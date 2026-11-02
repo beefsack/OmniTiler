@@ -25,27 +25,25 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen_full(output: &str, full: Rect, primary: bool) -> ScreenReport {
+fn screen_full(output: &str, full: Rect) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(full),
         work_area: Some(full),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
-fn incomplete_screen(output: &str, primary: bool) -> ScreenReport {
+fn incomplete_screen(output: &str) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: None,
         work_area: None,
-        gap: 0,
-        outer_gap: 0,
         complete: false,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -118,12 +116,11 @@ fn report_full(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-    predicate: crate::size_hints::FixedSizePredicate,
-    default_tiled: bool,
+    _predicate: crate::size_hints::FixedSizePredicate,
+    _default_tiled: bool,
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -131,31 +128,19 @@ fn report_full(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens,
         windows,
         views: Vec::new(),
         closed: Vec::new(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: predicate,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -215,9 +200,9 @@ fn window_transfer(reply: &crate::world_report::WorldReply, window: &str) -> Tra
 /// centre/span/left-top ranking (never carried adjacency).
 fn stacked_screens() -> Vec<ScreenReport> {
     vec![
-        screen_full("src", rect(0, 1080, 1920, 1080), false),
-        screen_full("u1", rect(0, 0, 960, 1080), false),
-        screen_full("u2", rect(960, 0, 960, 1080), true),
+        screen_full("src", rect(0, 1080, 1920, 1080)),
+        screen_full("u1", rect(0, 0, 960, 1080)),
+        screen_full("u2", rect(960, 0, 960, 1080)),
     ]
 }
 
@@ -238,7 +223,7 @@ fn send_up(window: &str, follow: bool) -> WorldCommand {
 }
 
 fn bootstrap_stacked(mover: WindowFact) -> (WorldEngine, crate::world_report::WorldReply) {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     // The source holds only the mover: a sole root leaf exhausts (R4)
     // instead of restructuring locally (R1-R3).
     let first = accepted(
@@ -282,11 +267,11 @@ fn world_overlap_fallback_selects_larger_span() {
     // window [300,1400) centre=850 is in the gap, overlapping u2 by 200
     // vs u1 by 100: U2.
     let screens = vec![
-        screen_full("src", rect(0, 1080, 1600, 1080), false),
-        screen_full("u1", rect(0, 0, 400, 1080), false),
-        screen_full("u2", rect(1200, 0, 400, 1080), true),
+        screen_full("src", rect(0, 1080, 1600, 1080)),
+        screen_full("u1", rect(0, 0, 400, 1080)),
+        screen_full("u2", rect(1200, 0, 400, 1080)),
     ];
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -330,11 +315,11 @@ fn world_both_centred_skips_overlap_to_left_top() {
     // centre=1100 sits in both, so overlap is skipped and left/top picks
     // U1 even though U2 overlaps the span more.
     let screens = vec![
-        screen_full("src", rect(0, 1080, 1600, 1080), false),
-        screen_full("u1", rect(0, 0, 1200, 1080), false),
-        screen_full("u2", rect(400, 0, 1200, 1080), true),
+        screen_full("src", rect(0, 1080, 1600, 1080)),
+        screen_full("u1", rect(0, 0, 1200, 1080)),
+        screen_full("u2", rect(400, 0, 1200, 1080)),
     ];
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -384,14 +369,15 @@ fn world_send_matches_move_targets() {
         (
             fact_rect("win-a", "src", rect(900, 1150, 400, 100)),
             vec![
-                screen_full("src", rect(0, 1080, 1600, 1080), false),
-                screen_full("u1", rect(0, 0, 1200, 1080), false),
-                screen_full("u2", rect(400, 0, 1200, 1080), true),
+                screen_full("src", rect(0, 1080, 1600, 1080)),
+                screen_full("u1", rect(0, 0, 1200, 1080)),
+                screen_full("u2", rect(400, 0, 1200, 1080)),
             ],
             "u1",
         ),
     ] {
-        let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+        let mut engine =
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
         accepted(
             &mut engine,
             &report(1, 1, screens.clone(), vec![mover], "", None, None),
@@ -429,11 +415,11 @@ fn world_migration_selects_largest_edge_despite_window_centre() {
     // (projecting onto U2), but migration ignores window position: the
     // largest shared edge selects U1.
     let screens = vec![
-        screen_full("out-l", rect(0, 1080, 1920, 1080), true),
-        screen_full("u1", rect(0, 0, 1200, 1080), false),
-        screen_full("u2", rect(1200, 0, 720, 1080), false),
+        screen_full("out-l", rect(0, 1080, 1920, 1080)),
+        screen_full("u1", rect(0, 0, 1200, 1080)),
+        screen_full("u2", rect(1200, 0, 720, 1080)),
     ];
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -547,9 +533,9 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
     // Gap topology forcing the no-candidate local fallback under the same
     // lagging window: the same fence fires before any local mutation.
     let gap = vec![
-        screen_full("src", rect(0, 2000, 800, 600), false),
-        screen_full("u1", rect(0, 0, 800, 600), false),
-        screen_full("u2", rect(3000, 0, 800, 600), true),
+        screen_full("src", rect(0, 2000, 800, 600)),
+        screen_full("u1", rect(0, 0, 800, 600)),
+        screen_full("u2", rect(3000, 0, 800, 600)),
     ];
     again = report(
         4,
@@ -638,11 +624,12 @@ fn exhausted_move_retains_identity_pinned_transfer_and_settles_on_arrival() {
     );
     // Local move on a gap topology retains no window transfer.
     let gap = vec![
-        screen_full("src", rect(0, 2000, 800, 600), false),
-        screen_full("u1", rect(0, 0, 800, 600), false),
-        screen_full("u2", rect(3000, 0, 800, 600), true),
+        screen_full("src", rect(0, 2000, 800, 600)),
+        screen_full("u1", rect(0, 0, 800, 600)),
+        screen_full("u2", rect(3000, 0, 800, 600)),
     ];
-    let mut gap_engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut gap_engine =
+        WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut gap_engine,
         &report(
@@ -753,10 +740,19 @@ fn capacity_float_fallback_retains_identity_pinned_window_transfer() {
     // row homes at the target with no Controlled frame authority, so no
     // invalid geometry can actuate.
     let screens = vec![
-        screen_full("out-a", rect(0, 0, 800, 600), true),
-        screen_full("out-b", rect(800, 0, 1, 1), false),
+        screen_full("out-a", rect(0, 0, 800, 600)),
+        screen_full("out-b", rect(800, 0, 1, 1)),
     ];
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities::default(),
+        vec![(
+            "outer".to_owned(),
+            crate::connection::RawSettingValue::Number(0.0),
+        )],
+    )
+    .expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -815,10 +811,10 @@ fn capacity_float_fallback_retains_identity_pinned_window_transfer() {
 
 fn two_output_world() -> (WorldEngine, Vec<ScreenReport>, String, Vec<String>) {
     let screens = vec![
-        screen_full("out-a", rect(0, 0, 800, 600), true),
-        screen_full("out-b", rect(800, 0, 800, 600), false),
+        screen_full("out-a", rect(0, 0, 800, 600)),
+        screen_full("out-b", rect(800, 0, 800, 600)),
     ];
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -942,8 +938,8 @@ fn uniform_presentation_resolves_found_and_root_leaf() {
     assert!(encoded.contains("\"status\":\"found\""));
     // A lone root leaf has no parent group: hidden with a reason (the
     // renderer clears), never an empty silent result.
-    let mut solo = WorldEngine::new("gen-1").expect("valid generation");
-    let solo_screens = vec![screen_full("out", rect(0, 0, 800, 600), true)];
+    let mut solo = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let solo_screens = vec![screen_full("out", rect(0, 0, 800, 600))];
     accepted(
         &mut solo,
         &report(
@@ -1070,10 +1066,10 @@ fn drag_drop_pair_resolves_pointer_target() {
     // destination. The world op resolves the pointer domain, never the
     // mover homing.
     let screens = vec![
-        screen_full("out-a", rect(0, 0, 300, 100), true),
-        screen_full("out-b", rect(800, 0, 300, 100), false),
+        screen_full("out-a", rect(0, 0, 300, 100)),
+        screen_full("out-b", rect(800, 0, 300, 100)),
     ];
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1176,8 +1172,8 @@ fn operation_send_retains_and_foreign_routes_refuse() {
     // Operation directional migration with a single live output has no
     // resolvable target and refuses without mutation, never silently
     // local. (Single output here; the strict map cannot resolve.)
-    let mut solo = WorldEngine::new("gen-1").expect("valid generation");
-    let solo_screens = vec![screen_full("out", rect(0, 0, 800, 600), true)];
+    let mut solo = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let solo_screens = vec![screen_full("out", rect(0, 0, 800, 600))];
     accepted(
         &mut solo,
         &report(
@@ -1438,7 +1434,8 @@ fn deterministic_sequence_replay_matches_exactly() {
     let (_engine, screens, _, ring) = two_output_world();
     assert_eq!(ring.len(), 2);
     let run = |reports: &[WorldReport]| {
-        let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+        let mut engine =
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
         let mut replies = Vec::new();
         for report in reports {
             match engine.handle_report(report) {
@@ -1483,8 +1480,8 @@ fn predicate_ingress_selects_admission_without_reclassification() {
             max_h: Some(150),
         };
         let screens = vec![
-            screen_full("out-a", rect(0, 0, 800, 600), true),
-            screen_full("out-b", rect(800, 0, 800, 600), false),
+            screen_full("out-a", rect(0, 0, 800, 600)),
+            screen_full("out-b", rect(800, 0, 800, 600)),
         ];
         report_full(
             seq,
@@ -1498,9 +1495,21 @@ fn predicate_ingress_selects_admission_without_reclassification() {
             true,
         )
     }
+
     // Either-axis ingress floats a width-only fixed window (membership
     // only, never a frame write).
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities::default(),
+        vec![(
+            "predicate".to_owned(),
+            crate::connection::RawSettingValue::String(
+                FixedSizePredicate::EitherAxis.as_wire_str().to_owned(),
+            ),
+        )],
+    )
+    .expect("valid generation");
     let reply = accepted(
         &mut engine,
         &width_fixed_report(FixedSizePredicate::EitherAxis, 1),
@@ -1513,7 +1522,7 @@ fn predicate_ingress_selects_admission_without_reclassification() {
     assert!(row.allocation.is_none());
     assert_eq!(row.frame_authority, ScopeAuthority::Untouched);
     // Both-axes ingress tiles the very same observation.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let reply = accepted(
         &mut engine,
         &width_fixed_report(FixedSizePredicate::BothAxes, 1),
@@ -1522,6 +1531,17 @@ fn predicate_ingress_selects_admission_without_reclassification() {
     assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
     assert!(row.allocation.is_some());
     // Retained tiles never reclassify when the predicate later changes.
+    engine
+        .apply_test_settings(
+            1,
+            vec![(
+                "predicate".to_owned(),
+                crate::connection::RawSettingValue::String(
+                    FixedSizePredicate::EitherAxis.as_wire_str().to_owned(),
+                ),
+            )],
+        )
+        .expect("settings accepted");
     let later = accepted(
         &mut engine,
         &width_fixed_report(FixedSizePredicate::EitherAxis, 2),
@@ -1538,11 +1558,11 @@ fn hotplug_incomplete_survivor_holds_unit_and_full_report_recovers() {
     // work-area or window-frame proxies. The next FULL complete report
     // hosts the unit with controlled rows.
     let three = vec![
-        screen_full("out-a", rect(0, 0, 800, 600), true),
-        screen_full("out-b", rect(800, 0, 800, 600), false),
-        screen_full("out-c", rect(1600, 0, 800, 600), false),
+        screen_full("out-a", rect(0, 0, 800, 600)),
+        screen_full("out-b", rect(800, 0, 800, 600)),
+        screen_full("out-c", rect(1600, 0, 800, 600)),
     ];
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1565,10 +1585,7 @@ fn hotplug_incomplete_survivor_holds_unit_and_full_report_recovers() {
         &report(
             2,
             2,
-            vec![
-                incomplete_screen("out-a", true),
-                incomplete_screen("out-b", false),
-            ],
+            vec![incomplete_screen("out-a"), incomplete_screen("out-b")],
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             "",
             None,
@@ -1606,10 +1623,7 @@ fn hotplug_incomplete_survivor_holds_unit_and_full_report_recovers() {
     let fenced = report(
         3,
         3,
-        vec![
-            incomplete_screen("out-a", true),
-            incomplete_screen("out-b", false),
-        ],
+        vec![incomplete_screen("out-a"), incomplete_screen("out-b")],
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
         "win-a",
         Some(11),
@@ -1627,8 +1641,8 @@ fn hotplug_incomplete_survivor_holds_unit_and_full_report_recovers() {
             4,
             4,
             vec![
-                screen_full("out-a", rect(0, 0, 800, 600), true),
-                screen_full("out-b", rect(800, 0, 800, 600), false),
+                screen_full("out-a", rect(0, 0, 800, 600)),
+                screen_full("out-b", rect(800, 0, 800, 600)),
             ],
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             "",
@@ -1670,11 +1684,11 @@ fn hotplug_policy_member_transfer_is_unique_and_ignores_outsiders() {
     // windows outside the displaced roster (newcomers, sticky strays)
     // earn no transfer entries.
     let three = vec![
-        screen_full("out-a", rect(0, 0, 800, 600), true),
-        screen_full("out-b", rect(800, 0, 800, 600), false),
-        screen_full("out-c", rect(1600, 0, 800, 600), false),
+        screen_full("out-a", rect(0, 0, 800, 600)),
+        screen_full("out-b", rect(800, 0, 800, 600)),
+        screen_full("out-c", rect(1600, 0, 800, 600)),
     ];
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1705,8 +1719,8 @@ fn hotplug_policy_member_transfer_is_unique_and_ignores_outsiders() {
             2,
             2,
             vec![
-                screen_full("out-a", rect(0, 0, 800, 600), true),
-                screen_full("out-b", rect(800, 0, 800, 600), false),
+                screen_full("out-a", rect(0, 0, 800, 600)),
+                screen_full("out-b", rect(800, 0, 800, 600)),
             ],
             vec![
                 fact("win-keep", "out-a", 0),
@@ -1768,8 +1782,8 @@ fn hotplug_policy_member_transfer_is_unique_and_ignores_outsiders() {
             3,
             3,
             vec![
-                screen_full("out-a", rect(0, 0, 800, 600), true),
-                screen_full("out-b", rect(800, 0, 800, 600), false),
+                screen_full("out-a", rect(0, 0, 800, 600)),
+                screen_full("out-b", rect(800, 0, 800, 600)),
             ],
             vec![
                 fact("win-keep", "out-a", 0),
@@ -1845,37 +1859,34 @@ fn unknown_outputs_and_views_hold_fail_closed() {
     assert!(calm.transfers.is_empty());
 }
 
-/// Distinct-gap operation-pair pins: nonzero source/destination outer gaps
-/// with asymmetric non-full work areas. Every reachable non-gesture
-/// operation route must leave both staged outer gaps untouched; the
-/// drag-pair builder defect (destination gap in `outer_gap`, `None` target)
-/// reset them before the fix.
+/// The configured outer gap is shared across outputs with asymmetric
+/// non-full work areas. Every reachable non-gesture operation route must
+/// leave both staged gaps untouched; the drag-pair builder defect
+/// (destination gap in `outer_gap`, `None` target) reset them before the fix.
 fn gapped_pair_screens() -> Vec<ScreenReport> {
     vec![
         ScreenReport {
             output: OutputId("out-a".to_owned()),
             full_rect: Some(rect(0, 0, 800, 600)),
             work_area: Some(rect(0, 20, 800, 560)),
-            gap: 0,
-            outer_gap: 8,
             complete: true,
-            primary: true,
+            scale: 1.0,
+            identity: crate::world_report::OutputIdentity::unknown(),
         },
         ScreenReport {
             output: OutputId("out-b".to_owned()),
             full_rect: Some(rect(800, 0, 800, 600)),
             work_area: Some(rect(810, 10, 780, 570)),
-            gap: 0,
-            outer_gap: 12,
             complete: true,
-            primary: false,
+            scale: 1.0,
+            identity: crate::world_report::OutputIdentity::unknown(),
         },
     ]
 }
 
 fn bootstrap_gapped_pair() -> (WorldEngine, Vec<ScreenReport>, String, String, Vec<String>) {
     let screens = gapped_pair_screens();
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1925,16 +1936,16 @@ fn assert_pair_gaps(engine: &WorldEngine, key_a: &DomainKey, key_b: &DomainKey) 
     );
     assert_eq!(
         engine.engine().outer_gap(key_b),
-        Some(12),
-        "destination outer gap retained"
+        Some(8),
+        "configured outer gap is shared across outputs"
     );
 }
 
 #[test]
-fn operation_drag_pair_preserves_distinct_outer_gaps() {
-    // Preview-then-drop and direct-drop over distinct gaps: both stored
-    // gaps survive, the drop commits the previewed slot, and a follow-up
-    // same-output placement on the destination routes locally.
+fn operation_drag_pair_preserves_configured_outer_across_outputs() {
+    // Preview-then-drop and direct-drop over distinct work areas: both
+    // retain the configured outer gap, the drop commits the previewed slot,
+    // and a follow-up same-output placement on the destination routes locally.
     for chained in [false, true] {
         let (mut engine, screens, view_a, view_b, _) = bootstrap_gapped_pair();
         let (key_a, key_b) = pair_keys(&view_a, &view_b);
@@ -1951,11 +1962,10 @@ fn operation_drag_pair_preserves_distinct_outer_gaps() {
         );
         assert_pair_gaps(&engine, &key_a, &key_b);
         let source = Some(key_a.clone());
-        // Full work-area insets: out-a (0,20,800,560) minus gap 8 and
-        // out-b (810,10,780,570) minus gap 12.
+        // Both outputs use the configured outer gap 8.
         let source_inset = rect(8, 28, 784, 544);
-        let dest_inset = rect(822, 22, 756, 546);
-        let destination_left = rect(822, 22, 378, 546);
+        let dest_inset = rect(818, 18, 764, 554);
+        let destination_left = rect(818, 18, 378, 554);
         let mut preview_rect = None;
         if chained {
             let preview = report(
@@ -2084,7 +2094,7 @@ fn operation_drag_pair_preserves_distinct_outer_gaps() {
 }
 
 #[test]
-fn operation_routes_preserve_distinct_outer_gaps() {
+fn operation_routes_preserve_configured_outer_across_outputs() {
     // Eight reachable non-gesture routes: typed/operation move and focus,
     // operation workspace send and typed directional send (follow/stay).
     for case in 0..8 {
@@ -2214,7 +2224,7 @@ fn operation_routes_preserve_distinct_outer_gaps() {
                 let inset = if row.output == key_a.output {
                     rect(8, 28, 784, 544)
                 } else {
-                    rect(822, 22, 756, 546)
+                    rect(818, 18, 764, 554)
                 };
                 assert_eq!(allocation.y, inset.y, "case {case}: work-area top");
                 assert_eq!(allocation.h, inset.h, "case {case}: work-area height");
@@ -2230,11 +2240,11 @@ fn operation_routes_preserve_distinct_outer_gaps() {
 fn explicit_output_send_uses_output_route() {
     // Explicit Operation(SendToOutput) cross-output must use the
     // cross-output builder (SendToOutput/MoveToOutput), not the
-    // same-output workspace builder: distinct gaps plus non-full work
-    // areas with exact inset layout, follow honored, and logical parity
+    // same-output workspace builder: the configured gap over non-full work
+    // areas has exact inset layout, follow is honored, and logical parity
     // with the directional output-send route. Table-driven over follow.
     let source_inset = rect(8, 28, 784, 544);
-    let dest_inset = rect(822, 22, 756, 546);
+    let dest_inset = rect(818, 18, 764, 554);
     for follow in [true, false] {
         let (mut engine, screens, view_a, view_b, _) = bootstrap_gapped_pair();
         let (key_a, key_b) = pair_keys(&view_a, &view_b);

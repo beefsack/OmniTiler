@@ -417,12 +417,23 @@ impl WorldEngine {
                     );
                     continue;
                 };
-                let (Some(work), gap) = (screen.work_area, screen.gap) else {
+                let Some(work) = screen.work_area else {
                     self.emit_operation(
                         retained.operation_id.clone(),
                         retained.window.clone(),
                         OperationOutcome::ClearContinuationRefused,
                         Some("unknown-output"),
+                    );
+                    continue;
+                };
+                let Some(gap) = Self::scale_once(self.gap_setting(), screen.scale) else {
+                    // Unscalable geometry refuses the continuation without
+                    // mutation, never a clamped gap.
+                    self.emit_operation(
+                        retained.operation_id.clone(),
+                        retained.window.clone(),
+                        OperationOutcome::ClearContinuationRefused,
+                        Some("invalid-geometry"),
                     );
                     continue;
                 };

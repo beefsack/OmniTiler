@@ -46,6 +46,14 @@
 - Status: active, 2026-10-30
 - Evidence: [review F1, F12, F19, P4](../changes/core-interface-review.md).
 
+### Own-process UI and ordinary Settings
+- Decision: Settings is an ordinary window on every platform, using normal resizable/fixed-size/dialog classification. Only the tiler's own native process UI is identity-excluded; another process with the same executable or bundle is not. Compare nullable window processId with fixed handshake applicationIdentity.processId, under unavailableFacts semantics; no platform selector or Settings-class predicate. Generic-dialog and generic-XAML rules stay unchanged.
+- Why: Settings is a complex window users may resize; Tier 1 WMs classify ordinary application windows, not special built-in Settings surfaces.
+- Rejected: the Windows Settings-class exemption of 2026-10-16 (ordinary-member and sends outcomes remain); M1's bundle-or-executable self exclusion, amended with W4 to own-process identity only.
+- Assumes / revisit if: Windows Settings becomes resizable and macOS Settings becomes distinguishable from own-process UI through a separate process or neutral marker; both are separate product follow-ups, not phase 1.
+- Status: approved, 2026-11-02
+- Evidence: User 2026-11-02; [process contract](../porting/world-contract.md#process-identity-and-own-process-exclusion), [fixed-size Tier 1 behavior](../spec/reference-outcomes/special-windows.md#r-spc-08-gain-or-lose-fixed-hints-after-admission), [resolved discriminator](../spec/reference-outcomes.md#raw-self-identity-applicability).
+
 ### Transient side effects
 - Decision: transient side effects of desired-state application are not world changes. Platforms avoid them where possible and distinguish them by causal evidence, never timing; safety checks use live host state.
 - Why: intentional outside changes must reach core promptly, including during desired-state application.

@@ -41,6 +41,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::connection::{
+    ApplicationIdentity, HandshakeReply, HandshakeRequest, HostCapabilities, ProtocolKind,
+    SettingsReply, SettingsRequest,
+};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::engine::Engine;
 use crate::geometry::Rect;
@@ -54,8 +58,8 @@ use crate::world_gesture::{GestureOutcome, RetainedGesture};
 use crate::world_report::{
     CommandResult, FrameAttempt, HoldReason, TilingMode, TransferKind, TransferTarget,
     WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldCommand,
-    WorldReply, WorldReport, encode_reply_canonical, reply_estimate, reply_upper_bound,
-    report_digest, report_estimate, validate_report_reason,
+    WorldReply, WorldReport, encode_reply_canonical, grade_invalid_screens, reply_estimate,
+    reply_upper_bound, report_digest, report_estimate, validate_report_reason,
 };
 
 pub(crate) const KIND_VERSION: &str = "unsupported-version";
@@ -401,9 +405,14 @@ pub(crate) struct StagedDomain {
 /// Per-report staged observation: screens as reported, one
 /// [`StagedDomain`] per known logical workspace, adapter view echoes, and
 /// the raw fact index the settlement path proves against.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct StagedReport {
     pub(crate) screens: Vec<crate::world_report::ScreenReport>,
+    /// Identifiable bad screen rows held narrowly, in report order.
+    pub(crate) held_screens: Vec<crate::world_report::HeldScreenRow>,
+    /// Typed narrow-hold diagnostics emitted with this report's reply:
+    /// one per held screen row plus one per use-time scale hold.
+    pub(crate) diagnostics: Vec<crate::world_report::RowDiagnostic>,
     pub(crate) domains: Vec<StagedDomain>,
     /// Non-empty adapter view echoes by output.
     pub(crate) echoes: BTreeMap<String, String>,
@@ -425,6 +434,16 @@ pub struct WorldEngine {
     pub(crate) engine: Engine,
     pub(crate) core_generation: GenerationId,
     pub(crate) core_generation_str: String,
+    generation_seed: String,
+    connection_number: u64,
+    config: WorldEngineConfig,
+    adapter: Option<String>,
+    pub(crate) connection_owner: Option<OwnerId>,
+    application_identity: Option<ApplicationIdentity>,
+    capabilities: Option<HostCapabilities>,
+    pub(crate) settings: crate::settings_state::SettingsState,
+    initial_settings_accepted: bool,
+    ready_latched: bool,
     pub(crate) state_revision: u64,
     has_last: bool,
     last_request_seq: u64,
@@ -433,9 +452,8 @@ pub struct WorldEngine {
     /// [`crate::world_report`]. Duplicate detection compares full typed
     /// input equality against this value; the digest is only a fast
     /// pre-check, never the identity (no hash-collision aliasing).
-    last_report: Option<WorldReport>,
+    pub(crate) last_report: Option<WorldReport>,
     last_observation_seq: u64,
-    last_adapter_incarnation: Option<String>,
     pub(crate) last_reply: Option<WorldReply>,
     /// Monotonic command high-watermark per (incarnation, generation):
     /// any `command_seq` at or below it is already consumed, so eviction
@@ -757,6 +775,135 @@ impl Default for WorldEngineConfig {
 }
 
 impl WorldEngine {
+    #[doc(hidden)]
+    pub fn new_test_bound(generation_seed: &str, adapter: &str) -> Option<Self> {
+        Self::new_test_bound_with_capabilities(
+            generation_seed,
+            adapter,
+            HostCapabilities {
+                ..HostCapabilities::default()
+            },
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn new_test_bound_with_capabilities(
+        generation_seed: &str,
+        adapter: &str,
+        capabilities: HostCapabilities,
+    ) -> Option<Self> {
+        Self::new_test_bound_with_initial_settings(
+            generation_seed,
+            adapter,
+            capabilities,
+            Vec::new(),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn new_test_bound_with_initial_settings(
+        generation_seed: &str,
+        adapter: &str,
+        capabilities: HostCapabilities,
+        values: Vec<(String, crate::connection::RawSettingValue)>,
+    ) -> Option<Self> {
+        Self::new_test_bound_with_config_and_initial_settings(
+            generation_seed,
+            adapter,
+            capabilities,
+            WorldEngineConfig::default(),
+            values,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn new_test_bound_with_config_and_initial_settings(
+        generation_seed: &str,
+        adapter: &str,
+        capabilities: HostCapabilities,
+        config: WorldEngineConfig,
+        mut values: Vec<(String, crate::connection::RawSettingValue)>,
+    ) -> Option<Self> {
+        let mut engine = Self::new_with_config(generation_seed, config)?;
+        // The caller owns availability: the synthetic test identity carries
+        // exactly the facts the given capabilities support, and the
+        // capabilities pass through unmodified (never silently extended).
+        let unavailable = &capabilities.unavailable_facts;
+        let handshake = HandshakeRequest {
+            adapter: adapter.to_owned(),
+            request: "test-handshake".to_owned(),
+            application_identity: ApplicationIdentity {
+                app_id: None,
+                executable: if unavailable.contains(&crate::connection::FactName::Executable) {
+                    None
+                } else {
+                    Some("test-own-executable".to_owned())
+                },
+                process_id: if unavailable.contains(&crate::connection::FactName::ProcessId) {
+                    None
+                } else {
+                    Some("test-own-pid".to_owned())
+                },
+            },
+            capabilities,
+        };
+        let handshake_reply = engine.handshake(&handshake);
+        if handshake_reply.kind.is_some() {
+            return None;
+        }
+        if !values.iter().any(|(key, _)| key == "mode") {
+            values.push((
+                "mode".to_owned(),
+                crate::connection::RawSettingValue::String(
+                    crate::workspace_scope::WORKSPACE_MODE_TOKENS[0].to_owned(),
+                ),
+            ));
+        }
+        let settings = SettingsRequest {
+            adapter: handshake_reply.adapter,
+            generation: handshake_reply.generation?,
+            request: "test-settings".to_owned(),
+            revision: 0,
+            values,
+        };
+        engine.handle_settings(&settings)?;
+        Some(engine)
+    }
+
+    #[doc(hidden)]
+    pub fn new_test_host_owned(generation_seed: &str, adapter: &str) -> Option<Self> {
+        let capabilities = HostCapabilities {
+            host_owned: true,
+            ..HostCapabilities::default()
+        };
+        Self::new_test_bound_with_capabilities(generation_seed, adapter, capabilities)
+    }
+
+    #[doc(hidden)]
+    pub fn new_test_host_owned_equal_count(generation_seed: &str, adapter: &str) -> Option<Self> {
+        let capabilities = HostCapabilities {
+            host_owned: true,
+            equal_count: true,
+            ..HostCapabilities::default()
+        };
+        Self::new_test_bound_with_capabilities(generation_seed, adapter, capabilities)
+    }
+
+    #[doc(hidden)]
+    pub fn apply_test_settings(
+        &mut self,
+        revision: u64,
+        values: Vec<(String, crate::connection::RawSettingValue)>,
+    ) -> Option<SettingsReply> {
+        self.handle_settings(&SettingsRequest {
+            adapter: self.adapter.clone()?,
+            generation: self.core_generation_str.clone(),
+            request: format!("test-settings-{revision}"),
+            revision,
+            values,
+        })
+    }
+
     /// Fresh backend incarnation. `None` on a malformed generation token.
     /// A new incarnation (process start, Engine replacement, poison
     /// recovery, world reset) must construct a new [`WorldEngine`]; the
@@ -783,13 +930,22 @@ impl WorldEngine {
             engine,
             core_generation: parsed,
             core_generation_str: core_generation.to_owned(),
+            generation_seed: core_generation.to_owned(),
+            connection_number: 0,
+            config,
+            adapter: None,
+            connection_owner: None,
+            application_identity: None,
+            capabilities: None,
+            settings: crate::settings_state::SettingsState::default(),
+            initial_settings_accepted: false,
+            ready_latched: false,
             state_revision: 0,
             has_last: false,
             last_request_seq: 0,
             last_digest: 0,
             last_report: None,
             last_observation_seq: 0,
-            last_adapter_incarnation: None,
             last_reply: None,
             command_highwater: None,
             retained: Vec::new(),
@@ -849,6 +1005,284 @@ impl WorldEngine {
         })
     }
 
+    /// Bind one adapter and its immutable host facts for a connection
+    /// lifetime. Re-handshaking resets the world by replacing it with a
+    /// fresh engine under a core-minted generation.
+    pub fn handshake(&mut self, request: &HandshakeRequest) -> HandshakeReply {
+        let reply = |adapter, correlation, generation, ready, kind| HandshakeReply {
+            adapter,
+            request: correlation,
+            generation,
+            ready,
+            kind,
+        };
+        let Some(correlation) = CorrelationId::parse(&request.request) else {
+            return reply(
+                OwnerId::parse(&request.adapter)
+                    .map(|id| id.as_str().to_owned())
+                    .unwrap_or_else(|| "invalid".to_owned()),
+                "invalid".to_owned(),
+                None,
+                false,
+                Some(ProtocolKind::CorrelationInvalid),
+            );
+        };
+        let Some(owner) = OwnerId::parse(&request.adapter) else {
+            return reply(
+                "invalid".to_owned(),
+                correlation.as_str().to_owned(),
+                None,
+                false,
+                Some(ProtocolKind::OwnerInvalid),
+            );
+        };
+        // Direct typed own-identity gate (same rules as the strict wire
+        // gate): support consistency plus carried-text grammar for appId,
+        // executable, and processId. No unsupported/null bypass and no
+        // ill-formed text bypass, even for callers that skip the wire codec.
+        // Refusal mints no generation and mutates no state.
+        if !request
+            .application_identity
+            .support_consistent(&request.capabilities.unavailable_facts)
+            || !request.application_identity.grammar_valid()
+        {
+            return reply(
+                request.adapter.clone(),
+                request.request.clone(),
+                None,
+                false,
+                Some(ProtocolKind::Malformed),
+            );
+        };
+        let next_number = if self.adapter.is_none() {
+            self.connection_number
+        } else {
+            let Some(number) = self.connection_number.checked_add(1) else {
+                return reply(
+                    request.adapter.clone(),
+                    request.request.clone(),
+                    None,
+                    false,
+                    Some(ProtocolKind::RevisionExhausted),
+                );
+            };
+            number
+        };
+        let generation = if next_number == 0 {
+            self.generation_seed.clone()
+        } else {
+            format!("{}-{next_number}", self.generation_seed)
+        };
+        if GenerationId::parse(&generation).is_none() {
+            return reply(
+                request.adapter.clone(),
+                request.request.clone(),
+                None,
+                false,
+                Some(ProtocolKind::RevisionExhausted),
+            );
+        }
+        let Some(mut fresh) = Self::new_with_config(&generation, self.config) else {
+            return reply(
+                request.adapter.clone(),
+                request.request.clone(),
+                None,
+                false,
+                Some(ProtocolKind::RevisionExhausted),
+            );
+        };
+        fresh.generation_seed.clone_from(&self.generation_seed);
+        fresh.connection_number = next_number;
+        fresh.focused_fullscreen_presentation_suspension =
+            self.focused_fullscreen_presentation_suspension;
+        fresh.adapter = Some(request.adapter.clone());
+        fresh.connection_owner = Some(owner);
+        fresh.engine.sync_binding(
+            fresh.connection_owner.as_ref().expect("connection owner"),
+            &fresh.core_generation,
+        );
+        fresh.application_identity = Some(request.application_identity.clone());
+        fresh.capabilities = Some(request.capabilities.clone());
+        *self = fresh;
+        reply(
+            request.adapter.clone(),
+            request.request.clone(),
+            Some(generation),
+            false,
+            None,
+        )
+    }
+
+    /// Accept settings only for the exact bound adapter and generation.
+    /// Stale or foreign envelopes cannot reach `SettingsState`.
+    pub fn handle_settings(&mut self, request: &SettingsRequest) -> Option<SettingsReply> {
+        if CorrelationId::parse(&request.request).is_none()
+            || self.adapter.as_deref() != Some(request.adapter.as_str())
+            || self.core_generation_str != request.generation
+        {
+            return None;
+        }
+        let caps = self.capabilities.as_ref()?;
+        let reply = self.settings.process(request, caps);
+        if reply.status == crate::connection::SettingsStatus::Accepted {
+            self.initial_settings_accepted = true;
+            self.engine
+                .set_fixed_size_predicate(self.settings.fixed_size_predicate);
+            self.engine
+                .set_anchor_fallback(self.settings.anchor_fallback);
+            self.engine
+                .set_no_space_result(self.settings.no_space_result);
+            self.engine
+                .set_fresh_placement(self.settings.fresh_placement);
+            self.switch_target = self.settings.switch_target;
+            self.fresh_placement = self.settings.fresh_placement;
+            self.focus_follows_cursor = self
+                .settings
+                .effective
+                .get(crate::settings_catalog::FIELD_FOCUS_FOLLOWS_CURSOR)
+                == Some(&crate::settings_state::EffectiveSetting::Bool(true));
+            self.cursor_warp = self
+                .settings
+                .effective
+                .get(crate::settings_catalog::FIELD_CURSOR_WARP)
+                == Some(&crate::settings_state::EffectiveSetting::Bool(true))
+                && caps.warp;
+        }
+        Some(reply)
+    }
+
+    #[must_use]
+    pub fn capabilities(&self) -> Option<&HostCapabilities> {
+        self.capabilities.as_ref()
+    }
+
+    #[must_use]
+    pub fn application_identity(&self) -> Option<&ApplicationIdentity> {
+        self.application_identity.as_ref()
+    }
+
+    #[must_use]
+    pub fn settings(&self) -> &crate::settings_state::SettingsState {
+        &self.settings
+    }
+
+    pub(crate) fn host_owned_workspace_domains(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .is_some_and(|caps| caps.host_owned)
+    }
+
+    pub(crate) fn equal_workspace_count(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .is_some_and(|caps| caps.equal_count)
+    }
+
+    pub(crate) fn birth_clear(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .is_some_and(|caps| caps.birth_clear)
+    }
+
+    pub(crate) fn switch_target_setting(&self) -> crate::cursor_targeting::SwitchTarget {
+        self.settings.switch_target
+    }
+
+    pub(crate) fn fresh_placement_setting(&self) -> crate::cursor_targeting::FreshPlacement {
+        self.settings.fresh_placement
+    }
+
+    pub(crate) fn focus_follows_cursor_setting(&self) -> bool {
+        matches!(
+            self.settings
+                .effective
+                .get(crate::settings_catalog::FIELD_FOCUS_FOLLOWS_CURSOR),
+            Some(crate::settings_state::EffectiveSetting::Bool(true))
+        )
+    }
+
+    pub(crate) fn cursor_warp_setting(&self) -> bool {
+        matches!(
+            self.settings
+                .effective
+                .get(crate::settings_catalog::FIELD_CURSOR_WARP),
+            Some(crate::settings_state::EffectiveSetting::Bool(true))
+        ) && self.capabilities.as_ref().is_some_and(|caps| caps.warp)
+    }
+
+    pub(crate) fn gap_setting(&self) -> i32 {
+        match self
+            .settings
+            .effective
+            .get(crate::settings_catalog::FIELD_INNER_GAP)
+        {
+            Some(crate::settings_state::EffectiveSetting::Int(value)) => *value,
+            _ => 8,
+        }
+    }
+
+    pub(crate) fn outer_gap_setting(&self) -> i32 {
+        match self
+            .settings
+            .effective
+            .get(crate::settings_catalog::FIELD_OUTER_GAP)
+        {
+            Some(crate::settings_state::EffectiveSetting::Int(value)) => *value,
+            _ => 8,
+        }
+    }
+
+    /// Scale one logical pixel setting into physical adapter units for one
+    /// output: `floor(logical * scale + 0.5)`, checked. `None` on overflow
+    /// (callers hold narrowly instead); never a 64-bit clamp.
+    pub(crate) fn scale_once(logical: i32, scale: f64) -> Option<i32> {
+        let scaled = (f64::from(logical) * scale + 0.5).floor();
+        if !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&scaled) {
+            return None;
+        }
+        Some(scaled as i32)
+    }
+
+    /// Per-output physical gaps: the logical inner/outer settings scaled
+    /// once by `scale`. `None` when either scaled value overflows.
+    pub(crate) fn scaled_gaps(&self, scale: f64) -> Option<(i32, i32)> {
+        Some((
+            Self::scale_once(self.gap_setting(), scale)?,
+            Self::scale_once(self.outer_gap_setting(), scale)?,
+        ))
+    }
+
+    pub(crate) fn workspace_mode_setting(&self) -> crate::workspace_scope::WorkspaceMode {
+        self.settings.workspace_mode
+    }
+
+    pub(crate) fn fixed_size_predicate_setting(&self) -> crate::size_hints::FixedSizePredicate {
+        self.settings.fixed_size_predicate
+    }
+
+    pub(crate) fn born_maximized_setting(&self) -> crate::born_maximized::BornMaximized {
+        self.settings.born_maximized
+    }
+
+    pub(crate) fn default_tiled(&self) -> bool {
+        matches!(
+            self.settings
+                .effective
+                .get(crate::settings_catalog::FIELD_WORKSPACE_DEFAULT_TILED),
+            Some(crate::settings_state::EffectiveSetting::Bool(true))
+        )
+    }
+
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.ready_latched
+    }
+
+    #[must_use]
+    pub fn core_generation(&self) -> &str {
+        &self.core_generation_str
+    }
+
     /// Opt in to neutral focused-fullscreen presentation suspension (stage 5).
     /// KWin only offers truthful `fullScreen`, never game identity: when the
     /// focused surface is fullscreen on its observed output, published
@@ -879,6 +1313,7 @@ impl WorldEngine {
             scopes: Vec::new(),
             workspaces: Vec::new(),
             outputs: Vec::new(),
+            diagnostics: Vec::new(),
             windows: Vec::new(),
             transfers: Vec::new(),
             effects: Vec::new(),
@@ -889,63 +1324,6 @@ impl WorldEngine {
             cursor_warp: None,
             presentation: crate::world_presentation::WorldPresentation::default(),
         }
-    }
-
-    /// Cancel retained world state for a new adapter incarnation on a staged
-    /// candidate: flights, ordering, desired caches, logical tokens, command
-    /// high-watermark, and workspace mapping/history. Never touches native
-    /// windows, retained engine sessions, the core generation, or the
-    /// global revision. Born lifetime state (`retained_born`,
-    /// `born_attempted`, `born_held_fullscreen`, `born_floating_first`,
-    /// `born_seen_nonfullscreen`, `born_keep_overlay`, `born_seq`) is intentionally retained:
-    /// it is keyed by native lifetimes the persisting engine sessions
-    /// still prove, so a rebind must neither re-clear admitted overlays
-    /// nor lose outstanding bindings.
-    fn reset_incarnation(&mut self, adapter_incarnation: &str) {
-        self.has_last = false;
-        self.last_request_seq = 0;
-        self.last_digest = 0;
-        self.last_observation_seq = 0;
-        self.last_report = None;
-        self.last_reply = None;
-        self.command_highwater = None;
-        self.retained.clear();
-        self.retained_floats.clear();
-        self.retained_clears.clear();
-        self.retained_creations.clear();
-        self.pending_source_releases.clear();
-        self.frames.clear();
-        self.consumed_frames.clear();
-        self.frame_bursts.clear();
-        self.learned_mins.clear();
-        self.gesture = None;
-        self.consumed_gesture_seq = 0;
-        self.gesture_terminal = None;
-        self.tiling.clear();
-        self.members.clear();
-        self.floating_scopes.clear();
-        self.last_views.clear();
-        self.mapping.clear();
-        self.native_map.clear();
-        self.views.clear();
-        self.history = ScopeHistory::new();
-        self.displaced.clear();
-        self.output_facts.clear();
-        self.live_topology.clear();
-        self.command_result = None;
-        self.operation_settled.clear();
-        self.prev_cursor = self.last_cursor;
-        self.ffc_last_hover = None;
-        self.staged = StagedReport::default();
-        self.placement_bootstrapped = false;
-        self.fresh_focus = crate::fresh_focus::FreshFocusMemory::default();
-        self.presentation_live.clear();
-        self.presentation_float.clear();
-        self.presentation_tile.clear();
-        self.presentation_order.clear();
-        self.presentation_focused = None;
-        self.last_adapter_incarnation = Some(adapter_incarnation.to_owned());
-        self.last_active_window.clear();
     }
 
     /// Advance the consumed gesture id watermark to at least `id`.
@@ -1223,14 +1601,26 @@ impl WorldEngine {
     /// command consumption exactly as before. Only reports passing every
     /// cheap gate pay for the clone.
     pub fn handle_report(&mut self, report: &WorldReport) -> WorldOutcome {
-        // Generation binding first: a delayed reply from another incarnation
-        // can never reset ordering.
+        // A report can only refer to the lifetime established by handshake.
+        if self.adapter.as_deref() != Some(report.adapter_incarnation.as_str()) {
+            return WorldOutcome::Rejected {
+                kind: KIND_OWNER,
+                message: MSG_OWNER,
+            };
+        }
         if report.core_generation != self.core_generation_str {
             return WorldOutcome::Rejected {
                 kind: KIND_GENERATION,
                 message: MSG_GENERATION,
             };
         }
+        // Core-owned grading: directly constructed identifiable invalid
+        // scale/metadata rows become narrow holds like their
+        // protocol-decoded twins before any estimate, validation, or
+        // mutation. Structural violations still refuse below; the pure
+        // shape gate is unchanged for callers that bypass the engine.
+        let graded = grade_invalid_screens(report);
+        let report = graded.as_ref().map_or(report, |owned| owned);
         if report_estimate(report) > WORLD_MAX_REQUEST_BYTES {
             return WorldOutcome::Rejected {
                 kind: KIND_OVERSIZED,
@@ -1250,14 +1640,33 @@ impl WorldEngine {
                 message: reason,
             };
         }
-        let owner = match OwnerId::parse(&report.owner) {
-            Some(owner) => owner,
-            None => {
-                return WorldOutcome::Rejected {
-                    kind: KIND_OWNER,
-                    message: MSG_OWNER,
-                };
-            }
+        let native_evidence = !report.native.is_empty()
+            || report
+                .windows
+                .iter()
+                .any(|window| window.native_workspace.is_some())
+            || report.member_attempts.iter().any(|attempt| {
+                matches!(
+                    attempt.pre.as_ref(),
+                    Some(crate::world_report::WorkspaceRef::Native { .. })
+                ) || matches!(
+                    attempt.post.as_ref(),
+                    Some(crate::world_report::WorkspaceRef::Native { .. })
+                )
+            })
+            || !report.view_attempts.is_empty()
+            || !report.creation_attempts.is_empty();
+        if native_evidence && !self.host_owned_workspace_domains() {
+            return WorldOutcome::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: "native-without-capability",
+            };
+        }
+        let Some(owner) = self.connection_owner.clone() else {
+            return WorldOutcome::Rejected {
+                kind: KIND_OWNER,
+                message: MSG_OWNER,
+            };
         };
         let correlation = match CorrelationId::parse(&report.request_id) {
             Some(correlation) => correlation,
@@ -1268,26 +1677,13 @@ impl WorldEngine {
                 };
             }
         };
-        // New adapter incarnation: fresh sequence namespace. The reset runs
-        // on the staged candidate below, never on `self`: when the staged
-        // report rejects, the previous incarnation's flights, ordering,
-        // desired caches, logical tokens, command high-watermark, and
-        // workspace mapping/history stay exactly as before. Freshness
-        // classifies against the effective namespace, so a new incarnation
-        // always classifies as new regardless of reused sequence numbers.
-        let is_new_incarnation =
-            self.last_adapter_incarnation.as_deref() != Some(report.adapter_incarnation.as_str());
         let digest = report_digest(report);
-        let (has_last, last_seq, last_digest, last_obs) = if is_new_incarnation {
-            (false, 0, 0, 0)
-        } else {
-            (
-                self.has_last,
-                self.last_request_seq,
-                self.last_digest,
-                self.last_observation_seq,
-            )
-        };
+        let (has_last, last_seq, last_digest, last_obs) = (
+            self.has_last,
+            self.last_request_seq,
+            self.last_digest,
+            self.last_observation_seq,
+        );
         if has_last {
             if report.request_seq < last_seq {
                 return WorldOutcome::Rejected {
@@ -1326,20 +1722,9 @@ impl WorldEngine {
         }
         // Conservative pre-mutation reply bound: no observation convergence,
         // slot cleanup, or command mutation runs when the worst-case reply
-        // cannot fit. A new incarnation stages from empty retained flights
-        // and creations, so the bound uses the staged (zeroed) lens for
-        // those; retained sessions persist across incarnations, so their
-        // lens stays exact.
-        let (retained_len, created_len) = if is_new_incarnation {
-            (0, 0)
-        } else {
-            (
-                self.retained.len() + self.retained_floats.len(),
-                // New logical workspaces per report are bounded by the live
-                // screens (at most one trailing creation each).
-                report.screens.len(),
-            )
-        };
+        // cannot fit.
+        let retained_len = self.retained.len() + self.retained_floats.len();
+        let created_len = report.screens.len();
         if reply_upper_bound(
             report,
             retained_len,
@@ -1360,18 +1745,10 @@ impl WorldEngine {
                 message: MSG_REVISION_EXHAUSTED,
             };
         }
-        // Fresh report carrying an already-consumed command sequence:
-        // reconcile the observation on the staged candidate but never
-        // re-execute the command. The high-watermark is per (incarnation,
-        // generation): a new incarnation owns a fresh watermark, so nothing
-        // is consumed there.
-        let effective_highwater = if is_new_incarnation {
-            None
-        } else {
-            self.command_highwater
-        };
+        // Fresh reports carrying an already-consumed command sequence
+        // reconcile observation but never re-execute the command.
         let consumed = match (report.command_seq, report.command.as_ref()) {
-            (Some(seq), Some(_)) => effective_highwater.is_some_and(|mark| seq <= mark),
+            (Some(seq), Some(_)) => self.command_highwater.is_some_and(|mark| seq <= mark),
             (Some(_), None) | (None, Some(_)) => {
                 return WorldOutcome::Rejected {
                     kind: KIND_SNAPSHOT,
@@ -1380,17 +1757,26 @@ impl WorldEngine {
             }
             (None, None) => false,
         };
+        let usable_initial_observation = report.inventory_complete
+            && !report.screens.is_empty()
+            && report.screens.iter().all(|screen| {
+                screen.complete
+                    && screen
+                        .full_rect
+                        .is_some_and(|rect| rect.w > 0 && rect.h > 0)
+                    && screen
+                        .work_area
+                        .is_some_and(|rect| rect.w > 0 && rect.h > 0)
+            });
+        if !self.initial_settings_accepted || (!self.ready_latched && !usable_initial_observation) {
+            return WorldOutcome::Accepted(self.bootstrap_report_reply(report, &correlation));
+        }
         // Stage everything past this point on a clone. Exact-encoding
         // overflow (or any late failure) drops the candidate; `self` is
         // adopted only after the staged reply encodes within budget.
-        // The incarnation reset lands here: retained world state (flights,
-        // ordering, desired caches, logical tokens, command high-watermark,
-        // workspace mapping/history) is cancelled on the candidate; native
-        // windows are untouched. Owner rebinding inside the staged run
-        // clears engine sessions when the owner actually changed.
         let mut staged = self.clone();
-        if is_new_incarnation {
-            staged.reset_incarnation(&report.adapter_incarnation);
+        if usable_initial_observation {
+            staged.ready_latched = true;
         }
         let outcome = staged.run_accepted(report, &owner, &correlation, digest, consumed);
         match outcome {
@@ -1423,6 +1809,36 @@ impl WorldEngine {
         }
     }
 
+    fn bootstrap_report_reply(
+        &self,
+        report: &WorldReport,
+        correlation: &CorrelationId,
+    ) -> WorldReply {
+        WorldReply {
+            contract_version: WORLD_CONTRACT_VERSION,
+            adapter_incarnation: report.adapter_incarnation.clone(),
+            core_generation: report.core_generation.clone(),
+            request_id: correlation.as_str().to_owned(),
+            based_on_observation_seq: report.observation_seq,
+            state_revision: self.state_revision,
+            ready: false,
+            command_consumed: false,
+            scopes: Vec::new(),
+            workspaces: Vec::new(),
+            outputs: Vec::new(),
+            diagnostics: Vec::new(),
+            windows: Vec::new(),
+            transfers: Vec::new(),
+            effects: Vec::new(),
+            command_result: None,
+            gesture_settled: None,
+            operation_settled: Vec::new(),
+            native_creations: Vec::new(),
+            cursor_warp: None,
+            presentation: crate::world_presentation::WorldPresentation::default(),
+        }
+    }
+
     /// Run one accepted report on the staged candidate: converge logical
     /// rings/views, stage the observation, settle retained state, sweep
     /// every readable logical workspace, execute at most one command, and
@@ -1449,9 +1865,6 @@ impl WorldEngine {
                 crate::world_report::SendSource::Explicit(_) => None,
                 crate::world_report::SendSource::HomeThenAction => {
                     self.resolve_home_then_action(report, window)
-                }
-                crate::world_report::SendSource::HomeThenCachedLive => {
-                    self.resolve_home_then_cached_live(report, window)
                 }
             },
             _ => None,
@@ -1503,27 +1916,10 @@ impl WorldEngine {
         // retained clamp/transient memory (scoped by exact staged lifetime)
         // so this same reply publishes suppression.
         self.settle_frames(report);
-        // Bind the engine owner/generation (rebinding clears sessions).
-        self.engine.sync_binding(owner, &self.core_generation);
-        // Ingress settings: the reported fixed-size predicate selects
-        // subsequent admissions only, never reclassifying retained windows.
-        // The D2/D3 capacity settings likewise select subsequent capacity
-        // decisions only: no reflow, retry, or reclassification on Apply.
-        self.engine
-            .set_fixed_size_predicate(report.fixed_size_predicate);
-        self.engine.set_anchor_fallback(report.anchor_fallback);
-        self.engine.set_no_space_result(report.no_space_result);
-        // Cursor-first ingress: switch target, fresh placement, the
-        // stage-4b coupling flags, and the normalized cursor seat
-        // with this observation. All apply to subsequent selections and
-        // admissions only, never to retained state.
-        self.switch_target = report.switch_target;
-        self.fresh_placement = report.fresh_placement;
-        self.focus_follows_cursor = report.focus_follows_cursor;
-        self.cursor_warp = report.cursor_warp;
+        // Cursor observations remain report facts; computational policy is
+        // retained from the connection settings envelope.
         self.prev_cursor = self.last_cursor;
         self.last_cursor = report.cursor;
-        self.engine.set_fresh_placement(report.fresh_placement);
         self.engine.set_fresh_cursor(report.cursor);
         // Floating workspaces skip convergence entirely: no session is
         // created or converged there, and no frame writes publish for them.
@@ -1605,7 +2001,7 @@ impl WorldEngine {
         // Unreadable authority (no new lane, no new enum): publish
         // withholds frame and membership writes there. Unhomed unknowns
         // (newcomers awaiting evidence) publish no row at all.
-        if report.host_owned_workspace_domains {
+        if self.host_owned_workspace_domains() {
             let mut fence: Vec<DomainKey> = Vec::new();
             for (window, fact) in &self.staged.facts {
                 if !self.native_authoritative(report, &fact.output) {
@@ -1895,7 +2291,7 @@ impl WorldEngine {
         // native-derived echo (never the explicit logical echo), so the
         // staged comparison keeps a single provenance. Tiler-owned
         // outputs keep tracking the raw logical echo.
-        if report.host_owned_workspace_domains {
+        if self.host_owned_workspace_domains() {
             let outputs: Vec<OutputId> = report
                 .screens
                 .iter()

@@ -24,7 +24,8 @@
           "req": "linked-no-warp",
           "applicationIdentity": {
             "appId": null,
-            "executable": "c:\\synthetic\\omnitiler.exe"
+            "executable": "c:\\synthetic\\omnitiler.exe",
+            "processId": "pid-own-1"
           },
           "capabilities": {
             "hostOwned": true,
@@ -200,6 +201,7 @@
               "role": "normal",
               "appId": "example.app",
               "executable": "c:\\synthetic\\example.exe",
+              "processId": "pid-foreign-1",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -429,6 +431,7 @@
               "role": "normal",
               "appId": "example.app",
               "executable": "c:\\synthetic\\example.exe",
+              "processId": "pid-foreign-1",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -660,6 +663,7 @@
               "role": "normal",
               "appId": "example.app",
               "executable": "c:\\synthetic\\example.exe",
+              "processId": "pid-foreign-1",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -816,7 +820,8 @@
           "req": "independent-with-warp",
           "applicationIdentity": {
             "appId": null,
-            "executable": "c:\\synthetic\\omnitiler.exe"
+            "executable": "c:\\synthetic\\omnitiler.exe",
+            "processId": "pid-own-1"
           },
           "capabilities": {
             "hostOwned": true,
@@ -992,6 +997,7 @@
               "role": "normal",
               "appId": "example.app",
               "executable": "c:\\synthetic\\example.exe",
+              "processId": "pid-foreign-1",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -1221,6 +1227,7 @@
               "role": "normal",
               "appId": "example.app",
               "executable": "c:\\synthetic\\example.exe",
+              "processId": "pid-foreign-1",
               "class": "Example",
               "title": "Window",
               "type": "normal",

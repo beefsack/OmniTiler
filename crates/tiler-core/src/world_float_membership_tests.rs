@@ -17,15 +17,14 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -88,7 +87,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -96,8 +94,7 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
-        screens: vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+        screens: vec![screen("out-a", 0), screen("out-b", 800)],
         windows,
         views: views
             .into_iter()
@@ -107,26 +104,15 @@ fn report(
             })
             .collect(),
         closed: vec![],
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: String::new(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -149,7 +135,7 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
 
 #[test]
 fn floating_toggle_keeps_membership_across_view_switch_and_unchanged_report() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, 1, vec![fact("win-t", "out-a", 0)], vec![], None, None),
@@ -207,7 +193,11 @@ fn floating_toggle_keeps_membership_across_view_switch_and_unchanged_report() {
     let scope = toggled
         .scopes
         .iter()
-        .find(|status| status.scope == format!("out-a/{view_a}"))
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), &view_a)
+        })
         .expect("floating scope");
     assert_eq!(scope.authority, ScopeAuthority::Untouched);
     for win in ["win-t", "win-u", "win-x"] {
@@ -282,7 +272,11 @@ fn floating_toggle_keeps_membership_across_view_switch_and_unchanged_report() {
     let scope = calm
         .scopes
         .iter()
-        .find(|status| status.scope == format!("out-a/{view_a}"))
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), &view_a)
+        })
         .expect("floating scope stays");
     assert_eq!(scope.authority, ScopeAuthority::Untouched);
     // Re-tile restores float intent: the user float rides the tiled scope as
@@ -311,15 +305,14 @@ fn floating_toggle_keeps_membership_across_view_switch_and_unchanged_report() {
     assert!(row.floating, "retile restores float intent: {row:?}");
 }
 
-fn screen_rect(output: &str, full: Rect, work: Rect, primary: bool) -> ScreenReport {
+fn screen_rect(output: &str, full: Rect, work: Rect) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(full),
         work_area: Some(work),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -352,7 +345,6 @@ fn report_screens(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -360,31 +352,19 @@ fn report_screens(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens,
         windows,
         views: Vec::new(),
         closed: vec![],
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: String::new(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -402,17 +382,56 @@ fn migrate_floating_workspace(
     screens: Vec<ScreenReport>,
     members: Vec<WindowFact>,
 ) -> crate::world_report::WorldReply {
-    migrated_session(screens, members).1
+    migrated_session(screens, members, false).1
 }
 
 fn migrated_session(
     screens: Vec<ScreenReport>,
     members: Vec<WindowFact>,
+    host_owned: bool,
 ) -> (WorldEngine, crate::world_report::WorldReply, String) {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    fn owned_report(
+        seq: u64,
+        screens: Vec<ScreenReport>,
+        mut members: Vec<WindowFact>,
+        command_seq: Option<u64>,
+        command: Option<WorldCommand>,
+    ) -> WorldReport {
+        use crate::world_report::{NativeObservation, NativeOccupancy};
+        for fact in &mut members {
+            fact.native_workspace = Some(format!(
+                "native-{}-0",
+                fact.output.0.trim_start_matches("out-")
+            ));
+        }
+        let mut report = report_screens(seq, screens, members, command_seq, command);
+        report.native = ["out-a", "out-b"]
+            .into_iter()
+            .map(|output| NativeObservation {
+                output: OutputId(output.to_owned()),
+                native_order: vec![format!("native-{}-0", output.trim_start_matches("out-"))],
+                current_native: Some(format!("native-{}-0", output.trim_start_matches("out-"))),
+                occupancy: vec![NativeOccupancy {
+                    native: format!("native-{}-0", output.trim_start_matches("out-")),
+                    count: None,
+                }],
+            })
+            .collect();
+        report
+    }
+
+    let mut engine = if host_owned {
+        WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation")
+    } else {
+        WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
+    };
     let first = accepted(
         &mut engine,
-        &report_screens(1, screens.clone(), members.clone(), None, None),
+        &if host_owned {
+            owned_report(1, screens.clone(), members.clone(), None, None)
+        } else {
+            report_screens(1, screens.clone(), members.clone(), None, None)
+        },
     );
     let view_a = first
         .outputs
@@ -422,31 +441,59 @@ fn migrated_session(
         .expect("view a");
     accepted(
         &mut engine,
-        &report_screens(
-            2,
-            screens.clone(),
-            members.clone(),
-            Some(11),
-            Some(WorldCommand::SetWorkspaceTiling {
-                output: OutputId("out-a".to_owned()),
-                workspace: view_a.clone(),
-                tiled: false,
-            }),
-        ),
+        &if host_owned {
+            owned_report(
+                2,
+                screens.clone(),
+                members.clone(),
+                Some(11),
+                Some(WorldCommand::SetWorkspaceTiling {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: view_a.clone(),
+                    tiled: false,
+                }),
+            )
+        } else {
+            report_screens(
+                2,
+                screens.clone(),
+                members.clone(),
+                Some(11),
+                Some(WorldCommand::SetWorkspaceTiling {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: view_a.clone(),
+                    tiled: false,
+                }),
+            )
+        },
     );
     let migrated = accepted(
         &mut engine,
-        &report_screens(
-            3,
-            screens.clone(),
-            members,
-            Some(12),
-            Some(WorldCommand::MigrateWorkspace {
-                source_output: OutputId("out-a".to_owned()),
-                target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
-            }),
-        ),
+        &if host_owned {
+            owned_report(
+                3,
+                screens.clone(),
+                members,
+                Some(12),
+                Some(WorldCommand::MigrateWorkspace {
+                    source_output: OutputId("out-a".to_owned()),
+                    target_output: OutputId("out-b".to_owned()),
+                    workspace: view_a.clone(),
+                }),
+            )
+        } else {
+            report_screens(
+                3,
+                screens.clone(),
+                members,
+                Some(12),
+                Some(WorldCommand::MigrateWorkspace {
+                    source_output: OutputId("out-a".to_owned()),
+                    target_output: OutputId("out-b".to_owned()),
+                    workspace: view_a.clone(),
+                }),
+            )
+        },
     );
     (engine, migrated, view_a)
 }
@@ -469,13 +516,8 @@ fn floating_source_migration_asymmetric_constrains_placement_to_destination() {
     // constrain the portable placement into the destination work area
     // instead of stranding the member off-screen. Size is preserved.
     let screens = vec![
-        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600), true),
-        screen_rect(
-            "out-b",
-            rect(800, 0, 400, 300),
-            rect(800, 0, 400, 300),
-            false,
-        ),
+        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600)),
+        screen_rect("out-b", rect(800, 0, 400, 300), rect(800, 0, 400, 300)),
     ];
     let members = vec![
         fact_at("w0", "out-a", rect(700, 500, 40, 90)),
@@ -518,13 +560,8 @@ fn floating_source_migration_negative_origin_preserves_relative_placement() {
     // destination, so the core preserves the relative placement exactly
     // instead of clamping to the destination origin.
     let screens = vec![
-        screen_rect(
-            "out-a",
-            rect(-800, 0, 800, 600),
-            rect(-800, 0, 800, 600),
-            true,
-        ),
-        screen_rect("out-b", rect(0, 0, 800, 600), rect(0, 0, 800, 600), false),
+        screen_rect("out-a", rect(-800, 0, 800, 600), rect(-800, 0, 800, 600)),
+        screen_rect("out-b", rect(0, 0, 800, 600), rect(0, 0, 800, 600)),
     ];
     let members = vec![fact_at("w0", "out-a", rect(-100, 100, 40, 90))];
     let reply = migrate_floating_workspace(screens, members);
@@ -543,13 +580,8 @@ fn floating_source_migration_minimized_carries_no_placement() {
     // authority at the target homing with no placement: the reveal writes
     // the frame, never the membership move.
     let screens = vec![
-        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600), true),
-        screen_rect(
-            "out-b",
-            rect(800, 0, 800, 600),
-            rect(800, 0, 800, 600),
-            false,
-        ),
+        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600)),
+        screen_rect("out-b", rect(800, 0, 800, 600), rect(800, 0, 800, 600)),
     ];
     let members = vec![
         fact_at("w0", "out-a", rect(100, 100, 40, 90)),
@@ -580,19 +612,14 @@ fn sessionless_target_observed_member_takes_no_retranslated_placement() {
     // unchanged: the migration stays retained and the member rides one
     // membership-only row at the target homing.
     let screens = vec![
-        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600), true),
-        screen_rect(
-            "out-b",
-            rect(800, 0, 800, 600),
-            rect(800, 0, 800, 600),
-            false,
-        ),
+        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600)),
+        screen_rect("out-b", rect(800, 0, 800, 600), rect(800, 0, 800, 600)),
     ];
     let members = vec![
         fact_at("w0", "out-a", rect(100, 100, 40, 90)),
         fact_at("w1", "out-a", rect(200, 200, 40, 90)),
     ];
-    let (mut engine, migrated, _) = migrated_session(screens.clone(), members);
+    let (mut engine, migrated, _) = migrated_session(screens.clone(), members, true);
     assert_eq!(
         row_of(&migrated, "w0").effective_frame,
         Some(rect(900, 100, 40, 90)),
@@ -602,7 +629,7 @@ fn sessionless_target_observed_member_takes_no_retranslated_placement() {
     // w0 physically crosses to the target with no logical receipt naming
     // the target id, so the host-owned homing stays at the source while
     // the raw fact reads on out-b.
-    let mut crossed = report_screens(
+    let crossed = report_screens(
         4,
         screens.clone(),
         vec![
@@ -612,7 +639,6 @@ fn sessionless_target_observed_member_takes_no_retranslated_placement() {
         None,
         None,
     );
-    crossed.host_owned_workspace_domains = true;
     let held = accepted(&mut engine, &crossed);
     let row = row_of(&held, "w0");
     assert_eq!(
@@ -655,25 +681,15 @@ fn sessionless_third_screen_observation_adopts_without_placement() {
     // retained for the remaining member. No portable placement is invented
     // for the adopted member (the raw observation already grounds it).
     let screens = vec![
-        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600), true),
-        screen_rect(
-            "out-b",
-            rect(800, 0, 800, 600),
-            rect(800, 0, 800, 600),
-            false,
-        ),
-        screen_rect(
-            "out-c",
-            rect(1600, 0, 800, 600),
-            rect(1600, 0, 800, 600),
-            false,
-        ),
+        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600)),
+        screen_rect("out-b", rect(800, 0, 800, 600), rect(800, 0, 800, 600)),
+        screen_rect("out-c", rect(1600, 0, 800, 600), rect(1600, 0, 800, 600)),
     ];
     let members = vec![
         fact_at("w0", "out-a", rect(100, 100, 40, 90)),
         fact_at("w1", "out-a", rect(200, 200, 40, 90)),
     ];
-    let (mut engine, _, _) = migrated_session(screens.clone(), members);
+    let (mut engine, _, _) = migrated_session(screens.clone(), members, false);
     let drifted = accepted(
         &mut engine,
         &report_screens(

@@ -17,19 +17,21 @@
 //! readable, or explicit unknown; strict coverage of each ordered id).
 
 pub use crate::world_sizing::{
-    encode_reply_canonical, int_len, json_string_len, reply_estimate, reply_exact_bytes,
-    reply_upper_bound, report_estimate, u64_len, usize_len,
+    NonFiniteNumber, encode_finite_json_number, encode_held_screen_canonical,
+    encode_reply_canonical, encode_screen_canonical, int_len, json_number_len, json_string_len,
+    push_json_number, push_raw_setting_value, push_row_diagnostic, raw_setting_value_len,
+    reply_estimate, reply_exact_bytes, reply_upper_bound, report_estimate, u64_len, usize_len,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::CoreCommand;
-use crate::bounds::{GEOMETRY_BOUND, is_gap, is_opaque_id, valid_carried_rect};
+use crate::bounds::{GEOMETRY_BOUND, is_opaque_id, valid_carried_rect};
 use crate::directional::{Direction, OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::gesture::{GestureIngress, GestureSettled};
+use crate::ids::NativeWorkspaceId;
 use crate::session::{DomainKey, DragHoverPrior};
-use crate::workspace_scope::WorkspaceMode;
 
 /// World envelope version (single source for the wire `v`). Version 3 is
 /// the logical-first contract plus the required neutral all-native-window
@@ -43,6 +45,42 @@ pub const WORLD_CONTRACT_VERSION: u32 = 3;
 pub const WORLD_MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 /// D4 selected transport budget: 4 MiB request AND reply.
 pub const WORLD_MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Typed authority target; wire encoding is a closed tagged record.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AuthorityScope {
+    Output(OutputId),
+    Workspace {
+        output: OutputId,
+        workspace: crate::directional::WorkspaceId,
+    },
+}
+
+impl AuthorityScope {
+    #[must_use]
+    pub fn covers_workspace(&self, output: &OutputId, workspace: &str) -> bool {
+        match self {
+            Self::Output(scope_output) => scope_output == output,
+            Self::Workspace {
+                output: scope_output,
+                workspace: scope_workspace,
+            } => scope_output == output && scope_workspace.0 == workspace,
+        }
+    }
+}
+
+/// Workspace reference with an explicit logical/native namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum WorkspaceRef {
+    Logical {
+        output: OutputId,
+        workspace: crate::directional::WorkspaceId,
+    },
+    Native {
+        output: OutputId,
+        workspace: NativeWorkspaceId,
+    },
+}
 
 /// Hard input caps so the worst-case budget is bounded before any work.
 pub const MAX_WORLD_SCREENS: usize = 16;
@@ -81,6 +119,10 @@ pub const MAX_PRESENTATION_STYLE_PX: i32 = 1024;
 /// ordered desktop (managed, unmanaged, and deleted occupants alike).
 /// `None` on the wire (`null`) is explicit unknown, never an inferred zero.
 pub const MAX_NATIVE_OCCUPANTS_PER_DESKTOP: u32 = 10_000;
+/// Bound on one output identity text in UTF-8 bytes (manufacturer, model,
+/// serial, connector): overbound identity holds the identifiable screen
+/// row narrowly instead of refusing the report.
+pub const MAX_IDENTITY_TEXT_BYTES: usize = 256;
 
 /// Tiling policy for one desired workspace row. The core retains one mode
 /// per workspace (Planner-owned, set through
@@ -104,13 +146,14 @@ impl TilingMode {
     }
 }
 
-/// Scope key for one desired workspace row: the owning output id, except in
-/// shared mode where every workspace shares one scope.
+/// Typed authority scope for a particular logical workspace on its owning
+/// live output. Shared internal workspace identity is projected by callers
+/// through each owning output, never serialized as a synthetic `shared` id.
 #[must_use]
-pub fn workspace_scope_key(mode: WorkspaceMode, output: &OutputId) -> String {
-    match mode {
-        WorkspaceMode::Shared => "shared".to_owned(),
-        WorkspaceMode::PerOutputLocal | WorkspaceMode::GlobalUnique => output.0.clone(),
+pub fn workspace_authority_scope(output: &OutputId, workspace: &str) -> AuthorityScope {
+    AuthorityScope::Workspace {
+        output: output.clone(),
+        workspace: crate::directional::WorkspaceId(workspace.to_owned()),
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -334,8 +377,7 @@ pub struct WorkspaceDesire {
     pub id: String,
     pub output: OutputId,
     pub native_binding: Option<String>,
-    /// Owning scope: the output id.
-    pub scope: String,
+    pub scope: AuthorityScope,
     pub order: usize,
     pub tiling_mode: TilingMode,
     pub existence: bool,
@@ -364,7 +406,7 @@ pub struct OutputDesire {
 /// Scoped status row: every known scope is explicit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeStatus {
-    pub scope: String,
+    pub scope: AuthorityScope,
     pub authority: ScopeAuthority,
 }
 
@@ -482,21 +524,11 @@ pub struct FrameAttempt {
 /// - `setter` is the mechanical disposition (`Accepted` never proves
 ///   arrival by itself, `Refused` is an explicit native refusal, `Threw`
 ///   is a throwing/ambiguous call).
-/// - `pre`/`post` are the live homings immediately before/after the write
-///   (`None` = unreadable). Only an explicit refusal with an unchanged
-///   readable preimage proves refusal; anything else latches ambiguity.
-/// - `native_pre`/`native_post` are the host-owned native desktop ids
-///   observed immediately before/after the write (`None` =
-///   unreadable/unknown). Only meaningful when
-///   `host_owned_workspace_domains` is set (non-null without the
-///   capability refuses, like
-///   [`WindowFact::native_workspace`]); the core translates them through
-///   its own per-output bindings (pre on the retained source output; post
-///   on the retained target output for arrival, on the retained source
-///   output for refusal) under a single evidence lane: host-owned reports
-///   ignore the logical `pre`/`post` and use only the translated natives.
-///   Tiler-owned reports use only the logical `pre`/`post` and carry no
-///   natives. Windows keeps the logical route with both fields `None`.
+/// - `pre`/`post` are namespaced references observed immediately before and
+///   after the write (`None` = unreadable). Member refs are logical on the
+///   native-free route and native on the host-owned route. The embedded
+///   output is authoritative for affinity and native translation. Only an
+///   explicit refusal with an unchanged readable preimage proves refusal.
 /// - `attempt_ms` is the adapter monotonic clock at the write, matching
 ///   [`FrameAttempt::attempt_ms`] idempotency.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -506,10 +538,8 @@ pub struct MemberAttempt {
     pub target_output: OutputId,
     pub target_workspace: String,
     pub setter: FrameSetter,
-    pub pre: Option<(OutputId, String)>,
-    pub post: Option<(OutputId, String)>,
-    pub native_pre: Option<String>,
-    pub native_post: Option<String>,
+    pub pre: Option<WorkspaceRef>,
+    pub post: Option<WorkspaceRef>,
     pub attempt_ms: u64,
 }
 
@@ -523,34 +553,27 @@ pub struct MemberAttempt {
 /// - `operation_id` is the owning phase id (the retained view id itself
 ///   for standalone/refill rows, the window parent for follow, the
 ///   migration parent for the target view).
-/// - `pre`/`post` are the live exact-output views immediately
-///   before/after the write (`None` = unreadable); `baseline` is the
-///   observation-time view (`None` = unknown). Only an explicit refusal
+/// - `pre`/`post` are namespaced native refs immediately before/after the
+///   write (`None` = unreadable); `baseline` is the native observation-time
+///   view (`None` = unknown). View attempts exist only for host-owned
+///   selectors. Only an explicit refusal
 ///   with an unchanged readable preimage proves refusal; a readable post
 ///   that is neither the baseline nor the target proves newer external
 ///   input.
-/// - `native_pre`/`native_post`/`native_baseline` are the host-owned native
-///   current ids read at the same three moments (`None` =
-///   unreadable/unknown). Same capability rule as
-///   [`MemberAttempt::native_pre`]: the core translates them through its
-///   own bindings for the attempt's target output under a single evidence
-///   lane (host-owned ignores logical `pre`/`post`/`baseline`; tiler-owned
-///   uses only the logical fields). A translated post proving the target
+///   The core translates each reference through its own binding at the
+///   output carried by that reference. A translated post proving the target
 ///   was reached followed by a different known current proves the proven
-///   view was abandoned (newer external input wins). Windows keeps the
-///   logical route with all three `None`.
+///   view was abandoned (newer external input wins). Native-free visibility
+///   and focus observations remain separate from selector-attempt evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewAttempt {
     pub operation_id: String,
     pub target_output: OutputId,
     pub target_workspace: String,
     pub setter: FrameSetter,
-    pub pre: Option<String>,
-    pub post: Option<String>,
-    pub baseline: Option<String>,
-    pub native_pre: Option<String>,
-    pub native_post: Option<String>,
-    pub native_baseline: Option<String>,
+    pub pre: Option<WorkspaceRef>,
+    pub post: Option<WorkspaceRef>,
+    pub baseline: Option<WorkspaceRef>,
     pub attempt_ms: u64,
 }
 
@@ -661,23 +684,138 @@ impl PresentationIngress {
     }
 }
 
+/// Native reconnect identity metadata for one output: neutral adapter-read
+/// strings, never adapter identity policy. Each of the four required keys
+/// is `None` (wire `null`) when unknown; empty strings stay preserved as
+/// `Some("")` (never normalized to unknown). Present values are bounded to
+/// 256 UTF-8 bytes each; the connector names the native connection
+/// identity only when its physical-connection normalization is proved
+/// (never a display id, UUID, ordinal, or unit number alone).
+/// The core derives physical reconnect identity from
+/// manufacturer/model/serial, using the connector if unreadable or
+/// duplicated; ambiguous reconnect holds rather than picking a candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputIdentity {
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub serial: Option<String>,
+    pub connector: Option<String>,
+}
+
+impl OutputIdentity {
+    /// Fully unknown identity: every field `None`.
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            manufacturer: None,
+            model: None,
+            serial: None,
+            connector: None,
+        }
+    }
+}
+
+/// Typed narrow-hold diagnostic for one bad identifiable row. The scope
+/// names the narrow held scope (never a policy verdict supplied by the
+/// adapter); `row` names the affected lane; `id` names the identifiable
+/// row (rows without identity refuse the envelope instead of holding);
+/// `kind` is the closed diagnostic vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RowDiagnosticKind {
+    Unreadable,
+    InvalidFact,
+    ConflictingFact,
+}
+
+impl RowDiagnosticKind {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unreadable => "unreadable",
+            Self::InvalidFact => "invalid-fact",
+            Self::ConflictingFact => "conflicting-fact",
+        }
+    }
+}
+
+/// Affected report lane for a [`RowDiagnostic`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RowDiagnosticLane {
+    Screen,
+    Window,
+    Native,
+    Attempt,
+    Presentation,
+}
+
+impl RowDiagnosticLane {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Screen => "screen",
+            Self::Window => "window",
+            Self::Native => "native",
+            Self::Attempt => "attempt",
+            Self::Presentation => "presentation",
+        }
+    }
+}
+
+/// One narrow-hold diagnostic: the held scope plus the affected lane, the
+/// identifiable row id, and the closed diagnostic kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowDiagnostic {
+    pub scope: AuthorityScope,
+    pub row: RowDiagnosticLane,
+    pub id: Option<String>,
+    pub kind: RowDiagnosticKind,
+}
+
+/// One identifiable screen row that failed v4 shape checks, held narrowly
+/// instead of refusing the whole report. `output` is the valid live output
+/// handle; `ordinal` is the row's original index in the carried `screens`
+/// array so a future exact request encoder can reconstruct the original
+/// order (valid rows keep relative order in `screens`); `fields` retains
+/// every carried screen key in canonical schema key order (`out`, `full`,
+/// `work`, `complete`, `scale`, `identity`, then any other carried keys in
+/// lexicographic order) as JSON-agnostic
+/// [`RawSettingValue`](crate::connection::RawSettingValue) facts so the
+/// canonical writer round-trips the row losslessly (absence, `null`, and
+/// value are all preserved, including bad types, overbound identity text,
+/// and retired extras; the nested `identity` object itself is retained in
+/// schema order `manufacturer`, `model`, `serial`, `connector` with unknown
+/// sub-keys after in lexicographic order); `diagnostic` is the emitted
+/// typed diagnostic for the held scope.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldScreenRow {
+    pub output: OutputId,
+    pub ordinal: usize,
+    pub fields: Vec<(String, crate::connection::RawSettingValue)>,
+    pub diagnostic: RowDiagnostic,
+}
+
 /// One screen observation: the stable output id, the FULL native output
-/// rectangle in one coherent adapter coordinate space, and the distinct
-/// work area the core tiles into. `gap`/`outer_gap` are settings carried
-/// per screen. `None` rectangles stay representable for explicitly
+/// rectangle in one coherent adapter coordinate space, the distinct work
+/// area the core tiles into, the target output scale (adapter units per
+/// logical pixel, finite positive), and the neutral native reconnect
+/// identity metadata. `gap`/`outer_gap`/`primary` are not screen keys:
+/// the core derives per-output physical gaps from the logical settings
+/// times this scale, and the report carries at most one host-designated
+/// primary. `None` rectangles stay representable for explicitly
 /// unreadable/partial observations; a report claiming complete topology
 /// carries valid FULL and work-area rectangles for every screen, and
 /// anything else narrowly fences topology-dependent crossing, migration,
 /// and remap (never an inferred work area, never a window frame proxy).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ScreenReport {
     pub output: OutputId,
     pub full_rect: Option<Rect>,
     pub work_area: Option<Rect>,
-    pub gap: i32,
-    pub outer_gap: i32,
     pub complete: bool,
-    pub primary: bool,
+    pub scale: f64,
+    pub identity: OutputIdentity,
 }
 
 /// One truthful window fact: the stable window lifetime, the screen where
@@ -835,12 +973,9 @@ pub enum SendSource {
     Explicit(OutputId),
     /// Retained pre-observation home, else the full migration/control
     /// action context (foreground, pointer, cache, known-registry order).
-    /// The CLI numbered/relative send route.
+    /// The implicit send route. Core uses retained home first, then the
+    /// action-context fallback chain.
     HomeThenAction,
-    /// Retained pre-observation home, else the cached output when live,
-    /// else the first live screen in report order. The keyboard
-    /// digit/relative send route.
-    HomeThenCachedLive,
 }
 
 /// Explicit world commands. At most one per report; observation-only
@@ -1006,10 +1141,9 @@ pub enum WorldCommand {
 /// screens, window facts, and view echoes. The default contract needs no
 /// native workspace concept at all: screens (FULL rectangles plus work
 /// areas) and window facts bootstrap and operate the whole logical model.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorldReport {
     pub contract_version: u32,
-    pub owner: String,
     pub adapter_incarnation: String,
     pub core_generation: String,
     /// Adapter-advanced on any invalidating native input, INCLUDING during
@@ -1020,15 +1154,10 @@ pub struct WorldReport {
     pub request_id: String,
     pub command_seq: Option<u64>,
     pub command: Option<WorldCommand>,
-    /// Logical workspace scope mode for this report: per-output-local
-    /// (default), global-unique (scoped numbering with visible-elsewhere
-    /// swap), or shared (one ring/history across all outputs). The mode is
-    /// authoritative for ring, view, history, hotplug, startup, and migration
-    /// policy on this report; changing it across reports re-scopes policy
-    /// without rewriting history beyond the mode rules.
-    pub workspace_mode: WorkspaceMode,
-    /// Screen observations: FULL rectangles plus work areas, completeness,
-    /// and the active (primary) screen. Core topology authority.
+    /// Screen observations: FULL rectangles plus work areas, per-output
+    /// scale, and neutral reconnect identity. Host-designated primary
+    /// rides the report-level `primary_output`, never a per-screen flag.
+    /// Core topology authority.
     pub screens: Vec<ScreenReport>,
     /// Truthful window facts: observed screen affinity, frames, flags, and
     /// minimized state. Core logical workspaces authorize all homing.
@@ -1040,71 +1169,16 @@ pub struct WorldReport {
     /// inventory is incomplete; only IMPLICIT missing=closed inference
     /// requires a provably complete inventory.
     pub closed: Vec<WindowId>,
-    /// Capability opt-in: the adapter additionally observes host-owned
-    /// workspace domains (see [`NativeObservation`]). Pure observation,
-    /// never mapping authority. Off by default.
-    pub host_owned_workspace_domains: bool,
-    /// Capability opt-in: keep workspace counts equal across screens
-    /// (neutral parity for native desktops spanning outputs). Off by
-    /// default; replaces the superseded aligned-grid option.
-    pub equal_workspace_count: bool,
-    /// Capability opt-in: the core may clear a born maximized window
-    /// automatically (commandless born maximize-clear, see
-    /// [`crate::world_born`]). Off by default; without it no automatic
-    /// birth behavior mints, publishes, or settles, while the explicit
-    /// directional clear lane is unchanged.
-    pub birth_clear: bool,
-    /// Host-owned native domain observations. Must be empty unless the
-    /// `host_owned_workspace_domains` capability is set.
+    /// Host-owned native domain observations. Core accepts them only when
+    /// the bound handshake advertises the corresponding capability.
     pub native: Vec<NativeObservation>,
-    /// Ingress fixed-size admission predicate (R-SPC-04 D1): the core
-    /// applies it to subsequent admissions only, never reclassifying
-    /// retained windows.
-    pub fixed_size_predicate: crate::size_hints::FixedSizePredicate,
-    /// Ingress migration source-refill mode (R-WS-12 G-37, main.xml
-    /// `migrationSourceRefill`, catalog `migration.refill`): the core
-    /// applies it to subsequent migrations only, never moving an
-    /// already-migrated workspace. Never reset committed state on change.
-    pub migration_source_refill: crate::output_selection::MigrationSourceRefill,
-    /// Ingress D2 anchor fallback (main.xml `anchorFallback`): selects the
-    /// fallback anchor for subsequent capacity admissions only. Missing or
-    /// invalid tokens backfill the largest-splittable default; changing it
-    /// never reflows, retries, or reclassifies retained state (D10).
-    pub anchor_fallback: crate::admission::AnchorFallback,
-    /// Ingress D3 no-space result (main.xml `noSpaceResult`): selects the
-    /// no-space outcome for subsequent admission or actual capacity-repair
-    /// decisions only. Missing or invalid tokens backfill float; changing
-    /// it never reflows retained overlap allocations until a real capacity
-    /// decision (D10).
-    pub no_space_result: crate::admission::NoSpaceResult,
-    /// Ingress cursor-first targeting (2026-10-20): selects the output
-    /// numbered/relative/previous/trailing selections act on
-    /// (cursor-output default, focused-output option). Applies to
-    /// subsequent selections only, never to retained views.
-    pub switch_target: crate::cursor_targeting::SwitchTarget,
-    /// Ingress fresh-window placement (2026-10-20): selects the output and
-    /// anchor for truly new lifetimes (cursor-output/last-focused default,
-    /// cursor-output/cursor-closest, or focused-output/last-focused).
-    /// Applies to subsequent fresh admissions only: never moves existing
-    /// members and never reflows, retries, or reclassifies retained state
-    /// on change. Reports before any accepted complete adoption adopt
-    /// native affinity (startup/restart/rebind quiet).
-    pub fresh_placement: crate::cursor_targeting::FreshPlacement,
-    /// Ingress focus-follows-cursor setting (default off). The stage-4b
-    /// core policy mints one hover-coupling focus effect per report while
-    /// this is on (see [`crate::world_cursor`]).
-    pub focus_follows_cursor: bool,
-    /// Ingress cursor-warp setting (default off). The stage-4b core policy
-    /// publishes the cross-output warp point while this is on (see
-    /// [`crate::world_cursor`]).
-    pub cursor_warp: bool,
     /// Normalized cursor position in adapter units (same space as screen
     /// FULL rectangles and fact frames), `None` when the adapter cannot
     /// read it. Seated with `observation_seq`: retained per accepted
     /// report with the behavior settings and focused facts above, never
     /// on a separate stale timer. Cursor lookup uses FULL bounds; an
     /// absent cursor or a point outside every screen falls back through
-    /// the focused output to the primary/first readable output.
+    /// the focused output to the designated-primary/first readable output.
     pub cursor: Option<(i32, i32)>,
     /// Normalized cursor-hit managed lifetime: the exact managed window
     /// under the reported cursor at observation time, resolved by the
@@ -1144,21 +1218,17 @@ pub struct WorldReport {
     /// platform selection universe; the adapter never preselects. Empty
     /// only when the adapter knows no output at all.
     pub action_outputs: Vec<OutputId>,
-    /// Saved default tiling seed (legacy `defaultTiled` parity): seeds
-    /// newly created logical workspaces (bootstrap seeds all; live changes
-    /// seed only subsequently created workspaces). Manual per-workspace
-    /// toggles already retained never reseed. Backfills `true` when the
-    /// adapter predates the field.
-    pub default_tiled: bool,
-    /// Ingress born-maximized admission mode (R-MAX-06, main.xml
-    /// `bornMaximized`, catalog `admission.born-maximized`): selects whether
-    /// a tiled-first born maximized window clears once (`tile-on-launch`,
-    /// default) or keeps its overlay over a reserved slot
-    /// (`keep-maximized-overlay`). Tolerant: missing/invalid backfills the
-    /// default. The held-fullscreen exit lane clears under both modes.
-    /// Applies to subsequent admissions only, never reclassifying retained
-    /// windows.
-    pub born_maximized: crate::born_maximized::BornMaximized,
+    /// Host-designated primary output (wire `primary`): `None` when the
+    /// designation is unknown (the key is omitted). Wire `null` refuses:
+    /// unknown is absence, never an explicit null. The core falls back to
+    /// the first stable screen order when this names no live output, never
+    /// to the active screen.
+    pub primary_output: Option<OutputId>,
+    /// Identifiable screen rows that failed v4 shape checks, held narrowly
+    /// with their raw fields retained (see [`HeldScreenRow`]). Valid rows
+    /// stay in `screens`; every entry here holds its output scope and emits
+    /// its typed diagnostic instead of refusing the report.
+    pub held_screens: Vec<HeldScreenRow>,
     pub inventory_complete: bool,
     pub gesture_barrier: bool,
     /// Normalized gesture lifecycle ingress (stage 4a): `None` on
@@ -1312,6 +1382,10 @@ pub struct WorldReply {
     pub scopes: Vec<ScopeStatus>,
     pub workspaces: Vec<WorkspaceDesire>,
     pub outputs: Vec<OutputDesire>,
+    /// Narrow-hold row diagnostics for this report: one typed entry per
+    /// held identifiable row (see [`RowDiagnostic`]). Empty when every
+    /// row was usable.
+    pub diagnostics: Vec<RowDiagnostic>,
     pub windows: Vec<WindowDesire>,
     pub transfers: Vec<TransferTarget>,
     pub effects: Vec<OneShotEffect>,
@@ -1482,7 +1556,9 @@ pub fn classify_request(
 
 /// Deterministic FNV-1a digest over the canonical report content. Covers
 /// sequences, owner, request/command identity, screens (output, FULL and
-/// work-area rectangles, gaps, completeness, primary), facts (identity,
+/// work-area rectangles, scale, identity, completeness), the report-level
+/// primary designation, held screen rows (output, original ordinal,
+/// retained fields, and diagnostic), facts (identity,
 /// observed screen, frame, every safety flag, size-hint bounds, minimized
 /// state, observed logical receipt plus capability-gated native membership),
 /// view echoes, explicit closes, capability flags, host-owned
@@ -1524,8 +1600,6 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         report.request_seq.to_string(),
         report.observation_seq.to_string(),
         report.contract_version.to_string(),
-        crate::workspace_scope::mode_token(report.workspace_mode).to_owned(),
-        report.owner.clone(),
         report.adapter_incarnation.clone(),
         report.core_generation.clone(),
         report.request_id.clone(),
@@ -1539,10 +1613,6 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         sep(&mut hash);
     }
     flag(&mut hash, report.inventory_complete);
-    flag(&mut hash, report.default_tiled);
-    flag(&mut hash, report.host_owned_workspace_domains);
-    flag(&mut hash, report.equal_workspace_count);
-    flag(&mut hash, report.birth_clear);
     feed(&mut hash, &report.focused_global);
     sep(&mut hash);
     feed(
@@ -1611,22 +1681,6 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         feed(&mut hash, "no-gesture");
         sep(&mut hash);
     }
-    flag(&mut hash, report.focus_follows_cursor);
-    flag(&mut hash, report.cursor_warp);
-    feed(&mut hash, report.born_maximized.as_wire_str());
-    sep(&mut hash);
-    feed(&mut hash, report.fixed_size_predicate.as_wire_str());
-    sep(&mut hash);
-    feed(&mut hash, report.migration_source_refill.as_wire_str());
-    sep(&mut hash);
-    feed(&mut hash, report.anchor_fallback.as_wire_str());
-    sep(&mut hash);
-    feed(&mut hash, report.no_space_result.as_wire_str());
-    sep(&mut hash);
-    feed(&mut hash, report.switch_target.as_wire_str());
-    sep(&mut hash);
-    feed(&mut hash, report.fresh_placement.as_wire_str());
-    sep(&mut hash);
     feed(
         &mut hash,
         &report
@@ -1651,14 +1705,106 @@ pub fn report_digest(report: &WorldReport) -> u64 {
             screen.output.0.clone(),
             rect_part(screen.full_rect),
             rect_part(screen.work_area),
-            screen.gap.to_string(),
-            screen.outer_gap.to_string(),
             (if screen.complete { "c" } else { "i" }).to_owned(),
-            (if screen.primary { "p" } else { "s" }).to_owned(),
+            screen.scale.to_bits().to_string(),
         ] {
             feed(&mut hash, &part);
             sep(&mut hash);
         }
+        for part in [
+            screen.identity.manufacturer.as_deref().unwrap_or_default(),
+            screen.identity.model.as_deref().unwrap_or_default(),
+            screen.identity.serial.as_deref().unwrap_or_default(),
+            screen.identity.connector.as_deref().unwrap_or_default(),
+        ] {
+            feed(&mut hash, part);
+            sep(&mut hash);
+        }
+        flag(&mut hash, screen.identity.manufacturer.is_some());
+        flag(&mut hash, screen.identity.model.is_some());
+        flag(&mut hash, screen.identity.serial.is_some());
+        flag(&mut hash, screen.identity.connector.is_some());
+    }
+    feed(
+        &mut hash,
+        report
+            .primary_output
+            .as_ref()
+            .map(|out| out.0.as_str())
+            .unwrap_or_default(),
+    );
+    sep(&mut hash);
+    flag(&mut hash, report.primary_output.is_some());
+    for held in &report.held_screens {
+        feed(&mut hash, &held.output.0);
+        sep(&mut hash);
+        feed(&mut hash, &held.ordinal.to_string());
+        sep(&mut hash);
+        fn feed_raw(hash: &mut u64, value: &crate::connection::RawSettingValue) {
+            fn feed(hash: &mut u64, text: &str) {
+                for byte in text.bytes() {
+                    *hash ^= u64::from(byte);
+                    *hash = hash.wrapping_mul(1099511628211);
+                }
+            }
+            fn sep(hash: &mut u64) {
+                *hash ^= 0xff;
+                *hash = hash.wrapping_mul(1099511628211);
+            }
+            match value {
+                crate::connection::RawSettingValue::Null => feed(hash, "null"),
+                crate::connection::RawSettingValue::Bool(set) => {
+                    feed(hash, if *set { "true" } else { "false" });
+                }
+                crate::connection::RawSettingValue::Number(number) => {
+                    feed(hash, &number.to_bits().to_string());
+                }
+                crate::connection::RawSettingValue::String(text) => feed(hash, text),
+                crate::connection::RawSettingValue::Array(items) => {
+                    for item in items {
+                        feed_raw(hash, item);
+                        sep(hash);
+                    }
+                }
+                crate::connection::RawSettingValue::Object(entries) => {
+                    for (key, item) in entries {
+                        feed(hash, key);
+                        sep(hash);
+                        feed_raw(hash, item);
+                        sep(hash);
+                    }
+                }
+            }
+            sep(hash);
+        }
+        for (key, value) in &held.fields {
+            feed(&mut hash, key);
+            sep(&mut hash);
+            feed_raw(&mut hash, value);
+        }
+        feed(&mut hash, held.diagnostic.kind.as_str());
+        sep(&mut hash);
+        feed(&mut hash, held.diagnostic.row.as_str());
+        sep(&mut hash);
+        feed(&mut hash, held.diagnostic.id.as_deref().unwrap_or_default());
+        sep(&mut hash);
+        match &held.diagnostic.scope {
+            AuthorityScope::Output(output) => {
+                feed(&mut hash, "output");
+                sep(&mut hash);
+                feed(&mut hash, &output.0);
+                sep(&mut hash);
+            }
+            AuthorityScope::Workspace { output, workspace } => {
+                feed(&mut hash, "workspace");
+                sep(&mut hash);
+                feed(&mut hash, &output.0);
+                sep(&mut hash);
+                feed(&mut hash, &workspace.0);
+                sep(&mut hash);
+            }
+        }
+        flag(&mut hash, held.diagnostic.id.is_some());
     }
     for fact in &report.windows {
         for part in [
@@ -1804,7 +1950,7 @@ pub fn report_digest(report: &WorldReport) -> u64 {
             &attempt
                 .pre
                 .as_ref()
-                .map(|(out, ws)| format!("{out}/{ws}", out = out.0))
+                .map(workspace_ref_fingerprint)
                 .unwrap_or_default(),
         );
         sep(&mut hash);
@@ -1813,15 +1959,8 @@ pub fn report_digest(report: &WorldReport) -> u64 {
             &attempt
                 .post
                 .as_ref()
-                .map(|(out, ws)| format!("{out}/{ws}", out = out.0))
+                .map(workspace_ref_fingerprint)
                 .unwrap_or_default(),
-        );
-        sep(&mut hash);
-        feed(&mut hash, attempt.native_pre.as_deref().unwrap_or_default());
-        sep(&mut hash);
-        feed(
-            &mut hash,
-            attempt.native_post.as_deref().unwrap_or_default(),
         );
         sep(&mut hash);
         feed(&mut hash, &attempt.attempt_ms.to_string());
@@ -1836,22 +1975,31 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         sep(&mut hash);
         feed(&mut hash, attempt.setter.as_str());
         sep(&mut hash);
-        feed(&mut hash, attempt.pre.as_deref().unwrap_or_default());
-        sep(&mut hash);
-        feed(&mut hash, attempt.post.as_deref().unwrap_or_default());
-        sep(&mut hash);
-        feed(&mut hash, attempt.baseline.as_deref().unwrap_or_default());
-        sep(&mut hash);
-        feed(&mut hash, attempt.native_pre.as_deref().unwrap_or_default());
-        sep(&mut hash);
         feed(
             &mut hash,
-            attempt.native_post.as_deref().unwrap_or_default(),
+            &attempt
+                .pre
+                .as_ref()
+                .map(workspace_ref_fingerprint)
+                .unwrap_or_default(),
         );
         sep(&mut hash);
         feed(
             &mut hash,
-            attempt.native_baseline.as_deref().unwrap_or_default(),
+            &attempt
+                .post
+                .as_ref()
+                .map(workspace_ref_fingerprint)
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            &attempt
+                .baseline
+                .as_ref()
+                .map(workspace_ref_fingerprint)
+                .unwrap_or_default(),
         );
         sep(&mut hash);
         feed(&mut hash, &attempt.attempt_ms.to_string());
@@ -1965,6 +2113,17 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     hash
 }
 
+fn workspace_ref_fingerprint(reference: &WorkspaceRef) -> String {
+    match reference {
+        WorkspaceRef::Logical { output, workspace } => {
+            format!("logical/{}/{}", output.0, workspace.0)
+        }
+        WorkspaceRef::Native { output, workspace } => {
+            format!("native/{}/{}", output.0, workspace.as_str())
+        }
+    }
+}
+
 /// Validate a world report shape without echoing payload bytes. Every
 /// carried string is gated (opaque ids, generation token, closed direction
 /// vocabularies, bounded numeric ranges) and every section is capped, so
@@ -1972,9 +2131,217 @@ pub fn report_digest(report: &WorldReport) -> u64 {
 /// closes are ALWAYS allowed (even with incomplete inventory); only implicit
 /// missing=closed inference requires completeness, and that inference lives
 /// in the transition, not here.
+///
+/// Pure shape gate: directly constructed identifiable invalid scale or
+/// identity rows refuse here. The engine grades those rows to narrow holds
+/// first (see [`grade_invalid_screens`]); callers that bypass the engine
+/// see the refusal.
 #[must_use]
 pub fn validate_report(report: &WorldReport) -> bool {
     validate_report_reason(report).is_none()
+}
+
+/// Grade directly constructed identifiable invalid screen rows to narrow
+/// holds before engine authority/readiness: the protocol codec already
+/// holds these rows at decode, while [`validate_report_reason`] refuses
+/// them. Grading closes that causal gap without weakening any structural
+/// gate.
+///
+/// A screens row is gradable only when it is identifiable (a valid opaque
+/// output id) and its only violations are the v4 scale/metadata values
+/// (non-finite or non-positive scale, identity text over
+/// [`MAX_IDENTITY_TEXT_BYTES`] UTF-8 bytes). Structural violations (bad
+/// ids, duplicates, counts, geometry, complete-topology claims) still
+/// refuse: grading re-runs [`validate_report_reason`] on the normalized
+/// report and returns `None` unless it passes.
+///
+/// Normalization preserves every carried fact: graded rows take the free
+/// carried-array slots as held ordinals in row order (pre-existing held
+/// ordinals are preserved, valid rows keep relative order), fields are
+/// retained in canonical schema order (`out`, `full`, `work`, `complete`,
+/// `scale`, `identity`; typed rows carry no extras), and each graded row
+/// carries an `InvalidFact` screen diagnostic over its output scope,
+/// exactly like its decoded twin. A non-finite scale is retained
+/// faithfully as a held number fact: the checked canonical writers refuse
+/// to spell it (never a silent `null`); only the pre-validation estimator
+/// bounds it.
+#[must_use]
+pub fn grade_invalid_screens(report: &WorldReport) -> Option<WorldReport> {
+    if !matches!(
+        validate_report_reason(report),
+        Some("screen-scale-invalid" | "screen-identity-invalid")
+    ) {
+        return None;
+    }
+    {
+        // Structural pre-check over EVERY carried row before any removal:
+        // validation stops at the first scale/identity failure, which could
+        // hide a structural violation in a later row that removal would
+        // then erase. Any structural failure refuses the whole report.
+        let mut seen = BTreeSet::new();
+        for screen in &report.screens {
+            if check_screen_structure(screen, &mut seen).is_some() {
+                return None;
+            }
+        }
+    }
+    let total = report
+        .screens
+        .len()
+        .saturating_add(report.held_screens.len());
+    let used: BTreeSet<usize> = report
+        .held_screens
+        .iter()
+        .map(|held| held.ordinal)
+        .collect();
+    let mut free = (0..total).filter(|slot| !used.contains(slot));
+    let mut screens = Vec::with_capacity(report.screens.len());
+    let mut graded = Vec::new();
+    for screen in &report.screens {
+        let slot = free.next()?;
+        if gradable_screen(screen) {
+            graded.push(graded_held_row(screen, slot));
+        } else {
+            screens.push(screen.clone());
+        }
+    }
+    if graded.is_empty() {
+        return None;
+    }
+    let mut normalized = report.clone();
+    normalized.screens = screens;
+    normalized.held_screens.extend(graded);
+    normalized.held_screens.sort_by_key(|held| held.ordinal);
+    if validate_report_reason(&normalized).is_some() {
+        return None;
+    }
+    Some(normalized)
+}
+
+/// Structural per-screen checks shared by [`validate_report_reason`] and
+/// [`grade_invalid_screens`]: output id, duplicate output, rect-pair shape,
+/// and the complete-topology claim. Scale and identity value checks are NOT
+/// included: validation reports them after these, grading treats them as
+/// gradable. One policy, two call sites, identical reasons.
+///
+/// Also shared by the protocol decoder, which must refuse topology
+/// violations before holding a row for bad scale, overbound identity, or
+/// retired keys: hidden to keep the narrow hold vocabulary the only
+/// public surface.
+#[doc(hidden)]
+pub fn check_screen_structure(
+    screen: &ScreenReport,
+    seen_outputs: &mut BTreeSet<String>,
+) -> Option<&'static str> {
+    if !is_opaque_id(&screen.output.0) {
+        return Some("screen-id-invalid");
+    }
+    if !seen_outputs.insert(screen.output.0.clone()) {
+        return Some("duplicate-screen");
+    }
+    match (screen.full_rect, screen.work_area) {
+        (Some(full), Some(work)) => {
+            if !valid_carried_rect(full.x, full.y, full.w, full.h)
+                || !valid_carried_rect(work.x, work.y, work.w, work.h)
+            {
+                return Some("screen-rect-invalid");
+            }
+        }
+        (None, None) => {}
+        _ => return Some("screen-rect-partial"),
+    }
+    if screen.complete
+        && (screen.full_rect.is_none()
+            || screen.work_area.is_none()
+            || screen
+                .full_rect
+                .is_some_and(|rect| !valid_carried_rect(rect.x, rect.y, rect.w, rect.h))
+            || screen
+                .work_area
+                .is_some_and(|rect| !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)))
+    {
+        return Some("screen-complete-invalid");
+    }
+    None
+}
+
+/// True when a screens row is identifiable and its only violations are the
+/// gradable v4 scale/metadata values (see [`grade_invalid_screens`]).
+fn gradable_screen(screen: &ScreenReport) -> bool {
+    if !is_opaque_id(&screen.output.0) {
+        return false;
+    }
+    if !screen.scale.is_finite() || screen.scale <= 0.0 {
+        return true;
+    }
+    [
+        screen.identity.manufacturer.as_deref(),
+        screen.identity.model.as_deref(),
+        screen.identity.serial.as_deref(),
+        screen.identity.connector.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|field| field.len() > MAX_IDENTITY_TEXT_BYTES)
+}
+
+/// Retain one directly constructed invalid screen row as a narrow hold,
+/// mirroring the protocol codec's retained fields and diagnostic.
+fn graded_held_row(screen: &ScreenReport, ordinal: usize) -> HeldScreenRow {
+    use crate::connection::RawSettingValue;
+    fn rect_value(rect: Option<Rect>) -> RawSettingValue {
+        rect.map_or(RawSettingValue::Null, |row| {
+            RawSettingValue::Array(vec![
+                RawSettingValue::Number(f64::from(row.x)),
+                RawSettingValue::Number(f64::from(row.y)),
+                RawSettingValue::Number(f64::from(row.w)),
+                RawSettingValue::Number(f64::from(row.h)),
+            ])
+        })
+    }
+    fn identity_text(text: &Option<String>) -> RawSettingValue {
+        text.as_deref().map_or(RawSettingValue::Null, |value| {
+            RawSettingValue::String(value.to_owned())
+        })
+    }
+    HeldScreenRow {
+        output: screen.output.clone(),
+        ordinal,
+        fields: vec![
+            (
+                "out".to_owned(),
+                RawSettingValue::String(screen.output.0.clone()),
+            ),
+            ("full".to_owned(), rect_value(screen.full_rect)),
+            ("work".to_owned(), rect_value(screen.work_area)),
+            (
+                "complete".to_owned(),
+                RawSettingValue::Bool(screen.complete),
+            ),
+            ("scale".to_owned(), RawSettingValue::Number(screen.scale)),
+            (
+                "identity".to_owned(),
+                RawSettingValue::Object(vec![
+                    (
+                        "manufacturer".to_owned(),
+                        identity_text(&screen.identity.manufacturer),
+                    ),
+                    ("model".to_owned(), identity_text(&screen.identity.model)),
+                    ("serial".to_owned(), identity_text(&screen.identity.serial)),
+                    (
+                        "connector".to_owned(),
+                        identity_text(&screen.identity.connector),
+                    ),
+                ]),
+            ),
+        ],
+        diagnostic: RowDiagnostic {
+            scope: AuthorityScope::Output(screen.output.clone()),
+            row: RowDiagnosticLane::Screen,
+            id: Some(screen.output.0.clone()),
+            kind: RowDiagnosticKind::InvalidFact,
+        },
+    }
 }
 
 /// Name the failed [`validate_report`] check in fixed vocabulary (never
@@ -1986,16 +2353,17 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
     if report.contract_version != WORLD_CONTRACT_VERSION {
         return Some("version-mismatch");
     }
-    if !is_opaque_id(&report.owner)
-        || !is_opaque_id(&report.adapter_incarnation)
-        || !is_opaque_id(&report.request_id)
-    {
+    if !is_opaque_id(&report.adapter_incarnation) || !is_opaque_id(&report.request_id) {
         return Some("identity-invalid");
     }
     if !crate::ids::is_generation_id(&report.core_generation) {
         return Some("generation-invalid");
     }
-    if report.screens.len() > MAX_WORLD_SCREENS
+    if report
+        .screens
+        .len()
+        .saturating_add(report.held_screens.len())
+        > MAX_WORLD_SCREENS
         || report.windows.len() > MAX_WORLD_FACTS
         || report.closed.len() > MAX_WORLD_CLOSED
         || report.views.len() > MAX_WORLD_VIEWS
@@ -2026,12 +2394,6 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         if !report.windows.iter().any(|fact| fact.window == *hit) {
             return Some("cursor-hit-unknown");
         }
-    }
-    if !report.host_owned_workspace_domains && !report.native.is_empty() {
-        return Some("native-without-capability");
-    }
-    if !report.host_owned_workspace_domains && !report.creation_attempts.is_empty() {
-        return Some("native-without-capability");
     }
     // Action-context facts are neutral adapter observations: opaque ids
     // only here. Registry membership filters at use (a mapped but
@@ -2093,40 +2455,61 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
     {
         return Some("command-invalid");
     }
+    if let Some(primary) = report.primary_output.as_ref()
+        && !is_opaque_id(&primary.0)
+    {
+        return Some("primary-invalid");
+    }
     let mut seen_windows = BTreeSet::new();
     let mut seen_outputs = BTreeSet::new();
     for screen in &report.screens {
-        if !is_opaque_id(&screen.output.0) {
+        if let Some(reason) = check_screen_structure(screen, &mut seen_outputs) {
+            return Some(reason);
+        }
+        // v4 ingress shape: finite positive scale plus 256-byte identity
+        // texts. The protocol codec holds identifiable bad rows narrowly
+        // instead of producing these typed violations; this gate refuses
+        // directly constructed violations before mutation.
+        if !screen.scale.is_finite() || screen.scale <= 0.0 {
+            return Some("screen-scale-invalid");
+        }
+        for field in [
+            screen.identity.manufacturer.as_deref(),
+            screen.identity.model.as_deref(),
+            screen.identity.serial.as_deref(),
+            screen.identity.connector.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if field.len() > MAX_IDENTITY_TEXT_BYTES {
+                return Some("screen-identity-invalid");
+            }
+        }
+    }
+    for held in &report.held_screens {
+        if !is_opaque_id(&held.output.0) {
             return Some("screen-id-invalid");
         }
-        if !seen_outputs.insert(screen.output.0.clone()) {
+        // A held row and a valid row never share an output: one live
+        // handle carries exactly one row per report.
+        if !seen_outputs.insert(held.output.0.clone()) {
             return Some("duplicate-screen");
         }
-        if !is_gap(screen.gap) || !is_gap(screen.outer_gap) {
-            return Some("gap-invalid");
-        }
-        match (screen.full_rect, screen.work_area) {
-            (Some(full), Some(work)) => {
-                if !valid_carried_rect(full.x, full.y, full.w, full.h)
-                    || !valid_carried_rect(work.x, work.y, work.w, work.h)
-                {
-                    return Some("screen-rect-invalid");
-                }
+    }
+    {
+        // Held ordinals are the rows' original `screens` indexes: each one
+        // names a distinct slot in the carried array, so a future exact
+        // request encoder can reconstruct the original order.
+        let total = report
+            .screens
+            .len()
+            .saturating_add(report.held_screens.len());
+        let mut seen_ordinals = BTreeSet::new();
+        for held in &report.held_screens {
+            if held.ordinal >= total || !seen_ordinals.insert(held.ordinal) {
+                return Some("held-ordinal-invalid");
             }
-            (None, None) => {}
-            _ => return Some("screen-rect-partial"),
-        }
-        if screen.complete
-            && (screen.full_rect.is_none()
-                || screen.work_area.is_none()
-                || screen
-                    .full_rect
-                    .is_some_and(|rect| !valid_carried_rect(rect.x, rect.y, rect.w, rect.h))
-                || screen
-                    .work_area
-                    .is_some_and(|rect| !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)))
-        {
-            return Some("screen-complete-invalid");
         }
     }
     for fact in &report.windows {
@@ -2157,13 +2540,10 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         {
             return Some("window-observed-invalid");
         }
-        if let Some(native) = fact.native_workspace.as_deref() {
-            if !is_opaque_id(native) {
-                return Some("window-native-invalid");
-            }
-            if !report.host_owned_workspace_domains {
-                return Some("native-without-capability");
-            }
+        if let Some(native) = fact.native_workspace.as_deref()
+            && !is_opaque_id(native)
+        {
+            return Some("window-native-invalid");
         }
     }
     for id in &report.closed {
@@ -2320,29 +2700,8 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
             if !is_opaque_id(&attempt.target_output.0) || !is_opaque_id(&attempt.target_workspace) {
                 return Some("member-target-invalid");
             }
-            for homing in [&attempt.pre, &attempt.post] {
-                if let Some((out, ws)) = homing
-                    && (!is_opaque_id(&out.0) || !is_opaque_id(ws))
-                {
-                    return Some("member-homing-invalid");
-                }
-            }
-            // Same capability rule as `WindowFact::native_workspace`:
-            // host-owned native pre/post ids ride only with the
-            // capability; without it any carried id refuses.
-            if !report.host_owned_workspace_domains
-                && [&attempt.native_pre, &attempt.native_post]
-                    .iter()
-                    .any(|native| native.is_some())
-            {
-                return Some("native-without-capability");
-            }
-            for native in [&attempt.native_pre, &attempt.native_post]
-                .iter()
-                .copied()
-                .flatten()
-            {
-                if !is_opaque_id(native) {
+            for reference in [&attempt.pre, &attempt.post].into_iter().flatten() {
+                if !valid_attempt_workspace_ref(reference) {
                     return Some("member-homing-invalid");
                 }
             }
@@ -2360,37 +2719,11 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
             if !is_opaque_id(&attempt.target_output.0) || !is_opaque_id(&attempt.target_workspace) {
                 return Some("view-target-invalid");
             }
-            for view in [&attempt.pre, &attempt.post, &attempt.baseline] {
-                if let Some(view) = view
-                    && !is_opaque_id(view)
-                {
-                    return Some("view-proof-invalid");
-                }
-            }
-            // Same capability rule as `WindowFact::native_workspace`:
-            // host-owned native pre/post/baseline ids ride only with the
-            // capability; without it any carried id refuses.
-            if !report.host_owned_workspace_domains
-                && [
-                    &attempt.native_pre,
-                    &attempt.native_post,
-                    &attempt.native_baseline,
-                ]
-                .iter()
-                .any(|native| native.is_some())
+            for reference in [&attempt.pre, &attempt.post, &attempt.baseline]
+                .into_iter()
+                .flatten()
             {
-                return Some("native-without-capability");
-            }
-            for native in [
-                &attempt.native_pre,
-                &attempt.native_post,
-                &attempt.native_baseline,
-            ]
-            .iter()
-            .copied()
-            .flatten()
-            {
-                if !is_opaque_id(native) {
+                if !valid_attempt_workspace_ref(reference) {
                     return Some("view-proof-invalid");
                 }
             }
@@ -2543,6 +2876,17 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
     None
 }
 
+fn valid_attempt_workspace_ref(reference: &WorkspaceRef) -> bool {
+    match reference {
+        WorkspaceRef::Logical { output, workspace } => {
+            is_opaque_id(&output.0) && is_opaque_id(&workspace.0)
+        }
+        WorkspaceRef::Native { output, workspace } => {
+            is_opaque_id(&output.0) && is_opaque_id(workspace.as_str())
+        }
+    }
+}
+
 /// Validate one send source: explicit outputs carry opaque ids, implicit
 /// variants are always well-formed (resolution refuses unknown sources
 /// without inventing focus).
@@ -2550,7 +2894,7 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
 pub fn valid_send_source(source: &SendSource) -> bool {
     match source {
         SendSource::Explicit(output) => is_opaque_id(&output.0),
-        SendSource::HomeThenAction | SendSource::HomeThenCachedLive => true,
+        SendSource::HomeThenAction => true,
     }
 }
 

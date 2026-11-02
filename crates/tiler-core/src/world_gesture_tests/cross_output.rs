@@ -17,19 +17,17 @@ fn mixed_screens() -> Vec<ScreenReport> {
             output: OutputId("out-a".to_owned()),
             full_rect: Some(rect(0, 0, 2048, 1152)),
             work_area: Some(rect(0, 40, 2048, 1072)),
-            gap: 0,
-            outer_gap: 0,
             complete: true,
-            primary: true,
+            scale: 1.0,
+            identity: crate::world_report::OutputIdentity::unknown(),
         },
         ScreenReport {
             output: OutputId("out-b".to_owned()),
             full_rect: Some(rect(2048, 72, 1920, 1080)),
             work_area: Some(rect(2072, 72, 1896, 1016)),
-            gap: 0,
-            outer_gap: 0,
             complete: true,
-            primary: false,
+            scale: 1.0,
+            identity: crate::world_report::OutputIdentity::unknown(),
         },
     ]
 }
@@ -70,8 +68,27 @@ fn mixed_fact_rows(seed: Vec<(&str, &str, Rect)>) -> Vec<WindowFact> {
         .collect()
 }
 
+fn engine_without_gaps() -> WorldEngine {
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities::default(),
+        vec![
+            (
+                "gap".to_owned(),
+                crate::connection::RawSettingValue::Number(0.0),
+            ),
+            (
+                "outer".to_owned(),
+                crate::connection::RawSettingValue::Number(0.0),
+            ),
+        ],
+    )
+    .expect("valid generation")
+}
+
 fn seed_mixed(seed_facts: Vec<WindowFact>) -> WorldEngine {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = engine_without_gaps();
     accepted(
         &mut engine,
         &mixed_report(1, 1, seed_facts, "", None, vec![], true),
@@ -495,10 +512,9 @@ fn migration_screens() -> Vec<ScreenReport> {
         output: OutputId("out-c".to_owned()),
         full_rect: Some(rect(3968, 0, 1280, 800)),
         work_area: Some(rect(3968, 0, 1280, 800)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary: false,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     });
     screens
 }
@@ -538,7 +554,7 @@ fn cross_release_into_migration_cell_refuses_without_double_book() {
         fact("win-2", "out-a", r2),
         fact("win-3", "out-c", r3),
     ];
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &migration_report(1, 1, seed_facts.clone(), "", None),
@@ -656,7 +672,7 @@ fn cross_release_into_migration_cell_refuses_without_double_book() {
 /// outer_gap, so the pair commit's gap bookkeeping is exercised.
 fn gapped_screens() -> Vec<ScreenReport> {
     let mut screens = mixed_screens();
-    screens[1].outer_gap = 12;
+    screens[1].work_area = Some(rect(2084, 84, 1872, 992));
     screens
 }
 
@@ -691,7 +707,7 @@ fn cross_pair_release_with_outer_gap_keeps_local_route() {
         fact("win-3", "out-a", rect(200, 50, 40, 90)),
     ];
     let start = rect(10, 50, 40, 90);
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = engine_without_gaps();
     accepted(
         &mut engine,
         &gapped_report(1, 1, seed_facts.clone(), "", None),
@@ -838,7 +854,7 @@ fn cross_release_to_empty_destination_keeps_send_admission() {
     // out-b stages no windows: the pair route is inapplicable, so the
     // release keeps the legacy send admission (membership plus follow)
     // and its settlement.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let r1 = rect(10, 10, 40, 90);
     let r2 = rect(100, 10, 40, 90);
     accepted(

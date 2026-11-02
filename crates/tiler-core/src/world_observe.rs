@@ -14,7 +14,10 @@ use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::world_engine::{StagedDomain, StagedReport, WorldEngine};
 use crate::world_operations::parse_direction_token;
-use crate::world_report::{HoldReason, TransferKind, WorldReport};
+use crate::world_report::{
+    AuthorityScope, HoldReason, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, TransferKind,
+    WorldReport,
+};
 
 impl WorldEngine {
     /// Retain (or fence) the core-owned live output topology from one
@@ -162,6 +165,12 @@ impl WorldEngine {
     pub(crate) fn stage_facts(&mut self, report: &WorldReport) {
         let mut staged = StagedReport {
             screens: report.screens.clone(),
+            held_screens: report.held_screens.clone(),
+            diagnostics: report
+                .held_screens
+                .iter()
+                .map(|held| held.diagnostic.clone())
+                .collect(),
             gesture_barrier: report.gesture_barrier,
             ..StagedReport::default()
         };
@@ -243,7 +252,7 @@ impl WorldEngine {
         let ring = self.mapping.get(output)?;
         let last = ring.last()?;
         let occupied: BTreeSet<String> =
-            if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+            if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
                 let mut union = BTreeSet::new();
                 for out in self.mapping.keys() {
                     union.extend(self.ring_occupied(&OutputId(out.clone())));
@@ -324,15 +333,39 @@ impl WorldEngine {
                 .screens
                 .iter()
                 .find(|screen| screen.output.0 == output);
-            let (work_area, gap, outer_gap, complete) = match screen {
-                Some(screen) => (
-                    screen.work_area,
-                    screen.gap,
-                    screen.outer_gap,
-                    screen.complete,
-                ),
-                None => (None, 0, 0, false),
+            let held = self
+                .staged
+                .held_screens
+                .iter()
+                .any(|held| held.output.0 == output);
+            let (work_area, gap, outer_gap, complete, scale_overflow) = match screen {
+                Some(screen) => {
+                    // Per-output physical gaps: the logical settings scaled
+                    // once by this screen's scale. An overflowing scale holds
+                    // the scope as unreadable with a staged diagnostic (never
+                    // a clamped gap, never silent).
+                    match self.scaled_gaps(screen.scale) {
+                        Some((gap, outer_gap)) => {
+                            (screen.work_area, gap, outer_gap, screen.complete, false)
+                        }
+                        None => (screen.work_area, 0, 0, screen.complete, true),
+                    }
+                }
+                None => (None, 0, 0, false, false),
             };
+            if scale_overflow {
+                // Restaging runs twice per report (pre/post settlement), so
+                // guard the duplicate: one diagnostic per overflowing output.
+                let diagnostic = RowDiagnostic {
+                    scope: AuthorityScope::Output(OutputId(output.clone())),
+                    row: RowDiagnosticLane::Screen,
+                    id: Some(output.clone()),
+                    kind: RowDiagnosticKind::Unreadable,
+                };
+                if !self.staged.diagnostics.contains(&diagnostic) {
+                    self.staged.diagnostics.push(diagnostic);
+                }
+            }
             for id in ring {
                 let key = DomainKey {
                     output: OutputId(output.clone()),
@@ -393,10 +426,23 @@ impl WorldEngine {
                 };
                 // Host-owned domains need a complete inventory to read.
                 let inventory_readable =
-                    !report.host_owned_workspace_domains || report.inventory_complete;
-                let readable =
-                    complete && inventory_readable && work_area.is_some() && unreadable.is_empty();
-                let hold = if !complete || !inventory_readable {
+                    !self.host_owned_workspace_domains() || report.inventory_complete;
+                let readable = complete
+                    && inventory_readable
+                    && work_area.is_some()
+                    && unreadable.is_empty()
+                    && !held
+                    && !scale_overflow;
+                let hold = if held {
+                    // Identifiable bad screen row: the scope holds as
+                    // unreadable (diagnostic already staged), never an
+                    // inferred work area, never silent.
+                    Some(HoldReason::Unreadable)
+                } else if scale_overflow {
+                    // Unscalable geometry: the overflowing scale holds as
+                    // unreadable (diagnostic staged above), never clamped.
+                    Some(HoldReason::Unreadable)
+                } else if !complete || !inventory_readable {
                     Some(HoldReason::IncompleteInventory)
                 } else if !unreadable.is_empty() {
                     Some(HoldReason::Unreadable)
@@ -503,7 +549,7 @@ impl WorldEngine {
                             workspace: WorkspaceId(observed.to_owned()),
                         });
                     }
-                    None if !report.host_owned_workspace_domains => {
+                    None if !self.host_owned_workspace_domains() => {
                         return Some(target_key);
                     }
                     None => {
@@ -603,7 +649,7 @@ impl WorldEngine {
                             workspace: WorkspaceId(observed.to_owned()),
                         });
                     }
-                    None if !same_output && !report.host_owned_workspace_domains => {
+                    None if !same_output && !self.host_owned_workspace_domains() => {
                         return Some(DomainKey {
                             output: target.target_output,
                             workspace: WorkspaceId(target.target_workspace),
@@ -765,22 +811,34 @@ impl WorldEngine {
         None
     }
 
-    /// Report outputs primary-first for the safe fallback chain.
+    /// Report outputs designated-primary-first for the safe fallback
+    /// chain: the host designation when it names a live valid screen,
+    /// then valid screens in stable report order, then held outputs in
+    /// report order (never winning over a usable screen, kept only so
+    /// the chain stays total). Never the active screen.
     pub(crate) fn primary_first_outputs(&self, report: &WorldReport) -> Vec<OutputId> {
         let _ = self;
-        report
-            .screens
-            .iter()
-            .filter(|screen| screen.primary)
-            .map(|screen| screen.output.clone())
-            .chain(
-                report
-                    .screens
-                    .iter()
-                    .filter(|screen| !screen.primary)
-                    .map(|screen| screen.output.clone()),
-            )
-            .collect()
+        let mut ordered = Vec::new();
+        if let Some(designated) = report.primary_output.as_ref()
+            && report
+                .screens
+                .iter()
+                .any(|screen| screen.output == *designated)
+            && !ordered.contains(designated)
+        {
+            ordered.push(designated.clone());
+        }
+        for screen in &report.screens {
+            if !ordered.contains(&screen.output) {
+                ordered.push(screen.output.clone());
+            }
+        }
+        for held in &report.held_screens {
+            if !ordered.contains(&held.output) {
+                ordered.push(held.output.clone());
+            }
+        }
+        ordered
     }
 
     /// Fresh-placement target domain for a truly new lifetime: the policy
@@ -795,7 +853,7 @@ impl WorldEngine {
         self.fresh_focus.trace = trace;
         let primary_first = self.primary_first_outputs(report);
         let output = crate::cursor_targeting::resolve_fresh_output(
-            report.fresh_placement,
+            self.fresh_placement_setting(),
             cursor_output.as_ref(),
             focused_output.as_ref(),
             &primary_first,

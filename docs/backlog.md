@@ -24,7 +24,7 @@ Prioritise by return toward these goals
 
 ## Open work
 
-- v4 phase 1 (next) | Implement core and protocol from the approved [v4 contract](porting/world-contract.md) and `test-fixtures/world-wire/v4/`; remove v3 at cutover and accept temporarily broken adapters. [decision](decisions/contract.md#v4-world-contract-phase-0c-approval)
+- v4 phase 1 (in progress) | Implement core and protocol from the approved [v4 contract](porting/world-contract.md) and `test-fixtures/world-wire/v4/`; remove v3 at cutover and accept temporarily broken adapters. [progress](changes/v4-phase1-core-protocol.md), [decision](decisions/contract.md#v4-world-contract-phase-0c-approval)
 - v4 phase 2 | Port KDE; after this phase, perform R21 KDE effect Rust steps 0-2. [decision](decisions/contract.md#contract-authority-and-v4-migration)
 - v4 phase 3 | Port Windows, including the R14 fullscreen baseline. [decision](decisions/contract.md#contract-authority-and-v4-migration)
 - v4 phase 4 | Port macOS. [decision](decisions/contract.md#contract-authority-and-v4-migration)
@@ -146,6 +146,8 @@ Prioritise by return toward these goals
 - P1 | macOS: first-float placement under execution-time float toggle | Implement macOS first-float placement at the current frame and provide fresh post-placement facts on Windows for parity. ([detail](backlog-archive.md#original-backlog-lines-1726-1732))
 - P1 | macOS: core hidden-focus blocker then pager publication (P1 next) | Fix the remaining core hidden-focus regression, then publish the pager on the stated P1 path. ([detail](changes/macos-core-trailing-pager.md#original-backlog-lines-1733-1740))
 - P1 | macOS: native Settings window for 0.1 | Deliver native macOS Settings-window acceptance for the required check 12 before 0.1. ([detail](backlog-archive.md#original-backlog-lines-1741-1744))
+- P1 | Windows Settings resizability | Separate product follow-up, not v4 phase 1: replace the current fixed-size WM_GETMINMAXINFO equal-track constraint with resizable Settings, classified by ordinary application rules. ([decision](decisions/contract.md#own-process-ui-and-ordinary-settings))
+- P1 | macOS Settings process distinction | Separate product follow-up, not v4 phase 1: distinguish ordinary Settings from own-process internal UI through a separate process as on Windows, or a neutral marker; do not restore bundle/executable self-exclusion. ([decision](decisions/contract.md#own-process-ui-and-ordinary-settings))
 - P1 | macOS: SkyLight group-underlay attempt for 0.1 | Attempt the SkyLight group-underlay visual implementation before 0.1 and report evidence if it fails. ([detail](backlog-archive.md#original-backlog-lines-1745-1748))
 - P1 | macOS: 0.1 product-scope audit vs Windows 0.1 | Audit macOS 0.1 cuts against Windows scope and report each parity reduction against the approved gate. ([detail](backlog-archive.md#original-backlog-lines-1749-1755))
 - P1 | macOS fullscreen float integration | Integrate the shared fullscreen float command in macOS and verify no AX writes during fullscreen and both exit states. ([detail](changes/archive/fullscreen-float-toggle.md#original-backlog-lines-1756-1761))

@@ -6,7 +6,6 @@
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     FrameSetter, HoldReason, NativeCreationAttempt, NativeObservation, NativeOccupancy,
@@ -18,15 +17,14 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: tiler_core::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -114,7 +112,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -122,21 +119,11 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: WorkspaceMode::PerOutputLocal,
         screens,
         windows: windows.clone(),
         views: vec![],
         closed: vec![],
-        host_owned_workspace_domains: true,
-        equal_workspace_count: false,
-        birth_clear: false,
         native,
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        default_tiled: true,
         focused_global: windows
             .first()
             .map(|f| f.window.0.clone())
@@ -144,13 +131,11 @@ fn report(
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         monotonic_ms: 0,
@@ -174,7 +159,7 @@ fn accepted(
 }
 
 fn one_screen() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true)]
+    vec![screen("out-a", 0)]
 }
 
 fn bound_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<(String, String)> {
@@ -200,7 +185,7 @@ fn workspace_hold(
 
 #[test]
 fn kde_four_desktops_preserve_spare_and_mint_no_creation() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let reply = accepted(
         &mut engine,
         &report(
@@ -245,7 +230,7 @@ fn kde_four_desktops_preserve_spare_and_mint_no_creation() {
 
 #[test]
 fn fullscreen_space_never_adopted_and_home_retained_without_writes() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -332,7 +317,7 @@ fn fullscreen_space_never_adopted_and_home_retained_without_writes() {
 
 #[test]
 fn fullscreen_current_none_retains_view_and_uses_order() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -393,7 +378,7 @@ fn fullscreen_current_none_retains_view_and_uses_order() {
 
 #[test]
 fn send_to_new_workspace_binds_late_desktop_exactly_once() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -529,7 +514,7 @@ fn send_to_new_workspace_binds_late_desktop_exactly_once() {
 
 #[test]
 fn ambiguous_creation_holds_and_never_blind_recreates() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -673,7 +658,7 @@ fn ambiguous_creation_holds_and_never_blind_recreates() {
 
 #[test]
 fn creation_collision_holds_without_guessing() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -768,7 +753,7 @@ fn creation_collision_holds_without_guessing() {
 
 #[test]
 fn startup_unknown_membership_holds_then_homes_without_rerun() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     // Startup with partial membership: win-x unknown, win-a known. No
     // move at launch, no row for the unknown window.
     let first = accepted(
@@ -840,7 +825,7 @@ fn startup_unknown_membership_holds_then_homes_without_rerun() {
 
 #[test]
 fn delayed_send_settles_while_unmatched_outside_evidence_adopts() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -937,9 +922,34 @@ fn delayed_send_settles_while_unmatched_outside_evidence_adopts() {
 
 #[test]
 fn spanning_identical_order_shares_one_ring_without_duplicates() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![screen("out-a", 0, true), screen("out-b", 800, false)];
-    let mut r = report(
+    // Shared mode is Restart timing: it must arrive as an initial
+    // handshake setting, mirroring the original report's carried mode.
+    // Screens were gapless (gap 0 / outer 0).
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        tiler_core::connection::HostCapabilities {
+            host_owned: true,
+            ..Default::default()
+        },
+        vec![
+            (
+                "mode".to_owned(),
+                tiler_core::connection::RawSettingValue::String("shared".to_owned()),
+            ),
+            (
+                "gap".to_owned(),
+                tiler_core::connection::RawSettingValue::Number(0.0),
+            ),
+            (
+                "outer".to_owned(),
+                tiler_core::connection::RawSettingValue::Number(0.0),
+            ),
+        ],
+    )
+    .expect("generation");
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let r = report(
         1,
         1,
         screens,
@@ -956,7 +966,6 @@ fn spanning_identical_order_shares_one_ring_without_duplicates() {
         None,
         true,
     );
-    r.workspace_mode = WorkspaceMode::Shared;
     let reply = accepted(&mut engine, &r);
     let ring_a: Vec<String> = reply
         .workspaces
@@ -982,7 +991,7 @@ fn spanning_identical_order_shares_one_ring_without_duplicates() {
 
 #[test]
 fn outside_desktop_binds_at_native_position_not_appended() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -1045,7 +1054,7 @@ fn outside_desktop_binds_at_native_position_not_appended() {
 
 #[test]
 fn reset_readopts_and_vanished_complete_removal_without_rename() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(D2)),
@@ -1070,7 +1079,7 @@ fn reset_readopts_and_vanished_complete_removal_without_rename() {
         .collect();
     assert_eq!(order, vec![D1, D2]);
     // A fresh core generation re-adopts the same observed order.
-    let mut reset = WorldEngine::new("gen-1").expect("generation");
+    let mut reset = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let readopted = accepted(
         &mut reset,
         &report(
@@ -1190,7 +1199,7 @@ fn replaced_desktop_is_deletion_plus_outside_creation_never_rename() {
     // host retires desktop D2 and the same complete snapshot already shows
     // X. X binds a fresh logical (never the retired id), the window homes
     // from its native X proof, and D2 stays unbound everywhere.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1262,8 +1271,8 @@ fn migrated_workspace_desires_creation_then_binds_late_desktop() {
     // Otherwise-create case: no unmapped desktop on the target, so the
     // core desires exactly one creation for the migrated logical; the late
     // desktop then binds it.
-    let screens = vec![screen("out-a", 0, true), screen("out-b", 800, false)];
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1447,7 +1456,7 @@ fn no_attempt_never_binds_and_collision_without_attempt_holds() {
     // A fresh desktop with NO raw attempt must never be attributed to the
     // outstanding creation (it could be a concurrent outside desktop):
     // hold instead of fabricating the binding, and never adopt it outside.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let (spare_id, op) = occupy_spare(&mut engine, 11);
     assert!(op.starts_with("op-native-"));
     const X: &str = "concurrent-x";
@@ -1492,7 +1501,7 @@ fn no_attempt_never_binds_and_collision_without_attempt_holds() {
 fn future_and_stale_attempt_stamps_hold() {
     // Monotonic/idempotency rules: an attempt stamped after the report's
     // own clock, or before the creation was minted, proves nothing.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let (spare_id, op) = occupy_spare(&mut engine, 11);
     // Mint happened at monotonic 10 (set below on the desire report is
     // already past; re-mint deterministically here is unnecessary: the
@@ -1544,7 +1553,7 @@ fn delayed_no_delta_attempt_settles_on_late_readback() {
     // Hard delayed-readback sequence: the attempt reports before==after
     // (no delta yet) and is NEVER updated after the fact; the later
     // appended order alone settles the single outstanding creation.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let (spare_id, op) = occupy_spare(&mut engine, 11);
     // No delta yet: Accepted, before == after == baseline.
     let waiting = accepted(
@@ -1614,7 +1623,7 @@ fn delayed_no_delta_attempt_settles_on_late_readback() {
 fn changed_replay_marks_ambiguous() {
     // The first exact attempt is consumed once: a changed replay for the
     // same op (different after-image) marks ambiguity instead of rebinding.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let (spare_id, op) = occupy_spare(&mut engine, 11);
     accepted(
         &mut engine,
@@ -1685,7 +1694,6 @@ fn creation_triple_mismatch_is_invalid() {
     // a silent absent-fallback for the wrong row.
     let report = WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: 1,
@@ -1693,32 +1701,20 @@ fn creation_triple_mismatch_is_invalid() {
         request_id: "req-1".to_owned(),
         command_seq: None,
         command: None,
-        workspace_mode: WorkspaceMode::PerOutputLocal,
         screens: one_screen(),
         windows: vec![],
         views: vec![],
         closed: vec![],
-        host_owned_workspace_domains: true,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![native_obs("out-a", &[D1], Some(D1))],
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        default_tiled: true,
         focused_global: String::new(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         monotonic_ms: 0,
@@ -1760,7 +1756,7 @@ fn creation_triple_mismatch_is_invalid() {
 fn native_reorder_reorders_bound_rows() {
     // Same ids, new host order: bound logical rows follow the observed
     // order instead of keeping the stale insertion order.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1821,7 +1817,7 @@ fn native_reorder_reorders_bound_rows() {
 fn vanished_selected_and_absent_window_remove_without_recreation() {
     // The vanished desktop was selected: removal must rehome the view and
     // never recreate from the stale retained view or member.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -1882,7 +1878,7 @@ fn vanished_selected_and_absent_window_remove_without_recreation() {
     );
     // Absent window with no explicit close on a complete snapshot: the
     // emptied logical is removed, never backed by a fresh creation.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -1945,7 +1941,7 @@ fn vanished_selected_and_absent_window_remove_without_recreation() {
 fn stale_attempt_before_mint_holds() {
     // An attempt stamped before the creation was minted cannot prove it:
     // pre-mint evidence holds instead of binding.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let mut bootstrap = report(
         1,
         1,
@@ -2037,7 +2033,7 @@ fn accepted_no_delta_late_singleton_binds_uncorrelated_risk() {
     // delta, even asynchronously. This accepts the residual outside-race
     // risk (X may be a concurrent outside desktop while the tiler's own T
     // is still in flight); hosts that can prove causality send `created`.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let (spare_id, op) = occupy_spare(&mut engine, 11);
     // Adapter reports Accepted with no delta yet (async create accepted,
     // desktop not visible). Mirrors delayed_no_delta_attempt_settles_on_late_readback.
@@ -2143,7 +2139,7 @@ fn accepted_no_delta_late_singleton_binds_uncorrelated_risk() {
 fn correlated_created_binds_exactly_despite_race() {
     // A clean host-correlated receipt binds exactly its named desktop at
     // most once, even with a racing outside addition in the same readback.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let (spare_id, op) = occupy_spare(&mut engine, 11);
     const T: &str = "tiler-created-t";
     const X: &str = "user-outside-x";
@@ -2250,7 +2246,7 @@ fn correlated_created_binds_exactly_despite_race() {
 fn correlated_created_wait_holds_then_binds_late() {
     // The named desktop is not visible yet while an outside candidate is:
     // hold transiently without guessing, then bind when T arrives.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let (spare_id, op) = occupy_spare(&mut engine, 11);
     const T: &str = "tiler-created-t";
     const X: &str = "user-outside-x";
@@ -2350,7 +2346,7 @@ fn correlated_created_changed_replay_holds() {
     // The first exact receipt is consumed once: a changed replay for the
     // same op (different correlated id) latches ambiguity instead of
     // rebinding.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let (spare_id, op) = occupy_spare(&mut engine, 11);
     const T: &str = "tiler-created-t";
     const U: &str = "ghost-u";
@@ -2419,7 +2415,7 @@ fn correlated_created_changed_replay_holds() {
 fn correlated_created_reused_id_holds() {
     // A receipt naming an already-existing desktop (in `before`) proves
     // nothing new: ambiguity instead of stealing the bound desktop.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let (spare_id, op) = occupy_spare(&mut engine, 11);
     let held = accepted(
         &mut engine,
@@ -2544,8 +2540,8 @@ fn multiple_outstanding_creations_hold_without_blind_recreate() {
     // a migrated logical awaiting backing plus an occupied spare (one
     // screen cannot host two unbound needed logicals from sends alone:
     // the trailing spare regenerates only on arrival proof).
-    let screens = vec![screen("out-a", 0, true), screen("out-b", 800, false)];
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -2710,7 +2706,7 @@ fn correlated_created_raced_before_still_binds_exact_id() {
     // The host's truthful `before` may include an outside desktop that
     // arrived after the creation was minted: that never refuses a
     // correlated receipt. Only the named desktop binds.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let (spare_id, op) = occupy_spare(&mut engine, 11);
     const X: &str = "user-outside-x";
     const T: &str = "tiler-created-t";
@@ -2790,8 +2786,8 @@ fn two_correlated_creations_settle_sequentially() {
     // time. The second receipt's truthful `before` includes the first
     // creation's desktop (it arrived after op2 was minted): that never
     // refuses op2.
-    let screens = vec![screen("out-a", 0, true), screen("out-b", 800, false)];
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -2987,7 +2983,7 @@ fn none_current_conflicting_view_holds_flight_until_native_proof() {
     // nothing. The retained SwitchView flight holds (never settles on the
     // logical echo) and the later native current settles it with no
     // logical evidence at all.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -3093,7 +3089,7 @@ fn actual_native_current_settles_despite_bogus_view() {
     // Native-only view receipts: the actual native current proves the
     // retained flight even when the explicit logical echo names a stale
     // workspace. No conflict hold, no logical fallback.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(

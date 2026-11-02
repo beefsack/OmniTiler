@@ -143,7 +143,7 @@ impl WorldEngine {
             // unknown native membership keeps the retained home with no
             // view adoption and never collapses (write authority is
             // fenced at publish; keeping the home invents no proof).
-            let adopt = if !report.host_owned_workspace_domains
+            let adopt = if !self.host_owned_workspace_domains()
                 && receipt.is_none()
                 && home_output
                     .as_ref()
@@ -187,7 +187,7 @@ impl WorldEngine {
                 // row and authorize no writes until native evidence
                 // arrives.
                 let home = observed_known.or_else(|| {
-                    if report.host_owned_workspace_domains {
+                    if self.host_owned_workspace_domains() {
                         None
                     } else {
                         self.effective_view(&fact.output).map(|view| DomainKey {
@@ -271,14 +271,20 @@ impl WorldEngine {
         let Some(area) = screen.work_area else {
             return false;
         };
-        let Ok(bounds) = crate::geometry::inset_bounds(area, screen.outer_gap) else {
+        let Some(outer_gap) = Self::scale_once(self.outer_gap_setting(), screen.scale) else {
+            return false;
+        };
+        let Ok(bounds) = crate::geometry::inset_bounds(area, outer_gap) else {
             return false;
         };
         if self.engine.session(target).is_some() {
             return false;
         }
         let mut moved = session.clone();
-        moved.relocate_domain(source, target, bounds, screen.gap)
+        let Some(gap) = Self::scale_once(self.gap_setting(), screen.scale) else {
+            return false;
+        };
+        moved.relocate_domain(source, target, bounds, gap)
     }
 
     /// Relocate one retained Engine session across outputs, preserving
@@ -315,19 +321,24 @@ impl WorldEngine {
         let Some(area) = screen.work_area else {
             return false;
         };
-        let Ok(bounds) = crate::geometry::inset_bounds(area, screen.outer_gap) else {
+        let Some(outer_gap) = Self::scale_once(self.outer_gap_setting(), screen.scale) else {
+            return false;
+        };
+        let Ok(bounds) = crate::geometry::inset_bounds(area, outer_gap) else {
             return false;
         };
         if self.engine.session(target).is_some() {
             return false;
         }
         let mut moved = session;
-        if !moved.relocate_domain(source, target, bounds, screen.gap) {
+        let Some(gap) = Self::scale_once(self.gap_setting(), screen.scale) else {
+            return false;
+        };
+        if !moved.relocate_domain(source, target, bounds, gap) {
             return false;
         }
-        let outer = screen.outer_gap;
         self.engine.remove(source);
-        self.engine.insert_raw(target.clone(), moved, outer);
+        self.engine.insert_raw(target.clone(), moved, outer_gap);
         true
     }
 }

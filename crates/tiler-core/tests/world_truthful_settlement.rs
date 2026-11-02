@@ -3,29 +3,27 @@
 //! missing/empty/stale/external views hold narrowly, PossiblyExecuted stays
 //! held across ack disappearance, and explicit closes settle across gaps.
 
-use tiler_core::directional::{OutputId, WindowId};
+use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     FrameSetter, MemberAttempt, ScreenReport, ScreenView, TransferKind, WORLD_CONTRACT_VERSION,
-    WindowFact, WorldCommand, WorldReport,
+    WindowFact, WorkspaceRef, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: tiler_core::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -57,12 +55,10 @@ fn report(
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
     member_attempts: Vec<MemberAttempt>,
-    host_owned: bool,
     inventory_complete: bool,
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -70,8 +66,7 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: WorkspaceMode::PerOutputLocal,
-        screens: vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+        screens: vec![screen("out-a", 0), screen("out-b", 800)],
         windows: windows.clone(),
         views: views
             .into_iter()
@@ -81,16 +76,7 @@ fn report(
             })
             .collect(),
         closed: vec![],
-        host_owned_workspace_domains: host_owned,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        default_tiled: true,
         focused_global: windows
             .first()
             .map(|f| f.window.0.clone())
@@ -98,13 +84,11 @@ fn report(
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         monotonic_ms: 0,
@@ -137,7 +121,7 @@ fn view_of(reply: &tiler_core::world_report::WorldReply, output: &str) -> Option
 
 #[test]
 fn contradictory_receipt_never_proves_send_arrival() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -148,7 +132,6 @@ fn contradictory_receipt_never_proves_send_arrival() {
             None,
             None,
             vec![],
-            false,
             true,
         ),
     );
@@ -175,7 +158,6 @@ fn contradictory_receipt_never_proves_send_arrival() {
                 follow: false,
             }),
             vec![],
-            false,
             true,
         ),
     );
@@ -183,7 +165,7 @@ fn contradictory_receipt_never_proves_send_arrival() {
     wrong.observed_workspace = Some(other);
     let held = accepted(
         &mut engine,
-        &report(3, 3, vec![wrong], vec![], None, None, vec![], false, true),
+        &report(3, 3, vec![wrong], vec![], None, None, vec![], true),
     );
     assert_eq!(
         held.transfers.len(),
@@ -195,7 +177,7 @@ fn contradictory_receipt_never_proves_send_arrival() {
 
 #[test]
 fn migration_contradictory_receipt_does_not_settle() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -206,7 +188,6 @@ fn migration_contradictory_receipt_does_not_settle() {
             None,
             None,
             vec![],
-            false,
             true,
         ),
     );
@@ -225,7 +206,6 @@ fn migration_contradictory_receipt_does_not_settle() {
                 workspace: view_a.clone(),
             }),
             vec![],
-            false,
             true,
         ),
     );
@@ -241,7 +221,6 @@ fn migration_contradictory_receipt_does_not_settle() {
             None,
             None,
             vec![],
-            false,
             true,
         ),
     )
@@ -258,7 +237,7 @@ fn migration_contradictory_receipt_does_not_settle() {
     wrong.observed_workspace = Some(wrong_ws);
     let held = accepted(
         &mut engine,
-        &report(4, 4, vec![wrong], vec![], None, None, vec![], false, true),
+        &report(4, 4, vec![wrong], vec![], None, None, vec![], true),
     );
     assert!(
         held.transfers
@@ -316,8 +295,9 @@ fn host_owned_unknown_holds_exact_settles() {
         r.native = native_rows();
         r
     }
+
     // Window send, cross-output, host-owned on.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &with_native(report(
@@ -328,7 +308,6 @@ fn host_owned_unknown_holds_exact_settles() {
             None,
             None,
             vec![],
-            true,
             true,
         )),
     );
@@ -348,7 +327,6 @@ fn host_owned_unknown_holds_exact_settles() {
             }),
             vec![],
             true,
-            true,
         )),
     );
     // Raw screen arrival with unknown membership must not settle while
@@ -363,7 +341,6 @@ fn host_owned_unknown_holds_exact_settles() {
             None,
             None,
             vec![],
-            true,
             true,
         )),
     );
@@ -390,7 +367,6 @@ fn host_owned_unknown_holds_exact_settles() {
             None,
             vec![],
             true,
-            true,
         )),
     );
     assert!(
@@ -400,7 +376,7 @@ fn host_owned_unknown_holds_exact_settles() {
     );
 
     // Migration, host-owned on: unknown at target holds.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &with_native(report(
@@ -411,7 +387,6 @@ fn host_owned_unknown_holds_exact_settles() {
             None,
             None,
             vec![],
-            true,
             true,
         )),
     );
@@ -431,7 +406,6 @@ fn host_owned_unknown_holds_exact_settles() {
             }),
             vec![],
             true,
-            true,
         )),
     );
     let held = accepted(
@@ -444,7 +418,6 @@ fn host_owned_unknown_holds_exact_settles() {
             None,
             None,
             vec![],
-            true,
             true,
         )),
     );
@@ -459,10 +432,10 @@ fn host_owned_unknown_holds_exact_settles() {
 
 #[test]
 fn missing_empty_stale_views_hold_external_known_settles() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
-        &report(1, 1, vec![], vec![], None, None, vec![], false, true),
+        &report(1, 1, vec![], vec![], None, None, vec![], true),
     );
     let reply = accepted(
         &mut engine,
@@ -477,7 +450,6 @@ fn missing_empty_stale_views_hold_external_known_settles() {
                 index: 2,
             }),
             vec![],
-            false,
             true,
         ),
     );
@@ -491,39 +463,19 @@ fn missing_empty_stale_views_hold_external_known_settles() {
     // Missing echo holds.
     let held = accepted(
         &mut engine,
-        &report(3, 3, vec![], vec![], None, None, vec![], false, true),
+        &report(3, 3, vec![], vec![], None, None, vec![], true),
     );
     assert_eq!(held.transfers.len(), 1, "missing holds");
     // Empty echo holds.
     let held = accepted(
         &mut engine,
-        &report(
-            4,
-            4,
-            vec![],
-            vec![("out-a", "")],
-            None,
-            None,
-            vec![],
-            false,
-            true,
-        ),
+        &report(4, 4, vec![], vec![("out-a", "")], None, None, vec![], true),
     );
     assert_eq!(held.transfers.len(), 1, "empty holds");
     // Stale echo holds.
     let held = accepted(
         &mut engine,
-        &report(
-            5,
-            5,
-            vec![],
-            vec![("out-a", "")],
-            None,
-            None,
-            vec![],
-            false,
-            true,
-        ),
+        &report(5, 5, vec![], vec![("out-a", "")], None, None, vec![], true),
     );
     assert_eq!(held.transfers.len(), 1, "stale holds");
     // External unknown holds.
@@ -537,7 +489,6 @@ fn missing_empty_stale_views_hold_external_known_settles() {
             None,
             None,
             vec![],
-            false,
             true,
         ),
     );
@@ -558,7 +509,6 @@ fn missing_empty_stale_views_hold_external_known_settles() {
             None,
             None,
             vec![],
-            false,
             true,
         ),
     );
@@ -571,7 +521,7 @@ fn missing_empty_stale_views_hold_external_known_settles() {
 
 #[test]
 fn possibly_executed_persists_held_across_disappearance() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -582,7 +532,6 @@ fn possibly_executed_persists_held_across_disappearance() {
             None,
             None,
             vec![],
-            false,
             true,
         ),
     );
@@ -614,7 +563,6 @@ fn possibly_executed_persists_held_across_disappearance() {
                 follow: false,
             }),
             vec![],
-            false,
             true,
         ),
     );
@@ -634,13 +582,16 @@ fn possibly_executed_persists_held_across_disappearance() {
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target.clone(),
                 setter: FrameSetter::Threw,
-                pre: Some((OutputId("out-a".to_owned()), source.clone())),
-                post: Some((OutputId("out-a".to_owned()), source)),
-                native_pre: None,
-                native_post: None,
+                pre: Some(WorkspaceRef::Logical {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: WorkspaceId(source.clone()),
+                }),
+                post: Some(WorkspaceRef::Logical {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: WorkspaceId(source),
+                }),
                 attempt_ms: 3,
             }],
-            false,
             true,
         ),
     );
@@ -658,7 +609,6 @@ fn possibly_executed_persists_held_across_disappearance() {
             None,
             None,
             vec![],
-            false,
             true,
         ),
     );
@@ -678,7 +628,7 @@ fn possibly_executed_persists_held_across_disappearance() {
 #[test]
 fn explicit_close_settles_across_gaps() {
     // Window close during incomplete inventory settles the flight.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -689,7 +639,6 @@ fn explicit_close_settles_across_gaps() {
             None,
             None,
             vec![],
-            false,
             true,
         ),
     );
@@ -703,7 +652,6 @@ fn explicit_close_settles_across_gaps() {
             None,
             None,
             vec![],
-            false,
             true,
         ),
     );
@@ -728,11 +676,10 @@ fn explicit_close_settles_across_gaps() {
                 follow: false,
             }),
             vec![],
-            false,
             true,
         ),
     );
-    let mut incomplete = report(4, 4, vec![], vec![], None, None, vec![], false, false);
+    let mut incomplete = report(4, 4, vec![], vec![], None, None, vec![], false);
     incomplete.closed = vec![WindowId("win-a".to_owned())];
     let settled = accepted(&mut engine, &incomplete);
     assert!(
@@ -742,7 +689,7 @@ fn explicit_close_settles_across_gaps() {
     );
 
     // Migration fully closed during incomplete inventory settles.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -753,7 +700,6 @@ fn explicit_close_settles_across_gaps() {
             None,
             None,
             vec![],
-            false,
             true,
         ),
     );
@@ -772,11 +718,10 @@ fn explicit_close_settles_across_gaps() {
                 workspace: view_a,
             }),
             vec![],
-            false,
             true,
         ),
     );
-    let mut closed = report(3, 3, vec![], vec![], None, None, vec![], false, false);
+    let mut closed = report(3, 3, vec![], vec![], None, None, vec![], false);
     closed.closed = vec![WindowId("win-a".to_owned())];
     let settled = accepted(&mut engine, &closed);
     assert!(

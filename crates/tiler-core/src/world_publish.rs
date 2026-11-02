@@ -15,7 +15,7 @@ use crate::world_engine::WorldEngine;
 use crate::world_report::{
     CommandResult, FloatOrigin, HoldReason, OneShotEffect, OutputDesire, ScopeAuthority,
     ScopeStatus, TilingMode, TransferKind, WORLD_CONTRACT_VERSION, WindowDesire, WorkspaceDesire,
-    WorldReply, WorldReport, workspace_scope_key,
+    WorldReply, WorldReport, workspace_authority_scope,
 };
 
 impl WorldEngine {
@@ -91,8 +91,8 @@ impl WorldEngine {
         // drop authorizations that no longer need backing (e.g. minted
         // against a stale view that fresh evidence rehomed): stale state
         // never recreates. Ambiguous rows persist for their visible hold.
-        if report.host_owned_workspace_domains {
-            if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+        if self.host_owned_workspace_domains() {
+            if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
                 let mut ordered: Vec<String> = report
                     .screens
                     .iter()
@@ -211,7 +211,7 @@ impl WorldEngine {
             // homing below, so they emit nothing here (one homing).
             if self.floating_scopes.contains(&key) {
                 scopes.push(ScopeStatus {
-                    scope: format!("{}/{}", key.output.0, key.workspace.0),
+                    scope: workspace_authority_scope(&key.output, &key.workspace.0),
                     authority: ScopeAuthority::Untouched,
                 });
                 for window in &domain.windows {
@@ -287,7 +287,7 @@ impl WorldEngine {
                 ScopeAuthority::Controlled
             };
             scopes.push(ScopeStatus {
-                scope: format!("{}/{}", key.output.0, key.workspace.0),
+                scope: workspace_authority_scope(&key.output, &key.workspace.0),
                 authority,
             });
             if !matches!(authority, ScopeAuthority::Controlled) {
@@ -915,10 +915,33 @@ impl WorldEngine {
                 float_origin: None,
             });
         }
+        let mut by_output: BTreeMap<OutputId, Vec<ScopeStatus>> = BTreeMap::new();
+        for status in scopes {
+            let output = match &status.scope {
+                crate::world_report::AuthorityScope::Output(output)
+                | crate::world_report::AuthorityScope::Workspace { output, .. } => output.clone(),
+            };
+            by_output.entry(output).or_default().push(status);
+        }
+        let mut scopes = Vec::new();
+        for (output, statuses) in by_output {
+            let uniform_authority = statuses
+                .first()
+                .map(|first| first.authority)
+                .filter(|auth| statuses.iter().all(|status| status.authority == *auth));
+            if let Some(authority) = uniform_authority {
+                scopes.push(ScopeStatus {
+                    scope: crate::world_report::AuthorityScope::Output(output),
+                    authority,
+                });
+            } else {
+                scopes.extend(statuses);
+            }
+        }
         scopes.sort_by(|a, b| a.scope.cmp(&b.scope));
         // Omission of a minimized/absent window inside a controlled scope
         // means "no managed geometry", never a close or teardown instruction.
-        let workspaces = self.plan_workspaces(report);
+        let workspaces = self.plan_workspaces(report, &scopes);
         let outputs = self.plan_outputs(report, held_scopes);
         // Per-report warp desire (stage 4b, cross-output only): computed
         // over the final focus effects plus the published window rows, so
@@ -941,11 +964,12 @@ impl WorldEngine {
             request_id: report.request_id.clone(),
             based_on_observation_seq: report.observation_seq,
             state_revision: self.state_revision,
-            ready: true,
+            ready: self.is_ready(),
             command_consumed,
             scopes,
             workspaces,
             outputs,
+            diagnostics: staged.diagnostics.clone(),
             windows,
             transfers: self.retained_transfers(),
             effects,
@@ -1066,7 +1090,11 @@ impl WorldEngine {
     /// deleting, and the ring plus native binding stay until a complete
     /// readback drops the desktop. Incomplete screens hold their rows
     /// without authorizing writes.
-    pub(crate) fn plan_workspaces(&mut self, report: &WorldReport) -> Vec<WorkspaceDesire> {
+    pub(crate) fn plan_workspaces(
+        &mut self,
+        report: &WorldReport,
+        scopes: &[ScopeStatus],
+    ) -> Vec<WorkspaceDesire> {
         let _ = report;
         let mut outputs: Vec<String> = self.mapping.keys().cloned().collect();
         outputs.sort();
@@ -1083,7 +1111,7 @@ impl WorldEngine {
                 .iter()
                 .any(|screen| screen.output.0 == output && screen.complete);
             for (index, id) in ring.iter().enumerate() {
-                let native_binding = if report.host_owned_workspace_domains {
+                let native_binding = if self.host_owned_workspace_domains() {
                     self.native_binding_for(&output, id)
                 } else {
                     None
@@ -1106,7 +1134,14 @@ impl WorldEngine {
                     id: id.clone(),
                     output: OutputId(output.clone()),
                     native_binding,
-                    scope: workspace_scope_key(report.workspace_mode, &OutputId(output.clone())),
+                    scope: if scopes.iter().any(|scope| {
+                        scope.scope
+                            == crate::world_report::AuthorityScope::Output(OutputId(output.clone()))
+                    }) {
+                        crate::world_report::AuthorityScope::Output(OutputId(output.clone()))
+                    } else {
+                        workspace_authority_scope(&OutputId(output.clone()), id)
+                    },
                     order: index,
                     tiling_mode: self.workspace_tiling_mode(&OutputId(output.clone()), id),
                     existence: !doomed.contains(&(output.clone(), id.clone())),
@@ -1163,7 +1198,7 @@ impl WorldEngine {
                     .is_some_and(|view| {
                         !view.view.is_empty()
                             && !ring.is_some_and(|ring| ring.iter().any(|id| id == &view.view))
-                            && !report.host_owned_workspace_domains
+                            && !self.host_owned_workspace_domains()
                     });
                 let unreadable = !screen.complete
                     || echo_unknown

@@ -48,10 +48,9 @@ fn screen(output: &str, x: i32) -> tiler_core::world_report::ScreenReport {
             w: 800,
             h: 560,
         }),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary: output == "out-a",
+        scale: 1.0,
+        identity: tiler_core::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -126,7 +125,11 @@ fn parse_case(case: &serde_json::Value) -> Case {
     Case {
         name: case["name"].as_str().expect("case name").to_owned(),
         kind: case["kind"].as_str().expect("case kind").to_owned(),
-        switch_target: parse_switch(case["settings"]["switch_target"].as_str().expect("switch")),
+        switch_target: parse_switch(
+            case["settings"]["switch_target"]
+                .as_str()
+                .expect("switch target"),
+        ),
         fresh_placement: parse_placement(
             case["settings"]["fresh_placement"]
                 .as_str()
@@ -177,14 +180,11 @@ fn report(
     windows: Vec<tiler_core::world_report::WindowFact>,
     focused: &str,
     cursor: Option<(i32, i32)>,
-    switch_target: SwitchTarget,
-    fresh_placement: FreshPlacement,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
         contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -192,31 +192,19 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens: vec![screen("out-a", 0), screen("out-b", 800)],
         windows,
         views: vec![],
         closed: vec![],
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        switch_target,
-        fresh_placement,
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: Some(OutputId("out-a".to_owned())),
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -238,6 +226,93 @@ fn accepted(
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
+}
+
+fn engine_for_case(case: &Case) -> WorldEngine {
+    use tiler_core::connection::RawSettingValue;
+    // Initial handshake settings mirroring the original per-report values:
+    // per-output-local mode, gapless screens, and the fixture's own
+    // switch target / fresh placement.
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        tiler_core::connection::HostCapabilities::default(),
+        vec![
+            (
+                "mode".to_owned(),
+                RawSettingValue::String("per-output-local".to_owned()),
+            ),
+            ("gap".to_owned(), RawSettingValue::Number(0.0)),
+            ("outer".to_owned(), RawSettingValue::Number(0.0)),
+            (
+                "switchTarget".to_owned(),
+                RawSettingValue::String(case.switch_target.as_wire_str().to_owned()),
+            ),
+            (
+                "freshPlacement".to_owned(),
+                RawSettingValue::String(case.fresh_placement.as_wire_str().to_owned()),
+            ),
+        ],
+    )
+    .expect("generation")
+}
+
+/// Adapter reboot through the real handshake path: a fresh handshake for
+/// the new incarnation plus revision-0 settings carrying the same case
+/// values, then reports resume with the rebound generation.
+fn reboot(engine: &mut WorldEngine, case: &Case, adapter: &str) {
+    use tiler_core::connection::{ApplicationIdentity, HandshakeRequest, SettingsRequest};
+    let generation = engine
+        .handshake(&HandshakeRequest {
+            adapter: adapter.to_owned(),
+            request: "reconnect-1".to_owned(),
+            application_identity: ApplicationIdentity {
+                app_id: None,
+                executable: None,
+                process_id: None,
+            },
+            capabilities: tiler_core::connection::HostCapabilities::without_native_identity(),
+        })
+        .generation
+        .expect("rebound generation");
+    let settings = engine
+        .handle_settings(&SettingsRequest {
+            adapter: adapter.to_owned(),
+            generation: generation.clone(),
+            request: "settings-1".to_owned(),
+            revision: 0,
+            values: vec![
+                (
+                    "mode".to_owned(),
+                    tiler_core::connection::RawSettingValue::String("per-output-local".to_owned()),
+                ),
+                (
+                    "gap".to_owned(),
+                    tiler_core::connection::RawSettingValue::Number(0.0),
+                ),
+                (
+                    "outer".to_owned(),
+                    tiler_core::connection::RawSettingValue::Number(0.0),
+                ),
+                (
+                    "switchTarget".to_owned(),
+                    tiler_core::connection::RawSettingValue::String(
+                        case.switch_target.as_wire_str().to_owned(),
+                    ),
+                ),
+                (
+                    "freshPlacement".to_owned(),
+                    tiler_core::connection::RawSettingValue::String(
+                        case.fresh_placement.as_wire_str().to_owned(),
+                    ),
+                ),
+            ],
+        })
+        .expect("reboot settings");
+    assert_eq!(
+        settings.status,
+        tiler_core::connection::SettingsStatus::Accepted
+    );
 }
 
 fn homed(reply: &tiler_core::world_report::WorldReply, window: &str) -> (String, String) {
@@ -333,7 +408,7 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
     // One freshly seeded engine per variant: seed focus order leaves
     // retained focus on b1 (out-b) before the arrival tick.
     let seed_engine = |seq: &mut u64| {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = engine_for_case(&case);
         let mut baseline = None;
         for focused in case
             .seed_focus_order
@@ -343,16 +418,7 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
             *seq += 1;
             let reply = accepted(
                 &mut engine,
-                &report(
-                    *seq,
-                    scene_facts(),
-                    focused,
-                    Some(case.cursor),
-                    case.switch_target,
-                    case.fresh_placement,
-                    None,
-                    None,
-                ),
+                &report(*seq, scene_facts(), focused, Some(case.cursor), None, None),
             );
             assert!(reply.ready, "seed converges");
             baseline = Some(reply);
@@ -371,16 +437,7 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
         *seq += 1;
         accepted(
             engine,
-            &report(
-                *seq,
-                facts,
-                focused,
-                Some(case.cursor),
-                case.switch_target,
-                case.fresh_placement,
-                None,
-                None,
-            ),
+            &report(*seq, facts, focused, Some(case.cursor), None, None),
         )
     };
 
@@ -490,16 +547,7 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
             },
         ),
     ];
-    let mut removed = report(
-        seq,
-        removed_facts,
-        "",
-        Some(case.cursor),
-        case.switch_target,
-        case.fresh_placement,
-        None,
-        None,
-    );
+    let mut removed = report(seq, removed_facts, "", Some(case.cursor), None, None);
     removed.screens = vec![screen("out-a", 0)];
     let arrival = accepted(&mut engine, &removed);
     assert_eq!(
@@ -510,19 +558,12 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
 
     // Quiet restart (new adapter incarnation) clears the latch.
     let (mut engine, _) = seed_engine(&mut seq);
+    reboot(&mut engine, &case, "adapter-2");
     seq += 1;
-    let mut reboot = report(
-        seq,
-        scene_facts(),
-        "",
-        Some(case.cursor),
-        case.switch_target,
-        case.fresh_placement,
-        None,
-        None,
-    );
-    reboot.adapter_incarnation = "adapter-2".to_owned();
-    let bootstrapped = accepted(&mut engine, &reboot);
+    let mut rebooted = report(seq, scene_facts(), "", Some(case.cursor), None, None);
+    rebooted.adapter_incarnation = "adapter-2".to_owned();
+    rebooted.core_generation = engine.core_generation().to_owned();
+    let bootstrapped = accepted(&mut engine, &rebooted);
     assert!(bootstrapped.ready, "restart bootstraps");
     seq += 1;
     let mut arrival_report = report(
@@ -538,12 +579,11 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
         ),
         "",
         Some(case.cursor),
-        case.switch_target,
-        case.fresh_placement,
         None,
         None,
     );
     arrival_report.adapter_incarnation = "adapter-2".to_owned();
+    arrival_report.core_generation = engine.core_generation().to_owned();
     let arrival = accepted(&mut engine, &arrival_report);
     assert_eq!(
         homed(&arrival, &new_id).0,
@@ -554,16 +594,7 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
     // Closing every window keeps the output context until topology removal.
     let (mut engine, _) = seed_engine(&mut seq);
     seq += 1;
-    let mut closed = report(
-        seq,
-        vec![],
-        "",
-        Some(case.cursor),
-        case.switch_target,
-        case.fresh_placement,
-        None,
-        None,
-    );
+    let mut closed = report(seq, vec![], "", Some(case.cursor), None, None);
     closed.closed = vec![
         WindowId("a1".to_owned()),
         WindowId("a2".to_owned()),
@@ -589,7 +620,9 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
         .find(|c| c["name"] == "fresh-cosmic-ba")
         .expect("fresh-cosmic-ba case");
     let cosmic = parse_case(cosmic);
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    // The cosmic reports carry their own placement; the engine must match
+    // them, not the i3 case above.
+    let mut engine = engine_for_case(&cosmic);
     for focused in cosmic
         .seed_focus_order
         .iter()
@@ -598,16 +631,7 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
         seq += 1;
         accepted(
             &mut engine,
-            &report(
-                seq,
-                scene_facts(),
-                focused,
-                Some(cosmic.cursor),
-                cosmic.switch_target,
-                cosmic.fresh_placement,
-                None,
-                None,
-            ),
+            &report(seq, scene_facts(), focused, Some(cosmic.cursor), None, None),
         );
     }
     let (cosmic_new, cosmic_native, cosmic_rect) = cosmic.newcomer.clone().expect("newcomer");
@@ -616,16 +640,7 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
     seq += 1;
     let arrival = accepted(
         &mut engine,
-        &report(
-            seq,
-            facts,
-            "",
-            Some(cosmic.cursor),
-            cosmic.switch_target,
-            cosmic.fresh_placement,
-            None,
-            None,
-        ),
+        &report(seq, facts, "", Some(cosmic.cursor), None, None),
     );
     assert_eq!(
         homed(&arrival, &cosmic_new).0,
@@ -655,7 +670,7 @@ fn fresh_focus_trace_labels_cached_leg_not_current() {
             .collect::<Vec<_>>()
     };
     let mut seq = 0u64;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for_case(&case);
     for focused in case
         .seed_focus_order
         .iter()
@@ -664,16 +679,7 @@ fn fresh_focus_trace_labels_cached_leg_not_current() {
         seq += 1;
         accepted(
             &mut engine,
-            &report(
-                seq,
-                scene_facts(),
-                focused,
-                Some(case.cursor),
-                case.switch_target,
-                case.fresh_placement,
-                None,
-                None,
-            ),
+            &report(seq, scene_facts(), focused, Some(case.cursor), None, None),
         );
     }
     // Baseline only: no admission ran, so the cached leg is default even
@@ -691,16 +697,7 @@ fn fresh_focus_trace_labels_cached_leg_not_current() {
     seq += 1;
     accepted(
         &mut engine,
-        &report(
-            seq,
-            facts,
-            "",
-            Some(case.cursor),
-            case.switch_target,
-            case.fresh_placement,
-            None,
-            None,
-        ),
+        &report(seq, facts, "", Some(case.cursor), None, None),
     );
     assert_eq!(
         engine.fresh_focus_trace(),
@@ -714,7 +711,7 @@ fn fresh_focus_trace_labels_cached_leg_not_current() {
     );
     // Current managed focus: the leg records current inputs distinctly
     // from the retained latch.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for_case(&case);
     for focused in case
         .seed_focus_order
         .iter()
@@ -723,16 +720,7 @@ fn fresh_focus_trace_labels_cached_leg_not_current() {
         seq += 1;
         accepted(
             &mut engine,
-            &report(
-                seq,
-                scene_facts(),
-                focused,
-                Some(case.cursor),
-                case.switch_target,
-                case.fresh_placement,
-                None,
-                None,
-            ),
+            &report(seq, scene_facts(), focused, Some(case.cursor), None, None),
         );
     }
     let mut facts = scene_facts();
@@ -740,16 +728,7 @@ fn fresh_focus_trace_labels_cached_leg_not_current() {
     seq += 1;
     accepted(
         &mut engine,
-        &report(
-            seq,
-            facts,
-            "a1",
-            Some(case.cursor),
-            case.switch_target,
-            case.fresh_placement,
-            None,
-            None,
-        ),
+        &report(seq, facts, "a1", Some(case.cursor), None, None),
     );
     assert_eq!(
         engine.fresh_focus_trace(),
@@ -777,7 +756,7 @@ fn shared_world_actions_converge_per_fixture() {
     assert!(!cases.is_empty(), "fixture carries action cases");
     for raw in cases {
         let case = parse_case(raw);
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = engine_for_case(&case);
         let mut seq = 0u64;
         let mut next_report = |windows: Vec<tiler_core::world_report::WindowFact>,
                                focused: &str,
@@ -786,16 +765,7 @@ fn shared_world_actions_converge_per_fixture() {
             let (command_seq, cmd) = command
                 .map(|(s, c)| (Some(s), Some(c)))
                 .unwrap_or((None, None));
-            report(
-                seq,
-                windows,
-                focused,
-                Some(case.cursor),
-                case.switch_target,
-                case.fresh_placement,
-                command_seq,
-                cmd,
-            )
+            report(seq, windows, focused, Some(case.cursor), command_seq, cmd)
         };
         let scene_facts = || {
             scene

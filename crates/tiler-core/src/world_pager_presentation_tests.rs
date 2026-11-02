@@ -28,10 +28,9 @@ fn screen(output: &str, x: i32) -> ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary: x == 0,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -96,7 +95,6 @@ fn pager_report_ordered(
         .collect();
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -104,31 +102,19 @@ fn pager_report_ordered(
         request_id: format!("req-{request_seq}"),
         command_seq: None,
         command: None,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens: vec![screen("out-a", 0), screen("out-b", 800)],
         windows,
         views: Vec::new(),
         closed: vec![],
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
-        default_tiled: true,
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: complete,
         gesture_barrier: false,
         gesture: None,
@@ -157,7 +143,7 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> WorldReply {
 }
 
 fn admitted_pair() -> (WorldEngine, DomainKey) {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     // A solo window on out-b keeps the second output homed so sends
     // have a live target domain.
     let members = vec![
@@ -348,7 +334,7 @@ fn pager_retains_last_live_frame_across_reports() {
 
 #[test]
 fn pager_hidden_and_minimized_keep_retained_frame() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &pager_report_ordered(

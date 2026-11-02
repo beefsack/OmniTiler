@@ -17,15 +17,14 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -68,7 +67,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -76,8 +74,7 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
-        screens: vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+        screens: vec![screen("out-a", 0), screen("out-b", 800)],
         windows,
         views: views
             .into_iter()
@@ -90,26 +87,15 @@ fn report(
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -162,7 +148,7 @@ fn committed_focus(engine: &WorldEngine, output: &str, workspace: &str) -> Optio
 
 #[test]
 fn bootstrap_seed_is_quiet_then_first_newcomer_focuses_once() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     // Fresh seeds emit nothing: the observed native focus stays authoritative.
     let first = accepted(
         &mut engine,
@@ -240,7 +226,7 @@ fn bootstrap_seed_is_quiet_then_first_newcomer_focuses_once() {
 
 #[test]
 fn reopened_window_focuses_again_after_close() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -312,7 +298,7 @@ fn reopened_window_focuses_again_after_close() {
 
 #[test]
 fn newcomer_behind_fullscreen_spends_without_emitting() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -377,7 +363,7 @@ fn newcomer_behind_fullscreen_spends_without_emitting() {
 #[test]
 fn close_focused_holds_until_survivor_focus_recovers() {
     use crate::world_report::ScopeAuthority;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -436,7 +422,13 @@ fn close_focused_holds_until_survivor_focus_recovers() {
     let scope = held
         .scopes
         .iter()
-        .find(|status| status.scope == format!("out-a/{view_a}"))
+        .find(|status| {
+            status.scope
+                == crate::world_report::AuthorityScope::Workspace {
+                    output: OutputId("out-a".into()),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
+                }
+        })
         .expect("scope row");
     assert_eq!(
         scope.authority,
@@ -466,7 +458,11 @@ fn close_focused_holds_until_survivor_focus_recovers() {
     let scope = recovered
         .scopes
         .iter()
-        .find(|status| status.scope == format!("out-a/{view_a}"))
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), &view_a)
+        })
         .expect("scope row");
     assert_eq!(scope.authority, ScopeAuthority::Controlled);
     for win in ["win-a", "win-c"] {
@@ -482,7 +478,7 @@ fn close_focused_holds_until_survivor_focus_recovers() {
         Some("win-a")
     );
     // Closing with the survivor observed focuses it directly.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -525,7 +521,11 @@ fn close_focused_holds_until_survivor_focus_recovers() {
     let scope = direct
         .scopes
         .iter()
-        .find(|status| status.scope == format!("out-a/{view_a}"))
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), &view_a)
+        })
         .expect("scope row");
     assert_eq!(scope.authority, ScopeAuthority::Controlled);
     assert_eq!(
@@ -537,7 +537,7 @@ fn close_focused_holds_until_survivor_focus_recovers() {
 #[test]
 fn close_overlay_survivor_keeps_focus_and_truthful_rows() {
     for (name, fullscreen, maximized) in [("fullscreen", true, false), ("maximized", false, true)] {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         accepted(
             &mut engine,
             &report(
@@ -597,7 +597,11 @@ fn close_overlay_survivor_keeps_focus_and_truthful_rows() {
         let scope = third
             .scopes
             .iter()
-            .find(|status| status.scope == format!("out-a/{view_a}"))
+            .find(|status| {
+                status
+                    .scope
+                    .covers_workspace(&OutputId("out-a".into()), &view_a)
+            })
             .expect("scope row");
         assert_eq!(
             scope.authority,
@@ -615,7 +619,7 @@ fn close_overlay_survivor_keeps_focus_and_truthful_rows() {
 
 #[test]
 fn view_switch_return_preserves_remembered_focus() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -714,7 +718,7 @@ fn numbered_select_return_emits_remembered_focus() {
     // switching away stays quiet when the target holds no remembered
     // focus, returning emits one explicit at-most-once effect to the
     // remembered leaf. A redundant select on the shown view stays quiet.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -841,7 +845,7 @@ fn numbered_select_empty_and_minimized_targets_stay_quiet() {
     // remembered member never takes focus itself: the return follows the
     // updated remembered survivor, and a sole-minimized workspace (REQ-MNZ-03)
     // stays quiet.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -926,7 +930,7 @@ fn numbered_select_empty_and_minimized_targets_stay_quiet() {
     assert_eq!(back.effects[0].target.0, "win-a");
     // Sole-minimized workspace (REQ-MNZ-03): no tiled survivor exists, so
     // the return stays quiet.
-    let mut sole = WorldEngine::new("gen-1").expect("generation");
+    let mut sole = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut sole,
         &report(
@@ -1047,7 +1051,7 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
     // a reply carries pre-switch focus on the departed view while logical
     // current has already moved. This diagnoses the reported stale mark;
     // it does not establish that presentation as the desired behavior.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1306,7 +1310,7 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
     // Survivor with the mover focused: the collapsed single-leaf tree
     // cannot name the pre-send stack, so the sole survivor is exact by
     // elimination.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1352,7 +1356,7 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
         other => panic!("sole survivor exact, got {other:?}"),
     }
     // Emptied source proves empty (never unknown): the session retired.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1394,7 +1398,7 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
     );
     // Follow transfers never pin source focus. The mover must be the
     // observed focus to send at all; the follow still pins nothing.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1438,7 +1442,7 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
 #[test]
 fn stay_hidden_mover_scope_converges_without_staged_focus_or_close() {
     use crate::world_report::{ScopeAuthority, TransferKind};
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1501,7 +1505,11 @@ fn stay_hidden_mover_scope_converges_without_staged_focus_or_close() {
     let scope = settled
         .scopes
         .iter()
-        .find(|status| status.scope == format!("out-a/{target}"))
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), &target)
+        })
         .expect("stay scope row");
     assert_eq!(scope.authority, ScopeAuthority::Controlled);
     assert!(
@@ -1517,7 +1525,7 @@ fn select_hidden_stay_arrival_without_history_focuses_first_leaf() {
     // the hidden spare without touching its focus memory. Selecting the
     // spare must focus the first (only) layout leaf instead of staying
     // quiet; an empty select stays quiet (R-CLOSE-03).
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1618,7 +1626,7 @@ fn select_remembered_fit_excluded_skips_to_eligible_later() {
     // leaf on WS1, but its staged row turns unexplained fit-excluded
     // while WS1 is hidden. Returning must skip win-b and focus eligible
     // win-a instead of staying quiet.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1708,7 +1716,7 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
     // Hidden stay-arrivals carry no focus memory; the first layout leaf
     // (win-b, admitted first) turns sticky before the reveal. Selecting
     // the spare must skip win-b and focus win-a.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1849,7 +1857,16 @@ fn select_held_scope_stays_quiet_despite_eligible() {
     // Held scopes never take view-return focus: WS1 carries seeded memory
     // for win-a, but a bounds change under the gesture barrier holds the
     // scope, so returning moves the view with no focus effect.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities::default(),
+        vec![(
+            "outer".to_owned(),
+            crate::connection::RawSettingValue::Number(0.0),
+        )],
+    )
+    .expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1909,9 +1926,15 @@ fn select_held_scope_stays_quiet_despite_eligible() {
         }),
     );
     held.gesture_barrier = true;
-    for screen in &mut held.screens {
-        screen.gap = 8;
-    }
+    engine
+        .apply_test_settings(
+            1,
+            vec![(
+                "outer".to_owned(),
+                crate::connection::RawSettingValue::Number(8.0),
+            )],
+        )
+        .expect("settings accepted");
     let back = accepted(&mut engine, &held);
     assert_eq!(view_of(&back, "out-a"), view_a);
     assert!(
@@ -1928,7 +1951,7 @@ fn select_without_native_focus_returns_recorded_leaf() {
     // unfocused admissions select win-c then win-d. The canonical slot
     // records the latest emitted focus choice even if native focus never
     // arrives; topology leaf memory remains a fallback.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(

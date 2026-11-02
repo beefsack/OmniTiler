@@ -20,6 +20,54 @@ use crate::world_report::{
 };
 
 impl WorldEngine {
+    /// Live output order for one report: valid screens in report (stable)
+    /// order, then held screen rows in report order. Held outputs keep
+    /// rings and displacement bookkeeping so their scopes hold narrowly,
+    /// but completeness/primary resolution below only ever selects valid
+    /// screens.
+    fn live_output_order(report: &WorldReport) -> Vec<String> {
+        // Factual carried order: valid rows keep their relative `screens`
+        // order while each held row returns to its original `screens`
+        // index, so a future exact request encoder can reconstruct the
+        // input order. Validation fences ordinals (distinct, in range)
+        // before mutation; the merge below stays total on invalid input
+        // instead of panicking.
+        let total = report
+            .screens
+            .len()
+            .saturating_add(report.held_screens.len());
+        let mut held_by_ordinal: BTreeMap<usize, &str> = BTreeMap::new();
+        for held in &report.held_screens {
+            if held.ordinal < total {
+                held_by_ordinal
+                    .entry(held.ordinal)
+                    .or_insert(held.output.0.as_str());
+            }
+        }
+        let mut valid = report.screens.iter();
+        let mut live: Vec<String> = Vec::with_capacity(total);
+        for index in 0..total {
+            if let Some(output) = held_by_ordinal.get(&index) {
+                live.push((*output).to_owned());
+            } else if let Some(screen) = valid.next() {
+                live.push(screen.output.0.clone());
+            }
+        }
+        // Defensive tail: invalid reports (rejected by validation) still
+        // resolve every live handle exactly once.
+        for screen in valid {
+            if !live.iter().any(|output| output == &screen.output.0) {
+                live.push(screen.output.0.clone());
+            }
+        }
+        for held in &report.held_screens {
+            if !live.iter().any(|output| output == &held.output.0) {
+                live.push(held.output.0.clone());
+            }
+        }
+        live
+    }
+
     /// Post-staging logical convergence: trailing lifecycle per screen (creation/removal over homed occupancy), equal-count
     /// parity, history, and stale session cleanup. Runs after staging so
     /// occupancy reads homed facts. Shared mode runs lifecycle once over
@@ -28,11 +76,7 @@ impl WorldEngine {
     /// scoped view is empty).
     pub(crate) fn converge_logical_post(&mut self, report: &WorldReport) {
         use crate::workspace::{WorkspaceFacts, plan_trailing};
-        let live: Vec<String> = report
-            .screens
-            .iter()
-            .map(|screen| screen.output.0.clone())
-            .collect();
+        let live: Vec<String> = Self::live_output_order(report);
         // Homed occupancy per logical id: non-sticky facts only. Sticky
         // homing and displaced hosting retain against removal without
         // occupying.
@@ -55,7 +99,7 @@ impl WorldEngine {
                 hosted.insert(format!("{}/{}", entry.dest, id));
             }
         }
-        let shared = report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared;
+        let shared = self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared;
         if shared {
             // Union occupancy over logical ids across all live outputs.
             let mut occupied_ids: BTreeSet<String> = BTreeSet::new();
@@ -132,8 +176,9 @@ impl WorldEngine {
                     }
                 }
                 if plan.need_append {
+                    let default_tiled = self.default_tiled();
                     let out = OutputId(first.clone());
-                    if let Some(id) = self.create_trailing_workspace(&out, report.default_tiled) {
+                    if let Some(id) = self.create_trailing_workspace(&out, default_tiled) {
                         for output in &live {
                             if output == &first {
                                 continue;
@@ -147,7 +192,7 @@ impl WorldEngine {
                                     output: OutputId(output.clone()),
                                     workspace: WorkspaceId(id.clone()),
                                 })
-                                .or_insert(if report.default_tiled {
+                                .or_insert(if default_tiled {
                                     TilingMode::Tiled
                                 } else {
                                     TilingMode::Floating
@@ -193,7 +238,7 @@ impl WorldEngine {
                 let plan = plan_trailing(&facts);
                 plans.insert(output.clone(), (ring, plan));
             }
-            if report.host_owned_workspace_domains && report.equal_workspace_count {
+            if self.host_owned_workspace_domains() && self.equal_workspace_count() {
                 // Partial native retirement readback must not replace an old
                 // logical identity with freshly minted equal-count padding.
                 let floor = live
@@ -233,7 +278,7 @@ impl WorldEngine {
                 }
                 if plan.need_append {
                     let out = OutputId(output.clone());
-                    self.create_trailing_workspace(&out, report.default_tiled);
+                    self.create_trailing_workspace(&out, self.default_tiled());
                 }
             }
         }
@@ -250,7 +295,7 @@ impl WorldEngine {
                     .find(|screen| screen.output.0 == *output)
                     .is_some_and(|screen| screen.complete)
             });
-        let native_orders_known = !report.host_owned_workspace_domains
+        let native_orders_known = !self.host_owned_workspace_domains()
             || live.iter().all(|output| {
                 report
                     .native
@@ -258,7 +303,7 @@ impl WorldEngine {
                     .find(|entry| entry.output.0 == *output)
                     .is_some_and(|entry| !entry.native_order.is_empty())
             });
-        if report.equal_workspace_count && inventories_readable && native_orders_known {
+        if self.equal_workspace_count() && inventories_readable && native_orders_known {
             let max_len = live
                 .iter()
                 .filter_map(|output| self.mapping.get(output).map(Vec::len))
@@ -272,7 +317,7 @@ impl WorldEngine {
                 {
                     let out = OutputId(output.clone());
                     if self
-                        .create_trailing_workspace(&out, report.default_tiled)
+                        .create_trailing_workspace(&out, self.default_tiled())
                         .is_none()
                     {
                         break;
@@ -302,7 +347,7 @@ impl WorldEngine {
         // History observes effective views over the fresh rings. Shared
         // mode keeps one history over the unified order; per-output
         // entries still discard with their outputs.
-        if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
             let mut ordered = live.clone();
             ordered.sort();
             if let Some(first) = ordered.first() {
@@ -357,28 +402,43 @@ impl WorldEngine {
     /// whole-workspace migration.
     pub(crate) fn converge_logical_pre(&mut self, report: &WorldReport) {
         use crate::workspace_scope::{DisplacedEntry, OutputFacts, SurvivorInfo, WorkspaceMode};
-        let shared = report.workspace_mode == WorkspaceMode::Shared;
-        let live: Vec<String> = report
-            .screens
-            .iter()
-            .map(|screen| screen.output.0.clone())
-            .collect();
+        let shared = self.workspace_mode_setting() == WorkspaceMode::Shared;
+        let live: Vec<String> = Self::live_output_order(report);
+        let designated = report.primary_output.as_ref().map(|out| out.0.clone());
+        let valid = |output: &str| {
+            report
+                .screens
+                .iter()
+                .any(|screen| screen.output.0 == output)
+        };
         let live_set: BTreeSet<&str> = live.iter().map(String::as_str).collect();
         for screen in &report.screens {
             self.output_facts.insert(
                 screen.output.0.clone(),
                 OutputFacts {
                     rect: screen.full_rect,
-                    primary: screen.primary,
+                    primary: designated.as_deref() == Some(screen.output.0.as_str()),
                 },
             );
         }
-        let primary = report
-            .screens
-            .iter()
-            .find(|screen| screen.primary)
-            .map(|screen| screen.output.0.clone())
-            .or_else(|| live.first().cloned());
+        for held in &report.held_screens {
+            // Held outputs keep disconnect-time-style facts (no geometry)
+            // so displacement still places survivors without inventing a
+            // proxy frame; the designated flag never marks a held output.
+            self.output_facts.insert(
+                held.output.0.clone(),
+                OutputFacts {
+                    rect: None,
+                    primary: false,
+                },
+            );
+        }
+        // Host designation wins when it names a live valid screen;
+        // otherwise the first valid screen in stable report order. Never
+        // the active screen, never a held output.
+        let primary = designated
+            .filter(|output| valid(output))
+            .or_else(|| live.iter().find(|output| valid(output)).cloned());
         // Bootstrap: every live screen owns at least one logical workspace
         // plus a view. Fresh ids are stable within the generation. Shared
         // mode bootstraps one logical workspace on the first live output in
@@ -390,7 +450,7 @@ impl WorldEngine {
         // ring, that ring is left empty here and
         // [`WorldEngine::converge_native_pre`] builds one logical per
         // native desktop in native order below.
-        let native_bootstrap = report.host_owned_workspace_domains && report.inventory_complete;
+        let native_bootstrap = self.host_owned_workspace_domains() && report.inventory_complete;
         if shared {
             let mut ordered = live.clone();
             ordered.sort();
@@ -420,7 +480,7 @@ impl WorldEngine {
                     });
                 if !native_ready && let Some(first) = ordered.first().cloned() {
                     let id = self
-                        .create_trailing_workspace(&OutputId(first.clone()), report.default_tiled);
+                        .create_trailing_workspace(&OutputId(first.clone()), self.default_tiled());
                     if let Some(id) = id {
                         for output in &ordered {
                             let ring = self.mapping.entry(output.clone()).or_default();
@@ -466,7 +526,7 @@ impl WorldEngine {
                         continue;
                     }
                     let id = self
-                        .create_trailing_workspace(&OutputId(output.clone()), report.default_tiled);
+                        .create_trailing_workspace(&OutputId(output.clone()), self.default_tiled());
                     if let Some(id) = id {
                         self.views.insert(output.clone(), id);
                     }
@@ -781,7 +841,7 @@ impl WorldEngine {
             }
         }
         self.tiling.retain(|key, _| ringed.contains(key));
-        let seed = if report.default_tiled {
+        let seed = if self.default_tiled() {
             TilingMode::Tiled
         } else {
             TilingMode::Floating
@@ -853,7 +913,7 @@ impl WorldEngine {
     /// member lives.
     pub(crate) fn logical_source_refill(
         &self,
-        report: &WorldReport,
+        _report: &WorldReport,
         source_output: &OutputId,
         migrated: &str,
     ) -> Option<String> {
@@ -875,7 +935,7 @@ impl WorldEngine {
         {
             return Some(current);
         }
-        match crate::workspace_scope::MigrationRefill::from(report.migration_source_refill) {
+        match crate::workspace_scope::MigrationRefill::from(self.settings.migration_refill) {
             crate::workspace_scope::MigrationRefill::MostRecentlyUsed => {
                 if let Some(prev) = self.history.previous(&source_output.0)
                     && prev != migrated
@@ -1103,11 +1163,24 @@ impl WorldEngine {
         let Some(reply) = self.last_reply.as_ref() else {
             return false;
         };
-        let scope = format!("{}/{}", key.output.0, key.workspace.0);
+        if self.last_report.is_none() {
+            return false;
+        }
         reply
-            .scopes
+            .workspaces
             .iter()
-            .any(|status| status.scope == scope && status.authority == ScopeAuthority::Controlled)
+            .any(|workspace| workspace.output == key.output && workspace.id == key.workspace.0)
+            && reply.scopes.iter().any(|status| {
+                status.authority == ScopeAuthority::Controlled
+                    && match &status.scope {
+                        crate::world_report::AuthorityScope::Output(output) => {
+                            output == &key.output
+                        }
+                        crate::world_report::AuthorityScope::Workspace { output, workspace } => {
+                            output == &key.output && workspace.0 == key.workspace.0
+                        }
+                    }
+            })
             && !reply
                 .windows
                 .iter()
@@ -1475,5 +1548,123 @@ impl WorldEngine {
             entry.hints = self.effective_hints(&entry.window, declared);
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod prior_empty_scope_tests {
+    use super::*;
+    use crate::world_directional::tests::{accepted, report, screen};
+    use crate::world_engine::WorldEngine;
+    use crate::world_report::{AuthorityScope, ScopeAuthority};
+
+    #[test]
+    fn output_control_requires_exact_prior_workspace_row_for_empty_proof() {
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        let initial = report(1, 1, vec![screen("out-a", 0)], Vec::new(), None, None);
+        let reply = accepted(&mut engine, &initial);
+        assert!(reply.scopes.iter().any(|scope| {
+            scope.scope == AuthorityScope::Output(OutputId("out-a".to_owned()))
+                && scope.authority == ScopeAuthority::Controlled
+        }));
+
+        let known_empty = reply
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.output == OutputId("out-a".to_owned()))
+            .expect("published workspace row");
+        assert!(engine.prior_empty_controlled(&DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(known_empty.id.clone()),
+        }));
+        assert!(!engine.prior_empty_controlled(&DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId("newly-appearing".to_owned()),
+        }));
+    }
+}
+
+#[cfg(test)]
+mod live_output_order_tests {
+    use super::*;
+    use crate::connection::RawSettingValue;
+    use crate::world_directional::tests::{report, screen};
+    use crate::world_report::{
+        AuthorityScope, HeldScreenRow, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
+        report_digest, validate_report_reason,
+    };
+
+    fn held(output: &str, ordinal: usize) -> HeldScreenRow {
+        HeldScreenRow {
+            output: OutputId(output.to_owned()),
+            ordinal,
+            fields: vec![
+                ("out".to_owned(), RawSettingValue::String(output.to_owned())),
+                ("scale".to_owned(), RawSettingValue::Number(0.0)),
+            ],
+            diagnostic: RowDiagnostic {
+                scope: AuthorityScope::Output(OutputId(output.to_owned())),
+                row: RowDiagnosticLane::Screen,
+                id: Some(output.to_owned()),
+                kind: RowDiagnosticKind::InvalidFact,
+            },
+        }
+    }
+
+    #[test]
+    fn mixed_valid_held_valid_restores_carried_order() {
+        let mut staged = report(
+            1,
+            1,
+            vec![screen("out-a", 0), screen("out-c", 800)],
+            Vec::new(),
+            None,
+            None,
+        );
+        staged.held_screens = vec![held("out-b", 1)];
+        assert_eq!(validate_report_reason(&staged), None);
+        assert_eq!(
+            WorldEngine::live_output_order(&staged),
+            vec!["out-a", "out-b", "out-c"]
+        );
+    }
+
+    #[test]
+    fn held_rows_at_either_end_merge_in_place() {
+        let mut staged = report(1, 1, vec![screen("out-b", 0)], Vec::new(), None, None);
+        staged.held_screens = vec![held("out-a", 0), held("out-c", 2)];
+        // Carried order was [held out-a, valid out-b, held out-c]: the
+        // valid row fills the single non-held slot in order.
+        assert_eq!(validate_report_reason(&staged), None);
+        assert_eq!(
+            WorldEngine::live_output_order(&staged),
+            vec!["out-a", "out-b", "out-c"]
+        );
+    }
+
+    #[test]
+    fn out_of_range_or_duplicate_ordinals_refuse() {
+        let mut staged = report(1, 1, vec![screen("out-a", 0)], Vec::new(), None, None);
+        staged.held_screens = vec![held("out-b", 2)];
+        assert_eq!(
+            validate_report_reason(&staged),
+            Some("held-ordinal-invalid")
+        );
+        let mut staged = report(1, 1, Vec::new(), Vec::new(), None, None);
+        staged.held_screens = vec![held("out-a", 0), held("out-b", 0)];
+        assert_eq!(
+            validate_report_reason(&staged),
+            Some("held-ordinal-invalid")
+        );
+    }
+
+    #[test]
+    fn ordinal_separates_digest_and_equality() {
+        let mut first = report(1, 1, vec![screen("out-a", 0)], Vec::new(), None, None);
+        first.held_screens = vec![held("out-b", 1)];
+        let mut second = first.clone();
+        second.held_screens[0].ordinal = 0;
+        assert_ne!(first, second);
+        assert_ne!(report_digest(&first), report_digest(&second));
     }
 }

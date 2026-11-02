@@ -138,7 +138,7 @@ impl WorldEngine {
         }
         if fact.fixed_auto
             || fact.fixed_suppress
-            || is_fixed_size_with(fact.hints, report.fixed_size_predicate)
+            || is_fixed_size_with(fact.hints, self.fixed_size_predicate_setting())
         {
             return false;
         }
@@ -172,7 +172,7 @@ impl WorldEngine {
         // home, and an order-conflicting projection holds every scope.
         // This mirrors the accept-time fence without consulting the
         // conflated sweep-hold set.
-        if report.host_owned_workspace_domains {
+        if self.host_owned_workspace_domains() {
             if self.native_order_conflict(report) {
                 return false;
             }
@@ -221,7 +221,7 @@ impl WorldEngine {
         // retained binding ever publishes, even if one somehow survived an
         // opt-out or rebind report (mint drops them; this is the publish
         // fence). The explicit directional lane never reads this gate.
-        if !report.birth_clear {
+        if !self.birth_clear() {
             return None;
         }
         self.retained_born
@@ -258,7 +258,7 @@ impl WorldEngine {
         // re-evaluates admitted windows as known (never a re-clear). The
         // explicit directional clear lane is untouched (separate retained
         // lane, separate settlement).
-        if !report.birth_clear {
+        if !self.birth_clear() {
             self.retained_born.clear();
             self.born_attempted.clear();
             self.born_held_fullscreen.clear();
@@ -378,7 +378,7 @@ impl WorldEngine {
                 if fact.fixed_auto || fact.fixed_suppress {
                     continue;
                 }
-                if classify_born_fullscreen_exit(fact.hints, report.fixed_size_predicate)
+                if classify_born_fullscreen_exit(fact.hints, self.fixed_size_predicate_setting())
                     == FirstExitDisposition::FloatAutomatic
                 {
                     continue;
@@ -406,7 +406,7 @@ impl WorldEngine {
             }
             if fact.fixed_suppress
                 || fact.fixed_auto
-                || is_fixed_size_with(fact.hints, report.fixed_size_predicate)
+                || is_fixed_size_with(fact.hints, self.fixed_size_predicate_setting())
             {
                 continue;
             }
@@ -422,7 +422,10 @@ impl WorldEngine {
             // R-MAX-06 latch at tiled-first evaluation under the live value:
             // keep-overlay binds to this exact lifetime, so a later flip to
             // tile-on-launch never reclears it.
-            if born_keep_latch(true, !report.born_maximized.should_clear_at_admission()) {
+            if born_keep_latch(
+                true,
+                !self.born_maximized_setting().should_clear_at_admission(),
+            ) {
                 self.born_keep_overlay.insert(window.clone());
                 continue;
             }
@@ -435,7 +438,7 @@ impl WorldEngine {
                 pre_slotted.contains(&window),
                 self.born_attempted.contains(&window),
                 true,
-                report.born_maximized,
+                self.born_maximized_setting(),
             ) {
                 let operation_id = self.mint_born_operation_id();
                 self.retained_born.push(RetainedBornClear {
@@ -478,7 +481,7 @@ impl WorldEngine {
         // publish. Mint drops the same state later in the pass; this fence
         // covers direct settlement callers. Silent: no verdict attaches to
         // a lane that never ran.
-        if !report.birth_clear {
+        if !self.birth_clear() {
             self.retained_born.clear();
             return;
         }
@@ -552,7 +555,7 @@ impl WorldEngine {
             // must all read non-fixed to continue.
             if fact.fixed_auto
                 || fact.fixed_suppress
-                || is_fixed_size_with(fact.hints, report.fixed_size_predicate)
+                || is_fixed_size_with(fact.hints, self.fixed_size_predicate_setting())
             {
                 self.born_attempted.insert(retained.window.clone());
                 self.emit_operation(

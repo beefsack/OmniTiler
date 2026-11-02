@@ -18,15 +18,14 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -52,7 +51,7 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
 #[allow(clippy::too_many_arguments)]
 fn report(
     request_seq: u64,
-    mode: WorkspaceMode,
+    _mode: WorkspaceMode,
     screens: Vec<ScreenReport>,
     windows: Vec<WindowFact>,
     views: Vec<(&str, &str)>,
@@ -60,11 +59,10 @@ fn report(
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
     inventory_complete: bool,
-    default_tiled: bool,
+    _default_tiled: bool,
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -72,7 +70,6 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: mode,
         screens,
         windows,
         views: views
@@ -86,26 +83,15 @@ fn report(
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled,
         focused_global: String::new(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
@@ -127,12 +113,12 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
 }
 
 fn two_screens() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true), screen("out-b", 800, false)]
+    vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
 #[test]
 fn floating_boundary_send_keeps_source_and_proves_recipient() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -252,7 +238,7 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
 
 #[test]
 fn default_seed_changes_only_new_workspaces() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -318,6 +304,15 @@ fn default_seed_changes_only_new_workspaces() {
         .next_back()
         .expect("trailing")
         .clone();
+    engine
+        .apply_test_settings(
+            1,
+            vec![(
+                "defaultTiled".to_owned(),
+                crate::connection::RawSettingValue::Bool(false),
+            )],
+        )
+        .expect("settings accepted");
     let mut fill = fact("win-a", "out-a", 0);
     fill.observed_workspace = Some(trailing);
     let calm = accepted(
@@ -368,7 +363,7 @@ fn default_seed_changes_only_new_workspaces() {
 
 #[test]
 fn incomplete_omission_holds_explicit_close_settles() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -431,7 +426,7 @@ fn incomplete_omission_holds_explicit_close_settles() {
 
 #[test]
 fn shared_occupancy_union_keeps_b_only_workspace() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -481,11 +476,11 @@ fn shared_occupancy_union_keeps_b_only_workspace() {
 
 #[test]
 fn three_output_displacement_preserves_unit_and_returns() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let three = vec![
-        screen("out-a", 0, true),
-        screen("out-b", 800, false),
-        screen("out-c", 1600, false),
+        screen("out-a", 0),
+        screen("out-b", 800),
+        screen("out-c", 1600),
     ];
     let first = accepted(
         &mut engine,
@@ -535,7 +530,7 @@ fn three_output_displacement_preserves_unit_and_returns() {
         .cloned();
     // Disconnect out-c: nearest survivor is out-b (1600 nearer 800 than 0).
     // Members observed on the survivor screen stay homed via the rehome.
-    let two = vec![screen("out-a", 0, true), screen("out-b", 800, false)];
+    let two = vec![screen("out-a", 0), screen("out-b", 800)];
     let displaced = accepted(
         &mut engine,
         &report(

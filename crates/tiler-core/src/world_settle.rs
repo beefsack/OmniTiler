@@ -19,7 +19,8 @@ use crate::directional::{OutputId, WindowId};
 use crate::session::DomainKey;
 use crate::world_engine::{RetainedFloat, RetainedTransfer, WorldEngine};
 use crate::world_report::{
-    AttemptOutcome, FrameSetter, MemberAttempt, TransferKind, ViewAttempt, WorldReport,
+    AttemptOutcome, FrameSetter, MemberAttempt, TransferKind, ViewAttempt, WorkspaceRef,
+    WorldReport,
 };
 
 /// Exact-correlated raw membership evidence for one retained operation
@@ -71,13 +72,17 @@ impl WorldEngine {
         source_output: &OutputId,
         host_owned: bool,
     ) -> Option<(OutputId, String)> {
-        if host_owned {
-            attempt.native_pre.as_deref().and_then(|native| {
-                self.native_logical(source_output, native)
-                    .map(|logical| (source_output.clone(), logical))
-            })
-        } else {
-            attempt.pre.clone()
+        match attempt.pre.as_ref()? {
+            WorkspaceRef::Logical { output, workspace }
+                if !host_owned && output == source_output =>
+            {
+                Some((output.clone(), workspace.0.clone()))
+            }
+            WorkspaceRef::Native { output, workspace } if host_owned && output == source_output => {
+                self.native_logical(output, workspace.as_str())
+                    .map(|logical| (output.clone(), logical))
+            }
+            _ => None,
         }
     }
 
@@ -92,13 +97,20 @@ impl WorldEngine {
         output: &OutputId,
         host_owned: bool,
     ) -> Option<(OutputId, String)> {
-        if host_owned {
-            attempt.native_post.as_deref().and_then(|native| {
-                self.native_logical(output, native)
-                    .map(|logical| (output.clone(), logical))
-            })
-        } else {
-            attempt.post.clone()
+        match attempt.post.as_ref()? {
+            WorkspaceRef::Logical {
+                output: ref_output,
+                workspace,
+            } if !host_owned && ref_output == output => {
+                Some((ref_output.clone(), workspace.0.clone()))
+            }
+            WorkspaceRef::Native {
+                output: ref_output,
+                workspace,
+            } if host_owned && ref_output == output => self
+                .native_logical(ref_output, workspace.as_str())
+                .map(|logical| (ref_output.clone(), logical)),
+            _ => None,
         }
     }
 
@@ -108,10 +120,17 @@ impl WorldEngine {
     fn effective_member_post(
         &self,
         attempt: &MemberAttempt,
-        target_output: &OutputId,
         host_owned: bool,
     ) -> Option<(OutputId, String)> {
-        self.effective_member_post_on(attempt, target_output, host_owned)
+        match attempt.post.as_ref()? {
+            WorkspaceRef::Logical { output, workspace } if !host_owned => {
+                Some((output.clone(), workspace.0.clone()))
+            }
+            WorkspaceRef::Native { output, workspace } if host_owned => self
+                .native_logical(output, workspace.as_str())
+                .map(|logical| (output.clone(), logical)),
+            _ => None,
+        }
     }
 
     /// Effective logical pre view for one view attempt, capability-gated
@@ -120,39 +139,42 @@ impl WorldEngine {
     /// for the attempt's target output; tiler-owned uses only the logical
     /// pre. Unmapped or unreadable natives stay unknown.
     fn effective_view_pre(&self, attempt: &ViewAttempt, host_owned: bool) -> Option<String> {
-        if host_owned {
-            attempt
-                .native_pre
-                .as_deref()
-                .and_then(|native| self.native_logical(&attempt.target_output, native))
-        } else {
-            attempt.pre.clone()
+        if !host_owned {
+            return None;
+        }
+        match attempt.pre.as_ref()? {
+            WorkspaceRef::Native { output, workspace } if output == &attempt.target_output => {
+                self.native_logical(output, workspace.as_str())
+            }
+            _ => None,
         }
     }
 
     /// Effective logical post view for one view attempt: same capability
     /// gate and translation rule as [`WorldEngine::effective_view_pre`].
     fn effective_view_post(&self, attempt: &ViewAttempt, host_owned: bool) -> Option<String> {
-        if host_owned {
-            attempt
-                .native_post
-                .as_deref()
-                .and_then(|native| self.native_logical(&attempt.target_output, native))
-        } else {
-            attempt.post.clone()
+        if !host_owned {
+            return None;
+        }
+        match attempt.post.as_ref()? {
+            WorkspaceRef::Native { output, workspace } if output == &attempt.target_output => {
+                self.native_logical(output, workspace.as_str())
+            }
+            _ => None,
         }
     }
 
     /// Effective logical baseline view for one view attempt: same capability
     /// gate and translation rule as [`WorldEngine::effective_view_pre`].
     fn effective_view_baseline(&self, attempt: &ViewAttempt, host_owned: bool) -> Option<String> {
-        if host_owned {
-            attempt
-                .native_baseline
-                .as_deref()
-                .and_then(|native| self.native_logical(&attempt.target_output, native))
-        } else {
-            attempt.baseline.clone()
+        if !host_owned {
+            return None;
+        }
+        match attempt.baseline.as_ref()? {
+            WorkspaceRef::Native { output, workspace } if output == &attempt.target_output => {
+                self.native_logical(output, workspace.as_str())
+            }
+            _ => None,
         }
     }
 
@@ -276,7 +298,7 @@ impl WorldEngine {
         source_output: &OutputId,
         workspace: &str,
     ) -> Vec<String> {
-        if !report.host_owned_workspace_domains {
+        if !self.host_owned_workspace_domains() {
             return Vec::new();
         }
         // Operation-scoped: only pairs naming the migrated workspace that
@@ -368,7 +390,7 @@ impl WorldEngine {
     fn member_post_proves_target(&self, attempt: &MemberAttempt, host_owned: bool) -> bool {
         matches!(attempt.setter, FrameSetter::Accepted)
             && self
-                .effective_member_post(attempt, &attempt.target_output, host_owned)
+                .effective_member_post(attempt, host_owned)
                 .as_ref()
                 .is_some_and(|(output, workspace)| {
                     output == &attempt.target_output && workspace == &attempt.target_workspace
@@ -510,7 +532,7 @@ impl WorldEngine {
                 self.view_refused(
                     attempt,
                     &retained.target.target_workspace,
-                    report.host_owned_workspace_domains,
+                    self.host_owned_workspace_domains(),
                 )
             }) {
                 // Proven refusal reconciled against readable evidence, never
@@ -536,7 +558,7 @@ impl WorldEngine {
                     continue;
                 }
                 let pre_matches = raw.as_ref().and_then(|attempt| {
-                    self.effective_view_pre(attempt, report.host_owned_workspace_domains)
+                    self.effective_view_pre(attempt, self.host_owned_workspace_domains())
                 });
                 if echo.is_some() && echo == pre_matches.as_deref() {
                     // Settle to observed: the refused preimage survived.
@@ -548,7 +570,7 @@ impl WorldEngine {
                     attempt,
                     &retained.target.target_workspace,
                     echo,
-                    report.host_owned_workspace_domains,
+                    self.host_owned_workspace_domains(),
                 )
             }) {
                 // Proven write then newer external input: the translated
@@ -573,9 +595,9 @@ impl WorldEngine {
                 self.view_third_location(
                     attempt,
                     &retained.target.target_workspace,
-                    report.host_owned_workspace_domains,
+                    self.host_owned_workspace_domains(),
                 ) && self
-                    .effective_view_post(attempt, report.host_owned_workspace_domains)
+                    .effective_view_post(attempt, self.host_owned_workspace_domains())
                     .as_deref()
                     .is_some_and(|post| {
                         self.mapping
@@ -681,7 +703,7 @@ impl WorldEngine {
                         &retained.source_output,
                         &retained.target.target_output,
                         &retained.target.target_workspace,
-                        report.host_owned_workspace_domains,
+                        self.host_owned_workspace_domains(),
                     )
                 }),
                 _ => false,
@@ -693,7 +715,7 @@ impl WorldEngine {
             // the write landed even when the staged capture is intermediate.
             let raw_arrival_proves = match &retained.target.kind {
                 TransferKind::Window(_) => raw.as_ref().is_some_and(|attempt| {
-                    self.member_post_proves_target(attempt, report.host_owned_workspace_domains)
+                    self.member_post_proves_target(attempt, self.host_owned_workspace_domains())
                 }),
                 _ => false,
             };
@@ -745,7 +767,7 @@ impl WorldEngine {
                                 .facts
                                 .get(window)
                                 .and_then(|fact| {
-                                    if report.host_owned_workspace_domains {
+                                    if self.host_owned_workspace_domains() {
                                         self.effective_logical_receipt(report, fact)
                                     } else {
                                         fact.observed_workspace.clone()
@@ -785,11 +807,11 @@ impl WorldEngine {
                                     self.view_third_location(
                                         attempt,
                                         &retained.target.target_workspace,
-                                        report.host_owned_workspace_domains,
+                                        self.host_owned_workspace_domains(),
                                     ) && self
                                         .effective_view_post(
                                             attempt,
-                                            report.host_owned_workspace_domains,
+                                            self.host_owned_workspace_domains(),
                                         )
                                         .as_deref()
                                         .is_some_and(|post| {
@@ -847,7 +869,7 @@ impl WorldEngine {
                                 self.effective_member_pre(
                                     attempt,
                                     &retained.source_output,
-                                    report.host_owned_workspace_domains,
+                                    self.host_owned_workspace_domains(),
                                 )
                                 .map(|(out, ws)| DomainKey {
                                     output: out.clone(),
@@ -1014,7 +1036,7 @@ impl WorldEngine {
             if echo == Some(child_ws.as_str()) {
                 keep.remove(pos);
             } else if child_raw.as_ref().is_some_and(|attempt| {
-                self.view_refused(attempt, &child_ws, report.host_owned_workspace_domains)
+                self.view_refused(attempt, &child_ws, self.host_owned_workspace_domains())
             }) {
                 // A refused refill never retries: the spent view-phase fence
                 // blocks repeats, so mere child absence can never itself
@@ -1026,7 +1048,7 @@ impl WorldEngine {
                 // forever: drop the child so the source-echo check below
                 // reconciles as external. Unknown/gap echoes hold.
                 let pre = child_raw.as_ref().and_then(|attempt| {
-                    self.effective_view_pre(attempt, report.host_owned_workspace_domains)
+                    self.effective_view_pre(attempt, self.host_owned_workspace_domains())
                 });
                 let known_third = echo.is_some_and(|current| {
                     current != child_ws.as_str()
@@ -1046,7 +1068,7 @@ impl WorldEngine {
                     attempt,
                     &child_ws,
                     echo,
-                    report.host_owned_workspace_domains,
+                    self.host_owned_workspace_domains(),
                 )
             }) {
                 // Proven refill then abandoned: the translated post
@@ -1061,9 +1083,9 @@ impl WorldEngine {
                 }
                 keep.remove(pos);
             } else if child_raw.as_ref().is_some_and(|attempt| {
-                self.view_third_location(attempt, &child_ws, report.host_owned_workspace_domains)
+                self.view_third_location(attempt, &child_ws, self.host_owned_workspace_domains())
                     && self
-                        .effective_view_post(attempt, report.host_owned_workspace_domains)
+                        .effective_view_post(attempt, self.host_owned_workspace_domains())
                         .as_deref()
                         .is_some_and(|post| {
                             self.mapping
@@ -1098,14 +1120,14 @@ impl WorldEngine {
         if !live_members.is_empty()
             && live_members.iter().all(|member| {
                 retained.pending_members.get(member).is_some_and(|attempt| {
-                    self.member_refused(attempt, &retained.source_output, &target_out, &target_ws, report.host_owned_workspace_domains)
+                    self.member_refused(attempt, &retained.source_output, &target_out, &target_ws, self.host_owned_workspace_domains())
                 })
             })
         {
             retained.migration_terminal = Some(AttemptOutcome::RefusedProven);
         } else if retained.pending_view.as_ref().is_some_and(|attempt| {
-            self.view_third_location(attempt, &target_ws, report.host_owned_workspace_domains)
-                && self.effective_view_post(attempt, report.host_owned_workspace_domains).as_deref().is_some_and(|post| {
+            self.view_third_location(attempt, &target_ws, self.host_owned_workspace_domains())
+                && self.effective_view_post(attempt, self.host_owned_workspace_domains()).as_deref().is_some_and(|post| {
                     self.mapping
                         .get(&target_out.0)
                         .is_some_and(|ring| ring.iter().any(|id| id == post))

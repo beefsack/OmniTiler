@@ -9,6 +9,7 @@
 //! Adapter-affinity facts deliberately disagree with the policy target
 //! throughout: core resolution must win, never the carried output.
 
+use tiler_core::connection::{HostCapabilities, RawSettingValue};
 use tiler_core::cursor_targeting::{FreshPlacement, SwitchTarget};
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
@@ -20,20 +21,101 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: tiler_core::world_report::OutputIdentity::unknown(),
     }
 }
 
 fn two_screens() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true), screen("out-b", 800, false)]
+    vec![screen("out-a", 0), screen("out-b", 800)]
+}
+
+/// Initial wire settings mirroring the original per-report values: the old
+/// screens carried gap 0 / outer 0, mode was per-output-local, and every
+/// report carried its own switch target / fresh placement with
+/// focus-follows and warp off.
+fn initial_values(
+    switch_target: SwitchTarget,
+    fresh_placement: FreshPlacement,
+) -> Vec<(String, RawSettingValue)> {
+    vec![
+        (
+            "mode".to_owned(),
+            RawSettingValue::String("per-output-local".to_owned()),
+        ),
+        ("gap".to_owned(), RawSettingValue::Number(0.0)),
+        ("outer".to_owned(), RawSettingValue::Number(0.0)),
+        (
+            "switchTarget".to_owned(),
+            RawSettingValue::String(switch_target.as_wire_str().to_owned()),
+        ),
+        (
+            "freshPlacement".to_owned(),
+            RawSettingValue::String(fresh_placement.as_wire_str().to_owned()),
+        ),
+    ]
+}
+
+fn engine_for(switch_target: SwitchTarget, fresh_placement: FreshPlacement) -> WorldEngine {
+    engine_for_with_capabilities(switch_target, fresh_placement, HostCapabilities::default())
+}
+
+fn engine_for_with_capabilities(
+    switch_target: SwitchTarget,
+    fresh_placement: FreshPlacement,
+    capabilities: HostCapabilities,
+) -> WorldEngine {
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        capabilities,
+        initial_values(switch_target, fresh_placement),
+    )
+    .expect("generation")
+}
+
+/// Adapter rebind through the real handshake path: a fresh handshake for
+/// the new incarnation plus revision-0 settings carrying the same initial
+/// values, then reports resume with the rebound generation.
+fn rebind(
+    engine: &mut WorldEngine,
+    adapter: &str,
+    switch_target: SwitchTarget,
+    fresh_placement: FreshPlacement,
+) {
+    use tiler_core::connection::{ApplicationIdentity, HandshakeRequest, SettingsRequest};
+    let handshake = engine
+        .handshake(&HandshakeRequest {
+            adapter: adapter.to_owned(),
+            request: "reconnect-1".to_owned(),
+            application_identity: ApplicationIdentity {
+                app_id: None,
+                executable: None,
+                process_id: None,
+            },
+            capabilities: HostCapabilities::without_native_identity(),
+        })
+        .generation
+        .expect("rebound generation");
+    let settings = engine
+        .handle_settings(&SettingsRequest {
+            adapter: adapter.to_owned(),
+            generation: handshake.clone(),
+            request: "settings-1".to_owned(),
+            revision: 0,
+            values: initial_values(switch_target, fresh_placement),
+        })
+        .expect("rebind settings");
+    assert_eq!(
+        settings.status,
+        tiler_core::connection::SettingsStatus::Accepted
+    );
 }
 
 fn fact(window: &str, output: &str, x: i32) -> WindowFact {
@@ -61,14 +143,11 @@ fn report(
     windows: Vec<WindowFact>,
     focused: &str,
     cursor: Option<(i32, i32)>,
-    switch_target: SwitchTarget,
-    fresh_placement: FreshPlacement,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
         contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -76,31 +155,19 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens: two_screens(),
         windows,
         views: vec![],
         closed: vec![],
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        switch_target,
-        fresh_placement,
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: Some(OutputId("out-a".to_owned())),
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -155,7 +222,7 @@ fn view_of(reply: &tiler_core::world_report::WorldReply, output: &str) -> Option
 /// last-focused, then focuses A. Returns the engine ready for a fresh
 /// newcomer under cursor/focus disagreement.
 fn seeded_disagreement(fresh_placement: FreshPlacement) -> WorldEngine {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for(SwitchTarget::Cursor, fresh_placement);
     accepted(
         &mut engine,
         &report(
@@ -163,8 +230,6 @@ fn seeded_disagreement(fresh_placement: FreshPlacement) -> WorldEngine {
             vec![fact("win-b1", "out-b", 800)],
             "win-b1",
             None,
-            SwitchTarget::Cursor,
-            fresh_placement,
             None,
             None,
         ),
@@ -176,8 +241,6 @@ fn seeded_disagreement(fresh_placement: FreshPlacement) -> WorldEngine {
             vec![fact("win-b1", "out-b", 800), fact("win-b2", "out-b", 1200)],
             "win-b2",
             None,
-            SwitchTarget::Cursor,
-            fresh_placement,
             None,
             None,
         ),
@@ -193,8 +256,6 @@ fn seeded_disagreement(fresh_placement: FreshPlacement) -> WorldEngine {
             ],
             "win-a",
             None,
-            SwitchTarget::Cursor,
-            fresh_placement,
             None,
             None,
         ),
@@ -223,8 +284,6 @@ fn cosmic_routes_cursor_output_with_mru_anchor() {
             ],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -241,7 +300,10 @@ fn hypr_same_output_focus_anchors_despite_cursor_on_neighbor() {
     // the cursor over its neighbor (Tier 1 same-output selected-focus
     // holds in all four; the pinned active-window branch covers the
     // target workspace itself).
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for(
+        SwitchTarget::Cursor,
+        FreshPlacement::CursorOutputCursorClosest,
+    );
     accepted(
         &mut engine,
         &report(
@@ -249,8 +311,6 @@ fn hypr_same_output_focus_anchors_despite_cursor_on_neighbor() {
             vec![fact("win-a", "out-a", 0)],
             "win-a",
             None,
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputCursorClosest,
             None,
             None,
         ),
@@ -262,8 +322,6 @@ fn hypr_same_output_focus_anchors_despite_cursor_on_neighbor() {
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
             "win-a",
             None,
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputCursorClosest,
             None,
             None,
         ),
@@ -280,8 +338,6 @@ fn hypr_same_output_focus_anchors_despite_cursor_on_neighbor() {
             ],
             "win-a",
             Some((600, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputCursorClosest,
             None,
             None,
         ),
@@ -316,8 +372,6 @@ fn restored_intent_lanes_keep_native_affinity() {
             ],
             "win-a",
             Some((100, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -333,8 +387,14 @@ fn rebind_adopts_native_affinity_for_unknown_lifetimes() {
     // keep screen affinity on the first post-rebind report while
     // retained members stay homed.
     let mut engine = seeded_disagreement(FreshPlacement::CursorOutputMru);
-    let mut rebind = report(
-        1,
+    rebind(
+        &mut engine,
+        "adapter-2",
+        SwitchTarget::Cursor,
+        FreshPlacement::CursorOutputMru,
+    );
+    let mut rebound = report(
+        4,
         vec![
             fact("win-b1", "out-b", 800),
             fact("win-b2", "out-b", 1200),
@@ -343,14 +403,12 @@ fn rebind_adopts_native_affinity_for_unknown_lifetimes() {
         ],
         "win-a",
         Some((100, 300)),
-        SwitchTarget::Cursor,
-        FreshPlacement::CursorOutputMru,
         None,
         None,
     );
-    rebind.adapter_incarnation = "adapter-2".to_owned();
-    rebind.request_id = "req-r1".to_owned();
-    let first = accepted(&mut engine, &rebind);
+    rebound.adapter_incarnation = "adapter-2".to_owned();
+    rebound.core_generation = engine.core_generation().to_owned();
+    let first = accepted(&mut engine, &rebound);
     assert_eq!(homed(&first, "win-c").0, "out-b");
     assert_eq!(homed(&first, "win-a").0, "out-a");
     assert_eq!(homed(&first, "win-b1").0, "out-b");
@@ -372,8 +430,6 @@ fn floating_scope_still_supports_later_fresh_placement() {
             ],
             "win-a",
             None,
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -390,8 +446,6 @@ fn floating_scope_still_supports_later_fresh_placement() {
             ],
             "win-a",
             None,
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-b".to_owned()),
@@ -412,8 +466,6 @@ fn floating_scope_still_supports_later_fresh_placement() {
             ],
             "win-a",
             Some((100, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -438,8 +490,6 @@ fn hypr_routes_cursor_output_with_cursor_closest_anchor() {
             ],
             "win-a",
             Some((900, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputCursorClosest,
             None,
             None,
         ),
@@ -465,8 +515,6 @@ fn i3_sway_ignores_cursor_for_output_and_anchor() {
             ],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::FocusedOutputMru,
             None,
             None,
         ),
@@ -492,8 +540,6 @@ fn cursor_output_wins_against_adapter_affinity_in_both_directions() {
             ],
             "win-b2",
             Some((100, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -517,8 +563,6 @@ fn missing_and_outside_cursor_fall_back_to_focused_then_primary() {
             ],
             "win-a",
             None,
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -538,8 +582,6 @@ fn missing_and_outside_cursor_fall_back_to_focused_then_primary() {
             ],
             "win-a",
             Some((5000, 5000)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -549,19 +591,10 @@ fn missing_and_outside_cursor_fall_back_to_focused_then_primary() {
 
 #[test]
 fn no_facts_at_all_falls_back_to_primary() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for(SwitchTarget::Cursor, FreshPlacement::CursorOutputMru);
     accepted(
         &mut engine,
-        &report(
-            1,
-            vec![fact("win-a", "out-a", 0)],
-            "",
-            None,
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
-            None,
-            None,
-        ),
+        &report(1, vec![fact("win-a", "out-a", 0)], "", None, None, None),
     );
     // No cursor and no focus: the primary output wins over adapter
     // affinity, never an invented focus.
@@ -572,8 +605,6 @@ fn no_facts_at_all_falls_back_to_primary() {
             vec![fact("win-a", "out-a", 0), fact("win-g", "out-b", 900)],
             "",
             None,
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -585,7 +616,7 @@ fn no_facts_at_all_falls_back_to_primary() {
 fn bootstrap_adopts_native_affinity_despite_cursor() {
     // First report on a fresh engine: native affinity wins, the cursor
     // never routes. This is the startup/restart quiet path.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for(SwitchTarget::Cursor, FreshPlacement::CursorOutputMru);
     let first = accepted(
         &mut engine,
         &report(
@@ -593,8 +624,6 @@ fn bootstrap_adopts_native_affinity_despite_cursor() {
             vec![fact("win-a", "out-a", 0)],
             "",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -606,7 +635,7 @@ fn bootstrap_adopts_native_affinity_despite_cursor() {
 fn restart_initial_report_adopts_native_affinity() {
     // A restarted engine (no retained sessions) adopts native affinity
     // for the whole roster even under cursor/focus disagreement.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for(SwitchTarget::Cursor, FreshPlacement::CursorOutputMru);
     let first = accepted(
         &mut engine,
         &report(
@@ -618,8 +647,6 @@ fn restart_initial_report_adopts_native_affinity() {
             ],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -643,14 +670,33 @@ fn settings_change_moves_no_member() {
             ],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
     );
     // Flip placement and move the cursor with an identical roster:
-    // membership must read exactly as before.
+    // membership must read exactly as before. The flip travels through
+    // the revisioned settings channel, mirroring the original report's
+    // carried values.
+    let flipped = engine
+        .apply_test_settings(
+            1,
+            vec![
+                (
+                    "switchTarget".to_owned(),
+                    RawSettingValue::String("focused-output".to_owned()),
+                ),
+                (
+                    "freshPlacement".to_owned(),
+                    RawSettingValue::String("cursor-output-cursor-closest".to_owned()),
+                ),
+            ],
+        )
+        .expect("settings flip");
+    assert_eq!(
+        flipped.status,
+        tiler_core::connection::SettingsStatus::Accepted
+    );
     let after = accepted(
         &mut engine,
         &report(
@@ -662,8 +708,6 @@ fn settings_change_moves_no_member() {
             ],
             "win-b2",
             Some((100, 300)),
-            SwitchTarget::Focused,
-            FreshPlacement::CursorOutputCursorClosest,
             None,
             None,
         ),
@@ -683,8 +727,6 @@ fn closed_lifetime_reused_as_fresh_newcomer() {
         vec![fact("win-b1", "out-b", 800), fact("win-a", "out-a", 0)],
         "win-a",
         Some((1000, 300)),
-        SwitchTarget::Cursor,
-        FreshPlacement::CursorOutputMru,
         None,
         None,
     );
@@ -701,8 +743,6 @@ fn closed_lifetime_reused_as_fresh_newcomer() {
             ],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -725,8 +765,6 @@ fn all_switch_verbs_resolve_cursor_output_under_disagreement() {
                 ],
                 "win-a",
                 Some((1000, 300)),
-                SwitchTarget::Cursor,
-                FreshPlacement::CursorOutputMru,
                 None,
                 None,
             ),
@@ -746,8 +784,6 @@ fn all_switch_verbs_resolve_cursor_output_under_disagreement() {
             ],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             Some(11),
             Some(WorldCommand::SelectTrailing { output: None }),
         ),
@@ -770,8 +806,6 @@ fn all_switch_verbs_resolve_cursor_output_under_disagreement() {
             ],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             Some(12),
             Some(WorldCommand::SelectNumbered {
                 output: None,
@@ -792,8 +826,6 @@ fn all_switch_verbs_resolve_cursor_output_under_disagreement() {
             ],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             Some(13),
             Some(WorldCommand::SelectRelative {
                 output: None,
@@ -818,8 +850,6 @@ fn all_switch_verbs_resolve_cursor_output_under_disagreement() {
             ],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             Some(14),
             Some(WorldCommand::SelectPrevious { output: None }),
         ),
@@ -845,14 +875,27 @@ fn focused_switch_target_and_explicit_output_ignore_cursor() {
             ],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
     );
     let view_b = view_of(&base, "out-b").expect("view b");
-    // Focused switch target acts on out-a despite the out-b cursor.
+    // Focused switch target acts on out-a despite the out-b cursor. The
+    // target travels through the revisioned settings channel, mirroring
+    // the original report's carried value.
+    let focused = engine
+        .apply_test_settings(
+            1,
+            vec![(
+                "switchTarget".to_owned(),
+                RawSettingValue::String("focused-output".to_owned()),
+            )],
+        )
+        .expect("focused switch");
+    assert_eq!(
+        focused.status,
+        tiler_core::connection::SettingsStatus::Accepted
+    );
     let fifth = accepted(
         &mut engine,
         &report(
@@ -864,8 +907,6 @@ fn focused_switch_target_and_explicit_output_ignore_cursor() {
             ],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Focused,
-            FreshPlacement::CursorOutputMru,
             Some(11),
             Some(WorldCommand::SelectRelative {
                 output: None,
@@ -888,8 +929,6 @@ fn focused_switch_target_and_explicit_output_ignore_cursor() {
             ],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             Some(12),
             Some(WorldCommand::SelectTrailing {
                 output: Some(OutputId("out-a".to_owned())),
@@ -944,8 +983,6 @@ fn sends_resolve_on_focused_member_output_despite_cursor() {
                 ],
                 window,
                 Some((1000, 300)),
-                SwitchTarget::Cursor,
-                FreshPlacement::CursorOutputMru,
                 Some(10 + seq),
                 Some(command),
             ),
@@ -967,7 +1004,15 @@ fn sends_resolve_on_focused_member_output_despite_cursor() {
 
 #[test]
 fn retained_settings_are_observable() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    // Cursor warp needs the warp capability; the rest rides the handshake.
+    let mut engine = engine_for_with_capabilities(
+        SwitchTarget::Cursor,
+        FreshPlacement::CursorOutputMru,
+        HostCapabilities {
+            warp: true,
+            ..HostCapabilities::default()
+        },
+    );
     accepted(
         &mut engine,
         &report(
@@ -975,8 +1020,6 @@ fn retained_settings_are_observable() {
             vec![fact("win-a", "out-a", 0)],
             "win-a",
             Some((100, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -986,18 +1029,37 @@ fn retained_settings_are_observable() {
     assert!(!engine.focus_follows_cursor());
     assert!(!engine.cursor_warp());
     assert_eq!(engine.last_cursor(), Some((100, 300)));
-    let mut warped = report(
+    // The flipped settings arrive through the revisioned settings channel,
+    // mirroring the original second report's carried values.
+    let flipped = engine
+        .apply_test_settings(
+            1,
+            vec![
+                (
+                    "switchTarget".to_owned(),
+                    RawSettingValue::String("focused-output".to_owned()),
+                ),
+                (
+                    "freshPlacement".to_owned(),
+                    RawSettingValue::String("focused-output-last-focused".to_owned()),
+                ),
+                ("focusFollowsCursor".to_owned(), RawSettingValue::Bool(true)),
+                ("cursorWarp".to_owned(), RawSettingValue::Bool(true)),
+            ],
+        )
+        .expect("settings flip");
+    assert_eq!(
+        flipped.status,
+        tiler_core::connection::SettingsStatus::Accepted
+    );
+    let warped = report(
         2,
         vec![fact("win-a", "out-a", 0)],
         "win-a",
         None,
-        SwitchTarget::Focused,
-        FreshPlacement::FocusedOutputMru,
         None,
         None,
     );
-    warped.focus_follows_cursor = true;
-    warped.cursor_warp = true;
     accepted(&mut engine, &warped);
     assert_eq!(engine.switch_target(), SwitchTarget::Focused);
     assert_eq!(engine.fresh_placement(), FreshPlacement::FocusedOutputMru);
@@ -1009,14 +1071,12 @@ fn retained_settings_are_observable() {
 #[test]
 fn out_of_bounds_cursor_refuses_at_validation() {
     use tiler_core::world_report::{report_digest, validate_report, validate_report_reason};
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for(SwitchTarget::Cursor, FreshPlacement::CursorOutputMru);
     let bad = report(
         1,
         vec![fact("win-a", "out-a", 0)],
         "",
         Some((20_000, 0)),
-        SwitchTarget::Cursor,
-        FreshPlacement::CursorOutputMru,
         None,
         None,
     );
@@ -1033,21 +1093,10 @@ fn out_of_bounds_cursor_refuses_at_validation() {
         vec![fact("win-a", "out-a", 0)],
         "",
         Some((100, 300)),
-        SwitchTarget::Cursor,
-        FreshPlacement::CursorOutputMru,
         None,
         None,
     );
-    let plain = report(
-        1,
-        vec![fact("win-a", "out-a", 0)],
-        "",
-        None,
-        SwitchTarget::Cursor,
-        FreshPlacement::CursorOutputMru,
-        None,
-        None,
-    );
+    let plain = report(1, vec![fact("win-a", "out-a", 0)], "", None, None, None);
     assert_ne!(report_digest(&with_cursor), report_digest(&plain));
 }
 
@@ -1060,20 +1109,8 @@ fn empty_seed_routes_first_newcomer_by_policy_both_directions() {
         ("out-a", Some((1000, 300)), "out-b"),
         ("out-b", Some((100, 300)), "out-a"),
     ] {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
-        let seed = accepted(
-            &mut engine,
-            &report(
-                1,
-                vec![],
-                "",
-                None,
-                SwitchTarget::Cursor,
-                FreshPlacement::CursorOutputMru,
-                None,
-                None,
-            ),
-        );
+        let mut engine = engine_for(SwitchTarget::Cursor, FreshPlacement::CursorOutputMru);
+        let seed = accepted(&mut engine, &report(1, vec![], "", None, None, None));
         assert!(seed.effects.is_empty(), "empty seed quiet");
         let arrival = accepted(
             &mut engine,
@@ -1082,8 +1119,6 @@ fn empty_seed_routes_first_newcomer_by_policy_both_directions() {
                 vec![fact("win-n", native, 0)],
                 "win-n",
                 cursor,
-                SwitchTarget::Cursor,
-                FreshPlacement::CursorOutputMru,
                 None,
                 None,
             ),
@@ -1099,7 +1134,7 @@ fn empty_seed_routes_first_newcomer_by_policy_both_directions() {
 
 #[test]
 fn close_all_then_new_lifetime_routes_by_policy() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for(SwitchTarget::Cursor, FreshPlacement::CursorOutputMru);
     accepted(
         &mut engine,
         &report(
@@ -1107,22 +1142,11 @@ fn close_all_then_new_lifetime_routes_by_policy() {
             vec![fact("win-a", "out-a", 0)],
             "win-a",
             None,
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
     );
-    let mut closed = report(
-        2,
-        vec![],
-        "",
-        None,
-        SwitchTarget::Cursor,
-        FreshPlacement::CursorOutputMru,
-        None,
-        None,
-    );
+    let mut closed = report(2, vec![], "", None, None, None);
     closed.closed = vec![WindowId("win-a".to_owned())];
     let empty = accepted(&mut engine, &closed);
     assert!(empty.effects.is_empty(), "close-all quiet");
@@ -1133,8 +1157,6 @@ fn close_all_then_new_lifetime_routes_by_policy() {
             vec![fact("win-n", "out-b", 900)],
             "win-n",
             Some((100, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -1149,7 +1171,7 @@ fn close_all_then_new_lifetime_routes_by_policy() {
 
 #[test]
 fn incomplete_gap_then_complete_newcomer_routes() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for(SwitchTarget::Cursor, FreshPlacement::CursorOutputMru);
     accepted(
         &mut engine,
         &report(
@@ -1157,8 +1179,6 @@ fn incomplete_gap_then_complete_newcomer_routes() {
             vec![fact("win-a", "out-a", 0)],
             "win-a",
             None,
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -1168,8 +1188,6 @@ fn incomplete_gap_then_complete_newcomer_routes() {
         vec![fact("win-a", "out-a", 0)],
         "win-a",
         None,
-        SwitchTarget::Cursor,
-        FreshPlacement::CursorOutputMru,
         None,
         None,
     );
@@ -1182,8 +1200,6 @@ fn incomplete_gap_then_complete_newcomer_routes() {
             vec![fact("win-a", "out-a", 0), fact("win-n", "out-b", 900)],
             "win-a",
             Some((100, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -1198,14 +1214,12 @@ fn incomplete_gap_then_complete_newcomer_routes() {
 
 #[test]
 fn initial_incomplete_then_first_complete_stays_native_then_later_routes() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for(SwitchTarget::Cursor, FreshPlacement::CursorOutputMru);
     let mut partial = report(
         1,
         vec![fact("win-a", "out-a", 0)],
         "win-a",
         Some((1000, 300)),
-        SwitchTarget::Cursor,
-        FreshPlacement::CursorOutputMru,
         None,
         None,
     );
@@ -1220,8 +1234,6 @@ fn initial_incomplete_then_first_complete_stays_native_then_later_routes() {
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
             "win-a",
             Some((1000, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -1240,8 +1252,6 @@ fn initial_incomplete_then_first_complete_stays_native_then_later_routes() {
             ],
             "win-a",
             Some((100, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -1256,34 +1266,13 @@ fn initial_incomplete_then_first_complete_stays_native_then_later_routes() {
 
 #[test]
 fn floating_newcomer_keeps_native_then_tiled_routes() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    accepted(
-        &mut engine,
-        &report(
-            1,
-            vec![],
-            "",
-            None,
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
-            None,
-            None,
-        ),
-    );
+    let mut engine = engine_for(SwitchTarget::Cursor, FreshPlacement::CursorOutputMru);
+    accepted(&mut engine, &report(1, vec![], "", None, None, None));
     let mut floated = fact("win-f", "out-b", 900);
     floated.floating = true;
     let first = accepted(
         &mut engine,
-        &report(
-            2,
-            vec![floated],
-            "win-f",
-            Some((100, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
-            None,
-            None,
-        ),
+        &report(2, vec![floated], "win-f", Some((100, 300)), None, None),
     );
     assert_eq!(homed(&first, "win-f").0, "out-b");
     let arrival = accepted(
@@ -1300,8 +1289,6 @@ fn floating_newcomer_keeps_native_then_tiled_routes() {
             ],
             "win-f",
             Some((100, 300)),
-            SwitchTarget::Cursor,
-            FreshPlacement::CursorOutputMru,
             None,
             None,
         ),
@@ -1312,8 +1299,14 @@ fn floating_newcomer_keeps_native_then_tiled_routes() {
 #[test]
 fn rebind_baseline_quiet_then_later_newcomer_routes() {
     let mut engine = seeded_disagreement(FreshPlacement::CursorOutputMru);
-    let mut rebind = report(
-        1,
+    rebind(
+        &mut engine,
+        "adapter-2",
+        SwitchTarget::Cursor,
+        FreshPlacement::CursorOutputMru,
+    );
+    let mut rebound = report(
+        4,
         vec![
             fact("win-b1", "out-b", 800),
             fact("win-b2", "out-b", 1200),
@@ -1322,19 +1315,17 @@ fn rebind_baseline_quiet_then_later_newcomer_routes() {
         ],
         "win-a",
         Some((100, 300)),
-        SwitchTarget::Cursor,
-        FreshPlacement::CursorOutputMru,
         None,
         None,
     );
-    rebind.adapter_incarnation = "adapter-2".to_owned();
-    rebind.request_id = "req-r1".to_owned();
-    let first = accepted(&mut engine, &rebind);
+    rebound.adapter_incarnation = "adapter-2".to_owned();
+    rebound.core_generation = engine.core_generation().to_owned();
+    let first = accepted(&mut engine, &rebound);
     assert_eq!(homed(&first, "win-c").0, "out-b");
     assert!(first.effects.is_empty(), "rebind baseline quiet");
     assert_eq!(homed(&first, "win-a").0, "out-a");
     let mut later = report(
-        2,
+        5,
         vec![
             fact("win-b1", "out-b", 800),
             fact("win-b2", "out-b", 1200),
@@ -1344,15 +1335,11 @@ fn rebind_baseline_quiet_then_later_newcomer_routes() {
         ],
         "win-a",
         Some((100, 300)),
-        SwitchTarget::Cursor,
-        FreshPlacement::CursorOutputMru,
         None,
         None,
     );
     later.adapter_incarnation = "adapter-2".to_owned();
-    later.request_id = "req-r2".to_owned();
-    later.observation_seq = 2;
-    later.request_seq = 2;
+    later.core_generation = engine.core_generation().to_owned();
     let arrival = accepted(&mut engine, &later);
     assert_eq!(homed(&arrival, "win-d").0, "out-a");
     assert!(

@@ -460,10 +460,9 @@ pub(crate) fn screen() -> ScreenReport {
         output: OutputId("out-a".to_owned()),
         full_rect: Some(rect(0, 0, 800, 600)),
         work_area: Some(rect(0, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary: true,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -505,7 +504,6 @@ pub(crate) fn report_with_screens(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -513,7 +511,6 @@ pub(crate) fn report_with_screens(
         request_id: format!("req-{request_seq}"),
         command_seq: None,
         command: None,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens,
         windows,
         views: vec![ScreenView {
@@ -524,26 +521,15 @@ pub(crate) fn report_with_screens(
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: String::new(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
@@ -587,6 +573,30 @@ pub(crate) fn accepted(
     }
 }
 
+fn rebind(engine: &mut WorldEngine, adapter: &str) {
+    let handshake = engine.handshake(&crate::connection::HandshakeRequest {
+        adapter: adapter.to_owned(),
+        request: "reconnect-1".to_owned(),
+        application_identity: crate::connection::ApplicationIdentity {
+            app_id: None,
+            executable: None,
+            process_id: None,
+        },
+        capabilities: crate::connection::HostCapabilities::without_native_identity(),
+    });
+    let generation = handshake.generation.expect("rebound generation");
+    let settings = engine
+        .handle_settings(&crate::connection::SettingsRequest {
+            adapter: adapter.to_owned(),
+            generation,
+            request: "settings-1".to_owned(),
+            revision: 0,
+            values: Vec::new(),
+        })
+        .expect("initial settings");
+    assert_eq!(settings.status, crate::connection::SettingsStatus::Accepted);
+}
+
 pub(crate) fn frame_row(
     reply: &crate::world_report::WorldReply,
     window: &str,
@@ -601,7 +611,7 @@ pub(crate) fn frame_row(
 
 #[test]
 fn engine_suppresses_stable_clamp_and_clears_on_exact_match() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -686,7 +696,7 @@ fn engine_rearms_when_staged_fact_changed_after_mismatched_readback() {
     // fact in the same report is already a different short frame. Publish
     // must stay controlled (no stable clamp, no backoff), then converge on
     // exact arrival and still clamp a genuinely re-proven short pair.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -783,7 +793,7 @@ fn engine_rearms_when_staged_fact_changed_after_mismatched_readback() {
 
 #[test]
 fn engine_transient_retry_follows_reported_time() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -853,7 +863,7 @@ fn engine_transient_retry_follows_reported_time() {
 
 #[test]
 fn engine_ignores_attempts_for_minimized_unknown_and_unreadable() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -927,7 +937,7 @@ fn engine_ignores_attempts_for_minimized_unknown_and_unreadable() {
 
 #[test]
 fn engine_changed_dpi_never_suppresses_and_close_prunes() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1000,7 +1010,7 @@ fn engine_changed_dpi_never_suppresses_and_close_prunes() {
 
 #[test]
 fn engine_replacement_lifetime_does_not_inherit_suppression() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1062,7 +1072,7 @@ fn engine_replacement_lifetime_does_not_inherit_suppression() {
 fn engine_withholds_float_token_while_suppressed() {
     use crate::boundary::CoreCommand;
     use crate::world_report::WorldCommand;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -1168,7 +1178,7 @@ fn exact_clear_then_complete_absence_prunes_consumed_watermark() {
     // absence without explicit close must still prune the watermark —
     // `reconcile_members` drops complete-inventory absences — rather
     // than leaking it keyed on a dead lifetime.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1238,7 +1248,7 @@ fn replayed_attempt_after_exact_clear_does_not_resurrect_clamp() {
     // clears the lane; re-observing R while redelivering the SAME old
     // attempt (lost-ack replay) must not re-insert the clamp: the reply
     // stays controlled so the fresh deviation may reapply.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1317,7 +1327,7 @@ fn stale_pair_redelivery_does_not_clobber_newer_authority() {
     // A newer different-pair attempt consumed at ms=2000 establishes the
     // live authority; redelivering the older (D, R) attempt from ms=1000
     // must leave that authority intact.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1427,7 +1437,7 @@ pub(crate) fn learned_of(engine: &WorldEngine, window: &str) -> (Option<i32>, Op
 #[test]
 fn learned_growth_changes_target_layout_and_converges() {
     use super::world_frames::learnable_growth;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -1503,7 +1513,7 @@ fn learned_async_clamp_with_exact_readback_still_converges() {
     // asynchronously at a larger stable size. The staged fact is the later
     // stable observation and must own completion/suppression, not the
     // premature readback; the stable growth still proves a floor.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -1568,7 +1578,7 @@ fn learned_async_clamp_heavy_layout_converges_without_rewrites() {
     // Heavily tiled production shape (ten managed windows in the dogfood
     // log, six tiled on one output with small tiles): the async clamp still
     // learns the floor and the next layout stops rewriting.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let facts: Vec<WindowFact> = (1..=6)
         .map(|i| fact(&format!("w{i}"), Some(rect(0, 0, 40, 90))))
         .collect();
@@ -1641,7 +1651,7 @@ fn learned_async_overconstrained_pair_holds_stable_without_rewrites() {
     // Impossible fit: both windows prove floors whose sum overflows the
     // 800-wide work area. The allocator keeps proportional targets and the
     // stable mismatched pair suppresses instead of rewriting forever.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -1739,7 +1749,7 @@ fn inverse_fact_at_target_with_mismatched_readback_clears_without_learning() {
         )
         .is_none()
     );
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -1781,7 +1791,7 @@ fn inverse_fact_at_target_with_mismatched_readback_clears_without_learning() {
 fn async_clockless_or_dpi_changed_never_learns() {
     // Freshness gate: the async shape still needs a freshness stamp and a
     // stable DPI basis, or the stable size proves nothing portable.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -1815,7 +1825,7 @@ fn async_clockless_or_dpi_changed_never_learns() {
     );
     assert!(engine.learned_mins.is_empty());
     // Same async shape across a DPI change: neither learns nor clamps.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -1855,7 +1865,7 @@ fn async_clockless_or_dpi_changed_never_learns() {
 
 #[test]
 fn learned_single_axis_only_pins_grown_axis() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -1895,7 +1905,7 @@ fn learned_both_axes_record_even_when_height_overflows_work_area() {
     let target = rect(400, 0, 400, 560);
     let grown = rect(400, 0, 520, 620);
     assert_eq!(learnable_growth(&target, &grown), (Some(520), Some(620)));
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -1954,7 +1964,7 @@ fn learned_rejects_origin_mismatch_shrink_and_equal() {
     );
     assert_eq!(learnable_growth(&target, &target), (None, None));
     // Engine never learns position drift even with a readable clamp pair.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -1990,7 +2000,7 @@ fn learned_rejects_origin_mismatch_shrink_and_equal() {
 
 #[test]
 fn learned_ignores_dpi_refused_threw() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2037,7 +2047,7 @@ fn learned_ignores_dpi_refused_threw() {
 #[test]
 fn learned_ignores_unreadable_float_overlay_and_gap() {
     // Unreadable post-write proof never learns.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2146,7 +2156,7 @@ fn learned_ignores_unreadable_float_overlay_and_gap() {
 
 #[test]
 fn learned_replay_after_clear_does_not_relearn() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2211,7 +2221,7 @@ fn learned_replay_after_clear_does_not_relearn() {
 
 #[test]
 fn learned_survives_pair_change_but_prunes_on_close_departure_incarnation() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2288,7 +2298,7 @@ fn learned_survives_pair_change_but_prunes_on_close_departure_incarnation() {
     );
     assert!(engine.learned_mins.is_empty());
     // Explicit close prunes on a fresh engine.
-    let mut engine2 = WorldEngine::new("gen-1").expect("generation");
+    let mut engine2 = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine2,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2332,7 +2342,7 @@ fn learned_survives_pair_change_but_prunes_on_close_departure_incarnation() {
     );
     assert!(engine2.learned_mins.is_empty());
     // Incarnation reset prunes on a fresh engine.
-    let mut engine3 = WorldEngine::new("gen-1").expect("generation");
+    let mut engine3 = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine3,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2364,7 +2374,9 @@ fn learned_survives_pair_change_but_prunes_on_close_departure_incarnation() {
     );
     assert!(!engine3.learned_mins.is_empty());
     let mut reboot = report(3, two_facts(), vec![], vec![], 2000, true);
+    rebind(&mut engine3, "adapter-2");
     reboot.adapter_incarnation = "adapter-2".to_owned();
+    reboot.core_generation = engine3.core_generation().to_owned();
     accepted(&mut engine3, &reboot);
     assert!(engine3.learned_mins.is_empty());
 }
@@ -2372,7 +2384,7 @@ fn learned_survives_pair_change_but_prunes_on_close_departure_incarnation() {
 #[test]
 fn learned_max_contradiction_keeps_declared_pair() {
     use crate::size_hints::WindowSizeHints;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2428,7 +2440,7 @@ fn learned_smaller_stable_observation_clears_floor_without_fight() {
     // A racing enlargement must not become a lifelong constraint: a later
     // stable eligible observation smaller than the floor disproves that
     // axis. The next layout drops the floor with no suppression fight.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2505,7 +2517,7 @@ fn learned_stale_replay_cannot_block_fresh_smaller_counterevidence() {
     // proof: it must not veto an observation-only smaller fact that
     // disproves the floor. Undercutting targets and refused setters only
     // block when the attempt itself is fresh.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2570,7 +2582,7 @@ fn learned_stale_refused_and_clockless_replays_cannot_block_clearing() {
     // redelivered refusal is a transient preimage replay, and a zero-clock
     // attempt carries no ordering claim, so neither blocks fresh smaller
     // counter-evidence. A fresh refusal still retains (pinned elsewhere).
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2638,7 +2650,7 @@ fn learned_stale_refused_and_clockless_replays_cannot_block_clearing() {
         ScopeAuthority::Controlled
     );
     // Clockless refusal: no ordering claim, so it never vetoes either.
-    let mut engine2 = WorldEngine::new("gen-1").expect("generation");
+    let mut engine2 = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine2,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2698,7 +2710,7 @@ fn learned_ignores_veto_table_flags() {
     // Compact veto table: maximized, sticky, fit-excluded, fixed-auto and
     // fixed-suppress facts never learn, even with corroborated growth.
     // (Minimized, floating and fullscreen ride the gap test above.)
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2746,7 +2758,7 @@ fn learned_ignores_veto_table_flags() {
 fn learned_refused_attempt_does_not_invalidate() {
     // A refused write leaves a transient staged preimage, not external
     // counter-evidence: the floor survives while the transient lane holds.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2816,7 +2828,7 @@ fn learned_max_change_suppresses_without_clearing_and_restores_without_relearn()
     // target follows the declared pair, and lifting the max restores the
     // floor with no new growth proof. No clear/relearn loop either way.
     use crate::size_hints::WindowSizeHints;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2898,7 +2910,7 @@ fn learned_max_change_suppresses_without_clearing_and_restores_without_relearn()
 fn learned_zero_clock_attempt_never_learns() {
     // No freshness stamp means no ordering claim: even corroborated growth
     // never learns, while the clamp lane still suppresses the stable pair.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -2940,7 +2952,7 @@ fn learned_declared_stronger_min_wins() {
     // A declared minimum stronger than the floor wins the merge: the
     // learned bound stays retained, but the target follows the declared min.
     use crate::size_hints::WindowSizeHints;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -3000,7 +3012,7 @@ fn learned_declared_stronger_min_wins() {
 fn learned_float_excursion_preserves_and_reapplies() {
     // A float excursion never erases the floor: the bound survives the
     // exception rows and applies again once the lifetime re-tiles.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -3080,7 +3092,7 @@ fn shrink(rect: Rect, dw: i32) -> Rect {
 
 #[test]
 fn burst_two_attempt_cap_holds_despite_redrift() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -3164,7 +3176,7 @@ fn burst_two_attempt_cap_holds_despite_redrift() {
 
 #[test]
 fn burst_quiet_stability_rearms() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -3247,7 +3259,7 @@ fn burst_quiet_stability_rearms() {
 
 #[test]
 fn burst_layout_target_change_rearms() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -3303,7 +3315,7 @@ fn burst_layout_target_change_rearms() {
 
 #[test]
 fn burst_zero_clock_never_time_rearms() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -3358,7 +3370,7 @@ fn burst_zero_clock_never_time_rearms() {
 
 #[test]
 fn burst_stale_redelivery_does_not_consume_budget() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -3431,7 +3443,7 @@ fn burst_stale_redelivery_does_not_consume_budget() {
 
 #[test]
 fn burst_sibling_shares_unaffected() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, two_facts(), vec![], vec![], 0, true),
@@ -3500,7 +3512,7 @@ fn burst_sibling_shares_unaffected() {
 
 #[test]
 fn burst_close_prunes_budget() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -3574,7 +3586,7 @@ fn burst_close_prunes_budget() {
 fn burst_float_attempts_never_acquire_tiled_budget() {
     use crate::boundary::CoreCommand;
     use crate::world_report::WorldCommand;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -3661,7 +3673,7 @@ fn burst_accepted_exact_readback_spends_budget() {
     // landed exactly at target while the later staged fact holds the
     // app-pulled size. The accepted attempt spends burst budget like any
     // other setter.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -3733,7 +3745,7 @@ fn burst_accepted_exact_readback_spends_budget() {
 fn burst_exact_echo_then_redrift_preserves_budget() {
     // An exact target echo refreshes continuity without resetting the
     // count; a fast redrift inside the burst preserves it too.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -3875,7 +3887,7 @@ fn burst_observation_gap_never_manufactures_quiet() {
     // Minimized then unreadable gaps break continuity (timestamp clears)
     // without spending budget; resuming on a changed frame thousands of
     // milliseconds later proves no quiet, so the count survives.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(

@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply, TiledKind};
 use crate::directional::{Direction, OutputId, SameAxisMove, WindowId, WorkspaceId};
 use crate::engine::Engine;
-use crate::ids::{CorrelationId, OwnerId};
+use crate::ids::CorrelationId;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::world_engine::{
@@ -270,7 +270,7 @@ impl WorldEngine {
             };
         };
         let (Some(owner), Some(correlation)) = (
-            OwnerId::parse(&report.owner),
+            self.connection_owner.clone(),
             CorrelationId::parse(&report.request_id),
         ) else {
             return CommandApplied::Rejected {
@@ -799,9 +799,21 @@ impl WorldEngine {
                 self.note_command(command_seq);
                 return CommandApplied::NoEffect;
             };
-            let (Some(work), gap) = (screen.work_area, screen.gap) else {
+            let Some(work) = screen.work_area else {
                 self.command_result = Some(CommandResult::Directional {
                     outcome: DirectionalOutcome::MoveFloatRefusedUnknownOutput,
+                    target: None,
+                    rect: None,
+                    cause: None,
+                });
+                self.note_command(command_seq);
+                return CommandApplied::NoEffect;
+            };
+            let Some(gap) = Self::scale_once(self.gap_setting(), screen.scale) else {
+                // Unscalable geometry refuses without mutation, never a
+                // clamped gap.
+                self.command_result = Some(CommandResult::Directional {
+                    outcome: DirectionalOutcome::MoveFloatRefusedInvalidGeometry,
                     target: None,
                     rect: None,
                     cause: None,
@@ -1148,7 +1160,7 @@ impl WorldEngine {
             };
         }
         let (Some(owner), Some(correlation)) = (
-            OwnerId::parse(&report.owner),
+            self.connection_owner.clone(),
             CorrelationId::parse(&report.request_id),
         ) else {
             return CommandApplied::Rejected {
@@ -1391,11 +1403,15 @@ impl WorldEngine {
                 };
             }
         };
-        let owner = report.owner.clone();
-        let (Some(owner), Some(correlation)) = (
-            OwnerId::parse(&owner),
-            CorrelationId::parse(&report.request_id),
-        ) else {
+        let Some(owner) = self.connection_owner.clone() else {
+            return CommandApplied::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: MSG_SNAPSHOT,
+            };
+        };
+        let (Some(owner), Some(correlation)) =
+            (Some(owner), CorrelationId::parse(&report.request_id))
+        else {
             return CommandApplied::Rejected {
                 kind: KIND_SNAPSHOT,
                 message: MSG_SNAPSHOT,

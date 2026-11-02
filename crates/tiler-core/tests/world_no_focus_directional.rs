@@ -19,15 +19,14 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: tiler_core::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -62,7 +61,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -70,31 +68,19 @@ fn report(
         request_id: format!("req-{seq}"),
         command_seq,
         command,
-        workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens,
         windows,
         views: vec![],
         closed: vec![],
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: action_foreground.map(|output| OutputId(output.to_owned())),
         action_cached: None,
         action_outputs: vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())],
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -128,7 +114,7 @@ fn focus_targets(reply: &tiler_core::world_report::WorldReply) -> Vec<String> {
 }
 
 fn two_outputs() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true), screen("out-b", 800, false)]
+    vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
 fn four_windows() -> Vec<WindowFact> {
@@ -151,7 +137,7 @@ fn no_focus_journey_focuses_remembered_then_converges() {
     // naming win-b1 after report 3) cannot win because win-b1 is filtered
     // as a non-edge candidate. The follow-up observation of the new focus
     // converges without minting another effect.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = two_outputs();
     accepted(
         &mut engine,
@@ -231,8 +217,8 @@ fn no_focus_journey_focuses_remembered_then_converges() {
 fn no_focus_noop_journey_stays_quiet() {
     // Single output: losing focus then pressing into the void retains
     // without effects, and the follow-up observation stays quiet too.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![screen("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![screen("out-a", 0)];
     let windows = || vec![fact("win-a1", "out-a", 10), fact("win-a2", "out-a", 100)];
     accepted(
         &mut engine,

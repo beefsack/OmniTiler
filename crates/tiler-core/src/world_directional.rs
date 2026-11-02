@@ -670,15 +670,14 @@ pub(crate) mod tests {
 
     // --- Engine integration: world-owned directional commands. ---
 
-    pub(crate) fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+    pub(crate) fn screen(output: &str, x: i32) -> ScreenReport {
         ScreenReport {
             output: OutputId(output.to_owned()),
             full_rect: Some(rect(x, 0, 800, 600)),
             work_area: Some(rect(x, 0, 800, 560)),
-            gap: 8,
-            outer_gap: 0,
             complete: true,
-            primary,
+            scale: 1.0,
+            identity: crate::world_report::OutputIdentity::unknown(),
         }
     }
 
@@ -714,7 +713,6 @@ pub(crate) mod tests {
     ) -> WorldReport {
         WorldReport {
             contract_version: WORLD_CONTRACT_VERSION,
-            owner: "owner-a".to_owned(),
             adapter_incarnation: "adapter-1".to_owned(),
             core_generation: "gen-1".to_owned(),
             observation_seq,
@@ -722,7 +720,6 @@ pub(crate) mod tests {
             request_id: format!("req-{request_seq}"),
             command_seq,
             command,
-            workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
             screens,
             windows,
             views: views
@@ -733,27 +730,14 @@ pub(crate) mod tests {
                 })
                 .collect(),
             closed: Vec::new(),
-            host_owned_workspace_domains: false,
-            equal_workspace_count: false,
             // Core regression builders opt into the automatic birth-clear
             // capability explicitly: production adapters carry their own
             // value (KDE true, Windows/macOS false) and these tests pin the
             // enabled lane. Disabled behavior is pinned per-test by
             // overriding this back to false.
-            birth_clear: true,
             native: Vec::new(),
-            fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-            migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-            anchor_fallback: crate::admission::AnchorFallback::default(),
-            no_space_result: crate::admission::NoSpaceResult::default(),
-            born_maximized: crate::born_maximized::BornMaximized::default(),
-            switch_target: crate::cursor_targeting::SwitchTarget::default(),
-            fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-            focus_follows_cursor: false,
-            cursor_warp: false,
             cursor: None,
             cursor_hit: None,
-            default_tiled: true,
             focused_global: focused.to_owned(),
             action_foreground: None,
             action_cached: None,
@@ -768,6 +752,8 @@ pub(crate) mod tests {
             clear_attempts: Vec::new(),
             creation_attempts: Vec::new(),
             presentation: crate::world_report::PresentationIngress::disabled(),
+            primary_output: None,
+            held_screens: Vec::new(),
         }
     }
 
@@ -816,7 +802,7 @@ pub(crate) mod tests {
             &report(
                 1,
                 1,
-                vec![screen("out-a", 0, true)],
+                vec![screen("out-a", 0)],
                 vec![
                     float_fact("win-subject", "out-a", 100, 100),
                     float_fact("win-target", "out-a", 300, 100),
@@ -837,7 +823,7 @@ pub(crate) mod tests {
             &report(
                 seq,
                 seq,
-                vec![screen("out-a", 0, true)],
+                vec![screen("out-a", 0)],
                 vec![
                     float_fact("win-subject", "out-a", 100, 100),
                     float_fact("win-target", "out-a", 300, 100),
@@ -850,7 +836,7 @@ pub(crate) mod tests {
 
     #[test]
     fn float_focus_hit_emits_effect_and_applied_result() {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         bootstrap_pair(&mut engine);
         let reply = directional(
             &mut engine,
@@ -885,7 +871,7 @@ pub(crate) mod tests {
 
     #[test]
     fn float_focus_miss_retains_and_float_move_authorizes_bounded_half() {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         bootstrap_pair(&mut engine);
         // Left of the leftmost float: no candidate, focus retains.
         let reply = directional(
@@ -928,13 +914,13 @@ pub(crate) mod tests {
 
     #[test]
     fn automatic_float_and_fullscreen_fences_refuse_without_mutation() {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         accepted(
             &mut engine,
             &report(
                 1,
                 1,
-                vec![screen("out-a", 0, true)],
+                vec![screen("out-a", 0)],
                 vec![
                     WindowFact {
                         floating: true,
@@ -957,7 +943,7 @@ pub(crate) mod tests {
                 &report(
                     seq,
                     seq,
-                    vec![screen("out-a", 0, true)],
+                    vec![screen("out-a", 0)],
                     vec![
                         WindowFact {
                             floating: true,
@@ -1084,13 +1070,13 @@ pub(crate) mod tests {
         // identity with the desire as its proof-to-come. Ordinary
         // unsolicited sticky frame writes stay prohibited: rows without a
         // `frame_operation` token authorize nothing.
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         accepted(
             &mut engine,
             &report(
                 1,
                 1,
-                vec![screen("out-a", 0, true)],
+                vec![screen("out-a", 0)],
                 vec![
                     WindowFact {
                         floating: true,
@@ -1108,7 +1094,7 @@ pub(crate) mod tests {
             &report(
                 2,
                 2,
-                vec![screen("out-a", 0, true)],
+                vec![screen("out-a", 0)],
                 vec![
                     WindowFact {
                         floating: true,
@@ -1149,13 +1135,13 @@ pub(crate) mod tests {
         // Sticky homed on one workspace but shown on another routes the
         // directional policy in the displayed (current) view: candidates
         // come from the displayed workspace, never the home one.
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let first = accepted(
             &mut engine,
             &report(
                 1,
                 1,
-                vec![screen("out-a", 0, true)],
+                vec![screen("out-a", 0)],
                 vec![
                     WindowFact {
                         floating: true,
@@ -1183,7 +1169,7 @@ pub(crate) mod tests {
             &report_full(
                 2,
                 2,
-                vec![screen("out-a", 0, true)],
+                vec![screen("out-a", 0)],
                 vec![
                     WindowFact {
                         floating: true,
@@ -1209,7 +1195,7 @@ pub(crate) mod tests {
             &report_full(
                 3,
                 3,
-                vec![screen("out-a", 0, true)],
+                vec![screen("out-a", 0)],
                 vec![
                     WindowFact {
                         floating: true,
@@ -1270,13 +1256,13 @@ pub(crate) mod tests {
         // Tiled directional moves stay world-owned with a single spent
         // follow-focus effect on the mover: the adapter verifies the
         // foreground for its snap chain and never actuates twice.
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         accepted(
             &mut engine,
             &report(
                 1,
                 1,
-                vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+                vec![screen("out-a", 0), screen("out-b", 800)],
                 vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 900)],
                 None,
                 None,
@@ -1287,7 +1273,7 @@ pub(crate) mod tests {
             &report(
                 2,
                 2,
-                vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+                vec![screen("out-a", 0), screen("out-b", 800)],
                 vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 900)],
                 Some(11),
                 Some(WorldCommand::MoveDirectional {
@@ -1330,13 +1316,13 @@ pub(crate) mod tests {
     fn cross_output_floats_never_match_and_tiled_paths_stay_world_owned() {
         // Physical output vs membership home preserved: a sticky on
         // out-a never matches a float homed on out-b.
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         accepted(
             &mut engine,
             &report(
                 1,
                 1,
-                vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+                vec![screen("out-a", 0), screen("out-b", 800)],
                 vec![
                     WindowFact {
                         floating: true,
@@ -1354,7 +1340,7 @@ pub(crate) mod tests {
             &report(
                 2,
                 2,
-                vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+                vec![screen("out-a", 0), screen("out-b", 800)],
                 vec![
                     WindowFact {
                         floating: true,
@@ -1382,7 +1368,7 @@ pub(crate) mod tests {
             &report(
                 3,
                 3,
-                vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+                vec![screen("out-a", 0), screen("out-b", 800)],
                 vec![
                     WindowFact {
                         floating: true,

@@ -64,26 +64,24 @@
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     FrameSetter, MemberAttempt, NativeCreationAttempt, NativeObservation, NativeOccupancy,
-    ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION, WorldCommand, WorldReport,
+    ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION, WorkspaceRef, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: tiler_core::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -110,6 +108,10 @@ fn native_obs(output: &str, order: &[&str], current: &str) -> NativeObservation 
             })
             .collect(),
     }
+}
+
+fn native_id(value: &str) -> tiler_core::ids::NativeWorkspaceId {
+    tiler_core::ids::NativeWorkspaceId::parse(value).expect("valid native id")
 }
 
 fn fact(window: &str, output: &str, x: i32, native: &str) -> tiler_core::world_report::WindowFact {
@@ -145,7 +147,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -153,21 +154,11 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: WorkspaceMode::PerOutputLocal,
         screens,
         windows: windows.clone(),
         views: vec![],
         closed: vec![],
-        host_owned_workspace_domains: true,
-        equal_workspace_count: false,
-        birth_clear: false,
         native,
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        default_tiled: true,
         focused_global: windows
             .first()
             .map(|f| f.window.0.clone())
@@ -175,13 +166,11 @@ fn report(
         action_foreground: None,
         action_cached: None,
         action_outputs: vec![],
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         monotonic_ms: 0,
@@ -205,7 +194,7 @@ fn accepted(
 }
 
 fn two_screens() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true), screen("out-b", 800, false)]
+    vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
 fn output_view(reply: &tiler_core::world_report::WorldReply, output: &str) -> Option<String> {
@@ -220,7 +209,7 @@ fn output_view(reply: &tiler_core::world_report::WorldReply, output: &str) -> Op
 /// out-b, returning the engine plus the migrated logical id, the refill
 /// logical id and its bound native, and the retained operation ids.
 fn migrate_setup() -> (WorldEngine, String, String, String, String, String, String) {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -416,12 +405,18 @@ fn known_surviving_source_switch_settles_with_switch_winning() {
                     target_output: OutputId("out-b".to_owned()),
                     target_workspace: migrated.clone(),
                     setter: FrameSetter::Accepted,
-                    pre: None,
-                    post: None,
-                    baseline: None,
-                    native_pre: Some(SB1.to_owned()),
-                    native_post: Some(SB_NEW.to_owned()),
-                    native_baseline: Some(SB1.to_owned()),
+                    pre: Some(WorkspaceRef::Native {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: native_id(SB1),
+                    }),
+                    post: Some(WorkspaceRef::Native {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: native_id(SB_NEW),
+                    }),
+                    baseline: Some(WorkspaceRef::Native {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: native_id(SB1),
+                    }),
                     attempt_ms: 4,
                 },
                 ViewAttempt {
@@ -429,12 +424,18 @@ fn known_surviving_source_switch_settles_with_switch_winning() {
                     target_output: OutputId("out-a".to_owned()),
                     target_workspace: refill_ws.clone(),
                     setter: FrameSetter::Accepted,
-                    pre: None,
-                    post: None,
-                    baseline: None,
-                    native_pre: Some(UA1.to_owned()),
-                    native_post: Some(refill_native.clone()),
-                    native_baseline: Some(UA1.to_owned()),
+                    pre: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: native_id(UA1),
+                    }),
+                    post: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: native_id(&refill_native),
+                    }),
+                    baseline: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: native_id(UA1),
+                    }),
                     attempt_ms: 4,
                 },
             ],
@@ -553,7 +554,8 @@ fn ask5_late_send_with_intermediate_readings_settles_transfer() {
     // (Same-output: cross-output sends reconcile through a different
     // session path; the stale-reading settlement rule is output-agnostic.)
     for with_proof in [false, true] {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine =
+            WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
         let first = accepted(
             &mut engine,
             &report(
@@ -621,10 +623,14 @@ fn ask5_late_send_with_intermediate_readings_settles_transfer() {
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target_ws.clone(),
                 setter: FrameSetter::Accepted,
-                pre: None,
-                post: None,
-                native_pre: Some(UA1.to_owned()),
-                native_post: Some(target_native.clone()),
+                pre: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(UA1),
+                }),
+                post: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(&target_native),
+                }),
                 attempt_ms: 3,
             }]
         } else {
@@ -711,7 +717,7 @@ fn host_owned_ignores_conflicting_logical_and_proves_via_native() {
     // Capability lane: host-owned ignores logical attempt fields and
     // translates only natives. A conflicting logical pre/post (wrong
     // homing) must not veto a native proof that names the target.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -794,10 +800,14 @@ fn host_owned_ignores_conflicting_logical_and_proves_via_native() {
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target_ws.clone(),
                 setter: FrameSetter::Accepted,
-                pre: Some((OutputId("out-a".to_owned()), "ws-wrong".to_owned())),
-                post: Some((OutputId("out-a".to_owned()), "ws-wrong".to_owned())),
-                native_pre: Some(UA1.to_owned()),
-                native_post: Some(target_native.clone()),
+                pre: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(UA1),
+                }),
+                post: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(&target_native),
+                }),
                 attempt_ms: 3,
             }],
             vec![],
@@ -816,7 +826,7 @@ fn host_owned_unknown_native_holds_despite_conflicting_logical() {
     // Unknown native (unmapped id) never proves: with no readable native
     // pre/post the flight holds for later proof, and a conflicting logical
     // row must not settle it either (single native-only lane).
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -890,10 +900,11 @@ fn host_owned_unknown_native_holds_despite_conflicting_logical() {
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target_ws.clone(),
                 setter: FrameSetter::Accepted,
-                pre: Some((OutputId("out-a".to_owned()), target_ws.clone())),
-                post: Some((OutputId("out-a".to_owned()), target_ws.clone())),
-                native_pre: None,
-                native_post: Some("space-99".to_owned()),
+                pre: None,
+                post: Some(WorkspaceRef::Native {
+                    output: OutputId("out-b".to_owned()),
+                    workspace: native_id("space-99"),
+                }),
                 attempt_ms: 3,
             }],
             vec![],
@@ -942,10 +953,14 @@ fn cross_output_refused_native_proves_only_with_source_homing() {
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: migrated.clone(),
                 setter: FrameSetter::Refused,
-                pre: None,
-                post: None,
-                native_pre: Some(UA1.to_owned()),
-                native_post: Some(UA1.to_owned()),
+                pre: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(UA1),
+                }),
+                post: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(UA1),
+                }),
                 attempt_ms: 3,
             }],
             vec![],
@@ -968,7 +983,7 @@ fn accepted_target_native_post_with_different_known_staged_homing_holds() {
     // different known staged homing as outside input on the same output:
     // the stale-proof shape holds the flight (ambiguity latch) rather than
     // fighting the user or fabricating external settlement.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1063,10 +1078,14 @@ fn accepted_target_native_post_with_different_known_staged_homing_holds() {
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target_ws.clone(),
                 setter: FrameSetter::Accepted,
-                pre: None,
-                post: None,
-                native_pre: Some(UA1.to_owned()),
-                native_post: Some(target_native.clone()),
+                pre: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(UA1),
+                }),
+                post: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(&target_native),
+                }),
                 attempt_ms: 3,
             }],
             vec![],
@@ -1135,12 +1154,18 @@ fn exact_old_source_listed_rewind_settles_with_fresh_adoption() {
                     target_output: OutputId("out-b".to_owned()),
                     target_workspace: migrated.clone(),
                     setter: FrameSetter::Accepted,
-                    pre: None,
-                    post: None,
-                    baseline: None,
-                    native_pre: Some(SB1.to_owned()),
-                    native_post: Some(SB_NEW.to_owned()),
-                    native_baseline: Some(SB1.to_owned()),
+                    pre: Some(WorkspaceRef::Native {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: native_id(SB1),
+                    }),
+                    post: Some(WorkspaceRef::Native {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: native_id(SB_NEW),
+                    }),
+                    baseline: Some(WorkspaceRef::Native {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: native_id(SB1),
+                    }),
                     attempt_ms: 4,
                 },
                 ViewAttempt {
@@ -1148,12 +1173,18 @@ fn exact_old_source_listed_rewind_settles_with_fresh_adoption() {
                     target_output: OutputId("out-a".to_owned()),
                     target_workspace: refill_ws.clone(),
                     setter: FrameSetter::Accepted,
-                    pre: None,
-                    post: None,
-                    baseline: None,
-                    native_pre: Some(UA1.to_owned()),
-                    native_post: Some(refill_native.clone()),
-                    native_baseline: Some(UA1.to_owned()),
+                    pre: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: native_id(UA1),
+                    }),
+                    post: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: native_id(&refill_native),
+                    }),
+                    baseline: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: native_id(UA1),
+                    }),
                     attempt_ms: 4,
                 },
             ],
@@ -1253,12 +1284,18 @@ fn exact_old_source_pruned_rewind_holds_then_settles_with_fresh_adoption() {
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: migrated.clone(),
                 setter: FrameSetter::Accepted,
-                pre: None,
-                post: None,
-                baseline: None,
-                native_pre: Some(SB1.to_owned()),
-                native_post: Some(SB_NEW.to_owned()),
-                native_baseline: Some(SB1.to_owned()),
+                pre: Some(WorkspaceRef::Native {
+                    output: OutputId("out-b".to_owned()),
+                    workspace: native_id(SB1),
+                }),
+                post: Some(WorkspaceRef::Native {
+                    output: OutputId("out-b".to_owned()),
+                    workspace: native_id(SB_NEW),
+                }),
+                baseline: Some(WorkspaceRef::Native {
+                    output: OutputId("out-b".to_owned()),
+                    workspace: native_id(SB1),
+                }),
                 attempt_ms: 3,
             },
             ViewAttempt {
@@ -1266,12 +1303,18 @@ fn exact_old_source_pruned_rewind_holds_then_settles_with_fresh_adoption() {
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: refill_ws.clone(),
                 setter: FrameSetter::Accepted,
-                pre: None,
-                post: None,
-                baseline: None,
-                native_pre: Some(UA1.to_owned()),
-                native_post: Some(refill_native.clone()),
-                native_baseline: Some(UA1.to_owned()),
+                pre: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(UA1),
+                }),
+                post: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(&refill_native),
+                }),
+                baseline: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(UA1),
+                }),
                 attempt_ms: 3,
             },
         ]
@@ -1531,12 +1574,18 @@ fn fresh_row_persists_noncurrent_and_live_selection_never_adopts() {
                     target_output: OutputId("out-b".to_owned()),
                     target_workspace: migrated.clone(),
                     setter: FrameSetter::Accepted,
-                    pre: None,
-                    post: None,
-                    baseline: None,
-                    native_pre: Some(SB1.to_owned()),
-                    native_post: Some(SB_NEW.to_owned()),
-                    native_baseline: Some(SB1.to_owned()),
+                    pre: Some(WorkspaceRef::Native {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: native_id(SB1),
+                    }),
+                    post: Some(WorkspaceRef::Native {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: native_id(SB_NEW),
+                    }),
+                    baseline: Some(WorkspaceRef::Native {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: native_id(SB1),
+                    }),
                     attempt_ms: 4,
                 },
                 ViewAttempt {
@@ -1544,12 +1593,18 @@ fn fresh_row_persists_noncurrent_and_live_selection_never_adopts() {
                     target_output: OutputId("out-a".to_owned()),
                     target_workspace: refill_ws.clone(),
                     setter: FrameSetter::Accepted,
-                    pre: None,
-                    post: None,
-                    baseline: None,
-                    native_pre: Some(UA1.to_owned()),
-                    native_post: Some(refill_native.clone()),
-                    native_baseline: Some(UA1.to_owned()),
+                    pre: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: native_id(UA1),
+                    }),
+                    post: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: native_id(&refill_native),
+                    }),
+                    baseline: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: native_id(UA1),
+                    }),
                     attempt_ms: 4,
                 },
             ],
@@ -1622,12 +1677,18 @@ fn redelivered_attempts_after_settle_are_ignored() {
                         target_output: OutputId("out-b".to_owned()),
                         target_workspace: migrated.clone(),
                         setter: FrameSetter::Accepted,
-                        pre: None,
-                        post: None,
-                        baseline: None,
-                        native_pre: Some(SB1.to_owned()),
-                        native_post: Some(SB_NEW.to_owned()),
-                        native_baseline: Some(SB1.to_owned()),
+                        pre: Some(WorkspaceRef::Native {
+                            output: OutputId("out-b".to_owned()),
+                            workspace: native_id(SB1),
+                        }),
+                        post: Some(WorkspaceRef::Native {
+                            output: OutputId("out-b".to_owned()),
+                            workspace: native_id(SB_NEW),
+                        }),
+                        baseline: Some(WorkspaceRef::Native {
+                            output: OutputId("out-b".to_owned()),
+                            workspace: native_id(SB1),
+                        }),
                         attempt_ms: 4,
                     },
                     ViewAttempt {
@@ -1635,12 +1696,18 @@ fn redelivered_attempts_after_settle_are_ignored() {
                         target_output: OutputId("out-a".to_owned()),
                         target_workspace: refill_ws.clone(),
                         setter: FrameSetter::Accepted,
-                        pre: None,
-                        post: None,
-                        baseline: None,
-                        native_pre: Some(UA1.to_owned()),
-                        native_post: Some(refill_native.clone()),
-                        native_baseline: Some(UA1.to_owned()),
+                        pre: Some(WorkspaceRef::Native {
+                            output: OutputId("out-a".to_owned()),
+                            workspace: native_id(UA1),
+                        }),
+                        post: Some(WorkspaceRef::Native {
+                            output: OutputId("out-a".to_owned()),
+                            workspace: native_id(&refill_native),
+                        }),
+                        baseline: Some(WorkspaceRef::Native {
+                            output: OutputId("out-a".to_owned()),
+                            workspace: native_id(UA1),
+                        }),
                         attempt_ms: 4,
                     },
                 ],
@@ -1674,10 +1741,14 @@ fn redelivered_attempts_after_settle_are_ignored() {
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: migrated.clone(),
                 setter: FrameSetter::Accepted,
-                pre: None,
-                post: None,
-                native_pre: Some(UA1.to_owned()),
-                native_post: Some(SB_NEW.to_owned()),
+                pre: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(UA1),
+                }),
+                post: Some(WorkspaceRef::Native {
+                    output: OutputId("out-b".to_owned()),
+                    workspace: native_id(SB_NEW),
+                }),
                 attempt_ms: 6,
             }],
             vec![
@@ -1686,12 +1757,18 @@ fn redelivered_attempts_after_settle_are_ignored() {
                     target_output: OutputId("out-b".to_owned()),
                     target_workspace: migrated.clone(),
                     setter: FrameSetter::Accepted,
-                    pre: None,
-                    post: None,
-                    baseline: None,
-                    native_pre: Some(SB1.to_owned()),
-                    native_post: Some(SB_NEW.to_owned()),
-                    native_baseline: Some(SB1.to_owned()),
+                    pre: Some(WorkspaceRef::Native {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: native_id(SB1),
+                    }),
+                    post: Some(WorkspaceRef::Native {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: native_id(SB_NEW),
+                    }),
+                    baseline: Some(WorkspaceRef::Native {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: native_id(SB1),
+                    }),
                     attempt_ms: 6,
                 },
                 ViewAttempt {
@@ -1699,12 +1776,18 @@ fn redelivered_attempts_after_settle_are_ignored() {
                     target_output: OutputId("out-a".to_owned()),
                     target_workspace: "ws-stale".to_owned(),
                     setter: FrameSetter::Accepted,
-                    pre: None,
-                    post: None,
-                    baseline: None,
-                    native_pre: Some(UA1.to_owned()),
-                    native_post: Some(refill_native.clone()),
-                    native_baseline: Some(UA1.to_owned()),
+                    pre: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: native_id(UA1),
+                    }),
+                    post: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: native_id(&refill_native),
+                    }),
+                    baseline: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: native_id(UA1),
+                    }),
                     attempt_ms: 6,
                 },
             ],
@@ -1836,10 +1919,14 @@ fn known_source_echo_never_releases_and_refusal_keeps_backing() {
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: migrated.clone(),
                 setter: FrameSetter::Refused,
-                pre: None,
-                post: None,
-                native_pre: Some(UA1.to_owned()),
-                native_post: Some(UA1.to_owned()),
+                pre: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(UA1),
+                }),
+                post: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(UA1),
+                }),
                 attempt_ms: 3,
             }],
             vec![],
@@ -1874,7 +1961,7 @@ fn empty_migration_target_survives_lifecycle_without_backing() {
     // rounds until the backing correlates. This unit test guards the
     // survival shape at core level; the theft race needs the adapter's
     // multi-round split correlation to reproduce.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -2289,9 +2376,9 @@ const SC2: &str = "space-22";
 
 fn three_screens() -> Vec<ScreenReport> {
     vec![
-        screen("out-a", 0, true),
-        screen("out-b", 800, false),
-        screen("out-c", 1600, false),
+        screen("out-a", 0),
+        screen("out-b", 800),
+        screen("out-c", 1600),
     ]
 }
 
@@ -2301,7 +2388,7 @@ fn off_output_move_releases_source() {
     // (positive newer input on a third output, not roster absence), so
     // the migration settles to observed — and must still release the
     // source backing, since nothing remains to roll back.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let before = accepted(
         &mut engine,
         &report(
@@ -2375,7 +2462,22 @@ fn off_output_move_releases_source() {
             ],
             None,
             None,
-            vec![],
+            vec![MemberAttempt {
+                operation_id: "op-11".to_owned(),
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                target_workspace: output_view(&drained, "out-b").expect("out-b shows a workspace"),
+                setter: FrameSetter::Accepted,
+                pre: Some(WorkspaceRef::Native {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: native_id(UA1),
+                }),
+                post: Some(WorkspaceRef::Native {
+                    output: OutputId("out-c".to_owned()),
+                    workspace: native_id(SC1),
+                }),
+                attempt_ms: 12,
+            }],
             vec![],
             vec![],
         ),
@@ -2404,7 +2506,7 @@ fn deferred_release_completes_after_creation_resolves() {
     // once when the creation resolves — settling never orphans a
     // dormant binding. Two crossing migrations stage this naturally:
     // op-12's backing desire pends on op-11's source output.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(

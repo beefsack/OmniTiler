@@ -6,7 +6,6 @@
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::workspace_scope::WorkspaceMode;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     ScopeAuthority, ScreenReport, ScreenView, TransferKind, WORLD_CONTRACT_VERSION, WindowFact,
@@ -17,15 +16,14 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -83,7 +81,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -91,7 +88,6 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: WorkspaceMode::GlobalUnique,
         screens,
         windows,
         views: views
@@ -102,26 +98,15 @@ fn report(
             })
             .collect(),
         closed: vec![],
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -136,7 +121,7 @@ fn report(
 }
 
 fn two_screens() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true), screen("out-b", 800, false)]
+    vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
@@ -144,6 +129,19 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
+}
+
+fn global_unique_engine() -> WorldEngine {
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities::default(),
+        vec![(
+            "mode".to_owned(),
+            crate::connection::RawSettingValue::String("global-unique".to_owned()),
+        )],
+    )
+    .expect("generation")
 }
 
 fn view_of(reply: &crate::world_report::WorldReply, output: &str) -> Option<String> {
@@ -167,7 +165,7 @@ fn window_row<'a>(
 
 #[test]
 fn global_unique_swap_preserves_nonempty_units() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = global_unique_engine();
     let first = accepted(
         &mut engine,
         &report(1, 1, two_screens(), vec![], vec![], "", None, None),
@@ -466,7 +464,7 @@ fn sticky_float(window: &str, output: &str, x: i32) -> WindowFact {
 
 #[test]
 fn global_unique_swap_keeps_sticky_on_physical_source() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = global_unique_engine();
     let first = accepted(
         &mut engine,
         &report(1, 1, two_screens(), vec![], vec![], "", None, None),
@@ -627,7 +625,7 @@ fn global_unique_swap_sticky_only_side_keeps_both_rows() {
     // A carries tiled plus a sticky float; B carries only a sticky float
     // (rootless empty domain after stripping). Neither side may refuse,
     // and both physical outputs retain exactly one sticky row.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = global_unique_engine();
     let first = accepted(
         &mut engine,
         &report(1, 1, two_screens(), vec![], vec![], "", None, None),
@@ -713,7 +711,7 @@ fn global_unique_swap_empty_side_keeps_sticky_row() {
     // B is genuinely empty (no session at all); A carries tiled plus a
     // sticky float. The command stays accepted and the sticky rides a
     // stay derived from its own actual source session.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = global_unique_engine();
     let first = accepted(
         &mut engine,
         &report(1, 1, two_screens(), vec![], vec![], "", None, None),
@@ -801,7 +799,7 @@ fn global_unique_swap_carries_floating_side_mode_and_flights() {
     // Controlled, and both sides retain their migration flights for
     // actuation settlement. This locks the seam precondition for F2:
     // floating-target migration members must actuate rather than stall.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = global_unique_engine();
     let first = accepted(
         &mut engine,
         &report(1, 1, two_screens(), vec![], vec![], "", None, None),
@@ -870,7 +868,11 @@ fn global_unique_swap_carries_floating_side_mode_and_flights() {
         swapped
             .scopes
             .iter()
-            .find(|status| status.scope == format!("{output}/{workspace}"))
+            .find(|status| {
+                status
+                    .scope
+                    .covers_workspace(&OutputId(output.to_owned()), workspace)
+            })
             .unwrap_or_else(|| panic!("missing scope {output}/{workspace}"))
             .authority
     };
@@ -910,7 +912,7 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
 
     // A carries tiled plus a sticky float; B is genuinely empty (no
     // session), so the B-side sticky stay derives from the A source.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = global_unique_engine();
     let first = accepted(
         &mut engine,
         &report(1, 1, two_screens(), vec![], vec![], "", None, None),
@@ -1158,7 +1160,7 @@ fn global_unique_swap_occupied_current_emits_destination_remembered_focus() {
     // stale pre-command report, absent view echoes. The requested output
     // lands on the occupied target, so the reply carries one explicit
     // focus effect to that destination's remembered leaf.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = global_unique_engine();
     let first = accepted(
         &mut engine,
         &report(1, 1, two_screens(), vec![], vec![], "", None, None),
@@ -1230,7 +1232,7 @@ fn global_unique_swap_empty_current_emits_destination_remembered_focus() {
     // Empty current (out-a) swaps with the occupied other side: same stale
     // pre-command shape, absent echoes. The requested output lands on the
     // occupied target, so its remembered leaf focuses.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = global_unique_engine();
     let first = accepted(
         &mut engine,
         &report(1, 1, two_screens(), vec![], vec![], "", None, None),
@@ -1283,7 +1285,7 @@ fn global_unique_swap_empty_current_emits_destination_remembered_focus() {
 fn global_unique_swap_to_empty_stays_quiet() {
     // No-memory control: the requested output lands on the empty side, so
     // no remembered window exists and the swap stays quiet.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = global_unique_engine();
     let first = accepted(
         &mut engine,
         &report(1, 1, two_screens(), vec![], vec![], "", None, None),

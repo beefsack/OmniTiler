@@ -5,6 +5,7 @@
 //! occupied, viewed, trailing, homed, retained-flight/creation, displaced,
 //! or minimum-floor evidence retains `existence:true`.
 
+use tiler_core::connection::{HostCapabilities, RawSettingValue};
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
@@ -14,26 +15,44 @@ use tiler_core::world_report::{
     NativeObservation, NativeOccupancy, ScreenReport, WindowFact, WorldCommand, WorldReport,
 };
 
+fn engine_host_owned(mode: WorkspaceMode, equal_count: bool) -> WorldEngine {
+    let token = match mode {
+        WorkspaceMode::PerOutputLocal => "per-output-local",
+        WorkspaceMode::GlobalUnique => "global-unique",
+        WorkspaceMode::Shared => "shared",
+    };
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            host_owned: true,
+            equal_count,
+            ..Default::default()
+        },
+        vec![("mode".to_owned(), RawSettingValue::String(token.to_owned()))],
+    )
+    .expect("generation")
+}
+
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: tiler_core::world_report::OutputIdentity::unknown(),
     }
 }
 
-fn incomplete_screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn incomplete_screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         complete: false,
-        ..screen(output, x, primary)
+        ..screen(output, x)
     }
 }
 
@@ -63,15 +82,12 @@ fn report(
     screens: Vec<ScreenReport>,
     windows: Vec<WindowFact>,
     native: Vec<NativeObservation>,
-    mode: WorkspaceMode,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
     inventory_complete: bool,
-    equal_count: bool,
 ) -> WorldReport {
     WorldReport {
         contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -79,21 +95,11 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: mode,
         screens,
         windows: windows.clone(),
         views: vec![],
         closed: vec![],
-        host_owned_workspace_domains: true,
-        equal_workspace_count: equal_count,
-        birth_clear: false,
         native,
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        default_tiled: true,
         focused_global: windows
             .first()
             .map(|f| f.window.0.clone())
@@ -101,13 +107,11 @@ fn report(
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         monotonic_ms: 0,
@@ -198,7 +202,7 @@ fn logical_for(
 }
 
 fn single_screen() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true)]
+    vec![screen("out-a", 0)]
 }
 
 fn setup_four(engine: &mut WorldEngine) -> tiler_core::world_report::WorldReply {
@@ -210,18 +214,16 @@ fn setup_four(engine: &mut WorldEngine) -> tiler_core::world_report::WorldReply 
             single_screen(),
             vec![],
             vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     )
 }
 
 #[test]
 fn eligible_empty_desktop_publishes_removal_while_row_and_binding_persist() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = setup_four(&mut engine);
     assert_eq!(bound_ids(&first, "out-a").len(), 4, "four bound: {first:?}");
     assert_eq!(
@@ -239,11 +241,9 @@ fn eligible_empty_desktop_publishes_removal_while_row_and_binding_persist() {
             single_screen(),
             vec![],
             vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     let d1 = logical_for(&reply, "out-a", "d1").expect("d1 still bound");
@@ -286,7 +286,7 @@ fn eligible_empty_desktop_publishes_removal_while_row_and_binding_persist() {
 
 #[test]
 fn retirement_repeat_is_stable_with_same_identities() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     setup_four(&mut engine);
     let mk = |seq| {
         report(
@@ -295,11 +295,9 @@ fn retirement_repeat_is_stable_with_same_identities() {
             single_screen(),
             vec![],
             vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         )
     };
     let second = accepted(&mut engine, &mk(2));
@@ -322,7 +320,7 @@ fn retirement_repeat_is_stable_with_same_identities() {
 
 #[test]
 fn partial_inventory_holds_every_row() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     setup_four(&mut engine);
     let reply = accepted(
         &mut engine,
@@ -332,10 +330,8 @@ fn partial_inventory_holds_every_row() {
             single_screen(),
             vec![],
             vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
-            false,
             false,
         ),
     );
@@ -347,21 +343,19 @@ fn partial_inventory_holds_every_row() {
 
 #[test]
 fn incomplete_screen_holds_every_row() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     setup_four(&mut engine);
     let reply = accepted(
         &mut engine,
         &report(
             2,
             2,
-            vec![incomplete_screen("out-a", 0, true)],
+            vec![incomplete_screen("out-a", 0)],
             vec![],
             vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     assert!(
@@ -372,7 +366,7 @@ fn incomplete_screen_holds_every_row() {
 
 #[test]
 fn unknown_occupancy_blocks_candidate() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = setup_four(&mut engine);
     let d3 = logical_for(&first, "out-a", "d3").expect("d3 bound");
     let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
@@ -389,11 +383,9 @@ fn unknown_occupancy_blocks_candidate() {
                 Some("d1"),
                 &[Some(0), Some(0), None, Some(0)],
             )],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -410,7 +402,7 @@ fn unknown_occupancy_blocks_candidate() {
 
 #[test]
 fn occupied_desktop_blocks_candidate() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = setup_four(&mut engine);
     let d3 = logical_for(&first, "out-a", "d3").expect("d3 bound");
     let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
@@ -427,11 +419,9 @@ fn occupied_desktop_blocks_candidate() {
                 Some("d1"),
                 &[Some(0), Some(0), Some(2), Some(0)],
             )],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -448,7 +438,7 @@ fn occupied_desktop_blocks_candidate() {
 
 #[test]
 fn viewed_desktop_never_retires() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = setup_four(&mut engine);
     let d1 = logical_for(&first, "out-a", "d1").expect("d1 bound");
     let reply = accepted(
@@ -459,11 +449,9 @@ fn viewed_desktop_never_retires() {
             single_screen(),
             vec![],
             vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -475,7 +463,7 @@ fn viewed_desktop_never_retires() {
 
 #[test]
 fn unknown_current_falls_back_to_retained_view() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = setup_four(&mut engine);
     let d1 = logical_for(&first, "out-a", "d1").expect("d1 bound");
     let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
@@ -494,11 +482,9 @@ fn unknown_current_falls_back_to_retained_view() {
                 None,
                 &[Some(0), Some(0), Some(0), Some(0)],
             )],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -515,7 +501,7 @@ fn unknown_current_falls_back_to_retained_view() {
 
 #[test]
 fn known_raw_current_vetoes_despite_command_moved_view() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = setup_four(&mut engine);
     let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
     let d3 = logical_for(&first, "out-a", "d3").expect("d3 bound");
@@ -529,14 +515,12 @@ fn known_raw_current_vetoes_despite_command_moved_view() {
             single_screen(),
             vec![],
             vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d2")],
-            WorkspaceMode::PerOutputLocal,
             Some(1),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
                 workspace: d3.clone(),
             }),
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -557,7 +541,7 @@ fn known_raw_current_vetoes_despite_command_moved_view() {
 
 #[test]
 fn gesture_barrier_vetoes_every_retirement() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     setup_four(&mut engine);
     let mut barrier = report(
         2,
@@ -565,11 +549,9 @@ fn gesture_barrier_vetoes_every_retirement() {
         single_screen(),
         vec![],
         vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")],
-        WorkspaceMode::PerOutputLocal,
         None,
         None,
         true,
-        false,
     );
     barrier.gesture_barrier = true;
     let reply = accepted(&mut engine, &barrier);
@@ -581,7 +563,7 @@ fn gesture_barrier_vetoes_every_retirement() {
 
 #[test]
 fn shared_mirror_flight_vetoes_observing_projection() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::Shared, false);
     // Shared mode, `n` observed only on out-a; its logical mirrors on
     // out-b without a binding there.
     let first = accepted(
@@ -595,11 +577,9 @@ fn shared_mirror_flight_vetoes_observing_projection() {
                 empty_obs("out-a", &["v", "n", "t"], "v"),
                 empty_obs("out-b", &["v", "t"], "v"),
             ],
-            WorkspaceMode::Shared,
             None,
             None,
             true,
-            false,
         ),
     );
     let ln = logical_for(&first, "out-a", "n").expect("n bound on a");
@@ -624,11 +604,9 @@ fn shared_mirror_flight_vetoes_observing_projection() {
                 empty_obs("out-a", &["v", "n", "t"], "v"),
                 empty_obs("out-b", &["v", "t"], "v"),
             ],
-            WorkspaceMode::Shared,
             None,
             None,
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -649,14 +627,12 @@ fn shared_mirror_flight_vetoes_observing_projection() {
                 empty_obs("out-a", &["v", "n", "t"], "v"),
                 empty_obs("out-b", &["v", "t"], "v"),
             ],
-            WorkspaceMode::Shared,
             Some(1),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-b".to_owned()),
                 workspace: ln.clone(),
             }),
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -668,7 +644,7 @@ fn shared_mirror_flight_vetoes_observing_projection() {
 
 #[test]
 fn native_minimum_floor_blocks_last_two() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = accepted(
         &mut engine,
         &report(
@@ -677,11 +653,9 @@ fn native_minimum_floor_blocks_last_two() {
             single_screen(),
             vec![],
             vec![empty_obs("out-a", &["d1", "d2"], "d1")],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
@@ -693,11 +667,9 @@ fn native_minimum_floor_blocks_last_two() {
             single_screen(),
             vec![],
             vec![empty_obs("out-a", &["d1", "d2"], "d1")],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -709,7 +681,7 @@ fn native_minimum_floor_blocks_last_two() {
 
 #[test]
 fn trailing_bound_row_never_eligible() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = setup_four(&mut engine);
     // The last bound row is the trailing spare even while bound.
     let d4 = logical_for(&first, "out-a", "d4").expect("d4 bound");
@@ -721,11 +693,9 @@ fn trailing_bound_row_never_eligible() {
             single_screen(),
             vec![],
             vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -737,7 +707,7 @@ fn trailing_bound_row_never_eligible() {
 
 #[test]
 fn unbound_spare_never_eligible() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     // Occupying the last desktop appends an ordinary unbound spare.
     let first = accepted(
         &mut engine,
@@ -752,11 +722,9 @@ fn unbound_spare_never_eligible() {
                 Some("d1"),
                 &[Some(0), Some(0), Some(0), Some(1)],
             )],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -788,11 +756,9 @@ fn unbound_spare_never_eligible() {
                 Some("d1"),
                 &[Some(0), Some(0), Some(0), Some(1)],
             )],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -804,7 +770,7 @@ fn unbound_spare_never_eligible() {
 
 #[test]
 fn vanished_desktop_recycles_logical_as_trailing_spare_after_complete_absence() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = setup_four(&mut engine);
     let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
     let ring_before = ring_ids(&first, "out-a");
@@ -821,11 +787,9 @@ fn vanished_desktop_recycles_logical_as_trailing_spare_after_complete_absence() 
             single_screen(),
             vec![],
             vec![empty_obs("out-a", &["d1", "d3", "d4"], "d1")],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     assert!(
@@ -863,7 +827,7 @@ fn vanished_desktop_recycles_logical_as_trailing_spare_after_complete_absence() 
 
 #[test]
 fn vanished_middle_desktop_deletes_row_when_spare_already_exists() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     // Occupying the last desktop appends an ordinary unbound spare, so a
     // later-proven absence has a lifecycle spare without recycling.
     let first = accepted(
@@ -879,11 +843,9 @@ fn vanished_middle_desktop_deletes_row_when_spare_already_exists() {
                 Some("d1"),
                 &[Some(0), Some(0), Some(0), Some(1)],
             )],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     let spare = first
@@ -910,11 +872,9 @@ fn vanished_middle_desktop_deletes_row_when_spare_already_exists() {
                 Some("d1"),
                 &[Some(0), Some(0), Some(1)],
             )],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     let ring = ring_ids(&reply, "out-a");
@@ -948,7 +908,7 @@ fn vanished_middle_desktop_deletes_row_when_spare_already_exists() {
 
 #[test]
 fn missing_native_row_refuses_report() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     setup_four(&mut engine);
     // No observation row for the live output: nothing may retire.
     if let WorldOutcome::Accepted(reply) = engine.handle_report(&report(
@@ -957,11 +917,9 @@ fn missing_native_row_refuses_report() {
         single_screen(),
         vec![],
         vec![],
-        WorkspaceMode::PerOutputLocal,
         None,
         None,
         true,
-        false,
     )) {
         assert!(
             reply.workspaces.iter().all(|row| row.existence),
@@ -972,7 +930,7 @@ fn missing_native_row_refuses_report() {
 
 #[test]
 fn occupancy_coverage_gap_refuses_report() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     setup_four(&mut engine);
     let mut obs = empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1");
     obs.occupancy.pop();
@@ -982,11 +940,9 @@ fn occupancy_coverage_gap_refuses_report() {
         single_screen(),
         vec![],
         vec![obs],
-        WorkspaceMode::PerOutputLocal,
         None,
         None,
         true,
-        false,
     ));
     assert!(
         !matches!(outcome, WorldOutcome::Accepted(_)),
@@ -996,7 +952,7 @@ fn occupancy_coverage_gap_refuses_report() {
 
 #[test]
 fn homed_window_blocks_candidate() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = setup_four(&mut engine);
     let d3 = logical_for(&first, "out-a", "d3").expect("d3 bound");
     let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
@@ -1015,11 +971,9 @@ fn homed_window_blocks_candidate() {
                 fact
             }],
             vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -1036,7 +990,7 @@ fn homed_window_blocks_candidate() {
 
 #[test]
 fn retained_send_blocks_candidate() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = accepted(
         &mut engine,
         &report(
@@ -1050,11 +1004,9 @@ fn retained_send_blocks_candidate() {
                 Some("d1"),
                 &[Some(1), Some(0), Some(0), Some(0)],
             )],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
-            false,
         ),
     );
     let d3 = logical_for(&first, "out-a", "d3").expect("d3 bound");
@@ -1073,7 +1025,6 @@ fn retained_send_blocks_candidate() {
                 Some("d1"),
                 &[Some(1), Some(0), Some(0), Some(0)],
             )],
-            WorkspaceMode::PerOutputLocal,
             Some(1),
             Some(WorldCommand::Send {
                 window: WindowId("win-a".to_owned()),
@@ -1082,7 +1033,6 @@ fn retained_send_blocks_candidate() {
                 follow: false,
             }),
             true,
-            false,
         ),
     );
     assert_eq!(
@@ -1098,7 +1048,7 @@ fn retained_send_blocks_candidate() {
 }
 
 fn two_screens() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true), screen("out-b", 800, false)]
+    vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
 fn global_modes() -> Vec<WorkspaceMode> {
@@ -1112,7 +1062,7 @@ fn global_modes() -> Vec<WorkspaceMode> {
 #[test]
 fn global_same_id_joins_all_modes() {
     for mode in global_modes() {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = engine_host_owned(mode, false);
         let first = accepted(
             &mut engine,
             &report(
@@ -1124,11 +1074,9 @@ fn global_same_id_joins_all_modes() {
                     empty_obs("out-a", &["g1", "g2", "g3"], "g1"),
                     empty_obs("out-b", &["g1", "g2", "g3"], "g1"),
                 ],
-                mode,
                 None,
                 None,
                 true,
-                false,
             ),
         );
         let (_mode_token, la2) = (mode, logical_for(&first, "out-a", "g2"));
@@ -1146,11 +1094,9 @@ fn global_same_id_joins_all_modes() {
                     empty_obs("out-a", &["g1", "g2", "g3"], "g1"),
                     empty_obs("out-b", &["g1", "g2", "g3"], "g1"),
                 ],
-                mode,
                 None,
                 None,
                 true,
-                false,
             ),
         );
         match (la2, lb2) {
@@ -1176,7 +1122,7 @@ fn global_same_id_joins_all_modes() {
 #[test]
 fn occupant_on_any_output_blocks_every_projection() {
     for mode in global_modes() {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = engine_host_owned(mode, false);
         let first = accepted(
             &mut engine,
             &report(
@@ -1188,11 +1134,9 @@ fn occupant_on_any_output_blocks_every_projection() {
                     empty_obs("out-a", &["g1", "g2", "g3"], "g1"),
                     empty_obs("out-b", &["g1", "g2", "g3"], "g1"),
                 ],
-                mode,
                 None,
                 None,
                 true,
-                false,
             ),
         );
         let la2 = logical_for(&first, "out-a", "g2").expect("g2 bound a");
@@ -1213,11 +1157,9 @@ fn occupant_on_any_output_blocks_every_projection() {
                         &[Some(0), Some(1), Some(0)],
                     ),
                 ],
-                mode,
                 None,
                 None,
                 true,
-                false,
             ),
         );
         assert_eq!(
@@ -1236,7 +1178,7 @@ fn occupant_on_any_output_blocks_every_projection() {
 #[test]
 fn view_on_any_output_blocks_every_projection() {
     for mode in global_modes() {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = engine_host_owned(mode, false);
         let first = accepted(
             &mut engine,
             &report(
@@ -1248,11 +1190,9 @@ fn view_on_any_output_blocks_every_projection() {
                     empty_obs("out-a", &["g1", "g2", "g3"], "g1"),
                     empty_obs("out-b", &["g1", "g2", "g3"], "g1"),
                 ],
-                mode,
                 None,
                 None,
                 true,
-                false,
             ),
         );
         let la2 = logical_for(&first, "out-a", "g2").expect("g2 bound a");
@@ -1269,11 +1209,9 @@ fn view_on_any_output_blocks_every_projection() {
                     empty_obs("out-a", &["g1", "g2", "g3"], "g1"),
                     empty_obs("out-b", &["g1", "g2", "g3"], "g2"),
                 ],
-                mode,
                 None,
                 None,
                 true,
-                false,
             ),
         );
         assert_eq!(
@@ -1292,7 +1230,7 @@ fn view_on_any_output_blocks_every_projection() {
 #[test]
 fn one_sided_native_retires_without_equal_count() {
     for mode in global_modes() {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = engine_host_owned(mode, false);
         let first = accepted(
             &mut engine,
             &report(
@@ -1304,11 +1242,9 @@ fn one_sided_native_retires_without_equal_count() {
                     empty_obs("out-a", &["s1", "g1", "g2"], "g1"),
                     empty_obs("out-b", &["g1", "g2"], "g1"),
                 ],
-                mode,
                 None,
                 None,
                 true,
-                false,
             ),
         );
         // s1 exists only on out-a: without the equal-count flag the
@@ -1326,11 +1262,9 @@ fn one_sided_native_retires_without_equal_count() {
                     empty_obs("out-a", &["s1", "g1", "g2"], "g1"),
                     empty_obs("out-b", &["g1", "g2"], "g1"),
                 ],
-                mode,
                 None,
                 None,
                 true,
-                false,
             ),
         );
         assert_eq!(
@@ -1344,7 +1278,7 @@ fn one_sided_native_retires_without_equal_count() {
 #[test]
 fn one_sided_native_presence_retains_padding_row() {
     for mode in global_modes() {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = engine_host_owned(mode, true);
         let first = accepted(
             &mut engine,
             &report(
@@ -1356,10 +1290,8 @@ fn one_sided_native_presence_retains_padding_row() {
                     empty_obs("out-a", &["s1", "g1", "g2"], "g1"),
                     empty_obs("out-b", &["g1", "g2"], "g1"),
                 ],
-                mode,
                 None,
                 None,
-                true,
                 true,
             ),
         );
@@ -1378,10 +1310,8 @@ fn one_sided_native_presence_retains_padding_row() {
                     empty_obs("out-a", &["s1", "g1", "g2"], "g1"),
                     empty_obs("out-b", &["g1", "g2"], "g1"),
                 ],
-                mode,
                 None,
                 None,
-                true,
                 true,
             ),
         );
@@ -1395,7 +1325,7 @@ fn one_sided_native_presence_retains_padding_row() {
 
 #[test]
 fn disjoint_balanced_pair_retires_jointly_under_equal_count() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, true);
     let first = accepted(
         &mut engine,
         &report(
@@ -1407,10 +1337,8 @@ fn disjoint_balanced_pair_retires_jointly_under_equal_count() {
                 empty_obs("out-a", &["v", "a", "c", "t"], "v"),
                 empty_obs("out-b", &["v", "b", "c", "t"], "v"),
             ],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
-            true,
             true,
         ),
     );
@@ -1431,10 +1359,8 @@ fn disjoint_balanced_pair_retires_jointly_under_equal_count() {
                 empty_obs("out-a", &["v", "a", "c", "t"], "v"),
                 empty_obs("out-b", &["v", "b", "c", "t"], "v"),
             ],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
-            true,
             true,
         ),
     );
@@ -1467,7 +1393,7 @@ fn disjoint_balanced_pair_retires_jointly_under_equal_count() {
 
 #[test]
 fn common_plus_extra_spares_only_extra_under_equal_count() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, true);
     // out-b's occupied last desktop appends a padding spare, so both
     // outputs hold four logical rows while only out-a observes `x`.
     let first = accepted(
@@ -1486,10 +1412,8 @@ fn common_plus_extra_spares_only_extra_under_equal_count() {
                     &[Some(0), Some(0), Some(1)],
                 ),
             ],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
-            true,
             true,
         ),
     );
@@ -1516,10 +1440,8 @@ fn common_plus_extra_spares_only_extra_under_equal_count() {
                     &[Some(0), Some(0), Some(1)],
                 ),
             ],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
-            true,
             true,
         ),
     );
@@ -1542,7 +1464,7 @@ fn common_plus_extra_spares_only_extra_under_equal_count() {
 
 #[test]
 fn joint_reduction_preserves_equal_count() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, true);
     let first = accepted(
         &mut engine,
         &report(
@@ -1554,10 +1476,8 @@ fn joint_reduction_preserves_equal_count() {
                 empty_obs("out-a", &["g1", "g2", "g3"], "g1"),
                 empty_obs("out-b", &["g1", "g2", "g3"], "g1"),
             ],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
-            true,
             true,
         ),
     );
@@ -1574,10 +1494,8 @@ fn joint_reduction_preserves_equal_count() {
                 empty_obs("out-a", &["g1", "g2", "g3"], "g1"),
                 empty_obs("out-b", &["g1", "g2", "g3"], "g1"),
             ],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
-            true,
             true,
         ),
     );
@@ -1600,7 +1518,7 @@ fn joint_reduction_preserves_equal_count() {
 
 #[test]
 fn staggered_joint_absence_retains_padding_identity_until_balanced_readback() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, true);
     let windows = vec![
         fact_native("win-a", "out-a", Some("t")),
         fact_native("win-b", "out-b", Some("t")),
@@ -1624,10 +1542,8 @@ fn staggered_joint_absence_retains_padding_identity_until_balanced_readback() {
                 &[Some(0), Some(0), Some(1)],
             ),
         ],
-        WorkspaceMode::PerOutputLocal,
         None,
         None,
-        true,
         true,
     );
     let first = accepted(&mut engine, &initial);

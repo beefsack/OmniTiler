@@ -11,22 +11,21 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    ScreenReport, ScreenView, TransferKind, WindowFact, WorldCommand, WorldReport,
+    ScreenReport, ScreenView, TransferKind, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: tiler_core::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -53,7 +52,6 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
 fn report(
     request_seq: u64,
     observation_seq: u64,
-    mode: WorkspaceMode,
     screens: Vec<ScreenReport>,
     windows: Vec<WindowFact>,
     views: Vec<(&str, &str)>,
@@ -65,7 +63,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -73,7 +70,6 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: mode,
         screens,
         windows,
         views: views
@@ -87,26 +83,15 @@ fn report(
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -121,7 +106,32 @@ fn report(
 }
 
 fn two_screens() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true), screen("out-b", 800, false)]
+    vec![screen("out-a", 0), screen("out-b", 800)]
+}
+
+fn engine_for_mode(mode: WorkspaceMode) -> WorldEngine {
+    engine_for_mode_with_capabilities(mode, tiler_core::connection::HostCapabilities::default())
+}
+
+fn engine_for_mode_with_capabilities(
+    mode: WorkspaceMode,
+    capabilities: tiler_core::connection::HostCapabilities,
+) -> WorldEngine {
+    let token = match mode {
+        WorkspaceMode::PerOutputLocal => "per-output-local",
+        WorkspaceMode::GlobalUnique => "global-unique",
+        WorkspaceMode::Shared => "shared",
+    };
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        capabilities,
+        vec![(
+            "mode".to_owned(),
+            tiler_core::connection::RawSettingValue::String(token.to_owned()),
+        )],
+    )
+    .expect("generation")
 }
 
 fn accepted(
@@ -159,13 +169,12 @@ fn ring_of(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<St
 #[test]
 fn local_modes_keep_independent_numbered_rings() {
     for mode in [WorkspaceMode::PerOutputLocal, WorkspaceMode::GlobalUnique] {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = engine_for_mode(mode);
         let first = accepted(
             &mut engine,
             &report(
                 1,
                 1,
-                mode,
                 two_screens(),
                 vec![],
                 vec![],
@@ -189,7 +198,6 @@ fn local_modes_keep_independent_numbered_rings() {
             &report(
                 2,
                 2,
-                mode,
                 two_screens(),
                 vec![],
                 vec![],
@@ -218,13 +226,12 @@ fn local_modes_keep_independent_numbered_rings() {
 
 #[test]
 fn global_unique_swaps_visible_elsewhere_instead_of_duplicating() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for_mode(WorkspaceMode::GlobalUnique);
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            WorkspaceMode::GlobalUnique,
             two_screens(),
             vec![],
             vec![],
@@ -244,7 +251,6 @@ fn global_unique_swaps_visible_elsewhere_instead_of_duplicating() {
         &report(
             2,
             2,
-            WorkspaceMode::GlobalUnique,
             two_screens(),
             vec![],
             vec![],
@@ -268,7 +274,6 @@ fn global_unique_swaps_visible_elsewhere_instead_of_duplicating() {
         &report(
             3,
             3,
-            WorkspaceMode::GlobalUnique,
             two_screens(),
             vec![],
             vec![("out-a", view_b.as_str()), ("out-b", view_a.as_str())],
@@ -286,13 +291,12 @@ fn global_unique_swaps_visible_elsewhere_instead_of_duplicating() {
 
 #[test]
 fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for_mode(WorkspaceMode::PerOutputLocal);
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![],
             vec![],
@@ -308,7 +312,6 @@ fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
     match engine.handle_report(&report(
         2,
         2,
-        WorkspaceMode::PerOutputLocal,
         two_screens(),
         vec![],
         vec![],
@@ -328,13 +331,12 @@ fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
 
 #[test]
 fn shared_mode_shares_one_ring_view_and_history() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for_mode(WorkspaceMode::Shared);
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            WorkspaceMode::Shared,
             two_screens(),
             vec![],
             vec![],
@@ -360,7 +362,6 @@ fn shared_mode_shares_one_ring_view_and_history() {
         &report(
             2,
             2,
-            WorkspaceMode::Shared,
             two_screens(),
             vec![],
             vec![],
@@ -386,7 +387,6 @@ fn shared_mode_shares_one_ring_view_and_history() {
         &report(
             3,
             3,
-            WorkspaceMode::Shared,
             two_screens(),
             vec![],
             vec![("out-a", trailing.as_str()), ("out-b", trailing.as_str())],
@@ -405,13 +405,12 @@ fn shared_mode_shares_one_ring_view_and_history() {
 
 #[test]
 fn shared_mode_refuses_whole_workspace_migration() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for_mode(WorkspaceMode::Shared);
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            WorkspaceMode::Shared,
             two_screens(),
             vec![fact("win-a", "out-a", 0)],
             vec![],
@@ -426,7 +425,6 @@ fn shared_mode_refuses_whole_workspace_migration() {
     match engine.handle_report(&report(
         2,
         2,
-        WorkspaceMode::Shared,
         two_screens(),
         vec![fact("win-a", "out-a", 0)],
         vec![],
@@ -447,13 +445,12 @@ fn shared_mode_refuses_whole_workspace_migration() {
 
 #[test]
 fn shared_disconnect_discards_history_without_displacement() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for_mode(WorkspaceMode::Shared);
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            WorkspaceMode::Shared,
             two_screens(),
             vec![fact("win-a", "out-a", 0)],
             vec![],
@@ -470,8 +467,7 @@ fn shared_disconnect_discards_history_without_displacement() {
         &report(
             2,
             2,
-            WorkspaceMode::Shared,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![fact("win-a", "out-a", 0)],
             vec![],
             vec![],
@@ -490,7 +486,6 @@ fn shared_disconnect_discards_history_without_displacement() {
         &report(
             3,
             3,
-            WorkspaceMode::Shared,
             two_screens(),
             vec![fact("win-a", "out-a", 0)],
             vec![],
@@ -510,11 +505,14 @@ fn shared_disconnect_discards_history_without_displacement() {
 
 #[test]
 fn equal_count_pads_shorter_rings() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let mut base = report(
+    let capabilities = tiler_core::connection::HostCapabilities {
+        equal_count: true,
+        ..Default::default()
+    };
+    let mut engine = engine_for_mode_with_capabilities(WorkspaceMode::PerOutputLocal, capabilities);
+    let base = report(
         1,
         1,
-        WorkspaceMode::PerOutputLocal,
         two_screens(),
         vec![],
         vec![],
@@ -524,7 +522,6 @@ fn equal_count_pads_shorter_rings() {
         None,
         vec![],
     );
-    base.equal_workspace_count = true;
     let first = accepted(&mut engine, &base);
     assert_eq!(
         ring_of(&first, "out-a").len(),
@@ -532,10 +529,9 @@ fn equal_count_pads_shorter_rings() {
     );
     // Fill one trailing empty on out-a only, then parity pads out-b back
     // to equal length on the next report.
-    let mut fill = report(
+    let fill = report(
         2,
         2,
-        WorkspaceMode::PerOutputLocal,
         two_screens(),
         vec![fact("win-a", "out-a", 0)],
         vec![],
@@ -550,12 +546,10 @@ fn equal_count_pads_shorter_rings() {
         }),
         vec![],
     );
-    fill.equal_workspace_count = true;
     accepted(&mut engine, &fill);
-    let mut calm = report(
+    let calm = report(
         3,
         3,
-        WorkspaceMode::PerOutputLocal,
         two_screens(),
         vec![fact("win-a", "out-a", 0)],
         vec![],
@@ -565,7 +559,6 @@ fn equal_count_pads_shorter_rings() {
         None,
         vec![],
     );
-    calm.equal_workspace_count = true;
     let settled = accepted(&mut engine, &calm);
     assert_eq!(
         ring_of(&settled, "out-a").len(),
@@ -576,13 +569,12 @@ fn equal_count_pads_shorter_rings() {
 
 #[test]
 fn same_output_send_stays_pending_then_settles_on_observed_membership() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for_mode(WorkspaceMode::PerOutputLocal);
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fact("win-a", "out-a", 0)],
             vec![],
@@ -608,7 +600,6 @@ fn same_output_send_stays_pending_then_settles_on_observed_membership() {
         &report(
             2,
             2,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fact("win-a", "out-a", 0)],
             vec![],
@@ -630,7 +621,6 @@ fn same_output_send_stays_pending_then_settles_on_observed_membership() {
         &report(
             3,
             3,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fact("win-a", "out-a", 0)],
             vec![],
@@ -655,7 +645,6 @@ fn same_output_send_stays_pending_then_settles_on_observed_membership() {
         &report(
             4,
             4,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![arrived],
             vec![],
@@ -675,13 +664,12 @@ fn same_output_send_stays_pending_then_settles_on_observed_membership() {
 
 #[test]
 fn unknown_membership_never_counts_as_target_receipt() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for_mode(WorkspaceMode::PerOutputLocal);
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fact("win-a", "out-a", 0)],
             vec![],
@@ -705,7 +693,6 @@ fn unknown_membership_never_counts_as_target_receipt() {
         &report(
             2,
             2,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fact("win-a", "out-a", 0)],
             vec![],
@@ -730,7 +717,6 @@ fn unknown_membership_never_counts_as_target_receipt() {
         &report(
             3,
             3,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![wrong],
             vec![],
@@ -752,13 +738,12 @@ fn unknown_membership_never_counts_as_target_receipt() {
 #[test]
 fn migration_partial_arrival_holds_narrowly_on_refusal() {
     use tiler_core::world_report::{FrameSetter, MemberAttempt};
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for_mode(WorkspaceMode::PerOutputLocal);
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             vec![],
@@ -775,7 +760,6 @@ fn migration_partial_arrival_holds_narrowly_on_refusal() {
         &report(
             2,
             2,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             vec![],
@@ -796,7 +780,6 @@ fn migration_partial_arrival_holds_narrowly_on_refusal() {
         &report(
             3,
             3,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fact("win-a", "out-b", 800), fact("win-b", "out-a", 100)],
             vec![],
@@ -810,10 +793,14 @@ fn migration_partial_arrival_holds_narrowly_on_refusal() {
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: view_a.clone(),
                 setter: FrameSetter::Refused,
-                pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
-                post: Some((OutputId("out-a".to_owned()), view_a.clone())),
-                native_pre: None,
-                native_post: None,
+                pre: Some(WorkspaceRef::Logical {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: WorkspaceId(view_a.clone()),
+                }),
+                post: Some(WorkspaceRef::Logical {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: WorkspaceId(view_a.clone()),
+                }),
                 attempt_ms: 3,
             }],
         ),
@@ -837,13 +824,12 @@ fn reobservation_emits_no_fresh_claims() {
     // previously hidden/observed memberships is pending stage 2b: a fresh
     // generation cannot reuse the same namespace, so this test locks the
     // re-observation half only and flags restoration as pending.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_for_mode(WorkspaceMode::PerOutputLocal);
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fact("win-a", "out-a", 0)],
             vec![],
@@ -860,7 +846,6 @@ fn reobservation_emits_no_fresh_claims() {
         &report(
             2,
             2,
-            WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fact("win-a", "out-a", 0)],
             vec![],

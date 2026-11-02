@@ -1,27 +1,35 @@
-//! Failing-first v3 native occupancy cutover regression.
+//! Native occupancy regression (staged v3 vocabulary, `WORLD_CONTRACT_VERSION == 3`).
 //!
 //! Wire shape under test: `native[]: {out, order, current, occupancy}` with
 //! `occupancy: [{native, count: integer|null}]` covering exactly each `order`
 //! id. `count: null` is explicit unknown; exact zero only on readable empty.
+//!
+//! The request envelope below uses the current staged vocabulary: settings
+//! own fields formerly carried by the report (no `owner`/`mode`/`hostOwned`/
+//! `equalCount`/`predicate`/`refill`/`switchTarget`/etc.), and screens carry
+//! the v4 shape (scale plus identity, no `gap`/`outer`/`primary`). The
+//! unsupported-version case below uses an otherwise
+//! valid current-shape envelope with only `v` replaced, isolating the
+//! version gate from shape rejection.
 
 use tiler_protocol::world_protocol::decode_request;
 
 fn base_request(native_value: &str) -> String {
     format!(
-        "{{\"v\":3,\"owner\":\"owner-a\",\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\
+        "{{\"v\":3,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\
          \"obs\":\"1\",\"reqSeq\":\"1\",\"req\":\"req-1\",\"cmdSeq\":null,\
          \"command\":null,\
          \"screens\":[{{\"out\":\"out\",\"full\":[0,0,800,600],\"work\":[0,0,800,560],\
-         \"gap\":0,\"outer\":0,\"complete\":true,\"primary\":true}}],\
+         \"complete\":true,\"scale\":1.0,\
+         \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
          \"windows\":[],\
-         \"views\":[{{\"out\":\"out\",\"view\":\"\"}}],\"closed\":[],\"mode\":\"per-output-local\",\
-         \"hostOwned\":true,\"equalCount\":false,\"native\":[{native_value}],\
-         \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
-         \"switchTarget\":\"cursor-output\",\"freshPlacement\":\"cursor-output-last-focused\",\
-         \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
-         \"actionOutputs\":[\"out\"],\"focusFollowsCursor\":false,\"cursorWarp\":false,\
-         \"defaultTiled\":true,\"focused\":\"\",\
-         \"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}}}}"
+         \"views\":[{{\"out\":\"out\",\"view\":\"\"}}],\"closed\":[],\
+         \"native\":[{native_value}],\
+         \"focused\":\"\",\
+         \"complete\":true,\"gesture\":false,\"cursor\":null,\
+         \"actionForeground\":null,\"actionCached\":null,\
+         \"actionOutputs\":[\"out\"],\
+         \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}}}}"
     )
 }
 

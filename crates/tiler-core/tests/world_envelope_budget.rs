@@ -23,19 +23,17 @@ fn screens() -> Vec<ScreenReport> {
             output: OutputId("out-a".to_owned()),
             full_rect: Some(rect(0, 0, 800, 600)),
             work_area: Some(rect(0, 0, 800, 560)),
-            gap: 0,
-            outer_gap: 0,
             complete: true,
-            primary: true,
+            scale: 1.0,
+            identity: tiler_core::world_report::OutputIdentity::unknown(),
         },
         ScreenReport {
             output: OutputId("out-b".to_owned()),
             full_rect: Some(rect(800, 0, 800, 600)),
             work_area: Some(rect(800, 0, 800, 560)),
-            gap: 0,
-            outer_gap: 0,
             complete: true,
-            primary: false,
+            scale: 1.0,
+            identity: tiler_core::world_report::OutputIdentity::unknown(),
         },
     ]
 }
@@ -77,7 +75,6 @@ fn report_obs(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -85,31 +82,19 @@ fn report_obs(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens: screens(),
         windows,
         views: Vec::new(),
         closed: Vec::new(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: String::new(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -152,7 +137,7 @@ fn ring_ids(engine: &mut WorldEngine, seq: u64) -> Vec<String> {
 
 #[test]
 fn freshness_and_identity_gates_leave_no_trace() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, vec![fact("win-a", "out-a", 0)], None, None),
@@ -198,7 +183,7 @@ fn freshness_and_identity_gates_leave_no_trace() {
 
 #[test]
 fn observation_stale_and_duplicates_hold_the_watermark() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report_obs(1, 2, vec![fact("win-a", "out-a", 0)], None, None),
@@ -231,7 +216,7 @@ fn observation_stale_and_duplicates_hold_the_watermark() {
 
 #[test]
 fn malformed_reports_are_transactional() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, vec![fact("win-a", "out-a", 0)], None, None),
@@ -279,7 +264,7 @@ fn malformed_reports_are_transactional() {
 
 #[test]
 fn late_command_refusal_rolls_back_without_mutation() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, vec![fact("win-a", "out-a", 0)], None, None),
@@ -322,7 +307,7 @@ fn late_command_refusal_rolls_back_without_mutation() {
 #[test]
 fn oversized_request_refuses_before_any_mutation() {
     use tiler_core::world_report::WORLD_MAX_REQUEST_BYTES;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(1, vec![fact("win-a", "out-a", 0)], None, None),

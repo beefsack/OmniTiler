@@ -158,7 +158,7 @@ impl WorldEngine {
         report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Option<OneShotEffect> {
-        if !report.focus_follows_cursor {
+        if !self.focus_follows_cursor_setting() {
             return None;
         }
         if !report.inventory_complete {
@@ -210,7 +210,7 @@ impl WorldEngine {
         windows: &[crate::world_report::WindowDesire],
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Option<(i32, i32)> {
-        if !report.cursor_warp {
+        if !self.cursor_warp_setting() {
             return None;
         }
         if !report.inventory_complete {

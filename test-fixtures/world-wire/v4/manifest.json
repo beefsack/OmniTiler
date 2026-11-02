@@ -7235,6 +7235,7 @@
       "role",
       "appId",
       "executable",
+      "processId",
       "class",
       "title",
       "activationPolicy",
@@ -11573,31 +11574,38 @@
             "value": "executable"
           }
         ],
-        "class": [
+        "processId": [
           {
             "fixture": "handshake-unavailable-facts",
             "pointer": "/capabilities/unavailableFacts/16",
+            "value": "processId"
+          }
+        ],
+        "class": [
+          {
+            "fixture": "handshake-unavailable-facts",
+            "pointer": "/capabilities/unavailableFacts/17",
             "value": "class"
           }
         ],
         "title": [
           {
             "fixture": "handshake-unavailable-facts",
-            "pointer": "/capabilities/unavailableFacts/17",
+            "pointer": "/capabilities/unavailableFacts/18",
             "value": "title"
           }
         ],
         "activationPolicy": [
           {
             "fixture": "handshake-unavailable-facts",
-            "pointer": "/capabilities/unavailableFacts/18",
+            "pointer": "/capabilities/unavailableFacts/19",
             "value": "activationPolicy"
           }
         ],
         "layer": [
           {
             "fixture": "handshake-unavailable-facts",
-            "pointer": "/capabilities/unavailableFacts/19",
+            "pointer": "/capabilities/unavailableFacts/20",
             "value": "layer"
           }
         ]

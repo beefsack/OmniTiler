@@ -5,7 +5,23 @@
 //! full access to its internals.
 
 use super::*;
+use crate::directional::WorkspaceId;
 use crate::geometry::Rect;
+use crate::ids::NativeWorkspaceId;
+
+fn logical_ref(output: &str, workspace: &str) -> WorkspaceRef {
+    WorkspaceRef::Logical {
+        output: OutputId(output.to_owned()),
+        workspace: WorkspaceId(workspace.to_owned()),
+    }
+}
+
+fn native_ref(output: &str, workspace: &str) -> WorkspaceRef {
+    WorkspaceRef::Native {
+        output: OutputId(output.to_owned()),
+        workspace: NativeWorkspaceId::parse(workspace).expect("valid native id"),
+    }
+}
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -14,7 +30,6 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
 fn test_report() -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: 1,
@@ -22,15 +37,13 @@ fn test_report() -> WorldReport {
         request_id: "req-1".to_owned(),
         command_seq: None,
         command: None,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens: vec![ScreenReport {
             output: OutputId("out".to_owned()),
             full_rect: Some(rect(0, 0, 800, 600)),
             work_area: Some(rect(0, 0, 800, 560)),
-            gap: 0,
-            outer_gap: 0,
             complete: true,
-            primary: true,
+            scale: 1.0,
+            identity: crate::world_report::OutputIdentity::unknown(),
         }],
         windows: vec![WindowFact {
             window: WindowId("win-a".to_owned()),
@@ -53,26 +66,15 @@ fn test_report() -> WorldReport {
             view: String::new(),
         }],
         closed: Vec::new(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: String::new(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -110,8 +112,7 @@ fn digest_covers_every_section() {
     changed.windows[0].minimized = true;
     assert_ne!(report_digest(&changed), digest);
     // The capability-gated native membership moves the digest too.
-    let mut capable = base.clone();
-    capable.host_owned_workspace_domains = true;
+    let capable = base.clone();
     let capable_digest = report_digest(&capable);
     let mut changed = capable;
     changed.windows[0].native_workspace = Some("d1".to_owned());
@@ -124,7 +125,6 @@ fn digest_covers_every_section() {
     changed.closed.push(WindowId("win-b".to_owned()));
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
-    changed.host_owned_workspace_domains = true;
     changed.native.push(NativeObservation {
         output: OutputId("out".to_owned()),
         native_order: vec!["ws".to_owned()],
@@ -135,12 +135,11 @@ fn digest_covers_every_section() {
         }],
     });
     assert_ne!(report_digest(&changed), digest);
-    let mut changed = base.clone();
-    changed.equal_workspace_count = true;
-    assert_ne!(report_digest(&changed), digest);
-    let mut changed = base.clone();
-    changed.birth_clear = true;
-    assert_ne!(report_digest(&changed), digest);
+    assert_eq!(
+        report_digest(&base),
+        digest,
+        "connection capabilities are not report facts"
+    );
     let mut changed = base.clone();
     changed.inventory_complete = false;
     assert_ne!(report_digest(&changed), digest);
@@ -189,9 +188,6 @@ fn digest_covers_every_section() {
         .start_cursor = Some((1, 3));
     assert_ne!(report_digest(&changed), progress_digest);
     let mut changed = base.clone();
-    changed.default_tiled = false;
-    assert_ne!(report_digest(&changed), digest);
-    let mut changed = base.clone();
     changed.monotonic_ms = 1;
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
@@ -203,8 +199,6 @@ fn digest_covers_every_section() {
         setter: FrameSetter::Accepted,
         pre: None,
         post: None,
-        native_pre: None,
-        native_post: None,
         attempt_ms: 9,
     });
     assert_ne!(report_digest(&changed), digest);
@@ -216,10 +210,8 @@ fn digest_covers_every_section() {
         target_output: OutputId("out".to_owned()),
         target_workspace: "ws-1".to_owned(),
         setter: FrameSetter::Accepted,
-        pre: None,
-        post: None,
-        native_pre: Some("native-1".to_owned()),
-        native_post: Some("native-2".to_owned()),
+        pre: Some(native_ref("out", "native-1")),
+        post: Some(native_ref("out", "native-2")),
         attempt_ms: 9,
     });
     assert_ne!(report_digest(&changed), digest);
@@ -232,9 +224,6 @@ fn digest_covers_every_section() {
         pre: None,
         post: None,
         baseline: None,
-        native_pre: None,
-        native_post: None,
-        native_baseline: None,
         attempt_ms: 9,
     });
     assert_ne!(report_digest(&changed), digest);
@@ -244,12 +233,9 @@ fn digest_covers_every_section() {
         target_output: OutputId("out".to_owned()),
         target_workspace: "ws-1".to_owned(),
         setter: FrameSetter::Accepted,
-        pre: None,
-        post: None,
-        baseline: None,
-        native_pre: Some("native-1".to_owned()),
-        native_post: Some("native-2".to_owned()),
-        native_baseline: Some("native-1".to_owned()),
+        pre: Some(native_ref("out", "native-1")),
+        post: Some(native_ref("out", "native-2")),
+        baseline: Some(native_ref("out", "native-1")),
         attempt_ms: 9,
     });
     assert_ne!(report_digest(&changed), digest);
@@ -310,7 +296,7 @@ fn validation_gates_shapes() {
         view: String::new(),
     });
     assert_eq!(validate_report_reason(&bad), Some("duplicate-view"));
-    // Native payload without the capability.
+    // Report shape validation is independent of handshake capabilities.
     let mut bad = base.clone();
     bad.native.push(NativeObservation {
         output: OutputId("out".to_owned()),
@@ -318,26 +304,17 @@ fn validation_gates_shapes() {
         current_native: None,
         occupancy: Vec::new(),
     });
-    assert_eq!(
-        validate_report_reason(&bad),
-        Some("native-without-capability")
-    );
-    // Native member evidence without the capability refuses, even with
-    // no native list at all.
+    assert!(validate_report(&bad));
+    // Native member evidence is decoded as a fact; Engine ingress gates it.
     let mut bad = base.clone();
     bad.windows[0].native_workspace = Some("d1".to_owned());
-    assert_eq!(
-        validate_report_reason(&bad),
-        Some("native-without-capability")
-    );
+    assert!(validate_report(&bad));
     // Native member evidence must be a valid opaque id.
     let mut bad = base.clone();
-    bad.host_owned_workspace_domains = true;
     bad.windows[0].native_workspace = Some("not an id".to_owned());
     assert_eq!(validate_report_reason(&bad), Some("window-native-invalid"));
     // Native member evidence with the capability validates.
     let mut good = base.clone();
-    good.host_owned_workspace_domains = true;
     good.windows[0].native_workspace = Some("d1".to_owned());
     assert!(validate_report(&good));
     // Duplicate native ids within one output refuse.
@@ -482,8 +459,6 @@ fn validation_gates_shapes() {
         setter: FrameSetter::Accepted,
         pre: None,
         post: None,
-        native_pre: None,
-        native_post: None,
         attempt_ms: 1,
     });
     assert_eq!(validate_report_reason(&bad), Some("member-window-invalid"));
@@ -494,14 +469,15 @@ fn validation_gates_shapes() {
         target_output: OutputId("out".to_owned()),
         target_workspace: "ws-1".to_owned(),
         setter: FrameSetter::Accepted,
-        pre: Some((OutputId(String::new()), "ws-0".to_owned())),
+        pre: Some(WorkspaceRef::Logical {
+            output: OutputId(String::new()),
+            workspace: WorkspaceId("ws-0".to_owned()),
+        }),
         post: None,
-        native_pre: None,
-        native_post: None,
         attempt_ms: 1,
     });
     assert_eq!(validate_report_reason(&bad), Some("member-homing-invalid"));
-    // Native attempt ids ride only with the capability, like nativeWs.
+    // Native attempt ids are typed report facts; Engine ingress gates them.
     let mut bad = base.clone();
     bad.member_attempts.push(MemberAttempt {
         operation_id: "op-9".to_owned(),
@@ -509,28 +485,20 @@ fn validation_gates_shapes() {
         target_output: OutputId("out".to_owned()),
         target_workspace: "ws-1".to_owned(),
         setter: FrameSetter::Accepted,
-        pre: None,
+        pre: Some(native_ref("out", "native-1")),
         post: None,
-        native_pre: Some("native-1".to_owned()),
-        native_post: None,
         attempt_ms: 1,
     });
-    assert_eq!(
-        validate_report_reason(&bad),
-        Some("native-without-capability")
-    );
+    assert!(validate_report(&bad));
     let mut capable = base.clone();
-    capable.host_owned_workspace_domains = true;
     capable.member_attempts.push(MemberAttempt {
         operation_id: "op-9".to_owned(),
         window: WindowId("win-a".to_owned()),
         target_output: OutputId("out".to_owned()),
         target_workspace: "ws-1".to_owned(),
         setter: FrameSetter::Accepted,
-        pre: None,
-        post: None,
-        native_pre: Some("native-1".to_owned()),
-        native_post: Some(String::new()),
+        pre: Some(logical_ref("out", "ws-0")),
+        post: Some(logical_ref("out", "")),
         attempt_ms: 1,
     });
     assert_eq!(
@@ -547,8 +515,6 @@ fn validation_gates_shapes() {
             setter: FrameSetter::Accepted,
             pre: None,
             post: None,
-            native_pre: None,
-            native_post: None,
             attempt_ms: 1,
         });
     }
@@ -563,9 +529,6 @@ fn validation_gates_shapes() {
         pre: None,
         post: None,
         baseline: None,
-        native_pre: None,
-        native_post: None,
-        native_baseline: None,
         attempt_ms: 1,
     });
     assert_eq!(validate_report_reason(&bad), Some("view-operation-invalid"));
@@ -576,19 +539,12 @@ fn validation_gates_shapes() {
         target_workspace: "ws-1".to_owned(),
         setter: FrameSetter::Accepted,
         pre: None,
-        post: None,
+        post: Some(native_ref("out", "native-2")),
         baseline: None,
-        native_pre: None,
-        native_post: Some("native-2".to_owned()),
-        native_baseline: None,
         attempt_ms: 1,
     });
-    assert_eq!(
-        validate_report_reason(&bad),
-        Some("native-without-capability")
-    );
+    assert!(validate_report(&bad));
     let mut capable = base.clone();
-    capable.host_owned_workspace_domains = true;
     capable.view_attempts.push(ViewAttempt {
         operation_id: "op-9".to_owned(),
         target_output: OutputId("out".to_owned()),
@@ -596,13 +552,10 @@ fn validation_gates_shapes() {
         setter: FrameSetter::Accepted,
         pre: None,
         post: None,
-        baseline: None,
-        native_pre: None,
-        native_post: None,
-        native_baseline: Some(String::new()),
+        baseline: Some(logical_ref("out", "ws-0")),
         attempt_ms: 1,
     });
-    assert_eq!(validate_report_reason(&capable), Some("view-proof-invalid"));
+    assert_eq!(validate_report_reason(&capable), None);
     let mut bad = base.clone();
     for _ in 0..2 {
         bad.view_attempts.push(ViewAttempt {
@@ -613,9 +566,6 @@ fn validation_gates_shapes() {
             pre: None,
             post: None,
             baseline: None,
-            native_pre: None,
-            native_post: None,
-            native_baseline: None,
             attempt_ms: 1,
         });
     }
@@ -631,10 +581,9 @@ fn validation_gates_shapes() {
         output: OutputId("out".to_owned()),
         full_rect: None,
         work_area: None,
-        gap: 0,
-        outer_gap: 0,
         complete: false,
-        primary: false,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     };
     bad.screens.extend((0..100).map(|_| filler.clone()));
     assert_eq!(validate_report_reason(&bad), Some("section-over-cap"));
@@ -689,7 +638,7 @@ fn command_validation_keeps_closed_vocabularies() {
     }));
     assert!(valid_command(&C::SendRelative {
         window: win.clone(),
-        source: SendSource::HomeThenCachedLive,
+        source: SendSource::HomeThenAction,
         delta: -1,
         follow: true,
     }));
@@ -717,4 +666,311 @@ fn command_validation_keeps_closed_vocabularies() {
     assert!(!valid_command(&C::MigrateDirectional {
         direction: "sideways".to_owned(),
     }));
+}
+
+#[test]
+fn estimator_stays_total_on_nonfinite_typed_facts_before_validation() {
+    // Finding A: the request estimator runs before validation, so a
+    // malicious typed carrier (non-finite scale, non-finite held number)
+    // must bound without panic and without encoding a `null`.
+    use crate::connection::RawSettingValue;
+    let mut report = test_report();
+    report.screens[0].scale = f64::NAN;
+    report.held_screens.push(HeldScreenRow {
+        output: OutputId("out-held".to_owned()),
+        ordinal: 1,
+        fields: vec![("scale".to_owned(), RawSettingValue::Number(f64::INFINITY))],
+        diagnostic: RowDiagnostic {
+            scope: AuthorityScope::Output(OutputId("out-held".to_owned())),
+            row: RowDiagnosticLane::Screen,
+            id: Some("out-held".to_owned()),
+            kind: RowDiagnosticKind::InvalidFact,
+        },
+    });
+    let bound = report_estimate(&report);
+    assert!(bound > 0);
+    assert_eq!(
+        validate_report_reason(&report),
+        Some("screen-scale-invalid")
+    );
+}
+
+#[test]
+fn grade_invalid_screens_leaves_valid_reports_untouched() {
+    let report = test_report();
+    assert!(validate_report(&report));
+    assert!(grade_invalid_screens(&report).is_none());
+}
+
+#[test]
+fn grade_invalid_screens_retains_nonfinite_fact_without_null_spelling() {
+    // Finding B: a directly constructed non-finite scale grades to a
+    // narrow hold with the original fact retained. The checked canonical
+    // writers refuse to spell the retained fact (never a silent `null`).
+    let mut report = test_report();
+    report.screens[0].scale = f64::NAN;
+    assert_eq!(
+        validate_report_reason(&report),
+        Some("screen-scale-invalid")
+    );
+    let graded = grade_invalid_screens(&report).expect("grades to hold");
+    assert!(graded.screens.is_empty());
+    assert_eq!(graded.held_screens.len(), 1);
+    let held = &graded.held_screens[0];
+    assert_eq!(held.output.0, "out");
+    assert_eq!(held.ordinal, 0);
+    assert_eq!(held.diagnostic.kind, RowDiagnosticKind::InvalidFact);
+    assert_eq!(held.diagnostic.row, RowDiagnosticLane::Screen);
+    assert_eq!(held.diagnostic.id.as_deref(), Some("out"));
+    let scale = held
+        .fields
+        .iter()
+        .find(|(key, _)| key == "scale")
+        .expect("scale fact retained");
+    assert!(matches!(scale.1, crate::connection::RawSettingValue::Number(v) if v.is_nan()));
+    assert!(encode_held_screen_canonical(held).is_err());
+    assert!(encode_screen_canonical(&report.screens[0]).is_err());
+    assert!(validate_report(&graded));
+}
+
+#[test]
+fn grade_invalid_screens_grades_overbound_identity() {
+    let mut report = test_report();
+    report.screens[0].identity.serial = Some("s".repeat(257));
+    assert_eq!(
+        validate_report_reason(&report),
+        Some("screen-identity-invalid")
+    );
+    let graded = grade_invalid_screens(&report).expect("grades to hold");
+    assert!(graded.screens.is_empty());
+    assert_eq!(graded.held_screens.len(), 1);
+    assert_eq!(
+        graded.held_screens[0].diagnostic.kind,
+        RowDiagnosticKind::InvalidFact
+    );
+    assert!(validate_report(&graded));
+}
+
+#[test]
+fn grade_invalid_screens_preserves_existing_held_ordinals() {
+    // Mixed lane: the pre-existing held row keeps its original ordinal
+    // while the newly graded row takes the free carried-array slot.
+    use crate::connection::RawSettingValue;
+    let mut report = test_report();
+    report.screens.push(ScreenReport {
+        output: OutputId("out-bad".to_owned()),
+        full_rect: None,
+        work_area: None,
+        complete: false,
+        scale: 0.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
+    });
+    report.held_screens.push(HeldScreenRow {
+        output: OutputId("out-held".to_owned()),
+        ordinal: 1,
+        fields: vec![(
+            "out".to_owned(),
+            RawSettingValue::String("out-held".to_owned()),
+        )],
+        diagnostic: RowDiagnostic {
+            scope: AuthorityScope::Output(OutputId("out-held".to_owned())),
+            row: RowDiagnosticLane::Screen,
+            id: Some("out-held".to_owned()),
+            kind: RowDiagnosticKind::Unreadable,
+        },
+    });
+    let graded = grade_invalid_screens(&report).expect("grades to hold");
+    assert_eq!(graded.screens.len(), 1);
+    assert_eq!(graded.screens[0].output.0, "out");
+    let ordinals: Vec<usize> = graded
+        .held_screens
+        .iter()
+        .map(|held| held.ordinal)
+        .collect();
+    assert_eq!(ordinals, vec![1, 2]);
+    assert_eq!(graded.held_screens[1].output.0, "out-bad");
+    assert!(validate_report(&graded));
+}
+
+#[test]
+fn grade_invalid_screens_refuses_structural_violations() {
+    // Structural gates are never graded away: bad ids, duplicates, and
+    // bad geometry still refuse even beside a gradable scale.
+    let mut bad_id = test_report();
+    bad_id.screens[0].output = OutputId(String::new());
+    bad_id.screens[0].scale = 0.0;
+    assert_eq!(validate_report_reason(&bad_id), Some("screen-id-invalid"));
+    assert!(grade_invalid_screens(&bad_id).is_none());
+
+    let mut duplicate = test_report();
+    duplicate.screens.push(ScreenReport {
+        output: OutputId("out".to_owned()),
+        full_rect: None,
+        work_area: None,
+        complete: false,
+        scale: 0.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
+    });
+    duplicate.screens[0].scale = 0.0;
+    assert!(grade_invalid_screens(&duplicate).is_none());
+
+    let mut bad_rect = test_report();
+    bad_rect.screens[0].full_rect = Some(rect(0, 0, -1, 2));
+    bad_rect.screens[0].scale = 0.0;
+    assert_eq!(
+        validate_report_reason(&bad_rect),
+        Some("screen-rect-invalid")
+    );
+    assert!(grade_invalid_screens(&bad_rect).is_none());
+}
+
+#[test]
+fn grade_invalid_screens_refuses_structural_violations_hidden_behind_first_scale_failure() {
+    // Loophole witness: validation stops at the first scale failure, so a
+    // structural violation in a LATER row must still refuse the whole
+    // report instead of being erased by removal. First row has valid
+    // geometry with scale 0; the second row carries scale 0 PLUS a
+    // structural violation (bad geometry, partial rects, or a
+    // complete-topology claim without rects).
+    fn second_row(
+        output: &str,
+        full_rect: Option<Rect>,
+        work_area: Option<Rect>,
+        complete: bool,
+    ) -> ScreenReport {
+        ScreenReport {
+            output: OutputId(output.to_owned()),
+            full_rect,
+            work_area,
+            complete,
+            scale: 0.0,
+            identity: crate::world_report::OutputIdentity::unknown(),
+        }
+    }
+    let cases: &[(&str, ScreenReport)] = &[
+        (
+            "invalid-geometry",
+            second_row(
+                "out-bad",
+                Some(rect(0, 0, -1, 2)),
+                Some(rect(0, 0, 4, 4)),
+                false,
+            ),
+        ),
+        (
+            "partial-rects",
+            second_row("out-bad", Some(rect(0, 0, 4, 4)), None, false),
+        ),
+        (
+            "complete-without-rects",
+            second_row("out-bad", None, None, true),
+        ),
+    ];
+    for (name, second) in cases {
+        let mut report = test_report();
+        report.screens[0].scale = 0.0;
+        report.screens.push(second.clone());
+        // The validator exits at the first row's scale failure, hiding the
+        // later structural violation: this pins the loophole premise.
+        assert_eq!(
+            validate_report_reason(&report),
+            Some("screen-scale-invalid"),
+            "{name}: validator exits early"
+        );
+        assert!(
+            grade_invalid_screens(&report).is_none(),
+            "{name}: hidden structural violation must refuse, not grade"
+        );
+    }
+}
+
+#[test]
+fn screen_section_cap_counts_valid_plus_held_rows() {
+    // Direct core held rows must not bypass the section cap: the bound
+    // covers the TOTAL carried screen rows (valid plus held), matching the
+    // decoder's carried-array bound.
+    fn numbered_screen(n: usize) -> ScreenReport {
+        ScreenReport {
+            output: OutputId(format!("out-{n:02}")),
+            full_rect: Some(rect(0, 0, 800, 600)),
+            work_area: Some(rect(0, 0, 800, 560)),
+            complete: true,
+            scale: 1.0,
+            identity: crate::world_report::OutputIdentity::unknown(),
+        }
+    }
+    fn held_row(output: &str, ordinal: usize) -> HeldScreenRow {
+        HeldScreenRow {
+            output: OutputId(output.to_owned()),
+            ordinal,
+            fields: vec![(
+                "out".to_owned(),
+                crate::connection::RawSettingValue::String(output.to_owned()),
+            )],
+            diagnostic: RowDiagnostic {
+                scope: AuthorityScope::Output(OutputId(output.to_owned())),
+                row: RowDiagnosticLane::Screen,
+                id: Some(output.to_owned()),
+                kind: RowDiagnosticKind::Unreadable,
+            },
+        }
+    }
+    let mut report = test_report();
+    for n in 1..MAX_WORLD_SCREENS {
+        report.screens.push(numbered_screen(n));
+    }
+    assert_eq!(report.screens.len(), MAX_WORLD_SCREENS);
+    assert!(validate_report(&report));
+    // One held row tips the total over the cap: whole-refusal, no grading.
+    report
+        .held_screens
+        .push(held_row("out-held", MAX_WORLD_SCREENS));
+    assert_eq!(validate_report_reason(&report), Some("section-over-cap"));
+    assert!(grade_invalid_screens(&report).is_none());
+    // Oversized all-held ingress refuses the same way.
+    let mut all_held = test_report();
+    all_held.screens.clear();
+    all_held.windows.clear();
+    all_held.views.clear();
+    for n in 0..MAX_WORLD_SCREENS + 1 {
+        all_held
+            .held_screens
+            .push(held_row(&format!("out-h{n:02}"), n));
+    }
+    assert_eq!(validate_report_reason(&all_held), Some("section-over-cap"));
+    assert!(grade_invalid_screens(&all_held).is_none());
+}
+
+#[test]
+fn estimator_does_not_collapse_structure_around_nonfinite_held_scalars() {
+    // A held value mixing a large carried string with one non-finite
+    // scalar must still count every carried structure/text byte: only the
+    // bad scalar itself falls back to the `null` width. Measured as the
+    // exact held-row delta so the surrounding report bytes cannot mask an
+    // undercount.
+    use crate::connection::RawSettingValue;
+    let big = "s".repeat(1000);
+    let nested = RawSettingValue::Object(vec![
+        ("big".to_owned(), RawSettingValue::String(big.clone())),
+        ("bad".to_owned(), RawSettingValue::Number(f64::NAN)),
+    ]);
+    let mut report = test_report();
+    let before = report_estimate(&report);
+    report.held_screens.push(HeldScreenRow {
+        output: OutputId("out-held".to_owned()),
+        ordinal: 1,
+        fields: vec![("extra".to_owned(), nested)],
+        diagnostic: RowDiagnostic {
+            scope: AuthorityScope::Output(OutputId("out-held".to_owned())),
+            row: RowDiagnosticLane::Screen,
+            id: Some("out-held".to_owned()),
+            kind: RowDiagnosticKind::InvalidFact,
+        },
+    });
+    let nested_estimate = 2
+        + (json_string_len("big") + 1 + json_string_len(&big))
+        + 1
+        + (json_string_len("bad") + 1 + 4);
+    let expected_delta = 2 + (json_string_len("extra") + 1 + nested_estimate);
+    assert_eq!(report_estimate(&report) - before, expected_delta);
 }

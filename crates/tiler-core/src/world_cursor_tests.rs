@@ -17,15 +17,14 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> crate::world_report::ScreenReport {
+fn screen(output: &str, x: i32) -> crate::world_report::ScreenReport {
     crate::world_report::ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -100,8 +99,8 @@ fn command_report(
     focused: &str,
     cursor: Option<(i32, i32)>,
     cursor_hit: Option<&str>,
-    focus_follows_cursor: bool,
-    cursor_warp: bool,
+    _focus_follows_cursor: bool,
+    _cursor_warp: bool,
     inventory_complete: bool,
     gesture_barrier: bool,
     command_seq: Option<u64>,
@@ -109,7 +108,6 @@ fn command_report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -117,31 +115,19 @@ fn command_report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
-        screens: vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+        screens: vec![screen("out-a", 0), screen("out-b", 800)],
         windows,
         views: Vec::new(),
         closed: Vec::new(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor,
-        cursor_warp,
         cursor,
         cursor_hit: cursor_hit.map(|hit| WindowId(hit.to_owned())),
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete,
         gesture_barrier,
         gesture: None,
@@ -166,7 +152,20 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
 /// report bootstraps (quiet); the second carries the cursor/settings under
 /// test.
 fn rig() -> WorldEngine {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    rig_with_focus_follows(false)
+}
+
+fn rig_with_focus_follows(enabled: bool) -> WorldEngine {
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities::default(),
+        vec![(
+            "focusFollowsCursor".to_owned(),
+            crate::connection::RawSettingValue::Bool(enabled),
+        )],
+    )
+    .expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -210,7 +209,7 @@ fn focus_follows_off_by_default_mints_no_effect() {
 
 #[test]
 fn focus_follows_on_mints_hover_effect() {
-    let mut engine = rig();
+    let mut engine = rig_with_focus_follows(true);
     let reply = accepted(
         &mut engine,
         &report(
@@ -352,7 +351,24 @@ fn focus_follows_ignores_cursor_outside_every_window() {
 
 /// Two-output rig: win-a on out-a focused, win-b on out-b.
 fn cross_rig() -> WorldEngine {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    cross_rig_with_warp(false)
+}
+
+fn cross_rig_with_warp(enabled: bool) -> WorldEngine {
+    let capabilities = crate::connection::HostCapabilities {
+        warp: enabled,
+        ..Default::default()
+    };
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        capabilities,
+        vec![(
+            "cursorWarp".to_owned(),
+            crate::connection::RawSettingValue::Bool(enabled),
+        )],
+    )
+    .expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -402,7 +418,7 @@ fn warp_off_by_default_publishes_no_point() {
 
 #[test]
 fn warp_publishes_cross_output_centre() {
-    let mut engine = cross_rig();
+    let mut engine = cross_rig_with_warp(true);
     let reply = accepted(
         &mut engine,
         &command_report(
@@ -532,7 +548,16 @@ fn warp_needs_a_known_cursor_output() {
 
 /// Three tiled windows on out-a, win-c exactly overlapping win-b.
 fn overlap_rig() -> WorldEngine {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities::default(),
+        vec![(
+            "focusFollowsCursor".to_owned(),
+            crate::connection::RawSettingValue::Bool(true),
+        )],
+    )
+    .expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -611,7 +636,7 @@ fn focus_follows_absent_hit_mints_nothing() {
 fn focus_follows_hit_beats_rectangles() {
     // The hit names win-b while the cursor point sits inside win-a's
     // frame: the native hit decides, not the cursor math.
-    let mut engine = rig();
+    let mut engine = rig_with_focus_follows(true);
     let reply = accepted(
         &mut engine,
         &report(
@@ -751,7 +776,7 @@ fn focus_follows_ignores_noncurrent_view() {
 fn focus_follows_static_cursor_never_resteals() {
     // Hover couples once on movement; a later keyboard command moving
     // focus away must not be undone by the unchanged cursor.
-    let mut engine = rig();
+    let mut engine = rig_with_focus_follows(true);
     let coupled = accepted(
         &mut engine,
         &report(

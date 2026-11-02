@@ -18,15 +18,14 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen_rect(output: &str, full: Rect, work: Rect, primary: bool) -> ScreenReport {
+fn screen_rect(output: &str, full: Rect, work: Rect) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(full),
         work_area: Some(work),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -59,7 +58,6 @@ fn report_screens(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -67,31 +65,19 @@ fn report_screens(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens,
         windows,
         views: Vec::new(),
         closed: vec![],
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: String::new(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -123,7 +109,7 @@ fn migrated_session(
     screens: Vec<ScreenReport>,
     members: Vec<WindowFact>,
 ) -> (WorldEngine, crate::world_report::WorldReply, String) {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report_screens(1, screens.clone(), members.clone(), None, None),
@@ -182,13 +168,8 @@ fn sessionless_oversized_member_pins_to_destination_origin() {
     // the small destination, so the origin pins to the destination work
     // area origin with size preserved (never resized).
     let screens = vec![
-        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600), true),
-        screen_rect(
-            "out-b",
-            rect(800, 0, 400, 300),
-            rect(800, 0, 400, 300),
-            false,
-        ),
+        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600)),
+        screen_rect("out-b", rect(800, 0, 400, 300), rect(800, 0, 400, 300)),
     ];
     let members = vec![fact_at("w0", "out-a", rect(100, 100, 500, 400))];
     let reply = migrate_floating_workspace(screens, members);
@@ -211,13 +192,8 @@ fn sessionless_unreadable_member_carries_no_placement() {
     // refuses the migration command itself, so the guard is reached through
     // a mid-migration readability loss.)
     let screens = vec![
-        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600), true),
-        screen_rect(
-            "out-b",
-            rect(800, 0, 800, 600),
-            rect(800, 0, 800, 600),
-            false,
-        ),
+        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600)),
+        screen_rect("out-b", rect(800, 0, 800, 600), rect(800, 0, 800, 600)),
     ];
     let members = vec![
         fact_at("w0", "out-a", rect(100, 100, 40, 90)),
@@ -269,13 +245,8 @@ fn sessionless_incomplete_screens_carry_no_placement() {
     // a mid-migration screen loss.)
     let screens = || {
         vec![
-            screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600), true),
-            screen_rect(
-                "out-b",
-                rect(800, 0, 800, 600),
-                rect(800, 0, 800, 600),
-                false,
-            ),
+            screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600)),
+            screen_rect("out-b", rect(800, 0, 800, 600), rect(800, 0, 800, 600)),
         ]
     };
     let members = || {
@@ -349,13 +320,8 @@ fn sessionless_protected_members_carry_no_placement() {
     // through a mid-migration flag flip.)
     let screens = || {
         vec![
-            screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600), true),
-            screen_rect(
-                "out-b",
-                rect(800, 0, 800, 600),
-                rect(800, 0, 800, 600),
-                false,
-            ),
+            screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600)),
+            screen_rect("out-b", rect(800, 0, 800, 600), rect(800, 0, 800, 600)),
         ]
     };
     let members = || {
@@ -405,13 +371,8 @@ fn sessionless_partial_arrival_holds_then_recovers() {
     // source (then unreadable there), and settles once both prove at the
     // target: partial arrival is progress, never settlement.
     let screens = vec![
-        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600), true),
-        screen_rect(
-            "out-b",
-            rect(800, 0, 800, 600),
-            rect(800, 0, 800, 600),
-            false,
-        ),
+        screen_rect("out-a", rect(0, 0, 800, 600), rect(0, 0, 800, 600)),
+        screen_rect("out-b", rect(800, 0, 800, 600), rect(800, 0, 800, 600)),
     ];
     let members = vec![
         fact_at("w0", "out-a", rect(100, 100, 40, 90)),

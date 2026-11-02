@@ -7,37 +7,37 @@
 //! `settle_send`, and `start_migration`.
 
 use crate::boundary::CoreCommand;
-use crate::directional::{OutputId, WindowId};
+use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use crate::world_report::{
-    CommandResult, FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport, TransferKind,
-    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    CommandResult, FrameSetter, HoldReason, MemberAttempt, RowDiagnosticKind, RowDiagnosticLane,
+    ScopeAuthority, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef,
+    WorldCommand, WorldReport, validate_report_reason,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen_sized(output: &str, x: i32, w: i32, h: i32, primary: bool, gap: i32) -> ScreenReport {
+fn screen_sized(output: &str, x: i32, w: i32, h: i32, _gap: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, w, h)),
         work_area: Some(rect(x, 0, w, h)),
-        gap,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
-fn roomy(output: &str, x: i32, primary: bool) -> ScreenReport {
-    screen_sized(output, x, 800, 600, primary, 0)
+fn roomy(output: &str, x: i32) -> ScreenReport {
+    screen_sized(output, x, 800, 600, 0)
 }
 
-fn tiny(output: &str, x: i32, primary: bool) -> ScreenReport {
-    screen_sized(output, x, 10, 10, primary, 8)
+fn tiny(output: &str, x: i32) -> ScreenReport {
+    screen_sized(output, x, 10, 10, 8)
 }
 
 fn fact(window: &str, output: &str, x: i32) -> WindowFact {
@@ -78,7 +78,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -86,7 +85,6 @@ fn report(
         request_id: format!("req-{seq}"),
         command_seq,
         command,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens,
         windows,
         views: Vec::new(),
@@ -94,26 +92,15 @@ fn report(
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -132,6 +119,19 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
+}
+
+fn engine_with_zero_outer_gap() -> WorldEngine {
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities::default(),
+        vec![(
+            "outer".to_owned(),
+            crate::connection::RawSettingValue::Number(0.0),
+        )],
+    )
+    .expect("generation")
 }
 
 fn row_of<'a>(
@@ -155,15 +155,15 @@ fn view_of(reply: &crate::world_report::WorldReply, output: &str) -> String {
 }
 
 fn two_roomy() -> Vec<ScreenReport> {
-    vec![roomy("out-a", 0, true), roomy("out-b", 800, false)]
+    vec![roomy("out-a", 0), roomy("out-b", 800)]
 }
 
 #[test]
 fn burst_batch_pins_last_eligible_newcomer_once() {
     // Two newcomers in one report carry exactly one focus intent, pinned
     // to the last eligible newcomer, never one per newcomer, never replayed.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -231,8 +231,8 @@ fn explicit_tile_retry_failure_mints_no_focus_and_never_loops() {
     // unfloat retry re-floats for lack of space (D5 no-space): the Float
     // result proves it, no focus mints, the row stays floated, and a
     // repeat proves the same without looping.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![tiny("out-a", 0, true)];
+    let mut engine = engine_with_zero_outer_gap();
+    let screens = vec![tiny("out-a", 0)];
     let seed: Vec<WindowFact> = (0..5)
         .map(|i| fact(&format!("w{i}"), "out-a", i * 10))
         .collect();
@@ -312,8 +312,8 @@ fn unexplained_excluded_newcomer_takes_no_activation() {
     // A game/overlay newcomer (fit-excluded with no floating, fullscreen,
     // or maximized origin) converges honestly but never takes automatic
     // activation; a later clean report still mints nothing.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -377,8 +377,8 @@ fn normalized_ordinary_float_newcomer_focuses_once() {
     // A newcomer arriving as an ordinary float carries the same one-shot
     // newcomer intent as a capacity float; only the unexplained shape is
     // unsafe. Re-observation mints nothing.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -455,8 +455,8 @@ fn fixed_fact(window: &str, output: &str, x: i32) -> WindowFact {
 fn automatic_fixed_size_newcomer_takes_no_admission_focus() {
     // A tiled-first fixed-size arrival floats automatic (D1/D8) and never
     // takes admission focus; the spend holds across re-observation.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -516,8 +516,8 @@ fn automatic_fixed_size_newcomer_takes_no_admission_focus() {
 fn adapter_asserted_automatic_float_newcomer_takes_no_admission_focus() {
     // A newcomer arriving already floating with the adapter-asserted
     // automatic origin (D6) withholds exactly like a classified arrival.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -577,8 +577,8 @@ fn adapter_asserted_automatic_float_newcomer_takes_no_admission_focus() {
 fn fixed_tile_override_newcomer_still_mints_once() {
     // D3: an explicit user tile win is ordinary admission and keeps its
     // one-shot intent.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -639,8 +639,8 @@ fn fixed_tile_override_newcomer_still_mints_once() {
 fn explicit_focus_of_automatic_float_after_withhold_stays_quiet() {
     // Native focus landing on a withheld automatic float converges (the
     // float-origin lane) without minting and without wedging.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -700,8 +700,8 @@ fn explicit_focus_of_automatic_float_after_withhold_stays_quiet() {
 fn automatic_fixed_float_keeps_withholding_across_hint_loss() {
     // Hint loss never reclassifies (D2): the retained automatic origin
     // keeps the float floated and focus-free.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -763,8 +763,8 @@ fn automatic_fixed_float_keeps_withholding_across_hint_loss() {
 fn closed_automatic_lifetime_reused_as_ordinary_mints_again() {
     // Close drops the lifetime (spent set, automatic marker); reusing the
     // id as an ordinary window is a fresh admission with its own intent.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -846,10 +846,10 @@ fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
     // Batch invariance: [ordinary, fixed] in one report mints exactly
     // what sequential arrivals mint (ordinary focus once, fixed
     // withheld), regardless of the fixed newcomer arriving last.
-    let screens = vec![roomy("out-a", 0, true)];
+    let screens = vec![roomy("out-a", 0)];
     let seed = vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)];
     // Sequential reference: ordinary arrives first, fixed second.
-    let mut sequential = WorldEngine::new("gen-1").expect("generation");
+    let mut sequential = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut sequential,
         &report(1, screens.clone(), seed.clone(), "", vec![], None, None),
@@ -904,7 +904,7 @@ fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
     );
     // Batched: both arrive together with the fixed newcomer last in
     // selection (id) order.
-    let mut batched = WorldEngine::new("gen-1").expect("generation");
+    let mut batched = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut batched,
         &report(1, screens.clone(), seed, "", vec![], None, None),
@@ -933,7 +933,7 @@ fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
     );
     // Report order within the batch changes nothing: the same members
     // listed fixed-first select identically.
-    let mut reordered = WorldEngine::new("gen-1").expect("generation");
+    let mut reordered = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut reordered,
         &report(
@@ -998,8 +998,8 @@ fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
 fn mixed_batch_fixed_first_mints_ordinary() {
     // Batch invariance, other order: [fixed, ordinary] still mints the
     // ordinary newcomer once and withholds (spends) the fixed one.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -1070,8 +1070,8 @@ fn mixed_batch_fixed_first_mints_ordinary() {
 #[test]
 fn two_automatic_fixed_newcomers_take_no_focus() {
     // [fixed, fixed]: every automatic newcomer spends, none mints.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -1145,8 +1145,15 @@ fn windows_profile_automatic_fixed_withholds_while_ordinary_mints() {
         maximized_focus_fence: false,
     };
     for case in ["automatic-fixed", "intentional-fixed", "ordinary"] {
-        let mut engine = WorldEngine::new_with_config("gen-1", config).expect("generation");
-        let screens = vec![roomy("out-a", 0, true)];
+        let mut engine = WorldEngine::new_test_bound_with_config_and_initial_settings(
+            "gen-1",
+            "adapter-1",
+            crate::connection::HostCapabilities::default(),
+            config,
+            Vec::new(),
+        )
+        .expect("generation");
+        let screens = vec![roomy("out-a", 0)];
         accepted(
             &mut engine,
             &report(
@@ -1217,8 +1224,8 @@ fn explicit_focus_command_after_withhold_succeeds_without_admission_token() {
     // Explicit user focus rides the Focus command, never admission: after
     // a withheld automatic-fixed arrival, the command emits its own
     // correlated effect with no `af-` token.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -1292,8 +1299,8 @@ fn explicit_focus_command_after_withhold_succeeds_without_admission_token() {
 fn maximized_sibling_suppresses_admission_without_retry() {
     // D01 native activation ownership covers maximized siblings exactly
     // like fullscreen ones: the suppressed intent spends, never retries.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     let mut max = fact("max", "out-a", 0);
     max.maximized = true;
     accepted(
@@ -1357,8 +1364,8 @@ fn restart_adoption_stays_quiet_without_origin() {
     // A fresh core on the same generation re-adopts persisted ordinary
     // floats with no intent and no diagnostic origin; disable/enable
     // re-adoption through tiling toggles is equally quiet.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
     accepted(
         &mut engine,
         &report(
@@ -1371,7 +1378,7 @@ fn restart_adoption_stays_quiet_without_origin() {
             None,
         ),
     );
-    let mut restarted = WorldEngine::new("gen-1").expect("generation");
+    let mut restarted = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let adopt = accepted(
         &mut restarted,
         &report(
@@ -1449,8 +1456,8 @@ fn close_each_position_reflows_controlled_survivors() {
     // position keeps the scope controlled with reflowed survivors and no
     // invented intent once the survivor is observed focused.
     for victim in ["w0", "w1", "w2"] {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
-        let screens = vec![roomy("out-a", 0, true)];
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        let screens = vec![roomy("out-a", 0)];
         accepted(
             &mut engine,
             &report(
@@ -1492,7 +1499,7 @@ fn close_each_position_reflows_controlled_survivors() {
         let scope = reply
             .scopes
             .iter()
-            .find(|s| s.scope.starts_with("out-a/"))
+            .find(|s| s.scope.covers_workspace(&OutputId("out-a".into()), "ws-1"))
             .expect("scope");
         assert_eq!(
             scope.authority,
@@ -1514,7 +1521,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
     // Stay right names the source MRU survivor; after exact arrival
     // settles the flight, follow left names the mover; the settled echo
     // replays nothing.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = two_roomy();
     // Focus history: w2 then the mover, so the stay survivor is w2.
     accepted(
@@ -1670,7 +1677,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
     );
     // Mirror legs on a fresh engine: stay left names the out-b MRU
     // survivor; after exact settlement, follow right names the mover.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -1830,7 +1837,7 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
     // focus, none retains a flight.
     let screens = two_roomy();
     for (tag, window, x) in [("sticky", "pin", 300), ("excluded", "game", 400)] {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let first = accepted(
             &mut engine,
             &report(
@@ -1882,7 +1889,7 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
     // resolvable target; the fixed vocabulary refuses with no focus and no
     // flight.
     {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         accepted(
             &mut engine,
             &report(
@@ -1896,15 +1903,14 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             ),
         );
         let blind_target = vec![
-            roomy("out-a", 0, true),
+            roomy("out-a", 0),
             ScreenReport {
                 output: OutputId("out-b".to_owned()),
                 full_rect: None,
                 work_area: None,
-                gap: 0,
-                outer_gap: 0,
                 complete: false,
-                primary: false,
+                scale: 1.0,
+                identity: crate::world_report::OutputIdentity::unknown(),
             },
         ];
         let send = report(
@@ -1935,18 +1941,26 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
     // The clamped source still touches the neighbor so topology resolves
     // and the refusal comes from the held scope, not the target.
     {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+            "gen-1",
+            "adapter-1",
+            crate::connection::HostCapabilities::default(),
+            vec![(
+                "outer".to_owned(),
+                crate::connection::RawSettingValue::Number(50.0),
+            )],
+        )
+        .expect("generation");
         let abutting = vec![
             ScreenReport {
                 output: OutputId("out-a".to_owned()),
                 full_rect: Some(rect(700, 0, 100, 100)),
                 work_area: Some(rect(700, 0, 100, 100)),
-                gap: 0,
-                outer_gap: 0,
                 complete: true,
-                primary: true,
+                scale: 1.0,
+                identity: crate::world_report::OutputIdentity::unknown(),
             },
-            roomy("out-b", 800, false),
+            roomy("out-b", 800),
         ];
         accepted(
             &mut engine,
@@ -1965,12 +1979,11 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
                 output: OutputId("out-a".to_owned()),
                 full_rect: Some(rect(700, 0, 100, 100)),
                 work_area: Some(rect(700, 0, 100, 100)),
-                gap: 0,
-                outer_gap: 64,
                 complete: true,
-                primary: true,
+                scale: 1.0,
+                identity: crate::world_report::OutputIdentity::unknown(),
             },
-            roomy("out-b", 800, false),
+            roomy("out-b", 800),
         ];
         let send = report(
             2,
@@ -2003,7 +2016,7 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
     // name that stale workspace: it resolves the current source view and
     // retains its own flight (the same commit the old production route
     // made by pinning the live view at dispatch).
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = two_roomy();
     let first = accepted(
         &mut engine,
@@ -2134,7 +2147,7 @@ fn floating_source_migration_carries_without_engine_tree() {
     // target view commit; arrival with both views settles; proven refusal
     // rolls back to observed.
     let screens = two_roomy();
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -2328,7 +2341,7 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
     // logical id and its floating mode return to the source ring, and
     // members rehome at the source. No tree is fabricated either way.
     let screens = two_roomy();
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -2398,10 +2411,14 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
             target_output: OutputId("out-b".to_owned()),
             target_workspace: view_a.clone(),
             setter: FrameSetter::Refused,
-            pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
-            post: Some((OutputId("out-a".to_owned()), view_a.clone())),
-            native_pre: None,
-            native_post: None,
+            pre: Some(WorkspaceRef::Logical {
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId(view_a.clone()),
+            }),
+            post: Some(WorkspaceRef::Logical {
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId(view_a.clone()),
+            }),
             attempt_ms: 4,
         },
         MemberAttempt {
@@ -2410,10 +2427,14 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
             target_output: OutputId("out-b".to_owned()),
             target_workspace: view_a.clone(),
             setter: FrameSetter::Refused,
-            pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
-            post: Some((OutputId("out-a".to_owned()), view_a.clone())),
-            native_pre: None,
-            native_post: None,
+            pre: Some(WorkspaceRef::Logical {
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId(view_a.clone()),
+            }),
+            post: Some(WorkspaceRef::Logical {
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId(view_a.clone()),
+            }),
             attempt_ms: 4,
         },
     ];
@@ -2457,12 +2478,10 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
         "no replayed operations on floating rollback: {:?}",
         settled.windows
     );
-    let source_scope = format!("out-a/{view_a}");
-    let target_scope = format!("out-b/{view_a}");
     let source_status = settled
         .scopes
         .iter()
-        .find(|s| s.scope == source_scope)
+        .find(|s| s.scope.covers_workspace(&OutputId("out-a".into()), &view_a))
         .expect("floating source scope on rollback reply");
     assert_eq!(
         source_status.authority,
@@ -2470,7 +2489,10 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
         "floating source Untouched on rollback: {source_status:?}"
     );
     assert!(
-        settled.scopes.iter().all(|s| s.scope != target_scope),
+        settled.scopes.iter().all(|s| {
+            !matches!(&s.scope, crate::world_report::AuthorityScope::Workspace { output, workspace }
+                if output.0 == "out-b" && workspace.0 == view_a)
+        }),
         "no stale floating target scope: {:?}",
         settled.scopes
     );
@@ -2526,7 +2548,7 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
     let scope = calm
         .scopes
         .iter()
-        .find(|s| s.scope == format!("out-a/{view_a}"))
+        .find(|s| s.scope.covers_workspace(&OutputId("out-a".into()), &view_a))
         .expect("scope row");
     assert_eq!(
         scope.authority,
@@ -2534,9 +2556,10 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
         "floating mode restored: {scope:?}"
     );
     assert!(
-        calm.scopes
-            .iter()
-            .all(|s| s.scope != format!("out-b/{view_a}")),
+        calm.scopes.iter().all(|s| {
+            !matches!(&s.scope, crate::world_report::AuthorityScope::Workspace { output, workspace }
+                    if output.0 == "out-b" && workspace.0 == view_a)
+        }),
         "no residue at the target: {:?}",
         calm.scopes
     );
@@ -2557,7 +2580,7 @@ fn tiled_workspace_migration_carries_float_members() {
     // result. The shared commit path serves both this and the floating
     // source carry.
     let screens = two_roomy();
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -2641,7 +2664,7 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
     let screens = two_roomy();
     // Empty trailing, lone float, stay: emptied source names no focus.
     {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let first = accepted(
             &mut engine,
             &report(
@@ -2761,7 +2784,7 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
     }
     // Occupied trailing with a tiled survivor: stay names the survivor.
     {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let first = accepted(
             &mut engine,
             &report(
@@ -2864,8 +2887,8 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     // Centered 60% fallback over the 800x600 roomy work area.
     let fallback = rect(160, 120, 480, 360);
     let fullscreen_frame = rect(0, 0, 800, 600);
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = engine_with_zero_outer_gap();
+    let screens = vec![roomy("out-a", 0)];
     let seed = vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)];
     let first = accepted(
         &mut engine,
@@ -3067,7 +3090,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     // observed and no command. The row stays floated on the exact
     // durable fallback with untouched frame authority.
     {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = engine_with_zero_outer_gap();
         accepted(
             &mut engine,
             &report(
@@ -3142,7 +3165,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     // then unfloat under the retained overlay, then the overlay clears
     // with a plain tiled observation and no command. Both rows tile.
     {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = engine_with_zero_outer_gap();
         accepted(
             &mut engine,
             &report(
@@ -3229,7 +3252,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     // so a later fullscreen toggle reuses it instead of the fallback.
     {
         let durable = rect(10, 10, 100, 100);
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = engine_with_zero_outer_gap();
         accepted(
             &mut engine,
             &report(
@@ -3328,7 +3351,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
 
     // Floating + maximized unfloat refuses too (post-clear observation
     // required): fresh engine, plain float, then the maximized overlay.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let seed = vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)];
     accepted(
         &mut engine,
@@ -3398,8 +3421,8 @@ fn toggle_maximize_command_decides_and_reports() {
             other => panic!("expected maximize result, got {other:?}"),
         }
     }
-    let screens = vec![roomy("out-a", 0, true)];
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let seed = vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)];
     let first = accepted(
         &mut engine,
@@ -3591,7 +3614,7 @@ fn toggle_maximize_command_decides_and_reports() {
     // float keeps its durable placement and untouched frames.
     {
         let durable = rect(10, 10, 100, 100);
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         accepted(
             &mut engine,
             &report(
@@ -3675,18 +3698,26 @@ fn toggle_maximize_command_decides_and_reports() {
 
     // Refusal: a geometrically held scope never executes.
     {
-        let mut held_engine = WorldEngine::new("gen-1").expect("generation");
+        let mut held_engine = WorldEngine::new_test_bound_with_initial_settings(
+            "gen-1",
+            "adapter-1",
+            crate::connection::HostCapabilities::default(),
+            vec![(
+                "outer".to_owned(),
+                crate::connection::RawSettingValue::Number(50.0),
+            )],
+        )
+        .expect("generation");
         let abutting = vec![
             ScreenReport {
                 output: OutputId("out-a".to_owned()),
                 full_rect: Some(rect(700, 0, 100, 100)),
                 work_area: Some(rect(700, 0, 100, 100)),
-                gap: 0,
-                outer_gap: 0,
                 complete: true,
-                primary: true,
+                scale: 1.0,
+                identity: crate::world_report::OutputIdentity::unknown(),
             },
-            roomy("out-b", 800, false),
+            roomy("out-b", 800),
         ];
         accepted(
             &mut held_engine,
@@ -3705,12 +3736,11 @@ fn toggle_maximize_command_decides_and_reports() {
                 output: OutputId("out-a".to_owned()),
                 full_rect: Some(rect(700, 0, 100, 100)),
                 work_area: Some(rect(700, 0, 100, 100)),
-                gap: 0,
-                outer_gap: 64,
                 complete: true,
-                primary: true,
+                scale: 1.0,
+                identity: crate::world_report::OutputIdentity::unknown(),
             },
-            roomy("out-b", 800, false),
+            roomy("out-b", 800),
         ];
         match held_engine.handle_report(&report(
             2,
@@ -3730,7 +3760,8 @@ fn toggle_maximize_command_decides_and_reports() {
     // (Explicit sends are same-output only; directional sends own the
     // crossing, so the flight here rides an ordinary same-output send.)
     {
-        let mut flight_engine = WorldEngine::new("gen-1").expect("generation");
+        let mut flight_engine =
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let seed = accepted(
             &mut flight_engine,
             &report(
@@ -3785,4 +3816,542 @@ fn toggle_maximize_command_decides_and_reports() {
             other => panic!("in-flight toggle refuses, got {other:?}"),
         }
     }
+}
+
+fn engine_with_gaps(inner: f64, outer: f64) -> WorldEngine {
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities::default(),
+        vec![
+            (
+                "gap".to_owned(),
+                crate::connection::RawSettingValue::Number(inner),
+            ),
+            (
+                "outer".to_owned(),
+                crate::connection::RawSettingValue::Number(outer),
+            ),
+        ],
+    )
+    .expect("generation")
+}
+
+fn roomy_scaled(output: &str, x: i32, scale: f64) -> ScreenReport {
+    ScreenReport {
+        output: OutputId(output.to_owned()),
+        full_rect: Some(rect(x, 0, 800, 600)),
+        work_area: Some(rect(x, 0, 800, 600)),
+        complete: true,
+        scale,
+        identity: crate::world_report::OutputIdentity::unknown(),
+    }
+}
+
+#[test]
+fn scale_once_ties_bounds_and_overflow() {
+    // floor(logical * scale + 0.5), checked: ties round up, overflow is
+    // None (never a 64-bit clamp).
+    assert_eq!(WorldEngine::scale_once(8, 1.0), Some(8));
+    assert_eq!(WorldEngine::scale_once(8, 1.5), Some(12));
+    assert_eq!(WorldEngine::scale_once(1, 1.0), Some(1));
+    assert_eq!(WorldEngine::scale_once(1, 1.5), Some(2));
+    assert_eq!(WorldEngine::scale_once(0, 1.5), Some(0));
+    assert_eq!(WorldEngine::scale_once(8, 1.25), Some(10));
+    assert_eq!(WorldEngine::scale_once(i32::MAX, 2.0), None);
+    assert_eq!(WorldEngine::scale_once(8, 1e308), None);
+}
+
+#[test]
+fn per_output_scale_derives_physical_gaps() {
+    // Logical 8/8 with scale 1 stages physical 8/8; scale 1.5 stages
+    // 12/12 on that output only. Real engine, through the staged domains.
+    for (scale, physical) in [(1.0, 8), (1.5, 12)] {
+        let mut engine = engine_with_gaps(8.0, 8.0);
+        accepted(
+            &mut engine,
+            &report(
+                1,
+                vec![roomy_scaled("out-a", 0, scale)],
+                vec![fact("w0", "out-a", 0)],
+                "",
+                vec![],
+                None,
+                None,
+            ),
+        );
+        let domain = engine
+            .staged
+            .domains
+            .iter()
+            .find(|domain| domain.key.output.0 == "out-a")
+            .expect("staged domain");
+        assert_eq!(domain.gap, physical, "scale {scale}");
+        assert_eq!(domain.outer_gap, physical, "scale {scale}");
+        assert!(domain.readable, "scale {scale}");
+        assert_eq!(domain.hold, None, "scale {scale}");
+    }
+}
+
+#[test]
+fn scale_overflow_holds_scope_unreadable_with_diagnostic() {
+    // An overflowing scale holds the scope as unreadable with one staged
+    // Unreadable screen diagnostic, never a clamped gap. The reply is
+    // still accepted; the scope authorizes nothing.
+    let mut engine = engine_with_gaps(8.0, 8.0);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![roomy_scaled("out-a", 0, 1e308)],
+            vec![fact("w0", "out-a", 0)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let domain = engine
+        .staged
+        .domains
+        .iter()
+        .find(|domain| domain.key.output.0 == "out-a")
+        .expect("staged domain");
+    assert!(!domain.readable);
+    assert_eq!(
+        domain.hold,
+        Some(crate::world_report::HoldReason::Unreadable)
+    );
+    assert_eq!(reply.diagnostics.len(), 1);
+    let diagnostic = &reply.diagnostics[0];
+    assert_eq!(
+        diagnostic.kind,
+        crate::world_report::RowDiagnosticKind::Unreadable
+    );
+    assert_eq!(
+        diagnostic.row,
+        crate::world_report::RowDiagnosticLane::Screen
+    );
+    assert_eq!(diagnostic.id.as_deref(), Some("out-a"));
+    // The hold rides the scope, not the output row: uniform per-output
+    // authorities collapse into one Output-level scope (publish folds
+    // them), the screen is complete and unreadable domains never enter
+    // held_scopes, so plan_outputs leaves the row unheld.
+    let scope = reply
+        .scopes
+        .iter()
+        .find(|status| {
+            matches!(
+                &status.scope,
+                crate::world_report::AuthorityScope::Output(output)
+                    if output.0 == "out-a"
+            )
+        })
+        .expect("output scope");
+    assert_eq!(
+        scope.authority,
+        crate::world_report::ScopeAuthority::Hold(crate::world_report::HoldReason::Unreadable)
+    );
+    let output = reply
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .expect("output row");
+    assert_eq!(output.hold, None);
+}
+
+fn held_unreadable_row(output: &str, ordinal: usize) -> crate::world_report::HeldScreenRow {
+    crate::world_report::HeldScreenRow {
+        output: OutputId(output.to_owned()),
+        ordinal,
+        fields: vec![
+            (
+                "out".to_owned(),
+                crate::connection::RawSettingValue::String(output.to_owned()),
+            ),
+            (
+                "scale".to_owned(),
+                crate::connection::RawSettingValue::String("bad".to_owned()),
+            ),
+        ],
+        diagnostic: crate::world_report::RowDiagnostic {
+            scope: crate::world_report::AuthorityScope::Output(OutputId(output.to_owned())),
+            row: crate::world_report::RowDiagnosticLane::Screen,
+            id: Some(output.to_owned()),
+            kind: crate::world_report::RowDiagnosticKind::Unreadable,
+        },
+    }
+}
+
+#[test]
+fn bootstrap_first_bad_identifiable_output_has_no_authority() {
+    // Before readiness latches, an identifiable bad screen row authorizes
+    // nothing: the report bootstraps with an empty reply.
+    let mut engine = engine_with_gaps(8.0, 8.0);
+    let mut bad_first = report(1, Vec::new(), Vec::new(), "", vec![], None, None);
+    bad_first.held_screens = vec![held_unreadable_row("out-b", 0)];
+    let reply = match engine.handle_report(&bad_first) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected bootstrap, got {other:?}"),
+    };
+    assert!(!reply.ready);
+    assert!(reply.scopes.is_empty());
+    assert!(reply.diagnostics.is_empty());
+    assert!(reply.workspaces.is_empty());
+    assert!(reply.windows.is_empty());
+    assert!(!engine.is_ready());
+    assert_eq!(engine.state_revision(), 0);
+}
+
+#[test]
+fn after_ready_bad_screen_holds_only_affected_output() {
+    // Once ready latches, a bad screen holds only its own output scope
+    // with its typed diagnostic while the healthy output stays controlled.
+    let mut engine = engine_with_gaps(8.0, 8.0);
+    let screens = vec![roomy("out-a", 0), roomy("out-b", 800)];
+    let _ = accepted(
+        &mut engine,
+        &report(
+            1,
+            screens,
+            vec![fact("w0", "out-a", 0), fact("w1", "out-b", 800)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(engine.is_ready());
+    let mut narrow = report(
+        2,
+        vec![roomy("out-a", 0)],
+        vec![fact("w0", "out-a", 0), fact("w1", "out-b", 800)],
+        "",
+        vec![],
+        None,
+        None,
+    );
+    narrow.held_screens = vec![held_unreadable_row("out-b", 1)];
+    let reply = match engine.handle_report(&narrow) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted narrow hold, got {other:?}"),
+    };
+    assert!(reply.ready);
+    assert_eq!(reply.diagnostics.len(), 1);
+    let diagnostic = &reply.diagnostics[0];
+    assert_eq!(
+        diagnostic.kind,
+        crate::world_report::RowDiagnosticKind::Unreadable
+    );
+    assert_eq!(
+        diagnostic.row,
+        crate::world_report::RowDiagnosticLane::Screen
+    );
+    assert_eq!(diagnostic.id.as_deref(), Some("out-b"));
+    let healthy = reply
+        .scopes
+        .iter()
+        .find(|status| {
+            matches!(
+                &status.scope,
+                crate::world_report::AuthorityScope::Output(output)
+                    if output.0 == "out-a"
+            )
+        })
+        .expect("healthy output scope");
+    assert_eq!(healthy.authority, ScopeAuthority::Controlled);
+    let held = reply
+        .scopes
+        .iter()
+        .find(|status| {
+            matches!(
+                &status.scope,
+                crate::world_report::AuthorityScope::Output(output)
+                    if output.0 == "out-b"
+            )
+        })
+        .expect("held output scope");
+    assert_eq!(
+        held.authority,
+        ScopeAuthority::Hold(crate::world_report::HoldReason::Unreadable)
+    );
+    let good = row_of(&reply, "w0");
+    assert_eq!(good.frame_authority, ScopeAuthority::Controlled);
+    assert_eq!(good.membership_authority, ScopeAuthority::Controlled);
+    let bad = row_of(&reply, "w1");
+    assert!(
+        matches!(bad.frame_authority, ScopeAuthority::Hold(_)),
+        "held window holds frame: {bad:?}"
+    );
+    assert!(
+        matches!(bad.membership_authority, ScopeAuthority::Hold(_)),
+        "held window holds membership: {bad:?}"
+    );
+}
+
+#[test]
+fn direct_invalid_scale_first_report_grades_to_hold_without_authority() {
+    // Causal-equivalence target (finding B): a directly constructed
+    // identifiable invalid-scale row must grade to a narrow hold like its
+    // protocol-decoded twin, not refuse the report. Before readiness
+    // latches there is no authority: bootstrap reply with empty scopes and
+    // diagnostics. The pure shape gate still names the violation.
+    let mut engine = engine_with_gaps(8.0, 8.0);
+    let bad = report(
+        1,
+        vec![roomy_scaled("out-b", 0, 0.0)],
+        Vec::new(),
+        "",
+        vec![],
+        None,
+        None,
+    );
+    assert_eq!(validate_report_reason(&bad), Some("screen-scale-invalid"));
+    let reply = match engine.handle_report(&bad) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected bootstrap narrow hold, got {other:?}"),
+    };
+    assert!(!reply.ready);
+    assert!(reply.scopes.is_empty());
+    assert!(reply.diagnostics.is_empty());
+    assert!(reply.workspaces.is_empty());
+    assert!(reply.windows.is_empty());
+    assert!(!engine.is_ready());
+}
+
+#[test]
+fn direct_invalid_scale_after_ready_holds_only_affected_output() {
+    // Post-ready causal equivalence: the healthy output stays controlled
+    // while the directly constructed bad-scale output holds with its typed
+    // InvalidFact diagnostic, exactly like the decoded narrow hold.
+    let mut engine = engine_with_gaps(8.0, 8.0);
+    let _ = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![roomy("out-a", 0), roomy("out-b", 800)],
+            vec![fact("w0", "out-a", 0), fact("w1", "out-b", 800)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(engine.is_ready());
+    let narrow = report(
+        2,
+        vec![roomy("out-a", 0), roomy_scaled("out-b", 800, 0.0)],
+        vec![fact("w0", "out-a", 0), fact("w1", "out-b", 800)],
+        "",
+        vec![],
+        None,
+        None,
+    );
+    assert_eq!(
+        validate_report_reason(&narrow),
+        Some("screen-scale-invalid")
+    );
+    let reply = match engine.handle_report(&narrow) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted narrow hold, got {other:?}"),
+    };
+    assert!(reply.ready);
+    assert_eq!(reply.diagnostics.len(), 1);
+    let diagnostic = &reply.diagnostics[0];
+    assert_eq!(diagnostic.kind, RowDiagnosticKind::InvalidFact);
+    assert_eq!(diagnostic.row, RowDiagnosticLane::Screen);
+    assert_eq!(diagnostic.id.as_deref(), Some("out-b"));
+    let healthy = reply
+        .scopes
+        .iter()
+        .find(|status| {
+            matches!(
+                &status.scope,
+                crate::world_report::AuthorityScope::Output(output)
+                    if output.0 == "out-a"
+            )
+        })
+        .expect("healthy output scope");
+    assert_eq!(healthy.authority, ScopeAuthority::Controlled);
+    let held = reply
+        .scopes
+        .iter()
+        .find(|status| {
+            matches!(
+                &status.scope,
+                crate::world_report::AuthorityScope::Output(output)
+                    if output.0 == "out-b"
+            )
+        })
+        .expect("held output scope");
+    assert_eq!(held.authority, ScopeAuthority::Hold(HoldReason::Unreadable));
+    let good = row_of(&reply, "w0");
+    assert_eq!(good.frame_authority, ScopeAuthority::Controlled);
+    let bad_row = row_of(&reply, "w1");
+    assert!(
+        matches!(bad_row.frame_authority, ScopeAuthority::Hold(_)),
+        "held window holds frame: {bad_row:?}"
+    );
+}
+
+#[test]
+fn direct_nonfinite_scale_grades_to_hold_without_null_encoding() {
+    // A non-finite typed scale is retained internally as a held number
+    // fact but no encoder converts it to `null`: the checked writers err.
+    let mut engine = engine_with_gaps(8.0, 8.0);
+    let _ = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![roomy("out-a", 0), roomy("out-b", 800)],
+            vec![fact("w0", "out-a", 0), fact("w1", "out-b", 800)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let narrow = report(
+        2,
+        vec![roomy("out-a", 0), roomy_scaled("out-b", 800, f64::NAN)],
+        vec![fact("w0", "out-a", 0), fact("w1", "out-b", 800)],
+        "",
+        vec![],
+        None,
+        None,
+    );
+    assert_eq!(
+        validate_report_reason(&narrow),
+        Some("screen-scale-invalid")
+    );
+    let graded = crate::world_report::grade_invalid_screens(&narrow).expect("grades");
+    assert_eq!(graded.held_screens.len(), 1);
+    assert!(
+        crate::world_report::encode_held_screen_canonical(&graded.held_screens[0]).is_err(),
+        "retained non-finite fact never spells null"
+    );
+    let reply = match engine.handle_report(&narrow) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted narrow hold, got {other:?}"),
+    };
+    assert!(reply.ready);
+    assert_eq!(reply.diagnostics.len(), 1);
+    assert_eq!(reply.diagnostics[0].kind, RowDiagnosticKind::InvalidFact);
+    assert_eq!(reply.diagnostics[0].id.as_deref(), Some("out-b"));
+}
+
+#[test]
+fn direct_invalid_scale_with_preheld_row_keeps_ordinals() {
+    // A newly graded row takes the free carried-array slot while the
+    // pre-existing held row keeps its original ordinal; both scopes hold
+    // with their own diagnostics and the healthy output stays controlled.
+    let mut engine = engine_with_gaps(8.0, 8.0);
+    let _ = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![roomy("out-a", 0), roomy("out-b", 800), roomy("out-c", 1600)],
+            vec![fact("w0", "out-a", 0)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let mut mixed = report(
+        2,
+        vec![roomy("out-a", 0), roomy_scaled("out-b", 800, 0.0)],
+        vec![fact("w0", "out-a", 0)],
+        "",
+        vec![],
+        None,
+        None,
+    );
+    mixed.held_screens = vec![held_unreadable_row("out-c", 1)];
+    let graded = crate::world_report::grade_invalid_screens(&mixed).expect("grades");
+    let ordinals: Vec<usize> = graded
+        .held_screens
+        .iter()
+        .map(|held| held.ordinal)
+        .collect();
+    assert_eq!(ordinals, vec![1, 2]);
+    let reply = match engine.handle_report(&mixed) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted mixed hold, got {other:?}"),
+    };
+    assert!(reply.ready);
+    assert_eq!(reply.diagnostics.len(), 2);
+    let healthy = reply
+        .scopes
+        .iter()
+        .find(|status| {
+            matches!(
+                &status.scope,
+                crate::world_report::AuthorityScope::Output(output)
+                    if output.0 == "out-a"
+            )
+        })
+        .expect("healthy output scope");
+    assert_eq!(healthy.authority, ScopeAuthority::Controlled);
+    for held in ["out-b", "out-c"] {
+        reply
+            .scopes
+            .iter()
+            .find(|status| {
+                matches!(
+                    &status.scope,
+                    crate::world_report::AuthorityScope::Output(output)
+                        if output.0 == held
+                )
+            })
+            .unwrap_or_else(|| panic!("held output scope {held}"));
+    }
+}
+
+#[test]
+fn direct_invalid_scale_with_structural_violation_still_refuses() {
+    // Grading never masks structural gates: a bad id, a duplicate output,
+    // or a bad rect beside a gradable scale refuses the whole report.
+    let mut engine = engine_with_gaps(8.0, 8.0);
+    let mut bad_id = report(
+        1,
+        vec![roomy_scaled("out-b", 0, 0.0)],
+        Vec::new(),
+        "",
+        vec![],
+        None,
+        None,
+    );
+    bad_id.screens[0].output = OutputId(String::new());
+    match engine.handle_report(&bad_id) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "snapshot-invalid");
+            assert_eq!(message, "screen-id-invalid");
+        }
+        other => panic!("bad id must refuse, got {other:?}"),
+    }
+    let duplicate = report(
+        1,
+        vec![roomy("out-b", 0), roomy_scaled("out-b", 800, 0.0)],
+        Vec::new(),
+        "",
+        vec![],
+        None,
+        None,
+    );
+    match engine.handle_report(&duplicate) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "snapshot-invalid");
+            assert_eq!(message, "duplicate-screen");
+        }
+        other => panic!("duplicate must refuse, got {other:?}"),
+    }
+    assert!(!engine.is_ready());
+}
+
+#[test]
+fn scale_once_rejects_nonfinite_without_clamp() {
+    assert_eq!(WorldEngine::scale_once(8, f64::NAN), None);
+    assert_eq!(WorldEngine::scale_once(8, f64::INFINITY), None);
+    assert_eq!(WorldEngine::scale_once(8, f64::NEG_INFINITY), None);
 }

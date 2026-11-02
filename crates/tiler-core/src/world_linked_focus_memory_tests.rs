@@ -20,15 +20,14 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -62,7 +61,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -70,31 +68,19 @@ fn report(
         request_id: format!("req-{seq}"),
         command_seq,
         command,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens,
         windows,
         views: Vec::new(),
         closed: Vec::new(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -116,7 +102,7 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
 }
 
 fn two_screens() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true), screen("out-b", 800, false)]
+    vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
 fn focus_targets(reply: &crate::world_report::WorldReply) -> Vec<WindowId> {
@@ -159,7 +145,7 @@ fn focused_window(engine: &WorldEngine, key: &DomainKey) -> Option<WindowId> {
 }
 
 fn bootstrap_two_tiled() -> (WorldEngine, DomainKey) {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -178,7 +164,7 @@ fn bootstrap_two_tiled() -> (WorldEngine, DomainKey) {
 /// Three tiled windows on out-a: lets a stale `last_active` name a window
 /// that is neither the command subject nor the effect target.
 fn bootstrap_three_tiled() -> (WorldEngine, DomainKey) {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -291,7 +277,7 @@ fn view_return_select_records_linked_target_before_native_writes() {
     // empty trailing workspace. The view return must name the moved
     // window (the only linked candidate there) and record it in target
     // memory before native writes, then the test leaves early.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -581,7 +567,7 @@ fn redundant_view_select_records_nothing_extra() {
 
 #[test]
 fn exception_focus_effect_leaves_memory_unchanged() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_fact = fact("win-f", "out-a", 0);
     float_fact.floating = true;
     accepted(
@@ -694,7 +680,7 @@ fn session_observation_for(
     windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
     crate::session::SessionObservation {
         observation: Observation::new(
-            OwnerId::parse("owner-a").expect("owner"),
+            OwnerId::parse("adapter-1").expect("owner"),
             GenerationId::parse("gen-1").expect("generation"),
             session.accepted_revision(),
             100 + session.accepted_revision(),
@@ -718,10 +704,34 @@ fn report_global_unique(
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
 ) -> WorldReport {
-    use crate::workspace_scope::WorkspaceMode;
-    let mut out = report(seq, two_screens(), windows, focused, command_seq, command);
-    out.workspace_mode = WorkspaceMode::GlobalUnique;
-    out
+    report(seq, two_screens(), windows, focused, command_seq, command)
+}
+
+fn global_unique_engine() -> WorldEngine {
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let handshake = engine.handshake(&crate::connection::HandshakeRequest {
+        adapter: "adapter-1".to_owned(),
+        request: "handshake-1".to_owned(),
+        application_identity: crate::connection::ApplicationIdentity {
+            app_id: None,
+            executable: None,
+            process_id: None,
+        },
+        capabilities: crate::connection::HostCapabilities::without_native_identity(),
+    });
+    engine
+        .handle_settings(&crate::connection::SettingsRequest {
+            adapter: "adapter-1".to_owned(),
+            generation: handshake.generation.expect("accepted handshake"),
+            request: "settings-1".to_owned(),
+            revision: 0,
+            values: vec![(
+                "mode".to_owned(),
+                crate::connection::RawSettingValue::String("global-unique".to_owned()),
+            )],
+        })
+        .expect("initial settings accepted");
+    engine
 }
 
 #[test]
@@ -736,7 +746,7 @@ fn global_swap_records_effect_target_in_moved_domain() {
     // the ineligible win-b1 leaf, so disabling the fallback seam must
     // turn the memory assertion red while the effect still names win-b2.
     use crate::directional::{OutputId, WorkspaceId};
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = global_unique_engine();
     let first = accepted(
         &mut engine,
         &report_global_unique(1, vec![], "", None, None),
@@ -843,7 +853,7 @@ fn pending_plan_refusal_leaves_staged_focus_uncorrupted() {
             .propose_focus(
                 &key,
                 &WindowId("win-a".to_owned()),
-                Direction::Right,
+                Direction::Left,
                 &obs,
                 &CorrelationId::parse("c-focus-1").expect("correlation"),
                 &FocusCapabilities::full(),
@@ -958,7 +968,7 @@ fn no_focus_cross_preserves_remembered_target() {
     // Seed remembered selections on both outputs, lose host focus, then
     // cross with no subject: the effect must name the destination's
     // already-remembered selection.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let windows = || {
         vec![
             fact("win-a1", "out-a", 10),
@@ -1010,7 +1020,7 @@ fn local_move_preserves_mover_memory() {
             Some(11),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-b".to_owned()),
-                direction: "left".to_owned(),
+                direction: "right".to_owned(),
                 same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
             }),
         ),
@@ -1029,10 +1039,11 @@ fn local_move_preserves_mover_memory() {
 
 #[test]
 fn ordinary_directional_focus_records_effect_target() {
-    // Stale `last_active` names win-c; the leftward focus from win-b must
-    // flip memory to win-a before native writes. The Engine focus commit
-    // owns this (no world seam records here): disabling the commit leaves
-    // memory on observed win-b while the effect still names win-a.
+    // Stale `last_active` and observed focus name win-c; down through its
+    // vertical subtree reaches win-a and must flip memory before native
+    // writes. The Engine focus commit owns this (no world seam records
+    // here): disabling the commit leaves memory on win-c while the effect
+    // still names win-a.
     let (mut engine, key) = bootstrap_three_tiled();
     stale_memory_to(&mut engine, 2, "win-c", "win-a");
     assert_eq!(
@@ -1050,18 +1061,18 @@ fn ordinary_directional_focus_records_effect_target() {
                 fact("win-b", "out-a", 200),
                 fact("win-c", "out-a", 400),
             ],
-            "win-b",
+            "win-c",
             Some(12),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-b".to_owned()),
-                direction: "left".to_owned(),
+                window: WindowId("win-c".to_owned()),
+                direction: "down".to_owned(),
             }),
         ),
     );
     assert_eq!(
         focus_targets(&reply),
         vec![WindowId("win-a".to_owned())],
-        "leftward focus names win-a"
+        "downward focus names win-a"
     );
     assert_eq!(
         remembered_window(&engine, &key),
@@ -1076,7 +1087,7 @@ fn cross_output_move_records_mover_in_target() {
     // alone on out-a (no local neighbor, so the pair plans R4 cross), and
     // stale `last_active` on out-b names win-c. The Engine move commit
     // owns target memory (no world seam records here).
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let windows = || {
         vec![
             fact("win-a", "out-a", 0),
@@ -1165,7 +1176,7 @@ fn swap_neighbor_move_preserves_mover_memory() {
             Some(12),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-b".to_owned()),
-                direction: "left".to_owned(),
+                direction: "right".to_owned(),
                 same_axis: crate::directional::SameAxisMove::SwapWithNeighbor,
             }),
         ),
@@ -1188,7 +1199,7 @@ fn float_lane_focus_leaves_memory_unchanged() {
     // construction (candidates are floating/sticky only), so the command
     // emits its effect but leaves tiled memory untouched. Non-leaf memory
     // requires a separate model decision.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_b = fact("win-f1", "out-a", 0);
     float_b.floating = true;
     let mut float_c = fact("win-f2", "out-a", 200);
@@ -1241,7 +1252,7 @@ fn float_lane_focus_leaves_memory_unchanged() {
 
 #[test]
 fn send_follow_records_mover_in_target_before_native_writes() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1401,7 +1412,7 @@ fn local_move_direct_records_mover_without_sweep() {
     ];
     let command = WorldCommand::MoveDirectional {
         window: WindowId("win-b".to_owned()),
-        direction: "left".to_owned(),
+        direction: "right".to_owned(),
         same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
     };
     let probe = report(
@@ -1463,7 +1474,7 @@ fn swap_neighbor_move_direct_records_mover_without_sweep() {
     ];
     let command = WorldCommand::MoveDirectional {
         window: WindowId("win-b".to_owned()),
-        direction: "left".to_owned(),
+        direction: "right".to_owned(),
         same_axis: crate::directional::SameAxisMove::SwapWithNeighbor,
     };
     let probe = report(
@@ -1506,7 +1517,7 @@ fn send_directional_follow_records_mover_in_target() {
     // source, so only the lifecycle commit can name win-a in the
     // target. Disabling that write leaves target memory on win-d while
     // the effect still names win-a.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let windows = || {
         vec![
             fact("win-a", "out-a", 0),
@@ -1583,7 +1594,7 @@ fn send_directional_stay_records_survivor_in_source() {
     // observed mover win-a), so only the lifecycle commit can record
     // it. Disabling that write leaves no resolvable source memory (the
     // old win-a leaf moved away) while the effect still names win-b.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let windows = || {
         vec![
             fact("win-a", "out-a", 0),
@@ -1650,7 +1661,7 @@ fn observed_float_away_back_returns_float() {
     // Mouse path: ordinary float observed focused alongside a tile, then
     // leave and return. Before the fix, leaf-only return named the tile
     // instead of the observed float.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
     float_f.floating = true;
     let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
@@ -1718,7 +1729,7 @@ fn keyboard_float_lane_leave_before_observe_returns_float() {
     // float-lane effect names win-f2, leave BEFORE native observes win-f2,
     // return must still name win-f2. Before the fix, leaf-only return
     // named the tile instead.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_b = fact("win-f1", "out-a", 0);
     float_b.floating = true;
     let mut float_c = fact("win-f2", "out-a", 200);
@@ -1806,7 +1817,7 @@ fn float_only_workspace_returns_float() {
     // Tiled-mode workspace whose only resident is a float: send the tile
     // away without follow, leave, return. Before the fix, leaf-only
     // candidates found no tiled member and emitted no focus.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
     float_f.floating = true;
     let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
@@ -1888,7 +1899,7 @@ fn sticky_shown_away_from_home_returns_sticky() {
     // `observed_workspace` on the sticky fact so ingestion never rehomes
     // the sticky native home; shown-vs-home split comes only from the
     // retained logical view.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
     sticky_s.sticky = true;
     let windows = || vec![fact("win-a", "out-a", 0), sticky_s.clone()];
@@ -1990,7 +2001,7 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
     // admitted and focused on the spare afterwards must win the later
     // return: live owner memory shadows the older foreign sticky
     // identity instead of letting it outrank the latest target tile.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
     sticky_s.sticky = true;
     let first = accepted(
@@ -2179,7 +2190,7 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
 fn last_active_sticky_after_tile_same_home_returns_sticky() {
     // Tile focused, then sticky focused, both while home is shown.
     // Contract: last active (sticky) wins the away/back return.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
     sticky_s.sticky = true;
     let windows = || {
@@ -2278,7 +2289,7 @@ fn last_active_sticky_after_tile_same_home_returns_sticky() {
 fn last_active_sticky_after_tile_on_spare_returns_sticky() {
     // Tile admitted+focused on the spare, then the home-pinned sticky is
     // focused while the spare is shown. Contract: the later sticky wins.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
     sticky_s.sticky = true;
     let first = accepted(
@@ -2407,7 +2418,7 @@ fn last_active_sticky_after_tile_on_spare_returns_sticky() {
 fn last_active_later_tile_after_float_returns_tile() {
     // Float recorded first, tile focused after, both at home.
     // Contract: last active (tile) wins. Control: must pass.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
     float_f.floating = true;
     let windows = || {
@@ -2504,7 +2515,7 @@ fn last_active_unchanged_tile_observation_preserves_float_command() {
     // focus (command before native actuation, native unchanged). Contract:
     // an unchanged tile re-report carries no new information and must not
     // clobber the recorded float.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
     float_f.floating = true;
     let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
@@ -2588,7 +2599,7 @@ fn last_active_unchanged_tile_observation_preserves_float_command() {
 fn last_active_closed_float_prunes_memory_no_ghost() {
     // Closing the recorded float prunes its identity; the return names the
     // surviving tile with no ghost focus. Control: must pass.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
     float_f.floating = true;
     let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
@@ -2678,7 +2689,7 @@ fn last_active_closed_float_prunes_memory_no_ghost() {
 fn last_active_no_focus_report_preserves_float_memory() {
     // An empty-focus report (unknown/lost foreground) records nothing and
     // preserves the recorded float. Control: must pass.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
     float_f.floating = true;
     let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
@@ -2763,7 +2774,7 @@ fn last_active_no_focus_empty_target_with_visible_sticky_stays_quiet() {
     // where only the sticky is visible: the spare names no canonical
     // target and has no tiled fallback, so the switch stays NoEffect and
     // records nothing; home memory survives for the return.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
     sticky_s.sticky = true;
     let windows = || vec![fact("win-a", "out-a", 0), sticky_s.clone()];
@@ -2857,7 +2868,7 @@ fn last_active_tiled_operation_focus_supersedes_stale_sticky() {
     // cross_output_transfer=false) names a tile before native observation
     // moves. The accepted tile must overwrite the sticky slot so
     // leave/return yields the tile.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
     sticky_s.sticky = true;
     let windows = || {
@@ -2973,7 +2984,7 @@ fn last_active_send_stay_survivor_supersedes_stale_sticky() {
     // Stale float recorded at home, then a same-output send with stay=false
     // names the tiled source survivor. That tile must overwrite the
     // float slot so leave/return yields the tile.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
     float_f.floating = true;
     let windows = || {
@@ -3082,7 +3093,7 @@ fn last_active_admission_newcomer_supersedes_stale_sticky() {
     // Sticky recorded at home, then a fresh tiled newcomer is admitted
     // with automatic focus. The admission tile must overwrite the sticky
     // slot so leave/return yields the newcomer.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
     sticky_s.sticky = true;
     let windows = || {
@@ -3181,7 +3192,7 @@ fn last_active_close_after_tile_supersession_falls_back_to_tiled() {
     // Closing that tile prunes the slot; the effect-free close/return
     // must use the eligible tiled fallback (win-a), never the stale
     // sticky exception.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
     sticky_s.sticky = true;
     let windows = || {
@@ -3316,7 +3327,7 @@ fn sticky_visibility_switch_mints_no_admission_and_no_spare_memory() {
     // no command, the observation must mint no admission focus and
     // record no canonical memory in the spare. A detour observation
     // stays quiet, and the return names the remembered tile.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
     sticky_s.sticky = true;
     let windows = || vec![fact("win-a", "out-a", 0), sticky_s.clone()];

@@ -192,7 +192,7 @@ impl WorldEngine {
         // Latest view command wins per output. Core views move immediately
         // (logical authority); the retained flight proves actuation.
         self.retain_view_inner(output, workspace, format!("op-{command_seq}"));
-        if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
             let canonical = self.mapping.get(&output.0).cloned().unwrap_or_default();
             let live: Vec<String> = {
                 let mut live: Vec<String> = report
@@ -306,7 +306,7 @@ impl WorldEngine {
     /// Scoped selection ring for one output: the retained logical ring.
     /// Shared mode returns the unified order (first live screen's ring).
     pub(crate) fn selection_ring(&self, report: &WorldReport, output: &OutputId) -> Vec<String> {
-        if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
             let mut live: Vec<String> = report
                 .screens
                 .iter()
@@ -347,7 +347,7 @@ impl WorldEngine {
             return Some(output.clone());
         }
         crate::cursor_targeting::resolve_switch_output(
-            report.switch_target,
+            self.switch_target_setting(),
             self.fresh_cursor_output(report).as_ref(),
             self.focused_output(report).as_ref(),
             &self.primary_first_outputs(report),
@@ -396,36 +396,5 @@ impl WorldEngine {
             return Some(home);
         }
         self.resolve_action_output(report)
-    }
-
-    /// Resolve an omitted send source from the pre-observation retained
-    /// home, else the cached output when live, else the first live screen
-    /// in report order. Same pre-sweep contract as
-    /// [`resolve_home_then_action`](Self::resolve_home_then_action):
-    /// the keyboard digit/relative fallback universe (cached-live, then
-    /// native screen enumeration order), never the pointer.
-    pub(crate) fn resolve_home_then_cached_live(
-        &self,
-        report: &WorldReport,
-        window: &WindowId,
-    ) -> Option<OutputId> {
-        if let Some(home) = self
-            .members
-            .get(window)
-            .map(|state| state.home.output.clone())
-        {
-            return Some(home);
-        }
-        let live: BTreeSet<&str> = report
-            .screens
-            .iter()
-            .map(|screen| screen.output.0.as_str())
-            .collect();
-        if let Some(cached) = report.action_cached.as_ref()
-            && live.contains(cached.0.as_str())
-        {
-            return Some(cached.clone());
-        }
-        report.screens.first().map(|screen| screen.output.clone())
     }
 }

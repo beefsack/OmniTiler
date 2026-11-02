@@ -32,8 +32,8 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    ScreenReport, ScreenView, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReply,
-    WorldReport,
+    AuthorityScope, OutputIdentity, ScreenReport, ScreenView, WORLD_CONTRACT_VERSION, WindowFact,
+    WorldCommand, WorldReply, WorldReport,
 };
 
 fn rect4(v: [i32; 4]) -> Rect {
@@ -181,6 +181,7 @@ pub struct StressCase {
     name: String,
     #[allow(dead_code)]
     description: String,
+    #[allow(dead_code)]
     owner: String,
     adapter: String,
     generation: String,
@@ -836,7 +837,7 @@ pub fn normalize_tiles_to_work(
 
 fn build_report(
     case: &StressCase,
-    mode: WorkspaceMode,
+    _mode: WorkspaceMode,
     sim: &Sim,
     command: Option<WorldCommand>,
     command_seq: Option<u64>,
@@ -879,7 +880,6 @@ fn build_report(
     }
     Ok(WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: case.owner.clone(),
         adapter_incarnation: case.adapter.clone(),
         core_generation: case.generation.clone(),
         observation_seq: sim.obs,
@@ -887,32 +887,18 @@ fn build_report(
         request_id: format!("req-{}", sim.req),
         command_seq,
         command,
-        workspace_mode: mode,
         screens: vec![ScreenReport {
             output: OutputId(screen.out.clone()),
             full_rect: Some(rect4(screen.full)),
             work_area: Some(rect4(screen.work)),
-            gap: screen.gap,
-            outer_gap: screen.outer_gap,
             complete: screen.complete,
-            primary: screen.primary,
+            scale: 1.0,
+            identity: OutputIdentity::unknown(),
         }],
         windows,
         views,
         closed: closed.into_iter().map(WindowId).collect(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         // Truthful observation: the predicted real foreground, "" when no
@@ -921,6 +907,12 @@ fn build_report(
         action_foreground: None,
         action_cached: None,
         action_outputs: vec![],
+        primary_output: if screen.primary {
+            Some(OutputId(screen.out.clone()))
+        } else {
+            None
+        },
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -931,7 +923,6 @@ fn build_report(
         clear_attempts: vec![],
         creation_attempts: vec![],
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
-        default_tiled: case.settings.default_tiled,
     })
 }
 
@@ -940,6 +931,7 @@ fn bootstrap_binding(
     mode: WorkspaceMode,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut probe = WorldEngine::new(&case.generation).ok_or("bad generation")?;
+    bind_engine(&mut probe, case, mode)?;
     let sim = Sim {
         req: 1,
         obs: 1,
@@ -988,6 +980,50 @@ fn bootstrap_binding(
         ("home".to_owned(), home),
         ("away".to_owned(), ring[1].1.clone()),
     ]))
+}
+
+fn bind_engine(
+    engine: &mut WorldEngine,
+    case: &StressCase,
+    mode: WorkspaceMode,
+) -> Result<(), String> {
+    use tiler_core::connection::{
+        ApplicationIdentity, HandshakeRequest, HostCapabilities, RawSettingValue, SettingsRequest,
+        SettingsStatus,
+    };
+    let handshake = engine.handshake(&HandshakeRequest {
+        adapter: case.adapter.clone(),
+        request: "stress-handshake".to_owned(),
+        application_identity: ApplicationIdentity {
+            app_id: None,
+            executable: None,
+            process_id: None,
+        },
+        capabilities: HostCapabilities::without_native_identity(),
+    });
+    let generation = handshake.generation.ok_or("stress handshake failed")?;
+    let mode = match mode {
+        WorkspaceMode::PerOutputLocal => "per-output-local",
+        WorkspaceMode::GlobalUnique => "global-unique",
+        WorkspaceMode::Shared => "shared",
+    };
+    let settings = engine
+        .handle_settings(&SettingsRequest {
+            adapter: case.adapter.clone(),
+            generation,
+            request: "stress-settings".to_owned(),
+            revision: 1,
+            values: vec![
+                ("mode".to_owned(), RawSettingValue::String(mode.to_owned())),
+                ("gap".to_owned(), RawSettingValue::Number(0.0)),
+                ("outer".to_owned(), RawSettingValue::Number(0.0)),
+            ],
+        })
+        .ok_or("stress settings envelope rejected")?;
+    if settings.status != SettingsStatus::Accepted {
+        return Err("stress settings were not accepted".to_owned());
+    }
+    Ok(())
 }
 
 /// Converge simulated host facts to the actual accepted allocations, exactly
@@ -1044,7 +1080,6 @@ fn check_pairing(
     if reply.contract_version != WORLD_CONTRACT_VERSION
         || reply.adapter_incarnation != case.adapter
         || reply.core_generation != case.generation
-        || report.owner != case.owner
     {
         return Err(fail(at, "report/reply provenance != case identity"));
     }
@@ -1082,7 +1117,7 @@ fn check_oracle(
     foreground: &Option<String>,
     pager_current: &str,
     pager_occupied: &[String],
-    both_scopes: bool,
+    _both_scopes: bool,
 ) -> Result<(), String> {
     let screen = &case.screens[0];
     let view = resolve(&binding_of(sim), view_alias, at)?;
@@ -1140,7 +1175,7 @@ fn check_oracle(
                 && (w.tiling_mode.as_str() != "tiled"
                     || !w.existence
                     || w.hold.is_some()
-                    || w.scope != screen.out
+                    || w.scope != AuthorityScope::Output(OutputId(screen.out.clone()))
                     || w.output.0 != screen.out
                     || w.native_binding.is_some())
             {
@@ -1148,44 +1183,28 @@ fn check_oracle(
             }
         }
     }
-    // Scopes: every known scope controlled. The bootstrap carries only
-    // the home scope. Later, home and the current away slot must be
-    // present; lifecycle may retain stale rows for pruned workspaces, so
-    // every extra scope must name a workspace id actually seen in a reply
-    // ring, never an invented one. Scope keys are `output/workspace` pairs.
+    // Uniform authority across this output projects to one output scope.
     {
-        let mut scopes: Vec<&str> = reply.scopes.iter().map(|s| s.scope.as_str()).collect();
+        let mut scopes: Vec<&AuthorityScope> = reply.scopes.iter().map(|s| &s.scope).collect();
         scopes.sort();
-        let home_scope = format!("{}/{}", screen.out, sim.home);
-        let away_scope = format!("{}/{}", screen.out, sim.away);
-        if !both_scopes {
-            if scopes != [home_scope.as_str()] {
-                return Err(fail(at, format!("scopes {scopes:?} != [home]")));
-            }
-        } else {
-            if !scopes.contains(&home_scope.as_str()) || !scopes.contains(&away_scope.as_str()) {
-                return Err(fail(
-                    at,
-                    format!("scopes {scopes:?} miss the home/away slots"),
-                ));
-            }
+        let output_scope = AuthorityScope::Output(OutputId(screen.out.clone()));
+        if scopes != [&output_scope] {
+            return Err(fail(at, format!("scopes {scopes:?} != [{output_scope:?}]")));
         }
         for s in &reply.scopes {
             if s.authority.as_str() != "controlled" {
-                return Err(fail(at, format!("scope {} is not controlled", s.scope)));
+                return Err(fail(at, format!("scope {:?} is not controlled", s.scope)));
             }
-            if both_scopes {
-                let id = s
-                    .scope
-                    .strip_prefix(&format!("{}/", screen.out))
-                    .unwrap_or("");
-                if id != sim.home && id != sim.away && !sim.seen.contains(id) {
-                    return Err(fail(
-                        at,
-                        format!("scope {} names an unseen workspace", s.scope),
-                    ));
-                }
-            }
+        }
+        if reply
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.output.0 == screen.out && workspace.scope != output_scope)
+        {
+            return Err(fail(
+                at,
+                "workspace row scope does not match output authority",
+            ));
         }
     }
     // Roster, homing, allocations, oracle tiles, coverage over actuals.
@@ -1736,6 +1755,7 @@ pub fn run_stress(
     let mode = case_mode(&case.mode)?;
     let binding = bootstrap_binding(case, mode)?;
     let mut engine = WorldEngine::new(&case.generation).ok_or("bad generation")?;
+    bind_engine(&mut engine, case, mode)?;
     let mut sim = Sim {
         req: 0,
         obs: 0,

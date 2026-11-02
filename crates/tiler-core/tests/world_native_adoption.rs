@@ -6,6 +6,7 @@
 //! duplicates refuse; native-free behavior unchanged (covered by the
 //! existing suite).
 
+use tiler_core::connection::{HostCapabilities, RawSettingValue};
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
@@ -20,15 +21,14 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: tiler_core::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -90,7 +90,11 @@ fn scope_authority(
     reply
         .scopes
         .iter()
-        .find(|status| status.scope == format!("{output}/{workspace}"))
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId(output.to_owned()), workspace)
+        })
         .map(|status| status.authority)
 }
 
@@ -101,14 +105,12 @@ fn report(
     screens: Vec<ScreenReport>,
     windows: Vec<WindowFact>,
     native: Vec<NativeObservation>,
-    mode: WorkspaceMode,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
     inventory_complete: bool,
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -116,21 +118,11 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: mode,
         screens,
         windows: windows.clone(),
         views: vec![],
         closed: vec![],
-        host_owned_workspace_domains: true,
-        equal_workspace_count: false,
-        birth_clear: false,
         native,
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        default_tiled: true,
         focused_global: windows
             .first()
             .map(|f| f.window.0.clone())
@@ -138,13 +130,11 @@ fn report(
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         monotonic_ms: 0,
@@ -155,6 +145,81 @@ fn report(
         creation_attempts: Vec::new(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
     }
+}
+
+/// Initial handshake settings mirroring the original per-report values:
+/// the original screens carried gap 0 / outer 0, host-owned domains were
+/// on, and each report carried its own workspace mode.
+fn engine_host_owned(mode: WorkspaceMode, equal_count: bool) -> WorldEngine {
+    let token = match mode {
+        WorkspaceMode::PerOutputLocal => "per-output-local",
+        WorkspaceMode::GlobalUnique => "global-unique",
+        WorkspaceMode::Shared => "shared",
+    };
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            host_owned: true,
+            equal_count,
+            ..Default::default()
+        },
+        vec![
+            ("mode".to_owned(), RawSettingValue::String(token.to_owned())),
+            ("gap".to_owned(), RawSettingValue::Number(0.0)),
+            ("outer".to_owned(), RawSettingValue::Number(0.0)),
+        ],
+    )
+    .expect("generation")
+}
+
+/// Adapter rebind through the real handshake path: a fresh handshake for
+/// the new incarnation plus revision-0 settings carrying the same initial
+/// values, then reports resume with the rebound generation.
+fn rebind(engine: &mut WorldEngine, adapter: &str, mode: WorkspaceMode, equal_count: bool) {
+    use tiler_core::connection::{
+        ApplicationIdentity, FactName, HandshakeRequest, SettingsRequest,
+    };
+    let token = match mode {
+        WorkspaceMode::PerOutputLocal => "per-output-local",
+        WorkspaceMode::GlobalUnique => "global-unique",
+        WorkspaceMode::Shared => "shared",
+    };
+    let generation = engine
+        .handshake(&HandshakeRequest {
+            adapter: adapter.to_owned(),
+            request: "reconnect-1".to_owned(),
+            application_identity: ApplicationIdentity {
+                app_id: None,
+                executable: None,
+                process_id: None,
+            },
+            capabilities: HostCapabilities {
+                host_owned: true,
+                equal_count,
+                unavailable_facts: vec![FactName::Executable, FactName::ProcessId],
+                ..Default::default()
+            },
+        })
+        .generation
+        .expect("rebound generation");
+    let settings = engine
+        .handle_settings(&SettingsRequest {
+            adapter: adapter.to_owned(),
+            generation: generation.clone(),
+            request: "settings-1".to_owned(),
+            revision: 0,
+            values: vec![
+                ("mode".to_owned(), RawSettingValue::String(token.to_owned())),
+                ("gap".to_owned(), RawSettingValue::Number(0.0)),
+                ("outer".to_owned(), RawSettingValue::Number(0.0)),
+            ],
+        })
+        .expect("rebind settings");
+    assert_eq!(
+        settings.status,
+        tiler_core::connection::SettingsStatus::Accepted
+    );
 }
 
 fn accepted(
@@ -183,7 +248,7 @@ fn native_obs(output: &str, order: &[&str], current: &str) -> NativeObservation 
 }
 
 fn two_native_screens() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true)]
+    vec![screen("out-a", 0)]
 }
 
 fn bound_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<(String, String)> {
@@ -197,7 +262,7 @@ fn bound_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<
 
 #[test]
 fn four_native_bound_plus_ordinary_spare_no_moves_at_launch() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, true);
     // Asymmetric native order (not layout, not sorted) with two windows
     // sharing one native desktop, so the startup size/position inference
     // must prove a retained split: side-by-side frames on N1 plus members
@@ -218,7 +283,6 @@ fn four_native_bound_plus_ordinary_spare_no_moves_at_launch() {
             two_native_screens(),
             windows,
             vec![native_obs("out-a", &[N3, N1, N4, N2], N1)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -350,7 +414,6 @@ fn four_native_bound_plus_ordinary_spare_no_moves_at_launch() {
                 floating_native("win-d", "out-a", rect(500, 100, 200, 150), Some(N4)),
             ],
             vec![native_obs("out-a", &[N3, N1, N4, N2], N1)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -376,7 +439,7 @@ fn four_native_bound_plus_ordinary_spare_no_moves_at_launch() {
 
 #[test]
 fn incarnation_reset_readopts_cleanly() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = accepted(
         &mut engine,
         &report(
@@ -390,7 +453,6 @@ fn incarnation_reset_readopts_cleanly() {
                 Some(N1),
             )],
             vec![native_obs("out-a", &[N1, N2], N1)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -399,9 +461,15 @@ fn incarnation_reset_readopts_cleanly() {
     assert_eq!(bound_ids(&first, "out-a").len(), 2);
     // New adapter incarnation resets generation state; re-adoption binds
     // the same native set again with no carried flights.
+    rebind(
+        &mut engine,
+        "adapter-2",
+        WorkspaceMode::PerOutputLocal,
+        false,
+    );
     let mut second = report(
-        1,
-        1,
+        2,
+        2,
         two_native_screens(),
         vec![fact_native(
             "win-a",
@@ -410,13 +478,12 @@ fn incarnation_reset_readopts_cleanly() {
             Some(N1),
         )],
         vec![native_obs("out-a", &[N1, N2], N1)],
-        WorkspaceMode::PerOutputLocal,
         None,
         None,
         true,
     );
     second.adapter_incarnation = "adapter-2".to_owned();
-    second.request_id = "req-1b".to_owned();
+    second.core_generation = engine.core_generation().to_owned();
     let reply = accepted(&mut engine, &second);
     assert_eq!(bound_ids(&reply, "out-a").len(), 2);
     assert!(reply.transfers.is_empty());
@@ -424,7 +491,7 @@ fn incarnation_reset_readopts_cleanly() {
 
 #[test]
 fn outside_move_and_create_are_adopted() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     accepted(
         &mut engine,
         &report(
@@ -436,7 +503,6 @@ fn outside_move_and_create_are_adopted() {
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N2)),
             ],
             vec![native_obs("out-a", &[N1, N2], N1)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -454,7 +520,6 @@ fn outside_move_and_create_are_adopted() {
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N2)),
             ],
             vec![native_obs("out-a", &[N1, N2], N2)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -487,7 +552,6 @@ fn outside_move_and_create_are_adopted() {
                 fact_native("win-c", "out-a", rect(0, 0, 800, 560), Some(N5)),
             ],
             vec![native_obs("out-a", &[N1, N2, N5], N2)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -505,7 +569,7 @@ fn outside_move_and_create_are_adopted() {
 
 #[test]
 fn unknown_partial_missing_hold_and_duplicates_refuse() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = accepted(
         &mut engine,
         &report(
@@ -517,7 +581,6 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N2)),
             ],
             vec![native_obs("out-a", &[N1, N2], N1)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -539,7 +602,6 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N2)),
             ],
             vec![native_obs("out-a", &[N1, N2], N2)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -579,7 +641,6 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N2)),
             ],
             vec![native_obs("out-a", &[N1, N2], N2)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -612,7 +673,6 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N2)),
             ],
             vec![native_obs("out-a", &[N1, N2, "new-partial"], N1)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             false,
@@ -647,7 +707,6 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
             fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N2)),
         ],
         vec![],
-        WorkspaceMode::PerOutputLocal,
         None,
         None,
         true,
@@ -669,7 +728,6 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
         two_native_screens(),
         vec![],
         vec![native_obs("out-a", &[N1, N1], N1)],
-        WorkspaceMode::PerOutputLocal,
         None,
         None,
         true,
@@ -692,8 +750,8 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
 fn separate_outputs_share_ids_independently_and_shared_unions() {
     // KDE-style: the same global native ids on two outputs map
     // independently per output in separate-view modes.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![screen("out-a", 0, true), screen("out-b", 800, false)];
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let reply = accepted(
         &mut engine,
         &report(
@@ -708,7 +766,6 @@ fn separate_outputs_share_ids_independently_and_shared_unions() {
                 native_obs("out-a", &[N1, N2], N1),
                 native_obs("out-b", &[N1, N2], N1),
             ],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -724,7 +781,7 @@ fn separate_outputs_share_ids_independently_and_shared_unions() {
         .collect();
     assert_ne!(a[N1], b[N1], "same native id maps independently");
     // macOS-style differing lists on a fresh engine stay coherent.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let reply = accepted(
         &mut engine,
         &report(
@@ -739,7 +796,6 @@ fn separate_outputs_share_ids_independently_and_shared_unions() {
                 native_obs("out-a", &[N1, N2], N1),
                 native_obs("out-b", &[N3], N3),
             ],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -749,7 +805,7 @@ fn separate_outputs_share_ids_independently_and_shared_unions() {
     assert_eq!(bound_ids(&reply, "out-b").len(), 1);
 
     // Shared linked mode: one coherent ring union without dropping members.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::Shared, false);
     let reply = accepted(
         &mut engine,
         &report(
@@ -764,7 +820,6 @@ fn separate_outputs_share_ids_independently_and_shared_unions() {
                 native_obs("out-a", &[N1, N2], N1),
                 native_obs("out-b", &[N3], N3),
             ],
-            WorkspaceMode::Shared,
             None,
             None,
             true,
@@ -817,8 +872,8 @@ fn separate_outputs_share_ids_independently_and_shared_unions() {
 
 #[test]
 fn shared_late_pair_binds_existing_logical_at_union_position() {
-    let screens = vec![screen("out-a", 0, true), screen("out-b", 800, false)];
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let mut engine = engine_host_owned(WorkspaceMode::Shared, false);
     let first = accepted(
         &mut engine,
         &report(
@@ -833,7 +888,6 @@ fn shared_late_pair_binds_existing_logical_at_union_position() {
                 native_obs("out-a", &[N1, N2], N1),
                 native_obs("out-b", &[N3], N3),
             ],
-            WorkspaceMode::Shared,
             None,
             None,
             true,
@@ -861,7 +915,6 @@ fn shared_late_pair_binds_existing_logical_at_union_position() {
                 native_obs("out-a", &[N1, N2], N1),
                 native_obs("out-b", &[N3, N1], N3),
             ],
-            WorkspaceMode::Shared,
             None,
             None,
             true,
@@ -911,7 +964,6 @@ fn shared_late_pair_binds_existing_logical_at_union_position() {
                 native_obs("out-a", &[N1, N4, N2], N1),
                 native_obs("out-b", &[N3, N1], N3),
             ],
-            WorkspaceMode::Shared,
             None,
             None,
             true,
@@ -945,8 +997,8 @@ fn migrate_workspace_publishes_no_destination_binding() {
     // its native id publishes no binding there: bindings are observed
     // pairs, never fabricated. The global map entry is retained (no
     // redesign of migration/hotplug ownership here).
-    let screens = vec![screen("out-a", 0, true), screen("out-b", 800, false)];
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = accepted(
         &mut engine,
         &report(
@@ -963,7 +1015,6 @@ fn migrate_workspace_publishes_no_destination_binding() {
                 native_obs("out-a", &[N1, N2], N1),
                 native_obs("out-b", &[N3], N3),
             ],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -991,7 +1042,6 @@ fn migrate_workspace_publishes_no_destination_binding() {
                 native_obs("out-a", &[N1, N2], N1),
                 native_obs("out-b", &[N3], N3),
             ],
-            WorkspaceMode::PerOutputLocal,
             Some(11),
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
@@ -1025,7 +1075,7 @@ fn migrate_workspace_publishes_no_destination_binding() {
 fn incomplete_then_complete_adopts_without_blessing_partial() {
     // First report incomplete: no bindings created, no member rows
     // published, no moves blessed. The complete follow-up adopts fully.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(N1)),
         fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N2)),
@@ -1038,7 +1088,6 @@ fn incomplete_then_complete_adopts_without_blessing_partial() {
             two_native_screens(),
             windows.clone(),
             vec![native_obs("out-a", &[N1, N2], N1)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             false,
@@ -1061,7 +1110,6 @@ fn incomplete_then_complete_adopts_without_blessing_partial() {
             two_native_screens(),
             windows,
             vec![native_obs("out-a", &[N1, N2], N1)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -1079,14 +1127,13 @@ fn incomplete_then_complete_adopts_without_blessing_partial() {
 
 #[test]
 fn unknown_minimized_newcomer_waits_for_native_membership() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let mut input = report(
         1,
         1,
         two_native_screens(),
         vec![minimized_native("win-minimized", "out-a", None)],
         vec![native_obs("out-a", &[N1, N2], N1)],
-        WorkspaceMode::PerOutputLocal,
         None,
         None,
         true,
@@ -1125,7 +1172,7 @@ fn missing_row_start_never_adopts_current_view() {
     // Capability on, first report carries per-window native evidence but
     // no native list: the unknown native membership must not silently
     // adopt the current logical view. The listed follow-up adopts.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(N1)),
         fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N1)),
@@ -1138,7 +1185,6 @@ fn missing_row_start_never_adopts_current_view() {
             two_native_screens(),
             windows.clone(),
             vec![],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -1161,7 +1207,6 @@ fn missing_row_start_never_adopts_current_view() {
             two_native_screens(),
             windows,
             vec![native_obs("out-a", &[N1, N2], N1)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -1195,8 +1240,8 @@ fn shared_incompatible_orders_hold_without_adoption() {
     // bindings, no member rows, no effects, no transfers; scope, output,
     // and workspace rows hold through the existing fences. A consistent
     // follow-up adopts normally.
-    let screens = vec![screen("out-a", 0, true), screen("out-b", 800, false)];
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let mut engine = engine_host_owned(WorkspaceMode::Shared, false);
     let conflicted = accepted(
         &mut engine,
         &report(
@@ -1211,7 +1256,6 @@ fn shared_incompatible_orders_hold_without_adoption() {
                 native_obs("out-a", &[N1, N2], N1),
                 native_obs("out-b", &[N3, N1], N3),
             ],
-            WorkspaceMode::Shared,
             None,
             None,
             true,
@@ -1235,7 +1279,7 @@ fn shared_incompatible_orders_hold_without_adoption() {
         assert_eq!(
             status.authority,
             ScopeAuthority::Hold(HoldReason::Unreadable),
-            "scope holds: {}",
+            "scope holds: {:?}",
             status.scope
         );
     }
@@ -1267,7 +1311,6 @@ fn shared_incompatible_orders_hold_without_adoption() {
                 native_obs("out-a", &[N1, N2], N1),
                 native_obs("out-b", &[N1, N2], N1),
             ],
-            WorkspaceMode::Shared,
             None,
             None,
             true,
@@ -1299,18 +1342,8 @@ fn shared_incompatible_orders_hold_without_adoption() {
 
 #[test]
 fn shared_missing_native_inventory_retains_unbound_rings() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let mut input = report(
-        1,
-        1,
-        two_native_screens(),
-        vec![],
-        vec![],
-        WorkspaceMode::Shared,
-        None,
-        None,
-        true,
-    );
+    let mut engine = engine_host_owned(WorkspaceMode::Shared, false);
+    let mut input = report(1, 1, two_native_screens(), vec![], vec![], None, None, true);
     let first = accepted(&mut engine, &input);
     assert_eq!(first.workspaces.len(), 2);
     assert!(
@@ -1340,7 +1373,7 @@ fn shared_missing_native_inventory_retains_unbound_rings() {
 
 #[test]
 fn pending_transfer_holds_on_unknown_native() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = accepted(
         &mut engine,
         &report(
@@ -1352,7 +1385,6 @@ fn pending_transfer_holds_on_unknown_native() {
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N1)),
             ],
             vec![native_obs("out-a", &[N1, N2], N1)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -1374,7 +1406,6 @@ fn pending_transfer_holds_on_unknown_native() {
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N1)),
             ],
             vec![native_obs("out-a", &[N1, N2], N1)],
-            WorkspaceMode::PerOutputLocal,
             Some(11),
             Some(WorldCommand::Send {
                 window: WindowId("win-a".to_owned()),
@@ -1398,7 +1429,6 @@ fn pending_transfer_holds_on_unknown_native() {
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N1)),
             ],
             vec![native_obs("out-a", &[N1, N2], N1)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -1439,7 +1469,6 @@ fn pending_transfer_holds_on_unknown_native() {
                 fact_native("win-b", "out-a", rect(0, 0, 800, 560), Some(N1)),
             ],
             vec![native_obs("out-a", &[N1, N2], N1)],
-            WorkspaceMode::PerOutputLocal,
             None,
             None,
             true,
@@ -1457,9 +1486,9 @@ fn pending_transfer_holds_on_unknown_native() {
 
 #[test]
 fn equal_counts_pad_neutrally_over_native_rings() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![screen("out-a", 0, true), screen("out-b", 800, false)];
-    let mut req = report(
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, true);
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let req = report(
         1,
         1,
         screens,
@@ -1473,12 +1502,10 @@ fn equal_counts_pad_neutrally_over_native_rings() {
             native_obs("out-a", &[N1, N2], N1),
             native_obs("out-b", &[N1], N1),
         ],
-        WorkspaceMode::PerOutputLocal,
         None,
         None,
         true,
     );
-    req.equal_workspace_count = true;
     let reply = accepted(&mut engine, &req);
     let len_a = reply
         .workspaces

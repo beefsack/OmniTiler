@@ -24,22 +24,21 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen_full(output: &str, full: Rect, primary: bool) -> ScreenReport {
+fn screen_full(output: &str, full: Rect) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(full),
         work_area: Some(full),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
 fn screens() -> Vec<ScreenReport> {
     vec![
-        screen_full("out-a", rect(0, 0, 800, 600), true),
-        screen_full("out-b", rect(800, 0, 800, 600), false),
+        screen_full("out-a", rect(0, 0, 800, 600)),
+        screen_full("out-b", rect(800, 0, 800, 600)),
     ]
 }
 
@@ -108,7 +107,6 @@ fn report_on(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -116,31 +114,19 @@ fn report_on(
         request_id: format!("req-{request_seq}"),
         command_seq: None,
         command: None,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens,
         windows,
         views: Vec::new(),
         closed,
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete,
         gesture_barrier: gesture.is_some(),
         gesture,
@@ -159,6 +145,30 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
+}
+
+fn rebind(engine: &mut WorldEngine, adapter: &str) {
+    let handshake = engine.handshake(&crate::connection::HandshakeRequest {
+        adapter: adapter.to_owned(),
+        request: "reconnect-1".to_owned(),
+        application_identity: crate::connection::ApplicationIdentity {
+            app_id: None,
+            executable: None,
+            process_id: None,
+        },
+        capabilities: crate::connection::HostCapabilities::without_native_identity(),
+    });
+    let generation = handshake.generation.expect("rebound generation");
+    let settings = engine
+        .handle_settings(&crate::connection::SettingsRequest {
+            adapter: adapter.to_owned(),
+            generation,
+            request: "settings-1".to_owned(),
+            revision: 0,
+            values: Vec::new(),
+        })
+        .expect("initial settings");
+    assert_eq!(settings.status, crate::connection::SettingsStatus::Accepted);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -187,7 +197,7 @@ fn report(
 /// win-a starts at (0,0,40,90) like the fact helper; the Engine tiles the
 /// pair across the 800px work area.
 fn rig() -> (WorldEngine, Rect, Rect) {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let ra = rect(0, 0, 40, 90);
     let rb = rect(100, 0, 40, 90);
     accepted(
@@ -1373,10 +1383,9 @@ fn incarnation_reset_clears_the_session() {
             true,
         ),
     );
-    // A new adapter incarnation resets retained world state, including
-    // the gesture session: the next update is stale, never a preview
-    // over reset state.
-    let mut reset = report(
+    // The same old-generation id is stale after rebind, while the same id
+    // in the new generation starts fresh against reset state.
+    let old_generation = report(
         1,
         3,
         vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
@@ -1391,9 +1400,27 @@ fn incarnation_reset_clears_the_session() {
         vec![],
         true,
     );
+    rebind(&mut engine, "adapter-2");
+    let mut stale_old_generation = old_generation.clone();
+    stale_old_generation.adapter_incarnation = "adapter-2".to_owned();
+    assert!(matches!(
+        engine.handle_report(&stale_old_generation),
+        WorldOutcome::Rejected {
+            kind: "generation-mismatch",
+            ..
+        }
+    ));
+    let mut reset = old_generation;
     reset.adapter_incarnation = "adapter-2".to_owned();
+    reset.core_generation = engine.core_generation().to_owned();
     let stale = accepted(&mut engine, &reset);
-    assert!(stale.command_result.is_none());
+    assert!(
+        matches!(
+            stale.command_result,
+            Some(CommandResult::DragPreview { .. })
+        ),
+        "id 1 is fresh in the new generation, not replayed from the old one"
+    );
 }
 
 #[test]

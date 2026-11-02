@@ -8,29 +8,27 @@
 //! unreadable *membership* (`native_workspace=None` with a readable
 //! frame). The pins below cover membership-`None` explicitly.
 
-use tiler_core::directional::{OutputId, WindowId};
+use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    HoldReason, NativeObservation, NativeOccupancy, ScopeAuthority, WORLD_CONTRACT_VERSION,
-    WindowFact, WorldCommand, WorldReport,
+    AuthorityScope, HoldReason, NativeObservation, NativeOccupancy, ScopeAuthority,
+    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> tiler_core::world_report::ScreenReport {
+fn screen(output: &str, x: i32) -> tiler_core::world_report::ScreenReport {
     tiler_core::world_report::ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: tiler_core::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -111,7 +109,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -119,21 +116,11 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: WorkspaceMode::PerOutputLocal,
         screens,
         windows: windows.clone(),
         views: vec![],
         closed: vec![],
-        host_owned_workspace_domains: true,
-        equal_workspace_count: false,
-        birth_clear: false,
         native,
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        default_tiled: true,
         focused_global: windows
             .first()
             .map(|f| f.window.0.clone())
@@ -141,13 +128,11 @@ fn report(
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         monotonic_ms: 0,
@@ -195,7 +180,7 @@ fn bound_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<
 }
 
 fn one_screen() -> Vec<tiler_core::world_report::ScreenReport> {
-    vec![screen("out-a", 0, true)]
+    vec![screen("out-a", 0)]
 }
 
 #[test]
@@ -204,7 +189,7 @@ fn sticky_none_unknown_retained_as_minimized_hold_without_collapse() {
     // unknown, never a collapse into the current view. The observed lane
     // retains a minimized-hold slot at home (no rehoming, no geometry,
     // no flight).
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -264,7 +249,7 @@ fn sticky_none_unknown_retained_as_minimized_hold_without_collapse() {
 fn unreadable_known_receipt_holds_scope_without_geometry() {
     // Unreadable membership (rect None, non-minimized) with known native
     // receipt still homes but authorizes no geometry.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -308,7 +293,13 @@ fn unreadable_known_receipt_holds_scope_without_geometry() {
     let scope = held
         .scopes
         .iter()
-        .find(|status| status.scope == format!("out-a/{}", bound[N1]))
+        .find(|status| {
+            status.scope
+                == AuthorityScope::Workspace {
+                    output: OutputId("out-a".into()),
+                    workspace: WorkspaceId(bound[N1].clone()),
+                }
+        })
         .expect("scope");
     assert_eq!(
         scope.authority,
@@ -322,7 +313,7 @@ fn unreadable_known_receipt_holds_scope_without_geometry() {
 fn out_of_order_unmapped_native_holds_newcomer_unhomed() {
     // A native id absent from `native_order` and unbound never adopts via
     // receipt: the newcomer publishes no row and mints no workspace.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -376,7 +367,7 @@ fn out_of_order_unmapped_native_holds_newcomer_unhomed() {
 fn out_of_order_retained_member_holds_fenced_home() {
     // A retained member whose evidence switches to an unlisted id keeps
     // its home and fences the scope: unknown never proves arrival.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -425,7 +416,13 @@ fn out_of_order_retained_member_holds_fenced_home() {
     assert_eq!(
         held.scopes
             .iter()
-            .find(|status| status.scope == format!("out-a/{}", bound[N1]))
+            .find(|status| {
+                status.scope
+                    == AuthorityScope::Workspace {
+                        output: OutputId("out-a".into()),
+                        workspace: WorkspaceId(bound[N1].clone()),
+                    }
+            })
             .map(|status| status.authority),
         Some(ScopeAuthority::Hold(HoldReason::Unreadable))
     );
@@ -437,7 +434,7 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
     // Minimized lifetimes never move via commands and never take focus:
     // Send/Focus reject without mutation, directional reports stale, and
     // the row keeps minimized authority with no geometry or op tokens.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -565,7 +562,7 @@ fn minimized_trailing_retains_workspace_and_focus_global_ignored() {
     // A sole-minimized workspace survives trailing lifecycle with no
     // geometry, and naming it focused never stages focus or mints
     // admission focus.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -627,7 +624,7 @@ fn readable_none_membership_retained_home_fences_without_move() {
     // Unreadable *membership*: readable frame, non-minimized, but
     // `native_workspace=None`. Retained home is kept, the scope fences
     // Unreadable, no rehoming and no flight.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -675,7 +672,13 @@ fn readable_none_membership_retained_home_fences_without_move() {
     assert_eq!(
         held.scopes
             .iter()
-            .find(|status| status.scope == format!("out-a/{}", bound[N1]))
+            .find(|status| {
+                status.scope
+                    == AuthorityScope::Workspace {
+                        output: OutputId("out-a".into()),
+                        workspace: WorkspaceId(bound[N1].clone()),
+                    }
+            })
             .map(|status| status.authority),
         Some(ScopeAuthority::Hold(HoldReason::Unreadable)),
         "unknown membership fences write authority"
@@ -688,7 +691,7 @@ fn readable_none_membership_retained_home_fences_without_move() {
 fn readable_none_membership_newcomer_launch_publishes_no_row() {
     // Launch with unknown membership: the newcomer publishes no row and
     // mints no workspace, while the known member homes normally.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let reply = accepted(
         &mut engine,
         &report(
@@ -720,7 +723,7 @@ fn fullscreen_none_absent_order_current_none_launch_adopts_nothing() {
     // the current surface is not an ordered desktop (`current=None`).
     // Launch adopts nothing for it: no row, no workspace, no move, while
     // the order still binds and the retained view stays.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let reply = accepted(
         &mut engine,
         &report(
@@ -749,7 +752,7 @@ fn fullscreen_none_absent_order_current_none_launch_adopts_nothing() {
 fn fullscreen_none_retained_holds_fenced_home() {
     // A retained fullscreen member whose evidence becomes `None` keeps
     // its home and fences the scope instead of collapsing.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -798,7 +801,7 @@ fn sticky_tiled_launch_none_publishes_no_row() {
     // Positive all-desktop case at launch: tiled sticky with `None` has
     // no single native membership, so the newcomer publishes no row and
     // mints nothing (there is no initial home to retain).
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let reply = accepted(
         &mut engine,
         &report(
@@ -828,7 +831,7 @@ fn sticky_float_newcomer_none_publishes_no_row() {
     // Float-only sticky (`floating=true`, `sticky=true`) with `None` at
     // launch likewise publishes no row: a floating unknown newcomer
     // cannot retain an initial home it never had.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let reply = accepted(
         &mut engine,
         &report(
@@ -858,7 +861,7 @@ fn sticky_float_retained_none_loses_row_without_move() {
     // Retained float-sticky transitioning known->`None`: the exception
     // row is dropped (exceptions are removed when unobserved, never
     // minimized), with no collapse into the current view and no flight.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -907,7 +910,7 @@ fn minimized_occupant_native_desktop_removal_retains_workspace_unbound() {
     // binding prunes (removal, never rename) while the minimized
     // occupancy retains the logical workspace unbound with minimized
     // authority and no move.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -977,7 +980,7 @@ fn close_focused_tiled_reflows_without_minimized_focus() {
     // Remove-one-foreground: closing the focused tiled window reflows
     // the survivor with no focus effect, and the minimized lifetime
     // keeps minimized authority with no geometry.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -1036,7 +1039,7 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
     // Explicit pager-click path is `WorldCommand::Focus`: a click on a
     // minimized lifetime refuses `focus-unknown` with no effect, while a
     // click on a tiled lifetime mints the explicit `fx-<seq>` effect.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(

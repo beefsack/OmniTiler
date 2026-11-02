@@ -11,6 +11,7 @@
 //! the cross command float-origin when the subject floats).
 
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
+use crate::connection::{HostCapabilities, RawSettingValue};
 use crate::contract::{
     AckOutcome, AdapterAck, FocusCapabilities, FocusPostObservation, LifecycleCapabilities,
     Observation,
@@ -24,6 +25,8 @@ use crate::session::{
     DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, ProposeError, RefusalKind, Session,
     SessionCommand, SessionObservation,
 };
+use crate::settings_catalog::{FIELD_INNER_GAP, FIELD_OUTER_GAP};
+use crate::settings_state::EffectiveSetting;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
@@ -553,15 +556,14 @@ fn wrect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(wrect(x, 0, 800, 600)),
         work_area: Some(wrect(x, 0, 800, 560)),
-        gap: 8,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -610,7 +612,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -618,31 +619,19 @@ fn report(
         request_id: format!("req-{seq}"),
         command_seq,
         command,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens,
         windows,
         views: Vec::new(),
         closed: Vec::new(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::default(),
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -664,11 +653,11 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
 }
 
 fn two_screens() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true), screen("out-b", 800, false)]
+    vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
 fn one_screen() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true)]
+    vec![screen("out-a", 0)]
 }
 
 fn focus_targets(reply: &crate::world_report::WorldReply) -> Vec<WindowId> {
@@ -704,7 +693,7 @@ fn session_focused(engine: &WorldEngine, key: &DomainKey) -> Option<WindowId> {
 
 #[test]
 fn world_fullscreen_tiled_skips_sibling_and_crosses_output() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -748,7 +737,30 @@ fn world_fullscreen_tiled_skips_sibling_and_crosses_output() {
 
 #[test]
 fn world_non_fullscreen_control_plans_local_sibling() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    // Genuine original geometry: inner gap 8 with outer gap 0 (the
+    // pre-migration screen default), via the real wire keys `gap`/`outer`.
+    // The effective-value guards below fail if the keys ever silently
+    // default instead of applying.
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            ..HostCapabilities::default()
+        },
+        vec![
+            ("gap".to_owned(), RawSettingValue::Number(8.0)),
+            ("outer".to_owned(), RawSettingValue::Number(0.0)),
+        ],
+    )
+    .expect("generation");
+    assert_eq!(
+        engine.settings().requested[FIELD_INNER_GAP],
+        EffectiveSetting::Int(8)
+    );
+    assert_eq!(
+        engine.settings().requested[FIELD_OUTER_GAP],
+        EffectiveSetting::Int(0)
+    );
     accepted(
         &mut engine,
         &report(
@@ -791,7 +803,7 @@ fn world_non_fullscreen_control_plans_local_sibling() {
 
 #[test]
 fn world_fullscreen_single_output_retains_without_effect() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -848,7 +860,7 @@ fn world_fullscreen_single_output_retains_without_effect() {
 
 #[test]
 fn world_fullscreen_vertical_is_noop() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -910,7 +922,7 @@ fn world_fullscreen_vertical_is_noop() {
 
 #[test]
 fn world_fullscreen_float_skips_lattice_and_crosses_remembered() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -996,7 +1008,7 @@ fn world_fullscreen_float_skips_lattice_and_crosses_remembered() {
 
 #[test]
 fn world_fullscreen_float_vertical_retains() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -1047,7 +1059,7 @@ fn world_fullscreen_float_vertical_retains() {
 
 #[test]
 fn world_fullscreen_float_single_output_retains() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
@@ -1098,7 +1110,7 @@ fn world_fullscreen_float_single_output_retains() {
 
 #[test]
 fn world_explicit_focus_by_window_works_under_fullscreen() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(

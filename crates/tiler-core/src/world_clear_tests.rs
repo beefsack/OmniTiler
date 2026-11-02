@@ -72,7 +72,7 @@ fn commandless_clear_continuation_float() {
     // unmaximized facts plus the correlated accepted attempt resumes
     // the half-snap under the ORIGINAL op id. No second command, no
     // second clear, no replay.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -87,7 +87,7 @@ fn commandless_clear_continuation_float() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -98,7 +98,7 @@ fn commandless_clear_continuation_float() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -128,7 +128,7 @@ fn commandless_clear_continuation_float() {
         &report_clears(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
             vec![clear_attempt(
@@ -176,7 +176,7 @@ fn commandless_clear_continuation_float() {
         &report_clears(
             4,
             4,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![arrived(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
             Vec::new(),
@@ -199,7 +199,7 @@ fn tiled_maximize_publishes_clear_before_attempt() {
     // maximize retaining its slot, one directional intent, actionable
     // clear token under the original op BEFORE any attempt. The
     // production seam cannot stage an attempt from a reply without it.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         maximized: true,
         ..fact("win-max", "out-a", 0)
@@ -209,7 +209,7 @@ fn tiled_maximize_publishes_clear_before_attempt() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-b", "out-b", 900)],
             None,
             None,
@@ -220,7 +220,7 @@ fn tiled_maximize_publishes_clear_before_attempt() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-b", "out-b", 900)],
             Vec::new(),
             "win-max",
@@ -249,7 +249,7 @@ fn commandless_clear_continuation_tiled() {
     // move tiled-as-tiled under the original op id (cross-output
     // transfer), with no directional result polluting the
     // observation-only reply.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         maximized: true,
         ..fact("win-max", "out-a", 0)
@@ -263,7 +263,7 @@ fn commandless_clear_continuation_tiled() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-b", "out-b", 900)],
             None,
             None,
@@ -274,7 +274,7 @@ fn commandless_clear_continuation_tiled() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-b", "out-b", 900)],
             Vec::new(),
             "win-max",
@@ -296,7 +296,7 @@ fn commandless_clear_continuation_tiled() {
         &report_clears(
             3,
             3,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![cleared(), fact("win-b", "out-b", 900)],
             "win-max",
             vec![clear_attempt(
@@ -338,7 +338,7 @@ fn commandless_clear_continuation_tiled() {
 fn clear_external_clear_alone_abandons_without_continuation() {
     // An externally cleared window (unmaximized facts, no correlated
     // accepted attempt) abandons the binding: never a continuation.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -353,7 +353,7 @@ fn clear_external_clear_alone_abandons_without_continuation() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -364,7 +364,7 @@ fn clear_external_clear_alone_abandons_without_continuation() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -382,7 +382,7 @@ fn clear_external_clear_alone_abandons_without_continuation() {
         &report_clears(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
             Vec::new(),
@@ -419,7 +419,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
     // maximized subject with accepted-but-unproven evidence holds
     // without ever counting as success.
     use crate::world_report::FrameSetter;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -430,7 +430,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -441,7 +441,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -459,7 +459,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
         &report_clears(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
             vec![clear_attempt(
@@ -499,7 +499,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
         &report_full(
             4,
             4,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -516,7 +516,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
         &report_clears(
             5,
             5,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
             vec![clear_attempt(
@@ -554,7 +554,7 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
     // no continuation, no second attempt. A fresh same-window intent
     // then supersedes the held binding and works independently.
     use crate::world_report::FrameSetter;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -569,7 +569,7 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -580,7 +580,7 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -597,7 +597,7 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         &report_clears(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
             vec![clear_attempt(
@@ -630,7 +630,7 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         &report_clears(
             4,
             4,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
             Vec::new(),
@@ -665,7 +665,7 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
     let mut fresh = report_full(
         5,
         5,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
         Vec::new(),
         "win-max",
@@ -713,7 +713,7 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
 fn clear_unknown_current_focus_holds_not_abandons() {
     // Unknown CURRENT focus holds (cannot safely continue); only known
     // changed focus abandons. The binding persists with no terminal.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -728,7 +728,7 @@ fn clear_unknown_current_focus_holds_not_abandons() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -739,7 +739,7 @@ fn clear_unknown_current_focus_holds_not_abandons() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -758,7 +758,7 @@ fn clear_unknown_current_focus_holds_not_abandons() {
         &report_clears(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
             "",
             vec![clear_attempt(
@@ -793,7 +793,7 @@ fn clear_empty_original_focus_abandons_on_known_other() {
     // exact-subject proof already ties the request, so no stale intent
     // survives known wrong focus to resume later. The retained baseline
     // is never guessed or latched.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -808,7 +808,7 @@ fn clear_empty_original_focus_abandons_on_known_other() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -820,7 +820,7 @@ fn clear_empty_original_focus_abandons_on_known_other() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "",
@@ -839,7 +839,7 @@ fn clear_empty_original_focus_abandons_on_known_other() {
         &report_clears(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
             "",
             vec![clear_attempt(
@@ -864,7 +864,7 @@ fn clear_empty_original_focus_abandons_on_known_other() {
         &report_clears(
             4,
             4,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
             "win-target",
             Vec::new(),
@@ -892,7 +892,7 @@ fn clear_empty_original_focus_abandons_on_known_other() {
 fn clear_unknown_baseline_subject_focus_continues() {
     // Unknown baseline plus exact-subject current focus permits
     // continuation with accepted proof; the baseline stays immutable.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -907,7 +907,7 @@ fn clear_unknown_baseline_subject_focus_continues() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -918,7 +918,7 @@ fn clear_unknown_baseline_subject_focus_continues() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "",
@@ -935,7 +935,7 @@ fn clear_unknown_baseline_subject_focus_continues() {
         &report_clears(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
             vec![clear_attempt(
@@ -966,7 +966,7 @@ fn clear_known_non_subject_baseline_retires_promptly() {
     // promptly with `baseline-non-subject`, even when unchanged: the
     // intent was never its subject's, so it must not linger to resume
     // later.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -981,7 +981,7 @@ fn clear_known_non_subject_baseline_retires_promptly() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -993,7 +993,7 @@ fn clear_known_non_subject_baseline_retires_promptly() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-target",
@@ -1012,7 +1012,7 @@ fn clear_known_non_subject_baseline_retires_promptly() {
         &report_clears(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
             "win-target",
             vec![clear_attempt(
@@ -1046,7 +1046,7 @@ fn clear_known_non_subject_baseline_retires_promptly() {
 fn clear_changed_focus_view_domain_abandons() {
     // Changed lifetime focus, displayed view, or homing abandons the
     // binding: the proof no longer names the bound intent.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -1062,7 +1062,7 @@ fn clear_changed_focus_view_domain_abandons() {
             &report(
                 seq,
                 seq,
-                vec![screen("out-a", 0, true)],
+                vec![screen("out-a", 0)],
                 vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
                 None,
                 None,
@@ -1073,7 +1073,7 @@ fn clear_changed_focus_view_domain_abandons() {
             &report_full(
                 seq + 1,
                 seq + 1,
-                vec![screen("out-a", 0, true)],
+                vec![screen("out-a", 0)],
                 vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
                 Vec::new(),
                 "win-max",
@@ -1093,7 +1093,7 @@ fn clear_changed_focus_view_domain_abandons() {
         &report_clears(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
             "win-target",
             vec![clear_attempt(
@@ -1129,7 +1129,7 @@ fn clear_changed_focus_view_domain_abandons() {
     let mut viewed = report_clears(
         7,
         7,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
         "win-max",
         vec![clear_attempt(
@@ -1167,7 +1167,7 @@ fn clear_changed_focus_view_domain_abandons() {
         &report_clears(
             11,
             11,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![cleared_b(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
             vec![clear_attempt(
@@ -1196,7 +1196,7 @@ fn clear_changed_focus_view_domain_abandons() {
 fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
     // Explicit close prunes the binding; an abandoned binding can never
     // affect a later independent intent, including the same direction.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -1207,7 +1207,7 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -1218,7 +1218,7 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -1235,7 +1235,7 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
     let mut closed = report_clears(
         3,
         3,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![float_fact("win-target", "out-a", 300, 100)],
         "win-target",
         vec![clear_attempt(
@@ -1257,7 +1257,7 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
         &report_full(
             4,
             4,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -1281,7 +1281,7 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
 fn clear_same_window_new_intent_supersedes_without_consuming() {
     // No later user command consumes a pending binding: any same-window
     // new intent supersedes the old one and re-evaluates fresh.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -1292,7 +1292,7 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -1303,7 +1303,7 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -1323,7 +1323,7 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
         &report_full(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -1350,7 +1350,7 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
         &report_clears(
             4,
             4,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
             vec![clear_attempt(
@@ -1382,7 +1382,7 @@ fn clear_same_report_proof_and_new_intent_supersedes_before_continuation() {
     // must supersede the old binding BEFORE old continuation. No
     // unwanted old move; the new intent binds/proceeds on its own.
     // Covers WorldCommand intents; CoreCommand covered below.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         maximized: true,
         ..fact("win-max", "out-a", 0)
@@ -1396,7 +1396,7 @@ fn clear_same_report_proof_and_new_intent_supersedes_before_continuation() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-b", "out-b", 900)],
             None,
             None,
@@ -1407,7 +1407,7 @@ fn clear_same_report_proof_and_new_intent_supersedes_before_continuation() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-b", "out-b", 900)],
             Vec::new(),
             "win-max",
@@ -1426,7 +1426,7 @@ fn clear_same_report_proof_and_new_intent_supersedes_before_continuation() {
     let mut both = report_full(
         3,
         3,
-        vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+        vec![screen("out-a", 0), screen("out-b", 800)],
         vec![cleared(), fact("win-b", "out-b", 900)],
         Vec::new(),
         "win-max",
@@ -1483,7 +1483,7 @@ fn clear_same_report_core_command_supersedes_before_continuation() {
     // (`WorldCommand::Operation`): an old proof plus a fresh
     // same-window CoreCommand move supersedes before continuation.
     use crate::boundary::CoreCommand;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         maximized: true,
         ..fact("win-max", "out-a", 0)
@@ -1497,7 +1497,7 @@ fn clear_same_report_core_command_supersedes_before_continuation() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-b", "out-b", 900)],
             None,
             None,
@@ -1508,7 +1508,7 @@ fn clear_same_report_core_command_supersedes_before_continuation() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-b", "out-b", 900)],
             Vec::new(),
             "win-max",
@@ -1523,7 +1523,7 @@ fn clear_same_report_core_command_supersedes_before_continuation() {
     let mut both = report_full(
         3,
         3,
-        vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+        vec![screen("out-a", 0), screen("out-b", 800)],
         vec![cleared(), fact("win-b", "out-b", 900)],
         Vec::new(),
         "win-max",
@@ -1562,7 +1562,7 @@ fn clear_same_report_core_command_supersedes_before_continuation() {
 fn clear_consumed_replay_does_not_supersede() {
     // A consumed/replayed command (seq at or below the high-watermark)
     // must NOT supersede: the old proof still continues under op-13.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         maximized: true,
         ..fact("win-max", "out-a", 0)
@@ -1576,7 +1576,7 @@ fn clear_consumed_replay_does_not_supersede() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-b", "out-b", 900)],
             None,
             None,
@@ -1587,7 +1587,7 @@ fn clear_consumed_replay_does_not_supersede() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-b", "out-b", 900)],
             Vec::new(),
             "win-max",
@@ -1603,7 +1603,7 @@ fn clear_consumed_replay_does_not_supersede() {
     let mut replay = report_full(
         3,
         3,
-        vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+        vec![screen("out-a", 0), screen("out-b", 800)],
         vec![cleared(), fact("win-b", "out-b", 900)],
         Vec::new(),
         "win-max",
@@ -1651,7 +1651,7 @@ fn clear_send_supersedes_without_consuming() {
     // discarded with the staged candidate), so only fresh accepted
     // reports supersede; consumed replays never do (see
     // `clear_consumed_replay_does_not_supersede`).
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -1662,7 +1662,7 @@ fn clear_send_supersedes_without_consuming() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-target", "out-b", 900)],
             None,
             None,
@@ -1673,7 +1673,7 @@ fn clear_send_supersedes_without_consuming() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-target", "out-b", 900)],
             Vec::new(),
             "win-max",
@@ -1691,7 +1691,7 @@ fn clear_send_supersedes_without_consuming() {
         &report_full(
             3,
             3,
-            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![screen("out-a", 0), screen("out-b", 800)],
             vec![maximized(), fact("win-target", "out-b", 900)],
             Vec::new(),
             "win-max",
@@ -1728,7 +1728,7 @@ fn clear_same_report_refused_intent_still_supersedes() {
     // refuses: one old Superseded event, no old continuation, and the
     // new refusal stays truthful. An unwanted old move is worse than a
     // refused new intent.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -1739,7 +1739,7 @@ fn clear_same_report_refused_intent_still_supersedes() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -1750,7 +1750,7 @@ fn clear_same_report_refused_intent_still_supersedes() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -1775,7 +1775,7 @@ fn clear_same_report_refused_intent_still_supersedes() {
     let mut both = report_full(
         3,
         3,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![fullscreened(), float_fact("win-target", "out-a", 300, 100)],
         Vec::new(),
         "win-max",
@@ -1834,7 +1834,7 @@ fn clear_held_and_unreadable_withhold_without_weakening() {
     // Held scopes (gap inventory, gesture barrier) and unreadable
     // facts withhold the desire and hold the binding with identities
     // preserved; authority never weakens and nothing re-actuates.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -1845,7 +1845,7 @@ fn clear_held_and_unreadable_withhold_without_weakening() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -1856,7 +1856,7 @@ fn clear_held_and_unreadable_withhold_without_weakening() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -1876,7 +1876,7 @@ fn clear_held_and_unreadable_withhold_without_weakening() {
     let mut gapped = report_clears(
         3,
         3,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
         "win-max",
         vec![clear_attempt(
@@ -1903,7 +1903,7 @@ fn clear_held_and_unreadable_withhold_without_weakening() {
     let mut gestured = report_clears(
         4,
         4,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
         "win-max",
         Vec::new(),
@@ -1924,7 +1924,7 @@ fn clear_held_domain_defers_continuation_until_authority_returns() {
     // authority returns (never silently drops). An incomplete home
     // screen holds the proven clear; a later complete observation
     // resumes on the staged proof with no second attempt.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -1939,7 +1939,7 @@ fn clear_held_domain_defers_continuation_until_authority_returns() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -1950,7 +1950,7 @@ fn clear_held_domain_defers_continuation_until_authority_returns() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -1964,7 +1964,7 @@ fn clear_held_domain_defers_continuation_until_authority_returns() {
     );
     // Incomplete home screen with unmaximized + accepted proof: holds,
     // never continues, never retires.
-    let mut held_screen = screen("out-a", 0, true);
+    let mut held_screen = screen("out-a", 0);
     held_screen.complete = false;
     let reply = accepted(
         &mut engine,
@@ -2000,7 +2000,7 @@ fn clear_held_domain_defers_continuation_until_authority_returns() {
         &report_clears(
             4,
             4,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
             Vec::new(),
@@ -2026,7 +2026,7 @@ fn clear_continuation_refusal_observable_with_original_op() {
     // constraints retires with `continuation-refused` and authorizes
     // nothing.
     use crate::world_report::FrameSetter;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut maximized = WindowFact {
         floating: true,
         maximized: true,
@@ -2041,7 +2041,7 @@ fn clear_continuation_refusal_observable_with_original_op() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![
                 maximized.clone(),
                 float_fact("win-target", "out-a", 300, 100),
@@ -2055,7 +2055,7 @@ fn clear_continuation_refusal_observable_with_original_op() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![
                 maximized.clone(),
                 float_fact("win-target", "out-a", 300, 100),
@@ -2075,7 +2075,7 @@ fn clear_continuation_refusal_observable_with_original_op() {
         &report_clears(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared, float_fact("win-target", "out-a", 300, 100)],
             "win-max",
             vec![clear_attempt(
@@ -2115,7 +2115,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
     // home domain, displayed view, observed focus, and the original
     // observation sequence under the originating op. Focus fences
     // without binding a clear.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
@@ -2126,7 +2126,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,
@@ -2141,7 +2141,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
         &report(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Some(12),
             Some(focus()),
@@ -2160,7 +2160,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
         &report_full(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             Vec::new(),
             "win-max",
@@ -2207,7 +2207,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
             &report(
                 seq,
                 seq,
-                vec![screen("out-a", 0, true)],
+                vec![screen("out-a", 0)],
                 vec![
                     WindowFact {
                         maximized: false,
@@ -2243,7 +2243,7 @@ fn sticky_maximize_publishes_clear_before_attempt() {
     // Sticky publication-first: a maximized sticky binds NeedClear and
     // publishes the one-shot token under the original op before any
     // attempt, through the same retained lane as floats.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized_sticky = || WindowFact {
         floating: true,
         sticky: true,
@@ -2255,7 +2255,7 @@ fn sticky_maximize_publishes_clear_before_attempt() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![
                 maximized_sticky(),
                 float_fact("win-target", "out-a", 300, 100),
@@ -2269,7 +2269,7 @@ fn sticky_maximize_publishes_clear_before_attempt() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![
                 maximized_sticky(),
                 float_fact("win-target", "out-a", 300, 100),
@@ -2302,13 +2302,13 @@ fn float_settled_events_are_one_shot_and_replay_cached() {
     // a `float-frame-proven` event (never setter success alone); the
     // next unrelated report publishes empty; a duplicate delivery
     // repeats the cached reply with its events.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![
                 float_fact("win-subject", "out-a", 100, 100),
                 float_fact("win-target", "out-a", 300, 100),
@@ -2322,7 +2322,7 @@ fn float_settled_events_are_one_shot_and_replay_cached() {
         &report(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![
                 float_fact("win-subject", "out-a", 100, 100),
                 float_fact("win-target", "out-a", 300, 100),
@@ -2350,7 +2350,7 @@ fn float_settled_events_are_one_shot_and_replay_cached() {
     let confirming = report(
         3,
         3,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![arrived(), float_fact("win-target", "out-a", 300, 100)],
         None,
         None,
@@ -2383,7 +2383,7 @@ fn float_settled_events_are_one_shot_and_replay_cached() {
         &report(
             4,
             4,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![arrived(), float_fact("win-target", "out-a", 300, 100)],
             None,
             None,

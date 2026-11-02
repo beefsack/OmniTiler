@@ -21,36 +21,35 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen_sized(output: &str, x: i32, y: i32, w: i32, h: i32, primary: bool) -> ScreenReport {
+fn screen_sized(output: &str, x: i32, y: i32, w: i32, h: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, y, w, h)),
         work_area: Some(rect(x, y, w, h)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
 fn side_by_side() -> Vec<ScreenReport> {
     vec![
-        screen_sized("out-a", 0, 0, 800, 600, true),
-        screen_sized("out-b", 800, 0, 800, 600, false),
+        screen_sized("out-a", 0, 0, 800, 600),
+        screen_sized("out-b", 800, 0, 800, 600),
     ]
 }
 
 fn stacked() -> Vec<ScreenReport> {
     vec![
-        screen_sized("out-a", 0, 0, 800, 600, true),
-        screen_sized("out-c", 0, 600, 800, 600, false),
+        screen_sized("out-a", 0, 0, 800, 600),
+        screen_sized("out-c", 0, 600, 800, 600),
     ]
 }
 
 fn square_side_by_side() -> Vec<ScreenReport> {
     vec![
-        screen_sized("out-a", 0, 0, 600, 600, true),
-        screen_sized("out-b", 600, 0, 600, 600, false),
+        screen_sized("out-a", 0, 0, 600, 600),
+        screen_sized("out-b", 600, 0, 600, 600),
     ]
 }
 
@@ -154,7 +153,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -162,7 +160,6 @@ fn report(
         request_id: format!("req-{seq}"),
         command_seq,
         command,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens,
         windows,
         views: views
@@ -173,22 +170,9 @@ fn report(
             })
             .collect(),
         closed: Vec::new(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: action_foreground.map(|output| OutputId(output.to_owned())),
         action_cached: None,
@@ -197,6 +181,8 @@ fn report(
             OutputId("out-b".to_owned()),
             OutputId("out-c".to_owned()),
         ],
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -247,7 +233,7 @@ fn retained_outcome(reply: &crate::world_report::WorldReply) -> (String, Option<
 /// win-a2 is the current source selection, win-b2 the remembered target
 /// selection. Returns the engine ready for a no-focus command.
 fn seeded_history() -> WorldEngine {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = side_by_side();
     let windows = || {
         vec![
@@ -360,7 +346,7 @@ fn no_focus_crosses_occupied_origin_to_existing_selection() {
 fn no_focus_crosses_empty_origin() {
     // Empty source workspace: no local subject exists, yet the adjacent
     // output's selection is still reached.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = side_by_side();
     accepted(
         &mut engine,
@@ -404,7 +390,7 @@ fn no_focus_crosses_empty_origin() {
 fn no_focus_wide_target_prefers_edge_leaf_over_mru() {
     // Wide facts admit side by side: only the left leaf touches the
     // Right entry edge, so it wins over the seeded MRU right leaf.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = side_by_side();
     let windows = || {
         vec![
@@ -494,7 +480,7 @@ fn no_focus_seeded_target_prefers_newer_seeded_leaf() {
     // Square outputs with tall facts: V-stacked pair, never focused.
     // Fresh Engine sessions seed per-domain history (newest-first
     // [win-b1, win-b2] here), so win-b1 wins over DFS-first win-b2.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = square_side_by_side();
     let windows = || {
         vec![
@@ -572,7 +558,7 @@ fn no_focus_seeded_target_prefers_newer_seeded_leaf() {
 fn no_focus_down_prefers_mru_among_top_edge_pair() {
     // Wide facts on the lower output admit side by side: both touch the
     // Down entry (top) edge, so the seeded MRU leaf wins over DFS-first.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = stacked();
     let windows = || {
         vec![
@@ -683,8 +669,8 @@ fn no_focus_resolves_source_from_cursor_when_foreground_unknown() {
 fn no_focus_without_adjacent_output_is_noop() {
     // Single output: no strict neighbor, so no effect and no
     // current-workspace pick.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![screen_sized("out-a", 0, 0, 800, 600, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![screen_sized("out-a", 0, 0, 800, 600)];
     accepted(
         &mut engine,
         &report(
@@ -727,7 +713,7 @@ fn no_focus_without_adjacent_output_is_noop() {
 fn no_focus_without_destination_selection_is_noop() {
     // Adjacent output exists but is empty: no remembered selection, so
     // no effect rather than an invented target.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = side_by_side();
     accepted(
         &mut engine,
@@ -808,7 +794,7 @@ fn no_focus_without_resolvable_source_is_noop() {
 fn no_focus_up_down_cross_stacked_outputs() {
     // With no local tree to prefer, vertical directions cross stacked
     // outputs by the same existing selection.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = stacked();
     accepted(
         &mut engine,
@@ -952,7 +938,7 @@ fn host_focus_loss_observation_emits_no_focus() {
     // Desktop/taskbar click or minimize drops the global focus with no
     // command: the tiler never forces focus back. Empty and occupied
     // origins both stay quiet.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = side_by_side();
     accepted(
         &mut engine,
@@ -1130,7 +1116,7 @@ fn no_focus_floating_destination_is_noop() {
 fn no_focus_unreadable_source_refuses() {
     // An unreadable current workspace never authorizes a crossing: refuse
     // with the operation vocabulary and no mutation.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = side_by_side();
     accepted(
         &mut engine,
@@ -1180,7 +1166,7 @@ fn no_focus_unreadable_destination_is_noop() {
     // An unreadable destination view resolves past to the readable spare,
     // which holds no selection: a quiet no-op that never selects through
     // the unreadable scope.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = side_by_side();
     accepted(
         &mut engine,

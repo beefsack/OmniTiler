@@ -18,15 +18,14 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen_sized(output: &str, x: i32, w: i32, h: i32, primary: bool) -> ScreenReport {
+fn screen_sized(output: &str, x: i32, w: i32, h: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, w, h)),
         work_area: Some(rect(x, 0, w, h)),
-        gap: 8,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -59,7 +58,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -67,31 +65,19 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens,
         windows,
         views: Vec::new(),
         closed: Vec::new(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -110,6 +96,43 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
+}
+
+fn engine_with_zero_outer_gap() -> WorldEngine {
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities::default(),
+        vec![(
+            "outer".to_owned(),
+            crate::connection::RawSettingValue::Number(0.0),
+        )],
+    )
+    .expect("generation")
+}
+
+fn rebind(engine: &mut WorldEngine, adapter: &str) {
+    let handshake = engine.handshake(&crate::connection::HandshakeRequest {
+        adapter: adapter.to_owned(),
+        request: "reconnect-1".to_owned(),
+        application_identity: crate::connection::ApplicationIdentity {
+            app_id: None,
+            executable: None,
+            process_id: None,
+        },
+        capabilities: crate::connection::HostCapabilities::without_native_identity(),
+    });
+    let generation = handshake.generation.expect("rebound generation");
+    let settings = engine
+        .handle_settings(&crate::connection::SettingsRequest {
+            adapter: adapter.to_owned(),
+            generation,
+            request: "settings-1".to_owned(),
+            revision: 0,
+            values: Vec::new(),
+        })
+        .expect("initial settings");
+    assert_eq!(settings.status, crate::connection::SettingsStatus::Accepted);
 }
 
 fn report_with_frames(
@@ -180,12 +203,12 @@ fn row_of<'a>(
 }
 
 fn tiny_screens() -> Vec<ScreenReport> {
-    vec![screen_sized("out-a", 0, 10, 10, true)]
+    vec![screen_sized("out-a", 0, 10, 10)]
 }
 
 #[test]
 fn exhaustion_marks_capacity_floats_with_diagnostic_origin_only() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_with_zero_outer_gap();
     let windows: Vec<WindowFact> = (0..6)
         .map(|i| fact(&format!("win-{i}"), "out-a", 0))
         .collect();
@@ -223,9 +246,9 @@ fn exhaustion_marks_capacity_floats_with_diagnostic_origin_only() {
 
 #[test]
 fn ordinary_float_matches_capacity_float_except_origin() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_with_zero_outer_gap();
     // Roomy screen: one ordinary float fact plus tiled siblings never exhaust.
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     let mut ordinary = fact("win-float", "out-a", 100);
     ordinary.floating = true;
     let reply = accepted(
@@ -247,7 +270,7 @@ fn ordinary_float_matches_capacity_float_except_origin() {
     assert!(row.allocation.is_none());
 
     // Exhausted screen: capacity floats share the exact authorities.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_with_zero_outer_gap();
     let windows: Vec<WindowFact> = (0..6)
         .map(|i| fact(&format!("win-{i}"), "out-a", 0))
         .collect();
@@ -268,7 +291,7 @@ fn ordinary_float_matches_capacity_float_except_origin() {
 
 #[test]
 fn normalized_float_echo_persists_without_retile() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_with_zero_outer_gap();
     let windows: Vec<WindowFact> = (0..6)
         .map(|i| fact(&format!("win-{i}"), "out-a", 0))
         .collect();
@@ -322,7 +345,7 @@ fn place_float(
         engine,
         &report(
             seq,
-            vec![screen_sized("out-a", 0, 800, 560, true)],
+            vec![screen_sized("out-a", 0, 800, 560)],
             windows,
             "",
             Some(10 + seq),
@@ -340,8 +363,8 @@ fn two_tiled() -> Vec<WindowFact> {
 
 #[test]
 fn float_placement_carries_operation_until_observed() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -383,8 +406,8 @@ fn float_placement_carries_operation_until_observed() {
 
 #[test]
 fn float_toggle_unfloat_withdraws_and_replace_reissues() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -413,8 +436,8 @@ fn float_toggle_unfloat_withdraws_and_replace_reissues() {
 #[test]
 fn float_placement_drops_on_newer_native_input_and_proven_refusal() {
     use crate::world_report::FrameSetter;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -493,8 +516,8 @@ fn domain_key(view: &str) -> crate::session::DomainKey {
 
 #[test]
 fn sole_toggle_float_publishes_controlled_exception_row() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(
@@ -525,7 +548,11 @@ fn sole_toggle_float_publishes_controlled_exception_row() {
     let scope = reply
         .scopes
         .iter()
-        .find(|status| status.scope == format!("out-a/{view}"))
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), &view)
+        })
         .expect("scope row");
     assert_eq!(scope.authority, ScopeAuthority::Controlled, "{scope:?}");
     let row = row_of(&reply, "win-a");
@@ -553,8 +580,8 @@ fn sole_toggle_float_publishes_controlled_exception_row() {
 
 #[test]
 fn sole_float_confirms_and_clears_once() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(
@@ -587,7 +614,11 @@ fn sole_float_confirms_and_clears_once() {
     let scope = settled
         .scopes
         .iter()
-        .find(|status| status.scope == format!("out-a/{view}"))
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), &view)
+        })
         .expect("scope row");
     assert_eq!(scope.authority, ScopeAuthority::Controlled, "{scope:?}");
     let row = row_of(&settled, "win-a");
@@ -598,8 +629,8 @@ fn sole_float_confirms_and_clears_once() {
 
 #[test]
 fn all_float_scope_stays_controlled() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     // Fresh seed of only ordinary floats (plus one automatic fixed float):
     // the session is exception-only from birth, never a hold.
     let mut ordinary = fact("win-u", "out-a", 100);
@@ -621,7 +652,11 @@ fn all_float_scope_stays_controlled() {
     let scope = reply
         .scopes
         .iter()
-        .find(|status| status.scope == format!("out-a/{view}"))
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), &view)
+        })
         .expect("scope row");
     assert_eq!(scope.authority, ScopeAuthority::Controlled, "{scope:?}");
     for win in ["win-u", "win-x"] {
@@ -639,8 +674,8 @@ fn all_float_scope_stays_controlled() {
 
 #[test]
 fn all_minimized_scope_stays_controlled() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     let minimized = WindowFact {
         minimized: true,
         rect: None,
@@ -654,7 +689,11 @@ fn all_minimized_scope_stays_controlled() {
     let scope = reply
         .scopes
         .iter()
-        .find(|status| status.scope == format!("out-a/{view}"))
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), &view)
+        })
         .expect("scope row");
     assert_eq!(scope.authority, ScopeAuthority::Controlled, "{scope:?}");
     let row = row_of(&reply, "win-m");
@@ -673,8 +712,8 @@ fn all_minimized_scope_stays_controlled() {
 #[test]
 fn float_ambiguous_third_frame_holds_across_ack() {
     use crate::world_report::FrameSetter;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -745,8 +784,8 @@ fn float_ambiguous_third_frame_holds_across_ack() {
 #[test]
 fn float_raw_accepted_attempt_confirms_at_target() {
     use crate::world_report::FrameSetter;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -787,8 +826,8 @@ fn float_raw_accepted_attempt_confirms_at_target() {
 #[test]
 fn float_dpi_change_blocks_confirmation_until_fresh_evidence() {
     use crate::world_report::FrameAttempt;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -854,8 +893,8 @@ fn float_dpi_change_blocks_confirmation_until_fresh_evidence() {
 #[test]
 fn float_changed_preimage_and_throw_latch_ambiguity() {
     use crate::world_report::FrameSetter;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -899,7 +938,7 @@ fn float_changed_preimage_and_throw_latch_ambiguity() {
     assert_eq!(row_of(&held, "win-a").effective_frame, Some(target));
     // A throwing setter with unreadable proof latches too, even when the
     // staged frame still names the source.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -939,7 +978,7 @@ fn float_changed_preimage_and_throw_latch_ambiguity() {
 #[test]
 fn float_forged_correlation_never_settles() {
     use crate::world_report::{FrameAttempt, FrameSetter};
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
     // Each forged shape runs against a fresh placement: only exact
@@ -986,7 +1025,7 @@ fn float_forged_correlation_never_settles() {
         },
     ];
     for (index, attempt) in forged.into_iter().enumerate() {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         accepted(
             &mut engine,
             &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -1022,8 +1061,8 @@ fn float_forged_correlation_never_settles() {
 #[test]
 fn float_replay_of_consumed_attempt_never_resurrects() {
     use crate::world_report::FrameSetter;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -1081,7 +1120,7 @@ fn float_replay_of_consumed_attempt_never_resurrects() {
     );
     assert_eq!(row_of(&replayed, "win-a").effective_frame, Some(target));
     // Confirmation then redelivery: the settled placement stays settled.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -1133,10 +1172,10 @@ fn float_replay_of_consumed_attempt_never_resurrects() {
 #[test]
 fn float_incomplete_gesture_minimized_and_unreadable_hold() {
     use crate::world_report::FrameSetter;
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     let target = rect(10, 10, 200, 150);
     // Incomplete inventory never confirms, even at the target.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -1162,7 +1201,7 @@ fn float_incomplete_gesture_minimized_and_unreadable_hold() {
         "incomplete inventory holds"
     );
     // A gesture barrier holds the same way.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -1210,7 +1249,7 @@ fn float_incomplete_gesture_minimized_and_unreadable_hold() {
             ],
         ),
     ] {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         accepted(
             &mut engine,
             &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -1242,7 +1281,7 @@ fn float_incomplete_gesture_minimized_and_unreadable_hold() {
 #[test]
 fn float_gap_clamp_recovers_without_repeated_row() {
     use crate::world_report::FrameSetter;
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
     let third = rect(400, 300, 210, 160);
@@ -1298,7 +1337,7 @@ fn float_gap_clamp_recovers_without_repeated_row() {
             false,
         ),
     ] {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         accepted(
             &mut engine,
             &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -1365,8 +1404,8 @@ fn float_gap_clamp_recovers_without_repeated_row() {
 #[test]
 fn float_gap_refusal_recovers_to_settle_after_ack() {
     use crate::world_report::FrameSetter;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -1434,8 +1473,8 @@ fn float_gap_refusal_recovers_to_settle_after_ack() {
 #[test]
 fn float_dpi_flip_holds_recovery_then_target_settles() {
     use crate::world_report::FrameSetter;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -1524,8 +1563,8 @@ fn float_dpi_flip_holds_recovery_then_target_settles() {
 #[test]
 fn float_gap_close_still_settles() {
     use crate::world_report::FrameSetter;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -1565,8 +1604,8 @@ fn float_gap_close_still_settles() {
 #[test]
 fn float_lost_result_recovers_stale_never_replays() {
     use crate::boundary::CoreCommand;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -1608,8 +1647,8 @@ fn float_lost_result_recovers_stale_never_replays() {
 
 #[test]
 fn float_close_and_reset_clear_token() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None),
@@ -1635,7 +1674,9 @@ fn float_close_and_reset_clear_token() {
     // Fresh placement then incarnation reset clears without touching windows.
     place_float(&mut engine, 4, two_tiled(), "win-a", Some(target));
     let mut reset = report(5, roomy, two_tiled(), "", None, None);
+    rebind(&mut engine, "adapter-2");
     reset.adapter_incarnation = "adapter-2".to_owned();
+    reset.core_generation = engine.core_generation().to_owned();
     let reply = accepted(&mut engine, &reset);
     assert!(
         reply.windows.iter().all(|w| w.frame_operation.is_none()),

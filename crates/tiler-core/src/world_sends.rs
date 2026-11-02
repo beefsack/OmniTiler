@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::engine::Engine;
-use crate::ids::{CorrelationId, OwnerId};
+use crate::ids::CorrelationId;
 use crate::seed::EngineWindow;
 use crate::session::RefusalKind;
 use crate::session::{DomainKey, OutputDomain};
@@ -325,7 +325,9 @@ impl WorldEngine {
                     let output = retained.target.target_output.clone();
                     let workspace = retained.target.target_workspace.clone();
                     self.retain_view_inner(&output, &workspace, format!("{operation_id}-follow"));
-                    if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+                    if self.workspace_mode_setting()
+                        == crate::workspace_scope::WorkspaceMode::Shared
+                    {
                         let canonical = self.mapping.get(&output.0).cloned().unwrap_or_default();
                         let mut live: Vec<String> = report
                             .screens
@@ -491,11 +493,12 @@ impl WorldEngine {
                 follow.then(|| window.clone()),
             ));
         }
-        let owner = report.owner.clone();
-        let (Some(owner), Some(correlation)) = (
-            OwnerId::parse(&owner),
-            CorrelationId::parse(&report.request_id),
-        ) else {
+        let Some(owner) = self.connection_owner.clone() else {
+            return Err((KIND_SNAPSHOT, MSG_SNAPSHOT));
+        };
+        let (Some(owner), Some(correlation)) =
+            (Some(owner), CorrelationId::parse(&report.request_id))
+        else {
             return Err((KIND_SNAPSHOT, MSG_SNAPSHOT));
         };
         let Some(source_domain) = self.staged.domains.iter().find(|d| d.key == source_key) else {
@@ -721,11 +724,12 @@ impl WorldEngine {
                 follow.then(|| window.clone()),
             ));
         }
-        let owner = report.owner.clone();
-        let (Some(owner), Some(correlation)) = (
-            OwnerId::parse(&owner),
-            CorrelationId::parse(&report.request_id),
-        ) else {
+        let Some(owner) = self.connection_owner.clone() else {
+            return Err((KIND_SNAPSHOT, MSG_SNAPSHOT));
+        };
+        let (Some(owner), Some(correlation)) =
+            (Some(owner), CorrelationId::parse(&report.request_id))
+        else {
             return Err((KIND_SNAPSHOT, MSG_SNAPSHOT));
         };
         let Some(source_domain) = self.staged.domains.iter().find(|d| d.key == source_key) else {
@@ -926,7 +930,7 @@ impl WorldEngine {
                     // screen (identical to the source domain on the guarded
                     // same output); the source domain is only a fallback
                     // and never a different screen.
-                    let created = self.create_trailing_workspace(output, report.default_tiled);
+                    let created = self.create_trailing_workspace(output, self.default_tiled());
                     let Some(target) = created else {
                         return CommandApplied::Rejected {
                             kind: KIND_CREATION_EXHAUSTED,
@@ -943,9 +947,12 @@ impl WorldEngine {
                         .iter()
                         .find(|screen| screen.output == *output)
                         .and_then(|screen| {
-                            screen
-                                .work_area
-                                .map(|bounds| (bounds, screen.gap, screen.outer_gap))
+                            screen.work_area.and_then(|bounds| {
+                                let gap = Self::scale_once(self.gap_setting(), screen.scale)?;
+                                let outer_gap =
+                                    Self::scale_once(self.outer_gap_setting(), screen.scale)?;
+                                Some((bounds, gap, outer_gap))
+                            })
                         })
                         .or_else(|| {
                             (source_key.output == *output)

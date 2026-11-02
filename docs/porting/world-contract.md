@@ -118,8 +118,9 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   window; arrival brackets <=10000 total per report; one renderer input at most.
   Failed-window lists are subsets of the frozen <=10000-window roster;
   diagnostics have at most one entry per held row, never unbounded queues.
-  Metadata text below is UTF-8 <=4096 bytes each (display identity <=256);
-  over-bound values are unreadable row facts, not silently truncated identity.
+  Metadata text below is UTF-8 <=4096 bytes each (display identity <=256).
+  error messages and diagnostic text inherit this bound; producers emit fixed, non-echoing error messages.
+  Over-bound values are unreadable row facts, not silently truncated identity.
   [Bounds](../../crates/tiler-core/src/world_report.rs),
   [transport](../decisions/engine.md#world-transport-authority-and-boundedness).
 
@@ -159,6 +160,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `capabilities` | HostCapabilities | no | Fixed hard host limits. |
 | `ApplicationIdentity` | `appId` | bounded application id | yes | Own native bundle/application id; null when absent or unreadable, never a fallback verdict. |
 | | `executable` | executable identity | yes | Own normalized executable; null only when executable is unavailable. |
+| | `processId` | Id | yes | Own native process identity in the window processId namespace; null only when processId is unavailable. |
 | `HandshakeReply` | `type` | `handshake-reply` | no | New routing tag. |
 | | `v` | integer 4 | no | Selected version, not negotiation of dual shapes. |
 | | `adapter,req` | Id | no | Request correlation. |
@@ -170,11 +172,14 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `windowSuppression` | bool | no | Independent recoverable per-window hide mechanism. |
 | | `maximize,fullscreen,nativeSticky,above,warp` | bool | no | Native state/stacking/cursor actuation support, not semantic command support or permission. |
 | | `tiledFloatTransfer` | bool | no | Tiled source can become a float while crossing outputs without unsupported remap. |
-| | `unavailableFacts` | FactName[] | no | Fixed unsupported classification inputs, unique and in FactName catalog order, <=20 entries. |
+| | `unavailableFacts` | FactName[] | no | Fixed unsupported classification inputs, unique and in FactName catalog order, <=21 entries. |
 
 - `ready:false` is normal after an accepted handshake; readiness requires a
   complete usable report and initial settings. Hard support cannot flip per
   report. Unsupported versions use the bounded error shape below.
+  Readiness latches for the connection lifetime after accepted initial settings (field diagnostics do not block) and a complete usable report; later incomplete/unreadable reports retain `ready:true` with narrow scope holds, and only a new connection/handshake resets readiness.
+  A valid report before initial settings returns an empty, correlated `ready:false` reply with no desired state or write/effect authority; it is not retained as authority, and readiness requires a complete usable report processed after initial settings are accepted.
+  Before readiness latches, an incomplete report after settings returns the same empty, correlated `ready:false` reply; nothing is minted or retained as authority, and a later complete usable report initializes and latches readiness.
   [Capabilities](../decisions/contract.md#host-capabilities-and-settings).
 - `nativeSelectorScope:all-outputs` makes core's effective workspace mode
   `shared`, preserving the existing global-selector behavior. Retain the raw
@@ -202,6 +207,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   validates each field, applies valid siblings, and keeps last-good/default for
   invalid fields. Missing known fields use defaults at startup, last-good later;
   unknown setting names receive per-field diagnostics, not startup refusal.
+  Raw setting names are UTF-8 <=4096 bytes; longer names refuse decoding before field processing.
   Duplicate revision/content is idempotent; older revision returns `stale`
   without replacing state; equal revision with different content returns
   `revision-reused` without replacing state. Receipt order does not change a
@@ -384,6 +390,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `owner,parent` | WindowId | yes | Known live relationship, null if unavailable/unmanaged binding unknown. |
 | `role,appId` | bounded text | yes | Native role/application values without policy verdicts. |
 | `executable` | executable identity | yes | Neutral native executable identity, not an appId alias or eligibility verdict. |
+| `processId` | Id | yes | Native owning process identity, comparable only to this connection's applicationIdentity.processId. |
 | `class,title` | bounded text | yes | Native class/title values without policy verdicts. |
 | `type` | WindowType | yes | Mechanically normalized native kind, not admission or eligibility. |
 | `activationPolicy` | `regular/accessory/prohibited` | yes | Native application activation policy, not inferred from acceptsInput. |
@@ -452,7 +459,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   placement, not a persistent below flag. GetParent can return a popup's owner;
   do not publish that as a parent relationship without distinguishing the arms.
 - `FactName` is closed, in order:
-  `privileged,managed,acceptsInput,activationInhibited,toolWindow,owned,transient,modal,resizable,above,below,owner,parent,role,appId,executable,class,title,activationPolicy,layer`.
+  `privileged,managed,acceptsInput,activationInhibited,toolWindow,owned,transient,modal,resizable,above,below,owner,parent,role,appId,executable,processId,class,title,activationPolicy,layer`.
   A listed unavailable fact must be null in every window row; a non-null
   contradiction holds that row as conflicting-fact. Unknown names, duplicates,
   wrong ordering/types or missing unavailableFacts refuse the handshake.
@@ -491,7 +498,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 ### Executable identity
 
 - `executable` is required nullable; handshake `applicationIdentity` is a required
-  object with required nullable `appId,executable`, in that order. Its non-null
+  object with required nullable `appId,executable,processId`, in that order. Its non-null
   appId is nonempty text <=4096 UTF-8 bytes without NUL, in the same native encoding
   as WindowFact.appId; absence is null, not an invented own-bundle value.
   A non-null executable is nonempty text <=4096 UTF-8 bytes, with no NUL. It is a
@@ -506,11 +513,9 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 - Windows uses the full executable path: replace `/` with `\`, then ASCII
   lowercase, exactly the existing executable comparison. Do not canonicalize
   dot segments, resolve relative paths, consult the filesystem or Unicode-fold.
-  Core compares normalized full identities for own Settings together with exact
-  class `OmniTilerSettings`; neither class alone nor own executable with another
-  class suffices. Separate-process, proof/control and other safety gates remain.
-  The existing generic-dialog membership gate refuses unowned `#32770`, not
-  arbitrary dialog types or foreign reuse of the Settings class.
+  Executable equality is not an own-process or Settings classification rule.
+  The existing generic-dialog membership gate still refuses unowned `#32770`,
+  not arbitrary dialog types or reuse of the Settings class.
 - Core preserves the border-only generic-XAML exception: exact classes
   `Windows.UI.Core.CoreWindow` or `XamlExplorerHostIslandWindow` require basename
   `startmenuexperiencehost.exe,shellexperiencehost.exe,searchhost.exe,searchui.exe,widgets.exe,textinputhost.exe`.
@@ -522,14 +527,32 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   declare it unavailable. Identity stays on the local wire only: do not add it
   to logs, telemetry or persisted intent. Fixtures use synthetic identities.
   W4 is a technical resolution approved 2026-11-02, not native acceptance.
-- For the existing macOS self-exclusion gate, core excludes when non-null raw
-  window appId equals non-null applicationIdentity.appId OR non-null window
-  executable equals non-null applicationIdentity.executable. Preserve macOS
-  executable case; Windows normalization does not apply. A missing bundle does
-  not imply own application; the own executable covers unbundled own processes.
-  This does not alter the Windows Settings/class exceptions above. M1 and the
-  macOS obligations here are
-  [technical resolutions approved 2026-11-02](../changes/v4-migration.md#m1-m9-technical-resolution-pending-0c-approval).
+
+### Process identity and own-process exclusion
+
+- `WindowFact.processId` is required nullable immediately after `executable`.
+  It is the native owning process identity, using the existing opaque Id grammar,
+  not a JSON number, executable, bundle id, class, window id or policy verdict.
+  Host values share one process namespace with `applicationIdentity.processId`;
+  compare exactly within the handshake lifetime only. Native PID encodings may
+  use decimal Id text; fixtures use synthetic identities. Do not infer process
+  identity from metadata or persist it across handshakes.
+- Declaring `processId` unavailable requires null own and window processIds;
+  support requires a non-null own processId at handshake. A supported-but-unreadable
+  window processId remains null and holds only dependent classification/actions.
+  A non-null window value contradicting unavailableFacts holds that row as
+  conflicting-fact. Executable and processId availability are independent.
+- Core excludes only windows whose known processId equals the connection's known
+  own processId: internal overlays, borders, pager, carriers and proof/control UI.
+  A separate process of the same executable or bundle is not excluded by identity
+  alone. Settings is ordinary on every platform: resizable ordinary windows tile;
+  fixed-size/dialog windows follow the same admission rules as any application.
+  There is no Settings-class exception or appId/executable self-exclusion.
+  Generic-dialog and generic-XAML shell rules above are unchanged.
+  [User decision 2026-11-02](../decisions/contract.md#own-process-ui-and-ordinary-settings)
+  supersedes the Windows Settings-class exemption and amends M1/W4. Windows
+  Settings resizability and macOS Settings process separation or a neutral marker
+  are separate product follow-ups, not phase-1 adapter work.
 
 ### Native observation
 

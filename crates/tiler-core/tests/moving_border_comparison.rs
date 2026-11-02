@@ -31,10 +31,9 @@ fn screen(output: &str, x: i32) -> ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 1600, 600)),
         work_area: Some(rect(x, 0, 1600, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary: x == 0,
+        scale: 1.0,
+        identity: tiler_core::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -88,7 +87,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: obs,
@@ -96,31 +94,19 @@ fn report(
         request_id: format!("req-{req}"),
         command_seq: cseq,
         command: cmd,
-        workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens: vec![screen("out-a", 0), screen("out-b", 1600)],
         windows,
         views: Vec::new(),
         closed,
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
-        default_tiled: true,
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture,
@@ -566,7 +552,7 @@ struct Fx {
 impl Fx {
     fn new() -> Self {
         Self {
-            eng: WorldEngine::new("gen-1").expect("generation"),
+            eng: WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation"),
             live: fresh_live(),
             l: Candidate::new(Mode::Live),
             a: Candidate::new(Mode::Anchored),
@@ -1079,7 +1065,7 @@ fn moving_tracking_lag_with_virtual_schedule() {
     const COMPUTE_TICKS: u64 = 3;
     const PUBLISH_DELAY: u64 = 1;
     const PAINT_DELAY: u64 = 1;
-    let mut eng = WorldEngine::new("gen-1").expect("generation");
+    let mut eng = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut live = fresh_live();
     let start_frame = live.frames["win-a"];
     live.set_gesture(Some(("win-a".to_owned(), 7)));

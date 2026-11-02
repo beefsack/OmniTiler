@@ -72,7 +72,7 @@ fn learned_shared_fixture_converges_through_raw_reports() {
         let expect_retry = case["expect_retry"].as_bool().unwrap_or(false);
         let expect_reapply = case["expect_reapply"].as_bool().unwrap_or(false);
         let (exp_w, exp_h) = expect_learned_axes(case);
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let first = accepted(
             &mut engine,
             &report_with_screens(1, vec![screen()], two_facts(), vec![], vec![], 0, true),
@@ -251,7 +251,7 @@ fn replacement_shared_fixture_reuses_retired_token_fresh() {
         let extra_w = case["extra_w"].as_i64().expect("extra_w") as i32;
         let extra_h = case["extra_h"].as_i64().expect("extra_h") as i32;
         let other = if window == "w1" { "w2" } else { "w1" };
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let first = accepted(
             &mut engine,
             &report_with_screens(1, vec![screen()], two_facts(), vec![], vec![], 0, true),
@@ -366,7 +366,7 @@ fn observation_shared_fixture_records_no_bounds_without_proof() {
             .as_bool()
             .expect("expect_suppressed");
         let other = if window == "w1" { "w2" } else { "w1" };
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let first = accepted(
             &mut engine,
             &report_with_screens(1, vec![screen()], two_facts(), vec![], vec![], 0, true),

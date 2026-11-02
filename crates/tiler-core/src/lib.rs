@@ -8,6 +8,7 @@ pub mod admission;
 pub mod born_maximized;
 pub mod boundary;
 pub mod bounds;
+pub mod connection;
 pub mod contract;
 pub mod cosmic_v1;
 pub mod cursor_targeting;
@@ -23,6 +24,7 @@ pub mod reconcile;
 pub mod seed;
 pub mod session;
 pub mod settings_catalog;
+pub mod settings_state;
 pub mod size_hints;
 pub mod visual;
 pub mod window_policy;
@@ -48,6 +50,9 @@ pub mod world_sends;
 pub mod world_settle;
 pub mod world_sizing;
 pub mod world_tiling_views;
+
+#[cfg(test)]
+mod world_connection_tests;
 
 #[cfg(test)]
 mod capacity_admission_tests;

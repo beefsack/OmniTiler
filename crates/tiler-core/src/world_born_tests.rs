@@ -104,18 +104,43 @@ fn desire_op(reply: &crate::world_report::WorldReply, window: &str) -> Option<St
         .and_then(|row| row.clear_operation.clone())
 }
 
+fn set_born_policy(
+    engine: &mut WorldEngine,
+    revision: u64,
+    policy: crate::born_maximized::BornMaximized,
+) {
+    engine
+        .apply_test_settings(
+            revision,
+            vec![(
+                "bornMaximized".to_owned(),
+                crate::connection::RawSettingValue::String(policy.as_wire_str().to_owned()),
+            )],
+        )
+        .expect("settings accepted");
+}
+
+fn born_clear_engine() -> WorldEngine {
+    let capabilities = crate::connection::HostCapabilities {
+        birth_clear: true,
+        ..Default::default()
+    };
+    WorldEngine::new_test_bound_with_capabilities("gen-1", "adapter-1", capabilities)
+        .expect("generation")
+}
+
 #[test]
 fn commandless_birth_mints_and_publishes_clear() {
     // A tiled-first born maximized window binds commandlessly and the
     // reply carries the one-shot `clear_operation` desire. No command
     // ran: the binding id comes from the core born serial.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let reply = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -133,16 +158,15 @@ fn commandless_birth_mints_and_publishes_clear() {
 fn disabled_birth_never_mints_or_publishes() {
     // Default-disabled pin: a tiled-first maximized birth mints nothing,
     // tracks nothing, and publishes no desire when the capability is off.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let mut first = report(
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let first = report(
         1,
         1,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![born_maximized("win-born", "out-a", 100)],
         None,
         None,
     );
-    first.birth_clear = false;
     let reply = accepted(&mut engine, &first);
     assert_eq!(engine.born_retained_len(), 0, "disabled mints nothing");
     assert_eq!(
@@ -157,28 +181,26 @@ fn disabled_birth_never_mints_or_publishes() {
 fn disabled_fullscreen_birth_and_exit_never_bind() {
     // Default-disabled pin: a fullscreen birth holds nothing and its exit
     // to maximized binds no held-exit lane while the capability is off.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let mut first = report(
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let first = report(
         1,
         1,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![born_fullscreen("win-fs", "out-a", 100)],
         None,
         None,
     );
-    first.birth_clear = false;
     let reply = accepted(&mut engine, &first);
     assert_eq!(engine.born_retained_len(), 0, "disabled holds nothing");
     assert_eq!(desire_op(&reply, "win-fs"), None);
-    let mut exit = report(
+    let exit = report(
         2,
         2,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![born_maximized("win-fs", "out-a", 100)],
         None,
         None,
     );
-    exit.birth_clear = false;
     let reply = accepted(&mut engine, &exit);
     assert_eq!(engine.born_retained_len(), 0, "disabled exit binds nothing");
     assert_eq!(desire_op(&reply, "win-fs"), None);
@@ -190,16 +212,15 @@ fn disabled_deferred_conditions_mint_nothing() {
     // gesture barrier, game-paused presentation) mint nothing while the
     // capability is off, and publish no desire either way.
     for name in ["gap", "gesture", "paused"] {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let mut deferred = report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
         );
-        deferred.birth_clear = false;
         match name {
             "gap" => deferred.inventory_complete = false,
             "gesture" => deferred.gesture_barrier = true,
@@ -217,16 +238,16 @@ fn disabled_deferred_conditions_mint_nothing() {
 }
 
 #[test]
-fn disabled_flag_off_after_mint_produces_no_desire() {
-    // Opt-out drops the lane: a minted token stops publishing once the
-    // capability turns off, and no binding survives the opt-out report.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+fn rehandshake_without_birth_clear_drops_old_binding() {
+    // Capabilities are immutable per connection. A fresh adapter lifetime
+    // without birth-clear starts with no retained token and cannot mint one.
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -234,15 +255,38 @@ fn disabled_flag_off_after_mint_produces_no_desire() {
     );
     assert_eq!(engine.born_retained_len(), 1);
     assert!(desire_op(&first, "win-born").is_some());
+    let handshake = engine.handshake(&crate::connection::HandshakeRequest {
+        adapter: "adapter-1".to_owned(),
+        request: "test-rebind".to_owned(),
+        application_identity: crate::connection::ApplicationIdentity {
+            app_id: None,
+            executable: None,
+            process_id: None,
+        },
+        capabilities: crate::connection::HostCapabilities::without_native_identity(),
+    });
+    let generation = handshake.generation.expect("re-handshake generation");
+    engine
+        .handle_settings(&crate::connection::SettingsRequest {
+            adapter: "adapter-1".to_owned(),
+            generation: generation.clone(),
+            request: "test-rebind-settings".to_owned(),
+            revision: 0,
+            values: vec![(
+                "mode".to_owned(),
+                crate::connection::RawSettingValue::String("per-output-local".to_owned()),
+            )],
+        })
+        .expect("initial settings accepted");
     let mut off = report(
-        2,
-        2,
-        vec![screen("out-a", 0, true)],
+        1,
+        1,
+        vec![screen("out-a", 0)],
         vec![born_maximized("win-born", "out-a", 100)],
         None,
         None,
     );
-    off.birth_clear = false;
+    off.core_generation = generation;
     let reply = accepted(&mut engine, &off);
     assert_eq!(engine.born_retained_len(), 0, "opt-out drops the binding");
     assert_eq!(desire_op(&reply, "win-born"), None);
@@ -253,26 +297,25 @@ fn disabled_explicit_directional_clear_unaffected() {
     // The capability gates only the automatic birth lane: an explicit
     // directional clear (move-maximize-clear) still binds and publishes
     // with the capability off.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         floating: true,
         maximized: true,
         ..fact("win-max", "out-a", 100)
     };
-    let mut first = report(
+    let first = report(
         1,
         1,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
         None,
         None,
     );
-    first.birth_clear = false;
     accepted(&mut engine, &first);
-    let mut commanded = report_full(
+    let commanded = report_full(
         2,
         2,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
         Vec::new(),
         "win-max",
@@ -283,7 +326,6 @@ fn disabled_explicit_directional_clear_unaffected() {
             same_axis: crate::directional::SameAxisMove::default(),
         }),
     );
-    commanded.birth_clear = false;
     let reply = accepted(&mut engine, &commanded);
     assert_eq!(engine.born_retained_len(), 0, "no automatic birth beside");
     assert_eq!(engine.retained_clears.len(), 1);
@@ -300,13 +342,13 @@ fn accepted_attempt_plus_unmaximized_proves_and_retires() {
     // The spent operation never re-actuates: a correlated accepted
     // attempt plus complete readable unmaximized facts retires the
     // binding, and the next report carries no desire and mints nothing.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -323,7 +365,7 @@ fn accepted_attempt_plus_unmaximized_proves_and_retires() {
         &report_clears(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared.clone()],
             "",
             vec![clear_attempt(
@@ -341,14 +383,7 @@ fn accepted_attempt_plus_unmaximized_proves_and_retires() {
     // set holds at most once.
     let third = accepted(
         &mut engine,
-        &report(
-            3,
-            3,
-            vec![screen("out-a", 0, true)],
-            vec![cleared],
-            None,
-            None,
-        ),
+        &report(3, 3, vec![screen("out-a", 0)], vec![cleared], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0);
     assert_eq!(desire_op(&third, "win-born"), None);
@@ -359,13 +394,13 @@ fn external_clear_without_attempt_abandons() {
     // Unmaximized facts with no correlated attempt name newer external
     // input, not our clear: the binding abandons with no continuation
     // and never re-mints.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -379,14 +414,7 @@ fn external_clear_without_attempt_abandons() {
     };
     accepted(
         &mut engine,
-        &report(
-            2,
-            2,
-            vec![screen("out-a", 0, true)],
-            vec![cleared],
-            None,
-            None,
-        ),
+        &report(2, 2, vec![screen("out-a", 0)], vec![cleared], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0);
 }
@@ -396,13 +424,13 @@ fn proven_refusal_retires_and_never_retries() {
     // An explicit refusal with an unchanged readable maximized preimage
     // proves refusal: the binding retires and later maximized reports
     // never re-mint.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -414,7 +442,7 @@ fn proven_refusal_retires_and_never_retries() {
         &report_clears(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             "",
             vec![clear_attempt(
@@ -433,7 +461,7 @@ fn proven_refusal_retires_and_never_retries() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -448,13 +476,13 @@ fn throw_latches_ambiguity_through_unchanged_reads() {
     // A throw may have executed: the binding holds with no retry, and
     // the staged pending attempt survives a later unmaximized read
     // without proving an external clear.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -466,7 +494,7 @@ fn throw_latches_ambiguity_through_unchanged_reads() {
         &report_clears(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             "",
             vec![clear_attempt(
@@ -489,14 +517,7 @@ fn throw_latches_ambiguity_through_unchanged_reads() {
     };
     accepted(
         &mut engine,
-        &report(
-            3,
-            3,
-            vec![screen("out-a", 0, true)],
-            vec![cleared],
-            None,
-            None,
-        ),
+        &report(3, 3, vec![screen("out-a", 0)], vec![cleared], None, None),
     );
     assert_eq!(engine.born_retained_len(), 1, "ambiguity persists");
 }
@@ -505,13 +526,13 @@ fn throw_latches_ambiguity_through_unchanged_reads() {
 fn unreadable_proof_holds_without_spend() {
     // An accepted attempt with an unreadable post latches ambiguity:
     // never success, never retry.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -523,7 +544,7 @@ fn unreadable_proof_holds_without_spend() {
         &report_clears(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             "",
             vec![clear_attempt(
@@ -543,13 +564,13 @@ fn async_success_completes_on_later_unmaximized_facts() {
     // Setter acceptance is never synchronous completion: the binding
     // holds while the window still reads maximized, then retires when
     // later readable facts prove the async clear landed.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -561,7 +582,7 @@ fn async_success_completes_on_later_unmaximized_facts() {
         &report_clears(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             "",
             vec![clear_attempt(
@@ -581,14 +602,7 @@ fn async_success_completes_on_later_unmaximized_facts() {
     };
     accepted(
         &mut engine,
-        &report(
-            3,
-            3,
-            vec![screen("out-a", 0, true)],
-            vec![cleared],
-            None,
-            None,
-        ),
+        &report(3, 3, vec![screen("out-a", 0)], vec![cleared], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0, "later proof retires");
 }
@@ -597,13 +611,13 @@ fn async_success_completes_on_later_unmaximized_facts() {
 fn fullscreen_birth_holds_then_exit_clears() {
     // A first-seen fullscreen birth holds slotless with no clear; its
     // first exit to maximized binds the held-exit lane commandlessly.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_fullscreen("win-fs", "out-a", 100)],
             None,
             None,
@@ -616,7 +630,7 @@ fn fullscreen_birth_holds_then_exit_clears() {
         &report(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-fs", "out-a", 100)],
             None,
             None,
@@ -636,7 +650,7 @@ fn fullscreen_birth_holds_then_exit_clears() {
         &report_clears(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared],
             "",
             vec![clear_attempt(
@@ -655,13 +669,13 @@ fn fullscreen_birth_holds_then_exit_clears() {
 fn fullscreen_exit_to_plain_consumes_hold_without_clear() {
     // A held birth that exits to plain (non-maximized) ends the hold:
     // a later user maximize is never mistaken for the held exit.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_fullscreen("win-fs", "out-a", 100)],
             None,
             None,
@@ -673,14 +687,7 @@ fn fullscreen_exit_to_plain_consumes_hold_without_clear() {
     };
     accepted(
         &mut engine,
-        &report(
-            2,
-            2,
-            vec![screen("out-a", 0, true)],
-            vec![plain],
-            None,
-            None,
-        ),
+        &report(2, 2, vec![screen("out-a", 0)], vec![plain], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0);
     let third = accepted(
@@ -688,7 +695,7 @@ fn fullscreen_exit_to_plain_consumes_hold_without_clear() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-fs", "out-a", 100)],
             None,
             None,
@@ -707,21 +714,14 @@ fn later_fullscreen_on_admitted_tile_never_enters_held() {
     // A fullscreen that arrives on an already-admitted tile is a managed
     // overlay transition, never a birth: no hold, no clear, and no exit
     // clear when it restores to maximized.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let plain = WindowFact {
         fit_excluded: false,
         ..fact("win-a", "out-a", 100)
     };
     accepted(
         &mut engine,
-        &report(
-            1,
-            1,
-            vec![screen("out-a", 0, true)],
-            vec![plain],
-            None,
-            None,
-        ),
+        &report(1, 1, vec![screen("out-a", 0)], vec![plain], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0);
     accepted(
@@ -729,7 +729,7 @@ fn later_fullscreen_on_admitted_tile_never_enters_held() {
         &report(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_fullscreen("win-a", "out-a", 100)],
             None,
             None,
@@ -745,7 +745,7 @@ fn later_fullscreen_on_admitted_tile_never_enters_held() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-a", "out-a", 100)],
             None,
             None,
@@ -763,13 +763,13 @@ fn later_fullscreen_on_admitted_tile_never_enters_held() {
 fn fixed_size_birth_floats_without_clear() {
     // A fixed-size maximized birth floats beneath its overlay with no
     // clear and no tile slot fight.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let reply = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![fixed_maximized("win-fixed", "out-a", 100)],
             None,
             None,
@@ -789,13 +789,13 @@ fn fixed_size_birth_floats_without_clear() {
 fn fixed_fullscreen_exit_skips_clear() {
     // A held fullscreen birth whose exit still carries fixed hints
     // floats automatic with no clear, consuming the hold.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_fullscreen("win-fs", "out-a", 100)],
             None,
             None,
@@ -811,7 +811,7 @@ fn fixed_fullscreen_exit_skips_clear() {
     };
     let second = accepted(
         &mut engine,
-        &report(2, 2, vec![screen("out-a", 0, true)], vec![exit], None, None),
+        &report(2, 2, vec![screen("out-a", 0)], vec![exit], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0, "fixed exit never clears");
     assert_eq!(desire_op(&second, "win-fs"), None);
@@ -823,16 +823,20 @@ fn keep_overlay_skips_born_but_clears_held_exit() {
     // keeps its overlay with no clear; the held-fullscreen exit lane
     // still clears once. The kept lifetime stays present throughout, so a
     // later flip to tile-on-launch never reclears it.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let mut first_report = report(
+    let mut engine = born_clear_engine();
+    set_born_policy(
+        &mut engine,
+        1,
+        crate::born_maximized::BornMaximized::KeepMaximizedOverlay,
+    );
+    let first_report = report(
         1,
         1,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![born_maximized("win-born", "out-a", 100)],
         None,
         None,
     );
-    first_report.born_maximized = crate::born_maximized::BornMaximized::KeepMaximizedOverlay;
     let first = accepted(&mut engine, &first_report);
     assert_eq!(
         engine.born_retained_len(),
@@ -841,10 +845,10 @@ fn keep_overlay_skips_born_but_clears_held_exit() {
     );
     assert_eq!(desire_op(&first, "win-born"), None);
     // Held-fullscreen exit still clears under both modes.
-    let mut fs_report = report(
+    let fs_report = report(
         2,
         2,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![
             born_maximized("win-born", "out-a", 100),
             born_fullscreen("win-fs", "out-a", 200),
@@ -852,12 +856,11 @@ fn keep_overlay_skips_born_but_clears_held_exit() {
         None,
         None,
     );
-    fs_report.born_maximized = crate::born_maximized::BornMaximized::KeepMaximizedOverlay;
     accepted(&mut engine, &fs_report);
-    let mut exit_report = report(
+    let exit_report = report(
         3,
         3,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![
             born_maximized("win-born", "out-a", 100),
             born_maximized("win-fs", "out-a", 200),
@@ -865,7 +868,6 @@ fn keep_overlay_skips_born_but_clears_held_exit() {
         None,
         None,
     );
-    exit_report.born_maximized = crate::born_maximized::BornMaximized::KeepMaximizedOverlay;
     let exit_reply = accepted(&mut engine, &exit_report);
     assert_eq!(
         engine.born_retained_len(),
@@ -877,15 +879,19 @@ fn keep_overlay_skips_born_but_clears_held_exit() {
     // A later flip to tile-on-launch never reclears the previously kept
     // lifetime: the keep decision latched at tiled-first evaluation and
     // the lifetime stayed known throughout.
-    let mut flipped = report(
+    let flipped = report(
         4,
         4,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![born_maximized("win-born", "out-a", 100)],
         None,
         None,
     );
-    flipped.born_maximized = crate::born_maximized::BornMaximized::TileOnLaunch;
+    set_born_policy(
+        &mut engine,
+        2,
+        crate::born_maximized::BornMaximized::TileOnLaunch,
+    );
     let flipped_reply = accepted(&mut engine, &flipped);
     assert_eq!(engine.born_retained_len(), 0, "kept lifetime never rebinds");
     assert_eq!(desire_op(&flipped_reply, "win-born"), None);
@@ -895,13 +901,13 @@ fn keep_overlay_skips_born_but_clears_held_exit() {
 fn floating_scope_never_clears_and_latches_floating_first() {
     // A maximized birth on a floating workspace keeps its overlay, and a
     // later tiled admission of the same lifetime never clears either.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -916,7 +922,7 @@ fn floating_scope_never_clears_and_latches_floating_first() {
         &report_full(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             Vec::new(),
             "",
@@ -933,7 +939,7 @@ fn floating_scope_never_clears_and_latches_floating_first() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -947,7 +953,7 @@ fn floating_scope_never_clears_and_latches_floating_first() {
         &report_full(
             4,
             4,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             Vec::new(),
             "",
@@ -972,20 +978,20 @@ fn close_prunes_and_replacement_rearms() {
     // An explicit close prunes every born lifetime set, so a replacement
     // lifetime under the same id binds fresh with a new operation id.
     use crate::directional::WindowId as W;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
         ),
     );
     let op = desire_op(&first, "win-born").expect("desire rides");
-    let mut closed_report = report(2, 2, vec![screen("out-a", 0, true)], vec![], None, None);
+    let mut closed_report = report(2, 2, vec![screen("out-a", 0)], vec![], None, None);
     closed_report.closed = vec![W("win-born".to_owned())];
     accepted(&mut engine, &closed_report);
     assert_eq!(engine.born_retained_len(), 0);
@@ -994,7 +1000,7 @@ fn close_prunes_and_replacement_rearms() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -1008,13 +1014,13 @@ fn close_prunes_and_replacement_rearms() {
 fn minimized_and_unreadable_hold_without_spend() {
     // Minimized and unreadable facts hold the binding with no attempt
     // and no spent mark: a later readable reply retries the desire.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -1027,14 +1033,7 @@ fn minimized_and_unreadable_hold_without_spend() {
     };
     let second = accepted(
         &mut engine,
-        &report(
-            2,
-            2,
-            vec![screen("out-a", 0, true)],
-            vec![minimized],
-            None,
-            None,
-        ),
+        &report(2, 2, vec![screen("out-a", 0)], vec![minimized], None, None),
     );
     assert_eq!(engine.born_retained_len(), 1, "minimized holds");
     assert_eq!(desire_op(&second, "win-born"), None, "minimized withholds");
@@ -1044,14 +1043,7 @@ fn minimized_and_unreadable_hold_without_spend() {
     };
     accepted(
         &mut engine,
-        &report(
-            3,
-            3,
-            vec![screen("out-a", 0, true)],
-            vec![unreadable],
-            None,
-            None,
-        ),
+        &report(3, 3, vec![screen("out-a", 0)], vec![unreadable], None, None),
     );
     assert_eq!(engine.born_retained_len(), 1, "unreadable holds");
     // The readable retry carries the same operation id: dedup, no second
@@ -1061,7 +1053,7 @@ fn minimized_and_unreadable_hold_without_spend() {
         &report(
             4,
             4,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -1073,16 +1065,18 @@ fn minimized_and_unreadable_hold_without_spend() {
 
 #[test]
 fn gap_arrival_decides_immediately() {
-    // Incomplete inventory never gates the birth decision itself (matching
-    // the retired adapter path, which decided on every accepted reply):
-    // a maximized birth on a provable tile scope binds at arrival even
-    // when the inventory is incomplete. Settlement and publish still hold
-    // while gapped, so no write fires before readable proof.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    // Establish readiness first. A later inventory gap does not block a
+    // birth decision on the still-provable tile scope; settlement and
+    // publish hold while gapped, so no write fires before readable proof.
+    let mut engine = born_clear_engine();
+    accepted(
+        &mut engine,
+        &report(1, 1, vec![screen("out-a", 0)], vec![], None, None),
+    );
     let mut gapped = report(
-        1,
-        1,
-        vec![screen("out-a", 0, true)],
+        2,
+        2,
+        vec![screen("out-a", 0)],
         vec![born_maximized("win-born", "out-a", 100)],
         None,
         None,
@@ -1094,9 +1088,9 @@ fn gap_arrival_decides_immediately() {
     // The binding holds across the gap with no attempt and no spend: the
     // next readable report retries the same desire.
     let mut still_gapped = report(
-        2,
-        2,
-        vec![screen("out-a", 0, true)],
+        3,
+        3,
+        vec![screen("out-a", 0)],
         vec![born_maximized("win-born", "out-a", 100)],
         None,
         None,
@@ -1109,21 +1103,14 @@ fn gap_arrival_decides_immediately() {
 #[test]
 fn sticky_birth_never_clears() {
     // Sticky identities keep their overlay: no mint, no retry loop.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let sticky = WindowFact {
         sticky: true,
         ..born_maximized("win-sticky", "out-a", 100)
     };
     let reply = accepted(
         &mut engine,
-        &report(
-            1,
-            1,
-            vec![screen("out-a", 0, true)],
-            vec![sticky],
-            None,
-            None,
-        ),
+        &report(1, 1, vec![screen("out-a", 0)], vec![sticky], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0);
     assert_eq!(desire_op(&reply, "win-sticky"), None);
@@ -1133,13 +1120,13 @@ fn sticky_birth_never_clears() {
 fn fullscreen_flip_abandons_into_held_lane() {
     // A fullscreen flip while a born clear is outstanding abandons the
     // born binding and re-arms the held lane for the eventual exit.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -1151,7 +1138,7 @@ fn fullscreen_flip_abandons_into_held_lane() {
         &report(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_fullscreen("win-born", "out-a", 100)],
             None,
             None,
@@ -1163,7 +1150,7 @@ fn fullscreen_flip_abandons_into_held_lane() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -1184,8 +1171,8 @@ fn distinct_births_dedup_per_window() {
     // maximized windows sharing one domain hold at engine converge, so
     // the dedup pair rides separate outputs like a real two-display
     // capture.)
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![screen("out-a", 0, true), screen("out-b", 800, false)];
+    let mut engine = born_clear_engine();
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let reply = accepted(
         &mut engine,
         &report(
@@ -1225,21 +1212,14 @@ fn distinct_births_dedup_per_window() {
 fn later_maximize_of_admitted_tile_never_mints() {
     // A plain admission followed by a later maximize keeps its overlay:
     // only first-sightings bind, never later transitions of admitted tiles.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let plain = WindowFact {
         fit_excluded: false,
         ..fact("win-a", "out-a", 100)
     };
     accepted(
         &mut engine,
-        &report(
-            1,
-            1,
-            vec![screen("out-a", 0, true)],
-            vec![plain],
-            None,
-            None,
-        ),
+        &report(1, 1, vec![screen("out-a", 0)], vec![plain], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0);
     let reply = accepted(
@@ -1247,7 +1227,7 @@ fn later_maximize_of_admitted_tile_never_mints() {
         &report(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-a", "out-a", 100)],
             None,
             None,
@@ -1262,13 +1242,13 @@ fn delayed_fixed_transition_abandons_without_retry() {
     // A birth that reads fixed only after minting abandons with no retry:
     // fixed births float beneath their overlay. The first report mints on
     // non-fixed hints; the fixed report retires the binding.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -1281,7 +1261,7 @@ fn delayed_fixed_transition_abandons_without_retry() {
         &report(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![fixed_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -1295,7 +1275,7 @@ fn delayed_fixed_transition_abandons_without_retry() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -1310,21 +1290,14 @@ fn delayed_unreadable_late_admission_binds() {
     // An unreadable birth (no rect) marks nothing and never mints; the
     // first readable maximized report binds it. Late admission is never
     // defeated by the earlier non-decision.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let unreadable = WindowFact {
         rect: None,
         ..born_maximized("win-born", "out-a", 100)
     };
     let first = accepted(
         &mut engine,
-        &report(
-            1,
-            1,
-            vec![screen("out-a", 0, true)],
-            vec![unreadable],
-            None,
-            None,
-        ),
+        &report(1, 1, vec![screen("out-a", 0)], vec![unreadable], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0, "unreadable mints nothing");
     assert_eq!(desire_op(&first, "win-born"), None);
@@ -1333,7 +1306,7 @@ fn delayed_unreadable_late_admission_binds() {
         &report(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -1351,26 +1324,19 @@ fn implicit_departure_restore_is_not_birth() {
     // (boundedness), and the slot — not stale marks — governs the restore.
     // (Explicit close forgets the slot; replacement re-mint is covered by
     // close_prunes_and_replacement_rearms.)
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let plain = WindowFact {
         fit_excluded: false,
         ..fact("win-a", "out-a", 100)
     };
     accepted(
         &mut engine,
-        &report(
-            1,
-            1,
-            vec![screen("out-a", 0, true)],
-            vec![plain],
-            None,
-            None,
-        ),
+        &report(1, 1, vec![screen("out-a", 0)], vec![plain], None, None),
     );
     // Implicit departure: complete inventory, window absent, no close.
     accepted(
         &mut engine,
-        &report(2, 2, vec![screen("out-a", 0, true)], vec![], None, None),
+        &report(2, 2, vec![screen("out-a", 0)], vec![], None, None),
     );
     assert_eq!(engine.born_tracked_count(), 0, "departure prunes all marks");
     // Restore maximized: the retained slot proves it is no birth.
@@ -1379,7 +1345,7 @@ fn implicit_departure_restore_is_not_birth() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-a", "out-a", 100)],
             None,
             None,
@@ -1398,13 +1364,13 @@ fn complete_departures_bound_all_born_sets() {
     // (A returning id re-evaluates against retained slots, covered by
     // implicit_departure_restore_is_not_birth; replacement after explicit
     // close is covered by close_prunes_and_replacement_rearms.)
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-old", "out-a", 100)],
             None,
             None,
@@ -1423,7 +1389,7 @@ fn complete_departures_bound_all_born_sets() {
         &report_clears(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared, born_fullscreen("win-hold", "out-a", 200)],
             "",
             vec![clear_attempt(
@@ -1441,7 +1407,7 @@ fn complete_departures_bound_all_born_sets() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![
                 WindowFact {
                     maximized: false,
@@ -1465,7 +1431,7 @@ fn complete_departures_bound_all_born_sets() {
     // All three lifetimes depart implicitly on a complete inventory.
     accepted(
         &mut engine,
-        &report(4, 4, vec![screen("out-a", 0, true)], vec![], None, None),
+        &report(4, 4, vec![screen("out-a", 0)], vec![], None, None),
     );
     assert_eq!(engine.born_tracked_count(), 0, "departure prunes all marks");
 }
@@ -1482,13 +1448,13 @@ fn same_domain_cohort_clear_admission_parked_b1() {
     // held; only the clear token rides, settled solely by fresh native
     // evidence plus the correlated raw attempt. Sequential arrival binds
     // both (see distinct_births_dedup_per_window).
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let reply = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![
                 born_maximized("win-a", "out-a", 100),
                 born_maximized("win-b", "out-a", 300),
@@ -1513,7 +1479,7 @@ fn cohort_report(request_seq: u64, observation_seq: u64) -> WorldReport {
     report(
         request_seq,
         observation_seq,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         cohort_pair(),
         None,
         None,
@@ -1526,7 +1492,7 @@ fn cohort_clear_publishes_held_property_tokens() {
     // actuator consumes `clear_operation` without any frame/member
     // authority, so geometry writes stay held while the property clear
     // proceeds. Both rows carry no allocation and hold both authorities.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let reply = accepted(&mut engine, &cohort_report(1, 1));
     assert_eq!(engine.born_retained_len(), 2);
     for win in ["win-a", "win-b"] {
@@ -1552,7 +1518,11 @@ fn cohort_clear_publishes_held_property_tokens() {
     let scope = reply
         .scopes
         .iter()
-        .find(|scope| scope.scope == "out-a/ws-1")
+        .find(|scope| {
+            scope
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), "ws-1")
+        })
         .expect("cohort scope row");
     assert_eq!(
         scope.authority,
@@ -1567,7 +1537,7 @@ fn cohort_clear_settles_and_converges_frames() {
     // dispatch, and fresh native evidence (correlated accepted attempts
     // plus readable unmaximized facts) retires both bindings with no
     // re-mint. The converged scope then tiles the proven frames.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(&mut engine, &cohort_report(1, 1));
     let opa = desire_op(&first, "win-a").expect("a desires");
     let opb = desire_op(&first, "win-b").expect("b desires");
@@ -1587,7 +1557,7 @@ fn cohort_clear_settles_and_converges_frames() {
         &report_clears(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared_a.clone(), cleared_b.clone()],
             "",
             vec![
@@ -1614,7 +1584,11 @@ fn cohort_clear_settles_and_converges_frames() {
     let scope = second
         .scopes
         .iter()
-        .find(|scope| scope.scope == "out-a/ws-1")
+        .find(|scope| {
+            scope
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), "ws-1")
+        })
         .expect("converged scope row");
     assert_eq!(
         scope.authority,
@@ -1628,7 +1602,7 @@ fn cohort_clear_settles_and_converges_frames() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![cleared_a, cleared_b],
             None,
             None,
@@ -1643,7 +1617,7 @@ fn cohort_clear_settles_and_converges_frames() {
 fn cohort_clear_held_for_game() {
     // The focused-fullscreen-game lane vetoes birth-clear authority: no
     // binding mints and no token rides while paused.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut paused = cohort_report(1, 1);
     paused.presentation.paused = true;
     let reply = accepted(&mut engine, &paused);
@@ -1655,7 +1629,7 @@ fn cohort_clear_held_for_game() {
 #[test]
 fn cohort_clear_held_for_gesture() {
     // An active gesture barrier defers birth admission: nothing mints.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut gated = cohort_report(1, 1);
     gated.gesture_barrier = true;
     let reply = accepted(&mut engine, &gated);
@@ -1668,8 +1642,8 @@ fn cohort_clear_held_for_gesture() {
 fn cohort_clear_held_for_incomplete_screen() {
     // An incomplete screen capture proves nothing: the staged domain is
     // unreadable, so no binding mints.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let mut incomplete_screen = screen("out-a", 0, true);
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let mut incomplete_screen = screen("out-a", 0);
     incomplete_screen.complete = false;
     let reply = accepted(
         &mut engine,
@@ -1684,9 +1658,8 @@ fn cohort_clear_held_for_incomplete_screen() {
 fn cohort_clear_held_for_unknown_host_owned_homing() {
     // Host-owned unknown membership never proves a home: with the
     // capability set and no native receipt, the cohort holds.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let mut unknown = cohort_report(1, 1);
-    unknown.host_owned_workspace_domains = true;
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let unknown = cohort_report(1, 1);
     let reply = accepted(&mut engine, &unknown);
     assert_eq!(engine.born_retained_len(), 0, "unknown native homing holds");
     assert_eq!(desire_op(&reply, "win-a"), None);
@@ -1697,13 +1670,13 @@ fn cohort_clear_held_for_unknown_host_owned_homing() {
 fn cohort_fullscreen_pair_holds_slotless() {
     // Fullscreen safety wins for the whole cohort: both births hold
     // slotless with no clear, like the single fullscreen birth.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let reply = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![
                 born_fullscreen("win-a", "out-a", 100),
                 born_fullscreen("win-b", "out-a", 300),
@@ -1720,9 +1693,13 @@ fn cohort_fullscreen_pair_holds_slotless() {
 #[test]
 fn cohort_keep_mode_skips_born() {
     // Keep-maximized-overlay vetoes the whole cohort birth lane.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let mut kept = cohort_report(1, 1);
-    kept.born_maximized = crate::born_maximized::BornMaximized::KeepMaximizedOverlay;
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    set_born_policy(
+        &mut engine,
+        1,
+        crate::born_maximized::BornMaximized::KeepMaximizedOverlay,
+    );
+    let kept = cohort_report(1, 1);
     let reply = accepted(&mut engine, &kept);
     assert_eq!(engine.born_retained_len(), 0, "keep mode never clears");
     assert_eq!(desire_op(&reply, "win-a"), None);
@@ -1732,13 +1709,13 @@ fn cohort_keep_mode_skips_born() {
 #[test]
 fn cohort_fixed_pair_floats_without_clear() {
     // Fixed-size cohort births float beneath their overlay with no clear.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let reply = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![
                 fixed_maximized("win-a", "out-a", 100),
                 fixed_maximized("win-b", "out-a", 300),
@@ -1763,7 +1740,7 @@ fn cohort_fixed_pair_floats_without_clear() {
 #[test]
 fn cohort_minimized_pair_holds_without_spend() {
     // Minimized cohort facts prove nothing: no binding mints.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let minimized_a = WindowFact {
         minimized: true,
         ..born_maximized("win-a", "out-a", 100)
@@ -1777,7 +1754,7 @@ fn cohort_minimized_pair_holds_without_spend() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![minimized_a, minimized_b],
             None,
             None,
@@ -1791,7 +1768,7 @@ fn cohort_minimized_pair_holds_without_spend() {
 #[test]
 fn cohort_floating_pair_never_clears() {
     // Floating cohort identities keep their overlay with no clear.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let floating_a = WindowFact {
         floating: true,
         ..born_maximized("win-a", "out-a", 100)
@@ -1805,7 +1782,7 @@ fn cohort_floating_pair_never_clears() {
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![floating_a, floating_b],
             None,
             None,
@@ -1823,8 +1800,8 @@ fn migration_gap_defers_born_mint_until_complete_inventory() {
     // is incomplete (matching the sweep gap fence); the next complete
     // report mints normally. The retained transfer outlives the gap.
     use crate::directional::OutputId;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let screens = vec![screen("out-a", 0, true), screen("out-b", 800, false)];
+    let mut engine = born_clear_engine();
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let plain = WindowFact {
         fit_excluded: false,
         ..fact("win-keep", "out-a", 100)
@@ -1893,13 +1870,13 @@ fn sticky_flip_abandons_with_no_retry() {
     // binding abandons on the flip report, publishes no desire there or
     // later, and never re-mints even if the window unstickies while
     // still maximized.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -1912,14 +1889,7 @@ fn sticky_flip_abandons_with_no_retry() {
     };
     let flipped = accepted(
         &mut engine,
-        &report(
-            2,
-            2,
-            vec![screen("out-a", 0, true)],
-            vec![sticky],
-            None,
-            None,
-        ),
+        &report(2, 2, vec![screen("out-a", 0)], vec![sticky], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0, "sticky flip abandons");
     assert_eq!(desire_op(&flipped, "win-born"), None);
@@ -1928,7 +1898,7 @@ fn sticky_flip_abandons_with_no_retry() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -1947,13 +1917,13 @@ fn floating_fact_flip_abandons_and_latches() {
     // A floating-fact flip ends the automatic clear with no retry and
     // latches floating-first: the flip report abandons, and a later
     // return to maximized-tiled facts never re-mints.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -1966,14 +1936,7 @@ fn floating_fact_flip_abandons_and_latches() {
     };
     let flipped = accepted(
         &mut engine,
-        &report(
-            2,
-            2,
-            vec![screen("out-a", 0, true)],
-            vec![floating],
-            None,
-            None,
-        ),
+        &report(2, 2, vec![screen("out-a", 0)], vec![floating], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0, "floating flip abandons");
     assert_eq!(desire_op(&flipped, "win-born"), None);
@@ -1982,7 +1945,7 @@ fn floating_fact_flip_abandons_and_latches() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -2002,13 +1965,13 @@ fn floating_flip_gapped_withholds_desire_then_abandons() {
     // from absence), but publish withholds the desire through the
     // per-window reproof. The next complete report abandons, and the
     // spent token never rides.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -2022,7 +1985,7 @@ fn floating_flip_gapped_withholds_desire_then_abandons() {
     let mut gapped = report(
         2,
         2,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![floating.clone()],
         None,
         None,
@@ -2037,14 +2000,7 @@ fn floating_flip_gapped_withholds_desire_then_abandons() {
     );
     let abandoned = accepted(
         &mut engine,
-        &report(
-            3,
-            3,
-            vec![screen("out-a", 0, true)],
-            vec![floating],
-            None,
-            None,
-        ),
+        &report(3, 3, vec![screen("out-a", 0)], vec![floating], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0, "complete flip abandons");
     assert_eq!(desire_op(&abandoned, "win-born"), None);
@@ -2055,13 +2011,13 @@ fn floating_flip_gapped_withholds_desire_then_abandons() {
 fn sticky_flip_gapped_withholds_desire() {
     // Gap plus sticky flip: the binding holds across the gap with no
     // desire, then abandons on the complete report with no retry.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -2075,7 +2031,7 @@ fn sticky_flip_gapped_withholds_desire() {
     let mut gapped = report(
         2,
         2,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![sticky.clone()],
         None,
         None,
@@ -2086,14 +2042,7 @@ fn sticky_flip_gapped_withholds_desire() {
     assert_eq!(desire_op(&held, "win-born"), None);
     let abandoned = accepted(
         &mut engine,
-        &report(
-            3,
-            3,
-            vec![screen("out-a", 0, true)],
-            vec![sticky],
-            None,
-            None,
-        ),
+        &report(3, 3, vec![screen("out-a", 0)], vec![sticky], None, None),
     );
     assert_eq!(engine.born_retained_len(), 0, "complete sticky abandons");
     assert_eq!(desire_op(&abandoned, "win-born"), None);
@@ -2102,7 +2051,7 @@ fn sticky_flip_gapped_withholds_desire() {
         &report(
             4,
             4,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -2120,13 +2069,13 @@ fn explicit_float_intent_supersedes_birth() {
     // ToggleFloat command on a maximized born-pending window refuses at
     // the session (only unflagged members float), so the intent is staged
     // directly here; the command-refusal path is pinned separately below.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -2153,7 +2102,7 @@ fn explicit_float_intent_supersedes_birth() {
         &report(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -2170,7 +2119,7 @@ fn explicit_float_intent_supersedes_birth() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -2188,13 +2137,13 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
     // the automatic birth is correctly NOT superseded — the clear must
     // land before any float (clear-then-float coherence). The binding
     // survives the refusal and the desire rides the next report.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -2210,7 +2159,7 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
     match engine.handle_report(&report_full(
         2,
         2,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![born_maximized("win-born", "out-a", 100)],
         Vec::new(),
         "",
@@ -2233,7 +2182,7 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -2249,13 +2198,13 @@ fn mode_flip_does_not_reclear_retained_lifetime() {
     // a retained lifetime: the outstanding binding keeps its operation id
     // across TileOnLaunch -> KeepMaximizedOverlay -> TileOnLaunch with no
     // second mint.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -2263,15 +2212,19 @@ fn mode_flip_does_not_reclear_retained_lifetime() {
     );
     let op = desire_op(&first, "win-born").expect("desire rides");
     assert_eq!(engine.born_retained_len(), 1);
-    let mut kept = report(
+    set_born_policy(
+        &mut engine,
+        1,
+        crate::born_maximized::BornMaximized::KeepMaximizedOverlay,
+    );
+    let kept = report(
         2,
         2,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![born_maximized("win-born", "out-a", 100)],
         None,
         None,
     );
-    kept.born_maximized = crate::born_maximized::BornMaximized::KeepMaximizedOverlay;
     accepted(&mut engine, &kept);
     assert_eq!(engine.born_retained_len(), 1, "flip keeps the binding");
     assert_eq!(
@@ -2286,7 +2239,7 @@ fn mode_flip_does_not_reclear_retained_lifetime() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -2308,13 +2261,13 @@ fn migration_gap_withholds_born_clear_authority() {
     // staged directly (it holds inertly through settlement); only the
     // born-authority mirror is pinned here.
     use std::collections::BTreeMap;
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = born_clear_engine();
     accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,
@@ -2348,7 +2301,7 @@ fn migration_gap_withholds_born_clear_authority() {
     let mut gapped = report(
         2,
         2,
-        vec![screen("out-a", 0, true)],
+        vec![screen("out-a", 0)],
         vec![born_maximized("win-born", "out-a", 100)],
         None,
         None,
@@ -2367,7 +2320,7 @@ fn migration_gap_withholds_born_clear_authority() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![born_maximized("win-born", "out-a", 100)],
             None,
             None,

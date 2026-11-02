@@ -28,6 +28,12 @@ trivially different start state.
 | --- | --- | --- | --- |
 | X11 urgency hint versus attention state | With B active, request critical attention on A; clear A's attention; activate A | WM_HINTS urgency clears, but KWin DEMANDS_ATTENTION persists until activation. Accepted clear is a client-hint acknowledgement, not compositor-state withdrawal | Other hosts/reference WMs and visual urgency presentation TBD; no tiler urgency policy changed. [Evidence](../changes/archive/kde-dev-scope-fixture-integration.md#tiler-findings-and-host-limits) |
 
+### Raw self-identity applicability
+
+| Minimal action sequence | Selected cross-platform outcome | Evidence / remaining gate |
+| --- | --- | --- |
+| Handshake with own processId; report an ordinary separate-process Settings window sharing executable/bundle, then an own-process internal UI window; classify membership | User 2026-11-02: Settings is ordinary, tiling if resizable or floating under normal fixed/dialog admission. Only matching own processId excludes; same executable/bundle in another process does not. No Settings-specific class or platform self-identity rule | `executable-identity` covers separate-process Settings and another class sharing the executable; `macos-self-identity` covers same bundle/executable in other processes and own-process UI. Fixture assertions are target behavior, not engine/native acceptance. Windows resizability and macOS Settings separation/neutral marker are product follow-ups. [Decision](../decisions/contract.md#own-process-ui-and-ordinary-settings), [Tier 1 fixed admission](reference-outcomes/special-windows.md#r-spc-08-gain-or-lose-fixed-hints-after-admission) |
+
 <a id="client-driven-tiled-geometry"></a>
 ### Client-driven tiled geometry
 

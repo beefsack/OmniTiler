@@ -937,7 +937,7 @@
 | W1: which float origins acquire persistent above uniformly? | **Approved, User 2026-11-02: option c (union), plus capacity follow-up.** Every float uses one core-owned acquisition/release/fullscreen-suspension/external-clear latch: qualified automatic, explicit float/sticky, capacity fallback and workspace-floating-mode floats. The last case uses the same rule even with no tiles present. Require above support and durable preimages; preserve native-preowned flags, with fullscreen-game safety first. Sticky transitions keep the same owner. This matches Tier 1 float-above-tiles and corrects K3's automatic-only record drift; capacity inclusion avoids arbitrary complexity. The persistent-above scenario now witnesses the union. macOS above=false still forbids writes. |
 | W2: what proves native-free arrival home after G1 removes logical echoes? | **Approved 2026-11-02.** ArrivalBracket has exclusive native/output arms. Only hostOwned uses bracketed native home; otherwise core compares retained logical home plus bracketed observed output/frame/visibility/lifetime/tag evidence to the frozen target. Null evidence is well-shaped but cannot prove readiness. No logical receipt, applied_homing proof or ScreenView revival. |
 | W3: how is sticky supported without a native sticky state? | **Approved 2026-11-02.** nativeSticky governs native sticky StateTarget/StateAttempt; windowSuppression supplies the other semantic command route. Core composes visibility from retained sticky intent and persists stickyPrior opaquely. With nativeSticky=false the native sticky fact is null, never capture's projected state.sticky (`T/world_capture.rs:1072-1080,1159-1160`). Commands reject state-unsupported only if both routes are absent. Existing Windows behavior is retained. |
-| W4: can core retain executable-dependent safety/presentation without adapter verdicts? | **Approved 2026-11-02.** Required nullable WindowFact.executable and handshake applicationIdentity carry <=4096-byte neutral normalized identity; executable joins unavailableFacts for hosts without a producer. Windows slash replacement plus ASCII lowercase preserves existing full-path equality and basename checks (`W/lifecycle.rs:42-45`, `T/shell.rs:12-46`, `W/tiling/classification.rs:154-185`, `T/world_capture.rs:480-488`). No appId conflation or shell/own-settings booleans. Identity is local-wire-only; fixtures are synthetic. |
+| W4: can core retain executable-dependent safety/presentation without adapter verdicts? | **Approved 2026-11-02; own-process amendment below.** Required nullable WindowFact.executable and handshake applicationIdentity carry <=4096-byte neutral normalized identity; executable joins unavailableFacts for hosts without a producer. Windows slash replacement plus ASCII lowercase preserves basename shell checks (`W/lifecycle.rs:42-45`, `T/shell.rs:12-46`, `T/world_capture.rs:480-488`). The earlier Settings class/executable exemption is superseded: Settings is ordinary and only native process identity excludes own-process UI. Generic-dialog and generic-XAML rules remain. No appId conflation or shell/own-settings booleans. Identity is local-wire-only; fixtures are synthetic. |
 
 - Minimal unresolved behavioral discriminators are recorded in
   [reference outcomes](../spec/reference-outcomes.md#v4-windows-platform-fit-discriminators);
@@ -988,8 +988,9 @@
   declared unavailable, preserve synthetic full-path/basename identity in core,
   and cover required/null/type/empty/NUL/size/unavailable contradictions. Ordered
   core cases retain shell-popup versus foreign generic-XAML/explorer presentation
-  and own/foreign Settings plus generic-dialog membership safeguards. No new
-  slotlessness policy is inferred from the Settings class. Windows identity
+  and generic-dialog membership safeguards. The own-process amendment replaces
+  Settings identity predicates with processId equality; no slotlessness or
+  exemption is inferred from the Settings class. Windows identity
   normalization is exactly slash replacement and ASCII lowercase, without dot
   collapse, path resolution or Unicode folding (`W/lifecycle.rs:42-45`);
   QueryFullProcessImageNameW supplies the original path (`W/native.rs:105-112`,
@@ -1106,7 +1107,7 @@
 
 | Gap / type | Options; recommendation; consequence |
 | --- | --- |
-| M1: self-bundle identity / **technical** | Preserve bundle-based self exclusion using raw appId plus neutral trusted self-bundle metadata; or intentionally replace it with executable equality (product change); or defer cutover. Recommend preserving the bundle predicate, separately from W4 executable/applicationIdentity. Existing missing-bundle -> own fallback (`M/native_facts.rs:301-321`) is policy to reconcile, not raw metadata. No self-app wire shape or false appId applied. |
+| M1: self-bundle identity / **technical** | Historical review options, superseded by the User 2026-11-02 own-process product decision below. Neither bundle nor executable equality excludes a separate process; remove missing-bundle -> own fallback (`M/native_facts.rs:301-321`). Settings remains ordinary. |
 | M2: CG/AX lifetime and reacquisition / **technical** | Retain/compare remote AX identity with process/session fencing and positive close evidence; or conservatively retire/remint/hold whenever continuity is unprovable; never trust pid_wid alone. Recommend combined AX binding plus conservative holds, including unmanaged foreground, stale callbacks and restart. R's CFEqual/stale-destroy paths illustrate mechanics, not a no-reuse theorem. Storage cannot bind until exact surviving subject is proved. |
 | M3: durable opaque/native preimage storage / **technical** | Prove a native foreign-window slot; or propose an atomic external slot bound to a restart-verifiable native lifetime; or withhold persistence-dependent writes. Recommend evaluating the external-slot route only with M2 and explicit contract reconciliation: the draft currently requires lifetime-bound native storage. Neither filesystem keys nor SLS property availability alone satisfy it. macOS storage-survival remains OPEN. |
 | M4: zoom/maximize truth / **technical; emulation would be product** | Find a neutral native zoom observation/executor; or keep maximized unknown/maximize=false; or explicitly design emulated maximize semantics. Recommend unknown/false until a native producer is proved. Do not port maximized=false constants or the 1-point engine-placement geometry heuristic as raw state. Existing [floating zoom discriminator](../spec/reference-outcomes.md#macos-active-border-discriminators) remains TBD; emulation is not selected. |
@@ -1117,7 +1118,8 @@
 | M9: physical output identity / **technical** | Add vendor/model/serial plus validated connection normalization; or leave unreadable metadata/connector null and hold ambiguous reconnects. Recommend nullable metadata with explicit sentinel handling and a separately proven unit-number/connection fallback. Never rename display UUID/id/ordinal to connector or claim cross-login hardware stability. |
 
 - W2 native arm fits native Spaces; W3 does not create a missing sticky route;
-  W4 executable does not replace bundle identity. No M proposal, W1 origin
+  W4 executable did not replace bundle identity at this historical checkpoint;
+  the own-process amendment below supersedes both self-identity predicates. No M proposal, W1 origin
   choice or new semantic behavior was applied. New minimal identity/cross-output
   discriminators are [recorded with outcomes TBD](../spec/reference-outcomes.md#v4-macos-platform-fit-discriminators);
   existing zoom, creation and native-workspace rows remain applicable.
@@ -1137,7 +1139,8 @@
 <a id="m1-m9-technical-resolution-pending-0c-approval"></a>
 ### M1-M9 technical resolution
 
-- Status: M1-M9 approved at phase 0c, 2026-11-02, with M3/M4 amendments. The
+- Status: M1-M9 approved at phase 0c, 2026-11-02, with M3/M4 amendments and
+  the later same-day M1/W4 own-process product amendment below. The
   source-review recommendations/counts above describe the earlier checkpoint;
   this subsection reconciles the submitted draft, not implemented authority or
   native acceptance. W1 union/capacity is approved; all eight shared OPEN/TBD
@@ -1145,7 +1148,7 @@
 
 | Item | Technical resolution approved 2026-11-02 | Evidence and remaining gate |
 | --- | --- | --- |
-| M1 | applicationIdentity is a fixed per-connection object with nullable appId/executable. Core's macOS self exclusion is non-null raw appId equality OR non-null executable equality. Remove missing-bundle -> own fallback; executable covers unbundled own processes. | Synthetic identity fixtures cover same bundle/different executable, foreign bundle/own executable, missing bundle with own/foreign executable and preserved case. Windows Settings/class exceptions remain unchanged; neutral native wiring is still required. |
+| M1 | **Amended by User 2026-11-02:** applicationIdentity carries required nullable appId/executable/processId. Only known window processId equal to known own processId excludes internal UI. Same executable/bundle in another process does not; Settings is ordinary on every platform. Remove missing-bundle -> own and appId/executable self-exclusion, with no Settings-class exception. | Synthetic identity fixtures distinguish own-process UI from separate-process same-bundle/executable windows. Process availability is independent of executable availability. Windows Settings resizability and macOS Settings separation/neutral marker are separate product follow-ups; native wiring and acceptance remain pending. |
 | M2 | Mint win only while retained remote AX identity (CFEqual) plus process fencing proves continuity. Positive close/replacement retires via existing closed, then remint; uncertain continuity holds with incomplete inventory. Never rebind from PID/CG id/title or a stale callback. | Existing closed/fresh-win/reconnect expressions suffice; no new wire/fixture lane. Restart reacquisition is fresh unless exact continuity is verified. AX omission/off-Space absence is not positive close evidence; native lifetime proof remains a port gate. |
 | M3 | Native per-window or adapter-owned atomic external slots share <=1024-byte opaque intent, atomic persist-before-dependent-write and restart-verifiable lifetime obligations. macOS must retain intentional-float intent across orderly tiler restart within a session; discard only genuinely unverifiable bindings. Native preimage failure disables only its property; no new capability. | Further macOS exploration must prove within-session re-identification, likely session-unique CGWindowID per Apple plus process/launch-date fencing, with a KDE-style atomic private store as candidate. A file/property key alone is not ownership proof. Storage-survival stays OPEN, not permission to cut restart intent. Existing fixtures need no storage-route shape. [Persistence decision](../decisions/persistence.md#orderly-restart-adoption). |
 | M4 | macOS maximize remains in 0.1 scope. maximize=false and WindowFact/PresentationIngress maximized=null are provisional fail-closed until the port proves a route; first try native zoom read+write. No false fact constant or border-geometry zoom heuristic. | Native zoom versus emulated maximize semantics are an OPEN user product decision for later macOS work; neither is selected here. FactName needs no new maximized arm. Synthetic handshake/report remain provisional witnesses, not a scope reduction. [R14 amendment](../decisions/contract.md#window-state-commands-r14). |
@@ -1245,3 +1248,36 @@
   [parked](../decisions/macos.md#drag-and-drop). M3 exploration, the M4 product
   decision/route proof and D6 staged documentation cleanup remain in the
   [pending backlog](../backlog.md).
+
+## Own-process identity amendment
+
+- User 2026-11-02: Settings is an ordinary application window on every platform;
+  only own-process internal UI is identity-excluded. Separate processes sharing
+  executable/bundle remain ordinary. This supersedes the Windows Settings-class
+  exemption of 2026-10-16 while retaining ordinary membership and sends, and
+  amends M1/W4. Generic-dialog and generic-XAML rules do not change.
+  [Decision](../decisions/contract.md#own-process-ui-and-ordinary-settings).
+- Required nullable applicationIdentity.processId and WindowFact.processId use
+  connection-scoped opaque process identities, independent of executable/appId.
+  ProcessId joins FactName after executable; unsupported requires null own/window
+  values, supported requires known own identity, and per-window failed reads
+  remain unknown. Native capture and full raw-window classification are pending.
+- Existing target messages/scenarios gain the required field; negative premises,
+  canonical order and the deliberate malformed/duplicate inputs remain intact.
+  Separate-process same-bundle/executable cases now allow controlled membership;
+  the macOS own-process case still excludes. Windows Settings resizability and
+  macOS Settings separation or neutral marker are backlog-only follow-ups.
+- Static revalidation: unchanged 518 messages (275 valid-wire, 3 diagnostic,
+  81 held-row, 159 reject-wire), 22 scenarios, 257 steps, 213 complete wire inputs,
+  406 compiled jq assertions and eight OPEN/TBD gates. All 515 canonical messages
+  match independent re-encoding; 13068 numeric tokens and four numeric witnesses
+  have zero errors. Catalogs: 66 with 346 arms (+1), 21 FactName arms and 437 enum
+  witnesses (+1); 7 families, 24 commands and 71 records/254 witnesses unchanged.
+  Recursive shapes, catalog values/pointers and bounded checks have zero errors
+  or unmapped objects. Historical baseline-delta checks remain checkpoint-specific,
+  not acceptance of this authorized amendment.
+- The connection foundation implements strict process-id handshake support and
+  shared typed/wire identity validation. Core/protocol tests, build, scoped strict
+  clippy, formatting and diff checks pass. The raw WindowFact engine transition
+  and full ordered-scenario execution remain phase-1 work; static fixture checks
+  are not native, recovery or renderer acceptance.

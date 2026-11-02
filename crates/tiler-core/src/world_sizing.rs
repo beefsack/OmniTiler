@@ -10,7 +10,8 @@ use crate::boundary::CoreCommand;
 use crate::directional::Direction;
 use crate::gesture::GestureSettled;
 use crate::world_report::{
-    CommandResult, FloatOrigin, HoldReason, TransferKind, WorldCommand, WorldReply, WorldReport,
+    AuthorityScope, CommandResult, FloatOrigin, HoldReason, TransferKind, WorldCommand, WorldReply,
+    WorldReport,
 };
 
 /// JSON string byte length for the canonical codec: two quotes plus the
@@ -32,16 +33,87 @@ pub fn json_string_len(value: &str) -> usize {
     bytes
 }
 
+fn authority_scope_len(scope: &AuthorityScope) -> usize {
+    match scope {
+        AuthorityScope::Output(out) => {
+            "{\"kind\":\"output\",\"out\":}".len() + json_string_len(&out.0)
+        }
+        AuthorityScope::Workspace { output, workspace } => {
+            "{\"kind\":\"workspace\",\"out\":,\"ws\":}".len()
+                + json_string_len(&output.0)
+                + json_string_len(&workspace.0)
+        }
+    }
+}
+
+fn workspace_ref_len(reference: &crate::world_report::WorkspaceRef) -> usize {
+    match reference {
+        crate::world_report::WorkspaceRef::Logical { output, workspace } => {
+            "{\"kind\":\"logical\",\"out\":,\"ws\":}".len()
+                + json_string_len(&output.0)
+                + json_string_len(&workspace.0)
+        }
+        crate::world_report::WorkspaceRef::Native { output, workspace } => {
+            "{\"kind\":\"native\",\"out\":,\"ws\":}".len()
+                + json_string_len(&output.0)
+                + json_string_len(workspace.as_str())
+        }
+    }
+}
+
+fn workspace_ref_option_len(reference: &Option<crate::world_report::WorkspaceRef>) -> usize {
+    reference.as_ref().map_or(4, workspace_ref_len)
+}
+
+/// Bound on one canonical binary64 spelling: the longest finite expansion
+/// is the smallest subnormal (`5e-324`: `0.` plus 323 zeros plus one
+/// digit, 327 bytes) and the longest large expansion is `f64::MAX` (309
+/// digits); 350 covers every finite spelling with margin. Screen scales
+/// ride this bound in the request estimator so the adapter's compact
+/// canonical encoding always fits.
+pub const MAX_CANONICAL_F64_LEN: usize = 350;
+
+fn row_diagnostic_estimate(diagnostic: &crate::world_report::RowDiagnostic) -> usize {
+    // {"scope":,"row":,"id":,"kind":} = 30 outer punctuation. A missing
+    // id encodes as JSON null (4), never the empty string.
+    30 + authority_scope_len(&diagnostic.scope)
+        + json_string_len(diagnostic.row.as_str())
+        + diagnostic.id.as_deref().map_or(4, json_string_len)
+        + json_string_len(diagnostic.kind.as_str())
+}
+
+fn scope_status_estimate(scope: &crate::world_report::ScopeStatus) -> usize {
+    // {"scope":,"auth":,"reason":} = 28 outer punctuation.
+    28 + authority_scope_len(&scope.scope)
+        + json_string_len(scope.authority.as_str())
+        + json_string_len(scope.authority.hold_reason().map_or("", HoldReason::as_str))
+}
+
+fn push_authority_scope(out: &mut String, scope: &AuthorityScope) {
+    match scope {
+        AuthorityScope::Output(output) => {
+            out.push_str("{\"kind\":\"output\",\"out\":");
+            push_json_string(out, &output.0);
+            out.push('}');
+        }
+        AuthorityScope::Workspace { output, workspace } => {
+            out.push_str("{\"kind\":\"workspace\",\"out\":");
+            push_json_string(out, &output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(out, &workspace.0);
+            out.push('}');
+        }
+    }
+}
+
 /// Structural size estimate for one typed send source: the exact object
 /// width for explicit ids (`{"explicit":S}`), and the exact token-object
-/// widths for the implicit legs (`{"implicit":"home-then-action"}` and
-/// `{"implicit":"home-then-cached-live"}`).
+/// width for the implicit leg (`{"implicit":"home-then-action"}`).
 #[must_use]
 pub fn send_source_estimate(source: &crate::world_report::SendSource) -> usize {
     match source {
         crate::world_report::SendSource::Explicit(output) => 13 + json_string_len(&output.0),
         crate::world_report::SendSource::HomeThenAction => 31,
-        crate::world_report::SendSource::HomeThenCachedLive => 36,
     }
 }
 
@@ -165,7 +237,8 @@ pub fn warp_cursor_estimate(warp: &Option<(i32, i32)>) -> usize {
 pub fn reply_estimate(reply: &WorldReply) -> usize {
     // Envelope punctuation: {"v":,"adapter":,"gen":,"req":,"obs":"","rev":"",
     // "ready":,"consumed":,"scopes":[],"workspaces":[],"outputs":[],
-    // "windows":[],"transfers":[],"effects":[]} = 151 plus bools. The three
+    // "windows":[],"transfers":[],"effects":[]} plus ,"diagnostics":[] last
+    // (after presentation) = 165 plus bools (10). The three
     // u64 counters encode as decimal strings (two quotes each). The
     // correlated `command_result` section is counted separately in
     // [`command_result_estimate`] (`,\"result\":null` = 14 when absent),
@@ -174,7 +247,7 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     // section in [`operation_settled_estimate`]
     // (`,\"operationSettled\":[]` = 21 when empty), and the warp section
     // in [`warp_cursor_estimate`] (`,\"warpCursor\":null` = 18 when absent).
-    let mut bytes = 166
+    let mut bytes = 175
         + usize_len(reply.contract_version as usize)
         + json_string_len(&reply.request_id)
         + json_string_len(&reply.adapter_incarnation)
@@ -182,11 +255,7 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
         + u64_len(reply.based_on_observation_seq)
         + u64_len(reply.state_revision);
     for scope in &reply.scopes {
-        // {"scope":,"auth":,"reason":} = 28 punctuation.
-        bytes += 28
-            + json_string_len(&scope.scope)
-            + json_string_len(scope.authority.as_str())
-            + json_string_len(scope.authority.hold_reason().map_or("", HoldReason::as_str));
+        bytes += scope_status_estimate(scope);
     }
     // One comma between adjacent rows of every non-empty array.
     bytes += reply.scopes.len().saturating_sub(1);
@@ -198,7 +267,7 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
             + json_string_len(&workspace.id)
             + json_string_len(&workspace.output.0)
             + json_string_len(workspace.native_binding.as_deref().unwrap_or_default())
-            + json_string_len(&workspace.scope)
+            + authority_scope_len(&workspace.scope)
             + usize_len(workspace.order)
             + json_string_len(workspace.tiling_mode.as_str())
             + bool_len(workspace.existence)
@@ -217,6 +286,11 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
             + json_string_len(output.hold.map_or("", HoldReason::as_str));
     }
     bytes += reply.outputs.len().saturating_sub(1);
+    for diagnostic in &reply.diagnostics {
+        // Held-row diagnostics ride last beside the presentation they fence.
+        bytes += row_diagnostic_estimate(diagnostic);
+    }
+    bytes += reply.diagnostics.len().saturating_sub(1);
     for window in &reply.windows {
         // {"win":,"out":,"ws":,"alloc":,"frame":,"frame_auth":,
         // "frame_hold":,"member_auth":,"member_hold":,"frame_op":,
@@ -564,7 +638,8 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // = 493, plus ,"gesture":null (12) = 505, plus ,"birthClear": (14) =
     // 519, plus ,"bornMaximized":S (17
     // fixed plus the token) = 522, plus the version digits, plus
-    // ,"presentation":{} below. Values
+    // ,"presentation":{} below, plus ,"primary":null (12) = 534 for the
+    // omitted host designation. Values
     // counted
     // separately below; nullable command, cursor, cursor-hit, and
     // action-context slots count `null` (4), while the action-output
@@ -577,18 +652,9 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         + 17
         + gesture_estimate(report)
         + usize_len(report.contract_version as usize)
-        + json_string_len(&report.owner)
         + json_string_len(&report.adapter_incarnation)
         + json_string_len(&report.core_generation)
         + json_string_len(&report.request_id)
-        + json_string_len(crate::workspace_scope::mode_token(report.workspace_mode))
-        + json_string_len(report.fixed_size_predicate.as_wire_str())
-        + json_string_len(report.born_maximized.as_wire_str())
-        + json_string_len(report.migration_source_refill.as_wire_str())
-        + json_string_len(report.anchor_fallback.as_wire_str())
-        + json_string_len(report.no_space_result.as_wire_str())
-        + json_string_len(report.switch_target.as_wire_str())
-        + json_string_len(report.fresh_placement.as_wire_str())
         + report
             .cursor
             .map_or(4, |(x, y)| 3 + int_len(x) + int_len(y))
@@ -614,28 +680,56 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         + u64_len(report.monotonic_ms)
         + report.command_seq.map_or(4, |seq| 2 + u64_len(seq))
         + report.command.as_ref().map_or(4, command_estimate_owned)
-        + bool_len(report.default_tiled)
-        + bool_len(report.host_owned_workspace_domains)
-        + bool_len(report.equal_workspace_count)
-        + bool_len(report.birth_clear)
         + json_string_len(&report.focused_global)
         + bool_len(report.inventory_complete)
         + bool_len(report.gesture_barrier)
-        + bool_len(report.focus_follows_cursor)
-        + bool_len(report.cursor_warp)
         + presentation_ingress_estimate(&report.presentation);
     for screen in &report.screens {
-        // {"out":S,"full":R|null,"work":R|null,"gap":N,"outer":N,
-        // "complete":B,"primary":B} = 72 fixed plus rect digits, gap
-        // widths, and bools.
-        bytes += 72
+        // {"out":S,"full":R|null,"work":R|null,"complete":B,"scale":N,
+        // "identity":{"manufacturer":S|null,"model":S|null,"serial":S|null,
+        // "connector":S|null}} = 106 fixed plus rect digits, bools, the
+        // canonical scale spelling, and identity strings.
+        bytes += 106
             + rect_len(screen.full_rect)
             + rect_len(screen.work_area)
-            + int_len(screen.gap)
-            + int_len(screen.outer_gap)
             + bool_len(screen.complete)
-            + bool_len(screen.primary)
-            + json_string_len(&screen.output.0);
+            + MAX_CANONICAL_F64_LEN
+            + json_string_len(&screen.output.0)
+            + screen
+                .identity
+                .manufacturer
+                .as_deref()
+                .map_or(4, json_string_len)
+            + screen.identity.model.as_deref().map_or(4, json_string_len)
+            + screen.identity.serial.as_deref().map_or(4, json_string_len)
+            + screen
+                .identity
+                .connector
+                .as_deref()
+                .map_or(4, json_string_len);
+    }
+    // ,"primary":S|null (12 fixed plus the designation when present).
+    bytes += 12
+        + report
+            .primary_output
+            .as_ref()
+            .map_or(4, |out| json_string_len(&out.0));
+    for held in &report.held_screens {
+        // Held rows ride the wire as ordinary screen objects with their
+        // carried keys: `{` + one `"key":value` per retained field +
+        // commas + `}` (values through [`raw_setting_value_estimate`]).
+        // The diagnostic is core-side only, never on the wire. The
+        // estimator runs before validation, so a non-finite retained
+        // number (which has no canonical spelling) counts the `null`
+        // width per bad scalar as a pure size bound, never as an
+        // encoding, while every carried structure and text byte counts.
+        bytes += 2
+            + held
+                .fields
+                .iter()
+                .map(|(key, value)| json_string_len(key) + 1 + raw_setting_value_estimate(value))
+                .sum::<usize>()
+            + held.fields.len().saturating_sub(1);
     }
     for fact in &report.windows {
         // {"win":S,"out":S,"rect":R|null,"floating":B,
@@ -717,48 +811,27 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             });
     }
     for attempt in &report.member_attempts {
-        // {"op":S,"win":S,"out":S,"ws":S,"setter":S,"pre":H|null,
-        // "post":H|null,"nativePre":S|null,"nativePost":S|null,
-        // "attemptMs":"u64"} = 94 fixed plus ids, setter token, homing
-        // pairs, native ids, and the stamp. A homing pair
-        // `{"out":S,"ws":S}` counts 14 plus its ids; absent homings and
-        // absent native ids count null (4).
-        bytes += 94
+        // Empty-string placeholders plus null references establish exact
+        // fixed punctuation; each string placeholder is replaced below.
+        bytes += "{\"op\":\"\",\"win\":\"\",\"out\":\"\",\"ws\":\"\",\"setter\":\"\",\"pre\":null,\"post\":null,\"attemptMs\":\"\"}".len() - 12
             + json_string_len(&attempt.operation_id)
             + json_string_len(&attempt.window.0)
             + json_string_len(&attempt.target_output.0)
             + json_string_len(&attempt.target_workspace)
             + json_string_len(attempt.setter.as_str())
-            + attempt.pre.as_ref().map_or(4, |(out, ws)| {
-                14 + json_string_len(&out.0) + json_string_len(ws)
-            })
-            + attempt.post.as_ref().map_or(4, |(out, ws)| {
-                14 + json_string_len(&out.0) + json_string_len(ws)
-            })
-            + attempt.native_pre.as_deref().map_or(4, json_string_len)
-            + attempt.native_post.as_deref().map_or(4, json_string_len)
+            + workspace_ref_option_len(&attempt.pre)
+            + workspace_ref_option_len(&attempt.post)
             + u64_len(attempt.attempt_ms);
     }
     for attempt in &report.view_attempts {
-        // {"op":S,"out":S,"ws":S,"setter":S,"pre":S|null,"post":S|null,
-        // "base":S|null,"nativePre":S|null,"nativePost":S|null,
-        // "nativeBase":S|null,"attemptMs":"u64"} = 109 fixed plus ids,
-        // setter token, views, native ids, and the stamp. Absent views and
-        // absent native ids count null (4).
-        bytes += 109
+        bytes += "{\"op\":\"\",\"out\":\"\",\"ws\":\"\",\"setter\":\"\",\"pre\":null,\"post\":null,\"base\":null,\"attemptMs\":\"\"}".len() - 10
             + json_string_len(&attempt.operation_id)
             + json_string_len(&attempt.target_output.0)
             + json_string_len(&attempt.target_workspace)
             + json_string_len(attempt.setter.as_str())
-            + attempt.pre.as_deref().map_or(4, json_string_len)
-            + attempt.post.as_deref().map_or(4, json_string_len)
-            + attempt.baseline.as_deref().map_or(4, json_string_len)
-            + attempt.native_pre.as_deref().map_or(4, json_string_len)
-            + attempt.native_post.as_deref().map_or(4, json_string_len)
-            + attempt
-                .native_baseline
-                .as_deref()
-                .map_or(4, json_string_len)
+            + workspace_ref_option_len(&attempt.pre)
+            + workspace_ref_option_len(&attempt.post)
+            + workspace_ref_option_len(&attempt.baseline)
             + u64_len(attempt.attempt_ms);
     }
     for attempt in &report.clear_attempts {
@@ -1179,20 +1252,305 @@ fn drag_source_estimate(source: &Option<crate::session::DomainKey>) -> usize {
 /// truncated page.
 fn push_json_string(out: &mut String, value: &str) {
     out.push('"');
-    for byte in value.bytes() {
-        match byte {
-            b'"' => out.push_str("\\\""),
-            b'\\' => out.push_str("\\\\"),
-            0x00..=0x1F => {
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\0'..='\u{1f}' => {
                 const HEX: &[u8; 16] = b"0123456789abcdef";
+                let byte = c as u8;
                 out.push_str("\\u00");
                 out.push(char::from(HEX[usize::from(byte >> 4)]));
                 out.push(char::from(HEX[usize::from(byte & 0x0F)]));
             }
-            _ => out.push(char::from(byte)),
+            _ => out.push(c),
         }
     }
     out.push('"');
+}
+
+/// Shortest round-trip spelling for one finite binary64 value: Ryu digits
+/// with a plain (never scientific) expansion. `-0.0` spells `"0"`, matching
+/// the digest and the protocol number gate.
+///
+/// Finite precondition: callers must prove finiteness first (every
+/// canonical writer below is checked and only calls this on the finite
+/// leg). The `debug_assert` guards the precondition in debug builds; the
+/// checked wrappers make it unreachable for non-finite input in all builds.
+#[must_use]
+pub fn encode_finite_json_number(value: f64) -> String {
+    debug_assert!(value.is_finite(), "finite precondition");
+    if value == 0.0 {
+        return "0".into();
+    }
+    let mut buffer = ryu::Buffer::new();
+    let mut spelling = buffer.format_finite(value).to_owned();
+    if !spelling.contains(['e', 'E']) {
+        if spelling.ends_with(".0") {
+            spelling.truncate(spelling.len() - 2);
+        }
+        return spelling;
+    }
+    let (mantissa, exp) = spelling.split_once(['e', 'E']).expect("ryu exponent");
+    let exp: i32 = exp.parse().expect("ryu exponent parses");
+    let negative = mantissa.starts_with('-');
+    let unsigned = mantissa.trim_start_matches('-');
+    let dot = unsigned.find('.').unwrap_or(unsigned.len()) as i32;
+    let digits: String = unsigned.chars().filter(|c| *c != '.').collect();
+    let point = dot + exp;
+    let mut expanded = if point <= 0 {
+        format!("0.{}{}", "0".repeat((-point) as usize), digits)
+    } else if point as usize >= digits.len() {
+        format!("{}{}", digits, "0".repeat(point as usize - digits.len()))
+    } else {
+        format!(
+            "{}.{}",
+            &digits[..point as usize],
+            &digits[point as usize..]
+        )
+    };
+    if expanded.contains('.') {
+        while expanded.ends_with('0') {
+            expanded.pop();
+        }
+        if expanded.ends_with('.') {
+            expanded.pop();
+        }
+    }
+    if negative {
+        expanded.insert(0, '-');
+    }
+    expanded
+}
+
+/// Checked-canonical failure: a non-finite binary64 reached a canonical
+/// writer. Callers grade the row to a narrow hold or refuse the report;
+/// writers never normalize to `null` and never panic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NonFiniteNumber;
+
+impl NonFiniteNumber {
+    /// Fixed check vocabulary for logs, never payload bytes.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        "nonfinite"
+    }
+}
+
+/// Canonical JSON encoding for one JSON number: the finite shortest
+/// round-trip spelling. Non-finite values (constructible only through the
+/// public typed carriers, never from wire JSON) are a checked error: the
+/// writer emits nothing, so a non-finite typed fact can never normalize
+/// to `null` on the wire.
+pub fn push_json_number(out: &mut String, value: f64) -> Result<(), NonFiniteNumber> {
+    if value.is_finite() {
+        out.push_str(&encode_finite_json_number(value));
+        Ok(())
+    } else {
+        Err(NonFiniteNumber)
+    }
+}
+
+/// Exact encoded width of [`push_json_number`] without encoding: `None`
+/// when the value has no canonical spelling (non-finite). Pre-validation
+/// estimators fall back to the `null` width (4) as a pure size bound, never
+/// as an encoding.
+#[must_use]
+pub fn json_number_len(value: f64) -> Option<usize> {
+    if value.is_finite() {
+        Some(encode_finite_json_number(value).len())
+    } else {
+        None
+    }
+}
+
+/// Canonical JSON encoding for one JSON-agnostic held-screen field value:
+/// `null` and bools literally, finite numbers in the shared shortest
+/// round-trip spelling, strings through the canonical escaping of
+/// [`json_string_len`], arrays and objects in stored order (nested objects
+/// iterate in stored order, so the spelling stays deterministic). A
+/// non-finite number anywhere in the value is a checked error (see
+/// [`push_json_number`]), never a silent `null`. Shared by the canonical
+/// held-row writer and the request estimator so the two cannot differ.
+/// Atomic: a non-finite value anywhere inside leaves `out` untouched.
+pub fn push_raw_setting_value(
+    out: &mut String,
+    value: &crate::connection::RawSettingValue,
+) -> Result<(), NonFiniteNumber> {
+    let mut staged = String::new();
+    push_raw_setting_value_inner(&mut staged, value)?;
+    out.push_str(&staged);
+    Ok(())
+}
+
+fn push_raw_setting_value_inner(
+    out: &mut String,
+    value: &crate::connection::RawSettingValue,
+) -> Result<(), NonFiniteNumber> {
+    use crate::connection::RawSettingValue;
+    match value {
+        RawSettingValue::Null => out.push_str("null"),
+        RawSettingValue::Bool(set) => out.push_str(if *set { "true" } else { "false" }),
+        RawSettingValue::Number(number) => push_json_number(out, *number)?,
+        RawSettingValue::String(text) => push_json_string(out, text),
+        RawSettingValue::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                push_raw_setting_value_inner(out, item)?;
+            }
+            out.push(']');
+        }
+        RawSettingValue::Object(entries) => {
+            out.push('{');
+            for (i, (key, item)) in entries.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                push_json_string(out, key);
+                out.push(':');
+                push_raw_setting_value_inner(out, item)?;
+            }
+            out.push('}');
+        }
+    }
+    Ok(())
+}
+/// Exact encoded width of [`push_raw_setting_value`] without encoding:
+/// `None` when the value has no canonical spelling (a non-finite number
+/// anywhere inside). Pre-validation estimators fall back per value, never
+/// as an encoding (see [`report_estimate`]).
+#[must_use]
+pub fn raw_setting_value_len(value: &crate::connection::RawSettingValue) -> Option<usize> {
+    use crate::connection::RawSettingValue;
+    match value {
+        RawSettingValue::Null => Some(4),
+        RawSettingValue::Bool(set) => Some(bool_len(*set)),
+        RawSettingValue::Number(number) => json_number_len(*number),
+        RawSettingValue::String(text) => Some(json_string_len(text)),
+        RawSettingValue::Array(items) => {
+            let mut bytes = 2usize;
+            for item in items {
+                bytes += raw_setting_value_len(item)?;
+            }
+            bytes += items.len().saturating_sub(1);
+            Some(bytes)
+        }
+        RawSettingValue::Object(entries) => {
+            let mut bytes = 2usize;
+            for (key, item) in entries {
+                bytes += json_string_len(key) + 1 + raw_setting_value_len(item)?;
+            }
+            bytes += entries.len().saturating_sub(1);
+            Some(bytes)
+        }
+    }
+}
+
+/// Pre-validation size bound for one held-screen field value: the exact
+/// canonical width where spellable, with a `null` width (4) bound per
+/// non-finite scalar. Unlike [`raw_setting_value_len`] (checked: `None`
+/// when any nested number is non-finite), this never collapses carried
+/// structure or text around one bad scalar, so the request estimator
+/// cannot undercount the report. A bound only, never an encoding.
+fn raw_setting_value_estimate(value: &crate::connection::RawSettingValue) -> usize {
+    use crate::connection::RawSettingValue;
+    match value {
+        RawSettingValue::Null => 4,
+        RawSettingValue::Bool(set) => bool_len(*set),
+        RawSettingValue::Number(number) => json_number_len(*number).unwrap_or(4),
+        RawSettingValue::String(text) => json_string_len(text),
+        RawSettingValue::Array(items) => {
+            2 + items.iter().map(raw_setting_value_estimate).sum::<usize>()
+                + items.len().saturating_sub(1)
+        }
+        RawSettingValue::Object(entries) => {
+            2 + entries
+                .iter()
+                .map(|(key, item)| json_string_len(key) + 1 + raw_setting_value_estimate(item))
+                .sum::<usize>()
+                + entries.len().saturating_sub(1)
+        }
+    }
+}
+
+/// Exact canonical encoding for one held screen row: the retained carried
+/// fields as a JSON object in stored order (canonical schema order at
+/// decode: `out`, `full`, `work`, `complete`, `scale`, `identity`, then any
+/// other carried keys lexicographically). The diagnostic is core-side only,
+/// never on the wire. Checked: a non-finite retained number is an error,
+/// never a silent `null`.
+pub fn encode_held_screen_canonical(
+    held: &crate::world_report::HeldScreenRow,
+) -> Result<String, NonFiniteNumber> {
+    let mut out = String::new();
+    out.push('{');
+    for (i, (key, value)) in held.fields.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_json_string(&mut out, key);
+        out.push(':');
+        push_raw_setting_value(&mut out, value)?;
+    }
+    out.push('}');
+    Ok(out)
+}
+
+/// Exact canonical encoding for one valid screen row: schema key order
+/// (`out`, `full`, `work`, `complete`, `scale`, `identity`) with
+/// schema-ordered identity and shared canonical scalars. Witness for the
+/// immutable message bytes: a decoded valid row must re-encode to the exact
+/// carried row bytes. Checked: a non-finite scale is an error, never a
+/// silent `null`.
+pub fn encode_screen_canonical(
+    screen: &crate::world_report::ScreenReport,
+) -> Result<String, NonFiniteNumber> {
+    fn push_rect(out: &mut String, rect: Option<crate::geometry::Rect>) {
+        match rect {
+            None => out.push_str("null"),
+            Some(rect) => {
+                out.push('[');
+                out.push_str(&rect.x.to_string());
+                out.push(',');
+                out.push_str(&rect.y.to_string());
+                out.push(',');
+                out.push_str(&rect.w.to_string());
+                out.push(',');
+                out.push_str(&rect.h.to_string());
+                out.push(']');
+            }
+        }
+    }
+    fn push_identity_text(out: &mut String, text: &Option<String>) {
+        match text {
+            None => out.push_str("null"),
+            Some(text) => push_json_string(out, text),
+        }
+    }
+    let mut out = String::new();
+    out.push_str("{\"out\":");
+    push_json_string(&mut out, &screen.output.0);
+    out.push_str(",\"full\":");
+    push_rect(&mut out, screen.full_rect);
+    out.push_str(",\"work\":");
+    push_rect(&mut out, screen.work_area);
+    out.push_str(",\"complete\":");
+    out.push_str(if screen.complete { "true" } else { "false" });
+    out.push_str(",\"scale\":");
+    push_json_number(&mut out, screen.scale)?;
+    out.push_str(",\"identity\":{\"manufacturer\":");
+    push_identity_text(&mut out, &screen.identity.manufacturer);
+    out.push_str(",\"model\":");
+    push_identity_text(&mut out, &screen.identity.model);
+    out.push_str(",\"serial\":");
+    push_identity_text(&mut out, &screen.identity.serial);
+    out.push_str(",\"connector\":");
+    push_identity_text(&mut out, &screen.identity.connector);
+    out.push_str("}}");
+    Ok(out)
 }
 
 /// Exact canonical reply encoding for the transactional commit gate.
@@ -1229,7 +1587,7 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
             out.push(',');
         }
         out.push_str("{\"scope\":");
-        push_json_string(&mut out, &scope.scope);
+        push_authority_scope(&mut out, &scope.scope);
         out.push_str(",\"auth\":");
         push_json_string(&mut out, scope.authority.as_str());
         out.push_str(",\"reason\":");
@@ -1254,7 +1612,7 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
             workspace.native_binding.as_deref().unwrap_or_default(),
         );
         out.push_str(",\"scope\":");
-        push_json_string(&mut out, &workspace.scope);
+        push_authority_scope(&mut out, &workspace.scope);
         out.push_str(",\"order\":");
         out.push_str(&workspace.order.to_string());
         out.push_str(",\"mode\":");
@@ -1410,8 +1768,37 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
     }
     out.push_str(",\"presentation\":");
     encode_presentation(&mut out, &reply.presentation);
+    out.push_str(",\"diagnostics\":[");
+    for (i, diagnostic) in reply.diagnostics.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_row_diagnostic(&mut out, diagnostic);
+    }
+    out.push(']');
     out.push('}');
     out
+}
+
+/// Exact canonical encoding for one narrow-hold row diagnostic, with
+/// frozen key order (mirrored by [`row_diagnostic_estimate`] and the
+/// protocol codec): `{"scope":..,"row":..,"id":..,"kind":..}` where a
+/// missing id encodes as JSON null (rows without identity refuse the
+/// envelope instead of holding, so only lanes with nullable ids emit
+/// here; never the empty string).
+pub fn push_row_diagnostic(out: &mut String, diagnostic: &crate::world_report::RowDiagnostic) {
+    out.push_str("{\"scope\":");
+    push_authority_scope(out, &diagnostic.scope);
+    out.push_str(",\"row\":");
+    push_json_string(out, diagnostic.row.as_str());
+    out.push_str(",\"id\":");
+    match diagnostic.id.as_deref() {
+        Some(id) => push_json_string(out, id),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"kind\":");
+    push_json_string(out, diagnostic.kind.as_str());
+    out.push('}');
 }
 
 /// Exact canonical encoding for the native creation desire section: `[]`
@@ -1853,7 +2240,10 @@ pub fn reply_exact_bytes(reply: &WorldReply) -> usize {
 /// - native creation desires (at most one per logical workspace): 22
 ///   punctuation + `op-native-<n>` (25) + logical (130) + output (130) =
 ///   307, rounded to 384 each.
-///   The 4096 base covers envelope slack and array commas.
+/// - held-row diagnostics (at most one per held screen row): scope (155) plus
+///   lane/kind tokens (30) plus id (130) plus punctuation (30) = 345,
+///   rounded to 512 each.
+/// - envelope slack: 4096 base covers envelope slack and array commas.
 #[must_use]
 pub fn reply_upper_bound(
     report: &WorldReport,
@@ -1880,4 +2270,222 @@ pub fn reply_upper_bound(
         .saturating_add(report_windows.saturating_mul(131))
         .saturating_add(report_windows.saturating_mul(768))
         .saturating_add(logical_workspaces.saturating_mul(384))
+        .saturating_add(report.held_screens.len().saturating_mul(512))
+}
+
+#[cfg(test)]
+mod typed_scope_sizing_tests {
+    use super::*;
+    use crate::world_report::{AuthorityScope, ScopeAuthority, ScopeStatus};
+
+    #[test]
+    fn scope_estimate_matches_exact_isolated_scope_row() {
+        let row = ScopeStatus {
+            scope: AuthorityScope::Workspace {
+                output: crate::directional::OutputId("out-1".into()),
+                workspace: crate::directional::WorkspaceId("ws-2".into()),
+            },
+            authority: ScopeAuthority::Controlled,
+        };
+        let exact = "{\"scope\":{\"kind\":\"workspace\",\"out\":\"out-1\",\"ws\":\"ws-2\"},\"auth\":\"controlled\",\"reason\":\"\"}";
+        assert_eq!(scope_status_estimate(&row), exact.len());
+    }
+}
+
+#[cfg(test)]
+mod canonical_scalar_tests {
+    use super::*;
+    use crate::connection::RawSettingValue;
+
+    fn encoded_number(value: f64) -> String {
+        let mut out = String::new();
+        push_json_number(&mut out, value).expect("finite test scalar");
+        out
+    }
+
+    fn encoded_string(value: &str) -> String {
+        let mut out = String::new();
+        push_json_string(&mut out, value);
+        out
+    }
+
+    #[test]
+    #[allow(
+        clippy::excessive_precision,
+        reason = "the tie witnesses intentionally carry full decimal precision; clippy's shorter suggestion does not round-trip"
+    )]
+    fn halfway_ties_use_shortest_even_digits() {
+        // Journaled witness: Rust `Display` spells the 2^50 halfway case
+        // `.3`; the shortest round-trip spelling ends `.2`.
+        assert_eq!(
+            encode_finite_json_number(1000000000000000.25),
+            "1000000000000000.2"
+        );
+        assert_eq!(
+            encode_finite_json_number(1000000000000000.75),
+            "1000000000000000.8"
+        );
+        for text in ["1000000000000000.2", "1000000000000000.8"] {
+            let parsed: f64 = text.parse().expect("parses");
+            assert_eq!(encoded_number(parsed), text);
+        }
+    }
+
+    #[test]
+    fn signed_zero_spells_zero() {
+        assert_eq!(encode_finite_json_number(-0.0), "0");
+        assert_eq!(encoded_number(-0.0), "0");
+        assert_eq!(json_number_len(-0.0), Some(1));
+    }
+
+    #[test]
+    fn small_large_and_boundary_exponents_expand_plainly() {
+        assert_eq!(encode_finite_json_number(1e21), "1000000000000000000000");
+        assert_eq!(encode_finite_json_number(1.5e-7), "0.00000015");
+        assert_eq!(encode_finite_json_number(0.000001), "0.000001");
+        assert_eq!(encode_finite_json_number(1.25), "1.25");
+        assert_eq!(encode_finite_json_number(-1.0), "-1");
+        let smallest = encode_finite_json_number(5e-324);
+        assert_eq!(smallest.len(), 326);
+        assert!(smallest.starts_with("0.000"));
+        assert!(smallest.ends_with('5'));
+        let max = encode_finite_json_number(f64::MAX);
+        assert_eq!(max.len(), 309);
+        assert!(max.starts_with("17976931348623157"));
+        assert!(!max.contains(['e', 'E', '.', '+', '-']));
+    }
+
+    #[test]
+    fn non_finite_scalars_are_checked_errors_never_null() {
+        // Finding A: non-finite typed facts must never normalize to
+        // `null`. Every canonical scalar/raw writer reports the value and
+        // emits nothing; only the pre-validation estimator substitutes a
+        // pure size bound.
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut out = String::new();
+            assert_eq!(
+                push_json_number(&mut out, value),
+                Err(super::NonFiniteNumber)
+            );
+            assert!(out.is_empty(), "no silent null normalization");
+            assert_eq!(json_number_len(value), None);
+            for held in [
+                RawSettingValue::Number(value),
+                RawSettingValue::Array(vec![
+                    RawSettingValue::Number(1.0),
+                    RawSettingValue::Number(value),
+                ]),
+                RawSettingValue::Object(vec![("scale".to_owned(), RawSettingValue::Number(value))]),
+            ] {
+                let mut raw = String::new();
+                assert_eq!(
+                    push_raw_setting_value(&mut raw, &held),
+                    Err(super::NonFiniteNumber)
+                );
+                assert!(raw.is_empty(), "no silent null normalization");
+                assert_eq!(raw_setting_value_len(&held), None);
+            }
+        }
+    }
+
+    #[test]
+    fn non_finite_rows_are_checked_errors_never_null() {
+        use crate::directional::OutputId;
+        use crate::world_report::{
+            HeldScreenRow, OutputIdentity, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
+            ScreenReport,
+        };
+        // A non-finite scale never encodes as a valid row.
+        let screen = ScreenReport {
+            output: OutputId("out".to_owned()),
+            full_rect: None,
+            work_area: None,
+            complete: false,
+            scale: f64::NAN,
+            identity: OutputIdentity::unknown(),
+        };
+        let mut out = String::new();
+        assert_eq!(
+            push_json_number(&mut out, screen.scale),
+            Err(super::NonFiniteNumber)
+        );
+        assert!(encode_screen_canonical(&screen).is_err());
+        // A non-finite retained field never encodes as a held row.
+        let held = HeldScreenRow {
+            output: OutputId("out".to_owned()),
+            ordinal: 0,
+            fields: vec![("scale".to_owned(), RawSettingValue::Number(f64::INFINITY))],
+            diagnostic: RowDiagnostic {
+                scope: crate::world_report::AuthorityScope::Output(OutputId("out".to_owned())),
+                row: RowDiagnosticLane::Screen,
+                id: Some("out".to_owned()),
+                kind: RowDiagnosticKind::InvalidFact,
+            },
+        };
+        assert!(encode_held_screen_canonical(&held).is_err());
+    }
+
+    #[test]
+    #[allow(
+        clippy::excessive_precision,
+        reason = "the tie witness intentionally carries full decimal precision"
+    )]
+    fn number_len_matches_encoding() {
+        for value in [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            1.25,
+            1.5,
+            100.0,
+            0.1 + 0.2,
+            1e21,
+            1.5e-7,
+            5e-324,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            1000000000000000.25,
+        ] {
+            assert_eq!(
+                json_number_len(value).expect("finite test scalar"),
+                encode_finite_json_number(value).len(),
+                "{value}"
+            );
+            assert_eq!(encoded_number(value), encode_finite_json_number(value));
+        }
+    }
+
+    #[test]
+    fn strings_preserve_multibyte_and_escape_c0() {
+        assert_eq!(encoded_string("Müller-µ-日本語-🎛"), "\"Müller-µ-日本語-🎛\"");
+        assert_eq!(
+            encoded_string("quote\"back\\slash\0\u{1}\u{1f}newline\n"),
+            "\"quote\\\"back\\\\slash\\u0000\\u0001\\u001fnewline\\u000a\""
+        );
+        assert_eq!(encoded_string(""), "\"\"");
+        for text in [
+            "Müller-µ-日本語-🎛",
+            "quote\"back\\slash\0\u{1f}\n",
+            "",
+            "plain",
+        ] {
+            assert_eq!(
+                json_string_len(text),
+                encoded_string(text).len(),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn string_len_counts_utf8_bytes_at_identity_bound() {
+        let exact = format!("{}é", "a".repeat(254));
+        assert_eq!(exact.len(), 256);
+        assert_eq!(json_string_len(&exact), 258);
+        let over = format!("{}é", "a".repeat(255));
+        assert_eq!(over.len(), 257);
+        assert_eq!(json_string_len(&over), 259);
+        assert_eq!(encoded_string(&over).len(), json_string_len(&over));
+    }
 }

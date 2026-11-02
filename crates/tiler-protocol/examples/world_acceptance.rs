@@ -20,14 +20,18 @@
 
 use std::collections::BTreeMap;
 
+use tiler_core::connection::{
+    ApplicationIdentity, HandshakeRequest, HostCapabilities, RawSettingValue, SettingsRequest,
+    SettingsStatus,
+};
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    ScreenReport, ScreenView, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReply,
-    WorldReport,
+    AuthorityScope, ScreenReport, ScreenView, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand,
+    WorldReply, WorldReport,
 };
 
 // ---------------------------------------------------------------------------
@@ -123,7 +127,7 @@ struct CaseFile {
     name: String,
     #[allow(dead_code)]
     description: String,
-    owner: String,
+    _owner: String,
     adapter: String,
     generation: String,
     mode: String,
@@ -231,7 +235,7 @@ fn build_command(
 fn build_report(
     case: &CaseFile,
     step: &CaseStep,
-    mode: WorkspaceMode,
+    _mode: WorkspaceMode,
     binding: &BTreeMap<String, String>,
 ) -> Result<WorldReport, String> {
     if !case.settings.default_tiled {
@@ -289,7 +293,6 @@ fn build_report(
     }
     Ok(WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: case.owner.clone(),
         adapter_incarnation: case.adapter.clone(),
         core_generation: case.generation.clone(),
         observation_seq: step.observation,
@@ -297,39 +300,30 @@ fn build_report(
         request_id: format!("req-{}", step.request),
         command_seq: step.command.as_ref().map(|c| c.seq),
         command,
-        workspace_mode: mode,
         screens: vec![ScreenReport {
             output: OutputId(screen.out.clone()),
             full_rect: Some(rect4(screen.full)),
             work_area: Some(rect4(screen.work)),
-            gap: screen.gap,
-            outer_gap: screen.outer_gap,
             complete: screen.complete,
-            primary: screen.primary,
+            scale: 1.0,
+            identity: tiler_core::world_report::OutputIdentity::unknown(),
         }],
         windows,
         views,
         closed: vec![],
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: case.settings.default_tiled,
         focused_global: String::new(),
         action_foreground: None,
         action_cached: None,
         action_outputs: vec![],
+        primary_output: if screen.primary {
+            Some(OutputId(screen.out.clone()))
+        } else {
+            None
+        },
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -343,6 +337,56 @@ fn build_report(
     })
 }
 
+fn configured_engine(case: &CaseFile, mode: WorkspaceMode) -> Result<WorldEngine, String> {
+    let mut engine = WorldEngine::new(&case.generation).ok_or("bad generation")?;
+    let handshake = engine.handshake(&HandshakeRequest {
+        adapter: case.adapter.clone(),
+        request: "case-handshake".to_owned(),
+        application_identity: ApplicationIdentity {
+            app_id: None,
+            executable: None,
+            process_id: None,
+        },
+        capabilities: HostCapabilities::without_native_identity(),
+    });
+    let generation = handshake
+        .generation
+        .ok_or_else(|| format!("handshake refused: {:?}", handshake.kind))?;
+    let setting = |key: &str, value: RawSettingValue| (key.to_owned(), value);
+    let reply = engine
+        .handle_settings(&SettingsRequest {
+            adapter: case.adapter.clone(),
+            generation,
+            request: "case-settings".to_owned(),
+            revision: 0,
+            values: vec![
+                setting(
+                    tiler_core::settings_catalog::FIELD_WORKSPACE_MODE,
+                    RawSettingValue::String(
+                        tiler_core::workspace_scope::mode_token(mode).to_owned(),
+                    ),
+                ),
+                setting(
+                    tiler_core::settings_catalog::FIELD_WORKSPACE_DEFAULT_TILED,
+                    RawSettingValue::Bool(case.settings.default_tiled),
+                ),
+                setting(
+                    tiler_core::settings_catalog::FIELD_INNER_GAP,
+                    RawSettingValue::Number(0.0),
+                ),
+                setting(
+                    tiler_core::settings_catalog::FIELD_OUTER_GAP,
+                    RawSettingValue::Number(0.0),
+                ),
+            ],
+        })
+        .ok_or("settings envelope refused")?;
+    if reply.status != SettingsStatus::Accepted {
+        return Err(format!("settings rejected: {:?}", reply.status));
+    }
+    Ok(engine)
+}
+
 /// Bind home/away once from a scratch bootstrap run of the authored step-0
 /// report (host input only, no oracle involved). The real checked run binds
 /// again from its own first reply and must agree; binding is never rebound.
@@ -354,7 +398,7 @@ fn bootstrap_binding(
     if case.screens.len() != 1 {
         return Err("narrow case covers exactly one screen".to_owned());
     }
-    let mut probe = WorldEngine::new(&case.generation).ok_or("bad generation")?;
+    let mut probe = configured_engine(case, mode)?;
     let first = build_report(case, step0, mode, &BTreeMap::new())?;
     let reply = match probe.handle_report(&first) {
         WorldOutcome::Accepted(reply) => reply,
@@ -403,7 +447,8 @@ fn run_reports(case: &CaseFile, reports: &[WorldReport]) -> Result<Vec<WorldRepl
     if reports.len() != case.steps.len() {
         return Err("report count != case steps".to_owned());
     }
-    let mut engine = WorldEngine::new(&case.generation).ok_or("bad generation")?;
+    let mode = case_mode(&case.mode)?;
+    let mut engine = configured_engine(case, mode)?;
     let mut replies = Vec::new();
     for (step, report) in case.steps.iter().zip(reports.iter()) {
         match engine.handle_report(report) {
@@ -498,7 +543,7 @@ fn check(case: &CaseFile, pairs: &[(WorldReport, WorldReply)]) -> Result<Vec<Str
         if reply.contract_version != WORLD_CONTRACT_VERSION
             || reply.adapter_incarnation != case.adapter
             || reply.core_generation != case.generation
-            || report.owner != case.owner
+            || report.adapter_incarnation != case.adapter
         {
             return Err(fail(at, "report/reply provenance != case identity"));
         }
@@ -590,7 +635,7 @@ fn check(case: &CaseFile, pairs: &[(WorldReport, WorldReply)]) -> Result<Vec<Str
                 if w.tiling_mode.as_str() != "tiled"
                     || !w.existence
                     || w.hold.is_some()
-                    || w.scope != screen.out
+                    || w.scope != AuthorityScope::Output(OutputId(screen.out.clone()))
                     || w.output.0 != screen.out
                     || w.native_binding.is_some()
                 {
@@ -616,14 +661,20 @@ fn check(case: &CaseFile, pairs: &[(WorldReport, WorldReply)]) -> Result<Vec<Str
         }
         // Scopes: exact expected set, every listed scope controlled.
         {
-            let home_scope = format!("{}/{home}", screen.out);
-            let away_scope = format!("{}/{away}", screen.out);
-            let mut scopes: Vec<&str> = reply.scopes.iter().map(|s| s.scope.as_str()).collect();
+            let home_scope = AuthorityScope::Workspace {
+                output: OutputId(screen.out.clone()),
+                workspace: tiler_core::directional::WorkspaceId(home.clone()),
+            };
+            let away_scope = AuthorityScope::Workspace {
+                output: OutputId(screen.out.clone()),
+                workspace: tiler_core::directional::WorkspaceId(away.clone()),
+            };
+            let mut scopes: Vec<&AuthorityScope> = reply.scopes.iter().map(|s| &s.scope).collect();
             scopes.sort();
             let mut want = if index == 0 {
-                vec![home_scope.as_str()]
+                vec![&home_scope]
             } else {
-                vec![away_scope.as_str(), home_scope.as_str()]
+                vec![&away_scope, &home_scope]
             };
             want.sort();
             if scopes != want {
@@ -631,7 +682,7 @@ fn check(case: &CaseFile, pairs: &[(WorldReport, WorldReply)]) -> Result<Vec<Str
             }
             for s in &reply.scopes {
                 if s.authority.as_str() != "controlled" {
-                    return Err(fail(at, format!("scope {} is not controlled", s.scope)));
+                    return Err(fail(at, format!("scope {:?} is not controlled", s.scope)));
                 }
             }
         }

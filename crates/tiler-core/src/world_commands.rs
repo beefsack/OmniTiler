@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
 use crate::directional::{Direction, OutputId, WindowId};
 use crate::engine::Engine;
-use crate::ids::{CorrelationId, OwnerId};
+use crate::ids::CorrelationId;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::workspace_scope::{
@@ -123,7 +123,9 @@ impl WorldEngine {
                 // Global-unique visible-elsewhere swap: selecting a target
                 // visible on another output exchanges the two views instead
                 // of duplicating the selection, with scoped numbering kept.
-                if report.workspace_mode == crate::workspace_scope::WorkspaceMode::GlobalUnique {
+                if self.workspace_mode_setting()
+                    == crate::workspace_scope::WorkspaceMode::GlobalUnique
+                {
                     let mut current_by_output: BTreeMap<String, String> = BTreeMap::new();
                     for screen in &report.screens {
                         if let Some(view) = self.effective_view(&screen.output) {
@@ -227,10 +229,12 @@ impl WorldEngine {
                                 .find(|screen| screen.output == *out)
                                 .and_then(|screen| {
                                     let area = screen.work_area?;
+                                    let outer_gap =
+                                        Self::scale_once(self.outer_gap_setting(), screen.scale)?;
                                     let inset =
-                                        crate::geometry::inset_bounds(area, screen.outer_gap)
-                                            .ok()?;
-                                    Some((inset, screen.gap, screen.outer_gap))
+                                        crate::geometry::inset_bounds(area, outer_gap).ok()?;
+                                    let gap = Self::scale_once(self.gap_setting(), screen.scale)?;
+                                    Some((inset, gap, outer_gap))
                                 })
                         };
                         let Some((bounds_a, gap_a, outer_a)) = target_geo(&out_b) else {
@@ -609,7 +613,7 @@ impl WorldEngine {
                 };
                 // Shared mode walks the one shared history over the
                 // unified order; scoped modes use the per-output entry.
-                if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+                if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
                     let live: Vec<String> = self.selection_ring(report, &resolved);
                     let current = self.effective_view(&resolved).unwrap_or_default();
                     match self.history.resolve_shared_for(&live, &current) {
@@ -673,7 +677,7 @@ impl WorldEngine {
                         // Trailing workspaces exist immediately in the
                         // logical contract: mint, then select.
                         let created =
-                            self.create_trailing_workspace(&resolved, report.default_tiled);
+                            self.create_trailing_workspace(&resolved, self.default_tiled());
                         let Some(logical) = created else {
                             return CommandApplied::Rejected {
                                 kind: KIND_CREATION_EXHAUSTED,
@@ -711,7 +715,7 @@ impl WorldEngine {
                 // source scope to resolve a ring over.
                 let source = match source {
                     SendSource::Explicit(output) => output.clone(),
-                    SendSource::HomeThenAction | SendSource::HomeThenCachedLive => {
+                    SendSource::HomeThenAction => {
                         let Some(resolved) = frozen_send_source.clone() else {
                             return CommandApplied::Rejected {
                                 kind: KIND_SEND_WINDOW,
@@ -747,7 +751,7 @@ impl WorldEngine {
             } => {
                 let output = match source {
                     SendSource::Explicit(output) => output.clone(),
-                    SendSource::HomeThenAction | SendSource::HomeThenCachedLive => {
+                    SendSource::HomeThenAction => {
                         let Some(resolved) = frozen_send_source.clone() else {
                             return CommandApplied::Rejected {
                                 kind: KIND_SEND_WINDOW,
@@ -982,7 +986,7 @@ impl WorldEngine {
     ) -> CommandApplied {
         // Shared mode refuses whole-workspace migration with a reason
         // before any writes and no native settings mutation.
-        if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
                 message: MSG_MIGRATION_SHARED,
@@ -1075,9 +1079,13 @@ impl WorldEngine {
             .screens
             .iter()
             .find(|screen| screen.output == *target_output);
-        let Some((work_area, gap, outer_gap)) =
-            target_screen.map(|screen| (screen.work_area, screen.gap, screen.outer_gap))
-        else {
+        let Some((work_area, gap, outer_gap)) = target_screen.and_then(|screen| {
+            Some((
+                screen.work_area,
+                Self::scale_once(self.gap_setting(), screen.scale)?,
+                Self::scale_once(self.outer_gap_setting(), screen.scale)?,
+            ))
+        }) else {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
                 message: MSG_MIGRATION_TARGET_GEOMETRY,
@@ -1112,7 +1120,7 @@ impl WorldEngine {
             };
         }
         let (Some(owner), Some(correlation)) = (
-            OwnerId::parse(&report.owner),
+            self.connection_owner.clone(),
             CorrelationId::parse(&report.request_id),
         ) else {
             return CommandApplied::Rejected {
@@ -1365,7 +1373,7 @@ impl WorldEngine {
             .get(&source_output.0)
             .is_some_and(Vec::is_empty)
         {
-            self.create_trailing_workspace(source_output, report.default_tiled);
+            self.create_trailing_workspace(source_output, self.default_tiled());
         }
         let source_view = refill.clone().unwrap_or_else(|| {
             self.mapping

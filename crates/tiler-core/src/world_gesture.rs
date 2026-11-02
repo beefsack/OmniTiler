@@ -34,7 +34,7 @@ use crate::gesture::{
     GestureIngress, GestureIntent, GestureKind, GesturePhase, classify_gesture, prefer_modal_move,
     resolve_drop_destination,
 };
-use crate::ids::{CorrelationId, OwnerId};
+use crate::ids::CorrelationId;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, DragHoverPrior, OutputDomain};
 use crate::world_engine::{RetainedTransfer, WorldEngine};
@@ -910,7 +910,7 @@ impl WorldEngine {
             return None;
         }
         let (Some(owner), Some(correlation)) = (
-            OwnerId::parse(&report.owner),
+            self.connection_owner.clone(),
             CorrelationId::parse(&report.request_id),
         ) else {
             return None;
@@ -984,7 +984,7 @@ impl WorldEngine {
             .find(|d| d.readable && d.key == domain_key)?
             .clone();
         let (Some(owner), Some(correlation)) = (
-            OwnerId::parse(&report.owner),
+            self.connection_owner.clone(),
             CorrelationId::parse(&report.request_id),
         ) else {
             return None;

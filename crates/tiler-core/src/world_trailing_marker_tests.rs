@@ -23,10 +23,9 @@ fn screen(output: &str, x: i32) -> ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary: x == 0,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -50,14 +49,13 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
 }
 
 fn report(
-    mode: WorkspaceMode,
+    _mode: WorkspaceMode,
     screens: Vec<ScreenReport>,
     complete: bool,
-    equal_count: bool,
+    _equal_count: bool,
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: 1,
@@ -65,31 +63,19 @@ fn report(
         request_id: "req-1".to_owned(),
         command_seq: None,
         command: None,
-        workspace_mode: mode,
         screens,
         windows: Vec::new(),
         views: Vec::new(),
         closed: vec![],
-        host_owned_workspace_domains: false,
-        equal_workspace_count: equal_count,
-        birth_clear: false,
         native: vec![],
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
-        default_tiled: true,
-        born_maximized: crate::born_maximized::BornMaximized::default(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: complete,
         gesture_barrier: false,
         gesture: None,
@@ -103,8 +89,36 @@ fn report(
     }
 }
 
-fn engine_with(rings: &[(&str, Vec<&str>)]) -> WorldEngine {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+fn engine_with(rings: &[(&str, Vec<&str>)], host_owned: bool) -> WorldEngine {
+    engine_with_mode(rings, WorkspaceMode::PerOutputLocal, false, host_owned)
+}
+
+fn engine_with_mode(
+    rings: &[(&str, Vec<&str>)],
+    mode: WorkspaceMode,
+    equal_count: bool,
+    host_owned: bool,
+) -> WorldEngine {
+    let capabilities = crate::connection::HostCapabilities {
+        host_owned,
+        equal_count,
+        ..Default::default()
+    };
+    let mode_token = match mode {
+        WorkspaceMode::PerOutputLocal => "per-output-local",
+        WorkspaceMode::GlobalUnique => "global-unique",
+        WorkspaceMode::Shared => "shared",
+    };
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        capabilities,
+        vec![(
+            "mode".to_owned(),
+            crate::connection::RawSettingValue::String(mode_token.to_owned()),
+        )],
+    )
+    .expect("generation");
     for (output, ids) in rings {
         engine.mapping.insert(
             (*output).to_owned(),
@@ -131,7 +145,7 @@ fn home(engine: &mut WorldEngine, window: &str, output: &str, workspace: &str) {
 
 fn plan_marks(engine: &mut WorldEngine, report: &WorldReport, output: &str) -> Vec<(String, bool)> {
     engine
-        .plan_workspaces(report)
+        .plan_workspaces(report, &[])
         .into_iter()
         .filter(|row| row.output.0 == output)
         .map(|row| (row.id.clone(), row.trailing))
@@ -156,7 +170,12 @@ fn pager_marks(report: &WorldReport, engine: &WorldEngine, output: &str) -> Vec<
 
 #[test]
 fn shared_union_occupied_elsewhere_suppresses_both_outputs() {
-    let mut engine = engine_with(&[("out-a", vec!["w1", "w2"]), ("out-b", vec!["w1", "w2"])]);
+    let mut engine = engine_with_mode(
+        &[("out-a", vec!["w1", "w2"]), ("out-b", vec!["w1", "w2"])],
+        WorkspaceMode::Shared,
+        false,
+        false,
+    );
     home(&mut engine, "win", "out-b", "w2");
     let report = report(
         WorkspaceMode::Shared,
@@ -190,7 +209,7 @@ fn shared_union_occupied_elsewhere_suppresses_both_outputs() {
 
 #[test]
 fn occupied_tail_marks_nothing() {
-    let mut engine = engine_with(&[("o", vec!["w1", "w2"])]);
+    let mut engine = engine_with(&[("o", vec!["w1", "w2"])], false);
     home(&mut engine, "win", "o", "w2");
     let report = report(
         WorkspaceMode::PerOutputLocal,
@@ -213,24 +232,23 @@ fn occupied_tail_marks_nothing() {
 
 #[test]
 fn bound_visible_tail_still_marks() {
-    let mut engine = engine_with(&[("o", vec!["w1", "w2"])]);
+    let mut engine = engine_with(&[("o", vec!["w1", "w2"])], true);
     engine.views.insert("o".to_owned(), "w2".to_owned());
     engine
         .native_map
         .insert(("o".to_owned(), "n1".to_owned()), "w2".to_owned());
-    let mut report = report(
+    let report = report(
         WorkspaceMode::PerOutputLocal,
         vec![screen("o", 0)],
         true,
         false,
     );
-    report.host_owned_workspace_domains = true;
     assert_eq!(
         engine.trailing_marked_id(&report, "o"),
         Some("w2".to_owned())
     );
     let bound = engine
-        .plan_workspaces(&report)
+        .plan_workspaces(&report, &[])
         .into_iter()
         .find(|row| row.output.0 == "o" && row.id == "w2")
         .expect("bound tail row");
@@ -247,7 +265,10 @@ fn bound_visible_tail_still_marks() {
 
 #[test]
 fn publication_final_only_over_unequal_rings() {
-    let mut engine = engine_with(&[("a", vec!["w1", "w2", "w3"]), ("b", vec!["w1", "w2"])]);
+    let mut engine = engine_with(
+        &[("a", vec!["w1", "w2", "w3"]), ("b", vec!["w1", "w2"])],
+        false,
+    );
     let report = report(
         WorkspaceMode::PerOutputLocal,
         vec![screen("a", 0), screen("b", 800)],
@@ -290,7 +311,7 @@ fn publication_final_only_over_unequal_rings() {
 
 #[test]
 fn empty_tail_marks_the_final_spare_in_both_streams() {
-    let mut engine = engine_with(&[("o", vec!["w1", "w2"])]);
+    let mut engine = engine_with(&[("o", vec!["w1", "w2"])], false);
     let report = report(
         WorkspaceMode::PerOutputLocal,
         vec![screen("o", 0)],
@@ -313,7 +334,7 @@ fn empty_tail_marks_the_final_spare_in_both_streams() {
 
 #[test]
 fn incomplete_inventory_fails_closed_at_the_helper() {
-    let mut engine = engine_with(&[("o", vec!["w1", "w2"])]);
+    let mut engine = engine_with(&[("o", vec!["w1", "w2"])], false);
     let report = report(
         WorkspaceMode::PerOutputLocal,
         vec![screen("o", 0)],

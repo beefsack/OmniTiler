@@ -38,8 +38,17 @@
 //!  plus the optional tolerant birthClear capability: missing backfills
 //!  false = no automatic birth clear, a present bool decodes, any other
 //!  shape refuses)
-//! screens[]: {out, full:[x,y,w,h]|null, work:[x,y,w,h]|null, gap, outer,
-//!             complete:bool, primary:bool}
+//! screens[]: {out, full:[x,y,w,h]|null, work:[x,y,w,h]|null,
+//!             complete:bool, scale:finite-positive-number,
+//!             identity:{manufacturer,model,serial,connector}}
+//!             (all six keys required; retired gap/outer/primary keys hold
+//!             the identifiable row, other unknown keys refuse; scale is a
+//!             finite positive JSON number; identity keys are all required
+//!             and nullable with empty text preserved; bad identifiable rows
+//!             hold narrowly with their carried fields retained, bad `out`
+//!             refuses the report)
+//! report-level primary: "primary":id|null (optional: absent means
+//!             unknown, null refuses, an opaque id designates)
 //! windows[] (facts): {win, out, rect:[x,y,w,h]|null, floating:bool,
 //!             fitExcluded:bool, fullscreen:bool, maximized:bool, sticky:bool,
 //!             fixedAuto:bool, fixedSuppress:bool, minimized:bool, hints:{...},
@@ -167,20 +176,26 @@
 //! `warpCursor`: null or the desired `[x,y]` cursor-warp point
 //! (cross-output focus only), plus `presentation`: the uniform
 //! border/underlay/pager presentation (`foreground` token, `border` shape,
-//! `underlay` found/hidden shape, `pager` content).
+//! `underlay` found/hidden shape, `pager` content), plus `diagnostics`: []
+//! or one `{"scope","row","id","kind"}` object per held identifiable row
+//! (a missing `id` encodes as JSON null, never the empty string).
 //! Bootstrap/discovery replies reuse the same shape with `ready:false` and
 //! empty sections. Bounded errors reuse
 //! `{v:3,outcome:"rejected",kind,message,gen}`.
 
 use tiler_core::boundary::CoreCommand;
 use tiler_core::bounds::{is_opaque_id, valid_carried_rect};
+use tiler_core::connection::RawSettingValue;
 use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
-use tiler_core::ids::{MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_OWNER_LEN};
+use tiler_core::ids::{
+    MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_NATIVE_WORKSPACE_ID_LEN, NativeWorkspaceId,
+};
 use tiler_core::world_report::{
-    HoldReason, NativeObservation, PresentationIngress, ScreenReport, ScreenView, TransferKind,
-    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReply, WorldReport,
-    validate_report_reason,
+    AuthorityScope, HeldScreenRow, HoldReason, NativeObservation, OutputIdentity,
+    PresentationIngress, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport,
+    ScreenView, TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand,
+    WorldReply, WorldReport, check_screen_structure, validate_report_reason,
 };
 
 /// World protocol contract version (equals the core world contract version).
@@ -299,6 +314,37 @@ fn req_i32(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Resul
         .ok_or_else(malformed)
 }
 
+/// Decode a closed v4 scope union. The output arm and workspace arm have
+/// intentionally disjoint key sets; no string/composite compatibility form
+/// is accepted.
+pub fn decode_authority_scope(value: &serde_json::Value) -> Result<AuthorityScope> {
+    let map = as_object(value)?;
+    let kind = req_str(map, "kind")?;
+    match kind {
+        "output" => {
+            check_keys(map, &["kind", "out"])?;
+            let output = req_str(map, "out")?;
+            if !is_opaque_id(output) {
+                return Err(malformed());
+            }
+            Ok(AuthorityScope::Output(OutputId(output.to_owned())))
+        }
+        "workspace" => {
+            check_keys(map, &["kind", "out", "ws"])?;
+            let output = req_str(map, "out")?;
+            let workspace = req_str(map, "ws")?;
+            if !is_opaque_id(output) || !is_opaque_id(workspace) {
+                return Err(malformed());
+            }
+            Ok(AuthorityScope::Workspace {
+                output: OutputId(output.to_owned()),
+                workspace: WorkspaceId(workspace.to_owned()),
+            })
+        }
+        _ => Err(unknown_value()),
+    }
+}
+
 /// Bounded canonical decimal `u64` string: `0` or `[1-9][0-9]{0,19}` with a
 /// value at or below `u64::MAX`. JSON numbers refuse (no `f64` precision
 /// loss); leading zeros, signs, whitespace, and empty strings refuse.
@@ -401,14 +447,6 @@ fn req_bounded(
     Ok(text.to_owned())
 }
 
-fn is_owner_text(text: &str) -> bool {
-    !text.is_empty()
-        && text.len() <= MAX_OWNER_LEN
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
-}
-
 fn is_correlation_text(text: &str) -> bool {
     !text.is_empty()
         && text.len() <= MAX_CORRELATION_LEN
@@ -496,8 +534,8 @@ fn opt_id_or_null(
 }
 
 /// Typed send source: `{"explicit": id}` names a genuinely semantic
-/// explicit output; `{"implicit": "home-then-action" |
-/// "home-then-cached-live"}` selects the core-owned fallback chain. Any
+/// explicit output; `{"implicit": "home-then-action"}` selects the
+/// core-owned fallback chain. Any
 /// other shape is malformed; non-opaque ids and unknown tokens are
 /// unknown values. Legacy string/null `out` payloads refuse here (no
 /// compatibility route).
@@ -523,7 +561,6 @@ fn decode_send_source(
         match value {
             serde_json::Value::String(token) => match token.as_str() {
                 "home-then-action" => Ok(SendSource::HomeThenAction),
-                "home-then-cached-live" => Ok(SendSource::HomeThenCachedLive),
                 _ => Err(unknown_value()),
             },
             _ => Err(unknown_value()),
@@ -621,24 +658,241 @@ fn decode_fact(value: &serde_json::Value) -> Result<WindowFact> {
     })
 }
 
-fn decode_screen(value: &serde_json::Value) -> Result<ScreenReport> {
+/// Strict v4 screen-row outcome: either a usable row or an identifiable
+/// row held narrowly with its carried fields retained. Anything
+/// unidentifiable (bad `out`) or structurally wrong (unknown non-retired
+/// keys, bad `full`/`work`/`complete`) refuses the whole report.
+enum ScreenRowOutcome {
+    Valid(ScreenReport),
+    Held(HeldScreenRow),
+}
+
+/// Convert one carried JSON value into its JSON-agnostic retained fact.
+/// JSON numbers always decode to finite `f64` (no arbitrary precision on
+/// this boundary), so the conversion is total.
+fn raw_setting_value(value: &serde_json::Value) -> RawSettingValue {
+    match value {
+        serde_json::Value::Null => RawSettingValue::Null,
+        serde_json::Value::Bool(set) => RawSettingValue::Bool(*set),
+        serde_json::Value::Number(number) => {
+            RawSettingValue::Number(number.as_f64().unwrap_or(f64::NAN))
+        }
+        serde_json::Value::String(text) => RawSettingValue::String(text.clone()),
+        serde_json::Value::Array(items) => {
+            RawSettingValue::Array(items.iter().map(raw_setting_value).collect())
+        }
+        serde_json::Value::Object(entries) => RawSettingValue::Object(
+            entries
+                .iter()
+                .map(|(key, item)| (key.clone(), raw_setting_value(item)))
+                .collect(),
+        ),
+    }
+}
+
+/// Retain one identifiable-but-bad screen row: every carried key in
+/// canonical schema order (`out`, `full`, `work`, `complete`, `scale`,
+/// `identity`, then any other carried keys lexicographically), with an
+/// `InvalidFact` diagnostic over the output scope naming the output. The
+/// nested `identity` object is retained in schema order (`manufacturer`,
+/// `model`, `serial`, `connector`, then unknown sub-keys lexicographically)
+/// so the canonical writer spells the exact carried row. `ordinal` is the
+/// row's original index in the carried `screens` array.
+fn held_screen_row(
+    output: &OutputId,
+    ordinal: usize,
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> HeldScreenRow {
+    const SCHEMA_ORDER: &[&str] = &["out", "full", "work", "complete", "scale", "identity"];
+    const IDENTITY_ORDER: &[&str] = &["manufacturer", "model", "serial", "connector"];
+    fn order_identity(entries: Vec<(String, RawSettingValue)>) -> Vec<(String, RawSettingValue)> {
+        let mut rest: std::collections::BTreeMap<String, RawSettingValue> =
+            entries.into_iter().collect();
+        let mut ordered = Vec::with_capacity(rest.len());
+        for key in IDENTITY_ORDER {
+            if let Some(value) = rest.remove(*key) {
+                ordered.push((key.to_string(), value));
+            }
+        }
+        for (key, value) in rest {
+            ordered.push((key, value));
+        }
+        ordered
+    }
+    let mut fields = Vec::with_capacity(map.len());
+    for key in SCHEMA_ORDER {
+        if let Some(value) = map.get(*key) {
+            let mut retained = raw_setting_value(value);
+            if *key == "identity"
+                && let RawSettingValue::Object(entries) = retained
+            {
+                retained = RawSettingValue::Object(order_identity(entries));
+            }
+            fields.push((key.to_string(), retained));
+        }
+    }
+    let mut extra: Vec<&String> = map
+        .keys()
+        .filter(|key| !SCHEMA_ORDER.contains(&key.as_str()))
+        .collect();
+    extra.sort();
+    for key in extra {
+        fields.push((key.clone(), raw_setting_value(&map[key])));
+    }
+    HeldScreenRow {
+        output: output.clone(),
+        ordinal,
+        fields,
+        diagnostic: RowDiagnostic {
+            scope: AuthorityScope::Output(output.clone()),
+            row: RowDiagnosticLane::Screen,
+            id: Some(output.0.clone()),
+            kind: RowDiagnosticKind::InvalidFact,
+        },
+    }
+}
+
+/// Strict v4 screen-row decode: `{out, full, work, complete, scale,
+/// identity}` with `identity = {manufacturer, model, serial, connector}`.
+/// - Unknown top-level keys refuse (`unknown-field`), except the retired
+///   `gap`/`outer`/`primary` keys which hold the identifiable row.
+/// - A missing or non-opaque `out` refuses the whole report (missing is
+///   `malformed`, a bad id is `unknown-value`).
+/// - `full`/`work`/`complete` failures refuse like the other fact shapes.
+///   Topology violations (half-carried rect pair, `complete` without both
+///   rects) refuse before any narrow hold below, with the core reason.
+/// - `scale` is required: absent refuses (`malformed`); present but not a
+///   finite positive number holds the row.
+/// - `identity` is a required object whose four keys are all required and
+///   nullable: `null` is unknown, strings are bounded to 256 UTF-8 bytes
+///   with empty text preserved as `Some("")` (never normalized to
+///   unknown). A missing key, a wrong-typed value, an overbound string, a
+///   non-object identity, or an unknown sub-key holds the row.
+fn decode_screen(value: &serde_json::Value, ordinal: usize) -> Result<ScreenRowOutcome> {
     let map = as_object(value)?;
-    check_keys(
+    check_keys_with_optional(
         map,
-        &["out", "full", "work", "gap", "outer", "complete", "primary"],
+        &["out", "full", "work", "complete", "scale", "identity"],
+        &["gap", "outer", "primary"],
     )?;
+    let output = match map.get("out") {
+        Some(serde_json::Value::String(text)) if is_opaque_id(text) => OutputId(text.clone()),
+        Some(serde_json::Value::String(_)) => return Err(unknown_value()),
+        _ => return Err(malformed()),
+    };
     // Null rectangles stay representable for explicitly unreadable or
-    // partial observations; `complete` claims require both.
+    // partial observations; `complete` claims require both (core gate).
     let full_rect = opt_rect_or_null(map, "full")?;
     let work_area = opt_rect_or_null(map, "work")?;
-    Ok(ScreenReport {
-        output: OutputId(req_id(map, "out")?),
+    let complete = req_bool(map, "complete")?;
+    // Structural rect-pair/complete claims refuse before any narrow hold:
+    // a bad scale, an overbound identity, or a retired key must not hide a
+    // topology violation the core refuses directly (shared policy with the
+    // core structural check; the dummy scale/identity never fire it, and
+    // the fresh id set never reports a duplicate: this gate sees only the
+    // rect-pair/complete shape, while id/duplicate refusal stays where it
+    // is). Malformed numeric rects already refused above, unchanged.
+    {
+        let candidate = ScreenReport {
+            output: output.clone(),
+            full_rect,
+            work_area,
+            complete,
+            scale: 1.0,
+            identity: OutputIdentity::unknown(),
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(reason) = check_screen_structure(&candidate, &mut seen) {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: reason,
+            });
+        }
+    }
+    // Retired per-output physical tweaks are never valid rows: the core
+    // derives physical gaps from the logical settings times scale.
+    let retired = ["gap", "outer", "primary"]
+        .iter()
+        .any(|key| map.contains_key(*key));
+    if retired {
+        return Ok(ScreenRowOutcome::Held(held_screen_row(
+            &output, ordinal, map,
+        )));
+    }
+    let scale = match map.get("scale") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Number(number)) => {
+            let scale = number.as_f64().ok_or_else(malformed)?;
+            if !scale.is_finite() || scale <= 0.0 {
+                return Ok(ScreenRowOutcome::Held(held_screen_row(
+                    &output, ordinal, map,
+                )));
+            }
+            scale
+        }
+        Some(_) => {
+            return Ok(ScreenRowOutcome::Held(held_screen_row(
+                &output, ordinal, map,
+            )));
+        }
+    };
+    let identity = match map.get("identity") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Object(identity_map)) => {
+            match decode_identity_strict(identity_map) {
+                Some(identity) => identity,
+                None => {
+                    return Ok(ScreenRowOutcome::Held(held_screen_row(
+                        &output, ordinal, map,
+                    )));
+                }
+            }
+        }
+        Some(_) => {
+            return Ok(ScreenRowOutcome::Held(held_screen_row(
+                &output, ordinal, map,
+            )));
+        }
+    };
+    Ok(ScreenRowOutcome::Valid(ScreenReport {
+        output,
         full_rect,
         work_area,
-        gap: req_i32(map, "gap")?,
-        outer_gap: req_i32(map, "outer")?,
-        complete: req_bool(map, "complete")?,
-        primary: req_bool(map, "primary")?,
+        complete,
+        scale,
+        identity,
+    }))
+}
+
+/// Strict identity decode: the four keys are all required and nullable.
+/// Returns `None` when the row must hold (missing key, wrong type,
+/// overbound text, unknown sub-key). Empty text is preserved as
+/// `Some("")`, never normalized to unknown.
+fn decode_identity_strict(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Option<OutputIdentity> {
+    use tiler_core::world_report::MAX_IDENTITY_TEXT_BYTES;
+    if map.len() != 4 {
+        return None;
+    }
+    let text = |key: &str| -> Option<Option<String>> {
+        match map.get(key) {
+            None => None,
+            Some(serde_json::Value::Null) => Some(None),
+            Some(serde_json::Value::String(text)) => {
+                if text.len() > MAX_IDENTITY_TEXT_BYTES {
+                    return None;
+                }
+                Some(Some(text.clone()))
+            }
+            Some(_) => None,
+        }
+    };
+    Some(OutputIdentity {
+        manufacturer: text("manufacturer")?,
+        model: text("model")?,
+        serial: text("serial")?,
+        connector: text("connector")?,
     })
 }
 
@@ -743,68 +997,7 @@ fn decode_closed_ids(value: &serde_json::Value) -> Result<Vec<WindowId>> {
     Ok(closed)
 }
 
-fn opt_homing_or_null(
-    map: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Result<Option<(OutputId, String)>> {
-    match map.get(key) {
-        None => Err(malformed()),
-        Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => {
-            let homing = as_object(value)?;
-            check_keys(homing, &["out", "ws"])?;
-            Ok(Some((
-                OutputId(req_id(homing, "out")?),
-                req_id(homing, "ws")?,
-            )))
-        }
-    }
-}
-
-fn opt_view_or_null(
-    map: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Result<Option<String>> {
-    match map.get(key) {
-        None => Err(malformed()),
-        Some(serde_json::Value::Null) => Ok(None),
-        // Empty string normalizes to unknown (None), consistently with
-        // `views[]`/`current` empty-means-unknown: validation rejects empty
-        // proof rows outright, so decoding must not produce `Some("")`.
-        Some(serde_json::Value::String(text)) if text.is_empty() => Ok(None),
-        Some(serde_json::Value::String(text)) => {
-            if !is_opaque_id(text) {
-                return Err(unknown_value());
-            }
-            Ok(Some(text.clone()))
-        }
-        Some(_) => Err(malformed()),
-    }
-}
-
-/// Optional host-owned native desktop id: tolerant like `nativeWs`
-/// (missing, null, or empty backfills unknown) so tiler-owned adapters
-/// predate the keys without changing their wire. A present id must be
-/// opaque; the capability gate lives in core validation, never here.
-fn opt_native_or_null(
-    map: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Result<Option<String>> {
-    match map.get(key) {
-        None => Ok(None),
-        Some(serde_json::Value::Null) => Ok(None),
-        Some(serde_json::Value::String(text)) if text.is_empty() => Ok(None),
-        Some(serde_json::Value::String(text)) => {
-            if !is_opaque_id(text) {
-                return Err(unknown_value());
-            }
-            Ok(Some(text.clone()))
-        }
-        Some(_) => Err(malformed()),
-    }
-}
-
-fn decode_member_attempt(
+pub fn decode_member_attempt(
     value: &serde_json::Value,
 ) -> Result<tiler_core::world_report::MemberAttempt> {
     use tiler_core::world_report::MemberAttempt;
@@ -821,7 +1014,7 @@ fn decode_member_attempt(
             "post",
             "attemptMs",
         ],
-        &["nativePre", "nativePost"],
+        &[],
     )?;
     Ok(MemberAttempt {
         operation_id: req_id(map, "op")?,
@@ -829,15 +1022,15 @@ fn decode_member_attempt(
         target_output: OutputId(req_id(map, "out")?),
         target_workspace: req_id(map, "ws")?,
         setter: parse_frame_setter(req_str(map, "setter")?)?,
-        pre: opt_homing_or_null(map, "pre")?,
-        post: opt_homing_or_null(map, "post")?,
-        native_pre: opt_native_or_null(map, "nativePre")?,
-        native_post: opt_native_or_null(map, "nativePost")?,
+        pre: opt_workspace_ref_or_null(map, "pre", false)?,
+        post: opt_workspace_ref_or_null(map, "post", false)?,
         attempt_ms: req_u64_str(map, "attemptMs")?,
     })
 }
 
-fn decode_view_attempt(value: &serde_json::Value) -> Result<tiler_core::world_report::ViewAttempt> {
+pub fn decode_view_attempt(
+    value: &serde_json::Value,
+) -> Result<tiler_core::world_report::ViewAttempt> {
     use tiler_core::world_report::ViewAttempt;
     let map = as_object(value)?;
     check_keys_with_optional(
@@ -852,21 +1045,60 @@ fn decode_view_attempt(value: &serde_json::Value) -> Result<tiler_core::world_re
             "base",
             "attemptMs",
         ],
-        &["nativePre", "nativePost", "nativeBase"],
+        &[],
     )?;
     Ok(ViewAttempt {
         operation_id: req_id(map, "op")?,
         target_output: OutputId(req_id(map, "out")?),
         target_workspace: req_id(map, "ws")?,
         setter: parse_frame_setter(req_str(map, "setter")?)?,
-        pre: opt_view_or_null(map, "pre")?,
-        post: opt_view_or_null(map, "post")?,
-        baseline: opt_view_or_null(map, "base")?,
-        native_pre: opt_native_or_null(map, "nativePre")?,
-        native_post: opt_native_or_null(map, "nativePost")?,
-        native_baseline: opt_native_or_null(map, "nativeBase")?,
+        pre: opt_workspace_ref_or_null(map, "pre", true)?,
+        post: opt_workspace_ref_or_null(map, "post", true)?,
+        baseline: opt_workspace_ref_or_null(map, "base", true)?,
         attempt_ms: req_u64_str(map, "attemptMs")?,
     })
+}
+
+fn opt_workspace_ref_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    native_only: bool,
+) -> Result<Option<WorkspaceRef>> {
+    match map.get(key).ok_or_else(malformed)? {
+        serde_json::Value::Null => Ok(None),
+        value => {
+            let reference = as_object(value)?;
+            let kind = req_str(reference, "kind")?;
+            let output = req_str(reference, "out")?;
+            let workspace = req_str(reference, "ws")?;
+            if !is_opaque_id(output) || !is_opaque_id(workspace) {
+                return Err(malformed());
+            }
+            match kind {
+                "logical" if !native_only => {
+                    check_keys(reference, &["kind", "out", "ws"])?;
+                    Ok(Some(WorkspaceRef::Logical {
+                        output: OutputId(output.to_owned()),
+                        workspace: WorkspaceId(workspace.to_owned()),
+                    }))
+                }
+                "native" => {
+                    check_keys(reference, &["kind", "out", "ws"])?;
+                    if workspace.len() > MAX_NATIVE_WORKSPACE_ID_LEN {
+                        return Err(unknown_value());
+                    }
+                    let workspace =
+                        NativeWorkspaceId::parse(workspace).ok_or_else(unknown_value)?;
+                    Ok(Some(WorkspaceRef::Native {
+                        output: OutputId(output.to_owned()),
+                        workspace,
+                    }))
+                }
+                "logical" => Err(unknown_value()),
+                _ => Err(unknown_value()),
+            }
+        }
+    }
 }
 
 fn opt_u32_or_null(
@@ -1597,13 +1829,22 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             message: MSG_OVERSIZED,
         });
     }
-    let value: serde_json::Value = serde_json::from_str(json).map_err(|_| malformed())?;
+    let value: serde_json::Value =
+        crate::connection_protocol::parse_strict_json(json).map_err(|e| {
+            if e.0 == "oversized" {
+                WorldProtocolError {
+                    kind: KIND_OVERSIZED,
+                    message: MSG_OVERSIZED,
+                }
+            } else {
+                malformed()
+            }
+        })?;
     let map = as_object(&value)?;
     check_keys_with_optional(
         map,
         &[
             "v",
-            "owner",
             "adapter",
             "gen",
             "obs",
@@ -1611,37 +1852,24 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "req",
             "cmdSeq",
             "command",
-            "mode",
             "screens",
             "windows",
             "views",
             "closed",
-            "hostOwned",
-            "equalCount",
             "native",
-            "predicate",
-            "refill",
-            "defaultTiled",
             "focused",
             "complete",
             "gesture",
-            "switchTarget",
-            "freshPlacement",
             "cursor",
             "actionForeground",
             "actionCached",
             "actionOutputs",
-            "focusFollowsCursor",
-            "cursorWarp",
             "presentation",
         ],
         &[
-            "anchorFallback",
-            "noSpaceResult",
-            "bornMaximized",
-            "birthClear",
             "cursorHit",
             "monotonicMs",
+            "primary",
             "frameAttempts",
             "memberAttempts",
             "viewAttempts",
@@ -1674,8 +1902,17 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     }
     let screens_value = map.get("screens").ok_or_else(malformed)?;
     let mut screens = Vec::new();
-    for item in screens_value.as_array().ok_or_else(malformed)? {
-        screens.push(decode_screen(item)?);
+    let mut held_screens = Vec::new();
+    for (ordinal, item) in screens_value
+        .as_array()
+        .ok_or_else(malformed)?
+        .iter()
+        .enumerate()
+    {
+        match decode_screen(item, ordinal)? {
+            ScreenRowOutcome::Valid(screen) => screens.push(screen),
+            ScreenRowOutcome::Held(held) => held_screens.push(held),
+        }
     }
     let windows_value = map.get("windows").ok_or_else(malformed)?;
     let mut windows = Vec::new();
@@ -1749,59 +1986,8 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         Some(serde_json::Value::Null) => None,
         Some(value) => Some(decode_gesture_ingress(value)?),
     };
-    let predicate =
-        tiler_core::size_hints::FixedSizePredicate::parse_wire(req_str(map, "predicate")?)
-            .ok_or_else(unknown_value)?;
-    let refill =
-        tiler_core::output_selection::MigrationSourceRefill::parse_wire(req_str(map, "refill")?)
-            .ok_or_else(unknown_value)?;
-    // Cursor-first targeting (strict, no tolerant backfill): unknown
-    // tokens refuse like the predicate/refill above, so an adapter that
-    // predates these keys fails loudly instead of silently running the
-    // wrong targeting policy.
-    let switch_target =
-        tiler_core::cursor_targeting::SwitchTarget::parse_wire(req_str(map, "switchTarget")?)
-            .ok_or_else(unknown_value)?;
-    let fresh_placement =
-        tiler_core::cursor_targeting::FreshPlacement::parse_wire(req_str(map, "freshPlacement")?)
-            .ok_or_else(unknown_value)?;
-    // Tolerant D2/D3 capacity settings: missing, non-string, or invalid
-    // tokens backfill the defaults (never refuse old adapters or typos).
-    // Non-string present values are not a shape error here.
-    let anchor_fallback = tiler_core::admission::AnchorFallback::normalize_wire(
-        map.get("anchorFallback")
-            .and_then(serde_json::Value::as_str),
-    );
-    let no_space_result = tiler_core::admission::NoSpaceResult::normalize_wire(
-        map.get("noSpaceResult").and_then(serde_json::Value::as_str),
-    );
-    // Tolerant born-maximized admission mode: missing, non-string, or
-    // invalid tokens backfill the tile-on-launch default (never refuse old
-    // adapters or typos). Applies to subsequent admissions only.
-    let born_maximized = tiler_core::born_maximized::BornMaximized::normalize_wire(
-        map.get("bornMaximized").and_then(serde_json::Value::as_str),
-    );
-    // Tolerant automatic birth-clear capability: missing backfills false
-    // (no automatic birth behavior, the fail-closed default for adapters
-    // predating the key). A present bool decodes; any other shape refuses
-    // like the strict capability flags.
-    let birth_clear = match map.get("birthClear") {
-        None => false,
-        Some(serde_json::Value::Bool(value)) => *value,
-        Some(_) => return Err(malformed()),
-    };
-    // No restoration ingress exists: every report is a fresh-observation
-    // report. A present `restored` key is an unknown key and refuses
-    // above; no durable ring store ever feeds this path.
-    let workspace_mode = match req_str(map, "mode")? {
-        "per-output-local" => tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
-        "global-unique" => tiler_core::workspace_scope::WorkspaceMode::GlobalUnique,
-        "shared" => tiler_core::workspace_scope::WorkspaceMode::Shared,
-        _ => return Err(unknown_value()),
-    };
     let report = WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: req_bounded(map, "owner", MAX_OWNER_LEN, is_owner_text)?,
         adapter_incarnation: req_id(map, "adapter")?,
         core_generation: req_bounded(map, "gen", MAX_GENERATION_LEN, is_generation_text)?,
         observation_seq: req_u64_str(map, "obs")?,
@@ -1809,22 +1995,11 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         request_id: req_bounded(map, "req", MAX_CORRELATION_LEN, is_correlation_text)?,
         command_seq,
         command,
-        workspace_mode,
         screens,
         windows,
         views,
         closed,
-        host_owned_workspace_domains: req_bool(map, "hostOwned")?,
-        equal_workspace_count: req_bool(map, "equalCount")?,
-        birth_clear,
         native,
-        fixed_size_predicate: predicate,
-        migration_source_refill: refill,
-        anchor_fallback,
-        no_space_result,
-        born_maximized,
-        switch_target,
-        fresh_placement,
         cursor: opt_point_or_null(map, "cursor")?,
         cursor_hit: match map.get("cursorHit") {
             // Tolerant backfill: adapters predating the hit fact report
@@ -1840,9 +2015,6 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             }
             Some(_) => return Err(unknown_value()),
         },
-        focus_follows_cursor: req_bool(map, "focusFollowsCursor")?,
-        cursor_warp: req_bool(map, "cursorWarp")?,
-        default_tiled: req_bool(map, "defaultTiled")?,
         action_foreground: match map.get("actionForeground") {
             // Required neutral fact: `null` when the foreground output is
             // unknown; a carried id must be opaque (empty refuses).
@@ -1903,6 +2075,22 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         clear_attempts,
         creation_attempts,
         presentation: decode_presentation(map.get("presentation").ok_or_else(malformed)?)?,
+        primary_output: match map.get("primary") {
+            // Host-designated primary: absent means unknown (no fallback
+            // to any per-screen flag: `primary` is not a screen key and
+            // any screen row carrying it is held). Explicit null refuses;
+            // unknown is absence, never an explicit null.
+            None => None,
+            Some(serde_json::Value::Null) => return Err(malformed()),
+            Some(serde_json::Value::String(text)) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                Some(OutputId(text.clone()))
+            }
+            Some(_) => return Err(malformed()),
+        },
+        held_screens,
     };
     if let Some(reason) = validate_report_reason(&report) {
         return Err(WorldProtocolError {
@@ -1945,6 +2133,23 @@ fn push_json_string(out: &mut String, value: &str) {
 /// [`tiler_core::world_report::encode_reply_canonical`] over every valid
 /// reply; the codec test locks the equality, so the core commit gate and
 /// this transport gate cannot differ.
+fn push_authority_scope(out: &mut String, scope: &AuthorityScope) {
+    match scope {
+        AuthorityScope::Output(output) => {
+            out.push_str("{\"kind\":\"output\",\"out\":");
+            push_json_string(out, &output.0);
+            out.push('}');
+        }
+        AuthorityScope::Workspace { output, workspace } => {
+            out.push_str("{\"kind\":\"workspace\",\"out\":");
+            push_json_string(out, &output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(out, &workspace.0);
+            out.push('}');
+        }
+    }
+}
+
 #[must_use]
 pub fn encode_reply(reply: &WorldReply) -> String {
     let mut out = String::new();
@@ -1974,7 +2179,7 @@ pub fn encode_reply(reply: &WorldReply) -> String {
             out.push(',');
         }
         out.push_str("{\"scope\":");
-        push_json_string(&mut out, &scope.scope);
+        push_authority_scope(&mut out, &scope.scope);
         out.push_str(",\"auth\":");
         push_json_string(&mut out, scope.authority.as_str());
         out.push_str(",\"reason\":");
@@ -1999,7 +2204,7 @@ pub fn encode_reply(reply: &WorldReply) -> String {
             workspace.native_binding.as_deref().unwrap_or_default(),
         );
         out.push_str(",\"scope\":");
-        push_json_string(&mut out, &workspace.scope);
+        push_authority_scope(&mut out, &workspace.scope);
         out.push_str(",\"order\":");
         out.push_str(&workspace.order.to_string());
         out.push_str(",\"mode\":");
@@ -2157,6 +2362,14 @@ pub fn encode_reply(reply: &WorldReply) -> String {
     }
     out.push_str(",\"presentation\":");
     tiler_core::world_sizing::encode_presentation(&mut out, &reply.presentation);
+    out.push_str(",\"diagnostics\":[");
+    for (i, diagnostic) in reply.diagnostics.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        tiler_core::world_sizing::push_row_diagnostic(&mut out, diagnostic);
+    }
+    out.push(']');
     out.push('}');
     out
 }

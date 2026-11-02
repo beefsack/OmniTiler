@@ -26,10 +26,9 @@ fn screen(output: &str, x: i32) -> ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary: x == 0,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -104,7 +103,6 @@ fn report(
     let order: Vec<WindowId> = windows.iter().map(|fact| fact.window.clone()).collect();
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -112,31 +110,19 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
         screens: vec![screen("out-a", 0), screen("out-b", 800)],
         windows,
         views: Vec::new(),
         closed: vec![],
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
-        default_tiled: true,
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -185,11 +171,11 @@ fn fullscreen_members(focused: &str) -> Vec<WindowFact> {
 /// a second identical report lets managed focus latch behind the newcomer.
 fn admitted(optin: bool) -> WorldEngine {
     let mut engine = if optin {
-        WorldEngine::new("gen-1")
+        WorldEngine::new_test_bound("gen-1", "adapter-1")
             .expect("generation")
             .with_focused_fullscreen_presentation_suspension()
     } else {
-        WorldEngine::new("gen-1").expect("generation")
+        WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
     };
     accepted(
         &mut engine,
@@ -466,11 +452,11 @@ fn window_actions_and_shortcuts_match_default_during_suspension() {
     // the presentation verdict differs.
     let run = |optin: bool| {
         let mut engine = if optin {
-            WorldEngine::new("gen-1")
+            WorldEngine::new_test_bound("gen-1", "adapter-1")
                 .expect("generation")
                 .with_focused_fullscreen_presentation_suspension()
         } else {
-            WorldEngine::new("gen-1").expect("generation")
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
         };
         accepted(
             &mut engine,
@@ -724,11 +710,11 @@ fn default_constructor_publication_bytes_stay_stable() {
     // the opt-in, and omits the suspension key in both cases.
     let run = |optin: bool| {
         let mut engine = if optin {
-            WorldEngine::new("gen-1")
+            WorldEngine::new_test_bound("gen-1", "adapter-1")
                 .expect("generation")
                 .with_focused_fullscreen_presentation_suspension()
         } else {
-            WorldEngine::new("gen-1").expect("generation")
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
         };
         let first = accepted(
             &mut engine,
@@ -752,4 +738,35 @@ fn default_constructor_publication_bytes_stay_stable() {
     );
     assert!(!encode_reply_canonical(&second_plain).contains("suspendedOutput"));
     assert!(!encode_reply_canonical(&second_opt).contains("suspendedOutput"));
+}
+
+#[test]
+fn handshake_preserves_focused_fullscreen_optin_across_rehandshake() {
+    use crate::connection::{ApplicationIdentity, HandshakeRequest, HostCapabilities};
+    fn req(adapter: &str, id: &str) -> HandshakeRequest {
+        HandshakeRequest {
+            adapter: adapter.to_owned(),
+            request: id.to_owned(),
+            application_identity: ApplicationIdentity {
+                app_id: None,
+                executable: None,
+                process_id: None,
+            },
+            capabilities: HostCapabilities::without_native_identity(),
+        }
+    }
+    let mut engine = WorldEngine::new("gen-1")
+        .expect("generation")
+        .with_focused_fullscreen_presentation_suspension();
+    assert!(engine.focused_fullscreen_presentation_suspension);
+    let first = engine.handshake(&req("adapter-1", "handshake-1"));
+    assert!(first.kind.is_none());
+    assert!(engine.focused_fullscreen_presentation_suspension);
+    // Wrong/foreign requests still refuse without mutation.
+    let bad = engine.handshake(&req("adapter-1", "bad id!!"));
+    assert!(bad.kind.is_some());
+    assert!(engine.focused_fullscreen_presentation_suspension);
+    let second = engine.handshake(&req("adapter-1", "handshake-2"));
+    assert!(second.kind.is_none());
+    assert!(engine.focused_fullscreen_presentation_suspension);
 }

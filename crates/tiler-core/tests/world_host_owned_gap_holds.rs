@@ -8,7 +8,6 @@
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     HoldReason, NativeCreationAttempt, NativeObservation, NativeOccupancy, ScopeAuthority,
@@ -19,22 +18,21 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: tiler_core::world_report::OutputIdentity::unknown(),
     }
 }
 
-fn broken_screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn broken_screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         complete: false,
-        ..screen(output, x, primary)
+        ..screen(output, x)
     }
 }
 
@@ -90,7 +88,6 @@ fn report(
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -98,21 +95,11 @@ fn report(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode: WorkspaceMode::PerOutputLocal,
         screens,
         windows: windows.clone(),
         views: vec![],
         closed: vec![],
-        host_owned_workspace_domains: true,
-        equal_workspace_count: false,
-        birth_clear: false,
         native,
-        fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        default_tiled: true,
         focused_global: windows
             .first()
             .map(|f| f.window.0.clone())
@@ -120,13 +107,11 @@ fn report(
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
         monotonic_ms: 0,
@@ -149,12 +134,31 @@ fn accepted(
     }
 }
 
+fn engine_host_owned_shared() -> WorldEngine {
+    engine_host_owned_mode("shared", false)
+}
+
+fn engine_host_owned_mode(mode: &str, equal_count: bool) -> WorldEngine {
+    use tiler_core::connection::RawSettingValue;
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        tiler_core::connection::HostCapabilities {
+            host_owned: true,
+            equal_count,
+            ..Default::default()
+        },
+        vec![("mode".to_owned(), RawSettingValue::String(mode.to_owned()))],
+    )
+    .expect("generation")
+}
+
 fn one_screen() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true)]
+    vec![screen("out-a", 0)]
 }
 
 fn two_screens() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true), screen("out-b", 800, false)]
+    vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
 fn bound_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<(String, String)> {
@@ -189,8 +193,12 @@ fn scope_held(
     reason: HoldReason,
 ) -> bool {
     reply.scopes.iter().any(|row| {
-        row.scope.starts_with(&format!("{output}/"))
-            && row.authority == ScopeAuthority::Hold(reason)
+        matches!(
+            &row.scope,
+            tiler_core::world_report::AuthorityScope::Output(out)
+                | tiler_core::world_report::AuthorityScope::Workspace { output: out, .. }
+                if out.0 == output
+        ) && row.authority == ScopeAuthority::Hold(reason)
     })
 }
 
@@ -211,7 +219,7 @@ fn healthy_windows() -> Vec<WindowFact> {
 
 #[test]
 fn inventory_gap_withholds_native_echo_and_holds_domain() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -309,7 +317,7 @@ fn inventory_gap_withholds_native_echo_and_holds_domain() {
 
 #[test]
 fn per_screen_gap_withholds_echo_on_gapped_output_only() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-b", "out-b", rect(800, 0, 400, 560), Some(D1)),
@@ -368,7 +376,7 @@ fn per_screen_gap_withholds_echo_on_gapped_output_only() {
         &report(
             3,
             3,
-            vec![screen("out-a", 0, true), broken_screen("out-b", 800, false)],
+            vec![screen("out-a", 0), broken_screen("out-b", 800)],
             windows.clone(),
             vec![
                 native_obs("out-a", &[D1, D2], Some(D1)),
@@ -408,7 +416,7 @@ fn per_screen_gap_withholds_echo_on_gapped_output_only() {
 fn healthy_none_current_retains_view_controlled() {
     // Contrast: a complete report with current None is the known
     // fullscreen-Space meaning, never a gap. View retained, Controlled.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -459,7 +467,7 @@ fn healthy_none_current_retains_view_controlled() {
 fn inventory_gap_none_current_holds_without_inference() {
     // Same None current as above, but the inventory is incomplete: the
     // None is unreadable, not the fullscreen meaning. Hold, no inference.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -510,9 +518,9 @@ fn inventory_gap_none_current_holds_without_inference() {
 
 #[test]
 fn equal_count_padding_withheld_during_inventory_gap() {
-    // Divergent rings without the equal flag: out-a binds two natives plus
-    // its spare, out-b binds one plus its spare.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    // Equal-count is fixed by the handshake capability for the lifetime.
+    let mut engine =
+        WorldEngine::new_test_host_owned_equal_count("gen-1", "adapter-1").expect("generation");
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-a2", "out-a", rect(400, 0, 400, 560), Some(D2)),
@@ -537,13 +545,8 @@ fn equal_count_padding_withheld_during_inventory_gap() {
     );
     let ids_a0 = workspace_ids(&base, "out-a");
     let ids_b0 = workspace_ids(&base, "out-b");
-    assert!(
-        ids_a0.len() > ids_b0.len(),
-        "baseline diverges without the equal flag: {ids_a0:?} vs {ids_b0:?}"
-    );
-    // The equal flag arrives with an incomplete inventory: padding must
-    // wait for a complete re-read, never mint from the gap.
-    let mut gap = report(
+    assert_eq!(ids_a0.len(), ids_b0.len());
+    let gap = report(
         2,
         2,
         two_screens(),
@@ -557,7 +560,6 @@ fn equal_count_padding_withheld_during_inventory_gap() {
         None,
         false,
     );
-    gap.equal_workspace_count = true;
     let gapped = accepted(&mut engine, &gap);
     assert_eq!(
         workspace_ids(&gapped, "out-b"),
@@ -583,7 +585,8 @@ fn empty_native_with_equal_flag_mints_nothing() {
     // Complete screens and inventory, but the native list is empty while
     // the equal flag is set: no row means no order evidence, never
     // padding or desires.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine =
+        WorldEngine::new_test_host_owned_equal_count("gen-1", "adapter-1").expect("generation");
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-a2", "out-a", rect(400, 0, 400, 560), Some(D2)),
@@ -608,11 +611,8 @@ fn empty_native_with_equal_flag_mints_nothing() {
     );
     let ids_a0 = workspace_ids(&base, "out-a");
     let ids_b0 = workspace_ids(&base, "out-b");
-    assert!(
-        ids_a0.len() > ids_b0.len(),
-        "baseline diverges without the equal flag: {ids_a0:?} vs {ids_b0:?}"
-    );
-    let mut empty = report(
+    assert_eq!(ids_a0.len(), ids_b0.len());
+    let empty = report(
         2,
         2,
         two_screens(),
@@ -623,7 +623,6 @@ fn empty_native_with_equal_flag_mints_nothing() {
         None,
         true,
     );
-    empty.equal_workspace_count = true;
     let gapped = accepted(&mut engine, &empty);
     assert_eq!(
         workspace_ids(&gapped, "out-a"),
@@ -644,71 +643,175 @@ fn empty_native_with_equal_flag_mints_nothing() {
     );
 }
 
-fn shared(report: &WorldReport) -> WorldReport {
-    let mut report = report.clone();
-    report.workspace_mode = WorkspaceMode::Shared;
-    report
-}
-
 #[test]
-fn shared_first_gapped_reports_mint_nothing() {
-    // Fresh shared engine whose first reports are inventory gaps: a view
-    // flight at the spare must not mint a creation until a complete
-    // inventory confirms the order.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let windows = vec![fact_native(
-        "win-a",
-        "out-a",
-        rect(0, 0, 400, 560),
-        Some(D1),
-    )];
+fn shared_first_incomplete_reports_empty_then_complete_mints_and_latches() {
+    // Bounded readiness on the same connection/settings: an incomplete
+    // report after settings returns the same empty, correlated
+    // ready:false reply as a report before settings. Nothing is minted
+    // or retained as authority. A later complete report then initializes,
+    // mints logical bindings, and latches ready; a following incomplete
+    // report withholds mints without revoking readiness.
+    let mut engine = engine_host_owned_shared();
+    assert!(!engine.is_ready());
+    let rev0 = engine.state_revision();
+    let windows = vec![
+        fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
+        fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(D2)),
+    ];
+    let native = vec![native_obs("out-a", &[D1, D2], Some(D1))];
+    // First report is an inventory gap: empty correlated ready:false.
     let first = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             1,
             1,
             one_screen(),
             windows.clone(),
-            vec![native_obs("out-a", &[D1, D2], Some(D1))],
+            native.clone(),
             vec![],
             None,
             None,
             false,
-        )),
+        ),
     );
-    let spare = first
+    assert!(!first.ready, "gap latches nothing: {:?}", first);
+    assert_eq!(first.request_id, "req-1", "gap stays correlated");
+    assert_eq!(first.based_on_observation_seq, 1);
+    assert_eq!(first.state_revision, rev0, "gap advances no revision");
+    assert!(
+        first.scopes.is_empty(),
+        "gap holds no scope: {:?}",
+        first.scopes
+    );
+    assert!(
+        first.workspaces.is_empty(),
+        "gap mints no workspace: {:?}",
+        first.workspaces
+    );
+    assert!(
+        first.outputs.is_empty(),
+        "gap opens no output: {:?}",
+        first.outputs
+    );
+    assert!(
+        first.windows.is_empty(),
+        "gap retains no window: {:?}",
+        first.windows
+    );
+    assert!(
+        first.transfers.is_empty(),
+        "gap flies nothing: {:?}",
+        first.transfers
+    );
+    assert!(
+        first.effects.is_empty(),
+        "gap effects nothing: {:?}",
+        first.effects
+    );
+    assert!(
+        first.native_creations.is_empty(),
+        "gap mints no creations: {:?}",
+        first.native_creations
+    );
+    assert!(
+        first.operation_settled.is_empty(),
+        "gap settles nothing: {:?}",
+        first.operation_settled
+    );
+    assert!(first.command_result.is_none());
+    assert!(first.gesture_settled.is_none());
+    assert!(first.cursor_warp.is_none());
+    // No engine readiness, revision, rings, or retained mint.
+    assert!(!engine.is_ready());
+    assert_eq!(engine.state_revision(), rev0);
+    assert!(engine.logical_outputs().is_empty());
+    assert!(engine.logical_ring("out-a").is_empty());
+    assert_eq!(engine.logical_view("out-a"), None);
+    assert!(engine.retained_transfers().is_empty());
+    assert_eq!(
+        engine.adapter_homing(&WindowId("win-a".to_owned())),
+        None,
+        "gap retains no report-before-complete authority"
+    );
+    // Later complete report initializes, binds logically, latches ready.
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            one_screen(),
+            windows.clone(),
+            native.clone(),
+            vec![],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert!(second.ready, "complete report latches ready: {:?}", second);
+    assert!(!second.workspaces.is_empty());
+    assert!(!second.outputs.is_empty());
+    assert!(!second.windows.is_empty());
+    assert!(engine.is_ready());
+    assert!(engine.state_revision() > rev0);
+    let spare = second
         .workspaces
         .iter()
         .find(|row| row.output.0 == "out-a" && row.native_binding.is_none())
         .map(|row| row.id.clone())
-        .expect("spare");
+        .expect("complete report mints a spare");
+    let _view = engine.logical_view("out-a").expect("complete binds a view");
+    assert!(!engine.logical_ring("out-a").is_empty());
+    let ids = workspace_ids(&second, "out-a");
+    // Incomplete following report: narrow hold, mints withheld, ready kept.
     let gapped = accepted(
         &mut engine,
-        &shared(&report(
-            2,
-            2,
+        &report(
+            3,
+            3,
             one_screen(),
             windows.clone(),
-            vec![native_obs("out-a", &[D1, D2], Some(D1))],
+            native.clone(),
             vec![],
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: spare,
+                workspace: spare.clone(),
             }),
             false,
-        )),
+        ),
+    );
+    assert!(
+        gapped.ready,
+        "gap never revokes latched ready: {:?}",
+        gapped
     );
     assert!(
         gapped.native_creations.is_empty(),
-        "gapped first flight mints nothing: {:?}",
+        "gapped flight mints nothing: {:?}",
         gapped.native_creations
+    );
+    assert_eq!(
+        workspace_ids(&gapped, "out-a"),
+        ids,
+        "gap infers no close and mints no workspace"
+    );
+    assert_eq!(
+        view_flights(&gapped, "out-a"),
+        1,
+        "gapped flight held, never confirmed: {:?}",
+        gapped.transfers
+    );
+    assert_eq!(
+        output_view(&gapped, "out-a"),
+        Some(spare),
+        "retained flight publishes its target"
     );
 }
 
 #[test]
 fn shared_gap_withholds_desires_and_recovery_republishes() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned_shared();
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(D2)),
@@ -716,7 +819,7 @@ fn shared_gap_withholds_desires_and_recovery_republishes() {
     let native = vec![native_obs("out-a", &[D1, D2], Some(D1))];
     let first = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             1,
             1,
             one_screen(),
@@ -726,7 +829,7 @@ fn shared_gap_withholds_desires_and_recovery_republishes() {
             None,
             None,
             true,
-        )),
+        ),
     );
     let spare = first
         .workspaces
@@ -737,7 +840,7 @@ fn shared_gap_withholds_desires_and_recovery_republishes() {
     // Healthy Send occupies the spare: exactly one outstanding desire.
     let desired = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             2,
             2,
             one_screen(),
@@ -752,7 +855,7 @@ fn shared_gap_withholds_desires_and_recovery_republishes() {
                 follow: false,
             }),
             true,
-        )),
+        ),
     );
     assert_eq!(
         desired.native_creations.len(),
@@ -764,7 +867,7 @@ fn shared_gap_withholds_desires_and_recovery_republishes() {
     // Inventory gap: the outstanding authorization publishes nothing.
     let gapped = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             3,
             3,
             one_screen(),
@@ -774,7 +877,7 @@ fn shared_gap_withholds_desires_and_recovery_republishes() {
             None,
             None,
             false,
-        )),
+        ),
     );
     assert!(
         gapped.native_creations.is_empty(),
@@ -784,7 +887,7 @@ fn shared_gap_withholds_desires_and_recovery_republishes() {
     // Recovery re-publishes the same outstanding authorization, once.
     let recovered = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             4,
             4,
             one_screen(),
@@ -794,7 +897,7 @@ fn shared_gap_withholds_desires_and_recovery_republishes() {
             None,
             None,
             true,
-        )),
+        ),
     );
     assert_eq!(
         recovered.native_creations.len(),
@@ -808,7 +911,7 @@ fn shared_gap_withholds_desires_and_recovery_republishes() {
 
 #[test]
 fn inventory_gap_recovery_restores_echo_without_duplication() {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -924,7 +1027,7 @@ fn gap_omitted_window_retains_membership_and_recovers() {
     // Omission inside a held scope retires nothing: the retained
     // membership row survives the gap with its homing, and recovery
     // restores Controlled authority without rehoming.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1009,7 +1112,7 @@ fn gap_omitted_window_retains_membership_and_recovers() {
 fn gap_conflicting_native_receipt_keeps_homing() {
     // A native receipt naming an unmapped desktop during a gap is
     // unknown evidence: retained homing wins, never a rehome.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1077,7 +1180,7 @@ fn gap_changed_current_records_no_history() {
     // No command anywhere: the gap report's changed native current is
     // unproven evidence, so previous-view history stays empty. The
     // existing SelectPrevious command is the external oracle.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1142,7 +1245,7 @@ fn shared_screen_gap_withholds_desires_and_recovers() {
     // Inventory is complete but the desire's target screen is
     // incomplete: the outstanding authorization publishes nothing
     // until the screen re-reads complete, under the same op id.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned_shared();
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(D2)),
@@ -1150,7 +1253,7 @@ fn shared_screen_gap_withholds_desires_and_recovers() {
     let native = vec![native_obs("out-a", &[D1, D2], Some(D1))];
     let first = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             1,
             1,
             one_screen(),
@@ -1160,7 +1263,7 @@ fn shared_screen_gap_withholds_desires_and_recovers() {
             None,
             None,
             true,
-        )),
+        ),
     );
     let spare = first
         .workspaces
@@ -1170,7 +1273,7 @@ fn shared_screen_gap_withholds_desires_and_recovers() {
         .expect("spare");
     let desired = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             2,
             2,
             one_screen(),
@@ -1185,7 +1288,7 @@ fn shared_screen_gap_withholds_desires_and_recovers() {
                 follow: false,
             }),
             true,
-        )),
+        ),
     );
     assert_eq!(
         desired.native_creations.len(),
@@ -1196,17 +1299,17 @@ fn shared_screen_gap_withholds_desires_and_recovers() {
     let op = desired.native_creations[0].operation_id.clone();
     let gapped = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             3,
             3,
-            vec![broken_screen("out-a", 0, true)],
+            vec![broken_screen("out-a", 0)],
             windows.clone(),
             native.clone(),
             vec![],
             None,
             None,
             true,
-        )),
+        ),
     );
     assert!(
         gapped.native_creations.is_empty(),
@@ -1215,7 +1318,7 @@ fn shared_screen_gap_withholds_desires_and_recovers() {
     );
     let recovered = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             4,
             4,
             one_screen(),
@@ -1225,7 +1328,7 @@ fn shared_screen_gap_withholds_desires_and_recovers() {
             None,
             None,
             true,
-        )),
+        ),
     );
     assert_eq!(
         recovered.native_creations.len(),
@@ -1242,7 +1345,7 @@ fn shared_missing_native_row_mints_nothing_new() {
     // Screens and inventory read complete but the native list carries
     // no row: no new authorization mints, and the outstanding one
     // withholds until the row re-reads.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned_shared();
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(D2)),
@@ -1250,7 +1353,7 @@ fn shared_missing_native_row_mints_nothing_new() {
     let native = vec![native_obs("out-a", &[D1, D2], Some(D1))];
     let first = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             1,
             1,
             one_screen(),
@@ -1260,7 +1363,7 @@ fn shared_missing_native_row_mints_nothing_new() {
             None,
             None,
             true,
-        )),
+        ),
     );
     let spare = first
         .workspaces
@@ -1270,7 +1373,7 @@ fn shared_missing_native_row_mints_nothing_new() {
         .expect("spare");
     let desired = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             2,
             2,
             one_screen(),
@@ -1285,13 +1388,13 @@ fn shared_missing_native_row_mints_nothing_new() {
                 follow: false,
             }),
             true,
-        )),
+        ),
     );
     assert_eq!(desired.native_creations.len(), 1);
     let op = desired.native_creations[0].operation_id.clone();
     let rowless = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             3,
             3,
             one_screen(),
@@ -1301,7 +1404,7 @@ fn shared_missing_native_row_mints_nothing_new() {
             None,
             None,
             true,
-        )),
+        ),
     );
     assert!(
         rowless.native_creations.is_empty(),
@@ -1310,7 +1413,7 @@ fn shared_missing_native_row_mints_nothing_new() {
     );
     let recovered = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             4,
             4,
             one_screen(),
@@ -1320,7 +1423,7 @@ fn shared_missing_native_row_mints_nothing_new() {
             None,
             None,
             true,
-        )),
+        ),
     );
     assert_eq!(recovered.native_creations.len(), 1);
     assert_eq!(recovered.native_creations[0].operation_id, op);
@@ -1330,7 +1433,9 @@ fn shared_missing_native_row_mints_nothing_new() {
 fn healthy_equal_count_pads_without_gap() {
     // Anti-overbreadth guard: complete inventories, screens, and
     // non-empty native orders still pad shorter rings to parity.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    // Equal-count is fixed by the handshake capability for the lifetime.
+    let mut engine =
+        WorldEngine::new_test_host_owned_equal_count("gen-1", "adapter-1").expect("generation");
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-a2", "out-a", rect(400, 0, 400, 560), Some(D2)),
@@ -1354,8 +1459,9 @@ fn healthy_equal_count_pads_without_gap() {
         ),
     );
     let ids_a0 = workspace_ids(&base, "out-a");
-    assert!(ids_a0.len() > workspace_ids(&base, "out-b").len());
-    let mut equal = report(
+    let ids_b0 = workspace_ids(&base, "out-b");
+    assert_eq!(ids_a0.len(), ids_b0.len());
+    let equal = report(
         2,
         2,
         two_screens(),
@@ -1369,7 +1475,6 @@ fn healthy_equal_count_pads_without_gap() {
         None,
         true,
     );
-    equal.equal_workspace_count = true;
     let padded = accepted(&mut engine, &equal);
     assert_eq!(
         workspace_ids(&padded, "out-b").len(),
@@ -1391,7 +1496,7 @@ fn healthy_equal_count_pads_without_gap() {
 fn shared_retained_desire_withholds_on_missing_and_empty_native_row() {
     // Outstanding authorization publishes nothing while its target
     // native row is missing or empty; recovery re-publishes the same op.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned_mode("shared", true);
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(D2)),
@@ -1399,7 +1504,7 @@ fn shared_retained_desire_withholds_on_missing_and_empty_native_row() {
     let native = vec![native_obs("out-a", &[D1, D2], Some(D1))];
     let first = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             1,
             1,
             one_screen(),
@@ -1409,7 +1514,7 @@ fn shared_retained_desire_withholds_on_missing_and_empty_native_row() {
             None,
             None,
             true,
-        )),
+        ),
     );
     let spare = first
         .workspaces
@@ -1419,7 +1524,7 @@ fn shared_retained_desire_withholds_on_missing_and_empty_native_row() {
         .expect("spare");
     let desired = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             2,
             2,
             one_screen(),
@@ -1434,13 +1539,13 @@ fn shared_retained_desire_withholds_on_missing_and_empty_native_row() {
                 follow: false,
             }),
             true,
-        )),
+        ),
     );
     assert_eq!(desired.native_creations.len(), 1);
     let op = desired.native_creations[0].operation_id.clone();
     let rowless = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             3,
             3,
             one_screen(),
@@ -1450,7 +1555,7 @@ fn shared_retained_desire_withholds_on_missing_and_empty_native_row() {
             None,
             None,
             true,
-        )),
+        ),
     );
     assert!(
         rowless.native_creations.is_empty(),
@@ -1459,7 +1564,7 @@ fn shared_retained_desire_withholds_on_missing_and_empty_native_row() {
     );
     let empty_order = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             4,
             4,
             one_screen(),
@@ -1469,7 +1574,7 @@ fn shared_retained_desire_withholds_on_missing_and_empty_native_row() {
             None,
             None,
             true,
-        )),
+        ),
     );
     assert!(
         empty_order.native_creations.is_empty(),
@@ -1478,7 +1583,7 @@ fn shared_retained_desire_withholds_on_missing_and_empty_native_row() {
     );
     let recovered = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             5,
             5,
             one_screen(),
@@ -1488,7 +1593,7 @@ fn shared_retained_desire_withholds_on_missing_and_empty_native_row() {
             None,
             None,
             true,
-        )),
+        ),
     );
     assert_eq!(
         recovered.native_creations.len(),
@@ -1504,7 +1609,7 @@ fn shared_retained_desire_withholds_on_missing_and_empty_native_row() {
 fn shared_other_screen_gap_withholds_desires_and_recovers() {
     // Shared spans every screen: a gap on any screen withholds even a
     // desire whose own target screen reads complete.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned_shared();
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(D2)),
@@ -1515,7 +1620,7 @@ fn shared_other_screen_gap_withholds_desires_and_recovers() {
     ];
     let first = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             1,
             1,
             two_screens(),
@@ -1525,7 +1630,7 @@ fn shared_other_screen_gap_withholds_desires_and_recovers() {
             None,
             None,
             true,
-        )),
+        ),
     );
     let spare = first
         .workspaces
@@ -1535,7 +1640,7 @@ fn shared_other_screen_gap_withholds_desires_and_recovers() {
         .expect("spare");
     let desired = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             2,
             2,
             two_screens(),
@@ -1550,7 +1655,7 @@ fn shared_other_screen_gap_withholds_desires_and_recovers() {
                 follow: false,
             }),
             true,
-        )),
+        ),
     );
     assert_eq!(
         desired.native_creations.len(),
@@ -1561,17 +1666,17 @@ fn shared_other_screen_gap_withholds_desires_and_recovers() {
     let op = desired.native_creations[0].operation_id.clone();
     let gapped = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             3,
             3,
-            vec![screen("out-a", 0, true), broken_screen("out-b", 800, false)],
+            vec![screen("out-a", 0), broken_screen("out-b", 800)],
             windows.clone(),
             native.clone(),
             vec![],
             None,
             None,
             true,
-        )),
+        ),
     );
     assert!(
         gapped.native_creations.is_empty(),
@@ -1580,7 +1685,7 @@ fn shared_other_screen_gap_withholds_desires_and_recovers() {
     );
     let recovered = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             4,
             4,
             two_screens(),
@@ -1590,7 +1695,7 @@ fn shared_other_screen_gap_withholds_desires_and_recovers() {
             None,
             None,
             true,
-        )),
+        ),
     );
     assert_eq!(
         recovered.native_creations.len(),
@@ -1606,7 +1711,9 @@ fn shared_other_screen_gap_withholds_desires_and_recovers() {
 fn equal_count_screen_gap_withholds_and_recovers() {
     // Same parity setup as the inventory-gap test, but the gap is a
     // broken screen: no padding until the screen re-reads complete.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    // Equal-count is fixed by the handshake capability for the lifetime.
+    let mut engine =
+        WorldEngine::new_test_host_owned_equal_count("gen-1", "adapter-1").expect("generation");
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-a2", "out-a", rect(400, 0, 400, 560), Some(D2)),
@@ -1632,14 +1739,11 @@ fn equal_count_screen_gap_withholds_and_recovers() {
     );
     let ids_a0 = workspace_ids(&base, "out-a");
     let ids_b0 = workspace_ids(&base, "out-b");
-    assert!(
-        ids_a0.len() > ids_b0.len(),
-        "baseline diverges without the equal flag: {ids_a0:?} vs {ids_b0:?}"
-    );
-    let mut gapped_report = report(
+    assert_eq!(ids_a0.len(), ids_b0.len());
+    let gapped_report = report(
         2,
         2,
-        vec![screen("out-a", 0, true), broken_screen("out-b", 800, false)],
+        vec![screen("out-a", 0), broken_screen("out-b", 800)],
         windows.clone(),
         native.clone(),
         vec![],
@@ -1647,7 +1751,6 @@ fn equal_count_screen_gap_withholds_and_recovers() {
         None,
         true,
     );
-    gapped_report.equal_workspace_count = true;
     let gapped = accepted(&mut engine, &gapped_report);
     assert_eq!(
         workspace_ids(&gapped, "out-b"),
@@ -1661,7 +1764,7 @@ fn equal_count_screen_gap_withholds_and_recovers() {
         "screen gap pads nothing: {:?}",
         gapped.workspaces
     );
-    let mut recovered_report = report(
+    let recovered_report = report(
         3,
         3,
         two_screens(),
@@ -1672,7 +1775,6 @@ fn equal_count_screen_gap_withholds_and_recovers() {
         None,
         true,
     );
-    recovered_report.equal_workspace_count = true;
     let recovered = accepted(&mut engine, &recovered_report);
     assert_eq!(
         workspace_ids(&recovered, "out-b").len(),
@@ -1687,7 +1789,7 @@ fn gap_known_conflicting_receipt_holds_and_recovers() {
     // A known mapped conflicting receipt during an inventory gap is
     // unproven evidence: the gapped reply keeps retained homing with a
     // hold, and a neutral (unmapped) recovery proves nothing moved.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1789,7 +1891,7 @@ fn gap_known_conflicting_receipt_holds_and_recovers() {
 fn screen_gap_known_conflicting_receipt_holds_and_recovers() {
     // Same unproven-evidence rule for a per-screen gap: the screen reads
     // incomplete while the inventory is complete.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1818,7 +1920,7 @@ fn screen_gap_known_conflicting_receipt_holds_and_recovers() {
         &report(
             2,
             2,
-            vec![broken_screen("out-a", 0, true)],
+            vec![broken_screen("out-a", 0)],
             gap_windows,
             vec![native_obs("out-a", &[D1, D2], Some(D1))],
             vec![],
@@ -1879,7 +1981,7 @@ fn gap_minimized_conflicting_receipt_holds_and_recovers() {
     // Minimized facts take the same rule: a known conflicting receipt
     // during an inventory gap keeps retained homing; the non-minimized
     // neutral recovery exposes any persisted rehome.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -1986,7 +2088,7 @@ fn shared_desire_omitted_occupant_gap_recovers_same_op() {
     // omits its occupant: the retained window flight keeps the need, the
     // gap publishes nothing, and recovery re-publishes the same op id
     // (never drop/remint).
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned_shared();
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(D2)),
@@ -1994,7 +2096,7 @@ fn shared_desire_omitted_occupant_gap_recovers_same_op() {
     let native = vec![native_obs("out-a", &[D1, D2], Some(D1))];
     let first = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             1,
             1,
             one_screen(),
@@ -2004,7 +2106,7 @@ fn shared_desire_omitted_occupant_gap_recovers_same_op() {
             None,
             None,
             true,
-        )),
+        ),
     );
     let spare = first
         .workspaces
@@ -2014,7 +2116,7 @@ fn shared_desire_omitted_occupant_gap_recovers_same_op() {
         .expect("spare");
     let desired = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             2,
             2,
             one_screen(),
@@ -2029,7 +2131,7 @@ fn shared_desire_omitted_occupant_gap_recovers_same_op() {
                 follow: false,
             }),
             true,
-        )),
+        ),
     );
     assert_eq!(
         desired.native_creations.len(),
@@ -2041,7 +2143,7 @@ fn shared_desire_omitted_occupant_gap_recovers_same_op() {
     // Inventory gap omits the moved occupant outright.
     let gapped = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             3,
             3,
             one_screen(),
@@ -2056,7 +2158,7 @@ fn shared_desire_omitted_occupant_gap_recovers_same_op() {
             None,
             None,
             false,
-        )),
+        ),
     );
     assert!(
         gapped.native_creations.is_empty(),
@@ -2071,7 +2173,7 @@ fn shared_desire_omitted_occupant_gap_recovers_same_op() {
     );
     let recovered = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             4,
             4,
             one_screen(),
@@ -2081,7 +2183,7 @@ fn shared_desire_omitted_occupant_gap_recovers_same_op() {
             None,
             None,
             true,
-        )),
+        ),
     );
     assert_eq!(
         recovered.native_creations.len(),
@@ -2101,7 +2203,7 @@ fn shared_desire_conflicting_occupant_gap_recovers_same_op() {
     // Same fence for a conflicting occupant receipt during the gap: the
     // outstanding membership flight shields homing, the desire survives,
     // and recovery keeps the same op id.
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut engine = engine_host_owned_shared();
     let windows = vec![
         fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
         fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(D2)),
@@ -2109,7 +2211,7 @@ fn shared_desire_conflicting_occupant_gap_recovers_same_op() {
     let native = vec![native_obs("out-a", &[D1, D2], Some(D1))];
     let first = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             1,
             1,
             one_screen(),
@@ -2119,7 +2221,7 @@ fn shared_desire_conflicting_occupant_gap_recovers_same_op() {
             None,
             None,
             true,
-        )),
+        ),
     );
     let spare = first
         .workspaces
@@ -2129,7 +2231,7 @@ fn shared_desire_conflicting_occupant_gap_recovers_same_op() {
         .expect("spare");
     let desired = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             2,
             2,
             one_screen(),
@@ -2144,7 +2246,7 @@ fn shared_desire_conflicting_occupant_gap_recovers_same_op() {
                 follow: false,
             }),
             true,
-        )),
+        ),
     );
     assert_eq!(desired.native_creations.len(), 1);
     let op = desired.native_creations[0].operation_id.clone();
@@ -2153,7 +2255,7 @@ fn shared_desire_conflicting_occupant_gap_recovers_same_op() {
     gap_windows[0].native_workspace = Some(D1.to_owned());
     let gapped = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             3,
             3,
             one_screen(),
@@ -2163,7 +2265,7 @@ fn shared_desire_conflicting_occupant_gap_recovers_same_op() {
             None,
             None,
             false,
-        )),
+        ),
     );
     assert!(
         gapped.native_creations.is_empty(),
@@ -2172,7 +2274,7 @@ fn shared_desire_conflicting_occupant_gap_recovers_same_op() {
     );
     let recovered = accepted(
         &mut engine,
-        &shared(&report(
+        &report(
             4,
             4,
             one_screen(),
@@ -2182,7 +2284,7 @@ fn shared_desire_conflicting_occupant_gap_recovers_same_op() {
             None,
             None,
             true,
-        )),
+        ),
     );
     assert_eq!(
         recovered.native_creations.len(),

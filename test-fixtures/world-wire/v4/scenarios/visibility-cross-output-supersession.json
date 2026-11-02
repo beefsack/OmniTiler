@@ -92,7 +92,8 @@
           "req": "handshake-a",
           "applicationIdentity": {
             "appId": null,
-            "executable": "c:\\synthetic\\omnitiler.exe"
+            "executable": "c:\\synthetic\\omnitiler.exe",
+            "processId": "pid-own-1"
           },
           "capabilities": {
             "hostOwned": false,

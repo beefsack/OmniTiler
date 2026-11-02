@@ -1349,6 +1349,37 @@ impl Engine {
                 // All-new IDs need fresh spatial adoption, not arbitrary ID-order convergence.
                 // Known minimized restore slots are not all-new: a native restore
                 // converges back to its stored old slot on the retained session.
+                // Focused-close hold (exact retained prior focus truth, not a
+                // no-focus proxy): when the adapter reports no focused window
+                // alongside explicit closes, hold only if a closed window is
+                // the retained focused window. An unrelated sibling close
+                // reflows normally. The retained focus is read pre-convergence
+                // (convergence retires the closed link and focus may fall
+                // back to a survivor); the hold itself is returned
+                // post-convergence so the closed link is already retired and
+                // survivors publish held rows without the closed window. A
+                // slot emptied by the close retires through the normal
+                // reconcile path instead of holding.
+                let focused_close_hold = event.focused_window.0.is_empty()
+                    && !event.closed_windows.is_empty()
+                    && self.sessions.get(&event.domain_key).is_some_and(|session| {
+                        if session.owner() != &event.owner
+                            || session.generation() != &event.generation
+                        {
+                            return false;
+                        }
+                        let (focus_domain, focus_leaf) = session.focus();
+                        match (focus_domain, focus_leaf) {
+                            (Some(focus_domain), Some(focus_leaf))
+                                if focus_domain == event.domain_key =>
+                            {
+                                session
+                                    .focused_window_for(&focus_leaf, &event.domain_key)
+                                    .is_some_and(|window| event.closed_windows.contains(&window))
+                            }
+                            _ => false,
+                        }
+                    });
                 let disjoint = !event.windows.is_empty()
                     && self.sessions.get(&event.domain_key).is_some_and(|session| {
                         if session.owner() != &event.owner
@@ -1368,7 +1399,20 @@ impl Engine {
                 }
                 match self.converge_for_single_domain(event, "reconcile") {
                     ConvergeOutcome::Rejected(reply) => *reply,
-                    _ => self.reconcile_request(event),
+                    _ => {
+                        if focused_close_hold
+                            && self
+                                .sessions
+                                .get(&event.domain_key)
+                                .is_some_and(|session| !committed_session_is_empty(session))
+                        {
+                            return CoreReply::Rejected {
+                                kind: RefusalKind::FocusMismatch.as_str(),
+                                message: RefusalKind::FocusMismatch.message(),
+                            };
+                        }
+                        self.reconcile_request(event)
+                    }
                 }
             }
             CoreCommand::UpdateGaps => {

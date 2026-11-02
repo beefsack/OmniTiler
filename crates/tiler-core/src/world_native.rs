@@ -90,9 +90,9 @@ impl WorldEngine {
     /// Windows never sets the capability and keeps the logical route
     /// unchanged.
     /// Capability-named note: native-only evidence, core-derived receipts.
-    pub(crate) fn native_authoritative(&self, report: &WorldReport, output: &OutputId) -> bool {
+    pub(crate) fn native_authoritative(&self, _report: &WorldReport, output: &OutputId) -> bool {
         let _ = output;
-        report.host_owned_workspace_domains
+        self.host_owned_workspace_domains()
     }
 
     /// Effective logical receipt for one fact: the native-derived logical
@@ -118,7 +118,7 @@ impl WorldEngine {
         report: &WorldReport,
         fact: &WindowFact,
     ) -> Option<String> {
-        if !report.host_owned_workspace_domains {
+        if !self.host_owned_workspace_domains() {
             return fact.observed_workspace.clone();
         }
         if !self.native_list_complete(report, &fact.output.0) {
@@ -136,9 +136,9 @@ impl WorldEngine {
     /// policy selected) and holds the affected rows through the existing
     /// fences instead.
     pub(crate) fn native_order_conflict(&self, report: &WorldReport) -> bool {
-        report.host_owned_workspace_domains
+        self.host_owned_workspace_domains()
             && report.inventory_complete
-            && report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared
+            && self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared
             && self.native_map.is_empty()
             && shared_order_conflict(report)
     }
@@ -153,7 +153,7 @@ impl WorldEngine {
         report: &WorldReport,
         output: &OutputId,
     ) -> Option<String> {
-        if !report.host_owned_workspace_domains {
+        if !self.host_owned_workspace_domains() {
             return None;
         }
         if !self.native_list_complete(report, &output.0) {
@@ -179,7 +179,7 @@ impl WorldEngine {
     /// Without the capability no native echo exists here: only the
     /// explicit logical echo proves, when it names a known workspace.
     pub(crate) fn view_echo_for(&self, report: &WorldReport, output: &OutputId) -> Option<String> {
-        if report.host_owned_workspace_domains {
+        if self.host_owned_workspace_domains() {
             return self.native_echo_for(report, output);
         }
         let explicit = report
@@ -200,7 +200,7 @@ impl WorldEngine {
     /// is complete. Partial reports never create mappings.
     pub(crate) fn native_list_complete(&self, report: &WorldReport, output: &str) -> bool {
         let _ = self;
-        report.host_owned_workspace_domains
+        self.host_owned_workspace_domains()
             && report.inventory_complete
             && report
                 .screens
@@ -220,10 +220,10 @@ impl WorldEngine {
     /// never recreates.
     pub(crate) fn converge_native_pre(&mut self, report: &WorldReport) {
         use crate::workspace_scope::WorkspaceMode;
-        if !report.host_owned_workspace_domains {
+        if !self.host_owned_workspace_domains() {
             return;
         }
-        let shared = report.workspace_mode == WorkspaceMode::Shared;
+        let shared = self.workspace_mode_setting() == WorkspaceMode::Shared;
         self.prune_retained_creations(report);
         if shared {
             self.converge_native_shared(report);
@@ -352,7 +352,7 @@ impl WorldEngine {
         report: &WorldReport,
     ) -> BTreeSet<(String, String)> {
         let mut doomed: BTreeSet<(String, String)> = BTreeSet::new();
-        if !report.host_owned_workspace_domains || !report.inventory_complete {
+        if !self.host_owned_workspace_domains() || !report.inventory_complete {
             return doomed;
         }
         if report.gesture_barrier || self.staged.gesture_barrier {
@@ -551,7 +551,7 @@ impl WorldEngine {
         }
         // Equal-count padding: surviving removals must leave every
         // output's logical count equal.
-        if report.equal_workspace_count {
+        if self.equal_workspace_count() {
             loop {
                 if !kept.contains(&true) {
                     break;
@@ -1055,7 +1055,7 @@ impl WorldEngine {
             .take_while(|id| id.as_str() != native)
             .filter(|id| self.native_logical(&out, id).is_some())
             .count();
-        let id = self.create_trailing_workspace(&out, report.default_tiled)?;
+        let id = self.create_trailing_workspace(&out, self.default_tiled())?;
         self.native_map
             .insert((output.to_owned(), native.to_owned()), id.clone());
         if let Some(ring) = self.mapping.get_mut(output)
@@ -1165,7 +1165,7 @@ impl WorldEngine {
     /// replay idempotent; the adapter never treats an unbound row without a
     /// desire as permission.
     pub(crate) fn ensure_native_creations(&mut self, report: &WorldReport, output: &str) {
-        if !report.host_owned_workspace_domains {
+        if !self.host_owned_workspace_domains() {
             return;
         }
         if !self.native_list_complete(report, output) {
@@ -1275,7 +1275,7 @@ impl WorldEngine {
                     }
                     continue;
                 }
-                let Some(id) = self.create_trailing_workspace(&out, report.default_tiled) else {
+                let Some(id) = self.create_trailing_workspace(&out, self.default_tiled()) else {
                     break;
                 };
                 self.native_map
@@ -1324,7 +1324,7 @@ impl WorldEngine {
                 .iter()
                 .filter(|id| self.native_logical(&out, id).is_some())
                 .count();
-            let Some(id) = self.create_trailing_workspace(&out, report.default_tiled) else {
+            let Some(id) = self.create_trailing_workspace(&out, self.default_tiled()) else {
                 break;
             };
             self.native_map
@@ -1424,7 +1424,7 @@ impl WorldEngine {
             let out = OutputId(first.clone());
             let mut ids = Vec::with_capacity(union.len());
             for native in &union {
-                let Some(id) = self.create_trailing_workspace(&out, report.default_tiled) else {
+                let Some(id) = self.create_trailing_workspace(&out, self.default_tiled()) else {
                     break;
                 };
                 ids.push((native.clone(), id));
@@ -1558,7 +1558,7 @@ impl WorldEngine {
                 }
                 continue;
             }
-            let Some(id) = self.create_trailing_workspace(&out, report.default_tiled) else {
+            let Some(id) = self.create_trailing_workspace(&out, self.default_tiled()) else {
                 break;
             };
             if let Some(ring) = self.mapping.get_mut(&first)
@@ -1651,7 +1651,7 @@ impl WorldEngine {
         report: &WorldReport,
         ordered: &[String],
     ) {
-        if !report.host_owned_workspace_domains || ordered.is_empty() {
+        if !self.host_owned_workspace_domains() || ordered.is_empty() {
             return;
         }
         if !report.inventory_complete {
@@ -1751,13 +1751,13 @@ impl WorldEngine {
         &self,
         report: &WorldReport,
     ) -> Vec<crate::world_report::NativeCreationDesire> {
-        if !report.host_owned_workspace_domains {
+        if !self.host_owned_workspace_domains() {
             return Vec::new();
         }
         if !report.inventory_complete {
             return Vec::new();
         }
-        if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared
+        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared
             && !report.screens.iter().all(|screen| screen.complete)
         {
             return Vec::new();
@@ -1806,7 +1806,7 @@ impl WorldEngine {
         }) {
             return true;
         }
-        if !report.host_owned_workspace_domains {
+        if !self.host_owned_workspace_domains() {
             return false;
         }
         let pending = self.retained_creations.iter().any(|retained| {

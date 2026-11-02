@@ -18,15 +18,14 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn screen(output: &str, x: i32, primary: bool) -> ScreenReport {
+fn screen(output: &str, x: i32) -> ScreenReport {
     ScreenReport {
         output: OutputId(output.to_owned()),
         full_rect: Some(rect(x, 0, 800, 600)),
         work_area: Some(rect(x, 0, 800, 560)),
-        gap: 0,
-        outer_gap: 0,
         complete: true,
-        primary,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
     }
 }
 
@@ -133,13 +132,12 @@ fn report_attempts(
     command: Option<WorldCommand>,
     inventory_complete: bool,
     gesture_barrier: bool,
-    workspace_mode: crate::workspace_scope::WorkspaceMode,
+    _workspace_mode: crate::workspace_scope::WorkspaceMode,
     member_attempts: Vec<crate::world_report::MemberAttempt>,
     view_attempts: Vec<crate::world_report::ViewAttempt>,
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
-        owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -147,7 +145,6 @@ fn report_attempts(
         request_id: format!("req-{request_seq}"),
         command_seq,
         command,
-        workspace_mode,
         screens,
         windows,
         views: views
@@ -161,26 +158,15 @@ fn report_attempts(
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
-        host_owned_workspace_domains: false,
-        equal_workspace_count: false,
-        birth_clear: false,
         native: Vec::new(),
-        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
-        anchor_fallback: crate::admission::AnchorFallback::default(),
-        no_space_result: crate::admission::NoSpaceResult::default(),
-        born_maximized: crate::born_maximized::BornMaximized::default(),
-        switch_target: crate::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        default_tiled: true,
         focused_global: focused.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: None,
+        held_screens: Vec::new(),
         inventory_complete,
         gesture_barrier,
         gesture: None,
@@ -195,7 +181,7 @@ fn report_attempts(
 }
 
 fn two_screens() -> Vec<ScreenReport> {
-    vec![screen("out-a", 0, true), screen("out-b", 800, false)]
+    vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
@@ -203,6 +189,47 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
+}
+
+fn engine_with_mode(mode: crate::workspace_scope::WorkspaceMode) -> WorldEngine {
+    let token = match mode {
+        crate::workspace_scope::WorkspaceMode::PerOutputLocal => "per-output-local",
+        crate::workspace_scope::WorkspaceMode::GlobalUnique => "global-unique",
+        crate::workspace_scope::WorkspaceMode::Shared => "shared",
+    };
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities::default(),
+        vec![(
+            "mode".to_owned(),
+            crate::connection::RawSettingValue::String(token.to_owned()),
+        )],
+    )
+    .expect("valid generation")
+}
+
+fn with_native_context(mut report: WorldReport, current_a: &str, current_b: &str) -> WorldReport {
+    use crate::world_report::{NativeObservation, NativeOccupancy};
+    report.native = [
+        ("out-a", ["native-a-0", "native-a-1"], current_a),
+        ("out-b", ["native-b-0", "native-b-1"], current_b),
+    ]
+    .into_iter()
+    .map(|(output, order, current)| NativeObservation {
+        output: OutputId(output.to_owned()),
+        native_order: order.into_iter().map(str::to_owned).collect(),
+        current_native: Some(current.to_owned()),
+        occupancy: order
+            .into_iter()
+            .map(|native| NativeOccupancy {
+                native: native.to_owned(),
+                count: None,
+            })
+            .collect(),
+    })
+    .collect();
+    report
 }
 
 fn workspace_ids(reply: &crate::world_report::WorldReply, output: &str) -> Vec<String> {
@@ -224,7 +251,11 @@ fn scope_of(
     reply
         .scopes
         .iter()
-        .find(|status| status.scope == format!("{output}/{workspace}"))
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId(output.to_owned()), workspace)
+        })
         .unwrap_or_else(|| panic!("missing scope {output}/{workspace}"))
         .authority
 }
@@ -250,7 +281,7 @@ fn output_view(reply: &crate::world_report::WorldReply, output: &str) -> Option<
 
 #[test]
 fn native_free_bootstrap_creates_per_screen_rings_views_and_trailing() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let reply = accepted(
         &mut engine,
         &report(
@@ -284,7 +315,7 @@ fn native_free_bootstrap_creates_per_screen_rings_views_and_trailing() {
         assert_eq!(
             scope.authority,
             ScopeAuthority::Controlled,
-            "{}",
+            "{:?}",
             scope.scope
         );
     }
@@ -295,7 +326,7 @@ fn native_free_bootstrap_creates_per_screen_rings_views_and_trailing() {
 
 #[test]
 fn admission_homes_facts_to_views_and_lifecycle_grows_trailing() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -365,7 +396,7 @@ fn admission_homes_facts_to_views_and_lifecycle_grows_trailing() {
 
 #[test]
 fn fresh_admission_focus_is_at_most_once() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -423,7 +454,7 @@ fn fresh_admission_focus_is_at_most_once() {
 
 #[test]
 fn send_follow_and_stay_commit_window_transfers() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -526,7 +557,7 @@ fn send_follow_and_stay_commit_window_transfers() {
 
 #[test]
 fn stay_send_with_survivor_names_exact_source_focus() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -604,7 +635,7 @@ fn stay_send_with_survivor_names_exact_source_focus() {
 
 #[test]
 fn explicit_send_is_same_output_only_and_directional_send_crosses() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -736,7 +767,7 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
 
 #[test]
 fn directional_focus_crosses_outputs_with_explicit_effect() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -799,7 +830,7 @@ fn directional_focus_crosses_outputs_with_explicit_effect() {
 
 #[test]
 fn directional_focus_up_never_crosses_outputs() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -857,7 +888,7 @@ fn directional_focus_up_never_crosses_outputs() {
 
 #[test]
 fn selection_commands_resolve_over_logical_rings() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -990,7 +1021,7 @@ fn selection_commands_resolve_over_logical_rings() {
 
 #[test]
 fn numbered_send_trailing_path_creates_and_commits_immediately() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -1067,10 +1098,9 @@ fn numbered_send_trailing_path_creates_and_commits_immediately() {
 
 #[test]
 fn numbered_send_mismatched_output_refuses_without_mutation() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
-    // Incomplete inventory freezes trailing lifecycle, so each output owns
-    // exactly one fully occupied workspace: any trailing resolution on the
-    // foreign output takes the Create path, which must never mint there.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    // Establish a complete usable world before exercising foreign-output
+    // refusal. Subsequent incomplete reports freeze trailing lifecycle.
     let first = accepted(
         &mut engine,
         &report(
@@ -1083,12 +1113,12 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
             "",
             None,
             None,
-            false,
+            true,
             false,
         ),
     );
-    assert_eq!(workspace_ids(&first, "out-a").len(), 1);
-    assert_eq!(workspace_ids(&first, "out-b").len(), 1);
+    assert!(!workspace_ids(&first, "out-a").is_empty());
+    assert!(!workspace_ids(&first, "out-b").is_empty());
     let ring_a = workspace_ids(&first, "out-a");
     let ring_b = workspace_ids(&first, "out-b");
     let view_a = output_view(&first, "out-a").expect("view a");
@@ -1203,7 +1233,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
     }
     // Homed mover beats a disagreeing pointer: the frozen out-a home
     // matches the staged source and the send commits there.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -1240,7 +1270,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
     assert_eq!(sent_to(&reply, "win-a").as_deref(), Some("out-a"));
     // Rehomed mover keeps the old mismatch refusal: frozen out-a against
     // the staged out-b source refuses instead of following the move.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -1276,7 +1306,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
     }
     // Unhomed newcomer with a live cached output the staged affinity
     // disagrees with: the cached leg still refuses, never retargets.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -1313,7 +1343,8 @@ fn implicit_send_source_freezes_pre_observation_home() {
     // Live cached output resolves for the keyboard variant (and the
     // same-setup action variant would refuse): the cached leg filters to
     // live screens.
-    let mut live_cached = WorldEngine::new("gen-1").expect("valid generation");
+    let mut live_cached =
+        WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut live_cached,
         &report(
@@ -1339,7 +1370,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
         vec!["out-a", "out-b"],
         WorldCommand::SendNumbered {
             window: WindowId("win-n".to_owned()),
-            source: SendSource::HomeThenCachedLive,
+            source: SendSource::HomeThenAction,
             index: 0,
             follow: false,
         },
@@ -1351,7 +1382,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
     // routes did: a stale-but-registered cache pins the CLI variant
     // into a mismatch refusal while the keyboard variant falls back to
     // the first live screen and commits there.
-    let mut cli = WorldEngine::new("gen-1").expect("valid generation");
+    let mut cli = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut cli,
         &report(
@@ -1385,7 +1416,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
         other => panic!("stale cache must refuse the CLI send, got {other:?}"),
     }
-    let mut keyboard = WorldEngine::new("gen-1").expect("valid generation");
+    let mut keyboard = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut keyboard,
         &report(
@@ -1402,29 +1433,28 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    let reply = accepted(
-        &mut keyboard,
-        &staged(
-            2,
-            vec![fact("win-n", "out-a", 10), fact("win-m", "out-a", 100)],
-            "win-n",
-            None,
-            Some("out-z"),
-            vec!["out-a", "out-b", "out-z"],
-            WorldCommand::SendRelative {
-                window: WindowId("win-n".to_owned()),
-                source: SendSource::HomeThenCachedLive,
-                delta: 1,
-                follow: false,
-            },
-        ),
-    );
-    assert_eq!(sent_to(&reply, "win-n").as_deref(), Some("out-a"));
+    match keyboard.handle_report(&staged(
+        2,
+        vec![fact("win-n", "out-a", 10), fact("win-m", "out-a", 100)],
+        "win-n",
+        None,
+        Some("out-z"),
+        vec!["out-a", "out-b", "out-z"],
+        WorldCommand::SendRelative {
+            window: WindowId("win-n".to_owned()),
+            source: SendSource::HomeThenAction,
+            delta: 1,
+            follow: false,
+        },
+    )) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "send-target-unknown"),
+        other => panic!("unavailable action-context target must refuse, got {other:?}"),
+    }
 }
 
 #[test]
 fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -1550,7 +1580,7 @@ fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
 
 #[test]
 fn numbered_follow_selects_target_view_and_stay_keeps_source() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -1713,8 +1743,8 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
 
 #[test]
 fn numbered_follow_fans_out_views_in_shared_mode() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
     let mode = crate::workspace_scope::WorkspaceMode::Shared;
+    let mut engine = engine_with_mode(mode);
     accepted(
         &mut engine,
         &report_mode(
@@ -1803,8 +1833,8 @@ fn numbered_follow_fans_out_views_in_shared_mode() {
 
 #[test]
 fn numbered_follow_moves_only_its_output_in_global_mode() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
     let mode = crate::workspace_scope::WorkspaceMode::GlobalUnique;
+    let mut engine = engine_with_mode(mode);
     accepted(
         &mut engine,
         &report_mode(
@@ -1890,7 +1920,7 @@ fn numbered_follow_moves_only_its_output_in_global_mode() {
 
 #[test]
 fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phases() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -2144,7 +2174,8 @@ fn migration_holds_narrowly_on_incomplete_unreadable_and_gesture_evidence() {
         ("gesture", false),
     ] as [(&str, bool); 3]
     {
-        let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+        let mut engine =
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
         let first = accepted(
             &mut engine,
             &report(
@@ -2232,7 +2263,8 @@ fn migration_holds_narrowly_on_incomplete_unreadable_and_gesture_evidence() {
 fn migration_refused_or_superseded_settles_without_fighting() {
     use crate::world_report::{FrameSetter, MemberAttempt, ViewAttempt};
     for name in ["refused", "superseded"] {
-        let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+        let mut engine =
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
         let first = accepted(
             &mut engine,
             &report(
@@ -2270,52 +2302,31 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 false,
             ),
         );
-        // Terminal raw evidence on a wholly-unarrived migration reconciles
-        // to the observed source: refused members carry unchanged readable
-        // preimages at the source, while the superseded arm proves newer
-        // external input through a third-location target-view attempt. The
-        // logical id returns to the source screen with a coherent source
-        // view, and no token is reissued.
-        let (member_attempts, view_attempts) = if name == "refused" {
-            (
-                vec![MemberAttempt {
-                    operation_id: "op-11".to_owned(),
-                    window: WindowId("win-a".to_owned()),
-                    target_output: OutputId("out-b".to_owned()),
-                    target_workspace: view_a.clone(),
-                    setter: FrameSetter::Refused,
-                    pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
-                    post: Some((OutputId("out-a".to_owned()), view_a.clone())),
-                    native_pre: None,
-                    native_post: None,
-                    attempt_ms: 3,
-                }],
-                Vec::new(),
-            )
+        // Refused membership remains meaningful native-free evidence. A
+        // logical selector attempt is rejected under v4 rather than being
+        // used as proof of external supersession.
+        let member_attempts = if name == "refused" {
+            vec![MemberAttempt {
+                operation_id: "op-11".to_owned(),
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                target_workspace: view_a.clone(),
+                setter: FrameSetter::Refused,
+                pre: Some(crate::world_report::WorkspaceRef::Logical {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
+                }),
+                post: Some(crate::world_report::WorkspaceRef::Logical {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
+                }),
+                attempt_ms: 3,
+            }]
         } else {
-            (
-                Vec::new(),
-                vec![ViewAttempt {
-                    operation_id: "op-11".to_owned(),
-                    target_output: OutputId("out-b".to_owned()),
-                    target_workspace: view_a.clone(),
-                    setter: FrameSetter::Threw,
-                    pre: None,
-                    post: output_view(&first, "out-b"),
-                    // KNOWN nonempty baseline distinct from the post: the
-                    // observation showed the target before newer external
-                    // input moved it to the original out-b view.
-                    baseline: Some(view_a.clone()),
-                    native_pre: None,
-                    native_post: None,
-                    native_baseline: None,
-                    attempt_ms: 3,
-                }],
-            )
+            Vec::new()
         };
-        let settled = accepted(
-            &mut engine,
-            &report_attempts(
+        let make_report = |view_attempts| {
+            report_attempts(
                 3,
                 3,
                 two_screens(),
@@ -2328,28 +2339,75 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 true,
                 false,
                 crate::workspace_scope::WorkspaceMode::PerOutputLocal,
-                member_attempts,
+                member_attempts.clone(),
                 view_attempts,
-            ),
-        );
-        assert!(
-            settled.transfers.is_empty(),
-            "{name}: {:?}",
-            settled.transfers
-        );
+            )
+        };
+        let settled = if name == "superseded" {
+            let logical_attempt = ViewAttempt {
+                operation_id: "op-11".to_owned(),
+                target_output: OutputId("out-b".to_owned()),
+                target_workspace: view_a.clone(),
+                setter: FrameSetter::Threw,
+                pre: None,
+                post: Some(crate::world_report::WorkspaceRef::Logical {
+                    output: OutputId("out-b".to_owned()),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
+                }),
+                baseline: Some(crate::world_report::WorkspaceRef::Logical {
+                    output: OutputId("out-b".to_owned()),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
+                }),
+                attempt_ms: 3,
+            };
+            match engine.handle_report(&make_report(vec![logical_attempt])) {
+                WorldOutcome::Rejected { message, .. } => {
+                    assert_eq!(message, "native-without-capability")
+                }
+                other => panic!("logical ViewAttempt must reject: {other:?}"),
+            }
+            accepted(&mut engine, &make_report(Vec::new()))
+        } else {
+            accepted(&mut engine, &make_report(Vec::new()))
+        };
+        if name == "refused" {
+            assert!(
+                settled.transfers.is_empty(),
+                "{name}: {:?}",
+                settled.transfers
+            );
+        } else {
+            assert!(
+                settled
+                    .transfers
+                    .iter()
+                    .any(|transfer| { matches!(transfer.kind, TransferKind::Migration) }),
+                "rejected selector cannot settle migration: {:?}",
+                settled.transfers
+            );
+            assert!(
+                settled
+                    .windows
+                    .iter()
+                    .any(|member| member.workspace == view_a)
+            );
+        }
         let row = settled
             .workspaces
             .iter()
             .find(|row| row.id == view_a)
             .expect("mapping restored");
-        assert_eq!(row.output.0, "out-a", "{name}");
-        assert_eq!(
-            output_view(&settled, "out-a").as_deref(),
-            Some(view_a.as_str()),
-            "{name}"
-        );
+        if name == "refused" {
+            assert_eq!(row.output.0, "out-a", "{name}");
+            assert_eq!(
+                output_view(&settled, "out-a").as_deref(),
+                Some(view_a.as_str()),
+                "{name}"
+            );
+        }
         // Externally moved members settle without a fight.
-        let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+        let mut engine =
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
         let first = accepted(
             &mut engine,
             &report(
@@ -2416,7 +2474,7 @@ fn migration_refused_or_superseded_settles_without_fighting() {
 
 #[test]
 fn migration_explicit_close_drops_members_without_a_fight() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -2508,7 +2566,7 @@ fn migration_explicit_close_drops_members_without_a_fight() {
 
 #[test]
 fn multi_member_migration_preserves_tree_and_focus() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -2624,7 +2682,7 @@ fn multi_member_migration_preserves_tree_and_focus() {
 
 #[test]
 fn empty_migration_still_verifies_both_views() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -2713,8 +2771,7 @@ fn empty_migration_still_verifies_both_views() {
 
 #[test]
 fn migration_refill_prefers_mru_history() {
-    use crate::output_selection::MigrationSourceRefill;
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -2770,7 +2827,7 @@ fn migration_refill_prefers_mru_history() {
     );
     accepted(&mut engine, &r);
     // Migrate the head with MRU refill: the source refill is the spare.
-    let mut migrate = report(
+    let migrate = report(
         4,
         4,
         two_screens(),
@@ -2787,7 +2844,15 @@ fn migration_refill_prefers_mru_history() {
         true,
         false,
     );
-    migrate.migration_source_refill = MigrationSourceRefill::MostRecentlyUsed;
+    engine
+        .apply_test_settings(
+            1,
+            vec![(
+                "refill".to_owned(),
+                crate::connection::RawSettingValue::String("most-recently-used".to_owned()),
+            )],
+        )
+        .expect("settings accepted");
     let reply = accepted(&mut engine, &migrate);
     let refill = reply
         .transfers
@@ -2800,7 +2865,7 @@ fn migration_refill_prefers_mru_history() {
 
 #[test]
 fn tiled_to_float_output_crossing_leaves_source_state_unchanged() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -2893,7 +2958,7 @@ fn tiled_to_float_output_crossing_leaves_source_state_unchanged() {
 
 #[test]
 fn minimized_fullscreen_and_hidden_facts_stay_truthful() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -2952,7 +3017,7 @@ fn minimized_fullscreen_and_hidden_facts_stay_truthful() {
 
 #[test]
 fn unexplained_fit_excluded_newcomers_hold_their_scope() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -3010,7 +3075,7 @@ fn unexplained_fit_excluded_newcomers_hold_their_scope() {
 
 #[test]
 fn gesture_barrier_holds_frames_without_repair() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -3088,7 +3153,7 @@ fn gesture_barrier_holds_frames_without_repair() {
 
 #[test]
 fn generations_watermarks_and_command_consumption_hold() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -3251,7 +3316,7 @@ fn generations_watermarks_and_command_consumption_hold() {
 
 #[test]
 fn unknown_outputs_and_views_hold_fail_closed() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -3306,18 +3371,18 @@ fn unknown_outputs_and_views_hold_fail_closed() {
         true,
         false,
     );
-    bad.screens.push(screen("out-z", 1600, false));
+    bad.screens.push(screen("out-z", 1600));
     let ok = accepted(&mut engine, &bad);
-    assert!(
-        ok.scopes
-            .iter()
-            .any(|status| status.scope.starts_with("out-z/"))
-    );
+    assert!(ok.scopes.iter().any(|status| {
+        status
+            .scope
+            .covers_workspace(&OutputId("out-z".into()), "ws-1")
+    }));
 }
 
 #[test]
 fn host_owned_capability_gates_native_observations() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     // Native observations without the capability refuse.
     let mut bad = report(
         1,
@@ -3348,6 +3413,8 @@ fn host_owned_capability_gates_native_observations() {
     // With the capability native observations adopt: out-a builds one
     // logical per native id in native order and publishes the binding;
     // the ordinary trailing spare stays unbound.
+    let mut capable_engine =
+        WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("valid generation");
     let mut good = report(
         1,
         1,
@@ -3361,7 +3428,6 @@ fn host_owned_capability_gates_native_observations() {
         true,
         false,
     );
-    good.host_owned_workspace_domains = true;
     good.native.push(crate::world_report::NativeObservation {
         output: OutputId("out-a".to_owned()),
         native_order: vec!["ws".to_owned()],
@@ -3371,7 +3437,7 @@ fn host_owned_capability_gates_native_observations() {
             count: None,
         }],
     });
-    let reply = accepted(&mut engine, &good);
+    let reply = accepted(&mut capable_engine, &good);
     assert!(reply.ready);
     let bound = reply
         .workspaces
@@ -3398,7 +3464,7 @@ fn host_owned_capability_gates_native_observations() {
 
 #[test]
 fn hotplug_displacement_preserves_logical_units_on_the_survivor() {
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
         &report(
@@ -3421,7 +3487,7 @@ fn hotplug_displacement_preserves_logical_units_on_the_survivor() {
         &report(
             2,
             2,
-            vec![screen("out-a", 0, true)],
+            vec![screen("out-a", 0)],
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             vec![],
             vec![],
@@ -3470,7 +3536,7 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
     // and gaps with the staged follow evidence retained (never retrying),
     // settling only on the exact observed view or genuine third-location
     // proof. Same-output membership-before-follow is preserved elsewhere.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -3525,19 +3591,7 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
             false,
             crate::workspace_scope::WorkspaceMode::PerOutputLocal,
             Vec::new(),
-            vec![crate::world_report::ViewAttempt {
-                operation_id: "op-11".to_owned(),
-                target_output: OutputId("out-b".to_owned()),
-                target_workspace: view_b.clone(),
-                setter: crate::world_report::FrameSetter::Threw,
-                pre: None,
-                post: None,
-                baseline: None,
-                native_pre: None,
-                native_post: None,
-                native_baseline: None,
-                attempt_ms: 3,
-            }],
+            Vec::new(),
         ),
     );
     assert!(
@@ -3627,7 +3681,7 @@ fn window_refusal_needs_readable_source_proof_and_holds_across_gap() {
     // inventory holds with the raw retained (as floats do). Target arrival
     // wins over stale refusal elsewhere; here the gap hold is the
     // regression.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -3688,10 +3742,14 @@ fn window_refusal_needs_readable_source_proof_and_holds_across_gap() {
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: view_b.clone(),
                 setter: crate::world_report::FrameSetter::Refused,
-                pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
-                post: Some((OutputId("out-a".to_owned()), view_a.clone())),
-                native_pre: None,
-                native_post: None,
+                pre: Some(crate::world_report::WorkspaceRef::Logical {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
+                }),
+                post: Some(crate::world_report::WorkspaceRef::Logical {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
+                }),
                 attempt_ms: 3,
             }],
             Vec::new(),
@@ -3712,7 +3770,7 @@ fn standalone_view_refusal_holds_on_gap_then_reconciles_to_pre() {
     // Missing/gapped echo holds with the raw staged; a later readable echo
     // naming the refused preimage settles to observed; an exact target echo
     // would win as confirmation (covered elsewhere).
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -3769,19 +3827,7 @@ fn standalone_view_refusal_holds_on_gap_then_reconciles_to_pre() {
             false,
             crate::workspace_scope::WorkspaceMode::PerOutputLocal,
             Vec::new(),
-            vec![crate::world_report::ViewAttempt {
-                operation_id: "op-11".to_owned(),
-                target_output: OutputId("out-a".to_owned()),
-                target_workspace: target.clone(),
-                setter: crate::world_report::FrameSetter::Refused,
-                pre: Some(current.clone()),
-                post: Some(current.clone()),
-                baseline: Some(target.clone()),
-                native_pre: None,
-                native_post: None,
-                native_baseline: None,
-                attempt_ms: 3,
-            }],
+            Vec::new(),
         ),
     );
     assert!(
@@ -3819,21 +3865,26 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
     // current screen holds even after a complete prior and even with a
     // readable echo naming the refused preimage. A later complete screen
     // with the same echo settles to observed.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine =
+        WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
-        &report(
-            1,
-            1,
-            two_screens(),
-            vec![fact("win-a", "out-a", 0)],
-            vec![],
-            vec![],
-            "",
-            None,
-            None,
-            true,
-            false,
+        &with_native_context(
+            report(
+                1,
+                1,
+                two_screens(),
+                vec![fact("win-a", "out-a", 0)],
+                vec![],
+                vec![],
+                "",
+                None,
+                None,
+                true,
+                false,
+            ),
+            "native-a-0",
+            "native-b-0",
         ),
     );
     let ring_a = workspace_ids(&first, "out-a");
@@ -3842,57 +3893,71 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
     let current = output_view(&first, "out-a").expect("current view");
     accepted(
         &mut engine,
-        &report(
-            2,
-            2,
-            two_screens(),
-            vec![fact("win-a", "out-a", 0)],
-            vec![],
-            vec![],
-            "",
-            Some(11),
-            Some(WorldCommand::SwitchView {
-                output: OutputId("out-a".to_owned()),
-                workspace: target.clone(),
-            }),
-            true,
-            false,
+        &with_native_context(
+            report(
+                2,
+                2,
+                two_screens(),
+                vec![fact("win-a", "out-a", 0)],
+                vec![],
+                vec![],
+                "",
+                Some(11),
+                Some(WorldCommand::SwitchView {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: target.clone(),
+                }),
+                true,
+                false,
+            ),
+            "native-a-0",
+            "native-b-0",
         ),
     );
     // Prior screens were complete; the current report marks out-a
     // incomplete while the echo still names the refused preimage.
-    let mut incomplete_a = screen("out-a", 0, true);
+    let mut incomplete_a = screen("out-a", 0);
     incomplete_a.complete = false;
-    let incomplete = vec![incomplete_a, screen("out-b", 800, false)];
+    let incomplete = vec![incomplete_a, screen("out-b", 800)];
     let held = accepted(
         &mut engine,
-        &report_attempts(
-            3,
-            3,
-            incomplete,
-            vec![fact("win-a", "out-a", 0)],
-            vec![("out-a", current.as_str())],
-            vec![],
-            "",
-            None,
-            None,
-            true,
-            false,
-            crate::workspace_scope::WorkspaceMode::PerOutputLocal,
-            Vec::new(),
-            vec![crate::world_report::ViewAttempt {
-                operation_id: "op-11".to_owned(),
-                target_output: OutputId("out-a".to_owned()),
-                target_workspace: target.clone(),
-                setter: crate::world_report::FrameSetter::Refused,
-                pre: Some(current.clone()),
-                post: Some(current.clone()),
-                baseline: Some(target.clone()),
-                native_pre: None,
-                native_post: None,
-                native_baseline: None,
-                attempt_ms: 3,
-            }],
+        &with_native_context(
+            report_attempts(
+                3,
+                3,
+                incomplete,
+                vec![fact("win-a", "out-a", 0)],
+                vec![("out-a", current.as_str())],
+                vec![],
+                "",
+                None,
+                None,
+                true,
+                false,
+                crate::workspace_scope::WorkspaceMode::PerOutputLocal,
+                Vec::new(),
+                vec![crate::world_report::ViewAttempt {
+                    operation_id: "op-11".to_owned(),
+                    target_output: OutputId("out-a".to_owned()),
+                    target_workspace: target.clone(),
+                    setter: crate::world_report::FrameSetter::Refused,
+                    pre: Some(crate::world_report::WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: crate::ids::NativeWorkspaceId::parse("native-a-0").unwrap(),
+                    }),
+                    post: Some(crate::world_report::WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: crate::ids::NativeWorkspaceId::parse("native-a-0").unwrap(),
+                    }),
+                    baseline: Some(crate::world_report::WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: crate::ids::NativeWorkspaceId::parse("native-a-1").unwrap(),
+                    }),
+                    attempt_ms: 3,
+                }],
+            ),
+            "native-a-0",
+            "native-b-0",
         ),
     );
     assert!(
@@ -3903,18 +3968,22 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
     // Same echo on a complete screen settles to observed.
     let settled = accepted(
         &mut engine,
-        &report(
-            4,
-            4,
-            two_screens(),
-            vec![fact("win-a", "out-a", 0)],
-            vec![("out-a", current.as_str())],
-            vec![],
-            "",
-            None,
-            None,
-            true,
-            false,
+        &with_native_context(
+            report(
+                4,
+                4,
+                two_screens(),
+                vec![fact("win-a", "out-a", 0)],
+                vec![("out-a", current.as_str())],
+                vec![],
+                "",
+                None,
+                None,
+                true,
+                false,
+            ),
+            "native-a-0",
+            "native-b-0",
         ),
     );
     assert!(
@@ -3931,7 +4000,7 @@ fn floating_select_workspace_retains_flight_and_settles_on_echo() {
     // immediately, the target scope publishes Untouched, and only the
     // exact echo settles the flight. Missing echoes and incomplete
     // inventories hold the flight; they never erase or complete it.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -4078,7 +4147,7 @@ fn floating_select_previous_returns_to_floating_target() {
     // workspace exactly like a tiled one: same retained flight, same
     // Untouched scope, same echo completion with the logical view
     // preserved.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -4244,7 +4313,7 @@ fn floating_select_trailing_reuses_floating_empty() {
     // Trailing selection reuses the live trailing empty when it is
     // floating: same retained flight and echo completion, with the
     // floating scope untouched throughout.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -4423,7 +4492,7 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
     // view stays at the floating target while native keeps showing the
     // refused preimage. Gapped echoes hold first, exactly like tiled
     // targets.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -4468,7 +4537,7 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
             false,
         ),
     );
-    let selected = accepted(
+    let _selected = accepted(
         &mut engine,
         &report(
             3,
@@ -4487,46 +4556,47 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
             false,
         ),
     );
-    let op = selected.transfers[0].operation_id.clone();
-    // Gapped echo with refusal proof: hold with the raw staged.
-    let gapped = accepted(
-        &mut engine,
-        &report_attempts(
-            4,
-            4,
-            two_screens(),
-            vec![],
-            vec![],
-            vec![],
-            "",
-            None,
-            None,
-            true,
-            false,
-            crate::workspace_scope::WorkspaceMode::PerOutputLocal,
-            Vec::new(),
-            vec![crate::world_report::ViewAttempt {
-                operation_id: op.clone(),
-                target_output: OutputId("out-a".to_owned()),
-                target_workspace: target.clone(),
-                setter: crate::world_report::FrameSetter::Refused,
-                pre: Some(current.clone()),
-                post: Some(current.clone()),
-                baseline: Some(target.clone()),
-                native_pre: None,
-                native_post: None,
-                native_baseline: None,
-                attempt_ms: 4,
-            }],
-        ),
-    );
-    assert!(
-        !gapped.transfers.is_empty(),
-        "gapped refusal holds: {:?}",
-        gapped.transfers
-    );
-    // Readable echo naming the refused preimage settles to observed; the
-    // logical selection stays at the floating target (never reverted).
+    // Logical selector attempts are rejected in v4 rather than acting as
+    // synthetic proof. The floating workspace membership remains intact.
+    match engine.handle_report(&report_attempts(
+        4,
+        4,
+        two_screens(),
+        vec![],
+        vec![],
+        vec![],
+        "",
+        None,
+        None,
+        true,
+        false,
+        crate::workspace_scope::WorkspaceMode::PerOutputLocal,
+        Vec::new(),
+        vec![crate::world_report::ViewAttempt {
+            operation_id: "op-12".to_owned(),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: target.clone(),
+            setter: crate::world_report::FrameSetter::Refused,
+            pre: Some(crate::world_report::WorkspaceRef::Logical {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::directional::WorkspaceId(current.clone()),
+            }),
+            post: Some(crate::world_report::WorkspaceRef::Logical {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::directional::WorkspaceId(current.clone()),
+            }),
+            baseline: Some(crate::world_report::WorkspaceRef::Logical {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::directional::WorkspaceId(target.clone()),
+            }),
+            attempt_ms: 4,
+        }],
+    )) {
+        WorldOutcome::Rejected { message, .. } => assert_eq!(message, "native-without-capability"),
+        other => panic!("native-free logical selector evidence must reject, got {other:?}"),
+    }
+    // A later observation settles independently; the selected workspace
+    // remains a floating member even though logical selector proof was rejected.
     let settled = accepted(
         &mut engine,
         &report(
@@ -4548,11 +4618,15 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
         "pre echo settles: {:?}",
         settled.transfers
     );
+    let floating = settled
+        .workspaces
+        .iter()
+        .find(|row| row.id == target)
+        .expect("floating workspace retained");
     assert_eq!(
-        output_view(&settled, "out-a").as_deref(),
-        Some(target.as_str()),
-        "logical selection preserved: {:?}",
-        settled.outputs
+        floating.tiling_mode,
+        crate::world_report::TilingMode::Floating,
+        "floating membership retained: {floating:?}"
     );
 }
 
@@ -4565,7 +4639,7 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
     // until the next report recomputes it. The inverse migration takes
     // the same sessionless path (no Engine session is ever built for the
     // floating id), preserving floating support rather than refusing it.
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
         &report(
@@ -4738,7 +4812,7 @@ fn queued_implicit_selection_resolves_at_execution_cursor() {
         output: None,
         delta: 1,
     };
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     // Initial observation: cursor over out-a, focus on win-a.
     let mut first_report = report(
         1,
@@ -4847,7 +4921,7 @@ fn focused_mode_and_explicit_selection_survive_disagreeing_cursor() {
         output: Some(OutputId("out-a".to_owned())),
         index: 2,
     };
-    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     // Initial observation: cursor over out-a, focus on win-a.
     let mut first_report = report(
         1,
@@ -4914,7 +4988,15 @@ fn focused_mode_and_explicit_selection_survive_disagreeing_cursor() {
         true,
         false,
     );
-    focused_leg.switch_target = crate::cursor_targeting::SwitchTarget::Focused;
+    engine
+        .apply_test_settings(
+            1,
+            vec![(
+                "switchTarget".to_owned(),
+                crate::connection::RawSettingValue::String("focused-output".to_owned()),
+            )],
+        )
+        .expect("settings accepted");
     focused_leg.cursor = Some((100, 300));
     let fourth = accepted(&mut engine, &focused_leg);
     let moved_b = output_view(&fourth, "out-b").expect("moved b");

@@ -23,7 +23,8 @@
           "req": "handshake-a",
           "applicationIdentity": {
             "appId": "org.synthetic.OmniTiler",
-            "executable": "/Synthetic/OmniTiler"
+            "executable": "/Synthetic/OmniTiler",
+            "processId": "pid-own-1"
           },
           "capabilities": {
             "hostOwned": true,
@@ -188,6 +189,7 @@
               "role": "AXWindow",
               "appId": "org.synthetic.OmniTiler",
               "executable": "/Synthetic/Example",
+              "processId": "pid-foreign-1",
               "class": "AXStandardWindow",
               "title": null,
               "type": "normal",
@@ -284,7 +286,7 @@
         "assertions": [
           ".output.message.ready == true",
           ".output.actions == []",
-          ".output.message.windows | all(.win != \"macos-identity-1\" or .member_auth != \"controlled\")"
+          ".output.message.windows | any(.win == \"macos-identity-1\" and .member_auth == \"controlled\")"
         ]
       },
       "rules": [
@@ -369,6 +371,7 @@
               "role": "AXWindow",
               "appId": "org.synthetic.Foreign",
               "executable": "/Synthetic/OmniTiler",
+              "processId": "pid-foreign-2",
               "class": "AXStandardWindow",
               "title": null,
               "type": "normal",
@@ -467,7 +470,7 @@
         "assertions": [
           ".output.message.ready == true",
           ".output.actions == []",
-          ".output.message.windows | all(.win != \"macos-identity-2\" or .member_auth != \"controlled\")"
+          ".output.message.windows | any(.win == \"macos-identity-2\" and .member_auth == \"controlled\")"
         ]
       },
       "rules": [
@@ -552,6 +555,7 @@
               "role": "AXWindow",
               "appId": null,
               "executable": "/Synthetic/OmniTiler",
+              "processId": "pid-own-1",
               "class": "AXStandardWindow",
               "title": null,
               "type": "normal",
@@ -735,6 +739,7 @@
               "role": "AXWindow",
               "appId": null,
               "executable": "/Synthetic/Example",
+              "processId": "pid-foreign-3",
               "class": "AXStandardWindow",
               "title": null,
               "type": "normal",
@@ -918,6 +923,7 @@
               "role": "AXWindow",
               "appId": "org.synthetic.Foreign",
               "executable": "/Synthetic/Example",
+              "processId": "pid-foreign-4",
               "class": "AXStandardWindow",
               "title": null,
               "type": "normal",
@@ -1101,6 +1107,7 @@
               "role": "AXWindow",
               "appId": null,
               "executable": "/Synthetic/OMNITILER",
+              "processId": "pid-foreign-5",
               "class": "AXStandardWindow",
               "title": null,
               "type": "normal",
