@@ -40,8 +40,9 @@
   dedicated DXGI fullscreen API grant, forced-writer recovery of topmost and hide
   preimages, preowned zero-policy-write behavior, stale-window refusal, synthetic
   drag/resize and ordinary identity reads. Production recovery, R14 exitability,
-  actual HWND reuse, K5 render joins, cross-output hidden arrival and elevation
-  remain open.
+  actual HWND reuse and K5 render joins remain open. Later sections qualify
+  cross-output hidden-motion/reveal and elevated results; production W2 arrival
+  and elevated restoration acceptance remain open.
 - The first PowerShell run and subsequent rejected candidates remain diagnostic
   history, not acceptance. Later functional Rust repairs and measurements below
   supersede the stopped-run status, not the limitations of those older results.
@@ -1155,6 +1156,115 @@ observations. The later Rust results above are the current measurement summary.
   the wider native investigation remains open for its stated evidence and
   production-integration gaps.
 
+## Follow-up: W2 cross-output hidden arrival (2026-11-03)
+
+- **Verdict: qualified native primitives measured; W2 arrival NOT accepted.**
+  A fixture window crossed from A (120 DPI) to B (96 DPI) while hidden by
+  `ShowWindow`, not cloak, and was revealed on B. A separate forced-writer-loss
+  leg left it hidden on B; a fresh recoverer restored the original A preimage.
+  Missing arrival bracketing, frame-convention differences and recovery-procedure
+  defects below prevent an overall pass. No production tiler was launched.
+- Tooling: an isolated development harness extended the earlier hide-loss
+  choreography using example-local Windows bindings, without `tiler-windows`.
+  In-repository example builds remain blocked by the pre-port product
+  dev-dependency. Source, isolated manifest and raw records remain external;
+  this is a parked measurement probe, not an accepted reusable recovery tool.
+- Reference revision: `e21d11e8`. External groups: `w2-live-20261103-001`
+  through `w2-live-20261103-005`; final isolated build group `w2-probe-verify`.
+  Final invocation: `w2-probe-verify.exe measure --fixture-exe <fixture-exe>
+  --run-dir <fresh-evidence-dir> --stay-ms 8000`. Executable/PID/creation,
+  HWND/full sentinel and nonzero tag bindings were retained externally.
+  OS build, user/session and integrity were not captured; no stronger
+  environment/provenance claim follows.
+
+| Independently rehashed final artifact | SHA-256 |
+| --- | --- |
+| Isolated harness source | `9ea90175aac8cf8107fa954256be067d0750aa2853c510abc5c35ad80ad83a29` |
+| `w2-probe-verify.exe` | `8f2e565b9214e21e649850bffdbbc1d21116b8b37f19ad4646c9115a1662b940` |
+| `tiler-live-fixture.exe` | `4a3845830a6ef1ea1858ba26a38dd9c227a385886223f40f9cb797eee4d3c509` |
+
+### Final native readbacks and comparison limits
+
+Rectangles below are PMv2 physical **left/top/right/bottom**, not contract
+`[x,y,w,h]`. `w2-target.json` freezes an outer rectangle entirely inside B's
+work area; the production adapter reports DWM visible frames instead.
+
+| Stage / retained file | Output / DPI | Visible / cloak | Outer / DWM | Identity and limit |
+| --- | --- | --- | --- | --- |
+| Before hide, `w2-normal-b.json`, `w2-measure.json` | A / 120 | true / false | `[960,450,1618,977]` / `[968,450,1610,969]` | Handoff/record carry fixture PID/creation/executable, HWND/title/tag; not a separate complete identity snapshot per sample |
+| Hidden before crossing | Not separately retained | Hide waited for false | No retained full readback row | Cannot reconstruct the requested before-move output/frame/DPI/lifetime matrix |
+| Hidden on B after writer loss, `w2-measure.json` | B / 96 | false / false | `[3191,607,3849,1134]` / `[3198,607,3842,1127]` | Native alive/PID and effect-marker readbacks; first-pass tag/lifetime checks inline, not all persisted per stage |
+| Normal reveal on B, `w2-normal-b.json` | B / 96 | true / false | Same B outer / DWM as above | Outer equals frozen target; DWM only contained inside B work area; not a contract-frame equality proof |
+| Fresh crash recoverer, `recovered-w2.json`, `w2-measure.json` | A / 120 | true / false | Original A outer / DWM exactly | Show-state 1 and marker preimage restored; four recorded writes; frozen B not restored |
+
+- `w2-preflight-result.json` records a visible offset move on A followed by a
+  fresh recoverer restoring the A rectangle. It exercises geometry recovery,
+  **not independent hidden-window reveal before the first hide**. Its
+  `independent_restore_proven:true` is too broad and is not accepted as the
+  hiding prerequisite.
+- Mixed DPI: hidden-on-B DPI reads 96 before recovery; A baseline/recovery reads
+  120. The harness uses a second `SetWindowPos` pass after cross-DPI settling
+  when the first does not reach the exact outer target. Intermediate first-pass
+  frames were not retained; this does not isolate DPI message behavior.
+  **WM_DPICHANGED while hidden versus only on reveal remains unmeasured.**
+- `w2-bracket.json` records wrong-output and stale-frame rejection, an exact
+  synthetic frozen construction accepting, and post-recovery A rejecting B.
+  These exercise a local comparator, not the core's production bracket path.
+  The local epoch is not `obs` or an invalidation watermark. The visible
+  `before` is on A, with hide/move/reveal intervening before the sole B sample;
+  no visible B lifetime/visibility pair surrounds the output/frame read.
+- Frame mismatch matters: B's outer target is 658x527; its DWM frame is 644x520
+  with different origin. An exact DWM-frame comparison to that outer target
+  must reject, even though both lie within B. Convert/freeze in the production
+  frame convention; do not add a tolerance or treat containment as arrival.
+
+### Stopped attempts, procedure defects and cleanup
+
+| Attempt | Stop / subsequent work | Evidence status |
+| --- | --- | --- |
+| 001 | Hidden outer did not equal fixed client-sized target; window remained hidden. Recovery first failed its geometry postcheck, then a second invocation succeeded; scoped close/list/shutdown reported | Failed restoration was retried rather than stopped/escalated. This violates the restoration-stop rule; later success does not rehabilitate it |
+| 002 | After using settled outer dimensions, normal reveal reached B; single-pass rollback missed A. Recovery and scoped teardown reported; a second geometry pass was added | Geometry failure retained, not arrival acceptance; first-pass/corrective-pass frames not retained |
+| 003 | Geometry/crash legs completed, but foreground comparison ran before teardown and failed; scoped close returned foreground to baseline | Procedure changed to compare after teardown; foreground preservation throughout the journey is not proved |
+| 004 | Teardown checked the wrong reply member (`windows` rather than `ids`); shutdown occurred and absence was reported | Wrapper failure, not native settlement failure; parser corrected |
+| 005 | Wrapper exit 0; list empty, shutdown `open_windows:0`, display-read baseline equal, final foreground equal | Qualified final readbacks only; does not erase preceding stops or remaining safety/measurement gaps |
+
+- Second-pass geometry writes lack fresh full HWND/PID/creation/executable/
+  title/tag gates immediately before every retry (some only recheck tag).
+  This is an unresolved stale-lifetime safety gap, not permission to replay.
+  Recovery output filenames are reused within a run, overwriting preflight or
+  earlier recovery evidence; prior failed-run write counts are not reconstructible.
+- The experiment continued after restoration uncertainty rather than stopping
+  under the live-testing restoration rule. No further live run follows
+  this audit. Earlier cleanup is reported execution evidence; final retained
+  records establish the final leg's tail, not every intervening cleanup state.
+- Final read-only process inspection found no fixture or isolated-probe process.
+  Seven isolated pure tests passed on independent rerun (record codec/local
+  comparison/teardown logic); build reported successful with warnings. These
+  checks do not execute native effects or validate recovery choreography.
+
+### Contract implications and remaining discriminators
+
+- No shape change established. W2 forward arrival still needs a fresh
+  [output-arm bracket](../porting/world-contract.md#visibility-and-focus-ordering)
+  in the production frame convention, matched lifetime/tag/watermark and core
+  frozen-target comparison. Hidden output/frame reads demonstrate feasibility,
+  not readiness or focus permission.
+- R12 rollback and W2 arrival differ: the fresh recoverer intentionally restores
+  the saved A preimage, not B. That is a rollback measurement, not a B-arrival
+  failure to fix by rewriting the recovery target. After recovery, core must
+  reconcile fresh facts and any still-authorized B desire; A must not settle B.
+- Proposed minimal rows (outcomes still TBD, no spec edits):
+  1. Hide on A; move hidden to B; reveal; take matched visible B samples around
+     output/DWM-frame reads, then compare frozen B. Production arrival/focus TBD.
+  2. Repeat but substitute A output or pre-move frame for the middle read.
+     Production rejection/focus withholding TBD; local comparator rejects.
+  3. Force exact writer loss hidden on B; independently recover A baseline;
+     submit fresh facts against retained B target. Product rollback and
+     reconvergence TBD; standalone A restore measured.
+  4. Cross 120 -> 96 DPI while hidden with timestamped per-window DPI messages;
+     reveal and compare both frame conventions. Message timing/corrective-frame
+     behavior TBD. Normal versus maximized/minimized preimages remain separate.
+
 ## Proposed discriminators (not spec edits)
 
 | Minimal action sequence | Distinction to measure | Unsupported outcome |
@@ -1165,7 +1275,7 @@ observations. The later Rust results above are the current measurement summary.
 | Persist nonzero window tag plus opaque intent; force writer loss; close/recreate in same fixture process, then feed old external record | Process continuity versus exact native-window continuity | Interrupted publication, actual full-HWND reuse/tag mismatch and product opaque intent TBD; changed-HWND stale refusal measured |
 | Settle production float/sticky on admitted fixture; stop/restore; restart scoped owner; separately settle removal and restart again | Surviving on-window marker adoption versus settled removal; absent after recreation is not stale-record rejection | Real restart adoption/removal and forced-loss survival TBD |
 | Capture accepted border witness; move/resize fixture, then change focus/style/visibility without a new reply | Anchor-only motion versus eligibility invalidation tied to captured observation | K5 causal join, missed-event and physical lag outcomes TBD |
-| Hide tagged fixture; move it across outputs while hidden; bracket output/frame/visibility/lifetime before reveal and focus | Actual hidden arrival versus requested/logical home or changed lifetime | Exact W2 arrival/focus and forced-loss suppression recovery TBD |
+| Hide tagged fixture; move it across outputs while hidden; reveal and bracket output/frame/visibility/lifetime before focus | Actual hidden arrival versus requested/logical home or changed lifetime | Hidden move/reveal and forced-loss A rollback measured with qualifications; production DWM-frame W2 bracket/focus and suppression recovery TBD |
 | Query otherwise equivalent medium and user-launched elevated fixture windows, with checked API errors; normalize synthetic non-ASCII/dot-segment identities | Supported unreadable facts versus unavailable route facts; ASCII-only normalization | Elevated metadata reads and access-denied/no-effect writes measured; DWM failure HRESULTs, independent restore proof and production denial handling TBD |
 | Create dedicated windowed DXGI subject, pump/focus, request current-mode fullscreen, read grant/output, request windowed and compare baseline | Fullscreen request/grant versus actual presentation path and app restore semantics | Legacy-exclusive/FSO classification and tiler exitability TBD; API grant measured separately |
 | Persist normal, maximized and minimized suppression preimages; force writer loss while hidden; restore in a fresh process | Ordinary windowed reveal versus exact non-normal show-state restoration | Non-normal suppression recovery and product watcher integration TBD; normal standalone case measured |
@@ -1186,7 +1296,8 @@ observations. The later Rust results above are the current measurement summary.
   recovery and W2/K5 observation joins, then verify the proposed discriminators
   against production paths. Standalone probes are not that acceptance.
 - Remaining native/user acceptance includes actual HWND reuse/tag mismatch,
-  cross-output hidden arrival, non-normal suppression recovery, application
+  production cross-output hidden-arrival bracketing, hidden DPI message timing,
+  non-normal suppression recovery, application
   fullscreen exitability/presentation behavior and physical input. The fixed
   elevated-fixture matrix now has qualified read/write results and clean
   shutdown; its independent restore prerequisite, physical geometry proof and
