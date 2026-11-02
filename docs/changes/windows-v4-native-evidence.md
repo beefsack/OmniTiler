@@ -473,8 +473,10 @@ observations. The later Rust results above are the current measurement summary.
 
 ## 6. Elevated windows and executable identity (W4/K1)
 
-- **Verdict: ordinary-window identity mechanism measured; elevated read/write
-  behavior needs a user-owned step.** No elevated window was launched.
+- **Verdict: ordinary identity and a later elevated-fixture read/write matrix
+  measured; restore-proof and error-reporting limitations remain.** The initial
+  ordinary run below launched no elevated window; the later physical-leg section
+  records the elevated fixture separately.
 - Source: [native.rs:78-116](../../crates/tiler-windows/src/native.rs) opens a held
   process with limited-query/synchronize rights and exposes identity/integrity;
   [ffi/process.rs:202-281](../../crates/tiler-windows/src/ffi/process.rs) reads token
@@ -659,6 +661,500 @@ observations. The later Rust results above are the current measurement summary.
   not permission to invent a connector, trust a duplicate serial, or declare
   empty-output notification acceptance from these measurements.
 
+## Physical-leg baseline, empty-output DPI and elevated fixture
+
+- Scope: retain repeatable, timestamped, read-only per-output snapshots for
+  physical lifecycle comparisons; establish otherwise-empty-output DPI delivery;
+  measure a medium observer's read/write API results against an elevated fixture.
+- Acceptance: snapshot EDID header/text serials only in external evidence, use
+  PMv2 physical monitor facts and per-output visible-window accounting, record
+  each native API return/error and readback, restore every successful mutation,
+  and close all experiment-owned windows/processes. No contract changes.
+- Approach: reuse the isolated native probe without `tiler-windows`; retain one
+  stable snapshot command across subsequent physical legs.
+
+### Reusable snapshot and accepted baseline
+
+- Added external-only `outid-probe.exe snapshot --dir <external-evidence-dir>`.
+  Each invocation creates `snapshot-<epoch-ms>-pid<PID>.json` with the same
+  schema. It changes no display setting and reads EDID registry keys only.
+  Transient nonactivating own PMv2 windows supply effective DPI and are destroyed
+  before completion. Absolute invocation/evidence paths remain outside this
+  repository for reuse after session or system restart.
+- Per active path, the snapshot retains QDC source/target metadata, raw and
+  canonical EDID manufacturer/product IDs, monitor device path, technology,
+  connector instance, DISPLAY ordinal, joined SetupAPI header and descriptor
+  serials/model, physical full/work rectangles, primary, effective DPI, and
+  per-output foreign-window census. Raw descriptor strings stay external.
+  Missing fields/errors remain explicit. The join uses exact normalized embedded
+  device-instance equality plus canonical manufacturer/product guards, not a
+  substring match or a claimed SetupAPI interface-detail join.
+- Evidence child: `outid-v4-run-20261102-2044/snap-leg-20261102-210707`.
+  Accepted baseline: `snapshot-1793615579607-pid20520.json`; restored-state
+  snapshot: `snapshot-1793615633416-pid20616.json`. Earlier snapshots in this
+  child are not physical-coordinate baselines: review found monitor/census
+  geometry read before PMv2 setup. The correction establishes PMv2 at entry and
+  verifies actual thread-context equality before any geometry read; both accepted
+  snapshots report `effective_pmv2:true`.
+- Both snapshots retain executable SHA-256, arguments, PID/start/session,
+  integrity and artifact metadata. Independently checked current artifact hash:
+  `801b416982cbd056eb0c0692aaf3582e7bc5c2264b1d2aa0fa981c649458434d`;
+  both accepted snapshots carry that hash. Reported offline snapshot build and
+  14 tests passed; independent review confirmed the corrected awareness ordering.
+
+| Baseline fact | Output A | Output B |
+| --- | --- | --- |
+| Connection technology | External DisplayPort | HDMI |
+| Primary / effective DPI | Yes / 120 | No / 96 |
+| Connector instance | 2 | 0 |
+| Header numeric serial | Present, nonzero | Same numeric value as A |
+| Descriptor text serial | Present | Present, distinct from A |
+| Checked ordinary visible-content windows, excluding observers | 2 | 0 |
+
+- Canonical manufacturer/product/header-serial triples are distinct, as are the
+  descriptor text serials. Offline `verify-baseline.jq` confirms complete retained
+  QDC/EDID metadata equality between the accepted snapshots, including descriptor
+  contents. This closes the previous text-retention gap for these snapshots, not
+  physical reconnect, sleep or reboot stability.
+
+### Otherwise-empty-output scale measurement
+
+- The census requires a visible, nonminimized, uncloaked foreign top-level window
+  with positive-area geometry intersecting its assigned monitor; explicit shell
+  classes are counted separately. No titles/content are retained. B had zero
+  qualifying ordinary windows and zero unknown cloak reads; its remaining rows
+  were shell/cloaked surfaces. No foreign windows were moved or closed.
+- The final isolated cycle changed B from 100% -> 125% -> 100%, holding for 3 s,
+  with one correctly placed PMv2 observer per output. `scale-final-set.json`
+  records apply/readback match, restore return 0 and `restored:true`.
+  `observe-final.json` supplies the following apply-and-restore totals:
+
+| Observer | Effective DPI | WM_DPICHANGED | WM_DISPLAYCHANGE | WM_SETTINGCHANGE |
+| --- | --- | --- | --- | --- |
+| A, unchanged output | 120 throughout | 0 | 2 | 4 |
+| B, otherwise empty output | 96 -> 120 -> 96 | 2 | 2 | 4 |
+
+- Each DPI payload equals its native `GetDpiForWindow` readback. Native modes
+  remained unchanged throughout the scale stimulus. Offline comparisons confirm
+  original physical full/work rectangles, GDI modes/primary, metadata and DPI on
+  both outputs afterwards. Both observer HWNDs and both snapshots' transient
+  HWNDs were natively confirmed absent; foreground was unchanged. No remaining
+  probe process was reported.
+- Earlier preparation in the same child ran two restored scale cycles, only the
+  second observer-covered. Those are not pooled into the final cycle's counts.
+  Verdict: the per-output PMv2 producer and scale-only notification route fit,
+  including an otherwise-empty output under this explicit census oracle. This
+  does not establish every scaling route or empty-output resolution coverage.
+
+### Elevated-fixture attempt
+
+- External group: `elevmatrix-live-20261102-214941`. The single elevation launch
+  returned "The operation was canceled by the user." Retained status is
+  `uac-declined-or-launch-failed`; no numeric cancellation code was captured.
+  This is a canceled launch, not an observed per-API UIPI refusal.
+- The elevated fixture did not launch. No elevated HWND, matrix read/write,
+  native mutation or recovery occurred; no fixture process remained reported.
+  No second elevation prompt was issued.
+
+| Requested matrix portion | Result |
+| --- | --- |
+| Process open/image/creation/token integrity | Not measured: elevation launch canceled |
+| Style/exstyle/class/DWM frame/cloak/owner/parent/property reads | Not measured |
+| Move/topmost/property/hide-show/cloak writes and native readbacks | Not attempted |
+| Independent elevated restoration and protocol shutdown | Prepared and offline-tested only; not live-proven |
+
+- The external driver and native helpers were independently reviewed; targeted
+  corrections added per-mutation identity checks, original user/process/window
+  bindings and bounded protocol cleanup. Reported final helper build, nine tests
+  and both PowerShell parser checks passed. They are preparation evidence only;
+  no successful elevated-launch or cross-integrity result is claimed.
+- Ready state: display settings match the accepted baseline; read-only snapshots
+  can now bracket one physical action at a time. Physical lifecycle comparisons
+  and the canceled elevated matrix remain open. No contract/spec change follows.
+  A final direct invocation produced `snapshot-1793616902793-pid10080.json` after
+  the canceled elevation attempt: PMv2 verified, all transient HWNDs absent, and
+  both outputs' QDC/EDID metadata, physical full/work areas, modes/primary and
+  effective DPI equal to the accepted baseline.
+
+### Physical HDMI same-port reconnect
+
+- User-reported action: unplug B's HDMI cable at the PC end, wait about 10 s,
+  reconnect to the same port; both screens appeared normal. Read-only after-file:
+  `snapshot-1793617501278-pid13852.json`, in the same snapshot evidence child.
+  Compared with the accepted baseline using `compare-reconnect.jq`; both active
+  outputs present, PMv2 verified, transient observer HWNDs confirmed absent.
+
+| Field | Output A | Output B |
+| --- | --- | --- |
+| QDC/EDID manufacturer and product IDs, raw/canonical | Same | Same |
+| Header serial | Same | Same |
+| Descriptor text serial/model | Same | Same |
+| Connector instance | Same | Same (zero retained) |
+| Monitor device path | Same | Same |
+| DISPLAY ordinal | Same | Same |
+| Output technology | Same | Same |
+| Full rectangle / work area | Same / same | Same / same |
+| Primary / effective DPI | Same / same | Same / same |
+| Source and target adapter LUIDs | Same | Same |
+| Source ID / target ID | Same / same | Same / same |
+
+- B has exactly one physical-triple match; its unchanged adapter/target/connector
+  tuple also identifies one candidate. Thus both routes would pair B correctly
+  for this same-port reconnect; connector instance zero alone is not sufficient
+  provenance or a durability guarantee. No contract change is indicated.
+- No primary change or lasting relocation was observed: both ordinary windows
+  tracked by HWND/PID retained their rectangles and outputs versus the latest
+  pre-action snapshot. The disconnected interval and any transient relocation
+  were not observed. Other-port, identical-monitor, sleep and reboot legs remain
+  unmeasured.
+
+### Physical DisplayPort move to another port
+
+- User-reported action: move A's cable to another DisplayPort output on the same
+  GPU; both screens appeared normal. Read-only after-file:
+  `snapshot-1793621643164-pid13112.json`, compared with the accepted baseline by
+  physical triple. Two active outputs, PMv2 verified, transient HWNDs absent.
+
+| Field | Output A | Output B |
+| --- | --- | --- |
+| EDID manufacturer/product IDs, raw/canonical | Same | Same |
+| Header serial | Same | Same |
+| Descriptor text serial/model | Same | Same |
+| Connector instance | Changed | Same |
+| Monitor device path | Changed | Same |
+| DISPLAY ordinal | Same | Same |
+| Output technology | Same | Same |
+| Full rectangle / work area | Same / same | Same / same |
+| Primary / effective DPI / scale | Same / same / same | Same / same / same |
+| Source and target adapter LUIDs | Same | Same |
+| Source ID / target ID | Same / changed | Same / same |
+
+- A still has exactly one unchanged physical-triple match, while its old
+  adapter/target/connector tuple matches no current output. B's physical triple
+  and connection tuple both remain unchanged. This supports physical-first
+  matching and confirms the monitor device path is not port-independent identity.
+- Primary designation, output positions/arrangement, DPI and scale survived.
+  Both tracked ordinary HWND/PID pairs remain on their prior outputs compared
+  with the preceding HDMI after-snapshot. One outer rectangle is inset by 1 px
+  on each edge; the other's rectangle is unchanged. Cause and transient behavior
+  during the cable move were not observed; no corrective writes were performed.
+  Return to the original port, sleep and reboot comparisons remain open.
+
+### Physical DisplayPort return to original port
+
+- User-reported action: return A's cable to its original port; screens appeared
+  normal. Read-only after-file: `snapshot-1793621823847-pid12700.json`.
+  Compared with both the accepted baseline and the swapped-port snapshot above;
+  two active outputs, PMv2 verified, transient HWNDs confirmed absent.
+
+| Field | A vs baseline | A vs swapped port | B vs both |
+| --- | --- | --- | --- |
+| EDID manufacturer/product IDs | Same | Same | Same |
+| Header serial | Same | Same | Same |
+| Descriptor text serial/model | Same | Same | Same |
+| Connector instance | Same | Changed back | Same |
+| Monitor device path | Same | Changed back | Same |
+| DISPLAY ordinal | Same | Same | Same |
+| Output technology | Same | Same | Same |
+| Full rectangle / work area | Same | Same | Same |
+| Primary / effective DPI / scale | Same | Same | Same |
+| Source/target adapter LUIDs | Same | Same | Same |
+| Source ID | Same | Same | Same |
+| Target ID | Same | Changed back | Same |
+
+- A's original connection tuple returned exactly, with one baseline connection
+  match; its physical triple continued to pair uniquely throughout. Primary,
+  arrangement, DPI and scale remained unchanged. Both tracked windows stayed on
+  their prior outputs and retained the swapped snapshot's outer rectangles: the
+  previously observed 1 px inset persisted, without further drift. No corrective
+  writes or other persistent anomalies were observed. Sleep/reboot and
+  identical-monitor fallback remain unmeasured.
+
+### Physical sleep/resume
+
+- User-reported action: Start > Power > Sleep, wait about 15 s, wake by mouse;
+  screens appeared normal. Read-only after-file:
+  `snapshot-1793621951225-pid20752.json`. Two active outputs, PMv2 verified,
+  transient HWNDs absent; comparison used the accepted physical baseline.
+
+| Field | Output A | Output B |
+| --- | --- | --- |
+| EDID manufacturer/product IDs | Same | Same |
+| Header serial | Same | Same |
+| Descriptor text serial/model | Same | Same |
+| Connector instance | Same | Same |
+| Monitor device path | Same | Same |
+| DISPLAY ordinal | Same | Same |
+| Output technology | Same | Same |
+| Full rectangle / work area | Same | Same |
+| Primary / effective DPI / scale | Same | Same |
+| Source/target adapter LUIDs | Same | Same |
+| Source ID / target ID | Same | Same |
+
+- Both physical triples and original connection tuples still match uniquely.
+  Arrangement/primary/DPI survived; both tracked windows retained their outputs
+  and outer rectangles versus the pre-sleep return snapshot. The 1 px inset
+  therefore persisted, with no further drift or corrective writes.
+- Read-only System-log evidence, retained externally as
+  `sleep-resume-events.json`, contains Kernel-Power 42 and 107 plus
+  Power-Troubleshooter 1 for this transition. The latter's SleepTime/WakeTime
+  span 25.455 s, confirming a logged sleep/resume cycle; this timestamp interval
+  is not an independently measured low-power residence duration. Raw transition
+  timing fields are retained without conflating them with sleep residence.
+- Reboot remains unmeasured. The external snapshot executable is an ordinary
+  on-disk file, not session memory, but resides under temporary storage: a normal
+  reboot does not inherently remove it, while temporary-file cleanup may. Exact
+  invocation, evidence paths, baseline/latest filenames and artifact hash are
+  retained in external reboot-continuation notes, not repository-local paths.
+
+### Elevated-fixture retry: server launched, matrix not reached
+
+- External group: `elevmatrix-live-20261102-232445`. Elevation launch succeeded
+  and the fixture server announced its pipe/PID, but the prepared sender produced
+  empty spawn/get replies. The controller stopped with `get did not return
+  exactly one ok window` before matrix entry or any native window write.
+  `elev-get.json` is empty apart from encoding/newline; client exit codes/stderr
+  were not retained. Native argument quoting is a suspected transport fault,
+  not a measured UIPI or native-API refusal.
+
+| Requested API group | Result / error |
+| --- | --- |
+| OpenProcess / image / creation / token integrity | Matrix not reached; no per-API error captured |
+| Style/exstyle / class / DWM extended frame / cloak | Not measured |
+| Owner / parent / window-property read | Not measured |
+| Move / TOPMOST set-clear / SetProp-remove | Not attempted |
+| Hide-show / cloak set-clear | Not attempted |
+
+- The controller's finally-path shutdown also returned an empty reply and left
+  the server alive. Separate medium-integrity cleanup checked the original
+  PID/start/session and announcement binding, then sent one serializer-built
+  authenticated request directly through the announced named pipe. A first
+  cleanup setup failed before sending because stream `ReadTimeout` was unsupported;
+  bounded asynchronous read replaced it without repeating a semantic request.
+- `cleanup.json` retains the successful reply: `open_windows:0` and
+  `shutting_down:true`, followed by verified exact-PID absence. Thus no fixture
+  window/preimage required restoration; independent native restoration remains
+  unexercised, not passed. No elevated fixture residue was reported. Direct
+  protocol shutdown succeeded; it is not evidence about window-write permissions.
+- An additional offline driver defect was identified: its `0u` literal is
+  unsupported by the invoked host shell; `[uint32]0` is required. That later
+  enumeration branch was not reached. Sender transport and shell defects must
+  be corrected before relying on this driver for a native matrix.
+- Contract impact: no permission matrix established. Missing/unreadable facts
+  remain unknown/null, never fabricated false. A per-window denial would not
+  justify route-wide `unavailableFacts`; that list describes absent producers.
+  This setup failure establishes neither denial nor unavailability.
+
+### Elevated harness transport diagnosis
+
+- Scope: reproduce the failed launch/controller/spawn/get sequence using only
+  medium-integrity fixture processes; retain actual client arguments, exits,
+  stdout/stderr and window readbacks, then correct the external harness without
+  changing its elevated-only mutation guards. No elevated launch is part of this
+  diagnosis.
+- **Measured cause:** the legacy positional-JSON native call under Windows
+  PowerShell returned exit 1, zero stdout, and `send: invalid JSON payload: key
+  must be a string at line 1 column 2`. The identical JSON delivered through stdin
+  succeeds. This isolates native-argument quote loss, not window creation or
+  working-directory dependence. `legacy-rc-capture` retains the reproduction.
+  The earlier elevated run did not retain its native stderr, so attribution of
+  that historical empty reply uses this reproducer, not a recovered old error.
+- Error handling amplified the fault: with `ErrorActionPreference=Stop`, native
+  stderr can throw before the exit-code capture. The repaired canonical external
+  `Invoke-ElevMatrix.ps1` supplies JSON through the existing client's stdin,
+  captures stderr and immediate exit code under function-local `Continue`, and
+  throws an explicit request/exit/error diagnostic. Per-request logs retain
+  response status and lengths without nonce text. Unsupported `0u` literals were
+  replaced with `[uint32]0`.
+- A medium launch with spaces in its path also exposed unquoted `Start-Process
+  -ArgumentList` values. Both controller launch branches now use absolute
+  executable/controller/output paths, quoted `-File`/`-OutDir` values and explicit
+  working directories. The canonical driver is fixed in place; the old broken
+  copy is clearly suffixed, with no second active fixed variant.
+- Early isolated-script proofs established the transport cause but did not
+  establish the actual controller sequence. The accepted proof uses the real
+  extracted controller through fixture startup, the unchanged spawn/get requests,
+  and PID/title/HWND discovery, with a medium transport-proof mode that exits
+  before the elevated-only owner/matrix stages. Native integrity guards remain
+  unchanged.
+- Accepted evidence: `med proof spaced/run 2`. All six actual controller requests
+  (spawn, get, list, close, list, shutdown) returned exit 0, `ok:true`, empty
+  stderr. Exactly one visible fixture window matched announcement, protocol
+  snapshot and native HWND/PID/title observations. Close emptied the roster;
+  shutdown returned `open_windows:0`, and fixture-PID/HWND absence was verified.
+  The controller log completes cleanup. `controller_gone:false` in the wrapper
+  status was sampled before that finally-path finished; later controller absence
+  was reported, not separately retained as a machine-response artifact.
+- Independent offline review confirmed the same-controller path, quoted absolute
+  launch arguments, no elevation in proof mode, preserved high-integrity guards,
+  six successful retained replies and zero parser errors. It found no blocker to
+  the next elevated transport attempt. Elevated owner capture/dry-run, API matrix,
+  restoration and watchdog behavior remain untested by this medium proof.
+- The prior medium direct-pipe shutdown already showed that the old elevated
+  endpoint was reachable for that operation; no alternative window-creation
+  design is needed on evidence collected so far. No general cross-integrity
+  native-window permission claim or contract change follows.
+
+### Elevated fixed-harness matrix: measured, with acceptance limitations
+
+- External group: `elevmatrix-fixed-retry-01`; one elevated launch reached the
+  matrix and protocol shutdown. The wrapper returned exit 0 and
+  `completed-clean`; that status establishes neither full restore acceptance nor
+  authoritative error reporting for every API. No further run followed.
+- Reference revision: `fa318dbb8b85977bd16274094b7ede1b3e962e93`.
+  Post-run independently hashed artifacts, not launch-time attestations:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `tiler-live-fixture.exe` | `4a3845830a6ef1ea1858ba26a38dd9c227a385886223f40f9cb797eee4d3c509` |
+| `fixture-matrix.exe` | `2c2b9b5485c58db2836af67b919079cd2fd774301aae309b54f6effb0b6db280` |
+| `fixture-owner.exe` | `61e9d0e969073bb5c08ade66ff5f71f5f16d6dd9d2c66152d0aae34a27e67a3f` |
+
+- Native matrix reads report caller integrity RID 8192 and target RID 12288.
+  Original executable/process-creation/session/user/HWND/full sentinel identity
+  matched at entry and all eight medium per-mutation gates. Elevated final
+  restoration gates also matched. Exact identities remain external.
+- `matrix-read.json` and `matrix-write.json` retain the following results.
+  `le` below means captured Win32 last-error, not necessarily an API-defined
+  error channel. Successful DWM reads establish HRESULT success, not a meaning
+  for their incidental `le=0`.
+
+| Read API / fact | Measured result |
+| --- | --- |
+| `OpenProcess` limited-query/synchronize; image, creation, token integrity/user, session; HWND PID/title | Succeeded and matched original identity; elevated integrity was read, not inferred from a filter |
+| `GetWindowLongPtrW` style/exstyle | Nonzero readable values, checked last-error 0; topmost=false |
+| `GetClassNameW`, `GetWindowTextW` | Nonempty class and exact fixture sentinel |
+| `GetWindowRect`, `GetClientRect` | Successful rectangle reads |
+| `DwmGetWindowAttribute` extended frame / cloaked | Both succeeded; frame readable, cloak mask 0 |
+| `IsWindowVisible` | true |
+| `GetWindow(GW_OWNER)`, `GetParent` | NULL handles with last-error 0; no non-null relationship binding tested; no owner-as-parent inference |
+| `GetPropW` fresh run-tag property | NULL, captured last-error 2; NULL alone is absence-or-failure, not a denied-read classification |
+
+| Medium-to-high write API | Return / captured error | Observed result |
+| --- | --- | --- |
+| `SetWindowPos` modest move | Failed, last-error 5 (`ERROR_ACCESS_DENIED`) | Same-reader outer rectangle unchanged |
+| `SetWindowPos` TOPMOST / NOTOPMOST | Both failed, last-error 5 | Exstyle unchanged; topmost=false throughout |
+| `SetPropW` nonzero scalar | Failed, last-error 5 | No nonzero property value read back |
+| `RemovePropW` | Failed/NULL, captured last-error 2 | Still NULL; no successful set preceded it |
+| `ShowWindow` hide / show | Previous-visibility return false for both; captured last-error 5 for both | Visibility true before, between and after; no hide/show roundtrip occurred |
+| `DwmSetWindowAttribute` cloak / clear | Both HRESULT failures; HRESULT values discarded. Captured last-errors 0 / 6 are not authoritative DWM failure codes | Cloak mask 0 before, between and after; no cloak effect observed |
+
+- No successful medium mutation required reversal. Failed writes plus unchanged
+  readbacks support the measured denial/no-effect outcomes, not a universal
+  elevated-window permission matrix. `ShowWindow` returns previous visibility,
+  not success; the unchanged visibility is the effect evidence. DWM failures
+  cannot be labeled access-denied or invalid-handle from these last-errors.
+- **Independent restore prerequisite not established.** The controller captured
+  `preimage.json`, ran an elevated idempotent dry-run before medium writes, and
+  logged exit 0. However, its argument list supplied `--out` twice and the native
+  parser takes the first occurrence. Capture, dry-run and final restore all wrote
+  `owner-capture.json`, overwriting earlier reports. Nominal `owner-dryrun.json`
+  and `owner-restore.json` do not exist; only the final restore report survives.
+- Source inspection additionally found that the recoverer records post-state but
+  does not compare it with the preimage before returning 0. It also returns 0
+  after a mid-restore identity refusal. Thus dry-run exit 0 and wrapper
+  `values-restored` are not semantic restore proofs. This is an unresolved
+  harness acceptance defect, not a passing recovery test.
+- Final retained `owner-capture.json` records successful geometry/level calls,
+  visible=true, unchanged style/exstyle/client/outer values, cloak mask 0 and
+  NULL property readback matching their preimages. Its cloak write failed even
+  at high integrity, with the HRESULT again discarded. No successful cloak or
+  nonzero-property restore was exercised. DWM bottom differs by 1 px from the
+  initial preimage; its cause was not isolated. Neither native helper establishes
+  PMv2, so compare only intra-API readings; exact physical geometry restoration
+  is not accepted from this leg.
+- **Shutdown established.** Main authenticated fixture `shutdown` returned exit
+  0, `ok:true`, empty stderr. Spawn/get also returned exit 0 and `ok:true`.
+  `elev-done.json` and `status.json` report fixture absence; the controller log
+  subsequently confirms process absence and no matching fixture HWND. A later
+  read-only process check also found the fixture and native helpers absent.
+  Redundant finally-path shutdown returned connection error 2 after the pipe
+  was gone; it does not invalidate the successful main shutdown. No fixture
+  residue remains reported.
+- Independent offline review confirmed the matrix/artifacts and identified the
+  overwrite and exit-status defects. No corrective live rerun was performed.
+- **Contract comparison:** readable privileged/executable/style/class facts must
+  retain their measured values; this target's privilege is true, not false.
+  Supported-but-unreadable facts remain null and hold only dependent actions.
+  Write denial does not negate a readable fact or justify a new route-wide
+  `unavailableFacts` entry. Existing absent-producer declarations remain as in
+  the contract; this standalone reader does not install production producers.
+  No contract shape change is established. Options are to retain these qualified
+  measurements with recovery/error-detail gaps open, or obtain stronger evidence
+  later with distinct report paths, retained HRESULTs, checked postconditions and
+  PMv2. Broader elevated control is not supported by this run.
+
+### Physical reboot comparison (2026-11-03)
+
+- User-reported action: reboot, sign in, confirm both screens normal; monitors
+  left unchanged. The retained snapshot binary was present, so no rebuild was
+  needed. The stable read-only command returned exit 0 and created
+  `snapshot-1793624674297-pid6716.json` in the existing snapshot evidence child.
+  Artifact hash matches the accepted pre-reboot hash above; two outputs,
+  effective PMv2 verified, all transient own HWNDs natively confirmed absent.
+- Compared with both accepted baseline `snapshot-1793615579607-pid20520.json`
+  and latest pre-reboot `snapshot-1793621951225-pid20752.json`, pairing by
+  canonical manufacturer/product/header-serial triple. Each baseline output has
+  exactly one post-reboot match; no duplicate triples or zero identity fields.
+  Numeric serial alone remains duplicated across the two outputs.
+- External comparison artifacts: `reboot-compare-fields.jq`,
+  `reboot-compare-vs-baseline-1793624674297.json` and
+  `reboot-compare-vs-presleep-1793624674297.json`. The latter filename refers to
+  the latest pre-reboot sleep/resume snapshot, not a pre-sleep sample. Both
+  comparisons have the same field-level outcome:
+
+| Field | Output A | Output B |
+| --- | --- | --- |
+| EDID manufacturer/product IDs, raw/canonical | Same | Same |
+| Header numeric serial | Same | Same |
+| Descriptor text serial/model | Same | Same |
+| Connector instance | Same | Same |
+| Monitor device path | Same | Same |
+| DISPLAY ordinal | Same | Same |
+| Output technology | Same | Same |
+| Physical full rectangle / work area | Same / same | Same / same |
+| Primary / effective DPI / scale | Same / same / same | Same / same / same |
+| Source adapter LUID | Changed | Changed |
+| Target adapter LUID | Changed | Changed |
+| Source ID / target ID | Same / same | Same / same |
+
+- Physical metadata, arrangement, primary, work areas and DPI survived this
+  reported reboot. Source/target adapter LUIDs changed as expected; the old
+  adapter/target/connector tuple therefore matches neither current output even
+  though both physical triples pair uniquely. LUIDs are not durable physical
+  identity keys. No HWND/PID continuity was inferred across reboot, and no
+  foreign-window restoration or display-setting write was performed.
+
+### Physical-check series closing summary
+
+| Leg | Accepted observation / remaining limit |
+| --- | --- |
+| HDMI same-port replug | Physical and connection metadata, arrangement and DPI unchanged after reconnect; disconnected interval unobserved |
+| DP alternate port | Physical triple/text serial stable; device path, connector instance and target ID changed; physical-first pairing remained unique |
+| DP original-port return | Original connection tuple returned; arrangement/DPI retained; prior 1 px ordinary-window inset persisted without further drift |
+| Sleep/wake | Output metadata, arrangement and DPI unchanged; logged sleep/resume corroborated the user report, not independently measured residence |
+| Reboot | Physical triple/text metadata, arrangement and DPI stable; source/target adapter LUIDs changed; unique physical pairing survived |
+| Otherwise-empty-output DPI | Explicit census established empty B; scale-only 100% -> 125% -> 100% delivered per-output DPI messages and restored settings; not every scaling path or empty-output resolution coverage |
+| Elevated fixture | Metadata readable; tested medium writes denied or had no observed effect; protocol shutdown/absence established. Restore prerequisite, exact physical geometry and DWM failure HRESULTs remain unaccepted |
+
+- **Contract impact: no shape change.** These observations support nullable raw
+  physical metadata, physical-first unique-triple matching, ambiguous holds and
+  per-output DPI/96. They do not prove uniqueness for identical monitors or a
+  durable normalized connector fallback. Preserve null for absent/unreadable
+  serial/connector facts instead of inventing a key.
+- Adapter LUIDs, source/target IDs, DISPLAY ordinals and connector instance alone
+  must not be persistent physical-monitor identity keys; nor may a port-dependent
+  device path, duplicate numeric serial alone, geometry, primary or DPI stand in
+  for physical identity. Connection metadata can describe the current route,
+  not promise monitor continuity across port moves or reboot. Both physical
+  triples happened to be unique here; ambiguous/identical cases remain open.
+- Elevated read success is not write authority. Supported unreadable window
+  facts stay null, never false; per-window refusal does not add an
+  `unavailableFacts` entry. Existing missing-producer declarations and product
+  safety gates remain unchanged. This physical-check sequence is measured, but
+  the wider native investigation remains open for its stated evidence and
+  production-integration gaps.
+
 ## Proposed discriminators (not spec edits)
 
 | Minimal action sequence | Distinction to measure | Unsupported outcome |
@@ -670,11 +1166,11 @@ observations. The later Rust results above are the current measurement summary.
 | Settle production float/sticky on admitted fixture; stop/restore; restart scoped owner; separately settle removal and restart again | Surviving on-window marker adoption versus settled removal; absent after recreation is not stale-record rejection | Real restart adoption/removal and forced-loss survival TBD |
 | Capture accepted border witness; move/resize fixture, then change focus/style/visibility without a new reply | Anchor-only motion versus eligibility invalidation tied to captured observation | K5 causal join, missed-event and physical lag outcomes TBD |
 | Hide tagged fixture; move it across outputs while hidden; bracket output/frame/visibility/lifetime before reveal and focus | Actual hidden arrival versus requested/logical home or changed lifetime | Exact W2 arrival/focus and forced-loss suppression recovery TBD |
-| Query otherwise equivalent medium and user-launched elevated fixture windows, with checked API errors; normalize synthetic non-ASCII/dot-segment identities | Supported unreadable facts versus unavailable route facts; ASCII-only normalization | Cross-integrity read/write matrix and denial handling TBD |
+| Query otherwise equivalent medium and user-launched elevated fixture windows, with checked API errors; normalize synthetic non-ASCII/dot-segment identities | Supported unreadable facts versus unavailable route facts; ASCII-only normalization | Elevated metadata reads and access-denied/no-effect writes measured; DWM failure HRESULTs, independent restore proof and production denial handling TBD |
 | Create dedicated windowed DXGI subject, pump/focus, request current-mode fullscreen, read grant/output, request windowed and compare baseline | Fullscreen request/grant versus actual presentation path and app restore semantics | Legacy-exclusive/FSO classification and tiler exitability TBD; API grant measured separately |
 | Persist normal, maximized and minimized suppression preimages; force writer loss while hidden; restore in a fresh process | Ordinary windowed reveal versus exact non-normal show-state restoration | Non-normal suppression recovery and product watcher integration TBD; normal standalone case measured |
-| Read physical output metadata in two processes; power-cycle, reconnect/swap ports, sleep/wake and reboot separately; repeat with identical monitors or missing serial | Physical triple versus connection fallback, duplicate serials and ambiguous reconnect | Process-read stability measured; durable connector normalization, text-serial stability and lifecycle matching TBD |
-| Leave an output without ordinary application windows; prove that condition per output; create its PMv2 observer; change only its scale, restore, then change resolution and restore | Output-owned DPI notification versus dependence on application windows or resolution-only events | Two-output observer notifications measured; otherwise-empty-output acceptance TBD |
+| Read physical output metadata in two processes; physically power-cycle, reconnect/swap ports, sleep/wake and reboot separately; repeat with identical monitors or missing serial | Physical triple versus connection fallback, duplicate serials and ambiguous reconnect | Process/text-serial stability, HDMI reconnect, DP move/return, sleep/resume and reboot measured; reboot changed adapter LUIDs; durable connector/identical-monitor matching and other lifecycle cases TBD |
+| Leave an output without ordinary application windows; prove that condition per output; create its PMv2 observer; change only its scale, restore, then change resolution and restore | Output-owned DPI notification versus dependence on application windows or resolution-only events | Otherwise-empty-output scale/DPI notifications measured; resolution coverage on that empty output TBD |
 
 ## Contract impact and exact next action
 
@@ -691,8 +1187,15 @@ observations. The later Rust results above are the current measurement summary.
   against production paths. Standalone probes are not that acceptance.
 - Remaining native/user acceptance includes actual HWND reuse/tag mismatch,
   cross-output hidden arrival, non-normal suppression recovery, application
-  fullscreen exitability/presentation behavior, physical input and the separately
-  launched elevated-fixture API matrix. The output follow-up also leaves durable
-  connector/identical-monitor and lifecycle matching, text-serial stability and
-  otherwise-empty-output DPI coverage open. Displays were physically woken and
-  confirmed normal after the power leg. No v4 production port work is included.
+  fullscreen exitability/presentation behavior and physical input. The fixed
+  elevated-fixture matrix now has qualified read/write results and clean
+  shutdown; its independent restore prerequisite, physical geometry proof and
+  DWM failure details remain unaccepted for the reasons above.
+  Durable connector/identical-monitor matching and untested lifecycle cases
+  remain open. Repeatable snapshots retain text serials and physical geometry;
+  otherwise-empty-output scale/DPI delivery and restoration were measured.
+  Replug, port swap/return, sleep/wake and reboot comparisons in this sequence
+  are now measured, with the elevated limitations above still unresolved.
+  Displays were confirmed normal after reboot; the earlier monitor-power
+  restoration failure remains a rejected result, not rehabilitated by this
+  series. No v4 production port work is included.
