@@ -183,6 +183,38 @@ pub enum Command {
         caller: String,
         wid: u32,
     },
+    FixtureZoomPress {
+        announcement_file: String,
+        caller: String,
+        wid: u32,
+        signer: String,
+    },
+    FixtureMenuPress {
+        announcement_file: String,
+        caller: String,
+        wid: u32,
+        item: String,
+        signer: String,
+    },
+    FixtureFrameWrite {
+        announcement_file: String,
+        caller: String,
+        wid: u32,
+        x: String,
+        y: String,
+        w: String,
+        h: String,
+        signer: String,
+    },
+    FixtureFrameSample {
+        announcement_file: String,
+        caller: String,
+        wid: u32,
+        duration_ms: u64,
+        interval_ms: u64,
+        max_samples: u64,
+        signer: String,
+    },
     FixtureLeg {
         seconds: u64,
         chords: Vec<String>,
@@ -264,8 +296,16 @@ pub enum Command {
         seconds: u64,
     },
     McInspect,
+    ProcIdentity {
+        pid: u32,
+    },
     SpacesGrabDiagnose,
     CgInspect,
+    CgDiff {
+        before: String,
+        after: String,
+        benign_pids: Vec<u32>,
+    },
     McRemoveEmpty {
         space: u64,
         allow_untested: bool,
@@ -587,6 +627,32 @@ pub fn help_text() -> String {
               \x20 fixture-focus --announcement JSON --nonce HEX --signer REQUIREMENT --caller ID --wid WID\n\
               \x20 \x20 (REFUSED outside the leg controller like fixture-post;\n\
               \x20 \x20 use fixture-leg below)\n\
+              \x20 fixture-zoom-press --announcement-file PATH --caller ID --wid WID --signer REQUIREMENT\n\
+              \x20 \x20 (development-only standalone button diagnostic: fresh\n\
+              \x20 \x20 signed-fixture proof plus exactly one native AXZoomButton\n\
+              \x20 \x20 AXPress with before/after facts; no input synthesis, no\n\
+              \x20 \x20 menu traversal; MAY ENTER FULLSCREEN; one press per invocation)\n\
+              \x20 fixture-menu-press --announcement-file PATH --caller ID --wid WID --item zoom|fill|tile-left|tile-right|return --signer REQUIREMENT\n\
+              \x20 \x20 (development-only standalone menu diagnostic: fresh\n\
+              \x20 \x20 signed-fixture proof plus selected-focus agreement plus\n\
+              \x20 \x20 exactly one Window-menu AXPress with before/after\n\
+              \x20 \x20 inventory; fixed five-item vocabulary, no input\n\
+              \x20 \x20 synthesis; one press per invocation)\n\
+              \x20 fixture-frame-write --announcement-file PATH --caller ID --wid WID --x X --y Y --width W --height H --signer REQUIREMENT\n\
+              \x20 \x20 (development-only standalone frame diagnostic: fresh\n\
+              \x20 \x20 signed-fixture proof plus exactly one cross-process\n\
+              \x20 \x20 AXPosition/AXSize write with before/after frame facts;\n\
+              \x20 \x20 ordinary bounded frame only, no button press, no menu\n\
+              \x20 \x20 traversal, no input synthesis; per-leg statuses, no\n\
+              \x20 \x20 replay, no automatic restore; one write per invocation)\n\
+              \x20 fixture-frame-sample --announcement-file PATH --caller ID --wid WID --signer REQUIREMENT [--duration-ms N] [--interval-ms N] [--max-samples N]\n\
+              \x20 \x20 (development-only read-only frame sampler: fresh\n\
+              \x20 \x20 signed-fixture proof plus bounded timestamped AX-frame\n\
+              \x20 \x20 samples off the retained joined window on the shared\n\
+              \x20 \x20 host monotonic clock; defaults 5000ms/20ms/256, caps\n\
+              \x20 \x20 5000/1000/256; run concurrently with exactly one\n\
+              \x20 \x20 action invocation and join stamps offline; no writes,\n\
+              \x20 \x20 no press, no focus changes, no input synthesis)\n\
               \x20 fixture-leg --chord NAME [--chord NAME ...] --signer REQUIREMENT [--seconds N] [--preset compatible|authentic]\n\
               \x20 \x20 (development-only fixture leg: the complete controller\n\
               \x20 \x20 entry from baseline through owned shutdown. Captures\n\
@@ -643,6 +709,7 @@ pub fn help_text() -> String {
             \x20 \x20 no warp/click); creates/destroys no Space, performs no SLS\n\
             \x20 \x20 move, posts no tap input; explicit opt-in per invocation)\n\
              \x20 cg-inspect (read-only unfiltered title-free window snapshot)\n\
+             \x20 cg-diff --before PATH --after PATH [--benign-pid PID ...] (read-only title-free compare over two cg-inspect dumps: missing/added/drifted windows; exit 1 on drift, never clean over roster changes; a listed pid's offscreen identical-geometry replacement classifies as benign host churn with the raw roster retained)\n\
              \x20 mc-remove-empty --space SID --allow-untested (one exact noncurrent empty user SID, no broad cleanup)\n\
              \x20 spaces-select [--display N] --action ID [--action ID ...]\n\
              \x20 \x20 (select-only batch, e.g. workspace-select-0, workspace-select-1, workspace-previous; changes persist, history lasts this invocation; the product tile arms the 18 existing-Space selects as hotkeys, trailing select-0 stays explicit-only)\n\
@@ -704,6 +771,11 @@ pub fn help_text() -> String {
             \x20 \x20 (read-only Mission Control probe: session lock, AX trust, Dock\n\
             \x20 \x20 identity, MC-group presence, sanitized topology; no launch, no\n\
             \x20 \x20 traversal past presence, no writes, no synthetic events)\n\
+            \x20 proc-identity --pid PID\n\
+            \x20 \x20 (read-only process/login-namespace identity: target bundle plus\n\
+            \x20 \x20 LaunchServices launch date (null when never launched through\n\
+            \x20 \x20 LaunchServices) beside this observer's own audit user/session\n\
+            \x20 \x20 ids from getaudit_addr(2); no titles/content/paths, no writes)\n\
             \x20 workspace-indicator-status\n\
             \x20 \x20 (read-only indicator dump: fresh single-display user row plus\n\
             \x20 \x20 per-row occupancy/current/selectable (ordinals and counts only,\n\
@@ -1845,6 +1917,275 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 wid: parsed.4,
             }
         }
+        "fixture-zoom-press" => {
+            // Development-only standalone zoom diagnostic: the serve
+            // announcement arrives as a file (socket/pid/nonce source; the
+            // nonce exchange over the socket proves the run live), plus the
+            // selected caller id, the exact target wid, and the expected
+            // designated requirement. Button-only vocabulary, no chords or
+            // menu traversal; the native effect may be fullscreen.
+            // All four flags required.
+            let mut announcement_file: Option<String> = None;
+            let mut caller: Option<String> = None;
+            let mut wid: Option<u32> = None;
+            let mut signer: Option<String> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--announcement-file" => {
+                        j += 1;
+                        announcement_file = Some(
+                            args.get(j)
+                                .ok_or("--announcement-file needs a value")?
+                                .clone(),
+                        );
+                    }
+                    "--caller" => {
+                        j += 1;
+                        caller = Some(args.get(j).ok_or("--caller needs a value")?.clone());
+                    }
+                    "--wid" => {
+                        j += 1;
+                        wid = Some(parse_u32(
+                            args.get(j).ok_or("--wid needs a value")?,
+                            "--wid",
+                        )?);
+                    }
+                    "--signer" => {
+                        j += 1;
+                        signer = Some(args.get(j).ok_or("--signer needs a value")?.clone());
+                    }
+                    other => return Err(format!("fixture-zoom-press: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::FixtureZoomPress {
+                announcement_file: announcement_file
+                    .ok_or("fixture-zoom-press needs --announcement-file")?,
+                caller: caller.ok_or("fixture-zoom-press needs --caller")?,
+                wid: wid.ok_or("fixture-zoom-press needs --wid")?,
+                signer: signer.ok_or("fixture-zoom-press needs --signer")?,
+            }
+        }
+        "fixture-menu-press" => {
+            // Development-only standalone menu diagnostic: the serve
+            // announcement arrives as a file (socket/pid/nonce source; the
+            // nonce exchange over the socket proves the run live), plus the
+            // selected caller id, the exact target wid, the fixed-vocabulary
+            // item key, and the expected designated requirement. All five
+            // flags required; the item key is validated here (exactly
+            // zoom|fill|tile-left|tile-right|return), so unknown slots,
+            // chords, or action vocabulary refuse at parse.
+            let mut announcement_file: Option<String> = None;
+            let mut caller: Option<String> = None;
+            let mut wid: Option<u32> = None;
+            let mut item: Option<String> = None;
+            let mut signer: Option<String> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--announcement-file" => {
+                        j += 1;
+                        announcement_file = Some(
+                            args.get(j)
+                                .ok_or("--announcement-file needs a value")?
+                                .clone(),
+                        );
+                    }
+                    "--caller" => {
+                        j += 1;
+                        caller = Some(args.get(j).ok_or("--caller needs a value")?.clone());
+                    }
+                    "--wid" => {
+                        j += 1;
+                        wid = Some(parse_u32(
+                            args.get(j).ok_or("--wid needs a value")?,
+                            "--wid",
+                        )?);
+                    }
+                    "--item" => {
+                        j += 1;
+                        let raw = args.get(j).ok_or("--item needs a value")?;
+                        crate::fixture_menu::parse_menu_item(raw)?;
+                        item = Some(raw.clone());
+                    }
+                    "--signer" => {
+                        j += 1;
+                        signer = Some(args.get(j).ok_or("--signer needs a value")?.clone());
+                    }
+                    other => return Err(format!("fixture-menu-press: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::FixtureMenuPress {
+                announcement_file: announcement_file
+                    .ok_or("fixture-menu-press needs --announcement-file")?,
+                caller: caller.ok_or("fixture-menu-press needs --caller")?,
+                wid: wid.ok_or("fixture-menu-press needs --wid")?,
+                item: item.ok_or("fixture-menu-press needs --item")?,
+                signer: signer.ok_or("fixture-menu-press needs --signer")?,
+            }
+        }
+        "fixture-frame-write" => {
+            // Development-only standalone frame diagnostic: the serve
+            // announcement arrives as a file (socket/pid/nonce source; the
+            // nonce exchange over the socket proves the run live), plus the
+            // selected caller id, the exact target wid, the requested
+            // ordinary frame in screen points, and the expected designated
+            // requirement. Frame-only vocabulary (no --chord, no button,
+            // menu, or fullscreen flags). All eight flags required.
+            let mut announcement_file: Option<String> = None;
+            let mut caller: Option<String> = None;
+            let mut wid: Option<u32> = None;
+            let mut x: Option<String> = None;
+            let mut y: Option<String> = None;
+            let mut w: Option<String> = None;
+            let mut h: Option<String> = None;
+            let mut signer: Option<String> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--announcement-file" => {
+                        j += 1;
+                        announcement_file = Some(
+                            args.get(j)
+                                .ok_or("--announcement-file needs a value")?
+                                .clone(),
+                        );
+                    }
+                    "--caller" => {
+                        j += 1;
+                        caller = Some(args.get(j).ok_or("--caller needs a value")?.clone());
+                    }
+                    "--wid" => {
+                        j += 1;
+                        wid = Some(parse_u32(
+                            args.get(j).ok_or("--wid needs a value")?,
+                            "--wid",
+                        )?);
+                    }
+                    // Raw strings stay raw so `Command` keeps its `Eq`
+                    // derive; values are validated numeric here and parsed
+                    // to `f64` at dispatch. Same shape as `DragCli`.
+                    "--x" => {
+                        j += 1;
+                        let raw = args.get(j).ok_or("--x needs a value")?;
+                        x = Some(parse_f64(raw, "--x")?.to_string());
+                    }
+                    "--y" => {
+                        j += 1;
+                        let raw = args.get(j).ok_or("--y needs a value")?;
+                        y = Some(parse_f64(raw, "--y")?.to_string());
+                    }
+                    "--width" => {
+                        j += 1;
+                        let raw = args.get(j).ok_or("--width needs a value")?;
+                        w = Some(parse_f64(raw, "--width")?.to_string());
+                    }
+                    "--height" => {
+                        j += 1;
+                        let raw = args.get(j).ok_or("--height needs a value")?;
+                        h = Some(parse_f64(raw, "--height")?.to_string());
+                    }
+                    "--signer" => {
+                        j += 1;
+                        signer = Some(args.get(j).ok_or("--signer needs a value")?.clone());
+                    }
+                    other => return Err(format!("fixture-frame-write: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::FixtureFrameWrite {
+                announcement_file: announcement_file
+                    .ok_or("fixture-frame-write needs --announcement-file")?,
+                caller: caller.ok_or("fixture-frame-write needs --caller")?,
+                wid: wid.ok_or("fixture-frame-write needs --wid")?,
+                x: x.ok_or("fixture-frame-write needs --x")?,
+                y: y.ok_or("fixture-frame-write needs --y")?,
+                w: w.ok_or("fixture-frame-write needs --width")?,
+                h: h.ok_or("fixture-frame-write needs --height")?,
+                signer: signer.ok_or("fixture-frame-write needs --signer")?,
+            }
+        }
+        "fixture-frame-sample" => {
+            // Development-only read-only frame sampler: the serve
+            // announcement arrives as a file (socket/pid/nonce source; the
+            // nonce exchange over the socket proves the run live), plus the
+            // selected caller id, the exact target wid, and the expected
+            // designated requirement. Sample-only vocabulary (no --chord,
+            // no button, menu, frame, or fullscreen flags). The four
+            // identity flags are required; the three pacing bounds are
+            // optional (defaults 5000ms/20ms/256) and range-refused by the
+            // sampler module.
+            let mut announcement_file: Option<String> = None;
+            let mut caller: Option<String> = None;
+            let mut wid: Option<u32> = None;
+            let mut duration_ms = crate::fixture_sample::SAMPLE_DEFAULT_DURATION_MS;
+            let mut interval_ms = crate::fixture_sample::SAMPLE_DEFAULT_INTERVAL_MS;
+            let mut max_samples = crate::fixture_sample::SAMPLE_DEFAULT_MAX;
+            let mut signer: Option<String> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--announcement-file" => {
+                        j += 1;
+                        announcement_file = Some(
+                            args.get(j)
+                                .ok_or("--announcement-file needs a value")?
+                                .clone(),
+                        );
+                    }
+                    "--caller" => {
+                        j += 1;
+                        caller = Some(args.get(j).ok_or("--caller needs a value")?.clone());
+                    }
+                    "--wid" => {
+                        j += 1;
+                        wid = Some(parse_u32(
+                            args.get(j).ok_or("--wid needs a value")?,
+                            "--wid",
+                        )?);
+                    }
+                    "--duration-ms" => {
+                        j += 1;
+                        duration_ms = parse_u64(
+                            args.get(j).ok_or("--duration-ms needs a value")?,
+                            "--duration-ms",
+                        )?;
+                    }
+                    "--interval-ms" => {
+                        j += 1;
+                        interval_ms = parse_u64(
+                            args.get(j).ok_or("--interval-ms needs a value")?,
+                            "--interval-ms",
+                        )?;
+                    }
+                    "--max-samples" => {
+                        j += 1;
+                        max_samples = parse_u64(
+                            args.get(j).ok_or("--max-samples needs a value")?,
+                            "--max-samples",
+                        )?;
+                    }
+                    "--signer" => {
+                        j += 1;
+                        signer = Some(args.get(j).ok_or("--signer needs a value")?.clone());
+                    }
+                    other => return Err(format!("fixture-frame-sample: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::FixtureFrameSample {
+                announcement_file: announcement_file
+                    .ok_or("fixture-frame-sample needs --announcement-file")?,
+                caller: caller.ok_or("fixture-frame-sample needs --caller")?,
+                wid: wid.ok_or("fixture-frame-sample needs --wid")?,
+                duration_ms,
+                interval_ms,
+                max_samples,
+                signer: signer.ok_or("fixture-frame-sample needs --signer")?,
+            }
+        }
         "fixture-leg" => {
             // Development-only fixture leg: repeated `--chord` values (one
             // per owned window, in order), the expected designated
@@ -2608,6 +2949,31 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             }
             Command::McInspect
         }
+        "proc-identity" => {
+            // Read-only identity join: one target pid (bundle/launch-date
+            // read, no auth needed) plus this observer's own audit ids.
+            // Refuses pid 0/1 like the other identity reads.
+            let mut pid: Option<u32> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--pid" => {
+                        j += 1;
+                        pid = Some(parse_u32(
+                            args.get(j).ok_or("--pid needs a value")?,
+                            "--pid",
+                        )?);
+                    }
+                    other => return Err(format!("proc-identity: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            let pid = pid.ok_or("proc-identity needs --pid")?;
+            if pid <= 1 {
+                return Err("proc-identity refuses pid 0/1".to_owned());
+            }
+            Command::ProcIdentity { pid }
+        }
         "mc-lifecycle" => {
             // Bounded temp-Space lifecycle: explicit --allow-untested opt-in
             // per invocation (no default mutation); --display selects the
@@ -2850,6 +3216,45 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             }
             Command::CgInspect
         }
+        "cg-diff" => {
+            // Read-only protected-window baseline compare for standalone
+            // live legs: pure before/after file compare over title-free
+            // `cg-inspect` dumps (no window-server touch, no AX, no writes).
+            // `--benign-pid` is explicit operator-verified owner input,
+            // repeatable: only an offscreen same-pid replacement at
+            // identical layer/bounds for a listed pid classifies as benign
+            // host churn. Anything else stays drift.
+            let mut before: Option<String> = None;
+            let mut after: Option<String> = None;
+            let mut benign_pids: Vec<u32> = Vec::new();
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--before" => {
+                        j += 1;
+                        before = Some(args.get(j).ok_or("--before needs a value")?.clone());
+                    }
+                    "--after" => {
+                        j += 1;
+                        after = Some(args.get(j).ok_or("--after needs a value")?.clone());
+                    }
+                    "--benign-pid" => {
+                        j += 1;
+                        benign_pids.push(parse_u32(
+                            args.get(j).ok_or("--benign-pid needs a value")?,
+                            "--benign-pid",
+                        )?);
+                    }
+                    other => return Err(format!("cg-diff: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::CgDiff {
+                before: before.ok_or("cg-diff needs --before")?,
+                after: after.ok_or("cg-diff needs --after")?,
+                benign_pids,
+            }
+        }
         "spaces-grab-diagnose" => {
             if !args.is_empty() {
                 return Err("spaces-grab-diagnose takes no arguments".to_owned());
@@ -2888,9 +3293,12 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             | Command::TextEditGrabInspect { .. }
             | Command::CgOwnedWindows { .. }
             | Command::CgInspect
+            | Command::CgDiff { .. }
             | Command::OwnedFrame { .. }
+            | Command::FixtureFrameSample { .. }
             | Command::ScopeInspect { .. }
             | Command::McInspect
+            | Command::ProcIdentity { .. }
             | Command::WorkspaceIndicatorStatus
             | Command::McMembers { .. }
     );

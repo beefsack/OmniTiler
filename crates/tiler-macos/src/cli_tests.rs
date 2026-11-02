@@ -295,6 +295,79 @@ fn cg_owned_windows_is_read_only_with_identity() {
 }
 
 #[test]
+fn cg_diff_is_read_only_with_before_and_after() {
+    let r = parse_args(&argv(&[
+        "cg-diff",
+        "--before",
+        "before.json",
+        "--after",
+        "after.json",
+    ]))
+    .unwrap();
+    assert!(!r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::CgDiff {
+            benign_pids: ref pids,
+            ..
+        } if pids.is_empty()
+    ));
+    assert!(parse_args(&argv(&["cg-diff", "--before", "b.json"])).is_err());
+    assert!(parse_args(&argv(&["cg-diff", "--after", "a.json"])).is_err());
+    assert!(parse_args(&argv(&["cg-diff"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "cg-diff", "--before", "b.json", "--after", "a.json", "--bogus"
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "cg-diff",
+            "--before",
+            "b.json",
+            "--after",
+            "a.json",
+            "--benign-pid"
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "cg-diff",
+            "--before",
+            "b.json",
+            "--after",
+            "a.json",
+            "--benign-pid",
+            "nope",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn cg_diff_benign_pid_is_explicit_repeatable_verified_owner_input() {
+    let r = parse_args(&argv(&[
+        "cg-diff",
+        "--before",
+        "b.json",
+        "--after",
+        "a.json",
+        "--benign-pid",
+        "83633",
+        "--benign-pid",
+        "4242",
+    ]))
+    .unwrap();
+    assert!(!r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::CgDiff { ref benign_pids, .. } if *benign_pids == vec![83633, 4242]
+    ));
+}
+
+#[test]
 fn spaces_session_is_bounded_holder_with_explicit_opt_in() {
     let r = parse_args(&argv(&["spaces-session"])).unwrap();
     assert!(r.may_mutate);
@@ -1032,6 +1105,429 @@ fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
         ]))
         .is_err()
     );
+}
+
+#[test]
+fn fixture_zoom_press_is_named_zoom_only_with_all_flags() {
+    // Standalone zoom diagnostic: announcement file plus caller plus exact
+    // wid plus signer, all required; zoom-only vocabulary (no --chord, no
+    // fullscreen flag, no menu/action flag). Mutating, so write-intent.
+    let base = [
+        "fixture-zoom-press",
+        "--announcement-file",
+        "announcement.json",
+        "--caller",
+        "zoom-leg-1",
+        "--wid",
+        "7",
+        "--signer",
+        "designated => test",
+    ];
+    let r = parse_args(&argv(&base)).unwrap();
+    assert!(
+        r.may_mutate,
+        "fixture-zoom-press presses and must be write-intent"
+    );
+    match r.command {
+        Command::FixtureZoomPress {
+            announcement_file,
+            caller,
+            wid,
+            signer,
+        } => {
+            assert_eq!(announcement_file, "announcement.json");
+            assert_eq!(caller, "zoom-leg-1");
+            assert_eq!(wid, 7);
+            assert_eq!(signer, "designated => test");
+        }
+        other => panic!("fixture-zoom-press must parse, got {other:?}"),
+    }
+    // Each flag is mandatory.
+    for drop in ["--announcement-file", "--caller", "--wid", "--signer"] {
+        let mut words: Vec<&str> = Vec::new();
+        let mut skip = false;
+        let mut j = 0;
+        while j < base.len() {
+            if !skip && base[j] == drop {
+                j += 2;
+                skip = true;
+                continue;
+            }
+            words.push(base[j]);
+            j += 1;
+        }
+        assert!(
+            parse_args(&argv(&words)).is_err(),
+            "dropping {drop} must refuse"
+        );
+    }
+    // Unknown args refuse, including the chord vocabulary of the posting
+    // route and any fullscreen/menu/action flag.
+    for extra in [
+        "--bogus",
+        "--chord",
+        "--action",
+        "--fullscreen",
+        "--announcement",
+    ] {
+        let mut words = base.to_vec();
+        words.push(extra);
+        if extra == "--chord" || extra == "--action" {
+            words.push("focus-h");
+        }
+        assert!(
+            parse_args(&argv(&words)).is_err(),
+            "extra {extra} must refuse"
+        );
+    }
+}
+
+#[test]
+fn fixture_menu_press_is_named_menu_only_with_all_flags() {
+    // Standalone menu diagnostic: announcement file plus caller plus exact
+    // wid plus fixed-vocabulary item plus signer, all required; menu-only
+    // vocabulary (no --chord, no fullscreen/action/announcement flags).
+    // Mutating, so write-intent.
+    let base = [
+        "fixture-menu-press",
+        "--announcement-file",
+        "announcement.json",
+        "--caller",
+        "menu-leg-1",
+        "--wid",
+        "7",
+        "--item",
+        "tile-left",
+        "--signer",
+        "designated => test",
+    ];
+    let r = parse_args(&argv(&base)).unwrap();
+    assert!(
+        r.may_mutate,
+        "fixture-menu-press presses and must be write-intent"
+    );
+    match r.command {
+        Command::FixtureMenuPress {
+            announcement_file,
+            caller,
+            wid,
+            item,
+            signer,
+        } => {
+            assert_eq!(announcement_file, "announcement.json");
+            assert_eq!(caller, "menu-leg-1");
+            assert_eq!(wid, 7);
+            assert_eq!(item, "tile-left");
+            assert_eq!(signer, "designated => test");
+        }
+        other => panic!("fixture-menu-press must parse, got {other:?}"),
+    }
+    // Each flag is mandatory.
+    for drop in [
+        "--announcement-file",
+        "--caller",
+        "--wid",
+        "--item",
+        "--signer",
+    ] {
+        let mut words: Vec<&str> = Vec::new();
+        let mut skip = false;
+        let mut j = 0;
+        while j < base.len() {
+            if !skip && base[j] == drop {
+                j += 2;
+                skip = true;
+                continue;
+            }
+            words.push(base[j]);
+            j += 1;
+        }
+        assert!(
+            parse_args(&argv(&words)).is_err(),
+            "dropping {drop} must refuse"
+        );
+    }
+    // Unknown args refuse, including the chord/action/fullscreen vocabulary
+    // of the posting route and any non-vocabulary item.
+    for extra in [
+        "--bogus",
+        "--chord",
+        "--action",
+        "--fullscreen",
+        "--announcement",
+    ] {
+        let mut words = base.to_vec();
+        words.push(extra);
+        if extra == "--chord" || extra == "--action" {
+            words.push("focus-h");
+        }
+        assert!(
+            parse_args(&argv(&words)).is_err(),
+            "extra {extra} must refuse"
+        );
+    }
+    // Non-vocabulary --item values refuse at parse.
+    for bad in ["minimize", "Zoom", "tile_left", ""] {
+        let mut words = base.to_vec();
+        let position = words.iter().position(|w| *w == "--item").unwrap() + 1;
+        words[position] = bad;
+        assert!(
+            parse_args(&argv(&words)).is_err(),
+            "item {bad:?} must refuse"
+        );
+    }
+    // Every vocabulary key parses.
+    for good in ["zoom", "fill", "tile-left", "tile-right", "return"] {
+        let mut words = base.to_vec();
+        let position = words.iter().position(|w| *w == "--item").unwrap() + 1;
+        words[position] = good;
+        assert!(
+            parse_args(&argv(&words)).is_ok(),
+            "item {good:?} must parse"
+        );
+    }
+}
+
+#[test]
+fn fixture_frame_write_is_named_frame_only_with_all_flags() {
+    // Standalone frame diagnostic: announcement file plus caller plus exact
+    // wid plus the four frame coordinates plus signer, all required;
+    // frame-only vocabulary (no --chord, no button/menu/fullscreen/action
+    // flags). Mutating, so write-intent.
+    let base = [
+        "fixture-frame-write",
+        "--announcement-file",
+        "announcement.json",
+        "--caller",
+        "frame-leg-1",
+        "--wid",
+        "7",
+        "--x",
+        "100",
+        "--y",
+        "100",
+        "--width",
+        "800",
+        "--height",
+        "600",
+        "--signer",
+        "designated => test",
+    ];
+    let r = parse_args(&argv(&base)).unwrap();
+    assert!(
+        r.may_mutate,
+        "fixture-frame-write writes and must be write-intent"
+    );
+    match r.command {
+        Command::FixtureFrameWrite {
+            announcement_file,
+            caller,
+            wid,
+            x,
+            y,
+            w,
+            h,
+            signer,
+        } => {
+            assert_eq!(announcement_file, "announcement.json");
+            assert_eq!(caller, "frame-leg-1");
+            assert_eq!(wid, 7);
+            assert_eq!(x, "100");
+            assert_eq!(y, "100");
+            assert_eq!(w, "800");
+            assert_eq!(h, "600");
+            assert_eq!(signer, "designated => test");
+        }
+        other => panic!("fixture-frame-write must parse, got {other:?}"),
+    }
+    // Each flag is mandatory.
+    for drop in [
+        "--announcement-file",
+        "--caller",
+        "--wid",
+        "--x",
+        "--y",
+        "--width",
+        "--height",
+        "--signer",
+    ] {
+        let mut words: Vec<&str> = Vec::new();
+        let mut skip = false;
+        let mut j = 0;
+        while j < base.len() {
+            if !skip && base[j] == drop {
+                j += 2;
+                skip = true;
+                continue;
+            }
+            words.push(base[j]);
+            j += 1;
+        }
+        assert!(
+            parse_args(&argv(&words)).is_err(),
+            "dropping {drop} must refuse"
+        );
+    }
+    // Unknown args refuse, including the chord/button/menu vocabulary of the
+    // other diagnostic routes.
+    for extra in [
+        "--bogus",
+        "--chord",
+        "--action",
+        "--fullscreen",
+        "--item",
+        "--announcement",
+    ] {
+        let mut words = base.to_vec();
+        words.push(extra);
+        if extra == "--chord" || extra == "--action" {
+            words.push("focus-h");
+        }
+        if extra == "--item" {
+            words.push("zoom");
+        }
+        assert!(
+            parse_args(&argv(&words)).is_err(),
+            "extra {extra} must refuse"
+        );
+    }
+    // Non-numeric frame values refuse at parse.
+    let mut words = base.to_vec();
+    let position = words.iter().position(|w| *w == "--width").unwrap() + 1;
+    words[position] = "wide";
+    assert!(
+        parse_args(&argv(&words)).is_err(),
+        "non-numeric width must refuse"
+    );
+}
+
+#[test]
+fn fixture_frame_sample_is_read_only_with_bounded_defaults() {
+    // Read-only sampler: announcement file plus caller plus exact wid plus
+    // signer are required; pacing bounds default and stay read-only
+    // (sample-only vocabulary: no --chord, no button/menu/frame/action
+    // flags). Never write-intent.
+    let base = [
+        "fixture-frame-sample",
+        "--announcement-file",
+        "announcement.json",
+        "--caller",
+        "sample-leg-1",
+        "--wid",
+        "7",
+        "--signer",
+        "designated => test",
+    ];
+    let r = parse_args(&argv(&base)).unwrap();
+    assert!(
+        !r.may_mutate,
+        "fixture-frame-sample samples and must be read-only"
+    );
+    match r.command {
+        Command::FixtureFrameSample {
+            announcement_file,
+            caller,
+            wid,
+            duration_ms,
+            interval_ms,
+            max_samples,
+            signer,
+        } => {
+            assert_eq!(announcement_file, "announcement.json");
+            assert_eq!(caller, "sample-leg-1");
+            assert_eq!(wid, 7);
+            assert_eq!(duration_ms, 5000);
+            assert_eq!(interval_ms, 20);
+            assert_eq!(max_samples, 256);
+            assert_eq!(signer, "designated => test");
+        }
+        other => panic!("fixture-frame-sample must parse, got {other:?}"),
+    }
+    // Each identity flag is mandatory.
+    for drop in ["--announcement-file", "--caller", "--wid", "--signer"] {
+        let mut words: Vec<&str> = Vec::new();
+        let mut skip = false;
+        let mut j = 0;
+        while j < base.len() {
+            if !skip && base[j] == drop {
+                j += 2;
+                skip = true;
+                continue;
+            }
+            words.push(base[j]);
+            j += 1;
+        }
+        assert!(
+            parse_args(&argv(&words)).is_err(),
+            "dropping {drop} must refuse"
+        );
+    }
+    // Explicit pacing bounds parse; non-numeric pacing refuses at parse
+    // (range refusal itself lives in the sampler module).
+    let r = parse_args(&argv(&[
+        "fixture-frame-sample",
+        "--announcement-file",
+        "announcement.json",
+        "--caller",
+        "sample-leg-1",
+        "--wid",
+        "7",
+        "--signer",
+        "designated => test",
+        "--duration-ms",
+        "1000",
+        "--interval-ms",
+        "50",
+        "--max-samples",
+        "40",
+    ]))
+    .unwrap();
+    match r.command {
+        Command::FixtureFrameSample {
+            duration_ms,
+            interval_ms,
+            max_samples,
+            ..
+        } => {
+            assert_eq!(duration_ms, 1000);
+            assert_eq!(interval_ms, 50);
+            assert_eq!(max_samples, 40);
+        }
+        other => panic!("explicit pacing must parse, got {other:?}"),
+    }
+    let mut words = base.to_vec();
+    words.extend(["--duration-ms", "slow"]);
+    assert!(
+        parse_args(&argv(&words)).is_err(),
+        "non-numeric duration must refuse"
+    );
+    // Unknown args refuse, including the mutating vocabulary of the other
+    // diagnostic routes.
+    for extra in [
+        "--bogus",
+        "--chord",
+        "--action",
+        "--fullscreen",
+        "--item",
+        "--x",
+        "--announcement",
+    ] {
+        let mut words = base.to_vec();
+        words.push(extra);
+        if extra == "--chord" || extra == "--action" {
+            words.push("focus-h");
+        }
+        if extra == "--item" {
+            words.push("zoom");
+        }
+        if extra == "--x" {
+            words.push("100");
+        }
+        assert!(
+            parse_args(&argv(&words)).is_err(),
+            "extra {extra} must refuse"
+        );
+    }
 }
 
 #[test]
@@ -2585,6 +3081,20 @@ fn mc_inspect_is_read_only_without_args() {
     assert_eq!(r.command, Command::McInspect);
     assert!(!r.may_mutate, "mc-inspect must not mutate");
     assert!(parse_args(&argv(&["mc-inspect", "--seconds", "10"])).is_err());
+}
+
+#[test]
+fn proc_identity_is_read_only_with_exact_pid() {
+    // Read-only identity join: exactly one --pid (pid 0/1 refused),
+    // no nonce/auth surface, never mutating.
+    let r = parse_args(&argv(&["proc-identity", "--pid", "4242"])).unwrap();
+    assert_eq!(r.command, Command::ProcIdentity { pid: 4242 });
+    assert!(!r.may_mutate, "proc-identity must not mutate");
+    assert!(parse_args(&argv(&["proc-identity"])).is_err());
+    assert!(parse_args(&argv(&["proc-identity", "--pid", "0"])).is_err());
+    assert!(parse_args(&argv(&["proc-identity", "--pid", "1"])).is_err());
+    assert!(parse_args(&argv(&["proc-identity", "--pid", "4242", "--bogus"])).is_err());
+    assert!(parse_args(&argv(&["proc-identity", "--pid", "nope"])).is_err());
 }
 
 #[test]

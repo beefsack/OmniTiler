@@ -1051,6 +1051,28 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             tiler_macos::group_underlay_session::run_group_underlay_session(seconds)
         }
         Command::McInspect => tiler_macos::mc_lifecycle::run_mc_inspect(),
+        Command::ProcIdentity { pid } => {
+            // Read-only join: target bundle/launch-date (LaunchServices
+            // read, no auth) beside this observer's own audit ids.
+            // `launch_ref_bits`/`launch_ref_secs` are additive diagnostics
+            // from the same `NSDate` (exact `timeIntervalSinceReferenceDate`
+            // bits plus an `f64::from_bits` display view); production
+            // identity still binds the `launch_date` string only.
+            let identity = tiler_macos::ffi::ns_app_identity_for_pid(pid as i32);
+            let (auid, asid) = tiler_macos::ffi::audit_self().map_err(|e| (1, e))?;
+            Ok(serde_json::json!({
+                "pid": pid,
+                "bundle": identity.bundle,
+                "launch_date": identity.launch_date,
+                "launch_ref_bits": identity.launch_ref_bits,
+                "launch_ref_secs": identity.launch_ref_bits.map(f64::from_bits),
+                "observer_pid": std::process::id(),
+                "auid": auid,
+                "asid": asid,
+                "mutates": false,
+            })
+            .to_string())
+        }
         Command::WorkspaceIndicatorStatus => tiler_macos::workspace_indicator::run_status(),
         Command::WorkspaceIndicatorProof {
             seconds,
@@ -1094,6 +1116,97 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             allow_untested,
         ),
         Command::ScopeInspect { scopes } => tiler_macos::scope_inspect::run_scope_inspect(scopes),
+        Command::FixtureZoomPress {
+            announcement_file,
+            caller,
+            wid,
+            signer,
+        } => tiler_macos::fixture_zoom::run_fixture_zoom_press(
+            &tiler_macos::fixture_zoom::FixtureZoomPressArgs {
+                announcement_file,
+                caller,
+                wid,
+                signer,
+            },
+        ),
+        Command::FixtureMenuPress {
+            announcement_file,
+            caller,
+            wid,
+            item,
+            signer,
+        } => tiler_macos::fixture_menu::run_fixture_menu_press(
+            &tiler_macos::fixture_menu::FixtureMenuPressArgs {
+                announcement_file,
+                caller,
+                wid,
+                item,
+                signer,
+            },
+        ),
+        Command::FixtureFrameWrite {
+            announcement_file,
+            caller,
+            wid,
+            x,
+            y,
+            w,
+            h,
+            signer,
+        } => {
+            // Validated numeric at parse; re-parse here is defensive only.
+            let frame = |what: &str, raw: &str| {
+                raw.parse::<f64>()
+                    .map_err(|_| format!("fixture-frame-write: {what} is not a number"))
+            };
+            let parsed = (|| {
+                Ok::<_, String>((
+                    frame("--x", &x)?,
+                    frame("--y", &y)?,
+                    frame("--width", &w)?,
+                    frame("--height", &h)?,
+                ))
+            })();
+            match parsed {
+                Ok((x, y, w, h)) => tiler_macos::fixture_frame::run_fixture_frame_write(
+                    &tiler_macos::fixture_frame::FixtureFrameWriteArgs {
+                        announcement_file,
+                        caller,
+                        wid,
+                        x,
+                        y,
+                        w,
+                        h,
+                        signer,
+                    },
+                ),
+                Err(error) => Err((2, error)),
+            }
+        }
+        Command::CgDiff {
+            before,
+            after,
+            benign_pids,
+        } => tiler_macos::cg_diff::run_cg_diff(&before, &after, &benign_pids),
+        Command::FixtureFrameSample {
+            announcement_file,
+            caller,
+            wid,
+            duration_ms,
+            interval_ms,
+            max_samples,
+            signer,
+        } => tiler_macos::fixture_sample::run_fixture_frame_sample(
+            &tiler_macos::fixture_sample::FixtureFrameSampleArgs {
+                announcement_file,
+                caller,
+                wid,
+                duration_ms,
+                interval_ms,
+                max_samples,
+                signer,
+            },
+        ),
     }
 }
 

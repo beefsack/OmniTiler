@@ -1061,6 +1061,36 @@ fn run_codesign_bounded(args: &[&str], exe: &str) -> Result<std::process::Output
     })
 }
 
+/// Bind-only fixture signature read: `codesign --verify --strict` plus the
+/// designated-requirement tail for one executable (the same shell preflight
+/// the leg bind runs). Shared by the driver bind and the standalone zoom
+/// diagnostic; the caller compares the tail against its expected `--signer`
+/// exactly. Never called past bind, never while input is held.
+pub(crate) fn fixture_designated_tail(exe: &str) -> Result<String, String> {
+    // Validity plus requirement read; the comparison stays pure so a
+    // drifted requirement and an unreadable one refuse distinctly.
+    if exe.is_empty() {
+        return Err("signature: missing executable; refusing".to_owned());
+    }
+    let validity = run_codesign_bounded(&["--verify", "--strict"], exe)?;
+    if !validity.status.success() {
+        return Err(format!(
+            "signature: codesign verify refused (status {}); refusing",
+            validity.status.code().unwrap_or(-1)
+        ));
+    }
+    let read = run_codesign_bounded(&["-d", "-r", "-"], exe)?;
+    if !read.status.success() {
+        return Err(format!(
+            "signature: designated-requirement read refused (status {}); refusing",
+            read.status.code().unwrap_or(-1)
+        ));
+    }
+    let mut combined = String::from_utf8_lossy(&read.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&read.stderr));
+    extract_designated_tail(&combined).map_err(|e| format!("signature: {e}"))
+}
+
 /// Plain-data process identity reads (no decisions): live bundle plus
 /// executable plus launch date from one OS lookup. The caller refuses
 /// whatever its contract requires.
@@ -1198,28 +1228,7 @@ impl FixtureTransport for LiveTransport {
     }
 
     fn designated_tail(&self, exe: &str) -> Result<String, String> {
-        // Validity plus requirement read; the comparison stays pure so a
-        // drifted requirement and an unreadable one refuse distinctly.
-        if exe.is_empty() {
-            return Err("signature: missing executable; refusing".to_owned());
-        }
-        let validity = run_codesign_bounded(&["--verify", "--strict"], exe)?;
-        if !validity.status.success() {
-            return Err(format!(
-                "signature: codesign verify refused (status {}); refusing",
-                validity.status.code().unwrap_or(-1)
-            ));
-        }
-        let read = run_codesign_bounded(&["-d", "-r", "-"], exe)?;
-        if !read.status.success() {
-            return Err(format!(
-                "signature: designated-requirement read refused (status {}); refusing",
-                read.status.code().unwrap_or(-1)
-            ));
-        }
-        let mut combined = String::from_utf8_lossy(&read.stdout).into_owned();
-        combined.push_str(&String::from_utf8_lossy(&read.stderr));
-        extract_designated_tail(&combined).map_err(|e| format!("signature: {e}"))
+        fixture_designated_tail(exe)
     }
 
     fn full_reads(&self, sess: &BoundSession, caller: &str, wid: u32) -> Result<FullReads, String> {

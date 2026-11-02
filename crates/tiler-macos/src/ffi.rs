@@ -79,6 +79,39 @@ pub fn ax_error_name(code: i32) -> String {
     }
 }
 
+/// Precise numeric form of an `NSDate` `timeIntervalSinceReferenceDate`
+/// reading: the `f64` bits iff finite, else `None`.
+///
+/// SDK ground (`Foundation/NSDate.h`, CLT SDK): `NSTimeInterval` is
+/// `typedef double`, documented as sub-millisecond precision over 10,000
+/// years; `timeIntervalSinceReferenceDate` is the seconds since the
+/// absolute reference date (00:00:00 UTC 1 Jan 2001, negative when
+/// earlier). Storing `to_bits` keeps `NsAppIdentity: Eq` (an `f64`
+/// field would drop `Eq`) and is an exact round-trip via
+/// `f64::from_bits`; JSON diagnostics derive display `f64` from the
+/// bits. Non-finite (`NaN`/`inf`, never expected from `NSDate` but
+/// fail-closed here) maps to `None`, same as an unreadable date.
+/// Portable pure function: no AppKit, no session, no I/O.
+pub fn launch_ref_bits_from_secs(secs: f64) -> Option<u64> {
+    secs.is_finite().then(|| secs.to_bits())
+}
+
+/// Pure `mach_absolute_time` tick-to-nanosecond conversion over plain data
+/// (no OS touch): `ticks * numer / denom` with checked `u128` math. `None`
+/// on a zero denominator or on overflow. The live [`host_now_ns`] path
+/// reads ticks plus the timebase from maintained `libc` bindings on the
+/// calling thread and converts here, so every diagnostic process shares one
+/// host monotonic origin (`mach_absolute_time`, boot-relative, common across
+/// processes); Rust `Instant` values are never exchanged across processes.
+/// Portable pure function; unit-tested.
+pub fn host_ticks_to_ns(ticks: u64, numer: u32, denom: u32) -> Option<u64> {
+    if denom == 0 {
+        return None;
+    }
+    let ns = (u128::from(ticks) * u128::from(numer)) / u128::from(denom);
+    u64::try_from(ns).ok()
+}
+
 /// Secure Input observation. `Unknown` (missing symbol) is distinct from
 /// `Inactive`: a missing symbol is never reported as inactive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1698,6 +1731,46 @@ mod macos {
         use objc2_foundation::NSProcessInfo;
         let version = NSProcessInfo::processInfo().operatingSystemVersion();
         u32::try_from(version.majorVersion).ok()
+    }
+
+    /// Host monotonic timebase `(numer, denom)` for [`host_now_ns`]:
+    /// maintained `libc::mach_timebase_info` binding, fail-closed (`None`)
+    /// on a nonzero return or a zero denominator. The `libc` re-export is
+    /// deprecated in favor of the `mach2` crate; this module deliberately
+    /// avoids a new dependency for two calls, so the deprecation is allowed
+    /// on this function only. Callers that stamp many samples in a loop
+    /// read this once and convert each tick read with
+    /// [`super::host_ticks_to_ns`].
+    #[allow(deprecated)]
+    pub fn host_timebase() -> Option<(u32, u32)> {
+        let mut info = std::mem::MaybeUninit::<libc::mach_timebase_info>::uninit();
+        // SAFETY: maintained `libc` binding; `info` is a valid out-pointer;
+        // assumed-init only on a zero return.
+        let status = unsafe { libc::mach_timebase_info(info.as_mut_ptr()) };
+        if status != 0 {
+            return None;
+        }
+        // SAFETY: zero return means the out-pointer was written.
+        let info = unsafe { info.assume_init() };
+        if info.denom == 0 {
+            return None;
+        }
+        Some((info.numer, info.denom))
+    }
+
+    /// Host monotonic now in nanoseconds on the shared cross-process origin:
+    /// `mach_absolute_time` ticks converted with the live timebase. `None`
+    /// when the timebase is unreadable (fail closed: callers emit `null`,
+    /// never a wall-clock fallback or a cross-process `Instant`). This is
+    /// the one clock joining dispatch-edge stamps (action process) with
+    /// sampler stamps (concurrent observation process). Same deprecation
+    /// note as [`host_timebase`].
+    #[allow(deprecated)]
+    pub fn host_now_ns() -> Option<u64> {
+        // SAFETY: maintained `libc` binding; no-arg tick read.
+        let ticks = unsafe { libc::mach_absolute_time() };
+        let (numer, denom) = host_timebase()?;
+        super::host_ticks_to_ns(ticks, numer, denom)
     }
 
     // -- Typed AX surface (maintained `objc2` bindings) --
@@ -5153,10 +5226,24 @@ mod macos {
     /// optional (`None` = unreadable there, never a claim); callers refuse
     /// whatever their contract requires (the scoped backend requires all
     /// three — a missing launch date refuses, never falls back).
+    /// `launch_ref_bits` is an additive diagnostic only: the exact
+    /// `NSDate.timeIntervalSinceReferenceDate` `f64` bits (finite-only,
+    /// `None` when `launchDate` is nil or non-finite) beside the preserved
+    /// whole-second `launch_date` debug string. It never feeds identity,
+    /// ownership, store, or protocol decisions: production binding still
+    /// compares the `launch_date` string, and no caller may promote the
+    /// bits to a fence. It is not a boot/login fence: it carries no boot
+    /// nonce and no audit session (`kern.boottime` via `KERN_BOOTTIME`
+    /// fences boot only, not relogin within one boot; own-process
+    /// `getaudit_addr` `ai_asid`/`ai_auid` is tested same-login only and
+    /// the per-session `audit_session_self` entry is `__APPLE_API_PRIVATE`
+    /// SPI, deliberately not used — see `audit_self`). Relogin/PID-reuse
+    /// behavior across logins is untested; no relogin claim is made.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct NsAppIdentity {
         pub bundle: Option<String>,
         pub launch_date: Option<String>,
+        pub launch_ref_bits: Option<u64>,
         pub exe: Option<String>,
     }
 
@@ -5166,22 +5253,89 @@ mod macos {
             return NsAppIdentity {
                 bundle: None,
                 launch_date: None,
+                launch_ref_bits: None,
                 exe: None,
             };
         }
-        let (bundle, launch_date) =
+        let (bundle, launch_date, launch_ref_bits) =
             match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
-                Some(app) => (
-                    app.bundleIdentifier().map(|b| b.to_string()),
-                    app.launchDate().map(|date| format!("{date:?}")),
-                ),
-                None => (None, None),
+                Some(app) => {
+                    let bundle = app.bundleIdentifier().map(|b| b.to_string());
+                    // One `launchDate` read feeds both outputs: the
+                    // preserved whole-second debug string (production
+                    // identity compares this) and the exact numeric bits
+                    // (diagnostic only) via public
+                    // `NSDate::timeIntervalSinceReferenceDate`
+                    // (`objc2-foundation 0.3.2`, SDK `NSDate.h` readonly
+                    // `NSTimeInterval` = `double`, seconds since
+                    // 2001-01-01T00:00:00Z). `launchDate` is nullable per
+                    // SDK `NSRunningApplication.h` (nil for apps not
+                    // launched via LaunchServices); precision is taken
+                    // from the `NSDate`, never parsed back from the
+                    // string.
+                    let (launch_date, launch_ref_bits) = match app.launchDate() {
+                        Some(date) => (
+                            Some(format!("{date:?}")),
+                            super::launch_ref_bits_from_secs(date.timeIntervalSinceReferenceDate()),
+                        ),
+                        None => (None, None),
+                    };
+                    (bundle, launch_date, launch_ref_bits)
+                }
+                None => (None, None, None),
             };
         NsAppIdentity {
             bundle,
             launch_date,
+            launch_ref_bits,
             exe: process_executable_path(pid),
         }
+    }
+
+    /// Own-process login-namespace token via public `getaudit_addr(2)`:
+    /// returns `(audit user id, audit session id)`. Read-only, own process
+    /// only - the syscall has no pid parameter, so this never observes a
+    /// foreign process; each observer process reports its own pair and
+    /// equality is compared across those reports. `Err` carries the errno.
+    /// Layout below is the exact CLT SDK `struct auditinfo_addr`
+    /// (`bsm/audit.h`): `au_id_t` is `uid_t` (u32), `au_mask_t` is two
+    /// `unsigned int`, `au_tid_addr_t` is `dev_t` (i32) + u32 + u32[4],
+    /// `au_asid_t` is `pid_t` (i32), `au_asflgs_t` is 8-aligned u64.
+    pub fn audit_self() -> Result<(u32, i32), String> {
+        #[repr(C)]
+        struct AuditInfoAddr {
+            auid: u32,
+            am_success: u32,
+            am_failure: u32,
+            at_port: i32,
+            at_type: u32,
+            at_addr: [u32; 4],
+            asid: i32,
+            flags: u64,
+        }
+        unsafe extern "C" {
+            fn getaudit_addr(info: *mut AuditInfoAddr, length: std::ffi::c_int) -> std::ffi::c_int;
+        }
+        let mut info = std::mem::MaybeUninit::<AuditInfoAddr>::zeroed();
+        // SAFETY: `getaudit_addr` is a public libSystem syscall taking a
+        // caller-owned out-pointer plus its size; the struct above matches
+        // the SDK layout and `length` gates the kernel write. No other
+        // process state is touched (own-process read only).
+        let ret = unsafe {
+            getaudit_addr(
+                info.as_mut_ptr(),
+                std::mem::size_of::<AuditInfoAddr>() as std::ffi::c_int,
+            )
+        };
+        if ret != 0 {
+            return Err(format!(
+                "getaudit_addr failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: success above fully initialized the struct.
+        let info = unsafe { info.assume_init() };
+        Ok((info.auid, info.asid))
     }
 
     /// Frontmost application identity (PID plus bundle ID) from the maintained
@@ -9459,6 +9613,93 @@ mod macos {
         }
     }
 
+    /// Runtime AX attribute names (names only, never values).
+    /// Sorted and deduplicated. `Ok` is the full advertised list; `Err` is
+    /// already an exact status string: the native [`ax_error_name`] on AX
+    /// failure, or a `local: ...` string on local conditions (null array,
+    /// over the entry/length/byte bounds, unreadable entry). The bounds cap
+    /// diagnostic cost only: names remain runtime strings from the target,
+    /// so bounded reads are not proof they carry no app data. Read-only
+    /// diagnostic: proves whether attributes such as `AXZoomed` are
+    /// advertised without reading values.
+    pub fn ax_attribute_names(element: &AxElement) -> Result<Vec<String>, String> {
+        const MAX_ATTR_NAMES: usize = 512;
+        const MAX_ATTR_NAME_LEN: usize = 128;
+        const MAX_ATTR_NAMES_BYTES: usize = 8192;
+        let mut raw: *const CFArray = std::ptr::null();
+        // SAFETY: live element from a checked constructor; the out-pointer
+        // is a live stack local; a nonzero status returns `Err` with no use
+        // of `raw`. Copy rule: success yields a +1 retained array, wrapped
+        // exactly once below.
+        let status = unsafe {
+            element
+                .inner
+                .copy_attribute_names(NonNull::new(std::ptr::addr_of_mut!(raw)).expect("non-null"))
+        };
+        if status.0 != 0 {
+            return Err(ax_error_name(status.0));
+        }
+        if raw.is_null() {
+            return Err("local: null attribute-names array".to_owned());
+        }
+        let untyped: CFRetained<CFArray> =
+            unsafe { CFRetained::from_raw(NonNull::new(raw as *mut CFArray).expect("non-null")) };
+        if untyped.len() > MAX_ATTR_NAMES {
+            return Err(format!(
+                "local: {} attribute names exceed {MAX_ATTR_NAMES}",
+                untyped.len()
+            ));
+        }
+        // SAFETY: top-level kind verified as `CFArray` by the typed pointer
+        // above; viewed as `CFArray<CFType>` (layouts identical; every CF
+        // object is a `CFType`). Entries are checked-downcast to `CFString`
+        // below; non-string entries are skipped, never guessed. Over-long
+        // or over-budget lists are an explicit local error, never a silent
+        // truncation or an inferred absence.
+        let array: CFRetained<CFArray<CFType>> = unsafe { CFRetained::cast_unchecked(untyped) };
+        let mut out = Vec::new();
+        let mut total_bytes = 0usize;
+        for i in 0..array.len() {
+            let item = array
+                .get(i)
+                .ok_or_else(|| "local: unreadable attribute-names entry".to_owned())?;
+            if let Ok(name) = item.downcast::<CFString>() {
+                let name = name.to_string();
+                if name.len() > MAX_ATTR_NAME_LEN {
+                    return Err(format!(
+                        "local: attribute name exceeds {MAX_ATTR_NAME_LEN} bytes"
+                    ));
+                }
+                total_bytes += name.len();
+                if total_bytes > MAX_ATTR_NAMES_BYTES {
+                    return Err(format!(
+                        "local: attribute names exceed {MAX_ATTR_NAMES_BYTES} bytes"
+                    ));
+                }
+                out.push(name);
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
+    /// One sub-element via a named accessor attribute (`AXZoomButton`,
+    /// `AXFullScreenButton`, ...). `Ok` is the joined element; `Err` is
+    /// already an exact status string: the native [`ax_error_name`] when the
+    /// read fails, or a `local: ...` string when the value is not an
+    /// element. A missing or non-element value is never guessed. Read-only.
+    pub fn ax_element_attribute(element: &AxElement, name: &str) -> Result<AxElement, String> {
+        let value = element.copy_attribute(name).map_err(ax_error_name)?;
+        let inner: CFRetained<AXUIElement> = value
+            .downcast()
+            .map_err(|_| format!("local: non-element value for {name}"))?;
+        Ok(AxElement {
+            inner,
+            _not_send: std::marker::PhantomData,
+        })
+    }
+
     /// Whether the app owning `pid` is hidden (`NSRunningApplication.isHidden`,
     /// public AppKit, no AX consent involved). Caller-thread read (main);
     /// unknown pids are `Err`, never assumed visible.
@@ -9963,18 +10204,19 @@ pub use macos::{
     NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback,
     SegmentRow, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec,
     TapHit, TapPump, TapSource, TapSourceReport, WorkspaceIndicator, activate_app,
-    activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute,
-    ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
-    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
-    ax_fullscreen_state, ax_get_frame, ax_hit_test_detail, ax_hit_test_owner, ax_identifier,
-    ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
-    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
-    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
-    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
-    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
-    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
-    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, drain_app_events,
-    drain_app_events_counted, frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
+    activation_policy_raw_for_pid, app_hidden_for_pid, audit_self, ax_app_focus_leg,
+    ax_attribute_names, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
+    ax_element_at_position, ax_element_attribute, ax_focused_preimage,
+    ax_focused_preimage_detailed, ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame,
+    ax_hit_test_detail, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
+    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
+    ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window,
+    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
+    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
+    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
+    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
+    copy_symbolic_hotkeys, drain_app_events, drain_app_events_counted, frontmost_app, host_now_ns,
+    host_timebase, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
     install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
     mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
     ns_image_for_bundle, ns_separate_spaces, own_bundle_id, process_executable_path,
@@ -10407,6 +10649,14 @@ mod stub {
         Err(AX_NOT_IMPLEMENTED)
     }
 
+    pub fn ax_attribute_names(_element: &AxElement) -> Result<Vec<String>, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn ax_element_attribute(_element: &AxElement, _name: &str) -> Result<AxElement, String> {
+        Err("macOS-only".to_owned())
+    }
+
     pub fn app_hidden_for_pid(_pid: i32) -> Result<bool, String> {
         Err("macOS-only".to_owned())
     }
@@ -10811,6 +11061,7 @@ mod stub {
     pub struct NsAppIdentity {
         pub bundle: Option<String>,
         pub launch_date: Option<String>,
+        pub launch_ref_bits: Option<u64>,
         pub exe: Option<String>,
     }
 
@@ -10818,8 +11069,13 @@ mod stub {
         NsAppIdentity {
             bundle: None,
             launch_date: None,
+            launch_ref_bits: None,
             exe: None,
         }
+    }
+
+    pub fn audit_self() -> Result<(u32, i32), String> {
+        Err("macOS-only".to_owned())
     }
 
     pub fn process_exists(_pid: i32) -> bool {
@@ -10828,6 +11084,18 @@ mod stub {
 
     pub fn terminate_process(_pid: i32) -> bool {
         false
+    }
+
+    /// Stub host clock (macOS-only): the shared monotonic origin does not
+    /// exist here, so every timestamp refuses as `None`, never a portable
+    /// fallback. Shape parity with the live [`super::host_now_ns`].
+    pub fn host_timebase() -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Stub host now (macOS-only): always `None`; see [`host_timebase`].
+    pub fn host_now_ns() -> Option<u64> {
+        None
     }
 
     pub fn pump_runloop_once(_millis: u64) {}
@@ -11108,8 +11376,9 @@ pub use stub::{
     SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback, SegmentRow, SlpsPsn,
     SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
     TapSource, TapSourceReport, WorkspaceIndicator, activate_app, activation_policy_raw_for_pid,
-    app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read,
-    ax_display_id, ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
+    app_hidden_for_pid, audit_self, ax_app_focus_leg, ax_attribute_names, ax_bool_attribute,
+    ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
+    ax_element_attribute, ax_focused_preimage, ax_focused_preimage_detailed,
     ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_detail,
     ax_hit_test_owner, ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size,
     ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
@@ -11118,19 +11387,19 @@ pub use stub::{
     ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
     border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
     cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
-    copy_symbolic_hotkeys, frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
-    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
-    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
-    ns_image_for_bundle, ns_separate_spaces, own_bundle_id, process_executable_path,
-    process_exists, pump_runloop_once, resolve_hotkey_spi, run_event_tap_bounded,
-    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
-    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
-    slps_set_front, sls_bridged_availability, sls_connection_available, sls_display_rows,
-    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_bridged,
-    sls_move_windows_direct, sls_order_available, sls_order_below, sls_order_below_txn,
-    sls_order_txn_available, sls_space_front_available, sls_space_set_front_psn, sls_space_type,
-    sls_spaces_for_window, sls_spaces_for_windows, sls_window_at_point, terminate_process,
-    warp_cursor_position,
+    copy_symbolic_hotkeys, frontmost_app, host_now_ns, host_timebase, hotkey_read,
+    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
+    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
+    ns_app_identity_for_pid, ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces,
+    own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
+    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
+    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
+    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
+    sls_move_symbols, sls_move_windows_bridged, sls_move_windows_direct, sls_order_available,
+    sls_order_below, sls_order_below_txn, sls_order_txn_available, sls_space_front_available,
+    sls_space_set_front_psn, sls_space_type, sls_spaces_for_window, sls_spaces_for_windows,
+    sls_window_at_point, terminate_process, warp_cursor_position,
 };
 
 #[cfg(test)]
@@ -12206,5 +12475,87 @@ mod tests {
         assert_eq!(first, second);
         #[cfg(not(target_os = "macos"))]
         assert_eq!(first.lock, SessionLock::Unknown);
+    }
+
+    #[test]
+    fn audit_self_is_repeatable_own_process_only() {
+        // Own-process getaudit_addr(2) read: two reads agree. Off
+        // platform this pins the fail-closed stub error.
+        #[cfg(target_os = "macos")]
+        {
+            let first = audit_self();
+            let second = audit_self();
+            assert_eq!(first, second);
+        }
+        #[cfg(not(target_os = "macos"))]
+        assert!(audit_self().is_err());
+    }
+
+    #[test]
+    fn launch_ref_bits_keeps_exact_finite_value() {
+        // Exactness: a finite `timeIntervalSinceReferenceDate` value
+        // round-trips bit-for-bit; no string formatting is involved.
+        for secs in [0.0, 1.5, -123.456, 789_123.125] {
+            let bits = launch_ref_bits_from_secs(secs);
+            assert_eq!(bits, Some(secs.to_bits()));
+            assert_eq!(bits.map(f64::from_bits), Some(secs));
+        }
+    }
+
+    #[test]
+    fn launch_ref_bits_rejects_non_finite_sentinels() {
+        // Fail-closed sentinels: NaN/inf (never expected from NSDate)
+        // map to None, exactly like an unreadable date.
+        assert_eq!(launch_ref_bits_from_secs(f64::NAN), None);
+        assert_eq!(launch_ref_bits_from_secs(f64::INFINITY), None);
+        assert_eq!(launch_ref_bits_from_secs(f64::NEG_INFINITY), None);
+    }
+
+    #[test]
+    fn host_ticks_to_ns_converts_scales_and_fails_closed() {
+        // Pure conversion on every platform: identity and real-world
+        // Apple-Silicon (125/3) scales convert exactly; a zero
+        // denominator and a u64 overflow refuse as None, never a wrap.
+        assert_eq!(host_ticks_to_ns(0, 125, 3), Some(0));
+        assert_eq!(host_ticks_to_ns(3, 125, 3), Some(125));
+        assert_eq!(host_ticks_to_ns(1_000_000, 1, 1), Some(1_000_000));
+        assert_eq!(host_ticks_to_ns(1, 1, 1_000), Some(0));
+        assert_eq!(host_ticks_to_ns(100, 1, 0), None);
+        assert_eq!(host_ticks_to_ns(u64::MAX, u64::MAX as u32 - 1, 1), None);
+    }
+
+    #[test]
+    fn ns_app_identity_refuses_reserved_pids_without_live_read() {
+        // No live lookup, no session assumption: reserved pids return
+        // the all-None identity (including the new bits field) on
+        // every platform.
+        for pid in [0, 1] {
+            let identity = ns_app_identity_for_pid(pid);
+            assert_eq!(identity.bundle, None);
+            assert_eq!(identity.launch_date, None);
+            assert_eq!(identity.launch_ref_bits, None);
+            assert_eq!(identity.exe, None);
+        }
+    }
+
+    #[test]
+    fn ns_app_identity_bits_field_serde_round_trips() {
+        // Additive `Eq` field: serializes and deserializes exactly;
+        // bit pattern survives the JSON integer hop losslessly.
+        let identity = NsAppIdentity {
+            bundle: Some("com.example.app".to_owned()),
+            launch_date: Some("debug-string-preserved".to_owned()),
+            launch_ref_bits: launch_ref_bits_from_secs(123.456),
+            exe: Some("/Applications/Example.app/Contents/MacOS/Example".to_owned()),
+        };
+        let value = serde_json::to_value(&identity).expect("identity serializes");
+        assert_eq!(
+            value.get("launch_ref_bits"),
+            Some(&serde_json::Value::from(123.456f64.to_bits())),
+            "bits ride as an exact JSON integer"
+        );
+        let parsed: NsAppIdentity = serde_json::from_value(value).expect("identity deserializes");
+        assert_eq!(parsed, identity);
+        assert_eq!(parsed.launch_ref_bits.map(f64::from_bits), Some(123.456f64));
     }
 }

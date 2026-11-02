@@ -34,6 +34,46 @@ const WORKER_BOUND: Duration = Duration::from_secs(20);
 /// truncated rather than spawning unbounded threads.
 const MAX_INSPECT_APPS: usize = 16;
 
+/// One zoom/fullscreen button's read-only facts. `found` means the button
+/// was successfully joined through its direct accessor attribute: join
+/// success, never a universal existence claim about the window. Unknowns
+/// stay `None` with `lookup_status` carrying the exact native or local
+/// status; a failed lookup leaves the per-read statuses as `"not-read"`,
+/// never a pretended OS error. No titles, no content, no paths.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ZoomButtonFact {
+    pub found: bool,
+    /// Route attempted: always `"direct-attr"` (named accessor join only;
+    /// no subtree walk).
+    pub via: String,
+    /// Exact join status: `"ok"` on success, else the native AX error name
+    /// or a `local: ...` string.
+    pub lookup_status: String,
+    pub has_enabled_attr: Option<bool>,
+    pub has_value_attr: Option<bool>,
+    pub enabled: Option<bool>,
+    pub enabled_status: String,
+    pub value_bool: Option<bool>,
+    pub value_status: String,
+}
+
+/// Read-only zoom metadata for one window: the runtime attribute inventory
+/// (names only, never values; bounded count/length/bytes with explicit
+/// local statuses on excess) plus the `AXZoomed` bit and the zoom/
+/// fullscreen button facts. All reads; no setters, no focus changes, no
+/// actions. Geometry is carried elsewhere and never interpreted as zoom
+/// state here.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ZoomFacts {
+    pub attr_names_status: String,
+    pub attr_names: Option<Vec<String>>,
+    pub has_zoomed_attr: Option<bool>,
+    pub zoomed: Option<bool>,
+    pub zoomed_status: String,
+    pub zoom_button: ZoomButtonFact,
+    pub fullscreen_button: ZoomButtonFact,
+}
+
 /// One window's read-only facts plus classification. No titles, no content,
 /// no paths, no exe names. Frames are points (AX) and CG points as read.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -56,6 +96,9 @@ pub struct InspectedWindow {
     pub floating: Option<bool>,
     pub spaces: Vec<u64>,
     pub spaces_status: String,
+    /// Read-only zoom diagnostic (`None` only before the zoom join runs;
+    /// the join itself always reports explicit statuses, never guesses).
+    pub zoom: Option<ZoomFacts>,
 }
 
 /// Integer/float rect in points as read (no conversion claims).
@@ -117,6 +160,142 @@ pub struct ScopeInspectReport {
 pub struct SpacesView {
     pub space_count: usize,
     pub displays: Vec<crate::ffi::SlsDisplay>,
+}
+
+/// Unjoined-button shape for a failed direct-accessor join: the lookup
+/// status carries the exact native or local cause, and the per-read
+/// statuses stay `"not-read"` (never a pretended OS error). Pure
+/// constructor shared by the macOS join path and the offline tests.
+fn missing_button(route: &str, lookup_status: &str) -> ZoomButtonFact {
+    ZoomButtonFact {
+        found: false,
+        via: route.to_owned(),
+        lookup_status: lookup_status.to_owned(),
+        has_enabled_attr: None,
+        has_value_attr: None,
+        enabled: None,
+        enabled_status: "not-read".to_owned(),
+        value_bool: None,
+        value_status: "not-read".to_owned(),
+    }
+}
+
+/// Read-only zoom diagnostic for one already-joined `(pid, wid)`: re-joins
+/// the window element on the calling (per-app AX owner) thread, inventories
+/// runtime attribute names (names only, bounded), reads the `AXZoomed` bit
+/// with its exact AX status, and joins the zoom and fullscreen buttons
+/// through their direct accessor attributes only (join success plus
+/// enabled/value bits; no subtree walk). No setters, no focus changes, no
+/// actions, no geometry interpretation. Every unknown carries its exact
+/// native or local status string; nothing is defaulted.
+#[cfg(target_os = "macos")]
+pub(crate) fn read_zoom_facts(pid: u32, wid: u32) -> ZoomFacts {
+    use crate::ffi::{
+        AxElement, ax_attribute_names, ax_bool_attribute, ax_error_name, ax_set_messaging_timeout,
+        ax_window_id,
+    };
+
+    let failed = |cause: String| ZoomFacts {
+        attr_names_status: cause.clone(),
+        attr_names: None,
+        has_zoomed_attr: None,
+        zoomed: None,
+        zoomed_status: "unknown".to_owned(),
+        zoom_button: missing_button("direct-attr", &cause),
+        fullscreen_button: missing_button("direct-attr", &cause),
+    };
+    if pid <= 1 || pid > i32::MAX as u32 {
+        return failed(format!("refusing out-of-range pid {pid}"));
+    }
+    let Some(app) = AxElement::application(pid as i32) else {
+        return failed(format!("no AX element for pid {pid}"));
+    };
+    if ax_set_messaging_timeout(&app, 2.0) != 0 {
+        return failed("messaging timeout unset before window join".to_owned());
+    }
+    let windows = match app.windows() {
+        Ok(windows) => windows,
+        Err(code) => return failed(format!("windows: {}", ax_error_name(code))),
+    };
+    let mut target: Option<AxElement> = None;
+    for window in windows {
+        if ax_set_messaging_timeout(&window, 2.0) != 0 {
+            continue;
+        }
+        if ax_window_id(&window) == Some(wid) {
+            target = Some(window);
+            break;
+        }
+    }
+    let Some(window) = target else {
+        return failed(format!("window wid {wid} rejoin missed"));
+    };
+
+    let (attr_names_status, attr_names) = match ax_attribute_names(&window) {
+        Ok(names) => ("ok".to_owned(), Some(names)),
+        Err(status) => (status, None),
+    };
+    let has_zoomed_attr = attr_names
+        .as_ref()
+        .map(|names| names.iter().any(|name| name == "AXZoomed"));
+    let (zoomed, zoomed_status) = match ax_bool_attribute(&window, "AXZoomed") {
+        Ok(value) => (Some(value), "ok".to_owned()),
+        Err(code) => (None, ax_error_name(code)),
+    };
+
+    // Direct accessor joins only: the window advertises `AXZoomButton` /
+    // `AXFullScreenButton` in its attribute names; joining through those
+    // accessors is exact. No subtree walk: a failed join is reported with
+    // its exact status, never filled in by guessing at descendants.
+    fn read_button(child: &AxElement) -> ZoomButtonFact {
+        use crate::ffi::{ax_attribute_names, ax_bool_attribute, ax_set_messaging_timeout};
+        // Bound each read on the joined element; a refusal still leaves the
+        // per-app worker bound as the cap.
+        let _ = ax_set_messaging_timeout(child, 2.0);
+        let names = ax_attribute_names(child).ok();
+        let has_enabled_attr = names
+            .as_ref()
+            .map(|list| list.iter().any(|name| name == "AXEnabled"));
+        let has_value_attr = names
+            .as_ref()
+            .map(|list| list.iter().any(|name| name == "AXValue"));
+        let (enabled, enabled_status) = match ax_bool_attribute(child, "AXEnabled") {
+            Ok(value) => (Some(value), "ok".to_owned()),
+            Err(code) => (None, ax_error_name(code)),
+        };
+        let (value_bool, value_status) = match ax_bool_attribute(child, "AXValue") {
+            Ok(value) => (Some(value), "ok".to_owned()),
+            Err(code) => (None, ax_error_name(code)),
+        };
+        ZoomButtonFact {
+            found: true,
+            via: "direct-attr".to_owned(),
+            lookup_status: "ok".to_owned(),
+            has_enabled_attr,
+            has_value_attr,
+            enabled,
+            enabled_status,
+            value_bool,
+            value_status,
+        }
+    }
+    fn join_button(window: &AxElement, name: &str) -> ZoomButtonFact {
+        use crate::ffi::ax_element_attribute;
+        match ax_element_attribute(window, name) {
+            Ok(button) => read_button(&button),
+            Err(status) => missing_button("direct-attr", &status),
+        }
+    }
+
+    ZoomFacts {
+        attr_names_status,
+        attr_names,
+        has_zoomed_attr,
+        zoomed,
+        zoomed_status,
+        zoom_button: join_button(&window, "AXZoomButton"),
+        fullscreen_button: join_button(&window, "AXFullScreenButton"),
+    }
 }
 
 fn locked_stop_reason(session: &crate::ffi::SessionState) -> Option<String> {
@@ -235,6 +414,10 @@ fn inspect_one_app(pid: u32, bundle_echo: String) -> InspectedApp {
             _ => ("incomplete-facts".to_owned(), None),
         };
         let hints = facts.size_hints();
+        // Read-only zoom diagnostic on the same owned window (same worker
+        // thread, same AX ownership rule). Never a production input: the
+        // classifier above is untouched.
+        let zoom = Some(read_zoom_facts(pid, facts.wid));
         windows.push(InspectedWindow {
             wid: facts.wid,
             role: facts.role.clone(),
@@ -254,6 +437,7 @@ fn inspect_one_app(pid: u32, bundle_echo: String) -> InspectedApp {
             floating,
             spaces,
             spaces_status,
+            zoom,
         });
     }
     // Deterministic order for evidence diffing.
@@ -577,6 +761,7 @@ mod tests {
                     floating: Some(false),
                     spaces: vec![1],
                     spaces_status: "ok".to_owned(),
+                    zoom: None,
                 }],
                 error: None,
             }],
@@ -595,6 +780,71 @@ mod tests {
         }
         assert!(json.contains("AXWindow"));
         assert!(json.contains("\"disposition\":\"Tile\""));
+    }
+
+    #[test]
+    fn zoom_facts_carry_no_title_content_path_or_exe_keys() {
+        let zoom = ZoomFacts {
+            attr_names_status: "ok".to_owned(),
+            attr_names: Some(vec!["AXZoomed".to_owned(), "AXWindows".to_owned()]),
+            has_zoomed_attr: Some(true),
+            zoomed: Some(false),
+            zoomed_status: "ok".to_owned(),
+            zoom_button: ZoomButtonFact {
+                found: true,
+                via: "direct-attr".to_owned(),
+                lookup_status: "ok".to_owned(),
+                has_enabled_attr: Some(true),
+                has_value_attr: Some(false),
+                enabled: Some(true),
+                enabled_status: "ok".to_owned(),
+                value_bool: None,
+                value_status: "kAXErrorAttributeUnsupported".to_owned(),
+            },
+            fullscreen_button: ZoomButtonFact {
+                found: false,
+                via: "direct-attr".to_owned(),
+                lookup_status: "kAXErrorNoValue".to_owned(),
+                has_enabled_attr: None,
+                has_value_attr: None,
+                enabled: None,
+                enabled_status: "not-read".to_owned(),
+                value_bool: None,
+                value_status: "not-read".to_owned(),
+            },
+        };
+        let json = serde_json::to_string(&zoom).unwrap();
+        for key in [
+            "\"title\"",
+            "\"content\"",
+            "\"path\"",
+            "\"exe\"",
+            "\"executable\"",
+        ] {
+            assert!(!json.contains(key), "zoom facts must not carry {key}");
+        }
+        assert!(json.contains("AXZoomed"));
+        assert!(json.contains("\"zoomed\":false"));
+    }
+
+    #[test]
+    fn missing_button_never_invents_os_statuses() {
+        for status in [
+            "kAXErrorNoValue",
+            "local: null attribute-names array",
+            "local: non-element value for AXZoomButton",
+            "unknown",
+        ] {
+            let button = missing_button("direct-attr", status);
+            assert!(!button.found);
+            assert_eq!(button.lookup_status, status);
+            assert_eq!(button.enabled_status, "not-read");
+            assert_eq!(button.value_status, "not-read");
+            assert!(button.enabled.is_none());
+            assert!(button.value_bool.is_none());
+            assert!(button.has_enabled_attr.is_none());
+            assert!(button.has_value_attr.is_none());
+        }
     }
 
     #[test]
@@ -619,6 +869,7 @@ mod tests {
                 floating: None,
                 spaces: vec![],
                 spaces_status: "ok".to_owned(),
+                zoom: None,
             }
         }
         let mut windows = [blank(9), blank(7)];
