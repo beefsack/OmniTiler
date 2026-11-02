@@ -274,6 +274,57 @@
   A later owned overlay would require state/geometry and recovery contract work,
   not a guessed extension of this record. M3 restart binding remains unproved,
   and no FrameWitness change is introduced.
+- Outer intent lanes are staged: `intentRecords` is required ingress with
+  closed rows, valid subject ids, <=10000 entries and <=1024 UTF-8 bytes per
+  opaque string. The wire preserves decoded string bytes without interpreting
+  inner JSON; malformed/unsupported inner records are not transport refusals.
+  Typed ingress enforces the same bounds. Report equality/digest includes subject,
+  order and exact data; changed data cannot reuse a prior request sequence.
+- Both reply writers publish required `intentWrites` after presentation and
+  before diagnostics, with opaque save strings or explicit null clears. A typed
+  intent-write validator enforces section/id/string bounds at the engine's staged
+  publication boundary before exact encoding, commit and reply caching. The legacy
+  String-returning encoders remain unchecked, with that validation as a caller
+  precondition; complete checked reply decoding remains separate migration work.
+- Engine intent writes remain empty and returned records confer no authority in
+  this increment. Fifteen protocol integration tests cover immutable nested
+  witnesses, wrong/missing/duplicate keys, both lane bounds, multibyte/control
+  escaping, exact new-section sizes, request-reuse fencing, oversized-request
+  non-mutation and behavior equality with an empty-record twin. The outbound
+  rejection helper is exercised directly; the engine cannot yet produce invalid
+  nonempty writes, so its rejection branch is source-reviewed rather than
+  dynamically injected. Nonempty engine writes need a pre-mutation budget bound
+  when lifetime-fenced restore/save/clear is implemented next.
+- Outer-lane verification: core/protocol tests pass (1159 core unit tests, all
+  integration targets, protocol suites 49/4/15/52/4), with only the unrelated
+  `workspace_unsafe_posture` filtered. Build and scoped all-target clippy with
+  warnings denied pass. No v4 fixture, version, native state or adapter source
+  changes are included; this is not complete bidirectional v4 conformance or
+  execution of the intent restart scenario.
+
+## Adapter compile-failure inventory
+
+- Current Linux-host `cargo check -p tiler-macos --all-targets --message-format
+  short` stops in the library with 65 errors and 12 warnings. Reported categories:
+  removed report/settings/capability fields in `world_builder.rs`, removed raw
+  window verdicts/nullability/native-workspace types in `runtime_core.rs` and
+  `world_builder.rs`, removed screen gap/outer/primary fields, retired
+  `HomeThenCachedLive`, and retired parallel member/view native-reference fields.
+  This is a host compile observation, not a native macOS build or an exhaustive
+  all-target inventory: library failure blocks later targets.
+- Intent constructor migration is additionally required by source inspection,
+  not established as fresh compiler diagnostics behind those earlier failures:
+  - macOS `WorldReport`: `drag_drop.rs`, `pager.rs`, `tile.rs`,
+    `world_builder.rs`, `world_command_map.rs`, `world_dispatch.rs`.
+  - macOS `WorldReply`: `world_dispatch.rs`, `world_sequencer.rs`.
+  - Windows `WorldReport` under `tiling_sys`: `world_owner_tests.rs`,
+    `world_sequencer.rs`, `world_tick.rs`.
+  - Windows `WorldReply` under `tiling_sys`: `tests_pending_drop.rs`,
+    `world_diff_tests.rs`, `world_native_tests.rs`, `world_route_tests.rs`,
+    `world_tick.rs`.
+  Production/fixture constructors need the new intent lane plus the earlier
+  staged migrations, not placeholder updates presented as an adapter port.
+  Native Windows and KDE compile-failure inventories remain pending.
 
 ## Outcome
 
@@ -288,8 +339,9 @@
    narrowing are implemented and tested; unselected special-kind admission stays
    TBD. The workspace unsafe guardrail failure above remains unresolved outside
    these changed sources.
-  The bounded opaque intent-data codec is implemented and fixture-tested;
-  outer intent records, engine restore/save/clear and host storage remain pending.
+  The bounded opaque intent-data codec and outer intent ingress/publication lanes
+  are implemented and fixture-tested; lifetime-fenced engine restore/save/clear
+  and host storage remain pending. Engine storage-write authority is still empty.
   The remaining world report/reply paths and version are still staged; no v4
   cutover or full scenario acceptance is claimed. Full adapter build-failure
   inventory remains pending.

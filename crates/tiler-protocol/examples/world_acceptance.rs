@@ -361,6 +361,8 @@ fn build_report(
         clear_attempts: vec![],
         creation_attempts: vec![],
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
+
+        intent_records: Vec::new(),
     })
 }
 

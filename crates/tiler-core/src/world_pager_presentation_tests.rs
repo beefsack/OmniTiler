@@ -159,6 +159,8 @@ fn pager_report_ordered(
             pager_frames: frames,
             ..PresentationIngress::disabled()
         },
+
+        intent_records: Vec::new(),
     }
 }
 

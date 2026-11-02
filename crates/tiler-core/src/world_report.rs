@@ -131,6 +131,29 @@ pub const MAX_IDENTITY_TEXT_BYTES: usize = 256;
 /// identity grammar in [`crate::connection::valid_identity_text`].
 pub const MAX_METADATA_TEXT_BYTES: usize = 4096;
 
+/// Bound on opaque host intent return rows per report (`intentRecords`).
+pub const MAX_INTENT_RECORDS: usize = 10_000;
+/// Bound on core intent save/clear decisions per reply (`intentWrites`).
+pub const MAX_INTENT_WRITES: usize = 10_000;
+
+/// Opaque host intent return row: the storage-verified live subject plus the
+/// exact core record bytes, never interpreted by the adapter. The outer
+/// `data` string only carries the slot bound (<=1024 UTF-8 bytes); inner
+/// version/shape verdicts never change this envelope validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntentRecord {
+    pub win: WindowId,
+    pub data: String,
+}
+
+/// Core intent save/clear decision: the exact subject plus the opaque save
+/// value, or `None` (wire `null`) to explicitly clear the lifetime slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntentWrite {
+    pub win: WindowId,
+    pub data: Option<String>,
+}
+
 /// Tiling policy for one desired workspace row. The core retains one mode
 /// per workspace (Planner-owned, set through
 /// [`WorldCommand::SetWorkspaceTiling`] or flipped through
@@ -1703,6 +1726,11 @@ pub struct WorldReport {
     /// core publishes uniform border/underlay/pager presentation in the
     /// reply; the adapter only captures, observes and renders.
     pub presentation: PresentationIngress,
+    /// Opaque host storage return: the verified live subjects plus their
+    /// exact core record bytes, never interpreted by the adapter. Required
+    /// on the wire (`intentRecords`, possibly empty); raw strings ride
+    /// verbatim, including unsupported or malformed inner JSON.
+    pub intent_records: Vec<IntentRecord>,
 }
 
 /// Terminal retained-operation lifecycle outcome for one core-owned
@@ -1847,6 +1875,11 @@ pub struct WorldReply {
     /// against the token and never paints stale shapes. A paused (game-lane)
     /// report carries hidden border/underlay and an empty pager.
     pub presentation: crate::world_presentation::WorldPresentation,
+    /// Core save/clear decisions for the lifetime-bound intent slots:
+    /// opaque save values, or `None` (wire `null`) to explicitly clear.
+    /// Required on the wire (`intentWrites`); empty until a later increment
+    /// publishes decisions. The engine emits no writes in this increment.
+    pub intent_writes: Vec<IntentWrite>,
 }
 
 /// Correlated per-command outcome that the snapshot alone cannot express.
@@ -2756,6 +2789,15 @@ pub fn report_digest(report: &WorldReport) -> u64 {
             }
         }
     }
+    // Opaque host storage return: every carried record separates the
+    // digest by exact subject identity, order, and raw data bytes
+    // (duplicate detection compares full typed input equality).
+    for record in &report.intent_records {
+        feed(&mut hash, &record.win.0);
+        sep(&mut hash);
+        feed(&mut hash, &record.data);
+        sep(&mut hash);
+    }
     hash
 }
 
@@ -3603,6 +3645,7 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         || report.view_attempts.len() > MAX_WORLD_VIEW_ATTEMPTS
         || report.clear_attempts.len() > MAX_WORLD_CLEAR_ATTEMPTS
         || report.creation_attempts.len() > MAX_WORLD_CREATION_ATTEMPTS
+        || report.intent_records.len() > MAX_INTENT_RECORDS
     {
         return Some("section-over-cap");
     }
@@ -4132,6 +4175,51 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
             {
                 return Some("presentation-frame-invalid");
             }
+        }
+    }
+    // Opaque host storage return: opaque live subjects only, and outer
+    // record strings bounded to the slot (UTF-8 bytes, not chars). Inner
+    // version/shape verdicts never change this envelope validation: raw
+    // unsupported or malformed inner JSON stays accepted here.
+    for record in &report.intent_records {
+        if !is_opaque_id(&record.win.0) {
+            return Some("window-id-invalid");
+        }
+        if record.data.len() > crate::intent_data::MAX_INTENT_DATA_BYTES {
+            return Some("intent-data-invalid");
+        }
+    }
+    None
+}
+
+/// Name the failed outbound intent save/clear check in fixed vocabulary
+/// (never payload bytes): `None` when every write row is publishable,
+/// otherwise the static reason token the engine carries as its rejection
+/// message under kind `snapshot-invalid`.
+///
+/// Intent-specific typed helper only: it validates the `intentWrites`
+/// outbound lane (section cap [`MAX_INTENT_WRITES`], opaque subject ids,
+/// save slot bound [`crate::intent_data::MAX_INTENT_DATA_BYTES`]), never a
+/// full reply. The legacy whole-reply canonical writers
+/// ([`encode_reply_canonical`](crate::world_sizing::encode_reply_canonical))
+/// return `String` and stay unchecked: callers must prove this helper is
+/// `None` before encoding (the engine publication gate does); the writer
+/// spells whatever rows it is given.
+#[must_use]
+pub fn validate_intent_writes_reason(writes: &[IntentWrite]) -> Option<&'static str> {
+    if writes.len() > MAX_INTENT_WRITES {
+        return Some("section-over-cap");
+    }
+    for write in writes {
+        if !is_opaque_id(&write.win.0) {
+            return Some("window-id-invalid");
+        }
+        if write
+            .data
+            .as_deref()
+            .is_some_and(|data| data.len() > crate::intent_data::MAX_INTENT_DATA_BYTES)
+        {
+            return Some("intent-data-invalid");
         }
     }
     None

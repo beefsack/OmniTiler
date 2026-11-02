@@ -955,6 +955,8 @@ mod tests {
             clear_attempts: Vec::new(),
             creation_attempts: Vec::new(),
             presentation: ingress,
+
+            intent_records: Vec::new(),
         }
     }
 

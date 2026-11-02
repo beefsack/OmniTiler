@@ -247,6 +247,9 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     // section in [`operation_settled_estimate`]
     // (`,\"operationSettled\":[]` = 21 when empty), and the warp section
     // in [`warp_cursor_estimate`] (`,\"warpCursor\":null` = 18 when absent).
+    // The intent save/clear section rides between presentation and
+    // diagnostics ([`intent_writes_estimate`], `,\"intentWrites\":[]` = 18
+    // when empty).
     let mut bytes = 175
         + usize_len(reply.contract_version as usize)
         + json_string_len(&reply.request_id)
@@ -362,6 +365,44 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     bytes += native_creations_estimate(&reply.native_creations);
     bytes += warp_cursor_estimate(&reply.cursor_warp);
     bytes += presentation_estimate(&reply.presentation);
+    bytes += intent_writes_estimate(&reply.intent_writes);
+    bytes
+}
+
+/// Structural size estimate for the core intent save/clear section:
+/// `,"intentWrites":[]` (18) when empty; each row
+/// `{"win":S,"data":S|null}` counts 16 fixed punctuation plus the subject
+/// id and the save value (`null` counts 4 when the slot clears).
+#[must_use]
+pub fn intent_writes_estimate(writes: &[crate::world_report::IntentWrite]) -> usize {
+    // `,"intentWrites":[` (17) plus `]` (1) when empty = 18.
+    let mut bytes = 18usize;
+    for (i, write) in writes.iter().enumerate() {
+        if i > 0 {
+            bytes += 1;
+        }
+        // `{"win":,"data":}` = 16 punctuation.
+        bytes +=
+            16 + json_string_len(&write.win.0) + write.data.as_deref().map_or(4, json_string_len);
+    }
+    bytes
+}
+
+/// Structural size estimate for the opaque host storage return section:
+/// `,"intentRecords":[]` (19) when empty; each row `{"win":S,"data":S}`
+/// counts 16 fixed punctuation plus the subject id and the raw record
+/// string (verbatim bytes, never decoded here).
+#[must_use]
+pub fn intent_records_estimate(records: &[crate::world_report::IntentRecord]) -> usize {
+    // `,"intentRecords":[` (18) plus `]` (1) when empty = 19.
+    let mut bytes = 19usize;
+    for (i, record) in records.iter().enumerate() {
+        if i > 0 {
+            bytes += 1;
+        }
+        // `{"win":,"data":}` = 16 punctuation.
+        bytes += 16 + json_string_len(&record.win.0) + json_string_len(&record.data);
+    }
     bytes
 }
 
@@ -973,8 +1014,11 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             bytes += json_string_len(id) + 1;
         }
     }
-    // No restoration ingress exists on the wire: every report is a
-    // fresh-observation report and the adapter sends no restoration key.
+    // No adapter-projected restoration key is admitted; opaque storage
+    // returns are a separate lane below.
+    // Opaque host storage return rides after the presentation ingress with
+    // exact escaped widths (control/quote/backslash per `json_string_len`).
+    bytes += intent_records_estimate(&report.intent_records);
     bytes
 }
 
@@ -1733,6 +1777,12 @@ pub fn encode_screen_canonical(
 /// these bytes. Global `u64` counters (`obs`, `rev`, effect `rev`) encode
 /// as bounded decimal strings, never JSON numbers, so JavaScript adapters
 /// never lose precision past 2^53.
+///
+/// Caller precondition (existing unchecked-`String` pattern, shared with the
+/// protocol transport mirror): `validate_intent_writes_reason` on the
+/// reply's `intent_writes` must be `None`. This writer spells whatever rows
+/// it is given and never refuses; the engine publication gate enforces the
+/// precondition before any commit or encode.
 #[must_use]
 pub fn encode_reply_canonical(reply: &WorldReply) -> String {
     let mut out = String::new();
@@ -1943,7 +1993,21 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
     }
     out.push_str(",\"presentation\":");
     encode_presentation(&mut out, &reply.presentation);
-    out.push_str(",\"diagnostics\":[");
+    out.push_str(",\"intentWrites\":[");
+    for (i, write) in reply.intent_writes.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"win\":");
+        push_json_string(&mut out, &write.win.0);
+        out.push_str(",\"data\":");
+        match write.data.as_deref() {
+            Some(data) => push_json_string(&mut out, data),
+            None => out.push_str("null"),
+        }
+        out.push('}');
+    }
+    out.push_str("],\"diagnostics\":[");
     for (i, diagnostic) in reply.diagnostics.iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -2418,6 +2482,11 @@ pub fn reply_exact_bytes(reply: &WorldReply) -> usize {
 /// - held-row diagnostics (at most one per held screen row): scope (155) plus
 ///   lane/kind tokens (30) plus id (130) plus punctuation (30) = 345,
 ///   rounded to 512 each.
+/// - core intent save/clear section (`intentWrites`): the empty 18-byte
+///   section is covered by the 4096 envelope slack below. Future nonempty
+///   writes publish at the consumption increment and need their own
+///   pre-mutation bound there; no max-write reservation is added here (it
+///   would overreject every report).
 /// - envelope slack: 4096 base covers envelope slack and array commas.
 #[must_use]
 pub fn reply_upper_bound(

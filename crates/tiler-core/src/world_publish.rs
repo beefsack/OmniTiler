@@ -1046,6 +1046,7 @@ impl WorldEngine {
             native_creations,
             cursor_warp,
             presentation: crate::world_presentation::WorldPresentation::default(),
+            intent_writes: Vec::new(),
         }
     }
 

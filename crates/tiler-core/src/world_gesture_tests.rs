@@ -164,6 +164,8 @@ fn report_on(
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
+
+        intent_records: Vec::new(),
     }
 }
 

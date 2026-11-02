@@ -211,12 +211,12 @@ use tiler_core::ids::{
 };
 use tiler_core::world_report::{
     ActivationPolicy, AuthorityScope, FullscreenOwner, HeldScreenRow, HeldWindowRow, HoldReason,
-    LastWrite, LastWritePath, LastWriteProperty, NativeObservation, NativeWorkspaceFact,
-    OutputIdentity, PresentationIngress, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
-    ScreenReport, ScreenView, TransferKind, VisibilityFact, VisibilityReason, VisibilitySample,
-    VisibilitySetter, WORLD_CONTRACT_VERSION, WindowFact, WindowType, WorkspaceRef, WorldCommand,
-    WorldReply, WorldReport, check_screen_structure, check_window_structure,
-    validate_report_reason,
+    IntentRecord, LastWrite, LastWritePath, LastWriteProperty, MAX_INTENT_RECORDS,
+    NativeObservation, NativeWorkspaceFact, OutputIdentity, PresentationIngress, RowDiagnostic,
+    RowDiagnosticKind, RowDiagnosticLane, ScreenReport, ScreenView, TransferKind, VisibilityFact,
+    VisibilityReason, VisibilitySample, VisibilitySetter, WORLD_CONTRACT_VERSION, WindowFact,
+    WindowType, WorkspaceRef, WorldCommand, WorldReply, WorldReport, check_screen_structure,
+    check_window_structure, validate_report_reason,
 };
 
 /// World protocol contract version (equals the core world contract version).
@@ -2537,6 +2537,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "actionCached",
             "actionOutputs",
             "presentation",
+            "intentRecords",
         ],
         &[
             "cursorHit",
@@ -2668,6 +2669,36 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         Some(serde_json::Value::Null) => None,
         Some(value) => Some(decode_gesture_ingress(value)?),
     };
+    // Required opaque host storage return: closed `{"win","data"}` rows.
+    // The `data` string rides verbatim (never decoded here): unsupported
+    // or malformed inner JSON stays an accepted envelope, while a
+    // wrong-typed `data` (object, null) refuses as malformed and an
+    // overbound string or an over-cap section refuses the envelope.
+    let intent_records_value = map.get("intentRecords").ok_or_else(malformed)?;
+    let intent_records_items = intent_records_value.as_array().ok_or_else(malformed)?;
+    if intent_records_items.len() > MAX_INTENT_RECORDS {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "section-over-cap",
+        });
+    }
+    let mut intent_records = Vec::with_capacity(intent_records_items.len());
+    for item in intent_records_items {
+        let row = as_object(item)?;
+        check_keys(row, &["win", "data"])?;
+        let win = WindowId(req_id(row, "win")?);
+        let data = match row.get("data") {
+            Some(serde_json::Value::String(data)) => data.clone(),
+            _ => return Err(malformed()),
+        };
+        if data.len() > tiler_core::intent_data::MAX_INTENT_DATA_BYTES {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: "intent-data-invalid",
+            });
+        }
+        intent_records.push(IntentRecord { win, data });
+    }
     let report = WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
         adapter_incarnation: req_id(map, "adapter")?,
@@ -2757,6 +2788,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         clear_attempts,
         creation_attempts,
         presentation: decode_presentation(map.get("presentation").ok_or_else(malformed)?)?,
+        intent_records,
         primary_output: match map.get("primary") {
             // Host-designated primary: absent means unknown (no fallback
             // to any per-screen flag: `primary` is not a screen key and
@@ -2833,6 +2865,12 @@ fn push_authority_scope(out: &mut String, scope: &AuthorityScope) {
     }
 }
 
+/// Transport mirror of the core canonical reply writer: byte-identical by
+/// construction. Same unchecked-`String` caller precondition as
+/// [`tiler_core::world_sizing::encode_reply_canonical`]: the reply's
+/// `intent_writes` must satisfy
+/// [`tiler_core::world_report::validate_intent_writes_reason`]; the engine
+/// publication gate enforces it before any commit or encode.
 #[must_use]
 pub fn encode_reply(reply: &WorldReply) -> String {
     let mut out = String::new();
@@ -3045,7 +3083,21 @@ pub fn encode_reply(reply: &WorldReply) -> String {
     }
     out.push_str(",\"presentation\":");
     tiler_core::world_sizing::encode_presentation(&mut out, &reply.presentation);
-    out.push_str(",\"diagnostics\":[");
+    out.push_str(",\"intentWrites\":[");
+    for (i, write) in reply.intent_writes.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"win\":");
+        push_json_string(&mut out, &write.win.0);
+        out.push_str(",\"data\":");
+        match write.data.as_deref() {
+            Some(data) => push_json_string(&mut out, data),
+            None => out.push_str("null"),
+        }
+        out.push('}');
+    }
+    out.push_str("],\"diagnostics\":[");
     for (i, diagnostic) in reply.diagnostics.iter().enumerate() {
         if i > 0 {
             out.push(',');

@@ -781,6 +781,8 @@ pub(crate) mod tests {
             primary_output: None,
             held_screens: Vec::new(),
             held_windows: Vec::new(),
+
+            intent_records: Vec::new(),
         }
     }
 

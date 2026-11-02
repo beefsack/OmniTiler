@@ -118,6 +118,8 @@ fn report(
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         presentation,
+
+        intent_records: Vec::new(),
     }
 }
 

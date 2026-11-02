@@ -164,6 +164,8 @@ fn report(
             pager_frames: frames,
             ..ingress
         },
+
+        intent_records: Vec::new(),
     }
 }
 

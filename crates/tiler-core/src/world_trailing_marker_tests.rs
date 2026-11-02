@@ -113,6 +113,8 @@ fn report(
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         presentation: PresentationIngress::disabled(),
+
+        intent_records: Vec::new(),
     }
 }
 

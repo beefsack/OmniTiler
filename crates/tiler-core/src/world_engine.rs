@@ -60,7 +60,7 @@ use crate::world_report::{
     WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldCommand,
     WorldReply, WorldReport, encode_reply_canonical, grade_conflicting_windows,
     grade_invalid_screens, grade_invalid_windows, reply_estimate, reply_upper_bound, report_digest,
-    report_estimate, validate_report_reason,
+    report_estimate, validate_intent_writes_reason, validate_report_reason,
 };
 
 pub(crate) const KIND_VERSION: &str = "unsupported-version";
@@ -1359,6 +1359,7 @@ impl WorldEngine {
             native_creations: Vec::new(),
             cursor_warp: None,
             presentation: crate::world_presentation::WorldPresentation::default(),
+            intent_writes: Vec::new(),
         }
     }
 
@@ -1829,6 +1830,17 @@ impl WorldEngine {
         let outcome = staged.run_accepted(report, &owner, &correlation, digest, consumed);
         match outcome {
             WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
+                // Outbound intent lane gate: every published/cached reply
+                // originates valid. The engine emits no writes in this
+                // increment, so this gate admits; a future increment that
+                // publishes decisions must pass here before the candidate
+                // commits or encodes. Fixed check vocabulary, never payload.
+                if let Some(reason) = validate_intent_writes_reason(&reply.intent_writes) {
+                    return WorldOutcome::Rejected {
+                        kind: KIND_SNAPSHOT,
+                        message: reason,
+                    };
+                }
                 if reply_estimate(&reply) > WORLD_MAX_REPLY_BYTES
                     || encode_reply_canonical(&reply).len() > WORLD_MAX_REPLY_BYTES
                 {
@@ -1862,6 +1874,9 @@ impl WorldEngine {
         report: &WorldReport,
         correlation: &CorrelationId,
     ) -> WorldReply {
+        // Bootstrap publishes no intent decisions: the empty `intent_writes`
+        // below trivially satisfies `validate_intent_writes_reason`, so the
+        // staged commit gate above stays the single enforcing boundary.
         WorldReply {
             contract_version: WORLD_CONTRACT_VERSION,
             adapter_incarnation: report.adapter_incarnation.clone(),
@@ -1884,6 +1899,7 @@ impl WorldEngine {
             native_creations: Vec::new(),
             cursor_warp: None,
             presentation: crate::world_presentation::WorldPresentation::default(),
+            intent_writes: Vec::new(),
         }
     }
 

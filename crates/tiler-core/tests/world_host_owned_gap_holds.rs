@@ -150,6 +150,8 @@ fn report(
         clear_attempts: Vec::new(),
         creation_attempts: creations,
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
+
+        intent_records: Vec::new(),
     }
 }
 
