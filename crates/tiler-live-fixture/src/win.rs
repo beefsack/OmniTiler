@@ -211,6 +211,13 @@ impl Windows {
         requested: &Fields,
     ) -> Result<CreatedWindow, String> {
         renderer_gate(&self.renderer_error)?;
+        // Standard Window menu (Zoom/Fill/tile slots) for the menu
+        // diagnostic: winit builds the app menu only, so the first window
+        // creation installs the minimal windowsMenu. Idempotent and
+        // fail-closed; a refusal is reported by the menu inventory, never
+        // hidden here.
+        #[cfg(target_os = "macos")]
+        crate::menu_macos::ensure_window_menu();
         let caps = self.capabilities();
         let backend = self.backend_name();
         let mut unsupported = Vec::new();

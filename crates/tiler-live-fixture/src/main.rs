@@ -6,6 +6,8 @@
 //! forwards JSON lines from arguments or stdin and prints reply/event lines.
 
 mod client;
+#[cfg(target_os = "macos")]
+mod menu_macos;
 #[cfg(windows)]
 mod pipe_win;
 mod platform;

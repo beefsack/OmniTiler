@@ -25,6 +25,13 @@ font8x8 = { version = "0.3", default-features = false }
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = true, features = ["process"] }
 
+# Minimal standard Window menu (macOS serve only): the sole unsafe owner is
+# the reviewed `menu_macos` module, mirroring `pipe_win.rs` on Windows.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+
 # Windows named-pipe transport: popular maintained tokio pipe API plus a
 # minimal reviewed unsafe module (src/pipe_win.rs) for the owner-only
 # security descriptor. windows-sys 0.61 matches the workspace pin.
