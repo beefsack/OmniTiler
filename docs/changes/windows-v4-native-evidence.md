@@ -7,6 +7,7 @@
 - Priorities: first-seen/app-owned fullscreen (R14), topmost crash recovery
   (W1/R12), native lifetime/storage, border witness/event coverage (K5), hidden
   arrival/suppression (W2), and elevated-window identity/facts (W4/K1).
+  The follow-up below adds output identity (R11) and per-output scale/event reads.
 - Do not change contract, spec, decisions, shared fixtures or non-Windows code.
   Proposed behavioral discriminators stay in this record until accepted.
 
@@ -508,14 +509,155 @@ observations. The later Rust results above are the current measurement summary.
 
 ## Adjacent open gates
 
-- [monitors.rs:4-84](../../crates/tiler-windows/src/tiling_sys/monitors.rs) proves
+- Before the follow-up below,
+  [monitors.rs:4-84](../../crates/tiler-windows/src/tiling_sys/monitors.rs) proved
   production PMv2 enforcement, full/work/primary enumeration and topology-dirty
   plumbing, not an empty-output scale-only notification or physical identity
-  producer. No scale setting, display-mode change or hotplug was performed.
-- QueryDisplayConfig target metadata plus SetupAPI EDID remains a proposed
+  producer. The earlier pass changed no scale, display mode or topology.
+- QueryDisplayConfig target metadata plus SetupAPI EDID was a proposed
   manufacturer/model/serial/connection route, per the existing platform-fit
   review. Serial absence stays null; DISPLAY ordinal/connectorInstance alone is
-  not proved durable physical identity. No new native evidence closes either gate.
+  not proved durable physical identity. The follow-up narrows, not closes, these
+  gates.
+
+## Follow-up: output identity and empty-output scale (2026-11-02)
+
+- Scope: measure ordinary-process QueryDisplayConfig target metadata and
+  read-only SetupAPI EDID; compare identity across process restart and bounded
+  display lifecycle changes. Separately observe effective DPI and native
+  notifications with one PMv2 probe window per output, including an output
+  without other application windows where available.
+- Acceptance: retain native before/after readbacks, distinguish serial absence
+  and duplicate/zero metadata, test scale-only versus resolution invalidation,
+  and verify restoration of every display setting changed. Unsupported physical
+  reconnect, sleep/resume and reboot legs remain explicit user steps.
+- Approach: a standalone development probe independent of the temporarily
+  unported `tiler-windows` crate; effect-free build and rollback review before
+  bounded native measurements. No contract/spec/decision edits are part of this
+  investigation.
+- **Partial evidence only; display power was restored by physical input, not by the probe.**
+  R11 metadata reads and process-restart stability fit the nullable shape;
+  durable connector fallback and lifecycle acceptance need further evidence.
+  Per-output PMv2 DPI/notifications fit on two outputs, but an otherwise-empty
+  output was not established. Neither item is fully accepted.
+
+### Provenance and measurement limitations
+
+- External group: `outid-v4-run-20261102-2044`; raw identities and the standalone
+  Rust harness remain outside the repository. Repository reference revision:
+  `03310546ea9e75217c4cd4d67ca29c52153202d0`. No production tiler was launched.
+  Native Windows 11 reports identify medium integrity (RID 8192).
+- Post-run artifact SHA-256 independently checked:
+  `10856b9efadcd86dcb0e52b0b8e38c516a33d7d122c52180da8eddef7909686b`.
+  Reported offline build, eight tests and strict clippy passed; their transcripts
+  were not retained. Reports retain PIDs, OS and integrity, but not executable/
+  process-start/session bindings or a launch sidecar. An exact-identity forced
+  stop was not demonstrated. These preflight omissions limit acceptance; the
+  current artifact hash does not retroactively prove every launched artifact.
+- Initial review found handled-Ctrl-C, zero-window timer, aligned-token-buffer,
+  partial-mode-preimage, topology-readback and DPI-payload deficiencies. The
+  measurement harness was corrected before these legs. It remains a disposable
+  probe, not an accepted production or general recovery implementation.
+- Identity/save-state commands were not PMv2: their monitor DPI and rectangles
+  can be virtualized. Only the PMv2 observer's `GetDpiForWindow` establishes DPI
+  here. Same-reader before/after geometry equality is not a physical-pixel proof.
+- Window enumeration counted visible windows globally, not per output. Its
+  `empty_of_ordinary_apps` result cannot establish whether either output was
+  empty or occupied. No foreign windows were moved/closed to create that case.
+
+### R11 identity readbacks and matching
+
+| Readback | Output A | Output B | Meaning |
+| --- | --- | --- | --- |
+| QDC target EDID IDs/device path/friendly name | Present; IDs valid | Present; IDs valid | Ordinary-process read succeeded; friendly name not forced |
+| SetupAPI device-key EDID | Readable; parsed | Readable; parsed | Device keys opened `KEY_READ`; manufacturer/product nonzero |
+| Numeric serial | Nonzero | Same value as A | Serial alone is duplicated, not a uniqueness proof |
+| Text serial/model descriptors | Present | Present | Parser read them, but retained reports record presence only; text contents/stability are unproved |
+| `connectorInstance` | 2 | 0 | Zero is a real observation; instance alone is not a connection identity |
+| Manufacturer/product/numeric-serial triple | Distinct from B | Distinct from A | Physical triples distinguish this pair; identical-monitor fallback was not exercised |
+
+- Offline `verify-evidence.jq` exactly matched each QDC device path's normalized
+  embedded device-instance portion to one SetupAPI instance ID, with matching
+  product IDs and manufacturer IDs after byte-order normalization. This is
+  retained-string correlation, not a live SetupAPI interface-detail join.
+  A producer must not mix QDC raw manufacturer byte order with parsed EDID order.
+- `identity-1.json` and `identity-2.json` are separate PIDs; the latter's diff
+  has no added/removed/changed paths and identical retained EDID device rows.
+  `identity-final.json` repeats that stable result after scale, resolution and
+  power requests. Text serial equality was not compared because text was omitted.
+- Distinct adapter/target provenance and device paths were readable, but no
+  durable normalized `connector` string was established. Adapter LUID/target IDs
+  are connection observations, not a reboot-stability guarantee; DISPLAY ordinal
+  and a lone connector instance remain invalid substitutes. Until proved, an
+  unreadable/unproven connector stays null and ambiguous matching holds.
+- EDID bytes/device registry storage are device-derived, not tiler-process
+  state. That inspection supports process independence, not actual reboot,
+  sleep/wake, physical reconnect, port-swap or identical-monitor stability.
+  No such lifecycle was completed; power requests did not remove an active path.
+
+### Per-output DPI and notifications
+
+- One nonactivating PMv2 observer HWND per output was correctly placed; each
+  observation report confirms two distinct actual outputs. Initial effective
+  DPI was A=120 (scale 1.25), B=96 (scale 1). An eight-second baseline recorded
+  none of the three watched messages.
+- Scale stimuli used the undocumented `DisplayConfigGetDeviceInfo(-3)` /
+  `DisplayConfigSetDeviceInfo(-4)` source-adapter/source-ID packets, with checked
+  32/24-byte layouts, valid relative ranges, saved preimages and bounded holds.
+  The ABI was inspected in [DPIScaler](https://github.com/EndpointFocus/DPIScaler/blob/master/DpiHelper.h)
+  and [SetDPI](https://github.com/imniko/SetDPI/blob/master/DpiHelper.cpp), with
+  a corroborating implementation. This is a test stimulus, not a new product
+  API dependency. No direct registry/policy write was used for scale.
+- Counts below cover the entire apply-and-restore pair, not a guaranteed number
+  per change. Native mode reads remained unchanged during scale stimuli.
+
+| Stimulus and readback | A observer: DPI / DPI messages / display messages / settings messages | B observer: DPI / DPI messages / display messages / settings messages |
+| --- | --- | --- |
+| A scale 125% -> 100% -> 125%; 3 s hold | 120 -> 96 -> 120 / 2 / 2 / 4 | 96 unchanged / 0 / 2 / 4 |
+| B scale 100% -> 125% -> 100%; 3 s hold | 120 unchanged / 0 / 2 / 4 | 96 -> 120 -> 96 / 2 / 2 / 4 |
+| B enumerated resolution 1920x1080 -> 1600x900 -> original, same refresh; 3 s hold | 120 unchanged / 0 / 2 / 4 | 96 unchanged / 0 / 2 / 4 |
+
+- DPI messages are `WM_DPICHANGED`, display messages `WM_DISPLAYCHANGE`, settings
+  messages `WM_SETTINGCHANGE`. DPI wParam X/Y matched raw `GetDpiForWindow`
+  readbacks at each affected transition; the other output received no DPI message.
+  Both observers received display/settings messages even for scale-only changes
+  in these runs. These are observed notifications, not a universal broadcast
+  guarantee or proof of every Settings/custom-scaling path.
+- `scaleA-set.json`, `scaleB-set.json` and `setmode-D2.json` each retain successful
+  apply readback and exact changed-setting restoration. Resolution kept position
+  and orientation unchanged. `scale-final.json` matches both original source
+  records exactly. Offline comparison of `save-state.json` with
+  `save-state-final.json` found equal GDI devices/modes/primary and equal monitor
+  facts excluding handles, including full/work areas under the same reader.
+- All observer reports natively confirmed both HWNDs absent after destruction
+  and unchanged foreground. No remaining probe process was reported; no retained
+  exact-process exit binding or power-HWND absence readback establishes more.
+
+### Power restoration failure and remaining lifecycle legs
+
+- `power.json`: own-HWND monitor-power OFF request, timed ON request, OS OFF/ON
+  notifications, then another OFF notification 1190 ms after ON. `power2.json`
+  repeated with a shorter off interval and again reported OFF 1183 ms after ON.
+  The second run began with OFF. The cause of the return to OFF is unknown;
+  actual panel illumination was not observed.
+- The probe's `status:completed` checks that ON was sent, not that ON remained
+  observed. That completion/restoration claim is rejected. The diagnostic repeat
+  after the first uncertain restoration deviated from the restoration-stop rule;
+  it supplies no recovery acceptance. No further live work follows this finding.
+  The last probe-recorded OS display-power state was OFF. Physical mouse input
+  then woke both outputs and normal display operation was confirmed by the user.
+  Scale and resolution readbacks were restored by the probe; display power was
+  not. A monitor-power OFF request is not a self-restoring software probe.
+- Topology validation returned success without applying anything. The saved
+  `QDC_ALL_PATHS` set includes inactive alternatives and is not a proven-safe
+  active-topology restore recipe; no no-op apply or software detach/reconnect
+  was attempted. Do not replay that all-paths blob as a reconnect experiment.
+  Physical reconnect, safe sleep/wake and reboot comparison remain user steps.
+- Contract impact: no demonstrated shape change. Keep nullable raw identity,
+  core-owned triple/connector matching and ambiguous holds, plus per-screen
+  DPI/96. Remaining obligations are producer normalization and missing evidence,
+  not permission to invent a connector, trust a duplicate serial, or declare
+  empty-output notification acceptance from these measurements.
 
 ## Proposed discriminators (not spec edits)
 
@@ -531,6 +673,8 @@ observations. The later Rust results above are the current measurement summary.
 | Query otherwise equivalent medium and user-launched elevated fixture windows, with checked API errors; normalize synthetic non-ASCII/dot-segment identities | Supported unreadable facts versus unavailable route facts; ASCII-only normalization | Cross-integrity read/write matrix and denial handling TBD |
 | Create dedicated windowed DXGI subject, pump/focus, request current-mode fullscreen, read grant/output, request windowed and compare baseline | Fullscreen request/grant versus actual presentation path and app restore semantics | Legacy-exclusive/FSO classification and tiler exitability TBD; API grant measured separately |
 | Persist normal, maximized and minimized suppression preimages; force writer loss while hidden; restore in a fresh process | Ordinary windowed reveal versus exact non-normal show-state restoration | Non-normal suppression recovery and product watcher integration TBD; normal standalone case measured |
+| Read physical output metadata in two processes; power-cycle, reconnect/swap ports, sleep/wake and reboot separately; repeat with identical monitors or missing serial | Physical triple versus connection fallback, duplicate serials and ambiguous reconnect | Process-read stability measured; durable connector normalization, text-serial stability and lifecycle matching TBD |
+| Leave an output without ordinary application windows; prove that condition per output; create its PMv2 observer; change only its scale, restore, then change resolution and restore | Output-owned DPI notification versus dependence on application windows or resolution-only events | Two-output observer notifications measured; otherwise-empty-output acceptance TBD |
 
 ## Contract impact and exact next action
 
@@ -548,4 +692,7 @@ observations. The later Rust results above are the current measurement summary.
 - Remaining native/user acceptance includes actual HWND reuse/tag mismatch,
   cross-output hidden arrival, non-normal suppression recovery, application
   fullscreen exitability/presentation behavior, physical input and the separately
-  launched elevated-fixture API matrix. No v4 production port work is included.
+  launched elevated-fixture API matrix. The output follow-up also leaves durable
+  connector/identical-monitor and lifecycle matching, text-serial stability and
+  otherwise-empty-output DPI coverage open. Displays were physically woken and
+  confirmed normal after the power leg. No v4 production port work is included.
