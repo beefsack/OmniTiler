@@ -739,6 +739,23 @@ impl WorldEngine {
         let view = self.effective_view(&home.output);
         let effective = effective_domain(&home, source_row.sticky, view.as_deref());
         let tiling = self.logical_tiling(&effective.output.0, &effective.workspace.0);
+        // No half-snap on unreadable hints, before any clear kickoff.
+        if (source_row.floating || source_row.sticky)
+            && self
+                .staged
+                .facts
+                .get(window)
+                .is_none_or(|fact| fact.hints.is_none())
+        {
+            self.command_result = Some(CommandResult::Directional {
+                outcome: DirectionalOutcome::MoveFloatRefusedConstraints,
+                target: None,
+                rect: None,
+                cause: None,
+            });
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
+        }
         match early_verdict(source_row, tiling, true) {
             Some(DirectionalVerdict::Refused { outcome, cause }) => {
                 self.command_result = Some(CommandResult::Directional {
@@ -1393,6 +1410,20 @@ impl WorldEngine {
                     message: MSG_IN_FLIGHT,
                 };
             }
+        }
+        // No convergence on unreadable hints; the carrier `none`
+        // never decides admission.
+        if let CoreCommand::ToggleFloat { window, .. } = command
+            && self
+                .staged
+                .facts
+                .get(&WindowId(window.clone()))
+                .is_some_and(|fact| fact.hints.is_none())
+        {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
         }
         let (domain_key, domain_report) = match self.operation_domain_staged(command, held_scopes) {
             Some(found) => found,

@@ -789,3 +789,1049 @@ fn sessionless_third_screen_observation_adopts_without_placement() {
         row_of(&drifted, "w1")
     );
 }
+
+fn dialog_hints_null(window: &str, output: &str, x: i32) -> WindowFact {
+    WindowFact {
+        window_type: Some(crate::world_report::WindowType::Dialog),
+        hints: None,
+        ..fact(window, output, x)
+    }
+}
+
+fn ordinary_hints_null(window: &str, output: &str, x: i32) -> WindowFact {
+    WindowFact {
+        hints: None,
+        ..fact(window, output, x)
+    }
+}
+
+#[test]
+fn classifier_known_float_survives_unreadable_hints_ordinary_holds() {
+    use crate::size_hints::FixedSizePredicate;
+    use crate::window_classify::{ClassifyInput, classify_window};
+    let unavailable: &[crate::connection::FactName] = &[];
+    let dialog = dialog_hints_null("win-d", "out-a", 0);
+    let classified = classify_window(ClassifyInput {
+        fact: &dialog,
+        unavailable,
+        fixed_predicate: FixedSizePredicate::BothAxes,
+        maximize_supported: true,
+        retained_tiled: false,
+        automatic_fixed: false,
+        tile_override: false,
+        explicit_float: false,
+        own_process_id: Some("test-own-pid"),
+    });
+    assert!(
+        !classified.hold,
+        "known dialog keeps membership: {classified:?}"
+    );
+    assert!(classified.floating, "{classified:?}");
+    assert!(!classified.fit_excluded, "{classified:?}");
+    assert!(!classified.excluded, "{classified:?}");
+
+    let modal = WindowFact {
+        modal: Some(true),
+        hints: None,
+        ..fact("win-m", "out-a", 0)
+    };
+    let classified = classify_window(ClassifyInput {
+        fact: &modal,
+        unavailable,
+        fixed_predicate: FixedSizePredicate::BothAxes,
+        maximize_supported: true,
+        retained_tiled: false,
+        automatic_fixed: false,
+        tile_override: false,
+        explicit_float: false,
+        own_process_id: Some("test-own-pid"),
+    });
+    assert!(!classified.hold, "{classified:?}");
+    assert!(classified.floating, "{classified:?}");
+
+    // Sheet kind, transient-only (modal null), and retained-tile dialog
+    // all keep proven float membership without readable hints.
+    let sheet = WindowFact {
+        window_type: Some(crate::world_report::WindowType::Sheet),
+        hints: None,
+        ..fact("win-s", "out-a", 0)
+    };
+    let transient_only = WindowFact {
+        transient: Some(true),
+        modal: None,
+        hints: None,
+        ..fact("win-to", "out-a", 0)
+    };
+    for (name, probe) in [("sheet", &sheet), ("transient-only", &transient_only)] {
+        let classified = classify_window(ClassifyInput {
+            fact: probe,
+            unavailable,
+            fixed_predicate: FixedSizePredicate::BothAxes,
+            maximize_supported: true,
+            retained_tiled: false,
+            automatic_fixed: false,
+            tile_override: false,
+            explicit_float: false,
+            own_process_id: Some("test-own-pid"),
+        });
+        assert!(!classified.hold, "{name}: {classified:?}");
+        assert!(classified.floating, "{name}: {classified:?}");
+    }
+    let classified = classify_window(ClassifyInput {
+        fact: &dialog,
+        unavailable,
+        fixed_predicate: FixedSizePredicate::BothAxes,
+        maximize_supported: true,
+        retained_tiled: true,
+        automatic_fixed: false,
+        tile_override: false,
+        explicit_float: false,
+        own_process_id: Some("test-own-pid"),
+    });
+    assert!(!classified.hold, "retained-tile dialog: {classified:?}");
+    assert!(classified.floating, "retained-tile dialog: {classified:?}");
+
+    // Retained explicit float survives unreadable hints.
+    let ordinary = ordinary_hints_null("win-e", "out-a", 0);
+    let classified = classify_window(ClassifyInput {
+        fact: &ordinary,
+        unavailable,
+        fixed_predicate: FixedSizePredicate::BothAxes,
+        maximize_supported: true,
+        retained_tiled: false,
+        automatic_fixed: false,
+        tile_override: false,
+        explicit_float: true,
+        own_process_id: Some("test-own-pid"),
+    });
+    assert!(!classified.hold, "{classified:?}");
+    assert!(classified.floating, "{classified:?}");
+
+    // Retained automatic-fixed latch survives unreadable hints.
+    let classified = classify_window(ClassifyInput {
+        fact: &ordinary,
+        unavailable,
+        fixed_predicate: FixedSizePredicate::BothAxes,
+        maximize_supported: true,
+        retained_tiled: false,
+        automatic_fixed: true,
+        tile_override: false,
+        explicit_float: false,
+        own_process_id: Some("test-own-pid"),
+    });
+    assert!(!classified.hold, "{classified:?}");
+    assert!(classified.floating, "{classified:?}");
+
+    // Unknown ordinary fresh admission still holds.
+    let classified = classify_window(ClassifyInput {
+        fact: &ordinary,
+        unavailable,
+        fixed_predicate: FixedSizePredicate::BothAxes,
+        maximize_supported: true,
+        retained_tiled: false,
+        automatic_fixed: false,
+        tile_override: false,
+        explicit_float: false,
+        own_process_id: Some("test-own-pid"),
+    });
+    assert!(
+        classified.hold,
+        "ordinary hints-null must hold: {classified:?}"
+    );
+    assert!(!classified.floating, "{classified:?}");
+
+    // Tile override with unreadable hints still holds (no invented minima).
+    let classified = classify_window(ClassifyInput {
+        fact: &ordinary,
+        unavailable,
+        fixed_predicate: FixedSizePredicate::BothAxes,
+        maximize_supported: true,
+        retained_tiled: false,
+        automatic_fixed: false,
+        tile_override: true,
+        explicit_float: false,
+        own_process_id: Some("test-own-pid"),
+    });
+    assert!(classified.hold, "{classified:?}");
+}
+
+#[test]
+fn dialog_hints_null_stays_float_member_without_frame_write() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                dialog_hints_null("win-d", "out-a", 0),
+                fact("win-t", "out-b", 800),
+            ],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    // Known float membership: staged fact keeps raw None, derived floats.
+    assert!(
+        engine
+            .staged
+            .facts
+            .get(&WindowId("win-d".to_owned()))
+            .is_some_and(|fact| fact.hints.is_none()),
+        "raw hints stay None, never defaulted"
+    );
+    let derived = engine.derived_for(&WindowId("win-d".to_owned()));
+    assert!(!derived.hold, "{derived:?}");
+    assert!(derived.floating, "{derived:?}");
+    assert!(
+        engine.members.contains_key(&WindowId("win-d".to_owned())),
+        "float keeps membership"
+    );
+    // Healthy sibling scope stays controlled with a live row.
+    let healthy = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-t")
+        .expect("healthy row");
+    assert_eq!(healthy.membership_authority, ScopeAuthority::Controlled);
+    assert_eq!(healthy.frame_authority, ScopeAuthority::Controlled);
+    assert!(healthy.allocation.is_some(), "{healthy:?}");
+    // Float row carries no constrained write or fake hint target.
+    let row = row_of(&reply, "win-d");
+    assert!(row.floating, "{row:?}");
+    assert!(row.allocation.is_none(), "{row:?}");
+    assert!(row.frame_operation.is_none(), "{row:?}");
+    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert_eq!(row.frame_authority, ScopeAuthority::Untouched, "{row:?}");
+    // Scope holding the float stays controlled (no unreadable hold).
+    assert!(
+        reply.scopes.iter().any(|status| {
+            status.authority == ScopeAuthority::Controlled
+                && status
+                    .scope
+                    .covers_workspace(&OutputId("out-a".to_owned()), &row.workspace)
+        }),
+        "float scope stays controlled: {:?}",
+        reply.scopes
+    );
+    assert!(reply.effects.is_empty(), "{:?}", reply.effects);
+
+    // Readable hints then unreadable again: no home/authority churn.
+    let home = engine
+        .members
+        .get(&WindowId("win-d".to_owned()))
+        .expect("member")
+        .home
+        .clone();
+    let readable = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![
+                WindowFact {
+                    hints: Some(WindowSizeHints::none()),
+                    ..dialog_hints_null("win-d", "out-a", 0)
+                },
+                fact("win-t", "out-b", 800),
+            ],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let readable_row = readable
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-d")
+        .expect("readable row");
+    assert!(readable_row.floating, "{readable_row:?}");
+    let back = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                dialog_hints_null("win-d", "out-a", 0),
+                fact("win-t", "out-b", 800),
+            ],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        engine
+            .members
+            .get(&WindowId("win-d".to_owned()))
+            .expect("member")
+            .home,
+        home
+    );
+    let back_row = back
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-d")
+        .expect("back row");
+    assert!(back_row.floating, "{back_row:?}");
+    assert!(back_row.allocation.is_none(), "{back_row:?}");
+    assert!(back_row.frame_operation.is_none(), "{back_row:?}");
+    assert_eq!(back_row.workspace, readable_row.workspace, "{back_row:?}");
+    assert!(back.effects.is_empty(), "{:?}", back.effects);
+    assert!(back.transfers.is_empty(), "{:?}", back.transfers);
+
+    // Dependent toggle stays fail-closed without replacing nulls.
+    match engine.handle_report(&report(
+        4,
+        4,
+        vec![
+            dialog_hints_null("win-d", "out-a", 0),
+            fact("win-t", "out-b", 800),
+        ],
+        vec![],
+        Some(11),
+        Some(WorldCommand::Operation(
+            crate::boundary::CoreCommand::ToggleFloat {
+                window: "win-d".to_owned(),
+                float_rect: None,
+            },
+        )),
+    )) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "operation-refused"),
+        other => panic!("hints-null toggle must refuse, got {other:?}"),
+    }
+    assert!(
+        engine
+            .staged
+            .facts
+            .get(&WindowId("win-d".to_owned()))
+            .is_some_and(|fact| fact.hints.is_none()),
+        "toggle refusal never fabricates hints"
+    );
+}
+
+#[test]
+fn ordinary_hints_null_fresh_admission_stays_held() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                ordinary_hints_null("win-u", "out-a", 0),
+                fact("win-t", "out-b", 800),
+            ],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    // Classification hold: no usable membership row, never a fabricated
+    // controlled float/tile.
+    let derived = engine.derived_for(&WindowId("win-u".to_owned()));
+    assert!(derived.hold, "{derived:?}");
+    assert!(!derived.floating, "{derived:?}");
+    assert!(
+        !reply.windows.iter().any(|row| row.lifetime.0 == "win-u"),
+        "unknown ordinary publishes no row: {:?}",
+        reply.windows
+    );
+    let healthy = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-t")
+        .expect("healthy row");
+    assert_eq!(healthy.membership_authority, ScopeAuthority::Controlled);
+    assert_eq!(healthy.frame_authority, ScopeAuthority::Controlled);
+}
+
+#[test]
+fn hints_null_float_move_refuses_without_side_effects() {
+    use crate::directional::SameAxisMove;
+    use crate::world_directional::DirectionalOutcome;
+    use crate::world_report::CommandResult;
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    // Same-output healthy tiled sibling proves no collateral.
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                dialog_hints_null("win-d", "out-a", 0),
+                fact("win-t", "out-a", 100),
+            ],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .staged
+            .facts
+            .get(&WindowId("win-d".to_owned()))
+            .is_some_and(|fact| fact.hints.is_none()),
+        "raw hints stay None"
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![
+                dialog_hints_null("win-d", "out-a", 0),
+                fact("win-t", "out-a", 100),
+            ],
+            vec![],
+            Some(11),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-d".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: SameAxisMove::default(),
+            }),
+        ),
+    );
+    match &reply.command_result {
+        Some(CommandResult::Directional { outcome, .. }) => assert_eq!(
+            *outcome,
+            DirectionalOutcome::MoveFloatRefusedConstraints,
+            "unreadable hints refuse: {reply:?}"
+        ),
+        other => panic!("expected directional refusal, got {other:?}"),
+    }
+    assert!(
+        engine.retained_floats.is_empty(),
+        "no placement: {:?}",
+        engine.retained_floats
+    );
+    assert!(
+        engine.retained_clears.is_empty(),
+        "no clear kickoff: {:?}",
+        engine.retained_clears
+    );
+    let row = row_of(&reply, "win-d");
+    assert!(row.frame_operation.is_none(), "{row:?}");
+    assert!(row.clear_operation.is_none(), "{row:?}");
+    let healthy = row_of(&reply, "win-t");
+    assert_eq!(
+        healthy.membership_authority,
+        ScopeAuthority::Controlled,
+        "{healthy:?}"
+    );
+    assert_eq!(
+        healthy.frame_authority,
+        ScopeAuthority::Controlled,
+        "{healthy:?}"
+    );
+    assert!(healthy.allocation.is_some(), "{healthy:?}");
+
+    // Maximized hints-null float must refuse the same way, never bind a
+    // clear the continuation could not authorize.
+    let mut cleared_engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let maximized_null = WindowFact {
+        maximized: Some(true),
+        ..dialog_hints_null("win-m", "out-a", 0)
+    };
+    accepted(
+        &mut cleared_engine,
+        &report(
+            1,
+            1,
+            vec![maximized_null.clone(), fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let reply = accepted(
+        &mut cleared_engine,
+        &report(
+            2,
+            2,
+            vec![maximized_null, fact("win-t", "out-a", 100)],
+            vec![],
+            Some(12),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-m".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: SameAxisMove::default(),
+            }),
+        ),
+    );
+    match &reply.command_result {
+        Some(CommandResult::Directional { outcome, .. }) => assert_eq!(
+            *outcome,
+            DirectionalOutcome::MoveFloatRefusedConstraints,
+            "maximized unreadable refuses, never NeedClear: {reply:?}"
+        ),
+        other => panic!("expected directional refusal, got {other:?}"),
+    }
+    assert!(
+        cleared_engine.retained_clears.is_empty(),
+        "no clear kickoff: {:?}",
+        cleared_engine.retained_clears
+    );
+    assert!(
+        cleared_engine.retained_floats.is_empty(),
+        "{:?}",
+        cleared_engine.retained_floats
+    );
+
+    // Readable unconstrained recovers: the same half-snap authorizes.
+    let readable = WindowFact {
+        hints: Some(WindowSizeHints::none()),
+        ..dialog_hints_null("win-d", "out-a", 0)
+    };
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![readable, fact("win-t", "out-a", 100)],
+            vec![],
+            Some(13),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-d".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: SameAxisMove::default(),
+            }),
+        ),
+    );
+    match &reply.command_result {
+        Some(CommandResult::Directional { outcome, .. }) => assert_eq!(
+            *outcome,
+            DirectionalOutcome::MoveFloatApplied,
+            "readable recovery: {reply:?}"
+        ),
+        other => panic!("expected applied, got {other:?}"),
+    }
+    assert_eq!(
+        engine.retained_floats.len(),
+        1,
+        "{:?}",
+        engine.retained_floats
+    );
+    assert_eq!(
+        row_of(&reply, "win-d").frame_operation.as_deref(),
+        Some("op-13")
+    );
+
+    // True constraining hints refuse the same way (consistency probe).
+    let mut capped_engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let capped = WindowFact {
+        hints: Some(WindowSizeHints {
+            min_w: Some(10_000),
+            min_h: None,
+            max_w: None,
+            max_h: None,
+        }),
+        ..dialog_hints_null("win-d", "out-a", 0)
+    };
+    accepted(
+        &mut capped_engine,
+        &report(
+            1,
+            1,
+            vec![capped.clone(), fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let reply = accepted(
+        &mut capped_engine,
+        &report(
+            2,
+            2,
+            vec![capped, fact("win-t", "out-a", 100)],
+            vec![],
+            Some(11),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-d".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: SameAxisMove::default(),
+            }),
+        ),
+    );
+    match &reply.command_result {
+        Some(CommandResult::Directional { outcome, .. }) => assert_eq!(
+            *outcome,
+            DirectionalOutcome::MoveFloatRefusedConstraints,
+            "constraining hints refuse: {reply:?}"
+        ),
+        other => panic!("expected constraints refusal, got {other:?}"),
+    }
+    assert!(
+        capped_engine.retained_floats.is_empty(),
+        "{:?}",
+        capped_engine.retained_floats
+    );
+}
+
+#[test]
+fn retained_explicit_automatic_null_cycle_keeps_home() {
+    // Automatic fixed float: readable fixed -> unreadable -> readable keeps
+    // home/floating with no minted ops.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                fixed_fact("win-a", "out-a", 200),
+                fact("win-t", "out-a", 100),
+            ],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        row_of(&reply, "win-a").floating,
+        "{:?}",
+        row_of(&reply, "win-a")
+    );
+    let home = engine
+        .members
+        .get(&WindowId("win-a".to_owned()))
+        .expect("member")
+        .home
+        .clone();
+    let nulled = WindowFact {
+        hints: None,
+        ..fixed_fact("win-a", "out-a", 200)
+    };
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![nulled.clone(), fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        row_of(&reply, "win-a").floating,
+        "latch keeps float: {reply:?}"
+    );
+    assert!(
+        engine.derived_for(&WindowId("win-a".to_owned())).fixed_auto,
+        "automatic latch retained while null"
+    );
+    assert_eq!(
+        engine
+            .members
+            .get(&WindowId("win-a".to_owned()))
+            .expect("member")
+            .home,
+        home
+    );
+    assert!(
+        row_of(&reply, "win-a").frame_operation.is_none(),
+        "{:?}",
+        row_of(&reply, "win-a")
+    );
+    assert!(reply.effects.is_empty(), "{:?}", reply.effects);
+    assert!(reply.transfers.is_empty(), "{:?}", reply.transfers);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                fixed_fact("win-a", "out-a", 200),
+                fact("win-t", "out-a", 100),
+            ],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(row_of(&reply, "win-a").floating, "{reply:?}");
+    assert!(
+        engine.derived_for(&WindowId("win-a".to_owned())).fixed_auto,
+        "automatic origin retained after recovery"
+    );
+    assert_eq!(
+        engine
+            .members
+            .get(&WindowId("win-a".to_owned()))
+            .expect("member")
+            .home,
+        home
+    );
+    assert!(reply.effects.is_empty(), "{:?}", reply.effects);
+    assert!(reply.transfers.is_empty(), "{:?}", reply.transfers);
+
+    // Explicit float via ToggleFloat keeps the same stability.
+    let mut explicit = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut explicit,
+        &report(
+            1,
+            1,
+            vec![fact("win-e", "out-a", 0), fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let floated = accepted(
+        &mut explicit,
+        &report(
+            2,
+            2,
+            vec![fact("win-e", "out-a", 0), fact("win-t", "out-a", 100)],
+            vec![],
+            Some(11),
+            Some(WorldCommand::Operation(
+                crate::boundary::CoreCommand::ToggleFloat {
+                    window: "win-e".to_owned(),
+                    float_rect: None,
+                },
+            )),
+        ),
+    );
+    assert!(row_of(&floated, "win-e").floating, "{floated:?}");
+    let home = explicit
+        .members
+        .get(&WindowId("win-e".to_owned()))
+        .expect("member")
+        .home
+        .clone();
+    let nulled = WindowFact {
+        hints: None,
+        ..fact("win-e", "out-a", 0)
+    };
+    let reply = accepted(
+        &mut explicit,
+        &report(
+            3,
+            3,
+            vec![nulled, fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        row_of(&reply, "win-e").floating,
+        "explicit survives null: {reply:?}"
+    );
+    assert_eq!(
+        explicit
+            .members
+            .get(&WindowId("win-e".to_owned()))
+            .expect("member")
+            .home,
+        home
+    );
+    assert!(
+        !explicit.derived_for(&WindowId("win-e".to_owned())).hold,
+        "{:?}",
+        explicit.derived_for(&WindowId("win-e".to_owned()))
+    );
+    assert!(
+        row_of(&reply, "win-e").frame_operation.is_none(),
+        "withhold while null: {:?}",
+        row_of(&reply, "win-e")
+    );
+    assert!(reply.effects.is_empty(), "{:?}", reply.effects);
+    assert!(reply.transfers.is_empty(), "{:?}", reply.transfers);
+    // Readable recovery: same home, still floating, same ToggleFloat
+    // op resumes (never reminted).
+    let reply = accepted(
+        &mut explicit,
+        &report(
+            4,
+            4,
+            vec![fact("win-e", "out-a", 0), fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let row = row_of(&reply, "win-e");
+    assert!(row.floating, "{row:?}");
+    assert_eq!(row.frame_operation.as_deref(), Some("op-11"), "{row:?}");
+    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert_eq!(
+        explicit
+            .members
+            .get(&WindowId("win-e".to_owned()))
+            .expect("member")
+            .home,
+        home
+    );
+    assert!(reply.effects.is_empty(), "{:?}", reply.effects);
+    assert!(reply.transfers.is_empty(), "{:?}", reply.transfers);
+}
+
+#[test]
+fn retained_float_tokens_withheld_while_hints_unreadable() {
+    use crate::directional::SameAxisMove;
+    use crate::world_directional::DirectionalOutcome;
+    use crate::world_report::{CommandResult, FrameSetter};
+    // Normal float: readable Move authorizes, null withholds, readable reuses same op.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let readable = WindowFact {
+        hints: Some(WindowSizeHints::none()),
+        ..dialog_hints_null("win-d", "out-a", 0)
+    };
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![readable.clone(), fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![readable.clone(), fact("win-t", "out-a", 100)],
+            vec![],
+            Some(11),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-d".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: SameAxisMove::default(),
+            }),
+        ),
+    );
+    match &reply.command_result {
+        Some(CommandResult::Directional { outcome, .. }) => {
+            assert_eq!(*outcome, DirectionalOutcome::MoveFloatApplied, "{reply:?}")
+        }
+        other => panic!("expected applied, got {other:?}"),
+    }
+    assert_eq!(
+        row_of(&reply, "win-d").frame_operation.as_deref(),
+        Some("op-11")
+    );
+    let home = engine
+        .members
+        .get(&WindowId("win-d".to_owned()))
+        .expect("member")
+        .home
+        .clone();
+    // Commandless null with the unmatched original rect: membership stays,
+    // the write token is withheld, the binding survives.
+    let nulled = WindowFact {
+        hints: None,
+        ..dialog_hints_null("win-d", "out-a", 0)
+    };
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![nulled, fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        engine
+            .members
+            .get(&WindowId("win-d".to_owned()))
+            .expect("member")
+            .home,
+        home
+    );
+    let row = row_of(&reply, "win-d");
+    assert!(row.floating, "{row:?}");
+    assert!(
+        row.frame_operation.is_none(),
+        "withhold while null: {row:?}"
+    );
+    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert_eq!(
+        engine.retained_floats.len(),
+        1,
+        "{:?}",
+        engine.retained_floats
+    );
+    assert_eq!(engine.retained_floats[0].operation_id, "op-11");
+    let healthy = row_of(&reply, "win-t");
+    assert_eq!(
+        healthy.membership_authority,
+        ScopeAuthority::Controlled,
+        "{healthy:?}"
+    );
+    assert_eq!(
+        healthy.frame_authority,
+        ScopeAuthority::Controlled,
+        "{healthy:?}"
+    );
+    // Readable recovery reuses the same op, never remints.
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![readable, fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        row_of(&reply, "win-d").frame_operation.as_deref(),
+        Some("op-11"),
+        "same op resumes: {reply:?}"
+    );
+    assert_eq!(
+        engine.retained_floats.len(),
+        1,
+        "{:?}",
+        engine.retained_floats
+    );
+    assert_eq!(engine.retained_floats[0].operation_id, "op-11");
+
+    // Maximized float parallel: NeedClear binds, null withholds, readable resumes same op.
+    let mut max_engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let max_readable = WindowFact {
+        maximized: Some(true),
+        hints: Some(WindowSizeHints::none()),
+        ..dialog_hints_null("win-m", "out-a", 0)
+    };
+    accepted(
+        &mut max_engine,
+        &report(
+            1,
+            1,
+            vec![max_readable.clone(), fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let reply = accepted(
+        &mut max_engine,
+        &report(
+            2,
+            2,
+            vec![max_readable.clone(), fact("win-t", "out-a", 100)],
+            vec![],
+            Some(12),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-m".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: SameAxisMove::default(),
+            }),
+        ),
+    );
+    match &reply.command_result {
+        Some(CommandResult::Directional { outcome, .. }) => {
+            assert_eq!(*outcome, DirectionalOutcome::NeedClear, "{reply:?}")
+        }
+        other => panic!("expected NeedClear, got {other:?}"),
+    }
+    assert_eq!(
+        row_of(&reply, "win-m").clear_operation.as_deref(),
+        Some("op-12")
+    );
+    let max_nulled = WindowFact {
+        maximized: Some(true),
+        hints: None,
+        ..dialog_hints_null("win-m", "out-a", 0)
+    };
+    let reply = accepted(
+        &mut max_engine,
+        &report(
+            3,
+            3,
+            vec![max_nulled.clone(), fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let row = row_of(&reply, "win-m");
+    assert!(
+        row.clear_operation.is_none(),
+        "withhold clear while null: {row:?}"
+    );
+    assert!(row.frame_operation.is_none(), "{row:?}");
+    assert_eq!(
+        max_engine.retained_clears.len(),
+        1,
+        "{:?}",
+        max_engine.retained_clears
+    );
+    assert_eq!(max_engine.retained_clears[0].operation_id, "op-12");
+    assert!(max_engine.retained_clears[0].pending.is_none());
+    let reply = accepted(
+        &mut max_engine,
+        &report(
+            4,
+            4,
+            vec![max_readable.clone(), fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        row_of(&reply, "win-m").clear_operation.as_deref(),
+        Some("op-12"),
+        "same clear op resumes: {reply:?}"
+    );
+    // A spent attempt stays spent across a null gap: never republished.
+    let mut spent = report(
+        5,
+        5,
+        vec![max_readable, fact("win-t", "out-a", 100)],
+        vec![],
+        None,
+        None,
+    );
+    spent.clear_attempts = vec![crate::world_report::ClearAttempt {
+        operation_id: "op-12".to_owned(),
+        window: WindowId("win-m".to_owned()),
+        setter: FrameSetter::Accepted,
+        pre_maximized: Some(true),
+        post_maximized: Some(true),
+        attempt_ms: 7,
+    }];
+    let reply = accepted(&mut max_engine, &spent);
+    assert!(
+        row_of(&reply, "win-m").clear_operation.is_none(),
+        "{:?}",
+        row_of(&reply, "win-m")
+    );
+    assert!(
+        max_engine.retained_clears[0].pending.is_some(),
+        "attempt staged: {:?}",
+        max_engine.retained_clears
+    );
+    let reply = accepted(
+        &mut max_engine,
+        &report(
+            6,
+            6,
+            vec![max_nulled, fact("win-t", "out-a", 100)],
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        row_of(&reply, "win-m").clear_operation.is_none(),
+        "{:?}",
+        row_of(&reply, "win-m")
+    );
+}

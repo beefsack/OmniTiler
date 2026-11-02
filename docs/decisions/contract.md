@@ -31,7 +31,7 @@
 - Evidence: User 2026-11-02, including capacity follow-up; [stacking rules](../porting/world-contract.md#persistent-stacking), [COSMIC float layer](../spec/reference-outcomes/floating.md#r-flt-01-toggle-float-then-unfloat), [KDE stacking evidence](../spec/reference-outcomes/floating.md#r-flt-12-raise-and-lower-overlapping-floats).
 
 ### Facts versus classification
-- Decision: native attributes and observed causes, with uncertainty, are facts; classification (tiled/floating/excluded) and all other meaning are core policy.
+- Decision: native attributes and observed causes, with uncertainty, are facts; classification (tiled/floating/excluded) and all other meaning are core policy. Unknown hints do not block independently proven float membership; hint-dependent admission, placement and its prerequisite clear remain fail-closed without inventing empty constraints.
 - Why: settings can reclassify, one implementation and cross-platform consistency.
 - Rejected: adapters classify membership and report verdicts as facts.
 - Assumes / revisit if: each needed native attribute can be reported neutrally.

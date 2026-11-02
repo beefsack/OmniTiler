@@ -467,6 +467,14 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   eligible default. Never add a fact to the list because one read failed.
   An unlisted required input that is null is unknown now and holds only the
   classification/action that needs it, not unrelated windows or properties.
+- Unreadable `hints` do not erase independently proven dialog/sheet,
+  transient/modal or retained explicit/automatic-fixed float membership.
+  Preserve unknown hints; ordinary hint-dependent admission and explicit tile
+  override remain held. Refuse float-to-tile convergence and constrained float
+  placement while hints are unreadable, before authorizing a prerequisite
+  maximize-clear. Withhold outstanding dependent frame/float-route clear tokens
+  across a hint-read gap without cancelling their bindings or rearming spent
+  attempts; readable recovery resumes the same operation identity.
 - Core applicability: evaluate only predicates whose native inputs are supplied
   by the connection; skip unsupported predicates, never turn null into false.
   Available managed=false excludes host-unmanaged candidates. Available native

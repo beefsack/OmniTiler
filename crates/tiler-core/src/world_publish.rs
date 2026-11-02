@@ -741,10 +741,14 @@ impl WorldEngine {
                         _ => {}
                     }
                 }
-                // Held and excluded exception rows authorize no placement
-                // and no clear: evidence retained, never a write.
+                // No placement write without readable hints; the binding
+                // survives for recovery.
                 if self.is_held_window(&observed.window)
                     || self.is_excluded_window(&observed.window)
+                    || staged
+                        .facts
+                        .get(&observed.window)
+                        .is_none_or(|fact| fact.hints.is_none())
                 {
                     frame_operation = None;
                 }
@@ -755,31 +759,32 @@ impl WorldEngine {
                 let float_origin = session
                     .is_capacity_float(&observed.window)
                     .then_some(FloatOrigin::Capacity);
-                // Retained directional clear desire: the one-shot
-                // `clear_operation` token authorizes exactly one native
-                // clear for this window. Withheld on held scopes, gesture
-                // barriers, minimized/unreadable facts, and after the
-                // attempt is spent (never re-actuated); the settlement
-                // owns every verdict over the correlated attempt. Born
-                // bindings share the lane for held-fullscreen exits that
-                // still ride an exception row.
+                // One-shot clear token: never re-actuated once spent; the
+                // settlement owns every verdict. A float-route clear is
+                // also withheld while hints are unreadable (its
+                // continuation could not authorize); the binding survives.
                 let fact_unreadable = self
                     .staged
                     .facts
                     .get(&observed.window)
                     .is_none_or(|fact| fact.minimized == Some(true) || fact.rect.is_none());
+                let directional = self.retained_clears.iter().find(|retained| {
+                    retained.window == observed.window && retained.pending.is_none()
+                });
+                let float_blocked = directional.is_some_and(|retained| retained.float_route)
+                    && staged
+                        .facts
+                        .get(&observed.window)
+                        .is_none_or(|fact| fact.hints.is_none());
                 let clear_operation = if report.gesture_barrier
                     || fact_unreadable
+                    || float_blocked
                     || self.is_held_window(&observed.window)
                     || self.is_excluded_window(&observed.window)
                 {
                     None
                 } else {
-                    self.retained_clears
-                        .iter()
-                        .find(|retained| {
-                            retained.window == observed.window && retained.pending.is_none()
-                        })
+                    directional
                         .map(|retained| retained.operation_id.clone())
                         .or_else(|| self.born_desire_for(&observed.window, report))
                 };

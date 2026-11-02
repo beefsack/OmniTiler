@@ -213,11 +213,37 @@
   346 arms / 437 enum witnesses, 71 records / 254 witnesses and 22 scenarios /
   257 steps / 406 compiled jq assertions. All eight OPEN/TBD gates are unchanged;
   static validation and nested byte witnesses are not full v4 scenario execution.
-- Deferred fail-closed refinements are recorded in the
+- The raw-window increment deferred fail-closed refinements recorded in the
   [raw classification discriminators](../spec/reference-outcomes.md#raw-classification-hold-discriminators):
-  known floats with unreadable hints still overhold rather than defaulting hints,
-  and unselected nonordinary-kind admission stays TBD. Full visibility/focus,
-  state/intent persistence and renderer lanes remain separate increments.
+  known floats with unreadable hints overheld rather than defaulting hints.
+  The refinement below closes that overhold; unselected nonordinary-kind
+  admission stays TBD. Full visibility/focus, state/intent persistence and
+  renderer lanes remain separate increments.
+- Known-float unreadable-hint refinement: independently proven dialog/sheet,
+  transient/modal and retained explicit/automatic-fixed floats now keep membership
+  with raw `hints:null`. Existing safety/process holds and tile-override precedence
+  remain; ordinary hint-dependent admission still holds. Healthy same-output and
+  other-output siblings retain authority without inventing empty constraints.
+- Hint-dependent ToggleFloat and directional half-snap remain fail-closed.
+  Directional Move refuses before maximize-clear kickoff; unreadable hints also
+  withhold outstanding float frame and float-route clear tokens without cancelling
+  their bindings. Readable recovery resumes the same operation identity, and
+  spent clear attempts remain spent. Retained frame desires without write tokens
+  are not actuation or native completion evidence.
+- Regression development reproduced two dependent-action gaps after membership
+  narrowing: a hints-null directional Move incorrectly returned
+  `MoveFloatApplied`, and a commandless hint-read gap republished a retained
+  `frame_operation`. Raw-hint guards and publication vetoes close both. Twelve
+  focused float-membership tests now cover known origins, ordinary/tile-override
+  holds, hint-read cycles, constrained/refused and readable/recovered moves,
+  retained tokens and spent-clear fencing. No wire shape or fixture change.
+- Final refinement verification: `cargo test -q -p tiler-core -p tiler-protocol
+  -- --skip workspace_unsafe_posture` passes (1151 core unit tests, all integration
+  targets, protocol suites 49/52/4); only the previously documented unrelated
+  workspace unsafe-posture test is filtered. Build, scoped all-target clippy with
+  warnings denied, formatting and diff checks pass. Native/reference unreadable
+  hint behavior remains TBD; no live acceptance, complete codec conformance or
+  whole-scenario execution is claimed.
 
 ## Outcome
 
@@ -228,9 +254,10 @@
   and tested; physical reconnect identity and other metric scaling remain pending.
    Raw ordinary/dialog/sheet classification and own-process exclusion are
    consumed by the real engine, with held-row lifecycle and retained-intent
-   regressions. Unreadable-hint narrowing and unselected special-kind admission
-   remain explicitly deferred; the workspace unsafe guardrail failure above
-   remains unresolved outside this increment's changed sources.
+   regressions. Known-float unreadable-hint membership and dependent-action
+   narrowing are implemented and tested; unselected special-kind admission stays
+   TBD. The workspace unsafe guardrail failure above remains unresolved outside
+   these changed sources.
   The remaining world report/reply paths and version are still staged; no v4
   cutover or full scenario acceptance is claimed. Full adapter build-failure
   inventory remains pending.

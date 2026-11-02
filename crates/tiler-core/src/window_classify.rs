@@ -392,9 +392,24 @@ pub fn classify_window(input: ClassifyInput<'_>) -> ClassifiedWindow {
         hold = true;
     }
     // Unknown hints hold dependent admission/geometry: never a default
-    // empty hint set as truth. Hints carry no unavailable-fact name, so a
-    // null hint set always holds.
-    if fact.hints.is_none() {
+    // empty hint set as truth. Hints carry no unavailable-fact name. A
+    // positively proven float origin needs no constraint facts for
+    // membership: explicit float, the retained automatic-fixed latch, or
+    // a known transient/modal/dialog-sheet origin (under the same
+    // precedence as admission below, with `fixed_now` false when hints
+    // are unreadable) stays floating without inventing an empty hint
+    // set. The fabricated `none` never authorizes a write.
+    // Ordinary newcomers (and tile-override carriers) still hold.
+    let float_without_hints = if input.explicit_float {
+        true
+    } else if input.tile_override {
+        false
+    } else if input.automatic_fixed {
+        true
+    } else {
+        float_member
+    };
+    if fact.hints.is_none() && !float_without_hints {
         hold = true;
     }
     // Unknown action properties hold their dependent action: never a

@@ -580,6 +580,8 @@ impl WorldEngine {
                             sticky: classified.sticky,
                             fixed_auto: classified.fixed_auto,
                             fixed_suppress: classified.fixed_suppress,
+                            // Proven floats keep membership; the `none`
+                            // below is a placeholder, never write truth.
                             hints: fact
                                 .hints
                                 .unwrap_or(crate::size_hints::WindowSizeHints::none()),
