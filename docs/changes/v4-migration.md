@@ -14,8 +14,10 @@
   carry-forward checklist approach remain accepted. Phase-0b KDE source-fit
   review and the Windows/macOS source-fit reviews are recorded below. Phase 0c
   shape approval was given 2026-11-02 for G1-G3, K1-K5, W2-W4 and M1-M9,
-  with W1 union/capacity and M3/M4 amendments. Phase 1 core/protocol
-  implementation from fixtures is next; native and implementation gates remain.
+  with W1 union/capacity and M3/M4 amendments. The 2026-11-03
+  [core-composed maximize amendment](#core-composed-maximize-amendment) resolves
+  M4 without a wire-shape change. Phase 1 core/protocol implementation is in
+  progress; native and implementation gates remain.
 - Acceptance: every current wire record/enum/message has a disposition; every
   delta has an authority reference or a named gap; defaults cite core source;
   preserved shapes keep their current names and representation.
@@ -204,7 +206,7 @@
 | One optional primary output id | A host-designated primary, unknown absent; stable-order fallback in core. No extra independently invented `output_order` is needed when `screens` already has order. | Primary |
 | Fullscreen ownership and exitability facts | A observed fullscreen plus tiler/app ownership and whether core-authorized exit is possible; unknown stays unknown. Windows app-owned exit remains refused pending each approved baseline case. | R14 |
 | Fullscreen and sticky on/off/toggle commands | A neutral state commands; preserve `ToggleMaximize`; core resolves refusal and sticky-off float/tile/current-workspace result. New op spellings are mechanical; no binding change or Alt+Enter command shortcut. | R14/R18 |
-| Native state targets/authority and raw state actuation facts | A independent fullscreen/maximize/sticky/above StateTarget and StateAttempt lanes; keep existing maximize result. K3 adds persistent stacking support and core ownership, with mechanical R12 preimages, approved 2026-11-02 with W1 union/capacity policy. No generic `Applied` replacement. | R14, state-centric contract; K3 below |
+| Native state targets/authority and raw state actuation facts | A independent fullscreen/maximize/sticky/above StateTarget and StateAttempt lanes; keep existing maximize result. Native maximized targets require maximize=true; the 2026-11-03 M4 amendment composes maximize=false through existing frame authority, with no projected native fact/target. K3 adds persistent stacking support and core ownership, with mechanical R12 preimages, approved 2026-11-02 with W1 union/capacity policy. No generic `Applied` replacement. | R14, state-centric contract; K3 below |
 | Neutral classification vocabulary and hard support | A closed WindowType/ActivationPolicy/FactName, raw native flags/layer and fixed unavailableFacts. Add nativeSelectorScope, above and warp hard capabilities; core derives effective shared mode and unsupported settings diagnostics. Technical resolutions K1-K4 approved 2026-11-02. | Facts, Split, R12; K1-K4 below |
 | Anchored border descriptor | A lifetime subject, outsets, width/radius, eligibility and existing causal freshness witness. Literal `"native-frame-event"` is not a causal witness. No polling or new settling marker. | R20 |
 | Presentation revision and renderer input | A exact core target plus rendered revision; core rejects changed target row, not unrelated revision. Named typed decorations retained. | Decor |
@@ -1086,7 +1088,7 @@
 | hostOwned / equalCount / birthClear | true / false / false | Existing report values (`M/world_builder.rs:671-678`); adopt native order/membership, never move at launch or invent count coupling. |
 | nativeSelectorScope | per-output if separate Spaces, otherwise all-outputs | Read native mode before handshake; unknown holds, mode change reconnects. Unified mode forces shared semantics in core, not adapter settings substitution. |
 | windowSuppression / nativeSticky / above | false / false / false | No selected recoverable independent hide, app all-Spaces or persistent above route. Native Space switching is not suppression. W3 requires at least one sticky mechanism, so no logical-sticky claim here. |
-| maximize / fullscreen / warp | false / true / true at mechanism level | No maximize executor proved. AX fullscreen diagnostic and CG warp establish APIs, not product dispatch, preimage durability, ownership, permission or R14 acceptance. Do not advertise a ready executor until those gates are implemented. |
+| maximize / fullscreen / warp | false / true / true at mechanism level | No native maximize executor proved; the 2026-11-03 M4 amendment selects core composition through the existing frame lane, not an adapter-owned executor. AX fullscreen diagnostic and CG warp establish APIs, not product dispatch, preimage durability, ownership, permission or R14 acceptance. Do not advertise a ready native executor until those gates are implemented. |
 | tiledFloatTransfer | Unfrozen: no selected crossing route | Current managed send requires exactly one display (`M/workspace_send_managed.rs:704-723`); move/focus crossing is disabled (`M/world_command_map.rs:240-255`). This is broader than tiled-to-float no-remap, not Windows's mechanism. M8 must resolve truthful capability scope before freeze. |
 | unavailableFacts | Ordered list in section 1, plus title for present route | appId/executable readers exist but require wiring. Keep missing per-window values nullable; no permanent unavailable declaration for transient read failure. |
 
@@ -1110,7 +1112,7 @@
 | M1: self-bundle identity / **technical** | Historical review options, superseded by the User 2026-11-02 own-process product decision below. Neither bundle nor executable equality excludes a separate process; remove missing-bundle -> own fallback (`M/native_facts.rs:301-321`). Settings remains ordinary. |
 | M2: CG/AX lifetime and reacquisition / **technical** | Retain/compare remote AX identity with process/session fencing and positive close evidence; or conservatively retire/remint/hold whenever continuity is unprovable; never trust pid_wid alone. Recommend combined AX binding plus conservative holds, including unmanaged foreground, stale callbacks and restart. R's CFEqual/stale-destroy paths illustrate mechanics, not a no-reuse theorem. Storage cannot bind until exact surviving subject is proved. |
 | M3: durable opaque/native preimage storage / **technical** | Prove a native foreign-window slot; or propose an atomic external slot bound to a restart-verifiable native lifetime; or withhold persistence-dependent writes. Recommend evaluating the external-slot route only with M2 and explicit contract reconciliation: the draft currently requires lifetime-bound native storage. Neither filesystem keys nor SLS property availability alone satisfy it. macOS storage-survival remains OPEN. |
-| M4: zoom/maximize truth / **technical; emulation would be product** | Find a neutral native zoom observation/executor; or keep maximized unknown/maximize=false; or explicitly design emulated maximize semantics. Recommend unknown/false until a native producer is proved. Do not port maximized=false constants or the 1-point engine-placement geometry heuristic as raw state. Existing [floating zoom discriminator](../spec/reference-outcomes.md#macos-active-border-discriminators) remains TBD; emulation is not selected. |
+| M4: zoom/maximize truth / **product resolution approved 2026-11-03** | Historical native-route options are superseded by the [core-composed maximize amendment](#core-composed-maximize-amendment). Keep native maximized=null/maximize=false and compose the work-area overlay in core. Do not port maximized=false constants or the 1-point engine-placement geometry heuristic as raw state. Existing [floating zoom discriminator](../spec/reference-outcomes.md#macos-active-border-discriminators) remains historical/TBD, not proof of the composed route. |
 | M5: native creation correlation / **technical** | Prove serialized creation/result identity excluding outside creators; or return created=null and hold ambiguous binding; or propose a new evidence shape only if necessary. Recommend null/hold on the present MC route until causal proof exists. Do not promote same-call list difference to a KWin-style atomic receipt or retry an uncertain create. |
 | M6: G2 removal authority / **technical** | Wire existing remove mechanics to core exist:false with fresh native vetoes; or defer retirement while retaining backing. Recommend the core consumer, replacing autonomous trailing/shutdown removal authority. A capability waiver is not justified by a missing consumer; no execution or new protocol field added. |
 | M7: K5 FrameWitness / **technical** | Prove local capture/event/renderer identity-and-watermark join plus coverage; otherwise design the smallest additional evidence shape. Recommend local join first with fail-closed stale/unknown watches, including beyond the 64-watch cap and eligibility/focus/state changes. Reread backstops and counter timestamps are not causal event coverage. native-witness-join-evidence remains OPEN. |
@@ -1140,7 +1142,8 @@
 ### M1-M9 technical resolution
 
 - Status: M1-M9 approved at phase 0c, 2026-11-02, with M3/M4 amendments and
-  the later same-day M1/W4 own-process product amendment below. The
+  the later same-day M1/W4 own-process product amendment below. M4 is resolved
+  by the 2026-11-03 core-composed amendment below. The
   source-review recommendations/counts above describe the earlier checkpoint;
   this subsection reconciles the submitted draft, not implemented authority or
   native acceptance. W1 union/capacity is approved; all eight shared OPEN/TBD
@@ -1151,7 +1154,7 @@
 | M1 | **Amended by User 2026-11-02:** applicationIdentity carries required nullable appId/executable/processId. Only known window processId equal to known own processId excludes internal UI. Same executable/bundle in another process does not; Settings is ordinary on every platform. Remove missing-bundle -> own and appId/executable self-exclusion, with no Settings-class exception. | Synthetic identity fixtures distinguish own-process UI from separate-process same-bundle/executable windows. Process availability is independent of executable availability. Windows Settings resizability and macOS Settings separation/neutral marker are separate product follow-ups; native wiring and acceptance remain pending. |
 | M2 | Mint win only while retained remote AX identity (CFEqual) plus process fencing proves continuity. Positive close/replacement retires via existing closed, then remint; uncertain continuity holds with incomplete inventory. Never rebind from PID/CG id/title or a stale callback. | Existing closed/fresh-win/reconnect expressions suffice; no new wire/fixture lane. Restart reacquisition is fresh unless exact continuity is verified. AX omission/off-Space absence is not positive close evidence; native lifetime proof remains a port gate. |
 | M3 | Native per-window or adapter-owned atomic external slots share <=1024-byte opaque intent, atomic persist-before-dependent-write and restart-verifiable lifetime obligations. macOS must retain intentional-float intent across orderly tiler restart within a session; discard only genuinely unverifiable bindings. Native preimage failure disables only its property; no new capability. | Further macOS exploration must prove within-session re-identification, likely session-unique CGWindowID per Apple plus process/launch-date fencing, with a KDE-style atomic private store as candidate. A file/property key alone is not ownership proof. Storage-survival stays OPEN, not permission to cut restart intent. Existing fixtures need no storage-route shape. [Persistence decision](../decisions/persistence.md#orderly-restart-adoption). |
-| M4 | macOS maximize remains in 0.1 scope. maximize=false and WindowFact/PresentationIngress maximized=null are provisional fail-closed until the port proves a route; first try native zoom read+write. No false fact constant or border-geometry zoom heuristic. | Native zoom versus emulated maximize semantics are an OPEN user product decision for later macOS work; neither is selected here. FactName needs no new maximized arm. Synthetic handshake/report remain provisional witnesses, not a scope reduction. [R14 amendment](../decisions/contract.md#window-state-commands-r14). |
+| M4 | **Amended by User 2026-11-03:** macOS maximize uses a core-composed work-area overlay with a retained base, selected by maximize=false and available frame writes. Native maximized stays null, no maximized StateTarget; no adapter-owned maximize on any host. maximize=true keeps the existing native route unchanged. | Product choice resolved; implementation/native outcomes remain pending. Runtime-only overlay drops to base on orderly restart, with no M3 dependency or opaque-record extension. Existing capability/record shapes suffice; fixtures remain unchanged. [Amendment](#core-composed-maximize-amendment), [R14](../decisions/contract.md#window-state-commands-r14). |
 | M5 | Without causal creation proof, created stays null and binding holds. Preserve the spent original attempt; no same-call/later-delta attribution or retry. | Existing nullable creation and ambiguity fixtures already express this. A same-call list delta alone is not an atomic receipt; causal creation identity remains a native port gate. |
 | M6 | Core exist:false is sole removal authority, subject to fresh occupancy/pin/minimum/completeness vetoes; unknown occupancy is not zero. No autonomous trailing/shutdown cleanup authority and no removal capability. | Text-only adapter obligation; existing G2 scenarios do not contradict it. The native core consumer must replace local cleanup authority; native-retirement-support stays OPEN. |
 | M7 | Prove the adapter-local capture/event/renderer causal join during phase 2, as for K5. Suppress paint for unwatched windows beyond the watch cap and stale/unknown eligibility. | Text only; no new FrameWitness fields. Native event coverage and accepted-anchor motion remain unproved; native-witness-join-evidence stays OPEN. Timestamps/rereads do not close it. |
@@ -1207,10 +1210,10 @@
   description was record drift: the [KDE record](../spec/reference-outcomes/floating.md#r-flt-12-raise-and-lower-overlapping-floats)
   includes project floats and automatic fixed-size floats. The [COSMIC layer](../spec/reference-outcomes/floating.md#r-flt-01-toggle-float-then-unfloat)
   corroborates float-above-tiles; capacity inclusion avoids arbitrary complexity.
-- M4: macOS maximize remains in 0.1 scope. The false capability/null facts
-  are provisional fail-closed witnesses, not a scope cut. First prove native zoom
-  read+write; native zoom versus emulated maximize remains an OPEN user product
-  decision for later macOS work. No implementation or fixture shape changed.
+- M4 at phase 0c: macOS maximize remained in 0.1 scope with provisional false
+  capability/null facts while native zoom versus emulation was OPEN. This is
+  superseded by the [2026-11-03 composed route](#core-composed-maximize-amendment),
+  which preserves those native wire values without a fixture-shape change.
 - M3: macOS must retain intentional-float intent across orderly tiler restart
   within a session. Further exploration must prove within-session re-identification,
   with session-unique CGWindowID plus process/launch-date fencing and a KDE-style
@@ -1245,9 +1248,53 @@
   by the sequential ports. Carry all eight scenario gates, K5/M7 native witness
   joins, storage survival, Windows R14 app-fullscreen adoption baseline and macOS
   M8 cross-output frame/Space proof. macOS multi-display integration stays
-  [parked](../decisions/macos.md#drag-and-drop). M3 exploration, the M4 product
-  decision/route proof and D6 staged documentation cleanup remain in the
+  [parked](../decisions/macos.md#drag-and-drop). M3 exploration, M4 composed-route
+  implementation/acceptance and D6 staged documentation cleanup remain in the
   [pending backlog](../backlog.md).
+
+## Core-composed maximize amendment
+
+- User 2026-11-03 resolves M4: maximize=true retains the existing native overlay
+  route (KDE/Windows); maximize=false with frame writes available selects a
+  core-owned work-area overlay (macOS). No adapter owns maximize policy on any
+  platform. This generalizes nativeSticky versus core-composed sticky rather
+  than making macOS Window-menu Zoom the product command.
+- Core retains a lifetime-local bit and the base tile slot/share/allocation or
+  float placement, with no sibling reflow. Publish frame=output work area with
+  frame authority; clear restores base. Native maximized remains null, non-null
+  is a conflicting-fact row hold, and no maximized StateTarget is emitted.
+  External user move/resize clears the bit; Window-menu Zoom is ordinary frame
+  drift, a documented host limit. Born-maximized cannot be detected on this
+  route and uses ordinary admission.
+- Unavailable frame authority refuses a composed maximize request via the existing
+  applicable refusal gate, leaving overlay intent unchanged. No deferred or
+  automatic composition occurs on recovery; a fresh press is required. This
+  applies existing refusal precedent rather than introducing product semantics.
+- B9 clears the bit locally before fresh tile admission, with no observe-clear
+  wait. R-MAX-11 exits native fullscreen under existing exitability/observation
+  rules before composing. Directional focus/move use the same overlay policy,
+  with local clear for move; fullscreen precedence stays unchanged. Sends/output
+  and work-area changes recompute the composed frame under existing arrival and
+  frame authority. Orderly restart drops the overlay to base; opaque intent
+  remains exactly v/float/stickyPrior, with no M3 dependency.
+- Tier 1 basis: [R-MAX-01](../spec/reference-outcomes/maximize-fullscreen.md#r-max-01-maximize-then-restore)
+  sources COSMIC/Hyprland WM-owned work-area overlays retaining tile slots;
+  [R-MAX-04](../spec/reference-outcomes/maximize-fullscreen.md#r-max-04-shortcut-maximize-native-restore-repress)
+  sources restore/repress, and [R-MAX-06](../spec/reference-outcomes/maximize-fullscreen.md#r-max-06-admit-a-first-seen-maximized-window)
+  records born overlays. i3/sway have no maximize counterpart. This basis does
+  not prove macOS frame delivery or restore; [minimal composed rows](../spec/reference-outcomes.md#core-composed-maximize-discriminators)
+  retain native/unexecuted outcomes TBD.
+- Shape audit: HostCapabilities.maximize already means native actuation support,
+  not semantic support. Existing frame/frame_auth expresses composition and base
+  restore, including floating subjects; no new capability, wire bit, StateTarget
+  arm, FactName or intent field is needed. Existing macOS false/null fixtures
+  agree; window-state maximize scenarios use maximize=true and do not pin the
+  composed route. No immutable v4 fixture changes are required or made. New
+  composed engine/codec coverage remains implementation work; all eight existing
+  OPEN/TBD scenario gates remain unchanged.
+- Reassess after the full contract rearchitecture and platform ports if jank or
+  other issues appear. This amendment records approved behavior and contract
+  authority, not an implementation, native acceptance or M3 proof.
 
 ## Own-process identity amendment
 

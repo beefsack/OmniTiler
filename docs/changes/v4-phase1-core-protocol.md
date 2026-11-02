@@ -26,6 +26,11 @@
   inner record first; then wire outer report/reply records and consume them in
   lifetime-fenced engine restore/save/clear. Inner-data tests alone do not prove
   engine restoration, host storage, or complete message codecs.
+- State increment includes the approved [core-composed maximize route](v4-migration.md#core-composed-maximize-amendment)
+  after lifetime-fenced intent consumption: maximize=true native unchanged;
+  maximize=false uses existing frame authority and a runtime-owned overlay bit,
+  with no adapter policy or opaque-intent extension. State implementation and
+  composed-route regression coverage remain pending.
 
 ## Evidence
 
@@ -269,11 +274,10 @@
   checks pass. Outer intent ingress/publication and real-engine restore/save/clear
   are the next dependent slice. No fixture, wire version or state/overlay change.
 - The opaque record remains classification intent only, with no identity or
-  maximize/fullscreen fields. Native maximize remains the approved contract;
-  macOS native Zoom versus core-owned overlay stays an OPEN product decision.
-  A later owned overlay would require state/geometry and recovery contract work,
-  not a guessed extension of this record. M3 restart binding remains unproved,
-  and no FrameWitness change is introduced.
+  maximize/fullscreen fields. The 2026-11-03 composed-maximize amendment below
+  resolves the formerly OPEN macOS native-Zoom versus owned-overlay choice
+  without extending this record. M3 restart binding remains unproved, and no
+  FrameWitness change is introduced.
 - Outer intent lanes are staged: `intentRecords` is required ingress with
   closed rows, valid subject ids, <=10000 entries and <=1024 UTF-8 bytes per
   opaque string. The wire preserves decoded string bytes without interpreting
@@ -301,6 +305,37 @@
   warnings denied pass. No v4 fixture, version, native state or adapter source
   changes are included; this is not complete bidirectional v4 conformance or
   execution of the intent restart scenario.
+- Composed-maximize contract increment: User 2026-11-03 selected a core-owned
+  work-area overlay on maximize=false with usable frame authority, generalizing
+  the nativeSticky/composed-sticky split. maximize=true remains native unchanged.
+  Core retains the base slot/share/allocation or float placement without sibling
+  reflow; native maximized stays null, non-null holds the conflicting row, and no
+  maximized StateTarget is emitted. External user move/resize clears the bit;
+  Window-menu Zoom is ordinary frame drift. Born-maximized is undetectable and
+  admits ordinarily. Orderly restart drops composed maximize to base without M3
+  dependency or v/float/stickyPrior changes. B9 clears locally, R-MAX-11 exits
+  native fullscreen under existing gates before composition, and sends/output/
+  work-area changes recompute the overlay frame. Directional and fullscreen
+  precedence rules remain; no platform has adapter-owned maximize policy.
+- Contract shape inspection found no required capability or immutable fixture
+  changes: existing frame/frame_auth expresses composed geometry and restore,
+  including float subjects; macOS witnesses already use false/null and existing
+  maximize scenarios use native support. The normative frame-authority text now
+  distinguishes composed frames from ordinary one-shot float placement. Tier 1
+  COSMIC/Hyprland retained-slot overlays support the design; i3/sway have no
+  maximize counterpart. Minimal composed-action rows keep unexecuted/native
+  results TBD. This is a documentation-only amendment, not engine/codec or live
+  acceptance; reassess after rearchitecture/ports if jank/issues appear.
+- Independent contract review found no shape/fixture conflict. User 2026-11-03
+  resolved its unavailable-frame-authority edge by applying existing refusal
+  precedent: refuse a composed maximize request via the existing applicable gate,
+  with overlay intent unchanged. No deferred/automatic composition on recovery;
+  a fresh press is required. The minimal discriminator retains only unproven
+  native refusal/recovery delivery as TBD, not the selected rule or refusal kind.
+- Documentation checks: 30 added local links/anchors resolve, added text is ASCII,
+  and `git diff --check` is clean. Exactly seven documentation files change; source,
+  adapters and immutable v4 fixtures are unchanged. No code tests or live checks
+  were run for this documentation amendment; the refusal edge is resolved above.
 
 ## Adapter compile-failure inventory
 
@@ -342,6 +377,8 @@
   The bounded opaque intent-data codec and outer intent ingress/publication lanes
   are implemented and fixture-tested; lifetime-fenced engine restore/save/clear
   and host storage remain pending. Engine storage-write authority is still empty.
+  The core-composed maximize contract is approved and recorded; implementation
+  belongs to the dependent state increment, with native outcomes still TBD.
   The remaining world report/reply paths and version are still staged; no v4
   cutover or full scenario acceptance is claimed. Full adapter build-failure
   inventory remains pending.

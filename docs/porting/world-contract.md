@@ -174,6 +174,11 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `tiledFloatTransfer` | bool | no | Tiled source can become a float while crossing outputs without unsupported remap. |
 | | `unavailableFacts` | FactName[] | no | Fixed unsupported classification inputs, unique and in FactName catalog order, <=21 entries. |
 
+- `maximize` selects native actuation, not command availability: true uses the
+  existing native overlay; false permits core-composed maximize through available
+  frame writes. No extra composition/frame-support capability is added; existing
+  per-window frame authority and safety gates determine whether writes are usable.
+  Adapters never implement their own maximize policy. See [window-state policy](#window-state-policy).
 - `ready:false` is normal after an accepted handshake; readiness requires a
   complete usable report and initial settings. Hard support cannot flip per
   report. Unsupported versions use the bounded error shape below.
@@ -422,15 +427,15 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   unmanaged fullscreen foreground capture, rather than inventing negative facts.
   [Evidence gaps](../changes/v4-migration.md#b-reconciliations-and-open-points).
 
-- macOS provisionally declares maximize=false and reports maximized=null in
-  WindowFact and PresentationIngress until a native route is proved; maximize
-  remains in 0.1 scope. First try native zoom read+write. Native zoom versus
-  emulated maximize semantics remain an OPEN user product decision for later
-  macOS work. FactName/unavailableFacts
-  covers classification inputs, not maximized, so no fixed-unavailable enum arm
-  is added. Do not substitute a false constant or engine-placement/border-geometry
-  zoom heuristic. Neither native zoom nor emulation is yet selected as the
-  product meaning. [M4 amendment](../decisions/contract.md#window-state-commands-r14).
+- macOS declares maximize=false and reports native maximized=null in WindowFact
+  and PresentationIngress; core-composed maximize is the selected 0.1 route.
+  The core-owned overlay bit is not a native fact. A non-null maximized fact on
+  this route is a conflicting-fact row hold. FactName/unavailableFacts covers
+  classification inputs, not maximized, so no fixed-unavailable enum arm is added.
+  Do not substitute a false constant or engine-placement/border-geometry zoom
+  heuristic. User-invoked Window-menu Zoom has no readable maximize state and
+  is ordinary frame drift, not a native maximize/restore command for this route.
+  [M4 amendment](../decisions/contract.md#window-state-commands-r14).
 
 ### Neutral classification vocabulary and applicability
 
@@ -664,6 +669,39 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   unreadability/recovery gates still hold the affected visibility lane. This
   retains Windows sticky behavior without native actuation. W3 is a technical
   resolution approved 2026-11-02, not an all-Spaces or implementation claim.
+- Maximize has the same native/core-composed ownership split: maximize=true
+  retains the existing native overlay route unchanged (KDE/Windows); maximize=false
+  with frame writes available selects core composition (macOS). Core owns a
+  lifetime-local overlay bit, retains slot/share/allocation without sibling reflow,
+  and publishes frame=output work area under frame authority. Clear restores the
+  retained tile allocation or retained float placement; the overlay frame never
+  becomes the saved float placement. Core emits no maximized StateTarget on this
+  route (a reply containing one is invalid); unsolicited native maximize attempts
+  are conflicting-fact attempt rows, not completion. WindowFact and
+  PresentationIngress maximized remain null; a non-null value holds the conflicting
+  row. No adapter-owned maximize path is permitted on any host.
+- A composed maximize request with unavailable frame authority is refused using
+  the existing applicable refusal gate; overlay intent stays unchanged. The
+  request is not deferred or automatically composed when authority returns: a
+  fresh press is required. This applies existing refusal precedent, with no new kind.
+- External user move/resize clears composed maximize; do not infer a user action
+  merely from delayed/clamped frame readback. macOS Window-menu Zoom is ordinary
+  frame drift, a host limit rather than a synthetic native maximize fact.
+  Born-maximized is undetectable on the composed route, so admission is ordinary.
+  Orderly restart drops the bit and returns the window to base; it is not persisted
+  in opaque intent and adds no M3 storage/recovery dependency.
+- Composed maximize follows the same overlay directional-focus/move policy:
+  directional focus skips same-output siblings, and directional move clears the
+  core bit locally before ordinary move policy, without native clear/readback.
+  B9 intentional unfloat clears the bit locally before fresh admission, with no
+  observe-clear wait. R-MAX-11 first exits native fullscreen under existing
+  exitability/observation rules, then composes; unconfirmed exit grants no frame
+  write. Fullscreen precedence and all safety/arrival gates remain unchanged.
+  Sends/output transfers preserve the bit and recompute the destination work-area
+  frame under destination authority; work-area changes recompute it in place.
+  [Overlay decision](../decisions/window-state.md#fullscreen-and-maximize-overlays),
+  approved 2026-11-03. Reassess after the full contract rearchitecture and platform
+  ports if jank/issues appear; this specifies intent, not implementation/native proof.
 
 ### CommandResult and diagnostics
 
@@ -729,8 +767,12 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 - Only controlled property authority authorizes that property's writes. Held,
   untouched, missing rows and retained geometry authorize nothing. Floating
   rows never imply frame writes: ordinary floats retain native frames; explicit
-  `frame_op` alone names one-shot float placement. `float_origin:capacity` is
-  diagnostic only. Existing clear/create/member/frame lanes stay distinct.
+  `frame_op` names one-shot float placement. Core-composed maximize and its base
+  restore instead use explicit `frame/frame_auth` authority, including for a
+  floating subject; no native-state target or extra wire bit is needed. The
+  floating diagnostic never substitutes for or vetoes that explicit authority.
+  `float_origin:capacity` is diagnostic only. Existing clear/create/member/frame
+  lanes stay distinct.
   [Desired-state baseline](world-contract-v3.md#4-desired-world-state-what-the-reply-authorizes),
   [state-centric decision](../decisions/contract.md#state-centric-contract).
 
@@ -767,6 +809,12 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `cause` | `explicit-command/automatic-admission/focus-follows-cursor` | no | Replaces fx-/af-/ffc- interpretation. |
 | | `cmdSeq` | Counter | yes | Non-null for explicit-command; null otherwise. |
 | | `awaitShown` | bool | no | Only explicit selection may grant arrival-ready focus. |
+
+- StateTarget is native actuation only: maximized requires maximize=true, and
+  sticky requires nativeSticky=true. Core-composed maximize uses the existing
+  controlled frame lane, never a maximized target, attempt or projected native
+  fact. `CommandResult::Maximize` remains the existing shape and describes the
+  core-resolved toggle, not native completion or independent write permission.
 
 ### Persistent stacking
 
@@ -827,6 +875,10 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   restart matching by title/process heuristic.
   [Intent](../decisions/contract.md#intent-ownership-and-persistence),
   [evidence](../changes/v4-migration.md#b-reconciliations-and-open-points).
+
+- Composed maximize is runtime-only: orderly restart drops it and restores base,
+  with no maximize field or base-geometry extension in this record. This adds no
+  M3 persistence dependency; intentional-float/sticky restart obligations remain.
 
 | Record | Key | Type | Null/absence | Meaning |
 | --- | --- | --- | --- | --- |

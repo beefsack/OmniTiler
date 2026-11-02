@@ -34,6 +34,23 @@ trivially different start state.
 | --- | --- | --- |
 | Handshake with own processId; report an ordinary separate-process Settings window sharing executable/bundle, then an own-process internal UI window; classify membership | User 2026-11-02: Settings is ordinary, tiling if resizable or floating under normal fixed/dialog admission. Only matching own processId excludes; same executable/bundle in another process does not. No Settings-specific class or platform self-identity rule | `executable-identity` covers separate-process Settings and another class sharing the executable; `macos-self-identity` covers same bundle/executable in other processes and own-process UI. Fixture assertions are target behavior, not engine/native acceptance. Windows resizability and macOS Settings separation/neutral marker are product follow-ups. [Decision](../decisions/contract.md#own-process-ui-and-ordinary-settings), [Tier 1 fixed admission](reference-outcomes/special-windows.md#r-spc-08-gain-or-lose-fixed-hints-after-admission) |
 
+### Core-composed maximize discriminators
+
+User 2026-11-03 selected the capability-routed overlay in the
+[window-state decision](../decisions/window-state.md#fullscreen-and-maximize-overlays).
+Tier 1 [R-MAX-01](reference-outcomes/maximize-fullscreen.md#r-max-01-maximize-then-restore)
+sources COSMIC/Hyprland WM-owned retained-slot overlays; i3/sway have no maximize
+counterpart. Those sources do not prove macOS delivery or the sequences below.
+
+| Minimal action sequence | Selected core-composed outcome | Unproven outcome / evidence gate |
+| --- | --- | --- |
+| With maximize=false and usable frame authority, tile A/B; maximize B; clear; repeat from a float with retained placement; separately first observe a host-Zoomed window | Work-area frame under core authority, no sibling reflow or slot/share loss; clear restores retained tile/float base; native maximized stays null, no maximized StateTarget. Born maximize is undetectable, so ordinary admission | Engine/native frame convergence, exact restored pixels, focus and presentation TBD; no composed fixture execution claimed |
+| Compose maximize; user-move/resize; repress maximize; separately invoke macOS Window-menu Zoom and observe its frame | User move/resize clears the core bit; new press composes again. Window-menu Zoom is ordinary frame drift, not readable maximize state | Native gesture attribution versus delayed/clamped own writes and host Zoom interaction TBD; [R-MAX-04](reference-outcomes/maximize-fullscreen.md#r-max-04-shortcut-maximize-native-restore-repress) native restore is analogy, not a macOS counterpart |
+| Compose on intentional float; unfloat (B9); separately enter native fullscreen and request maximize (R-MAX-11); repeat with unknown/refused exitability | B9 clears bit locally then fresh-admits, no native clear wait. R-MAX-11 exits fullscreen under existing gates before composing; fullscreen safety still wins | B9/frame delivery, asynchronous fullscreen exit and no unsafe intermediate frame TBD |
+| Compose B on O; send to another workspace/output; change destination work area; focus/move directionally | Preserve overlay on send and recompute destination/work-area frame under existing arrival authority; directional focus/move treat it like native overlay, with local bit clear for move | Native membership/frame ordering, multi-output projection and directional results TBD; R-MAX-08/09 policies remain selected, not newly observed |
+| Compose from tile, then float in separate runs; orderly-restart tiler and reobserve exact surviving window | Drop overlay and return to retained base; no maximize persistence or IntentRecord extension and no new M3 dependency | Orderly-stop base restoration and post-restart native geometry TBD; existing float restart identity/storage gates remain separate |
+| With maximize=false, request maximize while the subject's frame authority is unavailable; restore authority without a new command, then press again | User 2026-11-03: refuse via the existing applicable refusal gate, with overlay intent unchanged. No deferred/automatic composition on authority recovery; a fresh press is required. Existing refusal precedent, no new product semantics | Native refusal/recovery delivery TBD; Tier 1 retained-slot sources do not establish unavailable external frame-authority handling |
+
 ### Raw classification hold discriminators
 
 | Minimal action sequence | Current conservative core behavior | Unsupported outcome / remaining work |
