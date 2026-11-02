@@ -18,6 +18,7 @@ pub mod fresh_focus;
 pub mod geometry;
 pub mod gesture;
 pub mod ids;
+pub mod intent_data;
 pub mod output_selection;
 pub mod policy;
 pub mod reconcile;

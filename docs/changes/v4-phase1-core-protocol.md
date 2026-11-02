@@ -22,6 +22,11 @@
 5. Consolidate inherited contract rules, remove the v3 guide and code paths,
    and run build/test/clippy gates plus adapter build-failure inventory.
 
+- Intent dependency order: validate/canonically encode the core-owned opaque
+  inner record first; then wire outer report/reply records and consume them in
+  lifetime-fenced engine restore/save/clear. Inner-data tests alone do not prove
+  engine restoration, host storage, or complete message codecs.
+
 ## Evidence
 
 - Initial fixture inventory: 518 messages (275 valid, 3 settings-diagnostic,
@@ -244,6 +249,31 @@
   warnings denied, formatting and diff checks pass. Native/reference unreadable
   hint behavior remains TBD; no live acceptance, complete codec conformance or
   whole-scenario execution is claimed.
+- Opaque intent data foundation: core now defines `IntentData` with independent
+  nullable float override and sticky-prior lanes, strict bounded decoding and
+  canonical encoding of exactly `v:1,float,stickyPrior`. All nine semantic states
+  remain distinct. Required fields, decoded-key duplicates (including escaped
+  equivalents), unknown keys, wrong types/versions, malformed/trailing JSON and
+  the 1024-byte UTF-8 bound are tested. No additional crate dependency is needed.
+- Eight core data-codec tests and four nested-fixture tests pass. Supported
+  intent records and save data re-encode to the immutable fixture strings;
+  unsupported inner version returns no usable data. Invalid inner data never
+  bypasses independent outer string/type/byte-bound validation. These tests do
+  not execute the outer world codec, engine restoration or host persistence.
+  Review corrected a required-key documentation error and numeric-token
+  terminator diagnostics without changing the accepted data language.
+- Intent-data verification: full core/protocol tests pass (1159 core unit tests,
+  all integration targets, existing protocol suites 49/52/4 plus four new nested
+  intent tests), with only the unrelated `workspace_unsafe_posture` filtered.
+  Build, scoped all-target clippy with warnings denied, formatting and diff
+  checks pass. Outer intent ingress/publication and real-engine restore/save/clear
+  are the next dependent slice. No fixture, wire version or state/overlay change.
+- The opaque record remains classification intent only, with no identity or
+  maximize/fullscreen fields. Native maximize remains the approved contract;
+  macOS native Zoom versus core-owned overlay stays an OPEN product decision.
+  A later owned overlay would require state/geometry and recovery contract work,
+  not a guessed extension of this record. M3 restart binding remains unproved,
+  and no FrameWitness change is introduced.
 
 ## Outcome
 
@@ -258,6 +288,8 @@
    narrowing are implemented and tested; unselected special-kind admission stays
    TBD. The workspace unsafe guardrail failure above remains unresolved outside
    these changed sources.
+  The bounded opaque intent-data codec is implemented and fixture-tested;
+  outer intent records, engine restore/save/clear and host storage remain pending.
   The remaining world report/reply paths and version are still staged; no v4
   cutover or full scenario acceptance is claimed. Full adapter build-failure
   inventory remains pending.
