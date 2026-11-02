@@ -40,19 +40,45 @@ fn screen(output: &str, x: i32) -> ScreenReport {
 fn fact(window: &str, x: i32, w: i32, h: i32, fullscreen: bool) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId("out-a".to_owned()),
+        output: Some(OutputId("out-a".to_owned())),
         rect: Some(rect(x, 0, w, h)),
-        floating: false,
-        fit_excluded: false,
-        fullscreen,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(fullscreen),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: tiler_core::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(tiler_core::world_report::WindowType::Normal),
+        activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: tiler_core::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
@@ -107,6 +133,7 @@ fn report(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture,
@@ -413,7 +440,7 @@ fn base_windows(live: &LiveSource) -> Vec<WindowFact> {
         let fs = name == "win-a" && live.fullscreen_a;
         let mut wf = fact(name, f.x, f.w, f.h, fs);
         if name == "win-c" {
-            wf.output = OutputId("out-b".to_owned());
+            wf.output = Some(OutputId("out-b".to_owned()));
         }
         out.push(wf);
     }

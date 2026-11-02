@@ -27,6 +27,7 @@ pub mod settings_catalog;
 pub mod settings_state;
 pub mod size_hints;
 pub mod visual;
+pub mod window_classify;
 pub mod window_policy;
 pub mod workspace;
 pub mod workspace_scope;
@@ -114,6 +115,8 @@ mod world_frame_policy_tests;
 mod world_gesture_tests;
 #[cfg(test)]
 mod world_global_swap_tests;
+#[cfg(test)]
+mod world_held_presence_tests;
 #[cfg(test)]
 mod world_linked_focus_memory_tests;
 #[cfg(test)]

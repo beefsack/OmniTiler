@@ -41,43 +41,82 @@ const N4: &str = "12";
 fn fact_native(window: &str, output: &str, frame: Rect, native: Option<&str>) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(frame),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: native.map(str::to_owned),
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: native
+            .map(|s| tiler_core::world_report::NativeWorkspaceFact::Value(s.to_owned()))
+            .unwrap_or(tiler_core::world_report::NativeWorkspaceFact::Omitted),
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(tiler_core::world_report::WindowType::Normal),
+        activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: tiler_core::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
 fn minimized_native(window: &str, output: &str, native: Option<&str>) -> WindowFact {
     WindowFact {
         rect: None,
-        minimized: true,
+        minimized: Some(true),
         ..fact_native(window, output, rect(0, 0, 40, 90), native)
     }
 }
 
 fn floating_native(window: &str, output: &str, frame: Rect, native: Option<&str>) -> WindowFact {
     WindowFact {
-        floating: true,
-        fit_excluded: true,
+        transient: Some(true),
         ..fact_native(window, output, frame, native)
     }
 }
 
 fn fullscreen_native(window: &str, output: &str, frame: Rect, native: Option<&str>) -> WindowFact {
     WindowFact {
-        fullscreen: true,
-        fit_excluded: true,
+        fullscreen: Some(true),
         ..fact_native(window, output, frame, native)
+    }
+}
+
+/// Identity-stripped fact for reports after a no-native-identity rebind:
+/// the rebound handshake declares `Executable`/`ProcessId` unavailable, so
+/// carried identities must be null (a carried value holds the row as a
+/// `ConflictingFact` instead of homing it). Pre-rebind reports keep the
+/// known foreign pid the supported handshake requires.
+fn anon(fact: WindowFact) -> WindowFact {
+    WindowFact {
+        executable: None,
+        process_id: None,
+        ..fact
     }
 }
 
@@ -132,6 +171,7 @@ fn report(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
@@ -349,23 +389,18 @@ fn four_native_bound_plus_ordinary_spare_no_moves_at_launch() {
         assert_eq!(row.membership_authority, ScopeAuthority::Controlled);
     }
     // Fullscreen member on noncurrent N2 homes its mapping. A fresh
-    // fullscreen-only seed sweeps to the existing Unreadable fence (same
-    // as native-free: no allocation, no writes blessed); the homing is
-    // still the adopted N2 logical, never collapsed elsewhere.
+    // fullscreen-only seed is a readable overlay (v4 raw carries no
+    // unreadable verdict): no allocation-driven frame write, membership
+    // stays controlled; the homing is the adopted N2 logical, never
+    // collapsed elsewhere.
     let row_e = reply
         .windows
         .iter()
         .find(|row| row.lifetime.0 == "win-e")
         .expect("row e");
     assert_eq!(row_e.workspace, logical(N2));
-    assert_eq!(
-        row_e.frame_authority,
-        ScopeAuthority::Hold(HoldReason::Unreadable)
-    );
-    assert_eq!(
-        row_e.membership_authority,
-        ScopeAuthority::Hold(HoldReason::Unreadable)
-    );
+    assert_eq!(row_e.frame_authority, ScopeAuthority::Untouched);
+    assert_eq!(row_e.membership_authority, ScopeAuthority::Untouched);
     let row_c = reply
         .windows
         .iter()
@@ -386,7 +421,7 @@ fn four_native_bound_plus_ordinary_spare_no_moves_at_launch() {
     assert!(row_d.floating);
     assert_eq!(row_d.frame_authority, ScopeAuthority::Untouched);
     // Known-evidence scopes publish full authority; the fresh
-    // fullscreen-only N2 scope carries the existing sweep fence.
+    // fullscreen-only N2 scope is readable (no raw unreadable verdict).
     for native in [N3, N1, N4] {
         assert_eq!(
             scope_authority(&reply, "out-a", &logical(native)),
@@ -396,8 +431,8 @@ fn four_native_bound_plus_ordinary_spare_no_moves_at_launch() {
     }
     assert_eq!(
         scope_authority(&reply, "out-a", &logical(N2)),
-        Some(ScopeAuthority::Hold(HoldReason::Unreadable)),
-        "fresh fullscreen-only seed keeps the existing sweep fence"
+        Some(ScopeAuthority::Controlled),
+        "fresh fullscreen-only seed stays readable"
     );
     // Repeat stability: same ids, same order, same homing, same split.
     let again = accepted(
@@ -471,12 +506,12 @@ fn incarnation_reset_readopts_cleanly() {
         2,
         2,
         two_native_screens(),
-        vec![fact_native(
+        vec![anon(fact_native(
             "win-a",
             "out-a",
             rect(0, 0, 400, 560),
             Some(N1),
-        )],
+        ))],
         vec![native_obs("out-a", &[N1, N2], N1)],
         None,
         None,
@@ -624,12 +659,10 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
         scope_authority(&held, "out-a", &bound[N2]),
         Some(ScopeAuthority::Controlled)
     );
-    // Host-owned mode is native-only: the adapter logical receipt is
-    // never consulted, so a conflicting observed workspace naming the
-    // known N2 workspace loses to the native N1 evidence (native wins,
-    // no fence). Only unknown/unmapped native evidence holds.
-    let mut conflict = fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(N1));
-    conflict.observed_workspace = Some(bound[N2].clone());
+    // Host-owned mode is native-only: the retired adapter logical receipt
+    // is gone, so the native N1 evidence alone homes (native wins).
+    // Only unknown/unmapped native evidence holds.
+    let conflict = fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(N1));
     let held = accepted(
         &mut engine,
         &report(
@@ -1146,7 +1179,8 @@ fn unknown_minimized_newcomer_waits_for_native_membership() {
     input.request_seq = 2;
     input.observation_seq = 2;
     input.request_id = "req-2".to_owned();
-    input.windows[0].native_workspace = Some(N2.to_owned());
+    input.windows[0].native_workspace =
+        tiler_core::world_report::NativeWorkspaceFact::Value(N2.to_owned());
     let known = accepted(&mut engine, &input);
     let expected = bound_ids(&known, "out-a")
         .into_iter()

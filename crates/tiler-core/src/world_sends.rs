@@ -100,6 +100,11 @@ impl WorldEngine {
         if window.0.is_empty() {
             return false;
         }
+        // Safety/own-process exclusions never take canonical focus memory:
+        // no membership, no slot, no control.
+        if self.staged.excluded.contains(window) {
+            return false;
+        }
         let home = self.engine.domain_keys().into_iter().find(|key| {
             !held_scopes.contains(key)
                 && self.engine.session(key).is_some_and(|session| {
@@ -125,7 +130,7 @@ impl WorldEngine {
             .staged
             .facts
             .get(window)
-            .is_some_and(|fact| fact.sticky);
+            .is_some_and(|fact| fact.sticky == Some(true));
         // Tiled command contract first (pre-canonical behavior): the owned
         // Session gate alone decides. Staged effective/readability state
         // may lag a just-committed move (post-swap moved domain), so no
@@ -385,6 +390,14 @@ impl WorldEngine {
             return Err((KIND_IN_FLIGHT, MSG_IN_FLIGHT));
         }
         let Some(source_row) = by_id.get(window) else {
+            // Observed-but-excluded windows refuse (no automatic
+            // permission) instead of reading unknown: the adapter reported
+            // them and the core tracks them; membership is what is withheld.
+            // Own-process facts drop before staging, so the excluded set
+            // (not the fact map) carries both exclusion kinds.
+            if self.staged.excluded.contains(window) {
+                return Err((KIND_SEND_REFUSED, MSG_SEND_REFUSED));
+            }
             return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
         };
         // No automatic permission for sticky windows and unexplained
@@ -637,6 +650,14 @@ impl WorldEngine {
             return Err((KIND_IN_FLIGHT, MSG_IN_FLIGHT));
         }
         let Some(source_row) = by_id.get(window) else {
+            // Observed-but-excluded windows refuse (no automatic
+            // permission) instead of reading unknown: the adapter reported
+            // them and the core tracks them; membership is what is withheld.
+            // Own-process facts drop before staging, so the excluded set
+            // (not the fact map) carries both exclusion kinds.
+            if self.staged.excluded.contains(window) {
+                return Err((KIND_SEND_REFUSED, MSG_SEND_REFUSED));
+            }
             return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
         };
         if source_row.sticky
@@ -856,6 +877,17 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
         let Some(source_row) = by_id.get(window) else {
+            // Observed-but-excluded windows refuse (no automatic
+            // permission) instead of reading unknown: the adapter reported
+            // them and the core tracks them; membership is what is withheld.
+            // Own-process facts drop before staging, so the excluded set
+            // (not the fact map) carries both exclusion kinds.
+            if self.staged.excluded.contains(window) {
+                return CommandApplied::Rejected {
+                    kind: KIND_SEND_REFUSED,
+                    message: MSG_SEND_REFUSED,
+                };
+            }
             return CommandApplied::Rejected {
                 kind: KIND_SEND_WINDOW,
                 message: MSG_SEND_WINDOW,

@@ -58,8 +58,9 @@ use crate::world_gesture::{GestureOutcome, RetainedGesture};
 use crate::world_report::{
     CommandResult, FrameAttempt, HoldReason, TilingMode, TransferKind, TransferTarget,
     WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldCommand,
-    WorldReply, WorldReport, encode_reply_canonical, grade_invalid_screens, reply_estimate,
-    reply_upper_bound, report_digest, report_estimate, validate_report_reason,
+    WorldReply, WorldReport, encode_reply_canonical, grade_conflicting_windows,
+    grade_invalid_screens, grade_invalid_windows, reply_estimate, reply_upper_bound, report_digest,
+    report_estimate, validate_report_reason,
 };
 
 pub(crate) const KIND_VERSION: &str = "unsupported-version";
@@ -154,6 +155,20 @@ pub enum StaySourceFocus {
     Resident(WindowId),
     Empty,
     Unknown,
+}
+
+/// Neutral safety-exclusion intent ledger: lifetime fixed-size intent the
+/// retained Engine sessions held when a safety/own-process exclusion
+/// retired the slot. Never a public verdict, never membership, never an
+/// effect: only a same-lifetime fallback for the stage-time classifier
+/// so lifting the exclusion with current fixed hints restores the
+/// approved tile override instead of re-admitting an automatic float.
+/// Cleared on explicit native close (never inferred from safety), and a
+/// fresh backend generation constructs a fresh ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ExcludedIntent {
+    pub(crate) tile_override: bool,
+    pub(crate) automatic_fixed: bool,
 }
 
 /// Retained transfer plus the source homing needed for shielding and
@@ -410,16 +425,32 @@ pub(crate) struct StagedReport {
     pub(crate) screens: Vec<crate::world_report::ScreenReport>,
     /// Identifiable bad screen rows held narrowly, in report order.
     pub(crate) held_screens: Vec<crate::world_report::HeldScreenRow>,
+    /// Identifiable bad window rows held narrowly, in report order.
+    pub(crate) held_windows: Vec<crate::world_report::HeldWindowRow>,
+    /// Safety/own-process exclusions observed on this report: known
+    /// exclusions (staged facts classifying excluded) plus own-process
+    /// windows (dropped before facts). Never members, slots, or control:
+    /// converge removes them cleanly (never a minimize slot, never a
+    /// native close), reconciles drop them complete and incomplete, and
+    /// pending actions withhold writes/focus. Only an explicit native
+    /// close resets lifetime identity.
+    pub(crate) excluded: BTreeSet<WindowId>,
     /// Typed narrow-hold diagnostics emitted with this report's reply:
-    /// one per held screen row plus one per use-time scale hold.
+    /// one per held screen/window row plus one per use-time scale hold.
     pub(crate) diagnostics: Vec<crate::world_report::RowDiagnostic>,
     pub(crate) domains: Vec<StagedDomain>,
     /// Non-empty adapter view echoes by output.
     pub(crate) echoes: BTreeMap<String, String>,
     /// Raw observed screen per fact, before any logical assignment.
-    pub(crate) fact_output: BTreeMap<WindowId, OutputId>,
+    /// `None` is unknown affinity, never a current-output guess.
+    pub(crate) fact_output: BTreeMap<WindowId, Option<OutputId>>,
     /// Full raw facts by window id.
     pub(crate) facts: BTreeMap<WindowId, crate::world_report::WindowFact>,
+    /// Core-derived per-window classification (see
+    /// [`crate::window_classify`]): membership, hold, and exclusion
+    /// carriers for the consume lanes. Raw facts stay the sole public
+    /// input; these carriers never leave the core.
+    pub(crate) derived: BTreeMap<WindowId, crate::window_classify::ClassifiedWindow>,
     /// Raw explicit closes.
     pub(crate) closes: BTreeSet<WindowId>,
     /// Staged logical homing per window.
@@ -706,6 +737,10 @@ pub struct WorldEngine {
     /// accepted run and read by settling, sweeping, commands, and
     /// publishing; never survives across runs.
     pub(crate) staged: StagedReport,
+    /// Neutral retained fixed-size intent for safety-excluded lifetimes
+    /// (see [`ExcludedIntent`]). Keyed by stable lifetime; never a row,
+    /// never a slot, never a public wire value.
+    pub(crate) excluded_intent: BTreeMap<WindowId, ExcludedIntent>,
     /// Retained pager presentation live frames (stage 5): fresh native
     /// frames per roster lifetime, rebuilt wholesale by every
     /// [`WorldEngine::retain_pager_presentation`] call from the normalized
@@ -995,6 +1030,7 @@ impl WorldEngine {
             ffc_last_hover: None,
             fresh_focus: crate::fresh_focus::FreshFocusMemory::default(),
             staged: StagedReport::default(),
+            excluded_intent: BTreeMap::new(),
             presentation_live: BTreeMap::new(),
             presentation_float: BTreeMap::new(),
             presentation_tile: BTreeMap::new(),
@@ -1619,8 +1655,20 @@ impl WorldEngine {
         // protocol-decoded twins before any estimate, validation, or
         // mutation. Structural violations still refuse below; the pure
         // shape gate is unchanged for callers that bypass the engine.
+        // Window grading follows the screen grading: invalid metadata
+        // values hold first, then unavailable-fact contradictions hold
+        // against this connection's capabilities.
         let graded = grade_invalid_screens(report);
         let report = graded.as_ref().map_or(report, |owned| owned);
+        let graded_windows = grade_invalid_windows(report);
+        let report = graded_windows.as_ref().map_or(report, |owned| owned);
+        let unavailable = self
+            .capabilities
+            .as_ref()
+            .map(|capabilities| capabilities.unavailable_facts.as_slice())
+            .unwrap_or(&[]);
+        let graded_conflicting = grade_conflicting_windows(report, unavailable);
+        let report = graded_conflicting.as_ref().map_or(report, |owned| owned);
         if report_estimate(report) > WORLD_MAX_REQUEST_BYTES {
             return WorldOutcome::Rejected {
                 kind: KIND_OVERSIZED,
@@ -1644,7 +1692,7 @@ impl WorldEngine {
             || report
                 .windows
                 .iter()
-                .any(|window| window.native_workspace.is_some())
+                .any(|window| window.native_workspace.as_deref().is_some())
             || report.member_attempts.iter().any(|attempt| {
                 matches!(
                     attempt.pre.as_ref(),
@@ -1844,6 +1892,32 @@ impl WorldEngine {
     /// every readable logical workspace, execute at most one command, and
     /// publish one globally monotonic revision. Called only on the clone;
     /// the caller adopts the candidate after the exact-encoding gate.
+    pub(crate) fn capture_excluded_intent(&mut self) {
+        // Snapshot lifetime intent before the sweep retires excluded
+        // slots: an exclusion is never a native close, so the approved
+        // fixed tile override and automatic fixed mark survive the
+        // same-lifetime gap. Only records proven intent: never
+        // overwrites a retained win with a retired-session false.
+        for id in self.staged.excluded.clone() {
+            let tile = self.engine.has_fixed_tile_override_any(&id);
+            let automatic = self.engine.is_automatic_fixed_float_any(&id);
+            if tile || automatic {
+                self.excluded_intent.insert(
+                    id,
+                    ExcludedIntent {
+                        tile_override: tile,
+                        automatic_fixed: automatic,
+                    },
+                );
+            }
+        }
+        // Explicit native closes end the lifetime: never resurrect intent
+        // for a reused id.
+        for id in self.staged.closes.clone() {
+            self.excluded_intent.remove(&id);
+        }
+    }
+
     fn run_accepted(
         &mut self,
         report: &WorldReport,
@@ -2004,7 +2078,14 @@ impl WorldEngine {
         if self.host_owned_workspace_domains() {
             let mut fence: Vec<DomainKey> = Vec::new();
             for (window, fact) in &self.staged.facts {
-                if !self.native_authoritative(report, &fact.output) {
+                let authoritative = match fact.output.as_ref() {
+                    Some(out) => self.native_authoritative(report, out),
+                    // Unknown output under host-owned domains never proves
+                    // membership: fence the retained homing like any
+                    // unknown receipt.
+                    None => self.host_owned_workspace_domains(),
+                };
+                if !authoritative {
                     continue;
                 }
                 if self.effective_logical_receipt(report, fact).is_some() {
@@ -2029,10 +2110,34 @@ impl WorldEngine {
                 held_scopes.insert(key);
             }
         }
+        // Narrowly held rows keep their retained homes: hold those scopes
+        // so the sweep never converges live sessions away from under them.
+        // Unhomed held rows (newcomers with no facts) hold nothing: no
+        // authority, no membership.
+        let held_window_scopes: Vec<DomainKey> = self
+            .staged
+            .held_windows
+            .iter()
+            .filter_map(|held| self.core_homing(&held.window))
+            .collect();
+        for key in &held_window_scopes {
+            self.hold_reasons
+                .entry(key.clone())
+                .or_insert(HoldReason::Unreadable);
+            held_scopes.insert(key.clone());
+        }
+        // Snapshot safety-exclusion intent before the sweep retires the
+        // excluded slots (the sweep converges them as closes for slot
+        // removal only, never a native close). Same-lifetime lift below
+        // restores from this ledger through the stage-time fallback.
+        self.capture_excluded_intent();
         // Clone the staged domains for iteration: sweeps borrow `self`
         // mutably while reading staged homing.
         let domains = self.staged.domains.clone();
         for domain in &domains {
+            if held_window_scopes.contains(&domain.key) {
+                continue;
+            }
             if !domain.readable {
                 continue;
             }
@@ -2237,9 +2342,18 @@ impl WorldEngine {
                     .collect();
                 self.last_active_window
                     .retain(|_, window| live.contains(window));
+                // Same lifetime bound for the exclusion ledger: a complete
+                // inventory that carries neither the fact nor the exclusion
+                // proves departure, so drop the retained intent. Explicit
+                // closes already cleared at capture time.
+                let excluded = self.staged.excluded.clone();
+                self.excluded_intent
+                    .retain(|id, _| live.contains(id) || excluded.contains(id));
             } else if !report.closed.is_empty() {
                 self.last_active_window
                     .retain(|_, window| !report.closed.contains(window));
+                let closed: BTreeSet<WindowId> = report.closed.iter().cloned().collect();
+                self.excluded_intent.retain(|id, _| !closed.contains(id));
             }
         }
         // Retain the last-known focused output before membership converges,

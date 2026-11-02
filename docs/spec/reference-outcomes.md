@@ -34,6 +34,13 @@ trivially different start state.
 | --- | --- | --- |
 | Handshake with own processId; report an ordinary separate-process Settings window sharing executable/bundle, then an own-process internal UI window; classify membership | User 2026-11-02: Settings is ordinary, tiling if resizable or floating under normal fixed/dialog admission. Only matching own processId excludes; same executable/bundle in another process does not. No Settings-specific class or platform self-identity rule | `executable-identity` covers separate-process Settings and another class sharing the executable; `macos-self-identity` covers same bundle/executable in other processes and own-process UI. Fixture assertions are target behavior, not engine/native acceptance. Windows resizability and macOS Settings separation/neutral marker are product follow-ups. [Decision](../decisions/contract.md#own-process-ui-and-ordinary-settings), [Tier 1 fixed admission](reference-outcomes/special-windows.md#r-spc-08-gain-or-lose-fixed-hints-after-admission) |
 
+### Raw classification hold discriminators
+
+| Minimal action sequence | Current conservative core behavior | Unsupported outcome / remaining work |
+| --- | --- | --- |
+| Report a new dialog/sheet or proven modal beside a healthy ordinary window with readable safety facts but `hints:null`; repeat with readable hints | Hold the unknown-hints candidate without inventing empty hints; admit only when its dependent facts become readable | Float-membership authority while hints remain unreadable is deferred action-specific refinement, not a selected exclusion. Reference/native unreadable-hint outcomes TBD; [REQ-SPC-01 and fixed admission](functional-spec.md#special) remain unchanged |
+| With no independent selected safety exclusion, report each of utility, splash, desktop, dock, menu, tooltip, notification and other; compare normal/dialog/sheet | Unselected type-based admission holds fail-closed; no implicit ordinary-window fallback or newly selected ignore rule | Exact manage/float/ignore behavior TBD. Reuse [R-SPC-02](reference-outcomes/special-windows.md#r-spc-02-open-a-typed-splash-window-fresh-utility-variant) and [REQ-SPC-02](functional-spec.md#special) for utility/splash; other native-kind outcomes require evidence before selecting policy |
+
 <a id="client-driven-tiled-geometry"></a>
 ### Client-driven tiled geometry
 

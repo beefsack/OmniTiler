@@ -43,19 +43,47 @@ const D3: &str = "7";
 fn fact_native(window: &str, output: &str, frame: Rect, native: Option<&str>) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(frame),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: native.map(str::to_owned),
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: native
+            .map(|s| tiler_core::world_report::NativeWorkspaceFact::Value(s.to_owned()))
+            .unwrap_or(tiler_core::world_report::NativeWorkspaceFact::Omitted),
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(tiler_core::world_report::WindowType::Normal),
+        activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: tiler_core::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
@@ -109,6 +137,7 @@ fn report(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
@@ -1134,7 +1163,8 @@ fn gap_conflicting_native_receipt_keeps_homing() {
     let (home_out, home_ws, _) = window_row(&first, "win-b").expect("baseline win-b row");
     assert_eq!(home_ws, bound[D2]);
     let mut windows = healthy_windows();
-    windows[1].native_workspace = Some("unknown-native-zzz".to_owned());
+    windows[1].native_workspace =
+        tiler_core::world_report::NativeWorkspaceFact::Value("unknown-native-zzz".to_owned());
     let gapped = accepted(
         &mut engine,
         &report(
@@ -1814,7 +1844,8 @@ fn gap_known_conflicting_receipt_holds_and_recovers() {
     let view0 = output_view(&first, "out-a").expect("baseline view");
     // Gap: win-b's receipt names D1, mapped to the other logical.
     let mut gap_windows = healthy_windows();
-    gap_windows[1].native_workspace = Some(D1.to_owned());
+    gap_windows[1].native_workspace =
+        tiler_core::world_report::NativeWorkspaceFact::Value(D1.to_owned());
     let gapped = accepted(
         &mut engine,
         &report(
@@ -1860,7 +1891,8 @@ fn gap_known_conflicting_receipt_holds_and_recovers() {
     // Neutral recovery (unmapped receipt) keeps the retained home: the
     // gap persisted no rehome.
     let mut rec_windows = healthy_windows();
-    rec_windows[1].native_workspace = Some("unknown-native-zzz".to_owned());
+    rec_windows[1].native_workspace =
+        tiler_core::world_report::NativeWorkspaceFact::Value("unknown-native-zzz".to_owned());
     let recovered = accepted(
         &mut engine,
         &report(
@@ -1914,7 +1946,8 @@ fn screen_gap_known_conflicting_receipt_holds_and_recovers() {
     assert_eq!(home_ws, bound[D2]);
     let ids0 = workspace_ids(&first, "out-a");
     let mut gap_windows = healthy_windows();
-    gap_windows[1].native_workspace = Some(D1.to_owned());
+    gap_windows[1].native_workspace =
+        tiler_core::world_report::NativeWorkspaceFact::Value(D1.to_owned());
     let gapped = accepted(
         &mut engine,
         &report(
@@ -1949,7 +1982,8 @@ fn screen_gap_known_conflicting_receipt_holds_and_recovers() {
     assert!(gapped.transfers.is_empty());
     assert!(gapped.native_creations.is_empty());
     let mut rec_windows = healthy_windows();
-    rec_windows[1].native_workspace = Some("unknown-native-zzz".to_owned());
+    rec_windows[1].native_workspace =
+        tiler_core::world_report::NativeWorkspaceFact::Value("unknown-native-zzz".to_owned());
     let recovered = accepted(
         &mut engine,
         &report(
@@ -2004,7 +2038,7 @@ fn gap_minimized_conflicting_receipt_holds_and_recovers() {
     assert_eq!(home_ws, bound[D2]);
     let ids0 = workspace_ids(&first, "out-a");
     let mut min_windows = healthy_windows();
-    min_windows[1].minimized = true;
+    min_windows[1].minimized = Some(true);
     let minimized = accepted(
         &mut engine,
         &report(
@@ -2024,8 +2058,9 @@ fn gap_minimized_conflicting_receipt_holds_and_recovers() {
     assert_eq!(min_auth, ScopeAuthority::Controlled);
     // Gap: still minimized but the receipt conflicts to the other logical.
     let mut gap_windows = healthy_windows();
-    gap_windows[1].minimized = true;
-    gap_windows[1].native_workspace = Some(D1.to_owned());
+    gap_windows[1].minimized = Some(true);
+    gap_windows[1].native_workspace =
+        tiler_core::world_report::NativeWorkspaceFact::Value(D1.to_owned());
     let gapped = accepted(
         &mut engine,
         &report(
@@ -2055,7 +2090,8 @@ fn gap_minimized_conflicting_receipt_holds_and_recovers() {
     assert_eq!(workspace_ids(&gapped, "out-a"), ids0);
     // Non-minimized neutral recovery: unknown keeps the retained home.
     let mut rec_windows = healthy_windows();
-    rec_windows[1].native_workspace = Some("unknown-native-zzz".to_owned());
+    rec_windows[1].native_workspace =
+        tiler_core::world_report::NativeWorkspaceFact::Value("unknown-native-zzz".to_owned());
     let recovered = accepted(
         &mut engine,
         &report(
@@ -2252,7 +2288,8 @@ fn shared_desire_conflicting_occupant_gap_recovers_same_op() {
     let op = desired.native_creations[0].operation_id.clone();
     // Gap: the moved occupant's receipt conflicts back to its old desktop.
     let mut gap_windows = windows.clone();
-    gap_windows[0].native_workspace = Some(D1.to_owned());
+    gap_windows[0].native_workspace =
+        tiler_core::world_report::NativeWorkspaceFact::Value(D1.to_owned());
     let gapped = accepted(
         &mut engine,
         &report(

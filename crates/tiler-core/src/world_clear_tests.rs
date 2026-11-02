@@ -74,12 +74,12 @@ fn commandless_clear_continuation_float() {
     // second clear, no replay.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..maximized()
     };
     accepted(
@@ -168,7 +168,7 @@ fn commandless_clear_continuation_float() {
     // only this arrival confirms the float.
     let arrived = || WindowFact {
         rect: Some(rect(404, 8, 388, 544)),
-        maximized: false,
+        maximized: Some(false),
         ..maximized()
     };
     let reply = accepted(
@@ -201,7 +201,7 @@ fn tiled_maximize_publishes_clear_before_attempt() {
     // production seam cannot stage an attempt from a reply without it.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        maximized: true,
+        maximized: Some(true),
         ..fact("win-max", "out-a", 0)
     };
     accepted(
@@ -251,11 +251,11 @@ fn commandless_clear_continuation_tiled() {
     // observation-only reply.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        maximized: true,
+        maximized: Some(true),
         ..fact("win-max", "out-a", 0)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..fact("win-max", "out-a", 0)
     };
     accepted(
@@ -340,12 +340,12 @@ fn clear_external_clear_alone_abandons_without_continuation() {
     // accepted attempt) abandons the binding: never a continuation.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..maximized()
     };
     accepted(
@@ -421,8 +421,8 @@ fn clear_refusal_retires_and_still_maximized_holds() {
     use crate::world_report::FrameSetter;
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     accepted(
@@ -556,12 +556,12 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
     use crate::world_report::FrameSetter;
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..maximized()
     };
     accepted(
@@ -715,12 +715,12 @@ fn clear_unknown_current_focus_holds_not_abandons() {
     // changed focus abandons. The binding persists with no terminal.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..maximized()
     };
     accepted(
@@ -795,12 +795,12 @@ fn clear_empty_original_focus_abandons_on_known_other() {
     // is never guessed or latched.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..maximized()
     };
     accepted(
@@ -894,12 +894,12 @@ fn clear_unknown_baseline_subject_focus_continues() {
     // continuation with accepted proof; the baseline stays immutable.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..maximized()
     };
     accepted(
@@ -968,12 +968,12 @@ fn clear_known_non_subject_baseline_retires_promptly() {
     // later.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..maximized()
     };
     accepted(
@@ -1048,12 +1048,12 @@ fn clear_changed_focus_view_domain_abandons() {
     // binding: the proof no longer names the bound intent.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..maximized()
     };
     let bind = |engine: &mut WorldEngine, seq: u64, cmd: u64| {
@@ -1158,8 +1158,8 @@ fn clear_changed_focus_view_domain_abandons() {
     // Homing change abandons.
     bind(&mut engine, 9, 17);
     let cleared_b = || WindowFact {
-        maximized: false,
-        floating: true,
+        maximized: Some(false),
+        transient: Some(true),
         ..fact("win-max", "out-b", 100)
     };
     let reply = accepted(
@@ -1198,8 +1198,8 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
     // affect a later independent intent, including the same direction.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     accepted(
@@ -1283,8 +1283,8 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
     // new intent supersedes the old one and re-evaluates fresh.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     accepted(
@@ -1384,11 +1384,11 @@ fn clear_same_report_proof_and_new_intent_supersedes_before_continuation() {
     // Covers WorldCommand intents; CoreCommand covered below.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        maximized: true,
+        maximized: Some(true),
         ..fact("win-max", "out-a", 0)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..fact("win-max", "out-a", 0)
     };
     accepted(
@@ -1485,11 +1485,11 @@ fn clear_same_report_core_command_supersedes_before_continuation() {
     use crate::boundary::CoreCommand;
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        maximized: true,
+        maximized: Some(true),
         ..fact("win-max", "out-a", 0)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..fact("win-max", "out-a", 0)
     };
     accepted(
@@ -1564,11 +1564,11 @@ fn clear_consumed_replay_does_not_supersede() {
     // must NOT supersede: the old proof still continues under op-13.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        maximized: true,
+        maximized: Some(true),
         ..fact("win-max", "out-a", 0)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..fact("win-max", "out-a", 0)
     };
     accepted(
@@ -1653,8 +1653,8 @@ fn clear_send_supersedes_without_consuming() {
     // `clear_consumed_replay_does_not_supersede`).
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 0)
     };
     accepted(
@@ -1730,8 +1730,8 @@ fn clear_same_report_refused_intent_still_supersedes() {
     // refused new intent.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     accepted(
@@ -1768,8 +1768,8 @@ fn clear_same_report_refused_intent_still_supersedes() {
     // (`move-refused-fullscreen`), yet the old binding still
     // supersedes first and never continues.
     let fullscreened = || WindowFact {
-        fullscreen: true,
-        maximized: false,
+        fullscreen: Some(true),
+        maximized: Some(false),
         ..maximized()
     };
     let mut both = report_full(
@@ -1836,8 +1836,8 @@ fn clear_held_and_unreadable_withhold_without_weakening() {
     // preserved; authority never weakens and nothing re-actuates.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     accepted(
@@ -1926,12 +1926,12 @@ fn clear_held_domain_defers_continuation_until_authority_returns() {
     // resumes on the staged proof with no second attempt.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     let cleared = || WindowFact {
-        maximized: false,
+        maximized: Some(false),
         ..maximized()
     };
     accepted(
@@ -2028,14 +2028,14 @@ fn clear_continuation_refusal_observable_with_original_op() {
     use crate::world_report::FrameSetter;
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut maximized = WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     // Declared minimum wider than any half: the half can never satisfy it.
-    maximized.hints.min_w = Some(10_000);
+    maximized.hints.as_mut().expect("hints").min_w = Some(10_000);
     let mut cleared = maximized.clone();
-    cleared.maximized = false;
+    cleared.maximized = Some(false);
     accepted(
         &mut engine,
         &report(
@@ -2117,8 +2117,8 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
     // without binding a clear.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     accepted(
@@ -2210,7 +2210,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
                 vec![screen("out-a", 0)],
                 vec![
                     WindowFact {
-                        maximized: false,
+                        maximized: Some(false),
                         ..maximized()
                     },
                     float_fact("win-target", "out-a", 300, 100),
@@ -2245,9 +2245,9 @@ fn sticky_maximize_publishes_clear_before_attempt() {
     // attempt, through the same retained lane as floats.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized_sticky = || WindowFact {
-        floating: true,
-        sticky: true,
-        maximized: true,
+        sticky: Some(true),
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-sticky", "out-a", 100)
     };
     accepted(

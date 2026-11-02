@@ -86,11 +86,21 @@ impl WorldEngine {
             let Some(fact) = self.staged.facts.get(window) else {
                 continue;
             };
+            let _ = fact;
             let id = format!("{}/{}", key.output.0, key.workspace.0);
-            if fact.sticky {
+            if self.derived_for(window).sticky {
                 sticky_homed.insert(id);
             } else {
                 occupied.insert(id);
+            }
+        }
+        // Narrowly held rows are live presence with no usable facts: their
+        // retained homes occupy, never an empty workspace. Held rows carry
+        // no sticky facts, so the retained home keeps plain occupancy (the
+        // safe direction: never delete a live workspace).
+        for held in &self.staged.held_windows {
+            if let Some(key) = self.core_homing(&held.window) {
+                occupied.insert(format!("{}/{}", key.output.0, key.workspace.0));
             }
         }
         let mut hosted: BTreeSet<String> = BTreeSet::new();
@@ -108,9 +118,17 @@ impl WorldEngine {
                 let Some(fact) = self.staged.facts.get(window) else {
                     continue;
                 };
-                if fact.sticky {
+                let _ = fact;
+                if self.derived_for(window).sticky {
                     retained_ids.insert(key.workspace.0.clone());
                 } else {
+                    occupied_ids.insert(key.workspace.0.clone());
+                }
+            }
+            // Narrowly held rows are live presence: their retained homes
+            // occupy under union semantics too.
+            for held in &self.staged.held_windows {
+                if let Some(key) = self.core_homing(&held.window) {
                     occupied_ids.insert(key.workspace.0.clone());
                 }
             }
@@ -587,18 +605,18 @@ impl WorldEngine {
                     fresh_views.push((origin_id.clone(), id.clone()));
                 }
                 // Members still homed away from the origin ride one policy
-                // transfer each back home.
-                for fact in &report.windows {
-                    if fact.sticky {
+                // transfer each back home. Staged admitted facts only:
+                // own-process and safety exclusions never ride.
+                for (window, fact) in &self.staged.facts.clone() {
+                    if self.derived_for(window).sticky {
                         continue;
                     }
                     let moved_id = home.iter().find(|id| {
-                        self.retained_homing(&fact.window).is_some_and(|key| {
+                        self.retained_homing(window).is_some_and(|key| {
                             key.output.0 == entry.dest && key.workspace.0 == **id
                         })
                     });
-                    let (Some(moved_id), Some(source)) =
-                        (moved_id, self.retained_homing(&fact.window))
+                    let (Some(moved_id), Some(source)) = (moved_id, self.retained_homing(window))
                     else {
                         continue;
                     };
@@ -611,10 +629,11 @@ impl WorldEngine {
                     }
                     // Observed on the origin screen: the return carries it
                     // without actuation; only truly stray members move.
-                    if fact.output == origin_id {
+                    // Unknown output never counts as observed on origin.
+                    if fact.output.as_ref() == Some(&origin_id) {
                         continue;
                     }
-                    fresh_members.push((fact.window.clone(), target, source));
+                    fresh_members.push((window.clone(), target, source));
                 }
             }
             // Displacement: removed origins place their units on one survivor.
@@ -682,8 +701,9 @@ impl WorldEngine {
                 let mut stray_members: Vec<(WindowId, DomainKey, DomainKey)> = Vec::new();
                 if fresh {
                     let dest_id = OutputId(dest.clone());
-                    for fact in &report.windows {
-                        if fact.sticky {
+                    // Staged admitted facts only (see above).
+                    for (window, fact) in &self.staged.facts.clone() {
+                        if self.derived_for(window).sticky {
                             continue;
                         }
                         // Recorded homes, not the remapped view: the
@@ -694,15 +714,14 @@ impl WorldEngine {
                             self.members.get(window).map(|state| state.home.clone())
                         };
                         let moved_id = candidates.iter().find(|id| {
-                            home_of(&fact.window).is_some_and(|key| {
+                            home_of(window).is_some_and(|key| {
                                 key.output.0 == origin && key.workspace.0 == **id
                             })
                         });
-                        let (Some(moved_id), Some(source)) = (moved_id, home_of(&fact.window))
-                        else {
+                        let (Some(moved_id), Some(source)) = (moved_id, home_of(window)) else {
                             continue;
                         };
-                        if fact.output == dest_id {
+                        if fact.output.as_ref() == Some(&dest_id) {
                             continue;
                         }
                         let target = DomainKey {
@@ -712,7 +731,7 @@ impl WorldEngine {
                         if source == target {
                             continue;
                         }
-                        stray_members.push((fact.window.clone(), target, source));
+                        stray_members.push((window.clone(), target, source));
                     }
                 }
                 for id in &candidates {
@@ -1014,8 +1033,14 @@ impl WorldEngine {
             }
             current.insert(key, known);
         }
+        // Same-lifetime safety exclusions keep the spent mark: the
+        // exclusion retires the slot without ever closing the lifetime,
+        // so the lift restores without a fresh admission intent. An
+        // explicit close is never staged excluded and still prunes.
+        let excluded_here: BTreeSet<String> =
+            self.staged.excluded.iter().map(|id| id.0.clone()).collect();
         self.admission_focus_spent
-            .retain(|id| known_now.contains(id));
+            .retain(|id| known_now.contains(id) || excluded_here.contains(id));
         // Admission policy shares the fresh-placement bootstrap phase:
         // the baseline report itself stays quiet (startup adoption), and
         // incomplete inventories never mint (no speculative ingress
@@ -1192,6 +1217,42 @@ impl WorldEngine {
     /// reach here. A gesture (`gesture_barrier`) without an explicit
     /// Session drag defers geometric capacity repair (D7): when the
     /// carried bounds/gaps changed, membership still converges at the
+    /// Closed ids converged for one staged domain: explicit closes homed
+    /// here plus safety/own-process exclusions the retained session still
+    /// holds (links, exceptions, minimized slots). Exclusions never enter
+    /// or keep membership, so the sweep drops their slots exactly like a
+    /// close; this authorizes no native close, only slot removal.
+    pub(crate) fn closed_for_domain(&self, domain: &StagedDomain) -> Vec<WindowId> {
+        let mut closed = domain.closed.clone();
+        let Some(session) = self.engine.session(&domain.key) else {
+            return closed;
+        };
+        for id in &self.staged.excluded {
+            if closed.iter().any(|known| known == id) {
+                continue;
+            }
+            let held_here = session.snapshot().windows.iter().any(|link| {
+                &link.window == id
+                    && link.output == domain.key.output
+                    && link.workspace == domain.key.workspace
+            }) || session.exception_observed().iter().any(|observed| {
+                &observed.window == id
+                    && observed.output == domain.key.output
+                    && observed.workspace == domain.key.workspace
+            }) || session.minimized_entries().iter().any(
+                |(window, output, workspace)| {
+                    window == id
+                        && output == &domain.key.output
+                        && workspace == &domain.key.workspace
+                },
+            );
+            if held_here {
+                closed.push(id.clone());
+            }
+        }
+        closed
+    }
+
     /// retained geometry, but gap adoption and victim repair wait for the
     /// first report after the gesture clears. The scope holds as
     /// [`HoldReason::GestureBarrier`] with topology/order retained, so no
@@ -1268,7 +1329,7 @@ impl WorldEngine {
             outer_gap: domain.outer_gap,
             focused_window: domain.focused.clone(),
             windows,
-            closed_windows: domain.closed.clone(),
+            closed_windows: self.closed_for_domain(domain),
             directional: None,
             directional_target_outer_gap: None,
             target_domain: None,
@@ -1351,7 +1412,7 @@ impl WorldEngine {
             outer_gap: outer,
             focused_window: domain.focused.clone(),
             windows,
-            closed_windows: domain.closed.clone(),
+            closed_windows: self.closed_for_domain(domain),
             directional: None,
             directional_target_outer_gap: None,
             target_domain: None,
@@ -1462,30 +1523,40 @@ impl WorldEngine {
             }
         }
         // Raw fact index for injection: source-observed facts rehomed to
-        // the swept key.
+        // the swept key. Admitted facts only: held/excluded windows never
+        // inject geometry.
         let mut by_id: BTreeMap<&WindowId, EngineWindow> = BTreeMap::new();
         for fact in self.staged.facts.values() {
+            let derived = self.staged.derived.get(&fact.window);
+            if derived.is_some_and(|cls| cls.hidden || cls.hold || cls.excluded) {
+                continue;
+            }
             let Some(rect) = fact.rect else {
                 continue;
             };
-            if fact.minimized {
+            let Some(fact_output) = fact.output.as_ref() else {
                 continue;
-            }
+            };
+            let Some(derived) = derived.copied() else {
+                continue;
+            };
             by_id.insert(
                 &fact.window,
                 EngineWindow {
                     window: fact.window.clone(),
-                    output: fact.output.clone(),
+                    output: fact_output.clone(),
                     workspace: WorkspaceId(String::new()),
                     rect,
-                    floating: fact.floating,
-                    fit_excluded: fact.fit_excluded,
-                    fullscreen: fact.fullscreen,
-                    maximized: fact.maximized,
-                    sticky: fact.sticky,
-                    fixed_auto: fact.fixed_auto,
-                    fixed_suppress: fact.fixed_suppress,
-                    hints: fact.hints,
+                    floating: derived.floating,
+                    fit_excluded: derived.fit_excluded,
+                    fullscreen: derived.overlay_fullscreen,
+                    maximized: derived.overlay_maximized,
+                    sticky: derived.sticky,
+                    fixed_auto: derived.fixed_auto,
+                    fixed_suppress: derived.fixed_suppress,
+                    hints: fact
+                        .hints
+                        .unwrap_or(crate::size_hints::WindowSizeHints::none()),
                 },
             );
         }

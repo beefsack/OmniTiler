@@ -882,15 +882,30 @@ impl super::Session {
         self.fixed_tile_override.contains(window)
     }
 
+    /// Test-only stand-in for the pending persisted intent-record win:
+    /// records an explicit tile win without a raw-fact route (no adapter
+    /// verdict mints the first override; the wire carries raw facts only).
+    /// Exercises the approved classifier/admission algorithm downstream.
+    #[cfg(test)]
+    pub(crate) fn seed_fixed_tile_override(&mut self, window: &WindowId) {
+        self.fixed_tile_override.insert(window.clone());
+    }
+
     /// Drop fixed-size bookkeeping for windows no longer in membership.
     /// A removed/replaced native reference with a reused id classifies
     /// again on next admission (D3); overrides never cross restart
     /// because rebinding clears the world map (D7).
     pub(super) fn prune_fixed_size_state(&mut self) {
-        self.automatic_fixed
-            .retain(|id| self.windows.contains_key(id) || self.exceptions.contains_key(id));
-        self.fixed_tile_override
-            .retain(|id| self.windows.contains_key(id) || self.exceptions.contains_key(id));
+        self.automatic_fixed.retain(|id| {
+            self.windows.contains_key(id)
+                || self.exceptions.contains_key(id)
+                || self.minimized_slots.contains_key(id)
+        });
+        self.fixed_tile_override.retain(|id| {
+            self.windows.contains_key(id)
+                || self.exceptions.contains_key(id)
+                || self.minimized_slots.contains_key(id)
+        });
     }
 
     /// Retained intentional-float geometry, if this session owns that state.
@@ -1341,11 +1356,31 @@ impl super::Session {
     /// [`Session::sync_focus_from_window`]).
     ///
     /// Returns bounded counts only, never native identifiers.
-    #[allow(clippy::too_many_lines)]
+    /// Converge to one complete observation, clearing fixed-size
+    /// bookkeeping for anything absent. Bare session-level absence is
+    /// removal/close here (D3): a reused id classifies again.
+    /// Engine-minimized (hidden but same-lifetime) preservation rides the
+    /// explicit hidden set in
+    /// [`Session::converge_observation_with_hidden`], never bare absence.
     pub fn converge_observation(
         &mut self,
         observation: &SessionObservation,
         observed_focus: Option<&WindowId>,
+    ) -> Result<ObservationConvergence, ProposeError> {
+        self.converge_observation_with_hidden(observation, observed_focus, &BTreeSet::new())
+    }
+
+    /// Converge with an explicit engine-asserted hidden set: ids the
+    /// engine retains as minimized (present in neither this observation
+    /// nor the explicit close list) keep their fixed-size bookkeeping
+    /// across the same-lifetime gap. Anything else absent clears exactly
+    /// like [`Session::converge_observation`].
+    #[allow(clippy::too_many_lines)]
+    pub fn converge_observation_with_hidden(
+        &mut self,
+        observation: &SessionObservation,
+        observed_focus: Option<&WindowId>,
+        hidden: &BTreeSet<WindowId>,
     ) -> Result<ObservationConvergence, ProposeError> {
         if let Some(reason) = self.reconciler.divergence() {
             return Err(ProposeError::Diverged(reason));
@@ -2070,10 +2105,16 @@ impl super::Session {
         }
         // Removed windows drop fixed-size bookkeeping so a reused id
         // classifies again (D3); overrides never cross restart (D7).
-        // Minimize slots homed on removed workspaces are dropped; slots
-        // for present windows were already pruned above.
-        new_automatic.retain(|id| new_windows.contains_key(id) || new_exceptions.contains_key(id));
-        new_override.retain(|id| new_windows.contains_key(id) || new_exceptions.contains_key(id));
+        // Engine-asserted hidden (minimized, same lifetime) keeps its
+        // markers across the gap; slots alone never retain. Minimize slots
+        // homed on removed workspaces are dropped; slots for present
+        // windows were already pruned above.
+        new_automatic.retain(|id| {
+            new_windows.contains_key(id) || new_exceptions.contains_key(id) || hidden.contains(id)
+        });
+        new_override.retain(|id| {
+            new_windows.contains_key(id) || new_exceptions.contains_key(id) || hidden.contains(id)
+        });
         new_capacity.retain(|id| new_windows.contains_key(id) || new_exceptions.contains_key(id));
         new_order.retain(|id, _| {
             new_windows.contains_key(id)

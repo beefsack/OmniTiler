@@ -115,6 +115,17 @@ impl WorldEngine {
         let staged = self.staged.clone();
         let mut scopes = Vec::with_capacity(staged.domains.len());
         let mut windows = Vec::new();
+        // Pre-clear born overlay isolation (REQ-MAX-01/06): homes with an
+        // outstanding born binding hold their geometry until the clear
+        // lands. Birth-specific only: retained maximized slots (no
+        // binding) and keep-maximized mode (no binding) keep their
+        // reservations. Publish-only: commands still see the unheld
+        // scopes so ToggleFloat refusal stays `not-tiled`.
+        let born_held: BTreeSet<DomainKey> = self
+            .retained_born
+            .iter()
+            .map(|held| held.home.clone())
+            .collect();
         // Homed lifetimes in readable, unheld, non-floating scopes carry
         // live rows. Minimized and held-scope rows never shadow a live row
         // for the same lifetime: one homing per window.
@@ -122,6 +133,7 @@ impl WorldEngine {
         for domain in &staged.domains {
             if !domain.readable
                 || held_scopes.contains(&domain.key)
+                || born_held.contains(&domain.key)
                 || self.floating_scopes.contains(&domain.key)
             {
                 continue;
@@ -167,6 +179,11 @@ impl WorldEngine {
             if held_scopes.contains(&key) {
                 continue;
             }
+            // Narrowly held rows keep their retained homes, never a mover
+            // row; exclusions never ride transfers.
+            if self.is_held_window(&window) || self.is_excluded_window(&window) {
+                continue;
+            }
             if self.staged_homing(&window).as_ref() == Some(&key) {
                 continue;
             }
@@ -184,6 +201,10 @@ impl WorldEngine {
                 continue;
             }
             for member in &retained.members {
+                // Narrow holds and exclusions never ride mover rows.
+                if self.is_held_window(member) || self.is_excluded_window(member) {
+                    continue;
+                }
                 if self.staged_homing(member).as_ref() == Some(&key) {
                     continue;
                 }
@@ -197,7 +218,7 @@ impl WorldEngine {
         let fullscreen_windows: BTreeSet<&str> = staged
             .facts
             .values()
-            .filter(|fact| fact.fullscreen)
+            .filter(|fact| fact.fullscreen == Some(true))
             .map(|fact| fact.window.0.as_str())
             .collect();
         for domain in &staged.domains {
@@ -276,7 +297,7 @@ impl WorldEngine {
             }
             let authority = if !domain.readable {
                 ScopeAuthority::Hold(domain.hold.unwrap_or(HoldReason::Unreadable))
-            } else if held_scopes.contains(&key) {
+            } else if held_scopes.contains(&key) || born_held.contains(&key) {
                 ScopeAuthority::Hold(
                     self.hold_reasons
                         .get(&key)
@@ -579,8 +600,18 @@ impl WorldEngine {
                     .staged
                     .facts
                     .get(&geometry.window)
-                    .is_none_or(|fact| fact.minimized || fact.rect.is_none());
-                let clear_operation = if report.gesture_barrier || fact_unreadable {
+                    .is_none_or(|fact| fact.minimized == Some(true) || fact.rect.is_none());
+                let unknown_maximized = self
+                    .staged
+                    .facts
+                    .get(&geometry.window)
+                    .is_some_and(|fact| fact.maximized.is_none());
+                let clear_operation = if report.gesture_barrier
+                    || fact_unreadable
+                    || unknown_maximized
+                    || self.is_held_window(&geometry.window)
+                    || self.is_excluded_window(&geometry.window)
+                {
                     None
                 } else {
                     self.retained_clears
@@ -632,6 +663,8 @@ impl WorldEngine {
                     },
                     frame_authority: if fullscreen {
                         ScopeAuthority::Untouched
+                    } else if unknown_maximized {
+                        ScopeAuthority::Hold(HoldReason::Unreadable)
                     } else if frame_suppressed || burst_held {
                         ScopeAuthority::Hold(HoldReason::ConstraintClamp)
                     } else if frame_hold {
@@ -708,6 +741,13 @@ impl WorldEngine {
                         _ => {}
                     }
                 }
+                // Held and excluded exception rows authorize no placement
+                // and no clear: evidence retained, never a write.
+                if self.is_held_window(&observed.window)
+                    || self.is_excluded_window(&observed.window)
+                {
+                    frame_operation = None;
+                }
                 // Explicit ordinary-float classification (D4/D5): every
                 // retained exception row in a controlled scope converges
                 // adapter float intent. The diagnostic capacity origin
@@ -727,8 +767,12 @@ impl WorldEngine {
                     .staged
                     .facts
                     .get(&observed.window)
-                    .is_none_or(|fact| fact.minimized || fact.rect.is_none());
-                let clear_operation = if report.gesture_barrier || fact_unreadable {
+                    .is_none_or(|fact| fact.minimized == Some(true) || fact.rect.is_none());
+                let clear_operation = if report.gesture_barrier
+                    || fact_unreadable
+                    || self.is_held_window(&observed.window)
+                    || self.is_excluded_window(&observed.window)
+                {
                     None
                 } else {
                     self.retained_clears
@@ -808,7 +852,7 @@ impl WorldEngine {
         let minimized_ids: BTreeSet<&str> = staged
             .facts
             .values()
-            .filter(|fact| fact.minimized)
+            .filter(|fact| fact.minimized == Some(true))
             .map(|fact| fact.window.0.as_str())
             .collect();
         let mut migration_redirect: BTreeSet<String> = BTreeSet::new();
@@ -859,7 +903,15 @@ impl WorldEngine {
         // reported them minimized but no session slot emitted a row above
         // (fresh minimize, held scope, or gap). Explicit minimized-hold
         // rows, never silent absence, never inferred close.
-        for fact in staged.facts.values().filter(|fact| fact.minimized) {
+        for fact in staged
+            .facts
+            .values()
+            .filter(|fact| fact.minimized == Some(true))
+        {
+            // Exclusions never publish minimized rows: no slot, no control.
+            if self.is_excluded_window(&fact.window) {
+                continue;
+            }
             if live.contains(&fact.window.0) || !emitted.insert(fact.window.0.clone()) {
                 continue;
             }
@@ -867,17 +919,27 @@ impl WorldEngine {
             // transfer rides the target homing (one homing), keeping
             // minimized frame authority. The scope-hold lookup follows
             // the resolved homing.
-            let (home_output, home_workspace) = redirect
+            let Some((home_output, home_workspace)) = redirect
                 .get(&fact.window.0)
                 .map(|target| (target.output.clone(), target.workspace.clone()))
-                .unwrap_or_else(|| {
+                .or_else(|| {
                     self.staged_homing(&fact.window)
                         .map(|key| (key.output, key.workspace))
-                        .unwrap_or((fact.output.clone(), WorkspaceId(String::new())))
-                });
+                })
+                .or_else(|| {
+                    fact.output
+                        .clone()
+                        .map(|output| (output, WorkspaceId(String::new())))
+                })
+            else {
+                continue;
+            };
             // No native membership evidence authorizes an empty logical target.
             if home_workspace.0.is_empty()
-                && self.native_authoritative(report, &fact.output)
+                && fact
+                    .output
+                    .as_ref()
+                    .is_some_and(|output| self.native_authoritative(report, output))
                 && self.effective_logical_receipt(report, fact).is_none()
             {
                 continue;
@@ -1001,6 +1063,11 @@ impl WorldEngine {
             if link.output != key.output || link.workspace != key.workspace {
                 continue;
             }
+            // Exclusions never ride held rows: no slot, no control, even
+            // when the surrounding scope holds for another lifetime.
+            if self.is_excluded_window(&link.window) {
+                continue;
+            }
             if live.contains(&link.window.0) || !emitted.insert(link.window.0.clone()) {
                 continue;
             }
@@ -1025,6 +1092,9 @@ impl WorldEngine {
             if observed.output != key.output || observed.workspace != key.workspace {
                 continue;
             }
+            if self.is_excluded_window(&observed.window) {
+                continue;
+            }
             if live.contains(&observed.window.0) || !emitted.insert(observed.window.0.clone()) {
                 continue;
             }
@@ -1045,6 +1115,9 @@ impl WorldEngine {
         }
         for (window, output, workspace) in session.minimized_entries() {
             if output != key.output || workspace != key.workspace {
+                continue;
+            }
+            if self.is_excluded_window(&window) {
                 continue;
             }
             if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
@@ -1261,12 +1334,16 @@ fn migration_cross_output_placement(
         return None;
     }
     let fact = staged.facts.get(window)?;
-    if fact.minimized
-        || fact.sticky
-        || fact.floating
-        || fact.fullscreen
-        || fact.maximized
-        || fact.fit_excluded
+    fact.maximized?;
+    let derived = staged.derived.get(window)?;
+    if derived.hidden
+        || derived.hold
+        || derived.excluded
+        || derived.sticky
+        || derived.floating
+        || derived.overlay_fullscreen
+        || derived.overlay_maximized
+        || derived.fit_excluded
     {
         return None;
     }
@@ -1277,8 +1354,8 @@ fn migration_cross_output_placement(
     // Raw observation grounds the source screen: the index is total over
     // staged facts, so a missing entry means unknown geometry and takes
     // no placement, never a guess.
-    let observed_output = staged.fact_output.get(window)?;
-    if *observed_output == target.output {
+    let observed_output = staged.fact_output.get(window)?.as_ref()?;
+    if observed_output == &target.output {
         return None;
     }
     let source_screen = staged

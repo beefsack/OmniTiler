@@ -18,9 +18,10 @@
 
 pub use crate::world_sizing::{
     NonFiniteNumber, encode_finite_json_number, encode_held_screen_canonical,
-    encode_reply_canonical, encode_screen_canonical, int_len, json_number_len, json_string_len,
-    push_json_number, push_raw_setting_value, push_row_diagnostic, raw_setting_value_len,
-    reply_estimate, reply_exact_bytes, reply_upper_bound, report_estimate, u64_len, usize_len,
+    encode_held_window_canonical, encode_reply_canonical, encode_screen_canonical,
+    encode_window_canonical, int_len, json_number_len, json_string_len, push_json_number,
+    push_raw_setting_value, push_row_diagnostic, raw_setting_value_len, reply_estimate,
+    reply_exact_bytes, reply_upper_bound, report_estimate, u64_len, usize_len,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -123,6 +124,12 @@ pub const MAX_NATIVE_OCCUPANTS_PER_DESKTOP: u32 = 10_000;
 /// serial, connector): overbound identity holds the identifiable screen
 /// row narrowly instead of refusing the report.
 pub const MAX_IDENTITY_TEXT_BYTES: usize = 256;
+
+/// Bound on one native window metadata text in UTF-8 bytes (role, appId,
+/// executable, class, title): overbound text holds the identifiable window
+/// row narrowly instead of refusing the report. Shared with the handshake
+/// identity grammar in [`crate::connection::valid_identity_text`].
+pub const MAX_METADATA_TEXT_BYTES: usize = 4096;
 
 /// Tiling policy for one desired workspace row. The core retains one mode
 /// per workspace (Planner-owned, set through
@@ -796,6 +803,46 @@ pub struct HeldScreenRow {
     pub diagnostic: RowDiagnostic,
 }
 
+/// One identifiable window row that failed v4 shape checks, held narrowly
+/// instead of refusing the whole report. `window` is the valid lifetime
+/// handle; `ordinal` is the row's original index in the carried `windows`
+/// array so a future exact request encoder can reconstruct the original
+/// order (valid rows keep relative order in `windows`); `output` is the
+/// row's actual reported output (`None` when the row carried `out: null`:
+/// the authority source, never a guessed screen); `fields` retains
+/// every carried window key in canonical schema key order (`win`, `out`,
+/// `rect`, `fullscreen`, `maximized`, `sticky`, `minimized`, `hints`,
+/// `nativeWs`, `hostHidden`, `privileged`, `managed`, `acceptsInput`,
+/// `activationInhibited`, `toolWindow`, `owned`, `transient`, `modal`,
+/// `resizable`, `above`, `below`, `owner`, `parent`, `role`, `appId`,
+/// `executable`, `processId`, `class`, `title`, `type`, `activationPolicy`,
+/// `layer`, `fullscreenOwner`, `fullscreenExitable`,
+/// `suppressionAvailable`, `visibility`, `lastWrite`, then any other
+/// carried keys in lexicographic order) as JSON-agnostic
+/// [`RawSettingValue`](crate::connection::RawSettingValue) facts so the
+/// canonical writer round-trips the row losslessly (absence, `null`, and
+/// value are all preserved, including bad types, overbound metadata text,
+/// and retired extras; the nested `hints`, `visibility`, and `lastWrite`
+/// objects are retained in schema order with unknown sub-keys after in
+/// lexicographic order); `diagnostic` is `Some` typed diagnostic for the
+/// row's actual reported output, and `None` when the row carried no
+/// output: such a row has no output authority (its evidence is retained
+/// in `fields`; engine staging may resolve a real scope from the
+/// retained home, but never a fabricated one). `kind` is the mandatory
+/// narrow-hold reason (`InvalidFact` or `ConflictingFact`), independent
+/// of the scoped `diagnostic`: scope resolution must not lose the
+/// invalid-vs-conflicting distinction, including when `diagnostic` is
+/// `None`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldWindowRow {
+    pub window: WindowId,
+    pub ordinal: usize,
+    pub output: Option<OutputId>,
+    pub fields: Vec<(String, crate::connection::RawSettingValue)>,
+    pub diagnostic: Option<RowDiagnostic>,
+    pub kind: RowDiagnosticKind,
+}
+
 /// One screen observation: the stable output id, the FULL native output
 /// rectangle in one coherent adapter coordinate space, the distinct work
 /// area the core tiles into, the target output scale (adapter units per
@@ -818,44 +865,409 @@ pub struct ScreenReport {
     pub identity: OutputIdentity,
 }
 
-/// One truthful window fact: the stable window lifetime, the screen where
-/// the adapter observes it, its frame, and every safety flag. `rect=None`
+/// Neutral native window kind, mechanically normalized by the adapter, never
+/// an admission or eligibility verdict. Closed vocabulary: `normal`, `dialog`,
+/// `sheet`, `utility`, `desktop`, `dock`, `menu`, `tooltip`, `notification`,
+/// `splash`, `other`. Unreadable kind is null, never `other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowType {
+    Normal,
+    Dialog,
+    Sheet,
+    Utility,
+    Desktop,
+    Dock,
+    Menu,
+    Tooltip,
+    Notification,
+    Splash,
+    Other,
+}
+
+impl WindowType {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Dialog => "dialog",
+            Self::Sheet => "sheet",
+            Self::Utility => "utility",
+            Self::Desktop => "desktop",
+            Self::Dock => "dock",
+            Self::Menu => "menu",
+            Self::Tooltip => "tooltip",
+            Self::Notification => "notification",
+            Self::Splash => "splash",
+            Self::Other => "other",
+        }
+    }
+
+    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "normal" => Self::Normal,
+            "dialog" => Self::Dialog,
+            "sheet" => Self::Sheet,
+            "utility" => Self::Utility,
+            "desktop" => Self::Desktop,
+            "dock" => Self::Dock,
+            "menu" => Self::Menu,
+            "tooltip" => Self::Tooltip,
+            "notification" => Self::Notification,
+            "splash" => Self::Splash,
+            "other" => Self::Other,
+            _ => return None,
+        })
+    }
+}
+
+/// Neutral native application activation policy, never inferred from
+/// `acceptsInput`. Closed vocabulary: `regular`, `accessory`, `prohibited`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActivationPolicy {
+    Regular,
+    Accessory,
+    Prohibited,
+}
+
+impl ActivationPolicy {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Regular => "regular",
+            Self::Accessory => "accessory",
+            Self::Prohibited => "prohibited",
+        }
+    }
+
+    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "regular" => Self::Regular,
+            "accessory" => Self::Accessory,
+            "prohibited" => Self::Prohibited,
+            _ => return None,
+        })
+    }
+}
+
+/// Neutral native fullscreen owner: whether the tiler or the app owns the
+/// current fullscreen state. Unknown does not mean app-owned or exitable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FullscreenOwner {
+    Tiler,
+    App,
+}
+
+impl FullscreenOwner {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tiler => "tiler",
+            Self::App => "app",
+        }
+    }
+
+    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "tiler" => Self::Tiler,
+            "app" => Self::App,
+            _ => return None,
+        })
+    }
+}
+
+/// Current native visibility and recovery ownership: the native shown state
+/// plus whether the project owns a suppression of this window. Both nullable:
+/// unknown never proves readiness and never substitutes for suppression
+/// support. Minimal consumption only; the full visibility/focus lane is a
+/// separate migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisibilityFact {
+    pub visible: Option<bool>,
+    pub suppression_owned: Option<bool>,
+}
+
+/// One identity-bound visibility read around a visibility write or no-call:
+/// the invalidation watermark at the read, the lifetime/tag match, the
+/// native state at the read, and the separate native ineligibility facts.
+/// Facts only, never a copied target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisibilitySample {
+    pub obs: u64,
+    pub lifetime_matched: Option<bool>,
+    pub visibility: VisibilityFact,
+    pub minimized: Option<bool>,
+    pub host_hidden: Option<bool>,
+}
+
+/// Latest visibility write evidence: the property tag (reserved for later
+/// lane migrations; only `visibility` today), the desired-state target and
+/// existing revision (no visibility id), the actual execution route, the
+/// setter disposition (`not-called` is not a successful native call), the
+/// bounded typed mechanical reason, and the identity-bound reads around
+/// the action or no-call. No work id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LastWrite {
+    pub property: LastWriteProperty,
+    pub target: bool,
+    pub revision: u64,
+    pub path: LastWritePath,
+    pub setter: VisibilitySetter,
+    pub reason: VisibilityReason,
+    pub pre: Option<VisibilitySample>,
+    pub post: Option<VisibilitySample>,
+}
+
+/// Property tag for [`LastWrite`]: only `visibility` today, reserved for
+/// later separate lane migrations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LastWriteProperty {
+    Visibility,
+}
+
+impl LastWriteProperty {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Visibility => "visibility",
+        }
+    }
+
+    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "visibility" => Self::Visibility,
+            _ => return None,
+        })
+    }
+}
+
+/// Actual execution route for [`LastWrite`]: `staged`, `fallback`, or
+/// `independent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LastWritePath {
+    Staged,
+    Fallback,
+    Independent,
+}
+
+impl LastWritePath {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Staged => "staged",
+            Self::Fallback => "fallback",
+            Self::Independent => "independent",
+        }
+    }
+
+    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "staged" => Self::Staged,
+            "fallback" => Self::Fallback,
+            "independent" => Self::Independent,
+            _ => return None,
+        })
+    }
+}
+
+/// Mechanical disposition of one visibility write: the native setter outcome
+/// or `not-called` (no call is not a successful native call). Pure actuator
+/// disposition, never a policy conclusion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VisibilitySetter {
+    Accepted,
+    Refused,
+    Threw,
+    NotCalled,
+}
+
+impl VisibilitySetter {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Refused => "refused",
+            Self::Threw => "threw",
+            Self::NotCalled => "not-called",
+        }
+    }
+
+    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "accepted" => Self::Accepted,
+            "refused" => Self::Refused,
+            "threw" => Self::Threw,
+            "not-called" => Self::NotCalled,
+            _ => return None,
+        })
+    }
+}
+
+/// Bounded typed mechanical reason for [`LastWrite`]: empty on an ordinary
+/// call, otherwise one of the closed tokens. Facts only, never a copied
+/// target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VisibilityReason {
+    Empty,
+    IdentityStale,
+    ScopeHeld,
+    Unreadable,
+    Unsupported,
+    PreimageUnavailable,
+    ForegroundChanged,
+    Fullscreen,
+    Game,
+    ShowBlocked,
+    FocusUnproven,
+    Superseded,
+    NativeRefused,
+}
+
+impl VisibilityReason {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Empty => "",
+            Self::IdentityStale => "identity-stale",
+            Self::ScopeHeld => "scope-held",
+            Self::Unreadable => "unreadable",
+            Self::Unsupported => "unsupported",
+            Self::PreimageUnavailable => "preimage-unavailable",
+            Self::ForegroundChanged => "foreground-changed",
+            Self::Fullscreen => "fullscreen",
+            Self::Game => "game",
+            Self::ShowBlocked => "show-blocked",
+            Self::FocusUnproven => "focus-unproven",
+            Self::Superseded => "superseded",
+            Self::NativeRefused => "native-refused",
+        }
+    }
+
+    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "" => Self::Empty,
+            "identity-stale" => Self::IdentityStale,
+            "scope-held" => Self::ScopeHeld,
+            "unreadable" => Self::Unreadable,
+            "unsupported" => Self::Unsupported,
+            "preimage-unavailable" => Self::PreimageUnavailable,
+            "foreground-changed" => Self::ForegroundChanged,
+            "fullscreen" => Self::Fullscreen,
+            "game" => Self::Game,
+            "show-blocked" => Self::ShowBlocked,
+            "focus-unproven" => Self::FocusUnproven,
+            "superseded" => Self::Superseded,
+            "native-refused" => Self::NativeRefused,
+            _ => return None,
+        })
+    }
+}
+
+/// One truthful raw window fact: the stable window lifetime, the observed
+/// screen affinity (`None` is unknown, never a current-output guess), the
+/// frame, and the raw native facts the core classifies from. `rect=None`
 /// is an explicitly unreadable frame: the homed scope holds instead of
-/// authorizing geometry, never a silent absence. `minimized=true` marks a
-/// lifetime the adapter holds minimized: the core homes it on its retained
-/// logical workspace with no managed geometry (never silent absence,
-/// never inferred close). Core logical workspaces authorize homing, never
-/// native workspace vocabulary.
-/// Optional membership evidence (never authority by itself):
-/// `observed_workspace` is an adapter-observed logical workspace id for
-/// this window (facade readback / mechanical application receipt),
-/// distinct from core desire.
+/// authorizing geometry, never a silent absence. `minimized=Some(true)` (or
+/// `host_hidden=Some(true)`) marks a lifetime the host holds back: the core
+/// homes it on its retained logical workspace with no managed geometry
+/// (never silent absence, never inferred close). Every nullable input that
+/// is `None` is unknown now and holds only the classification or action
+/// that needs it, never unrelated windows or properties. Supported-null
+/// inputs hold their dependent classification; predicates whose fact is
+/// listed unavailable are skipped, never turned into a false default.
+/// Core logical workspaces authorize all homing, never native workspace
+/// vocabulary.
 /// `native_workspace` is the capability-gated host-owned native desktop id
 /// for this window (KWin desktop id, macOS Space id, opaque platform
 /// vocabulary, separate namespace from logical ids). It is only meaningful
-/// when `host_owned_workspace_domains` is set; without the capability it
-/// must be `None` (carrying it refuses, like `native[]`). The core maps
+/// when `host_owned_workspace_domains` is set; without the capability any
+/// carried value refuses, like `native[]`. The core maps
 /// `(output, native_workspace)` to a stable logical id and derives the
 /// logical receipt from that mapping; the adapter never mints logical ids
-/// from native ids. `None` means unknown, never a proof of absence: with
-/// the capability set, unknown native membership holds (never collapses
-/// into the current view).
+/// from native ids. All three unknown spellings mean unknown, never a proof
+/// of absence: with the capability set, unknown native membership holds
+/// (never collapses into the current view). The wire spelling is retained
+/// (`Omitted` for an absent key, `Null` for explicit `null`,
+/// `Value("")` for explicit empty, `Value(id)` for a known id) so a
+/// decoded row re-encodes to its exact carried bytes; `as_deref` exposes
+/// the semantic view (`Some` only for a known non-empty id).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeWorkspaceFact {
+    Omitted,
+    Null,
+    Value(String),
+}
+
+impl NativeWorkspaceFact {
+    #[must_use]
+    pub fn as_deref(&self) -> Option<&str> {
+        match self {
+            Self::Omitted | Self::Null => None,
+            Self::Value(id) if id.is_empty() => None,
+            Self::Value(id) => Some(id.as_str()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowFact {
     pub window: WindowId,
-    pub output: OutputId,
+    pub output: Option<OutputId>,
     pub rect: Option<Rect>,
-    pub floating: bool,
-    pub fit_excluded: bool,
-    pub fullscreen: bool,
-    pub maximized: bool,
-    pub sticky: bool,
-    pub fixed_auto: bool,
-    pub fixed_suppress: bool,
-    pub hints: crate::size_hints::WindowSizeHints,
-    pub minimized: bool,
-    pub observed_workspace: Option<String>,
-    pub native_workspace: Option<String>,
+    pub fullscreen: Option<bool>,
+    pub maximized: Option<bool>,
+    pub sticky: Option<bool>,
+    pub minimized: Option<bool>,
+    pub hints: Option<crate::size_hints::WindowSizeHints>,
+    pub native_workspace: NativeWorkspaceFact,
+    pub host_hidden: Option<bool>,
+    pub privileged: Option<bool>,
+    pub managed: Option<bool>,
+    pub accepts_input: Option<bool>,
+    pub activation_inhibited: Option<bool>,
+    pub tool_window: Option<bool>,
+    pub owned: Option<bool>,
+    pub transient: Option<bool>,
+    pub modal: Option<bool>,
+    pub resizable: Option<bool>,
+    pub above: Option<bool>,
+    pub below: Option<bool>,
+    pub owner: Option<WindowId>,
+    pub parent: Option<WindowId>,
+    pub role: Option<String>,
+    pub app_id: Option<String>,
+    pub executable: Option<String>,
+    pub process_id: Option<String>,
+    pub class: Option<String>,
+    pub title: Option<String>,
+    pub window_type: Option<WindowType>,
+    pub activation_policy: Option<ActivationPolicy>,
+    pub layer: Option<i32>,
+    pub fullscreen_owner: Option<FullscreenOwner>,
+    pub fullscreen_exitable: Option<bool>,
+    pub suppression_available: Option<bool>,
+    pub visibility: VisibilityFact,
+    pub last_write: Option<LastWrite>,
 }
 
 /// Observed applied logical view per screen: the stable logical workspace id
@@ -1229,6 +1641,11 @@ pub struct WorldReport {
     /// stay in `screens`; every entry here holds its output scope and emits
     /// its typed diagnostic instead of refusing the report.
     pub held_screens: Vec<HeldScreenRow>,
+    /// Identifiable window rows that failed v4 shape checks, held narrowly
+    /// with their raw fields retained (see [`HeldWindowRow`]). Valid rows
+    /// stay in `windows`; every entry here holds its window scope and emits
+    /// its typed diagnostic instead of refusing the report.
+    pub held_windows: Vec<HeldWindowRow>,
     pub inventory_complete: bool,
     pub gesture_barrier: bool,
     /// Normalized gesture lifecycle ingress (stage 4a): `None` on
@@ -1806,39 +2223,268 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         }
         flag(&mut hash, held.diagnostic.id.is_some());
     }
+    fn feed_visibility_raw(hash: &mut u64, value: &crate::connection::RawSettingValue) {
+        fn feed(hash: &mut u64, text: &str) {
+            for byte in text.bytes() {
+                *hash ^= u64::from(byte);
+                *hash = hash.wrapping_mul(1099511628211);
+            }
+        }
+        fn sep(hash: &mut u64) {
+            *hash ^= 0xff;
+            *hash = hash.wrapping_mul(1099511628211);
+        }
+        match value {
+            crate::connection::RawSettingValue::Null => feed(hash, "null"),
+            crate::connection::RawSettingValue::Bool(set) => {
+                feed(hash, if *set { "true" } else { "false" });
+            }
+            crate::connection::RawSettingValue::Number(number) => {
+                feed(hash, &number.to_bits().to_string());
+            }
+            crate::connection::RawSettingValue::String(text) => feed(hash, text),
+            crate::connection::RawSettingValue::Array(items) => {
+                for item in items {
+                    feed_visibility_raw(hash, item);
+                    sep(hash);
+                }
+            }
+            crate::connection::RawSettingValue::Object(entries) => {
+                for (key, item) in entries {
+                    feed(hash, key);
+                    sep(hash);
+                    feed_visibility_raw(hash, item);
+                    sep(hash);
+                }
+            }
+        }
+        sep(hash);
+    }
+    for held in &report.held_windows {
+        feed(&mut hash, &held.window.0);
+        sep(&mut hash);
+        feed(&mut hash, &held.ordinal.to_string());
+        sep(&mut hash);
+        for (key, value) in &held.fields {
+            feed(&mut hash, key);
+            sep(&mut hash);
+            feed_visibility_raw(&mut hash, value);
+        }
+        // The diagnostic is presence-explicit: an output-less row carries
+        // no scope authority, and its raw fields above already separate
+        // it from every diagnosed row. The mandatory kind separates
+        // invalid-vs-conflicting even when the diagnostic is absent.
+        feed(&mut hash, held.kind.as_str());
+        sep(&mut hash);
+        flag(&mut hash, held.diagnostic.is_some());
+        if let Some(diagnostic) = held.diagnostic.as_ref() {
+            feed(&mut hash, diagnostic.kind.as_str());
+            sep(&mut hash);
+            feed(&mut hash, diagnostic.row.as_str());
+            sep(&mut hash);
+            feed(&mut hash, diagnostic.id.as_deref().unwrap_or_default());
+            sep(&mut hash);
+            match &diagnostic.scope {
+                AuthorityScope::Output(output) => {
+                    feed(&mut hash, "output");
+                    sep(&mut hash);
+                    feed(&mut hash, &output.0);
+                    sep(&mut hash);
+                }
+                AuthorityScope::Workspace { output, workspace } => {
+                    feed(&mut hash, "workspace");
+                    sep(&mut hash);
+                    feed(&mut hash, &output.0);
+                    sep(&mut hash);
+                    feed(&mut hash, &workspace.0);
+                    sep(&mut hash);
+                }
+            }
+            flag(&mut hash, diagnostic.id.is_some());
+        }
+    }
     for fact in &report.windows {
         for part in [
             fact.window.0.clone(),
-            fact.output.0.clone(),
+            fact.output
+                .as_ref()
+                .map(|out| out.0.clone())
+                .unwrap_or_default(),
             rect_part(fact.rect),
         ] {
             feed(&mut hash, &part);
             sep(&mut hash);
         }
-        flag(&mut hash, fact.floating);
-        flag(&mut hash, fact.fit_excluded);
-        flag(&mut hash, fact.fullscreen);
-        flag(&mut hash, fact.maximized);
-        flag(&mut hash, fact.sticky);
-        flag(&mut hash, fact.fixed_auto);
-        flag(&mut hash, fact.fixed_suppress);
-        flag(&mut hash, fact.minimized);
-        feed(
-            &mut hash,
-            fact.observed_workspace.as_deref().unwrap_or_default(),
-        );
-        sep(&mut hash);
+        flag(&mut hash, fact.output.is_some());
+        for value in [fact.fullscreen, fact.maximized, fact.sticky, fact.minimized] {
+            feed(
+                &mut hash,
+                &value.map(|set| set.to_string()).unwrap_or_default(),
+            );
+            sep(&mut hash);
+            flag(&mut hash, value.is_some());
+        }
         feed(
             &mut hash,
             fact.native_workspace.as_deref().unwrap_or_default(),
         );
         sep(&mut hash);
-        for bound in [
-            fact.hints.min_w,
-            fact.hints.min_h,
-            fact.hints.max_w,
-            fact.hints.max_h,
+        flag(&mut hash, fact.native_workspace.as_deref().is_some());
+        // Exact request identity keeps the wire spelling distinct even
+        // though all three unknown spellings mean the same semantically.
+        flag(
+            &mut hash,
+            !matches!(fact.native_workspace, NativeWorkspaceFact::Omitted),
+        );
+        flag(
+            &mut hash,
+            matches!(fact.native_workspace, NativeWorkspaceFact::Value(_)),
+        );
+        for value in [
+            fact.host_hidden,
+            fact.privileged,
+            fact.managed,
+            fact.accepts_input,
+            fact.activation_inhibited,
+            fact.tool_window,
+            fact.owned,
+            fact.transient,
+            fact.modal,
+            fact.resizable,
+            fact.above,
+            fact.below,
         ] {
+            feed(
+                &mut hash,
+                &value.map(|set| set.to_string()).unwrap_or_default(),
+            );
+            sep(&mut hash);
+            flag(&mut hash, value.is_some());
+        }
+        for id in [&fact.owner, &fact.parent] {
+            feed(
+                &mut hash,
+                id.as_ref()
+                    .map(|window| window.0.as_str())
+                    .unwrap_or_default(),
+            );
+            sep(&mut hash);
+            flag(&mut hash, id.is_some());
+        }
+        for text in [
+            fact.role.as_deref(),
+            fact.app_id.as_deref(),
+            fact.executable.as_deref(),
+            fact.process_id.as_deref(),
+            fact.class.as_deref(),
+            fact.title.as_deref(),
+        ] {
+            feed(&mut hash, text.unwrap_or_default());
+            sep(&mut hash);
+            flag(&mut hash, text.is_some());
+        }
+        feed(
+            &mut hash,
+            fact.window_type
+                .map(|kind| kind.as_str())
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        flag(&mut hash, fact.window_type.is_some());
+        feed(
+            &mut hash,
+            fact.activation_policy
+                .map(|policy| policy.as_str())
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        flag(&mut hash, fact.activation_policy.is_some());
+        feed(
+            &mut hash,
+            &fact
+                .layer
+                .map(|layer| layer.to_string())
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        flag(&mut hash, fact.layer.is_some());
+        feed(
+            &mut hash,
+            fact.fullscreen_owner
+                .map(|owner| owner.as_str())
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        flag(&mut hash, fact.fullscreen_owner.is_some());
+        for value in [fact.fullscreen_exitable, fact.suppression_available] {
+            feed(
+                &mut hash,
+                &value.map(|set| set.to_string()).unwrap_or_default(),
+            );
+            sep(&mut hash);
+            flag(&mut hash, value.is_some());
+        }
+        for value in [fact.visibility.visible, fact.visibility.suppression_owned] {
+            feed(
+                &mut hash,
+                &value.map(|set| set.to_string()).unwrap_or_default(),
+            );
+            sep(&mut hash);
+            flag(&mut hash, value.is_some());
+        }
+        match fact.last_write.as_ref() {
+            None => {
+                feed(&mut hash, "no-last-write");
+                sep(&mut hash);
+            }
+            Some(last) => {
+                feed(&mut hash, last.property.as_str());
+                sep(&mut hash);
+                flag(&mut hash, last.target);
+                feed(&mut hash, &last.revision.to_string());
+                sep(&mut hash);
+                feed(&mut hash, last.path.as_str());
+                sep(&mut hash);
+                feed(&mut hash, last.setter.as_str());
+                sep(&mut hash);
+                feed(&mut hash, last.reason.as_str());
+                sep(&mut hash);
+                for sample in [last.pre.as_ref(), last.post.as_ref()] {
+                    match sample {
+                        None => {
+                            feed(&mut hash, "no-sample");
+                            sep(&mut hash);
+                        }
+                        Some(sample) => {
+                            feed(&mut hash, &sample.obs.to_string());
+                            sep(&mut hash);
+                            for value in [
+                                sample.lifetime_matched,
+                                sample.visibility.visible,
+                                sample.visibility.suppression_owned,
+                                sample.minimized,
+                                sample.host_hidden,
+                            ] {
+                                feed(
+                                    &mut hash,
+                                    &value.map(|set| set.to_string()).unwrap_or_default(),
+                                );
+                                sep(&mut hash);
+                                flag(&mut hash, value.is_some());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        flag(&mut hash, fact.last_write.is_some());
+        // Unknown hints digest distinctly from an empty hint set: absence
+        // is never a default empty truth.
+        flag(&mut hash, fact.hints.is_some());
+        let hints = fact
+            .hints
+            .unwrap_or(crate::size_hints::WindowSizeHints::none());
+        for bound in [hints.min_w, hints.min_h, hints.max_w, hints.max_h] {
             feed(&mut hash, &bound.map(|v| v.to_string()).unwrap_or_default());
             sep(&mut hash);
         }
@@ -2344,6 +2990,586 @@ fn graded_held_row(screen: &ScreenReport, ordinal: usize) -> HeldScreenRow {
     }
 }
 
+/// Canonical schema key order for carried window rows, mirrored by the
+/// protocol decoder, the estimators, and the canonical writer.
+#[doc(hidden)]
+pub const WINDOW_SCHEMA_ORDER: &[&str] = &[
+    "win",
+    "out",
+    "rect",
+    "fullscreen",
+    "maximized",
+    "sticky",
+    "minimized",
+    "hints",
+    "nativeWs",
+    "hostHidden",
+    "privileged",
+    "managed",
+    "acceptsInput",
+    "activationInhibited",
+    "toolWindow",
+    "owned",
+    "transient",
+    "modal",
+    "resizable",
+    "above",
+    "below",
+    "owner",
+    "parent",
+    "role",
+    "appId",
+    "executable",
+    "processId",
+    "class",
+    "title",
+    "type",
+    "activationPolicy",
+    "layer",
+    "fullscreenOwner",
+    "fullscreenExitable",
+    "suppressionAvailable",
+    "visibility",
+    "lastWrite",
+];
+
+/// Structural per-window checks shared by [`validate_report_reason`] and
+/// the window graders: lifetime id, output id shape, duplicate lifetime,
+/// and rect-pair shape. An unknown `out` (valid id naming no live screen)
+/// is valid here: the engine retains the prior home and holds the scope,
+/// never guessing the current output. Metadata bounds, visibility/lastWrite
+/// shape, owner/parent/native/process grammars, and closed-overlap are NOT
+/// included: validation reports those after these, grading treats the
+/// gradable subset as holds. One policy, three call sites, identical
+/// reasons.
+///
+/// Also shared by the protocol decoder, which must refuse id/duplicate/rect
+/// violations before holding a row for bad metadata, retired keys, or
+/// conflicting facts: hidden to keep the narrow hold vocabulary the only
+/// public surface.
+#[doc(hidden)]
+pub fn check_window_structure(
+    fact: &WindowFact,
+    seen_windows: &mut BTreeSet<String>,
+) -> Option<&'static str> {
+    if !is_opaque_id(&fact.window.0) {
+        return Some("window-id-invalid");
+    }
+    if let Some(out) = fact.output.as_ref()
+        && !is_opaque_id(&out.0)
+    {
+        return Some("window-id-invalid");
+    }
+    if !seen_windows.insert(fact.window.0.clone()) {
+        return Some("duplicate-window");
+    }
+    if let Some(rect) = fact.rect
+        && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
+    {
+        return Some("window-rect-invalid");
+    }
+    None
+}
+
+/// Hidden structural id violations masked inside a gradable row: bad
+/// owner/parent references or a bad native workspace id. These refuse the
+/// whole report like other id shapes; they are never graded to a hold even
+/// when the same row also carries overbound text or a bad process id.
+fn hidden_window_id_violation(fact: &WindowFact) -> bool {
+    for id in [&fact.owner, &fact.parent].into_iter().flatten() {
+        if !is_opaque_id(&id.0) {
+            return true;
+        }
+    }
+    if let Some(native) = fact.native_workspace.as_deref()
+        && !is_opaque_id(native)
+    {
+        return true;
+    }
+    false
+}
+
+/// True when a window row is identifiable and its only violations are the
+/// gradable v4 value failures (metadata text over
+/// [`MAX_METADATA_TEXT_BYTES`] UTF-8 bytes, or a non-grammatical optional
+/// process id). Structural violations (bad ids, duplicates, geometry)
+/// still refuse: grading re-runs [`validate_report_reason`] on the
+/// normalized report and returns `None` unless it passes.
+fn gradable_window(fact: &WindowFact) -> bool {
+    if !is_opaque_id(&fact.window.0) {
+        return false;
+    }
+    if let Some(out) = fact.output.as_ref()
+        && !is_opaque_id(&out.0)
+    {
+        return false;
+    }
+    // Hidden id violations are never gradable: grading them would erase
+    // the refusal that validation reports for the same row.
+    if hidden_window_id_violation(fact) {
+        return false;
+    }
+    if [
+        fact.role.as_deref(),
+        fact.app_id.as_deref(),
+        fact.executable.as_deref(),
+        fact.class.as_deref(),
+        fact.title.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|field| field.len() > MAX_METADATA_TEXT_BYTES)
+    {
+        return true;
+    }
+    if let Some(process) = fact.process_id.as_deref()
+        && !crate::connection::valid_process_identity_text(process)
+    {
+        return true;
+    }
+    false
+}
+
+/// Retain one directly constructed invalid window row as a narrow hold,
+/// mirroring the protocol codec's retained fields and diagnostic: a
+/// diagnostic only for the row's actual reported output, never a
+/// fabricated scope.
+fn graded_held_window_row(fact: &WindowFact, ordinal: usize) -> HeldWindowRow {
+    HeldWindowRow {
+        window: fact.window.clone(),
+        ordinal,
+        output: fact.output.clone(),
+        fields: retained_window_fields(fact),
+        diagnostic: fact.output.as_ref().map(|out| RowDiagnostic {
+            scope: AuthorityScope::Output(out.clone()),
+            row: RowDiagnosticLane::Window,
+            id: Some(fact.window.0.clone()),
+            kind: RowDiagnosticKind::InvalidFact,
+        }),
+        kind: RowDiagnosticKind::InvalidFact,
+    }
+}
+
+/// Retain every carried window fact in canonical schema order
+/// ([`WINDOW_SCHEMA_ORDER`]) as JSON-agnostic facts, with the nested
+/// `hints`, `visibility`, and `lastWrite` objects in schema order. Used by
+/// both the invalid and the conflicting graders: one retention, two
+/// diagnostics.
+pub(crate) fn retained_window_fields(
+    fact: &WindowFact,
+) -> Vec<(String, crate::connection::RawSettingValue)> {
+    use crate::connection::RawSettingValue;
+    fn opt_bool(value: Option<bool>) -> RawSettingValue {
+        value.map_or(RawSettingValue::Null, RawSettingValue::Bool)
+    }
+    fn opt_text(value: &Option<String>) -> RawSettingValue {
+        value.as_deref().map_or(RawSettingValue::Null, |text| {
+            RawSettingValue::String(text.to_owned())
+        })
+    }
+    fn opt_id(value: &Option<WindowId>) -> RawSettingValue {
+        value.as_ref().map_or(RawSettingValue::Null, |id| {
+            RawSettingValue::String(id.0.clone())
+        })
+    }
+    fn rect_value(rect: Option<Rect>) -> RawSettingValue {
+        rect.map_or(RawSettingValue::Null, |row| {
+            RawSettingValue::Array(vec![
+                RawSettingValue::Number(f64::from(row.x)),
+                RawSettingValue::Number(f64::from(row.y)),
+                RawSettingValue::Number(f64::from(row.w)),
+                RawSettingValue::Number(f64::from(row.h)),
+            ])
+        })
+    }
+    fn visibility_value(visibility: VisibilityFact) -> RawSettingValue {
+        RawSettingValue::Object(vec![
+            ("visible".to_owned(), opt_bool(visibility.visible)),
+            (
+                "suppressionOwned".to_owned(),
+                opt_bool(visibility.suppression_owned),
+            ),
+        ])
+    }
+    fn sample_value(sample: &VisibilitySample) -> RawSettingValue {
+        RawSettingValue::Object(vec![
+            (
+                "obs".to_owned(),
+                RawSettingValue::String(sample.obs.to_string()),
+            ),
+            (
+                "lifetimeMatched".to_owned(),
+                opt_bool(sample.lifetime_matched),
+            ),
+            ("visibility".to_owned(), visibility_value(sample.visibility)),
+            ("minimized".to_owned(), opt_bool(sample.minimized)),
+            ("hostHidden".to_owned(), opt_bool(sample.host_hidden)),
+        ])
+    }
+    fn last_write_value(last: &LastWrite) -> RawSettingValue {
+        RawSettingValue::Object(vec![
+            (
+                "property".to_owned(),
+                RawSettingValue::String(last.property.as_str().to_owned()),
+            ),
+            ("target".to_owned(), RawSettingValue::Bool(last.target)),
+            (
+                "revision".to_owned(),
+                RawSettingValue::String(last.revision.to_string()),
+            ),
+            (
+                "path".to_owned(),
+                RawSettingValue::String(last.path.as_str().to_owned()),
+            ),
+            (
+                "setter".to_owned(),
+                RawSettingValue::String(last.setter.as_str().to_owned()),
+            ),
+            (
+                "reason".to_owned(),
+                RawSettingValue::String(last.reason.as_str().to_owned()),
+            ),
+            (
+                "pre".to_owned(),
+                last.pre
+                    .as_ref()
+                    .map_or(RawSettingValue::Null, sample_value),
+            ),
+            (
+                "post".to_owned(),
+                last.post
+                    .as_ref()
+                    .map_or(RawSettingValue::Null, sample_value),
+            ),
+        ])
+    }
+    fn native_value(native: &NativeWorkspaceFact) -> Option<RawSettingValue> {
+        match native {
+            NativeWorkspaceFact::Omitted => None,
+            NativeWorkspaceFact::Null => Some(RawSettingValue::Null),
+            NativeWorkspaceFact::Value(id) => Some(RawSettingValue::String(id.clone())),
+        }
+    }
+    let mut fields = vec![
+        (
+            "win".to_owned(),
+            RawSettingValue::String(fact.window.0.clone()),
+        ),
+        (
+            "out".to_owned(),
+            fact.output.as_ref().map_or(RawSettingValue::Null, |out| {
+                RawSettingValue::String(out.0.clone())
+            }),
+        ),
+        ("rect".to_owned(), rect_value(fact.rect)),
+        ("fullscreen".to_owned(), opt_bool(fact.fullscreen)),
+        ("maximized".to_owned(), opt_bool(fact.maximized)),
+        ("sticky".to_owned(), opt_bool(fact.sticky)),
+        ("minimized".to_owned(), opt_bool(fact.minimized)),
+        (
+            "hints".to_owned(),
+            fact.hints.map_or(RawSettingValue::Null, |hints| {
+                RawSettingValue::Object(vec![
+                    (
+                        "minW".to_owned(),
+                        hints.min_w.map_or(RawSettingValue::Null, |bound| {
+                            RawSettingValue::Number(f64::from(bound))
+                        }),
+                    ),
+                    (
+                        "minH".to_owned(),
+                        hints.min_h.map_or(RawSettingValue::Null, |bound| {
+                            RawSettingValue::Number(f64::from(bound))
+                        }),
+                    ),
+                    (
+                        "maxW".to_owned(),
+                        hints.max_w.map_or(RawSettingValue::Null, |bound| {
+                            RawSettingValue::Number(f64::from(bound))
+                        }),
+                    ),
+                    (
+                        "maxH".to_owned(),
+                        hints.max_h.map_or(RawSettingValue::Null, |bound| {
+                            RawSettingValue::Number(f64::from(bound))
+                        }),
+                    ),
+                ])
+            }),
+        ),
+    ];
+    if let Some(native) = native_value(&fact.native_workspace) {
+        fields.push(("nativeWs".to_owned(), native));
+    }
+    fields.extend([
+        ("hostHidden".to_owned(), opt_bool(fact.host_hidden)),
+        ("privileged".to_owned(), opt_bool(fact.privileged)),
+        ("managed".to_owned(), opt_bool(fact.managed)),
+        ("acceptsInput".to_owned(), opt_bool(fact.accepts_input)),
+        (
+            "activationInhibited".to_owned(),
+            opt_bool(fact.activation_inhibited),
+        ),
+        ("toolWindow".to_owned(), opt_bool(fact.tool_window)),
+        ("owned".to_owned(), opt_bool(fact.owned)),
+        ("transient".to_owned(), opt_bool(fact.transient)),
+        ("modal".to_owned(), opt_bool(fact.modal)),
+        ("resizable".to_owned(), opt_bool(fact.resizable)),
+        ("above".to_owned(), opt_bool(fact.above)),
+        ("below".to_owned(), opt_bool(fact.below)),
+        ("owner".to_owned(), opt_id(&fact.owner)),
+        ("parent".to_owned(), opt_id(&fact.parent)),
+        ("role".to_owned(), opt_text(&fact.role)),
+        ("appId".to_owned(), opt_text(&fact.app_id)),
+        ("executable".to_owned(), opt_text(&fact.executable)),
+        ("processId".to_owned(), opt_text(&fact.process_id)),
+        ("class".to_owned(), opt_text(&fact.class)),
+        ("title".to_owned(), opt_text(&fact.title)),
+        (
+            "type".to_owned(),
+            fact.window_type.map_or(RawSettingValue::Null, |kind| {
+                RawSettingValue::String(kind.as_str().to_owned())
+            }),
+        ),
+        (
+            "activationPolicy".to_owned(),
+            fact.activation_policy
+                .map_or(RawSettingValue::Null, |policy| {
+                    RawSettingValue::String(policy.as_str().to_owned())
+                }),
+        ),
+        (
+            "layer".to_owned(),
+            fact.layer.map_or(RawSettingValue::Null, |layer| {
+                RawSettingValue::Number(f64::from(layer))
+            }),
+        ),
+        (
+            "fullscreenOwner".to_owned(),
+            fact.fullscreen_owner
+                .map_or(RawSettingValue::Null, |owner| {
+                    RawSettingValue::String(owner.as_str().to_owned())
+                }),
+        ),
+        (
+            "fullscreenExitable".to_owned(),
+            opt_bool(fact.fullscreen_exitable),
+        ),
+        (
+            "suppressionAvailable".to_owned(),
+            opt_bool(fact.suppression_available),
+        ),
+        ("visibility".to_owned(), visibility_value(fact.visibility)),
+        (
+            "lastWrite".to_owned(),
+            fact.last_write
+                .as_ref()
+                .map_or(RawSettingValue::Null, last_write_value),
+        ),
+    ]);
+    fields
+}
+
+/// Grade directly constructed identifiable invalid window rows to narrow
+/// holds before engine authority/readiness: the protocol codec already
+/// holds these rows at decode, while [`validate_report_reason`] refuses
+/// them. Grading closes that causal gap without weakening any structural
+/// gate.
+///
+/// A window row is gradable only when it is identifiable (a valid opaque
+/// lifetime id with a valid-or-absent output) and its only violations are
+/// the v4 metadata/process values (overbound text, non-grammatical optional
+/// process id). Structural violations (bad ids, duplicates, geometry,
+/// closed-overlap) still refuse: grading re-runs
+/// [`validate_report_reason`] on the normalized report and returns `None`
+/// unless it passes.
+///
+/// Normalization preserves every carried fact: graded rows take the free
+/// carried-array slots as held ordinals in row order (pre-existing held
+/// ordinals are preserved, valid rows keep relative order), fields are
+/// retained in canonical schema order, and each graded row carries an
+/// `InvalidFact` window diagnostic over its reported output scope (or the
+/// window-id output handle when the row carries no output).
+#[must_use]
+pub fn grade_invalid_windows(report: &WorldReport) -> Option<WorldReport> {
+    if !matches!(
+        validate_report_reason(report),
+        Some("window-metadata-invalid" | "window-identity-invalid")
+    ) {
+        return None;
+    }
+    {
+        // Structural pre-check over EVERY carried row before any removal:
+        // validation stops at the first metadata failure, which could hide
+        // a structural violation in a later row that removal would then
+        // erase. Any structural failure refuses the whole report.
+        let mut seen = BTreeSet::new();
+        for fact in &report.windows {
+            if check_window_structure(fact, &mut seen).is_some() {
+                return None;
+            }
+            // A gradable overbound/bad-process row must not mask a hidden
+            // owner/parent/native violation in the same row.
+            if hidden_window_id_violation(fact) {
+                return None;
+            }
+        }
+        for held in &report.held_windows {
+            if !is_opaque_id(&held.window.0) || !seen.insert(held.window.0.clone()) {
+                return None;
+            }
+        }
+    }
+    let total = report
+        .windows
+        .len()
+        .saturating_add(report.held_windows.len());
+    let used: BTreeSet<usize> = report
+        .held_windows
+        .iter()
+        .map(|held| held.ordinal)
+        .collect();
+    let mut free = (0..total).filter(|slot| !used.contains(slot));
+    let mut windows = Vec::with_capacity(report.windows.len());
+    let mut graded = Vec::new();
+    for fact in &report.windows {
+        let slot = free.next()?;
+        if gradable_window(fact) {
+            graded.push(graded_held_window_row(fact, slot));
+        } else {
+            windows.push(fact.clone());
+        }
+    }
+    if graded.is_empty() {
+        return None;
+    }
+    let mut normalized = report.clone();
+    normalized.windows = windows;
+    normalized.held_windows.extend(graded);
+    normalized.held_windows.sort_by_key(|held| held.ordinal);
+    if validate_report_reason(&normalized).is_some() {
+        return None;
+    }
+    Some(normalized)
+}
+
+/// True when a window row contradicts the connection's unavailable facts: a
+/// listed-unavailable classification input carried non-null. Required
+/// identity/geometry/visibility inputs (win, out, rect, hints, visibility,
+/// lastWrite, fullscreen/maximized/sticky/minimized state, nativeWs,
+/// fullscreen/layer ownership and suppression support) are never waived by
+/// this list and never conflict.
+fn conflicting_window(fact: &WindowFact, unavailable: &[crate::connection::FactName]) -> bool {
+    use crate::connection::FactName;
+    unavailable.iter().any(|name| match name {
+        FactName::Privileged => fact.privileged.is_some(),
+        FactName::Managed => fact.managed.is_some(),
+        FactName::AcceptsInput => fact.accepts_input.is_some(),
+        FactName::ActivationInhibited => fact.activation_inhibited.is_some(),
+        FactName::ToolWindow => fact.tool_window.is_some(),
+        FactName::Owned => fact.owned.is_some(),
+        FactName::Transient => fact.transient.is_some(),
+        FactName::Modal => fact.modal.is_some(),
+        FactName::Resizable => fact.resizable.is_some(),
+        FactName::Above => fact.above.is_some(),
+        FactName::Below => fact.below.is_some(),
+        FactName::Owner => fact.owner.is_some(),
+        FactName::Parent => fact.parent.is_some(),
+        FactName::Role => fact.role.is_some(),
+        FactName::AppId => fact.app_id.is_some(),
+        FactName::Executable => fact.executable.is_some(),
+        FactName::ProcessId => fact.process_id.is_some(),
+        FactName::Class => fact.class.is_some(),
+        FactName::Title => fact.title.is_some(),
+        FactName::ActivationPolicy => fact.activation_policy.is_some(),
+        FactName::Layer => fact.layer.is_some(),
+    })
+}
+
+/// Grade unavailable-fact contradictions to narrow holds before engine
+/// authority/readiness. The protocol decoder cannot do this: it has no
+/// connection capabilities. Rows already held (or gradable-invalid, which
+/// the invalid grader owns) are skipped, never double-held. Structural
+/// pre-checks cover every carried row including masked (already held) rows:
+/// any id/duplicate/rect violation refuses the whole report instead of
+/// grading around it.
+///
+/// Normalization mirrors [`grade_invalid_windows`]: conflicting rows move to
+/// `held_windows` with their fields retained and a `ConflictingFact`
+/// window diagnostic.
+#[must_use]
+pub fn grade_conflicting_windows(
+    report: &WorldReport,
+    unavailable: &[crate::connection::FactName],
+) -> Option<WorldReport> {
+    if unavailable.is_empty() {
+        return None;
+    }
+    {
+        let mut seen = BTreeSet::new();
+        for held in &report.held_windows {
+            if !is_opaque_id(&held.window.0) || !seen.insert(held.window.0.clone()) {
+                return None;
+            }
+        }
+        for fact in &report.windows {
+            if check_window_structure(fact, &mut seen).is_some() {
+                return None;
+            }
+            // A conflicting row must not mask a hidden
+            // owner/parent/native violation in the same row.
+            if hidden_window_id_violation(fact) {
+                return None;
+            }
+        }
+    }
+    let total = report
+        .windows
+        .len()
+        .saturating_add(report.held_windows.len());
+    let used: BTreeSet<usize> = report
+        .held_windows
+        .iter()
+        .map(|held| held.ordinal)
+        .collect();
+    let mut free = (0..total).filter(|slot| !used.contains(slot));
+    let mut windows = Vec::with_capacity(report.windows.len());
+    let mut graded = Vec::new();
+    for fact in &report.windows {
+        let slot = free.next()?;
+        // Invalid-gradable rows belong to the invalid grader; conflicting
+        // grading never double-holds them.
+        if !gradable_window(fact) && conflicting_window(fact, unavailable) {
+            graded.push(HeldWindowRow {
+                window: fact.window.clone(),
+                ordinal: slot,
+                output: fact.output.clone(),
+                fields: retained_window_fields(fact),
+                diagnostic: fact.output.as_ref().map(|out| RowDiagnostic {
+                    scope: AuthorityScope::Output(out.clone()),
+                    row: RowDiagnosticLane::Window,
+                    id: Some(fact.window.0.clone()),
+                    kind: RowDiagnosticKind::ConflictingFact,
+                }),
+                kind: RowDiagnosticKind::ConflictingFact,
+            });
+        } else {
+            windows.push(fact.clone());
+        }
+    }
+    if graded.is_empty() {
+        return None;
+    }
+    let mut normalized = report.clone();
+    normalized.windows = windows;
+    normalized.held_windows.extend(graded);
+    normalized.held_windows.sort_by_key(|held| held.ordinal);
+    if validate_report_reason(&normalized).is_some() {
+        return None;
+    }
+    Some(normalized)
+}
+
 /// Name the failed [`validate_report`] check in fixed vocabulary (never
 /// payload bytes): `None` when the report is valid, otherwise the static
 /// reason token the rejection carries as its message under kind
@@ -2364,7 +3590,11 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         .len()
         .saturating_add(report.held_screens.len())
         > MAX_WORLD_SCREENS
-        || report.windows.len() > MAX_WORLD_FACTS
+        || report
+            .windows
+            .len()
+            .saturating_add(report.held_windows.len())
+            > MAX_WORLD_FACTS
         || report.closed.len() > MAX_WORLD_CLOSED
         || report.views.len() > MAX_WORLD_VIEWS
         || report.native.len() > MAX_WORLD_SCREENS
@@ -2512,38 +3742,69 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
             }
         }
     }
-    for fact in &report.windows {
-        if !is_opaque_id(&fact.window.0) || !is_opaque_id(&fact.output.0) {
-            return Some("window-id-invalid");
+    {
+        for fact in &report.windows {
+            if let Some(reason) = check_window_structure(fact, &mut seen_windows) {
+                return Some(reason);
+            }
+            // Nullable metadata text is bounded: overbound text holds the
+            // identifiable row narrowly (gradable below) instead of
+            // refusing the report. Identity-grammar process ids refuse
+            // like other id shapes: only the metadata text bound grades.
+            for field in [
+                fact.role.as_deref(),
+                fact.app_id.as_deref(),
+                fact.executable.as_deref(),
+                fact.class.as_deref(),
+                fact.title.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if field.len() > MAX_METADATA_TEXT_BYTES {
+                    return Some("window-metadata-invalid");
+                }
+            }
+            if let Some(native) = fact.native_workspace.as_deref()
+                && !is_opaque_id(native)
+            {
+                return Some("window-native-invalid");
+            }
+            if let Some(process) = fact.process_id.as_deref()
+                && !crate::connection::valid_process_identity_text(process)
+            {
+                return Some("window-identity-invalid");
+            }
+            for id in [&fact.owner, &fact.parent].into_iter().flatten() {
+                if !is_opaque_id(&id.0) {
+                    return Some("window-id-invalid");
+                }
+            }
         }
-        if !seen_outputs.contains(&fact.output.0) {
-            return Some("window-output-unknown");
+        // Held rows keep their window handle unique against the valid rows:
+        // one lifetime carries exactly one row per report.
+        for held in &report.held_windows {
+            if !is_opaque_id(&held.window.0) {
+                return Some("window-id-invalid");
+            }
+            if !seen_windows.insert(held.window.0.clone()) {
+                return Some("duplicate-window");
+            }
         }
-        if let Some(rect) = fact.rect
-            && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
-        {
-            return Some("window-rect-invalid");
-        }
-        // Size hints are advisory only: zero, negative, contradictory,
-        // and out-of-bound values (Qt 0x0 default minimums,
-        // QWIDGETSIZE_MAX / i32::MAX unbounded maximums) sanitize to
-        // absent at every use site (see
-        // `crate::size_hints::WindowSizeHints`), never fail the
-        // report. A single valid window reporting such default or
-        // sentinel hints invalidates the whole world when gated here,
-        // so every report carrying one was refused.
-        if !seen_windows.insert(fact.window.0.clone()) {
-            return Some("duplicate-window");
-        }
-        if let Some(observed) = fact.observed_workspace.as_deref()
-            && !is_opaque_id(observed)
-        {
-            return Some("window-observed-invalid");
-        }
-        if let Some(native) = fact.native_workspace.as_deref()
-            && !is_opaque_id(native)
-        {
-            return Some("window-native-invalid");
+    }
+    {
+        // Held ordinals are the rows' original `windows` indexes: each one
+        // names a distinct slot in the carried array, so a future exact
+        // request encoder can reconstruct the original order.
+        let total = report
+            .windows
+            .len()
+            .saturating_add(report.held_windows.len());
+        let mut seen_ordinals = BTreeSet::new();
+        for held in &report.held_windows {
+            if held.ordinal >= total || !seen_ordinals.insert(held.ordinal) {
+                return Some("held-ordinal-invalid");
+            }
         }
     }
     for id in &report.closed {

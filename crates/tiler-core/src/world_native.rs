@@ -97,17 +97,18 @@ impl WorldEngine {
 
     /// Effective logical receipt for one fact: the native-derived logical
     /// id when the capability is on (native-only, the adapter logical
-    /// receipt is never consulted), else the adapter's logical receipt.
+    /// receipt is never consulted), else `None` (native-free: no logical
+    /// receipt vocabulary exists, unknown never collapses into the view).
     ///
     /// Host-owned rules (native-only; unknown/unmapped holds, never invent
     /// or collapse):
-    /// - `native_workspace: Some(nid)` mapped to `L` yields `Some(L)`, but
+    /// - `native_workspace: Value(nid)` mapped to `L` yields `Some(L)`, but
     ///   only when the output's native list reads complete (complete screen
     ///   plus complete inventory). During inventory or per-screen gaps the
     ///   mapping may be stale, so even a mapped id yields `None`: callers
     ///   keep retained homing; write authority for that scope is fenced at
     ///   publish, it is not held by returning `None` here.
-    /// - `None` or unmapped native yields `None`: unknown membership never
+    /// - `Omitted`/`Null`/`Value("")` or unmapped native yields `None`: unknown membership never
     ///   collapses into the current view and never proves arrival. Callers
     ///   keep retained homing; write authority for that scope is fenced at
     ///   publish, it is not held by returning `None` here.
@@ -119,13 +120,14 @@ impl WorldEngine {
         fact: &WindowFact,
     ) -> Option<String> {
         if !self.host_owned_workspace_domains() {
-            return fact.observed_workspace.clone();
+            return None;
         }
-        if !self.native_list_complete(report, &fact.output.0) {
+        let output = fact.output.as_ref()?;
+        if !self.native_list_complete(report, &output.0) {
             return None;
         }
         let native = fact.native_workspace.as_deref()?;
-        self.native_logical(&fact.output, native)
+        self.native_logical(output, native)
     }
 
     /// Whether the fresh shared projection is order-ambiguous: the report

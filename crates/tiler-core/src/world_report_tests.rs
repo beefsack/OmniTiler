@@ -47,19 +47,45 @@ fn test_report() -> WorldReport {
         }],
         windows: vec![WindowFact {
             window: WindowId("win-a".to_owned()),
-            output: OutputId("out".to_owned()),
+            output: Some(OutputId("out".to_owned())),
             rect: Some(rect(0, 0, 40, 90)),
-            floating: false,
-            fit_excluded: false,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
-            fixed_auto: false,
-            fixed_suppress: false,
-            hints: crate::size_hints::WindowSizeHints::none(),
-            minimized: false,
-            observed_workspace: None,
-            native_workspace: None,
+            fullscreen: Some(false),
+            maximized: Some(false),
+            sticky: Some(false),
+            hints: Some(crate::size_hints::WindowSizeHints::none()),
+            minimized: Some(false),
+            native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+            host_hidden: Some(false),
+            privileged: Some(false),
+            managed: Some(true),
+            accepts_input: Some(true),
+            activation_inhibited: Some(false),
+            tool_window: Some(false),
+            owned: Some(false),
+            transient: Some(false),
+            modal: Some(false),
+            resizable: Some(true),
+            above: Some(false),
+            below: Some(false),
+            owner: None,
+            parent: None,
+            role: None,
+            app_id: None,
+            executable: Some("synthetic.exe".to_owned()),
+            process_id: Some("foreign-pid".to_owned()),
+            class: Some("Synthetic".to_owned()),
+            title: None,
+            window_type: Some(crate::world_report::WindowType::Normal),
+            activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+            layer: Some(0),
+            fullscreen_owner: None,
+            fullscreen_exitable: None,
+            suppression_available: None,
+            visibility: crate::world_report::VisibilityFact {
+                visible: Some(true),
+                suppression_owned: None,
+            },
+            last_write: None,
         }],
         views: vec![ScreenView {
             output: OutputId("out".to_owned()),
@@ -75,6 +101,7 @@ fn test_report() -> WorldReport {
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -106,16 +133,17 @@ fn digest_covers_every_section() {
     changed.windows[0].rect = Some(rect(1, 0, 40, 90));
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
-    changed.windows[0].floating = true;
+    changed.windows[0].transient = Some(true);
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
-    changed.windows[0].minimized = true;
+    changed.windows[0].minimized = Some(true);
     assert_ne!(report_digest(&changed), digest);
     // The capability-gated native membership moves the digest too.
     let capable = base.clone();
     let capable_digest = report_digest(&capable);
     let mut changed = capable;
-    changed.windows[0].native_workspace = Some("d1".to_owned());
+    changed.windows[0].native_workspace =
+        crate::world_report::NativeWorkspaceFact::Value("d1".to_owned());
     assert!(validate_report(&changed));
     assert_ne!(report_digest(&changed), capable_digest);
     let mut changed = base.clone();
@@ -265,10 +293,13 @@ fn validation_gates_shapes() {
     let mut bad = base.clone();
     bad.screens.push(bad.screens[0].clone());
     assert_eq!(validate_report_reason(&bad), Some("duplicate-screen"));
-    // Fact on an unknown screen.
+    // Fact on an unknown screen: no validation refusal. Ingress holds
+    // narrowly at the engine (unknown output never guesses a screen:
+    // `logical_homing` keeps the retained home, unhomed unknowns stay
+    // unhomed), so the report shape itself stays valid.
     let mut bad = base.clone();
-    bad.windows[0].output = OutputId("nope".to_owned());
-    assert_eq!(validate_report_reason(&bad), Some("window-output-unknown"));
+    bad.windows[0].output = Some(OutputId("nope".to_owned()));
+    assert_eq!(validate_report_reason(&bad), None);
     // Duplicate window.
     let mut bad = base.clone();
     bad.windows.push(bad.windows[0].clone());
@@ -307,15 +338,18 @@ fn validation_gates_shapes() {
     assert!(validate_report(&bad));
     // Native member evidence is decoded as a fact; Engine ingress gates it.
     let mut bad = base.clone();
-    bad.windows[0].native_workspace = Some("d1".to_owned());
+    bad.windows[0].native_workspace =
+        crate::world_report::NativeWorkspaceFact::Value("d1".to_owned());
     assert!(validate_report(&bad));
     // Native member evidence must be a valid opaque id.
     let mut bad = base.clone();
-    bad.windows[0].native_workspace = Some("not an id".to_owned());
+    bad.windows[0].native_workspace =
+        crate::world_report::NativeWorkspaceFact::Value("not an id".to_owned());
     assert_eq!(validate_report_reason(&bad), Some("window-native-invalid"));
     // Native member evidence with the capability validates.
     let mut good = base.clone();
-    good.windows[0].native_workspace = Some("d1".to_owned());
+    good.windows[0].native_workspace =
+        crate::world_report::NativeWorkspaceFact::Value("d1".to_owned());
     assert!(validate_report(&good));
     // Duplicate native ids within one output refuse.
     let mut bad = good.clone();
@@ -412,8 +446,8 @@ fn validation_gates_shapes() {
     bad.windows[0].rect = Some(rect(0, 0, 0, 0));
     assert_eq!(validate_report_reason(&bad), Some("window-rect-invalid"));
     let mut good = base.clone();
-    good.windows[0].hints.min_w = Some(0);
-    good.windows[0].hints.max_w = Some(i32::MAX);
+    good.windows[0].hints.as_mut().expect("hints").min_w = Some(0);
+    good.windows[0].hints.as_mut().expect("hints").max_w = Some(i32::MAX);
     assert!(validate_report(&good));
     // Unreadable frames ride None without failing.
     let mut good = base.clone();

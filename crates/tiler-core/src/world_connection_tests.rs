@@ -1,9 +1,12 @@
 use crate::boundary::CoreCommand;
 use crate::connection::*;
-use crate::directional::OutputId;
+use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
-use crate::world_report::{ScreenReport, ScreenView, WorldCommand, WorldReport};
+use crate::world_report::{
+    RowDiagnosticLane, ScopeAuthority, ScreenReport, ScreenView, WindowFact, WorldCommand,
+    WorldReport,
+};
 
 fn report(seq: u64, complete: bool) -> WorldReport {
     WorldReport {
@@ -48,6 +51,7 @@ fn report(seq: u64, complete: bool) -> WorldReport {
         action_outputs: vec![OutputId("out-1".into())],
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete: complete,
         gesture_barrier: false,
         gesture: None,
@@ -453,4 +457,620 @@ fn test_bound_helper_passes_caller_capabilities_through_unmodified() {
             "helper must not extend caller unavailableFacts"
         );
     }
+}
+
+fn accepted_reply(
+    engine: &mut WorldEngine,
+    report: &WorldReport,
+) -> crate::world_report::WorldReply {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    }
+}
+
+fn identity_report(seq: u64, windows: Vec<WindowFact>) -> WorldReport {
+    let mut base = report(seq, true);
+    base.windows = windows;
+    base
+}
+
+fn identity_fact(
+    window: &str,
+    app_id: Option<&str>,
+    executable: Option<&str>,
+    process_id: Option<&str>,
+    class: &str,
+) -> WindowFact {
+    WindowFact {
+        window: WindowId(window.to_owned()),
+        output: Some(OutputId("out-1".into())),
+        rect: Some(Rect {
+            x: 0,
+            y: 0,
+            w: 40,
+            h: 90,
+        }),
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(crate::size_hints::WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: app_id.map(|value| value.to_owned()),
+        executable: executable.map(|value| value.to_owned()),
+        process_id: process_id.map(|value| value.to_owned()),
+        class: Some(class.to_owned()),
+        title: None,
+        window_type: Some(crate::world_report::WindowType::Normal),
+        activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: crate::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
+    }
+}
+
+fn controlled_lifetimes(reply: &crate::world_report::WorldReply) -> Vec<String> {
+    reply
+        .windows
+        .iter()
+        .filter(|row| {
+            row.membership_authority == ScopeAuthority::Controlled
+                && row.frame_authority == ScopeAuthority::Controlled
+        })
+        .map(|row| row.lifetime.0.clone())
+        .collect()
+}
+
+fn effect_targets(reply: &crate::world_report::WorldReply) -> Vec<String> {
+    reply
+        .effects
+        .iter()
+        .map(|effect| effect.target.0.clone())
+        .collect()
+}
+
+fn transfer_targets(reply: &crate::world_report::WorldReply) -> Vec<String> {
+    reply
+        .transfers
+        .iter()
+        .filter_map(|target| match &target.kind {
+            crate::world_report::TransferKind::Window(window) => Some(window.0.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn own_process_identity_excludes_while_same_output_sibling_stays_controlled() {
+    // Real-engine own-process equality (`test-own-pid` from the test-bound
+    // handshake): the own row authorizes no membership, frame, transfer,
+    // or effect path, while the healthy same-output sibling stays fully
+    // controlled.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let reply = accepted_reply(
+        &mut engine,
+        &identity_report(
+            1,
+            vec![
+                identity_fact(
+                    "win-own",
+                    None,
+                    Some("test-own-executable"),
+                    Some("test-own-pid"),
+                    "Synthetic",
+                ),
+                identity_fact(
+                    "win-healthy",
+                    None,
+                    Some("test-own-executable"),
+                    Some("foreign-pid-9"),
+                    "Synthetic",
+                ),
+            ],
+        ),
+    );
+    assert!(reply.ready);
+    let controlled = controlled_lifetimes(&reply);
+    assert!(
+        controlled.contains(&"win-healthy".to_owned()),
+        "same-output sibling stays controlled: {controlled:?}"
+    );
+    assert!(
+        !reply.windows.iter().any(|row| row.lifetime.0 == "win-own"),
+        "own row authorizes no window desire: {:?}",
+        reply.windows
+    );
+    assert!(
+        !effect_targets(&reply).contains(&"win-own".to_owned()),
+        "own row authorizes no effect: {:?}",
+        reply.effects
+    );
+    assert!(
+        !transfer_targets(&reply).contains(&"win-own".to_owned()),
+        "own row authorizes no transfer: {:?}",
+        reply.transfers
+    );
+    let members = engine.logical_members_all();
+    assert!(
+        members.iter().any(|member| member.0 == "win-healthy"),
+        "sibling homed: {members:?}"
+    );
+    assert!(
+        !members.iter().any(|member| member.0 == "win-own"),
+        "own row never homed: {members:?}"
+    );
+}
+
+#[test]
+fn foreign_same_executable_and_settings_surface_tile_ordinarily() {
+    // Process identity is never inferred from executable/appId/class:
+    // foreign processes sharing the own executable (or carrying a
+    // settings-bundle app id) follow ordinary tile membership.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let reply = accepted_reply(
+        &mut engine,
+        &identity_report(
+            1,
+            vec![
+                identity_fact(
+                    "win-same-exe",
+                    None,
+                    Some("test-own-executable"),
+                    Some("foreign-pid-1"),
+                    "Synthetic",
+                ),
+                identity_fact(
+                    "win-settings",
+                    Some("settings-app"),
+                    Some("test-own-executable"),
+                    Some("foreign-pid-7"),
+                    "SettingsWindow",
+                ),
+            ],
+        ),
+    );
+    let controlled = controlled_lifetimes(&reply);
+    assert!(
+        controlled.contains(&"win-same-exe".to_owned()),
+        "same-exe foreign process tiles ordinarily: {controlled:?}"
+    );
+    assert!(
+        controlled.contains(&"win-settings".to_owned()),
+        "settings surface tiles ordinarily: {controlled:?}"
+    );
+    let members = engine.logical_members_all();
+    assert!(members.iter().any(|member| member.0 == "win-same-exe"));
+    assert!(members.iter().any(|member| member.0 == "win-settings"));
+}
+
+#[test]
+fn supported_null_process_holds_only_dependent_row_while_unavailable_admits() {
+    // Supported-but-null processId holds only the dependent row (own
+    // exclusion undecidable); the same-output healthy sibling stays
+    // controlled. Declaring processId unavailable admits the same row.
+    let null_row = || {
+        identity_fact(
+            "win-null",
+            None,
+            Some("test-own-executable"),
+            None,
+            "Synthetic",
+        )
+    };
+    let healthy_row = || {
+        identity_fact(
+            "win-healthy",
+            None,
+            Some("test-own-executable"),
+            Some("foreign-pid-9"),
+            "Synthetic",
+        )
+    };
+
+    let mut supported = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let held = accepted_reply(
+        &mut supported,
+        &identity_report(1, vec![null_row(), healthy_row()]),
+    );
+    let controlled = controlled_lifetimes(&held);
+    assert!(
+        controlled.contains(&"win-healthy".to_owned()),
+        "healthy sibling stays controlled past a held row: {controlled:?}"
+    );
+    assert!(
+        !held.windows.iter().any(|row| row.lifetime.0 == "win-null"),
+        "supported-null process holds the dependent row: {:?}",
+        held.windows
+    );
+    assert!(
+        held.diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.id.as_deref() != Some("win-null")),
+        "held row mints no spurious diagnostic: {:?}",
+        held.diagnostics
+    );
+    let members = supported.logical_members_all();
+    assert!(members.iter().any(|member| member.0 == "win-healthy"));
+    assert!(
+        members.iter().any(|member| member.0 == "win-null"),
+        "held row keeps its retained home (never an inferred close): {members:?}"
+    );
+
+    let mut unavailable = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            unavailable_facts: vec![FactName::ProcessId],
+            ..Default::default()
+        },
+    )
+    .expect("generation");
+    // An unavailable fact must be carried as null: repeating the foreign
+    // pid here would be a conflicting-fact hold, not an admission.
+    let unavailable_healthy = || {
+        identity_fact(
+            "win-healthy",
+            None,
+            Some("test-own-executable"),
+            None,
+            "Synthetic",
+        )
+    };
+    let admitted = accepted_reply(
+        &mut unavailable,
+        &identity_report(1, vec![null_row(), unavailable_healthy()]),
+    );
+    let controlled = controlled_lifetimes(&admitted);
+    assert!(
+        controlled.contains(&"win-null".to_owned()),
+        "unavailable processId admits the null row: {controlled:?}"
+    );
+    assert!(
+        controlled.contains(&"win-healthy".to_owned()),
+        "sibling stays controlled: {controlled:?}"
+    );
+    assert!(
+        !admitted
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.row == RowDiagnosticLane::Window
+                && diagnostic.id.as_deref() == Some("win-null")),
+        "no window hold once unavailable: {:?}",
+        admitted.diagnostics
+    );
+}
+
+#[test]
+fn output_none_known_retains_home_without_new_authority() {
+    // Known lifetime observed with `out: null` keeps its retained home;
+    // the row carries no output authority and mints no new homing.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let first = accepted_reply(
+        &mut engine,
+        &identity_report(
+            1,
+            vec![
+                identity_fact(
+                    "win-known",
+                    None,
+                    Some("test-own-executable"),
+                    Some("foreign-pid-9"),
+                    "Synthetic",
+                ),
+                identity_fact(
+                    "win-sibling",
+                    None,
+                    Some("test-own-executable"),
+                    Some("foreign-pid-10"),
+                    "Synthetic",
+                ),
+            ],
+        ),
+    );
+    assert!(first.ready);
+    let mut second = identity_report(2, Vec::new());
+    let mut known_none = identity_fact(
+        "win-known",
+        None,
+        Some("test-own-executable"),
+        Some("foreign-pid-9"),
+        "Synthetic",
+    );
+    known_none.output = None;
+    let sibling = identity_fact(
+        "win-sibling",
+        None,
+        Some("test-own-executable"),
+        Some("foreign-pid-10"),
+        "Synthetic",
+    );
+    second.windows = vec![known_none, sibling];
+    let reply = accepted_reply(&mut engine, &second);
+    assert!(reply.ready);
+    let members = engine.logical_members_all();
+    assert!(
+        members.iter().any(|member| member.0 == "win-known"),
+        "output-less known keeps retained home: {members:?}"
+    );
+    assert!(
+        members.iter().any(|member| member.0 == "win-sibling"),
+        "sibling stays homed: {members:?}"
+    );
+    let controlled = controlled_lifetimes(&reply);
+    assert!(
+        controlled.contains(&"win-sibling".to_owned()),
+        "sibling stays controlled: {controlled:?}"
+    );
+}
+
+#[test]
+fn output_none_new_unhomed_authorizes_nothing() {
+    // A brand-new lifetime with `out: null` has no retained home: it homes
+    // nowhere, authorizes no desire, and retains raw evidence only.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let mut unhomed = identity_fact(
+        "win-new",
+        None,
+        Some("test-own-executable"),
+        Some("foreign-pid-9"),
+        "Synthetic",
+    );
+    unhomed.output = None;
+    let sibling = identity_fact(
+        "win-healthy",
+        None,
+        Some("test-own-executable"),
+        Some("foreign-pid-10"),
+        "Synthetic",
+    );
+    let reply = accepted_reply(&mut engine, &identity_report(1, vec![unhomed, sibling]));
+    assert!(reply.ready);
+    assert!(
+        !reply.windows.iter().any(|row| row.lifetime.0 == "win-new"),
+        "unhomed output-less authorizes no desire: {:?}",
+        reply.windows
+    );
+    assert!(
+        controlled_lifetimes(&reply).contains(&"win-healthy".to_owned()),
+        "sibling stays controlled"
+    );
+    let members = engine.logical_members_all();
+    assert!(
+        !members.iter().any(|member| member.0 == "win-new"),
+        "unhomed output-less never guesses a home: {members:?}"
+    );
+    assert!(members.iter().any(|member| member.0 == "win-healthy"));
+}
+
+#[test]
+fn held_invalid_and_conflicting_keep_kind_parity() {
+    use crate::world_report::{
+        RowDiagnosticKind, grade_conflicting_windows, grade_invalid_windows,
+    };
+    // Overbound text grades to an InvalidFact hold with no fabricated scope.
+    let mut overbound = identity_fact(
+        "win-over",
+        None,
+        Some("test-own-executable"),
+        Some("foreign-pid-9"),
+        "Synthetic",
+    );
+    overbound.title = Some("x".repeat(crate::world_report::MAX_METADATA_TEXT_BYTES + 1));
+    let mut base = report(1, true);
+    base.windows = vec![overbound];
+    let graded = grade_invalid_windows(&base).expect("overbound grades");
+    assert_eq!(graded.windows.len(), 0);
+    assert_eq!(graded.held_windows.len(), 1);
+    let held = &graded.held_windows[0];
+    assert_eq!(held.kind, RowDiagnosticKind::InvalidFact);
+    assert_eq!(held.output, Some(OutputId("out-1".into())));
+    let diagnostic = held.diagnostic.as_ref().expect("scoped diagnostic");
+    assert_eq!(diagnostic.kind, RowDiagnosticKind::InvalidFact);
+    assert_eq!(diagnostic.row, RowDiagnosticLane::Window);
+    // A listed-unavailable fact grades to a ConflictingFact hold, same
+    // shape but distinct kind.
+    let mut conflict = identity_fact(
+        "win-conflict",
+        None,
+        Some("test-own-executable"),
+        Some("foreign-pid-9"),
+        "Synthetic",
+    );
+    conflict.privileged = Some(true);
+    let mut base = report(2, true);
+    base.windows = vec![conflict];
+    let graded =
+        grade_conflicting_windows(&base, &[FactName::Privileged]).expect("conflict grades");
+    assert_eq!(graded.windows.len(), 0);
+    assert_eq!(graded.held_windows.len(), 1);
+    let held = &graded.held_windows[0];
+    assert_eq!(held.kind, RowDiagnosticKind::ConflictingFact);
+    let diagnostic = held.diagnostic.as_ref().expect("scoped diagnostic");
+    assert_eq!(diagnostic.kind, RowDiagnosticKind::ConflictingFact);
+    assert_eq!(diagnostic.row, RowDiagnosticLane::Window);
+}
+
+#[test]
+fn masked_owner_with_overbound_refuses_typed() {
+    use crate::world_report::{grade_invalid_windows, validate_report_reason};
+    // Overbound text must not mask a bad owner reference in the same row.
+    let mut masked = identity_fact(
+        "win-masked",
+        None,
+        Some("test-own-executable"),
+        Some("foreign-pid-9"),
+        "Synthetic",
+    );
+    masked.title = Some("x".repeat(crate::world_report::MAX_METADATA_TEXT_BYTES + 1));
+    masked.owner = Some(WindowId("has space".into()));
+    let mut base = report(1, true);
+    base.windows = vec![masked];
+    assert!(
+        matches!(
+            validate_report_reason(&base),
+            Some("window-id-invalid" | "window-metadata-invalid")
+        ),
+        "masked row reports: {:?}",
+        validate_report_reason(&base)
+    );
+    assert!(
+        grade_invalid_windows(&base).is_none(),
+        "masked owner refuses, never holds"
+    );
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    assert!(
+        matches!(engine.handle_report(&base), WorldOutcome::Rejected { .. }),
+        "engine refuses masked owner"
+    );
+}
+
+#[test]
+fn ordinary_maximized_null_without_maximize_holds_frame_only() {
+    use crate::world_report::HoldReason;
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let mut unknown = identity_fact(
+        "win-unknown",
+        None,
+        Some("test-own-executable"),
+        Some("foreign-pid-9"),
+        "Synthetic",
+    );
+    unknown.maximized = None;
+    let healthy = identity_fact(
+        "win-healthy",
+        None,
+        Some("test-own-executable"),
+        Some("foreign-pid-10"),
+        "Synthetic",
+    );
+    let reply = accepted_reply(&mut engine, &identity_report(1, vec![unknown, healthy]));
+    assert!(reply.ready);
+    let row_unknown = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-unknown")
+        .expect("unknown row present");
+    assert_eq!(
+        row_unknown.membership_authority,
+        ScopeAuthority::Controlled,
+        "unsupported null keeps membership: {row_unknown:?}"
+    );
+    assert_eq!(
+        row_unknown.frame_authority,
+        ScopeAuthority::Hold(HoldReason::Unreadable),
+        "unknown overlay holds frame narrowly: {row_unknown:?}"
+    );
+    assert!(
+        row_unknown.allocation.is_some(),
+        "membership keeps allocation: {row_unknown:?}"
+    );
+    assert_eq!(
+        row_unknown.clear_operation, None,
+        "no clear on unknown: {row_unknown:?}"
+    );
+    let row_healthy = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-healthy")
+        .expect("sibling row present");
+    assert_eq!(row_healthy.membership_authority, ScopeAuthority::Controlled);
+    assert_eq!(row_healthy.frame_authority, ScopeAuthority::Controlled);
+    assert_eq!(row_healthy.clear_operation, None);
+    assert!(
+        reply
+            .scopes
+            .iter()
+            .all(|scope| scope.authority == ScopeAuthority::Controlled),
+        "no broad revocation: {:?}",
+        reply.scopes
+    );
+    assert!(engine.retained_clears.is_empty(), "no retained clear");
+
+    // Supported capability: same null holds the dependent domain, still no
+    // unsafe geometry and no clear; the other output stays controlled.
+    let mut supported = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            maximize: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation");
+    let mut unknown2 = identity_fact(
+        "win-unknown",
+        None,
+        Some("test-own-executable"),
+        Some("foreign-pid-9"),
+        "Synthetic",
+    );
+    unknown2.maximized = None;
+    unknown2.output = Some(OutputId("out-1".into()));
+    let mut healthy2 = identity_fact(
+        "win-healthy",
+        None,
+        Some("test-own-executable"),
+        Some("foreign-pid-10"),
+        "Synthetic",
+    );
+    healthy2.output = Some(OutputId("out-2".into()));
+    let mut base = report(1, true);
+    base.screens.push(crate::world_report::ScreenReport {
+        output: OutputId("out-2".into()),
+        full_rect: Some(Rect {
+            x: 800,
+            y: 0,
+            w: 800,
+            h: 600,
+        }),
+        work_area: Some(Rect {
+            x: 800,
+            y: 0,
+            w: 800,
+            h: 560,
+        }),
+        complete: true,
+        scale: 1.0,
+        identity: crate::world_report::OutputIdentity::unknown(),
+    });
+    base.action_outputs = vec![OutputId("out-1".into()), OutputId("out-2".into())];
+    base.windows = vec![unknown2, healthy2];
+    let held = accepted_reply(&mut supported, &base);
+    assert!(
+        !held
+            .windows
+            .iter()
+            .any(|row| row.lifetime.0 == "win-unknown"
+                && row.membership_authority == ScopeAuthority::Controlled
+                && row.frame_authority == ScopeAuthority::Controlled),
+        "supported null authorizes no controlled geometry: {:?}",
+        held.windows
+    );
+    assert!(
+        held.windows.iter().all(|row| row.clear_operation.is_none()),
+        "supported null authorizes no clear: {:?}",
+        held.windows
+    );
 }

@@ -230,9 +230,7 @@ fn cross_slot(
         .iter()
         .map(|row| {
             if row.window.0 == mover {
-                let mut arrived = fact(mover, dest_output, slot);
-                arrived.observed_workspace = Some(target_view.clone());
-                arrived
+                fact(mover, dest_output, slot)
             } else {
                 row.clone()
             }
@@ -903,8 +901,7 @@ fn cross_release_to_empty_destination_keeps_send_admission() {
     assert!(transfer.follow, "empty-destination drop follows");
     assert_eq!(row_of(&released, "win-2").output.0, "out-b");
     let target_view = transfer.target_workspace.clone();
-    let mut arrived = fact("win-2", "out-b", moved);
-    arrived.observed_workspace = Some(target_view.clone());
+    let arrived = fact("win-2", "out-b", moved);
     let mut settle = mixed_report(
         3,
         3,

@@ -366,13 +366,17 @@ impl WorldEngine {
         let Some(fact) = self.staged.facts.get(&ingress.window) else {
             return false;
         };
-        if fact.rect.is_none() || fact.minimized {
+        let derived = self.derived_for(&ingress.window);
+        if derived.hidden || derived.hold || derived.excluded {
             return false;
         }
-        if fact.fullscreen || fact.maximized {
+        if fact.rect.is_none() || fact.minimized == Some(true) {
             return false;
         }
-        if fact.floating || fact.sticky {
+        if derived.overlay_fullscreen || derived.overlay_maximized {
+            return false;
+        }
+        if derived.floating || derived.sticky {
             return false;
         }
         true
@@ -409,13 +413,17 @@ impl WorldEngine {
         let Some(fact) = self.staged.facts.get(&retained.window) else {
             return false;
         };
-        if fact.rect.is_none() || fact.minimized {
+        let derived = self.derived_for(&retained.window);
+        if derived.hidden || derived.hold || derived.excluded {
             return false;
         }
-        if fact.fullscreen || fact.maximized {
+        if fact.rect.is_none() || fact.minimized == Some(true) {
             return false;
         }
-        if fact.floating || fact.sticky {
+        if derived.overlay_fullscreen || derived.overlay_maximized {
+            return false;
+        }
+        if derived.floating || derived.sticky {
             return false;
         }
         true
@@ -443,7 +451,7 @@ impl WorldEngine {
         self.staged
             .facts
             .get(&focused)
-            .is_some_and(|fact| fact.fullscreen)
+            .is_some_and(|fact| fact.fullscreen == Some(true))
     }
 
     /// Handle an Updated phase: refresh the pointer target and the

@@ -45,19 +45,45 @@ fn screens() -> Vec<ScreenReport> {
 fn fact(window: &str, output: &str, r: Rect) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(r),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: crate::size_hints::WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(crate::size_hints::WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(crate::world_report::WindowType::Normal),
+        activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: crate::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
@@ -127,6 +153,7 @@ fn report_on(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier: gesture.is_some(),
         gesture,
@@ -857,7 +884,7 @@ fn invalid_starts_refuse_without_session() {
     let (mut engine, ra, rb) = rig();
     let mut seq = 2u64;
     let mut minimized = fact("win-a", "out-a", ra);
-    minimized.minimized = true;
+    minimized.minimized = Some(true);
     minimized.rect = None;
     for (tag, facts) in [
         (
@@ -878,7 +905,7 @@ fn invalid_starts_refuse_without_session() {
             "fullscreen",
             vec![
                 WindowFact {
-                    fullscreen: true,
+                    fullscreen: Some(true),
                     ..fact("win-a", "out-a", ra)
                 },
                 fact("win-b", "out-a", rb),
@@ -888,7 +915,7 @@ fn invalid_starts_refuse_without_session() {
             "floating",
             vec![
                 WindowFact {
-                    floating: true,
+                    transient: Some(true),
                     ..fact("win-a", "out-a", ra)
                 },
                 fact("win-b", "out-a", rb),
@@ -898,7 +925,7 @@ fn invalid_starts_refuse_without_session() {
             "sticky",
             vec![
                 WindowFact {
-                    sticky: true,
+                    sticky: Some(true),
                     ..fact("win-a", "out-a", ra)
                 },
                 fact("win-b", "out-a", rb),
@@ -1117,8 +1144,7 @@ fn cross_output_release_retains_follow_and_settles_on_receipt() {
     // membership receipt plus the exact target-view echo (cross follow
     // proves the view like a send).
     let target_view = transfer.target_workspace.clone();
-    let mut arrived_a = fact("win-a", "out-b", moved_a);
-    arrived_a.observed_workspace = Some(target_view.clone());
+    let arrived_a = fact("win-a", "out-b", moved_a);
     let mut settle = report(
         3,
         3,
@@ -1384,8 +1410,10 @@ fn incarnation_reset_clears_the_session() {
         ),
     );
     // The same old-generation id is stale after rebind, while the same id
-    // in the new generation starts fresh against reset state.
-    let old_generation = report(
+    // in the new generation starts fresh against reset state. The rebind
+    // declares executable/processId unavailable, so the post-rebind facts
+    // carry them null (a supported adapter sends no conflicting facts).
+    let mut old_generation = report(
         1,
         3,
         vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
@@ -1400,6 +1428,10 @@ fn incarnation_reset_clears_the_session() {
         vec![],
         true,
     );
+    for fact in &mut old_generation.windows {
+        fact.executable = None;
+        fact.process_id = None;
+    }
     rebind(&mut engine, "adapter-2");
     let mut stale_old_generation = old_generation.clone();
     stale_old_generation.adapter_incarnation = "adapter-2".to_owned();
@@ -1849,8 +1881,8 @@ fn focused_fullscreen_game_bars_update_and_release() {
     // release refuses with no commit.
     let (mut engine, ra, rb) = rig();
     let mut game = fact("game", "out-a", rect(0, 0, 800, 600));
-    game.fullscreen = true;
-    game.fit_excluded = true;
+    game.fullscreen = Some(true);
+    game.privileged = Some(true);
     accepted(
         &mut engine,
         &report(

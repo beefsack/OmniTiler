@@ -570,33 +570,59 @@ fn screen(output: &str, x: i32) -> ScreenReport {
 fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(wrect(x, 0, 40, 90)),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(crate::world_report::WindowType::Normal),
+        activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: crate::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
 fn fullscreen_fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
-        fullscreen: true,
+        fullscreen: Some(true),
         ..fact(window, output, x)
     }
 }
 
 fn float_fact(window: &str, output: &str, x: i32, y: i32) -> WindowFact {
     WindowFact {
-        floating: true,
         rect: Some(wrect(x, y, 200, 200)),
+        transient: Some(true),
         ..fact(window, output, x)
     }
 }
@@ -632,6 +658,7 @@ fn report(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -985,7 +1012,7 @@ fn world_fullscreen_float_skips_lattice_and_crosses_remembered() {
             two_screens(),
             vec![
                 WindowFact {
-                    fullscreen: true,
+                    fullscreen: Some(true),
                     ..float_fact("win-sub", "out-a", 100, 100)
                 },
                 float_fact("win-east", "out-a", 300, 100),
@@ -1032,7 +1059,7 @@ fn world_fullscreen_float_vertical_retains() {
             one_screen(),
             vec![
                 WindowFact {
-                    fullscreen: true,
+                    fullscreen: Some(true),
                     ..float_fact("win-sub", "out-a", 100, 100)
                 },
                 float_fact("win-above", "out-a", 100, 0),
@@ -1083,7 +1110,7 @@ fn world_fullscreen_float_single_output_retains() {
             one_screen(),
             vec![
                 WindowFact {
-                    fullscreen: true,
+                    fullscreen: Some(true),
                     ..float_fact("win-sub", "out-a", 100, 100)
                 },
                 float_fact("win-east", "out-a", 300, 100),

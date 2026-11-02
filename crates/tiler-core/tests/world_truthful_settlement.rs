@@ -30,19 +30,45 @@ fn screen(output: &str, x: i32) -> ScreenReport {
 fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(rect(x, 0, 40, 90)),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: tiler_core::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(tiler_core::world_report::WindowType::Normal),
+        activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: tiler_core::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
@@ -86,6 +112,7 @@ fn report(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
@@ -161,11 +188,31 @@ fn contradictory_receipt_never_proves_send_arrival() {
             true,
         ),
     );
-    let mut wrong = fact("win-a", "out-a", 0);
-    wrong.observed_workspace = Some(other);
+    let wrong = fact("win-a", "out-a", 0);
     let held = accepted(
         &mut engine,
-        &report(3, 3, vec![wrong], vec![], None, None, vec![], true),
+        &report(
+            3,
+            3,
+            vec![wrong],
+            vec![],
+            None,
+            None,
+            vec![MemberAttempt {
+                operation_id: "op-11".to_owned(),
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: target.clone(),
+                setter: FrameSetter::Accepted,
+                pre: None,
+                post: Some(WorkspaceRef::Logical {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: WorkspaceId(other.clone()),
+                }),
+                attempt_ms: 11,
+            }],
+            true,
+        ),
     );
     assert_eq!(
         held.transfers.len(),
@@ -233,11 +280,31 @@ fn migration_contradictory_receipt_does_not_settle() {
         .into_iter()
         .find(|id| id != &view_a)
         .expect("other target workspace");
-    let mut wrong = fact("win-a", "out-b", 800);
-    wrong.observed_workspace = Some(wrong_ws);
+    let wrong = fact("win-a", "out-b", 800);
     let held = accepted(
         &mut engine,
-        &report(4, 4, vec![wrong], vec![], None, None, vec![], true),
+        &report(
+            4,
+            4,
+            vec![wrong],
+            vec![],
+            None,
+            None,
+            vec![MemberAttempt {
+                operation_id: "op-11".to_owned(),
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                target_workspace: view_a.clone(),
+                setter: FrameSetter::Accepted,
+                pre: None,
+                post: Some(WorkspaceRef::Logical {
+                    output: OutputId("out-b".to_owned()),
+                    workspace: WorkspaceId(wrong_ws.clone()),
+                }),
+                attempt_ms: 11,
+            }],
+            true,
+        ),
     );
     assert!(
         held.transfers
@@ -288,7 +355,9 @@ fn host_owned_unknown_holds_exact_settles() {
     }
     fn hfact(window: &str, output: &str, x: i32, native: Option<&str>) -> WindowFact {
         let mut f = fact(window, output, x);
-        f.native_workspace = native.map(str::to_owned);
+        f.native_workspace = native
+            .map(|s| tiler_core::world_report::NativeWorkspaceFact::Value(s.to_owned()))
+            .unwrap_or(tiler_core::world_report::NativeWorkspaceFact::Omitted);
         f
     }
     fn with_native(mut r: WorldReport) -> WorldReport {
@@ -352,10 +421,8 @@ fn host_owned_unknown_holds_exact_settles() {
     );
     // Exact native receipt plus the exact follow-view echo settles: a
     // cross-output follow parent never settles on membership alone while
-    // the target view is still stale. The adapter logical receipt is
-    // ignored in host-owned mode (native-only); the native receipt proves.
-    let mut exact = hfact("win-a", "out-b", 800, Some(NB1));
-    exact.observed_workspace = Some(view_b.clone());
+    // the target view is still stale. The native receipt proves.
+    let exact = hfact("win-a", "out-b", 800, Some(NB1));
     let settled = accepted(
         &mut engine,
         &with_native(report(

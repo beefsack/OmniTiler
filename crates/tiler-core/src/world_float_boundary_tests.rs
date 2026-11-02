@@ -32,19 +32,45 @@ fn screen(output: &str, x: i32) -> ScreenReport {
 fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(rect(x, 0, 40, 90)),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(crate::world_report::WindowType::Normal),
+        activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: crate::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
@@ -92,6 +118,7 @@ fn report(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
@@ -142,16 +169,16 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
         .collect();
     assert_eq!(ring_a.len(), 2);
     let (ws_a, ws_b) = (ring_a[0].clone(), ring_a[1].clone());
-    // win-s tiled on ws_b (second workspace via observed receipt), win-t stays.
-    let mut s = fact("win-s", "out-a", 0);
-    s.observed_workspace = Some(ws_b.clone());
+    // win-t stays on the fresh workspace; win-s joins on the next
+    // report through the echoed view below.
+    let s = fact("win-s", "out-a", 0);
     accepted(
         &mut engine,
         &report(
             2,
             WorkspaceMode::PerOutputLocal,
             two_screens(),
-            vec![s.clone(), fact("win-t", "out-a", 100)],
+            vec![fact("win-t", "out-a", 100)],
             vec![],
             vec![],
             None,
@@ -168,7 +195,7 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![s.clone(), fact("win-t", "out-a", 100)],
-            vec![],
+            vec![("out-a", ws_b.as_str())],
             vec![],
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
@@ -313,8 +340,7 @@ fn default_seed_changes_only_new_workspaces() {
             )],
         )
         .expect("settings accepted");
-    let mut fill = fact("win-a", "out-a", 0);
-    fill.observed_workspace = Some(trailing);
+    let fill = fact("win-a", "out-a", 0);
     let calm = accepted(
         &mut engine,
         &report(
@@ -322,7 +348,7 @@ fn default_seed_changes_only_new_workspaces() {
             WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fill],
-            vec![],
+            vec![("out-a", trailing.as_str())],
             vec![],
             None,
             None,
@@ -449,9 +475,9 @@ fn shared_occupancy_union_keeps_b_only_workspace() {
         .map(|row| row.id.clone())
         .collect();
     assert!(ring.len() >= 2, "ring: {ring:?}");
-    // Occupy the second workspace from out-b only via a truthful receipt.
-    let mut b_only = fact("win-b", "out-b", 800);
-    b_only.observed_workspace = Some(ring[1].clone());
+    // Occupy the second workspace from out-b only: the newcomer homes
+    // to the echoed view.
+    let b_only = fact("win-b", "out-b", 800);
     let calm = accepted(
         &mut engine,
         &report(
@@ -459,7 +485,7 @@ fn shared_occupancy_union_keeps_b_only_workspace() {
             WorkspaceMode::Shared,
             two_screens(),
             vec![b_only],
-            vec![],
+            vec![("out-b", ring[1].as_str())],
             vec![],
             None,
             None,

@@ -34,19 +34,45 @@ fn screen(output: &str, x: i32) -> ScreenReport {
 fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(rect(x, 0, 40, 90)),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(crate::world_report::WindowType::Normal),
+        activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: crate::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
@@ -81,6 +107,7 @@ fn report(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -569,7 +596,7 @@ fn redundant_view_select_records_nothing_extra() {
 fn exception_focus_effect_leaves_memory_unchanged() {
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_fact = fact("win-f", "out-a", 0);
-    float_fact.floating = true;
+    float_fact.transient = Some(true);
     accepted(
         &mut engine,
         &report(
@@ -708,38 +735,24 @@ fn report_global_unique(
 }
 
 fn global_unique_engine() -> WorldEngine {
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let handshake = engine.handshake(&crate::connection::HandshakeRequest {
-        adapter: "adapter-1".to_owned(),
-        request: "handshake-1".to_owned(),
-        application_identity: crate::connection::ApplicationIdentity {
-            app_id: None,
-            executable: None,
-            process_id: None,
-        },
-        capabilities: crate::connection::HostCapabilities::without_native_identity(),
-    });
-    engine
-        .handle_settings(&crate::connection::SettingsRequest {
-            adapter: "adapter-1".to_owned(),
-            generation: handshake.generation.expect("accepted handshake"),
-            request: "settings-1".to_owned(),
-            revision: 0,
-            values: vec![(
-                "mode".to_owned(),
-                crate::connection::RawSettingValue::String("global-unique".to_owned()),
-            )],
-        })
-        .expect("initial settings accepted");
-    engine
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities::default(),
+        vec![(
+            "mode".to_owned(),
+            crate::connection::RawSettingValue::String("global-unique".to_owned()),
+        )],
+    )
+    .expect("generation")
 }
 
 #[test]
 fn global_swap_records_effect_target_in_moved_domain() {
-    // Global-unique nonempty swap where the incoming side remembers an
-    // ineligible window (unexplained fit-excluded keeps its link but
-    // view-return skips it): the pre-move capture falls through to the
-    // eligible win-b2, the view flight cannot prove (post-commit lookup
+    // Global-unique nonempty swap where the incoming side remembers a
+    // minimized window (minimized members keep their link but view
+    // return skips them: no staged row resolves): the pre-move capture
+    // falls through to the eligible win-b2, the view flight cannot prove (post-commit lookup
     // misses the stale staged domain, so retain_view returns NoEffect),
     // and the fallback emits the effect plus command-owned memory in the
     // moved domain before native writes. Relocate alone would preserve
@@ -775,9 +788,9 @@ fn global_swap_records_effect_target_in_moved_domain() {
             fact("win-b2", "out-b", 920),
         ]
     };
-    // Focus win-b1 so the incoming side remembers it, then mark it
-    // unexplained fit-excluded on the swap leg: still linked, but
-    // ineligible for view return.
+    // Focus win-b1 so the incoming side remembers it, then minimize
+    // it on the swap leg: still a member, but ineligible for view
+    // return (minimized rows never resolve a view candidate).
     accepted(
         &mut engine,
         &report_global_unique(2, windows(), "win-b1", None, None),
@@ -788,18 +801,23 @@ fn global_swap_records_effect_target_in_moved_domain() {
         Some(WindowId("win-b1".to_owned())),
         "precondition: incoming side remembers win-b1"
     );
-    let mut excluded = windows();
-    excluded
+    let mut swap_windows = windows();
+    swap_windows
         .iter_mut()
         .find(|row| row.window == WindowId("win-b1".to_owned()))
         .expect("win-b1 fact")
-        .fit_excluded = true;
+        .minimized = Some(true);
+    swap_windows
+        .iter_mut()
+        .find(|row| row.window == WindowId("win-b1".to_owned()))
+        .expect("win-b1 fact")
+        .rect = None;
     // Swap: select out-b's workspace on out-a.
     let reply = accepted(
         &mut engine,
         &report_global_unique(
             3,
-            excluded,
+            swap_windows,
             "",
             Some(11),
             Some(WorldCommand::SelectWorkspace {
@@ -1201,9 +1219,9 @@ fn float_lane_focus_leaves_memory_unchanged() {
     // requires a separate model decision.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_b = fact("win-f1", "out-a", 0);
-    float_b.floating = true;
+    float_b.transient = Some(true);
     let mut float_c = fact("win-f2", "out-a", 200);
-    float_c.floating = true;
+    float_c.transient = Some(true);
     let windows = || {
         vec![
             fact("win-a", "out-a", 400),
@@ -1663,7 +1681,7 @@ fn observed_float_away_back_returns_float() {
     // instead of the observed float.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
-    float_f.floating = true;
+    float_f.transient = Some(true);
     let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
     let first = accepted(
         &mut engine,
@@ -1731,9 +1749,9 @@ fn keyboard_float_lane_leave_before_observe_returns_float() {
     // named the tile instead.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_b = fact("win-f1", "out-a", 0);
-    float_b.floating = true;
+    float_b.transient = Some(true);
     let mut float_c = fact("win-f2", "out-a", 200);
-    float_c.floating = true;
+    float_c.transient = Some(true);
     let windows = || {
         vec![
             fact("win-a", "out-a", 400),
@@ -1819,7 +1837,7 @@ fn float_only_workspace_returns_float() {
     // candidates found no tiled member and emitted no focus.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
-    float_f.floating = true;
+    float_f.transient = Some(true);
     let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
     let first = accepted(
         &mut engine,
@@ -1901,7 +1919,7 @@ fn sticky_shown_away_from_home_returns_sticky() {
     // retained logical view.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
-    sticky_s.sticky = true;
+    sticky_s.sticky = Some(true);
     let windows = || vec![fact("win-a", "out-a", 0), sticky_s.clone()];
     let first = accepted(
         &mut engine,
@@ -2003,7 +2021,7 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
     // identity instead of letting it outrank the latest target tile.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
-    sticky_s.sticky = true;
+    sticky_s.sticky = Some(true);
     let first = accepted(
         &mut engine,
         &report(
@@ -2027,10 +2045,10 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
         .find(|id| **id != home.workspace.0)
         .expect("second workspace")
         .clone();
-    // Pin the sticky home with a truthful receipt from here on: the link
-    // never migrates, only the shown view moves.
-    let mut sticky_home = sticky_s.clone();
-    sticky_home.observed_workspace = Some(home.workspace.0.clone());
+    // Pin the sticky home: without a receipt vocabulary the link
+    // follows the shown view, so the sticky links at the spare while
+    // shown there. Focus still records through the effective domain.
+    let sticky_home = sticky_s.clone();
     let windows = || vec![fact("win-a", "out-a", 0), sticky_home.clone()];
     // Show the spare (no tile there yet).
     let _ = accepted(
@@ -2073,8 +2091,11 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
     );
     assert_eq!(
         home_of(&engine, &WindowId("win-s".to_owned())),
-        Some(home.clone()),
-        "receipt-pinned sticky stays linked at home"
+        Some(DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: crate::directional::WorkspaceId(other.clone()),
+        }),
+        "sticky follows the shown spare without a receipt vocabulary"
     );
     // Detour home, then return: the foreign home memory answers while the
     // spare owns nothing.
@@ -2192,7 +2213,7 @@ fn last_active_sticky_after_tile_same_home_returns_sticky() {
     // Contract: last active (sticky) wins the away/back return.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
-    sticky_s.sticky = true;
+    sticky_s.sticky = Some(true);
     let windows = || {
         vec![
             fact("win-a", "out-a", 0),
@@ -2291,7 +2312,7 @@ fn last_active_sticky_after_tile_on_spare_returns_sticky() {
     // focused while the spare is shown. Contract: the later sticky wins.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
-    sticky_s.sticky = true;
+    sticky_s.sticky = Some(true);
     let first = accepted(
         &mut engine,
         &report(
@@ -2315,8 +2336,8 @@ fn last_active_sticky_after_tile_on_spare_returns_sticky() {
         .find(|id| **id != home.workspace.0)
         .expect("second workspace")
         .clone();
-    let mut sticky_home = sticky_s.clone();
-    sticky_home.observed_workspace = Some(home.workspace.0.clone());
+    // No receipt vocabulary: the sticky links at the shown view.
+    let sticky_home = sticky_s.clone();
     let windows = || vec![fact("win-a", "out-a", 0), sticky_home.clone()];
     let _ = accepted(
         &mut engine,
@@ -2420,7 +2441,7 @@ fn last_active_later_tile_after_float_returns_tile() {
     // Contract: last active (tile) wins. Control: must pass.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
-    float_f.floating = true;
+    float_f.transient = Some(true);
     let windows = || {
         vec![
             fact("win-a", "out-a", 0),
@@ -2517,7 +2538,7 @@ fn last_active_unchanged_tile_observation_preserves_float_command() {
     // clobber the recorded float.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
-    float_f.floating = true;
+    float_f.transient = Some(true);
     let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
     let first = accepted(
         &mut engine,
@@ -2601,7 +2622,7 @@ fn last_active_closed_float_prunes_memory_no_ghost() {
     // surviving tile with no ghost focus. Control: must pass.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
-    float_f.floating = true;
+    float_f.transient = Some(true);
     let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
     let first = accepted(
         &mut engine,
@@ -2691,7 +2712,7 @@ fn last_active_no_focus_report_preserves_float_memory() {
     // preserves the recorded float. Control: must pass.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
-    float_f.floating = true;
+    float_f.transient = Some(true);
     let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
     let first = accepted(
         &mut engine,
@@ -2776,7 +2797,7 @@ fn last_active_no_focus_empty_target_with_visible_sticky_stays_quiet() {
     // records nothing; home memory survives for the return.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
-    sticky_s.sticky = true;
+    sticky_s.sticky = Some(true);
     let windows = || vec![fact("win-a", "out-a", 0), sticky_s.clone()];
     let first = accepted(
         &mut engine,
@@ -2870,7 +2891,7 @@ fn last_active_tiled_operation_focus_supersedes_stale_sticky() {
     // leave/return yields the tile.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
-    sticky_s.sticky = true;
+    sticky_s.sticky = Some(true);
     let windows = || {
         vec![
             fact("win-a", "out-a", 0),
@@ -2986,7 +3007,7 @@ fn last_active_send_stay_survivor_supersedes_stale_sticky() {
     // float slot so leave/return yields the tile.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut float_f = fact("win-f", "out-a", 200);
-    float_f.floating = true;
+    float_f.transient = Some(true);
     let windows = || {
         vec![
             fact("win-a", "out-a", 0),
@@ -3095,7 +3116,7 @@ fn last_active_admission_newcomer_supersedes_stale_sticky() {
     // slot so leave/return yields the newcomer.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
-    sticky_s.sticky = true;
+    sticky_s.sticky = Some(true);
     let windows = || {
         vec![
             fact("win-a", "out-a", 0),
@@ -3194,7 +3215,7 @@ fn last_active_close_after_tile_supersession_falls_back_to_tiled() {
     // sticky exception.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
-    sticky_s.sticky = true;
+    sticky_s.sticky = Some(true);
     let windows = || {
         vec![
             fact("win-a", "out-a", 0),
@@ -3329,7 +3350,7 @@ fn sticky_visibility_switch_mints_no_admission_and_no_spare_memory() {
     // stays quiet, and the return names the remembered tile.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let mut sticky_s = fact("win-s", "out-a", 200);
-    sticky_s.sticky = true;
+    sticky_s.sticky = Some(true);
     let windows = || vec![fact("win-a", "out-a", 0), sticky_s.clone()];
     let first = accepted(
         &mut engine,

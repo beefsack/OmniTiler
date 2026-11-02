@@ -49,13 +49,30 @@
 //!             refuses the report)
 //! report-level primary: "primary":id|null (optional: absent means
 //!             unknown, null refuses, an opaque id designates)
-//! windows[] (facts): {win, out, rect:[x,y,w,h]|null, floating:bool,
-//!             fitExcluded:bool, fullscreen:bool, maximized:bool, sticky:bool,
-//!             fixedAuto:bool, fixedSuppress:bool, minimized:bool, hints:{...},
-//!             observedWs:""|id|null, nativeWs:""|id|null (optional, tolerant:
-//!             missing backfills null; capability-gated host-owned native
-//!             desktop id, separate namespace from observedWs; without
-//!             hostOwned it refuses)}
+//! windows[] (facts): {win, out:null|id, rect:[x,y,w,h]|null,
+//!             fullscreen:bool|null, maximized:bool|null, sticky:bool|null,
+//!             minimized:bool|null, hints:{...}, nativeWs:""|id|null (optional,
+//!             spelling-retained: missing stays omitted, null stays null,
+//!             empty stays "", capability-gated host-owned
+//!             native desktop id, separate namespace from logical ids;
+//!             without hostOwned it refuses), hostHidden:bool|null,
+//!             privileged:bool|null, managed:bool|null,
+//!             acceptsInput:bool|null, activationInhibited:bool|null,
+//!             toolWindow:bool|null, owned:bool|null, transient:bool|null,
+//!             modal:bool|null, resizable:bool|null, above:bool|null,
+//!             below:bool|null, owner:id|null, parent:id|null, role:text|null,
+//!             appId:text|null, executable:text|null, processId:id|null,
+//!             class:text|null, title:text|null, type:token|null,
+//!             activationPolicy:token|null, layer:i32|null,
+//!             fullscreenOwner:token|null, fullscreenExitable:bool|null,
+//!             suppressionAvailable:bool|null,
+//!             visibility:{visible:bool|null, suppressionOwned:bool|null},
+//!             lastWrite:{...}|null} (retired floating/fitExcluded/fixedAuto/
+//!             fixedSuppress/observedWs/shell/tool/ownedDialog/dialog/noActivate/
+//!             cannotControl keys hold the identifiable row;
+//!             unknown keys refuse; bad win/out-shape/rect/hints refuse;
+//!             overbound text and wrong-typed values hold; unknown enum
+//!             tokens refuse)
 //! views[]: {out, view:""|id} (empty means unknown)
 //! closed[]: [id...] (explicit closes)
 //! native[] (host-owned observations, requires hostOwned): {out, order:[id...],
@@ -186,16 +203,20 @@
 use tiler_core::boundary::CoreCommand;
 use tiler_core::bounds::{is_opaque_id, valid_carried_rect};
 use tiler_core::connection::RawSettingValue;
+use tiler_core::connection::{valid_identity_text, valid_process_identity_text};
 use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::ids::{
     MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_NATIVE_WORKSPACE_ID_LEN, NativeWorkspaceId,
 };
 use tiler_core::world_report::{
-    AuthorityScope, HeldScreenRow, HoldReason, NativeObservation, OutputIdentity,
-    PresentationIngress, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport,
-    ScreenView, TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand,
-    WorldReply, WorldReport, check_screen_structure, validate_report_reason,
+    ActivationPolicy, AuthorityScope, FullscreenOwner, HeldScreenRow, HeldWindowRow, HoldReason,
+    LastWrite, LastWritePath, LastWriteProperty, NativeObservation, NativeWorkspaceFact,
+    OutputIdentity, PresentationIngress, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
+    ScreenReport, ScreenView, TransferKind, VisibilityFact, VisibilityReason, VisibilitySample,
+    VisibilitySetter, WORLD_CONTRACT_VERSION, WindowFact, WindowType, WorkspaceRef, WorldCommand,
+    WorldReply, WorldReport, check_screen_structure, check_window_structure,
+    validate_report_reason,
 };
 
 /// World protocol contract version (equals the core world contract version).
@@ -604,58 +625,709 @@ fn opt_point_or_null(
     }
 }
 
-fn decode_fact(value: &serde_json::Value) -> Result<WindowFact> {
-    let map = as_object(value)?;
-    check_keys_with_optional(
-        map,
-        &[
-            "win",
-            "out",
-            "rect",
-            "floating",
-            "fitExcluded",
-            "fullscreen",
-            "maximized",
-            "sticky",
-            "fixedAuto",
-            "fixedSuppress",
-            "minimized",
-            "hints",
-            "observedWs",
-        ],
-        &["nativeWs"],
-    )?;
-    // A null rect is an explicitly unreadable frame: the staged scope
-    // holds instead of authorizing geometry, never a silent absence.
-    let rect = opt_rect_or_null(map, "rect")?;
-    let native_workspace = match map.get("nativeWs") {
-        None => None,
-        Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::String(text)) if text.is_empty() => None,
+/// Strict v4 window-row outcome: either a usable row or an identifiable
+/// row held narrowly with its carried fields retained. Anything
+/// unidentifiable (bad `win`) or structurally wrong (unknown non-retired
+/// keys, bad `out` shape, duplicate lifetime, bad `rect`, bad `hints`)
+/// refuses the whole report.
+enum WindowRowOutcome {
+    Valid(Box<WindowFact>),
+    Held(HeldWindowRow),
+}
+
+/// Nullable bounded native text (`role`, `appId`, `executable`, `class`,
+/// `title`): the key is required; `null` is unknown; strings must be
+/// nonempty, NUL-free, and within the metadata bound. Overbound text is
+/// reported as held by the caller (identifiable value failure), never
+/// refused here: this helper refuses only empty/NUL text
+/// (`unknown-value`) and wrong types (`malformed`).
+fn opt_text_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<String>> {
+    match map.get(key) {
+        None => Err(malformed()),
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) => {
+            if !valid_identity_text(text) {
+                return Err(unknown_value());
+            }
+            Ok(Some(text.clone()))
+        }
+        Some(_) => Err(malformed()),
+    }
+}
+
+/// Nullable native process identity: the key is required; `null` is
+/// unknown; strings must satisfy the opaque process-identity grammar.
+/// Wrong types refuse (`malformed`); bad grammar refuses
+/// (`unknown-value`).
+fn opt_process_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<String>> {
+    match map.get(key) {
+        None => Err(malformed()),
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) => {
+            if !valid_process_identity_text(text) {
+                return Err(unknown_value());
+            }
+            Ok(Some(text.clone()))
+        }
+        Some(_) => Err(malformed()),
+    }
+}
+
+/// Nullable window/output reference (`owner`, `parent`): the key is
+/// required; `null` is an unbound relationship; strings must be opaque
+/// lifetime ids. Wrong types refuse (`malformed`); bad grammar refuses
+/// (`unknown-value`).
+fn opt_window_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<WindowId>> {
+    match map.get(key) {
+        None => Err(malformed()),
+        Some(serde_json::Value::Null) => Ok(None),
         Some(serde_json::Value::String(text)) => {
             if !is_opaque_id(text) {
                 return Err(unknown_value());
             }
-            Some(text.clone())
+            Ok(Some(WindowId(text.clone())))
+        }
+        Some(_) => Err(malformed()),
+    }
+}
+
+/// Nullable `i32` layer: the key is required; `null` is unknown; numbers
+/// must fit `i32`. Wrong types refuse (`malformed`); out-of-range numbers
+/// refuse (`unknown-value`).
+fn opt_layer_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<i32>> {
+    match map.get(key) {
+        None => Err(malformed()),
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_i64()
+            .and_then(|n| i32::try_from(n).ok())
+            .map(Some)
+            .ok_or_else(|| {
+                if value.is_number() {
+                    unknown_value()
+                } else {
+                    malformed()
+                }
+            }),
+    }
+}
+
+/// Nullable closed token decoder: the key is required; `null` is unknown;
+/// strings parse through `parse`, unknown tokens refuse
+/// (`unknown-value`), wrong types refuse (`malformed`).
+fn opt_token_or_null<T>(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    parse: fn(&str) -> Option<T>,
+) -> Result<Option<T>> {
+    match map.get(key) {
+        None => Err(malformed()),
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) => parse(text).map(Some).ok_or_else(unknown_value),
+        Some(_) => Err(malformed()),
+    }
+}
+
+/// Strict nested `VisibilityFact` decode: both keys required and nullable;
+/// wrong types refuse (`malformed`).
+fn decode_visibility(value: &serde_json::Value) -> Result<VisibilityFact> {
+    let map = as_object(value)?;
+    check_keys(map, &["visible", "suppressionOwned"])?;
+    Ok(VisibilityFact {
+        visible: opt_bool_or_null(map, "visible")?,
+        suppression_owned: opt_bool_or_null(map, "suppressionOwned")?,
+    })
+}
+
+/// Strict nested `VisibilitySample` decode: `obs` is a required canonical
+/// decimal counter string; every other key is required and nullable;
+/// wrong types and bad counters refuse.
+fn decode_visibility_sample(value: &serde_json::Value) -> Result<VisibilitySample> {
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "obs",
+            "lifetimeMatched",
+            "visibility",
+            "minimized",
+            "hostHidden",
+        ],
+    )?;
+    Ok(VisibilitySample {
+        obs: req_u64_str(map, "obs")?,
+        lifetime_matched: opt_bool_or_null(map, "lifetimeMatched")?,
+        visibility: decode_visibility(map.get("visibility").ok_or_else(malformed)?)?,
+        minimized: opt_bool_or_null(map, "minimized")?,
+        host_hidden: opt_bool_or_null(map, "hostHidden")?,
+    })
+}
+
+/// Strict nested `LastWrite` decode: every key required; `pre`/`post` are
+/// nullable samples; unknown property/path/setter/reason tokens refuse
+/// (`unknown-value`).
+fn decode_last_write(value: &serde_json::Value) -> Result<LastWrite> {
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "property", "target", "revision", "path", "setter", "reason", "pre", "post",
+        ],
+    )?;
+    let property_text = req_str(map, "property")?;
+    let property = LastWriteProperty::parse(property_text).ok_or_else(unknown_value)?;
+    let path_text = req_str(map, "path")?;
+    let path = LastWritePath::parse(path_text).ok_or_else(unknown_value)?;
+    let setter_text = req_str(map, "setter")?;
+    let setter = VisibilitySetter::parse(setter_text).ok_or_else(unknown_value)?;
+    let reason_text = req_str(map, "reason")?;
+    let reason = VisibilityReason::parse(reason_text).ok_or_else(unknown_value)?;
+    let pre = match map.get("pre") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => Some(decode_visibility_sample(value)?),
+    };
+    let post = match map.get("post") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => Some(decode_visibility_sample(value)?),
+    };
+    Ok(LastWrite {
+        property,
+        target: req_bool(map, "target")?,
+        revision: req_u64_str(map, "revision")?,
+        path,
+        setter,
+        reason,
+        pre,
+        post,
+    })
+}
+
+/// Retain one identifiable-but-bad window row: every carried key in
+/// canonical schema order, then any other carried keys lexicographically,
+/// with an `InvalidFact` diagnostic only for the row's actual reported
+/// output (an output-less row carries no scope authority: `None`). The nested `hints`, `visibility`, and `lastWrite` objects are
+/// retained in schema order with unknown sub-keys after in lexicographic
+/// order so the canonical writer spells the exact carried row. `ordinal`
+/// is the row's original index in the carried `windows` array.
+fn held_window_row(
+    fact: &WindowFact,
+    ordinal: usize,
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> HeldWindowRow {
+    const SCHEMA_ORDER: &[&str] = &[
+        "win",
+        "out",
+        "rect",
+        "fullscreen",
+        "maximized",
+        "sticky",
+        "minimized",
+        "hints",
+        "nativeWs",
+        "hostHidden",
+        "privileged",
+        "managed",
+        "acceptsInput",
+        "activationInhibited",
+        "toolWindow",
+        "owned",
+        "transient",
+        "modal",
+        "resizable",
+        "above",
+        "below",
+        "owner",
+        "parent",
+        "role",
+        "appId",
+        "executable",
+        "processId",
+        "class",
+        "title",
+        "type",
+        "activationPolicy",
+        "layer",
+        "fullscreenOwner",
+        "fullscreenExitable",
+        "suppressionAvailable",
+        "visibility",
+        "lastWrite",
+    ];
+    const HINTS_ORDER: &[&str] = &["minW", "minH", "maxW", "maxH"];
+    const VISIBILITY_ORDER: &[&str] = &["visible", "suppressionOwned"];
+    const LAST_WRITE_ORDER: &[&str] = &[
+        "property", "target", "revision", "path", "setter", "reason", "pre", "post",
+    ];
+    fn order_object(value: &serde_json::Value, order: &[&str]) -> RawSettingValue {
+        let RawSettingValue::Object(entries) = raw_setting_value(value) else {
+            return raw_setting_value(value);
+        };
+        let mut rest: std::collections::BTreeMap<String, RawSettingValue> =
+            entries.into_iter().collect();
+        let mut ordered = Vec::with_capacity(rest.len());
+        for key in order {
+            if let Some(item) = rest.remove(*key) {
+                ordered.push((key.to_string(), item));
+            }
+        }
+        for (key, item) in rest {
+            ordered.push((key, item));
+        }
+        RawSettingValue::Object(ordered)
+    }
+    let mut fields = Vec::with_capacity(map.len());
+    for key in SCHEMA_ORDER {
+        if let Some(value) = map.get(*key) {
+            let retained = match *key {
+                "hints" => order_object(value, HINTS_ORDER),
+                "visibility" => order_object(value, VISIBILITY_ORDER),
+                "lastWrite" => order_object(value, LAST_WRITE_ORDER),
+                _ => raw_setting_value(value),
+            };
+            fields.push((key.to_string(), retained));
+        }
+    }
+    let mut extra: Vec<&String> = map
+        .keys()
+        .filter(|key| !SCHEMA_ORDER.contains(&key.as_str()))
+        .collect();
+    extra.sort();
+    for key in extra {
+        fields.push((key.clone(), raw_setting_value(&map[key])));
+    }
+    // Nested visibility samples keep schema order inside the retained
+    // `lastWrite` object: `pre`/`post` reorder to sample order and their
+    // nested `visibility` objects to visibility order, so witnesses are
+    // canonical regardless of carried order.
+    for (key, value) in fields.iter_mut() {
+        if key == "lastWrite" {
+            reorder_last_write(value);
+        }
+    }
+    HeldWindowRow {
+        window: fact.window.clone(),
+        ordinal,
+        output: fact.output.clone(),
+        fields,
+        diagnostic: fact.output.as_ref().map(|out| RowDiagnostic {
+            scope: AuthorityScope::Output(out.clone()),
+            row: RowDiagnosticLane::Window,
+            id: Some(fact.window.0.clone()),
+            kind: RowDiagnosticKind::InvalidFact,
+        }),
+        kind: RowDiagnosticKind::InvalidFact,
+    }
+}
+
+/// Reorder the nested objects of a retained `lastWrite` value into
+/// schema order in place: the object itself is already ordered by the
+/// caller; `pre`/`post` sample objects reorder to sample order and their
+/// nested `visibility` objects to visibility order. Unknown sub-keys sort
+/// after in lexicographic order.
+fn reorder_last_write(value: &mut RawSettingValue) {
+    const SAMPLE_ORDER: &[&str] = &[
+        "obs",
+        "lifetimeMatched",
+        "visibility",
+        "minimized",
+        "hostHidden",
+    ];
+    const VISIBILITY_ORDER: &[&str] = &["visible", "suppressionOwned"];
+    fn order_entries(
+        entries: Vec<(String, RawSettingValue)>,
+        order: &[&str],
+    ) -> Vec<(String, RawSettingValue)> {
+        let mut rest: std::collections::BTreeMap<String, RawSettingValue> =
+            entries.into_iter().collect();
+        let mut ordered = Vec::with_capacity(rest.len());
+        for key in order {
+            if let Some(item) = rest.remove(*key) {
+                ordered.push((key.to_string(), item));
+            }
+        }
+        for (key, item) in rest {
+            ordered.push((key, item));
+        }
+        ordered
+    }
+    fn order_visibility(value: &mut RawSettingValue) {
+        if let RawSettingValue::Object(entries) = value {
+            let taken = std::mem::take(entries);
+            *entries = order_entries(taken, VISIBILITY_ORDER);
+        }
+    }
+    let RawSettingValue::Object(entries) = value else {
+        return;
+    };
+    for (key, item) in entries.iter_mut() {
+        if (key == "pre" || key == "post")
+            && let RawSettingValue::Object(sample) = item
+        {
+            let taken = std::mem::take(sample);
+            *sample = order_entries(taken, SAMPLE_ORDER);
+            for (sub_key, sub_value) in sample.iter_mut() {
+                if sub_key == "visibility" {
+                    order_visibility(sub_value);
+                }
+            }
+        }
+    }
+}
+
+/// Retired window keys: adapter membership verdicts the core now derives
+/// (legacy floating/fit/fixed/observed plus legacy shell/tool/dialog
+/// verdicts). Any carried retired key holds the identifiable row (fail
+/// closed), never a silent drop and never an unknown-field refusal.
+const RETIRED_WINDOW_KEYS: &[&str] = &[
+    "floating",
+    "fitExcluded",
+    "fixedAuto",
+    "fixedSuppress",
+    "observedWs",
+    "shell",
+    "tool",
+    "ownedDialog",
+    "dialog",
+    "noActivate",
+    "cannotControl",
+];
+
+/// Strict v4 window-row decode: `{win, out, rect, fullscreen, maximized,
+/// sticky, minimized, hints, nativeWs?, hostHidden, privileged, managed,
+/// acceptsInput, activationInhibited, toolWindow, owned, transient, modal,
+/// resizable, above, below, owner, parent, role, appId, executable,
+/// processId, class, title, type, activationPolicy, layer, fullscreenOwner,
+/// fullscreenExitable, suppressionAvailable, visibility, lastWrite}` with
+/// nested `hints`/`visibility`/`lastWrite` objects.
+/// - Unknown top-level keys refuse (`unknown-field`), except the retired
+///   membership keys above which hold the identifiable row.
+/// - A missing or non-opaque `win` refuses the whole report (missing is
+///   `malformed`, a bad id or a duplicate lifetime is `unknown-value`
+///   grammar / `snapshot-invalid` duplicate refusal).
+/// - `out` is required but nullable: `null` is unknown affinity (never a
+///   current-output guess, never structurally invalid); a bad id shape
+///   refuses. Unknown-but-valid outputs stay valid: the core retains the
+///   prior home and holds the scope.
+/// - `rect` failures refuse like the other structural shapes; `hints`
+///   is required but nullable (`null` is unknown, never a default empty
+///   hint set), and a wrong-typed `hints` refuses.
+/// - Overbound metadata text and wrong-typed value fields hold the
+///   identifiable row; unknown enum tokens refuse (`unknown-value`).
+/// - Structural id/duplicate/rect violations refuse before any narrow hold
+///   below (shared policy with the core structural check).
+fn decode_fact(
+    value: &serde_json::Value,
+    ordinal: usize,
+    seen_windows: &mut std::collections::BTreeSet<String>,
+) -> Result<WindowRowOutcome> {
+    const REQUIRED: &[&str] = &[
+        "win",
+        "out",
+        "rect",
+        "fullscreen",
+        "maximized",
+        "sticky",
+        "minimized",
+        "hints",
+        "hostHidden",
+        "privileged",
+        "managed",
+        "acceptsInput",
+        "activationInhibited",
+        "toolWindow",
+        "owned",
+        "transient",
+        "modal",
+        "resizable",
+        "above",
+        "below",
+        "owner",
+        "parent",
+        "role",
+        "appId",
+        "executable",
+        "processId",
+        "class",
+        "title",
+        "type",
+        "activationPolicy",
+        "layer",
+        "fullscreenOwner",
+        "fullscreenExitable",
+        "suppressionAvailable",
+        "visibility",
+        "lastWrite",
+    ];
+    let map = as_object(value)?;
+    check_keys_with_optional(
+        map,
+        REQUIRED,
+        &[
+            "nativeWs",
+            "floating",
+            "fitExcluded",
+            "fixedAuto",
+            "fixedSuppress",
+            "observedWs",
+            "shell",
+            "tool",
+            "ownedDialog",
+            "dialog",
+            "noActivate",
+            "cannotControl",
+        ],
+    )?;
+    let window = match map.get("win") {
+        Some(serde_json::Value::String(text)) if is_opaque_id(text) => WindowId(text.clone()),
+        Some(serde_json::Value::String(_)) => return Err(unknown_value()),
+        _ => return Err(malformed()),
+    };
+    // A null rect is an explicitly unreadable frame: the homed scope
+    // holds instead of authorizing geometry, never a silent absence.
+    let rect = opt_rect_or_null(map, "rect")?;
+    let output = match map.get("out") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            Some(OutputId(text.clone()))
         }
         Some(_) => return Err(malformed()),
     };
-    Ok(WindowFact {
-        window: WindowId(req_id(map, "win")?),
-        output: OutputId(req_id(map, "out")?),
+    let hints = match map.get("hints") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => Some(decode_hints(value)?),
+    };
+    let native_workspace = match map.get("nativeWs") {
+        None => NativeWorkspaceFact::Omitted,
+        Some(serde_json::Value::Null) => NativeWorkspaceFact::Null,
+        Some(serde_json::Value::String(text)) if text.is_empty() => {
+            NativeWorkspaceFact::Value(String::new())
+        }
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            NativeWorkspaceFact::Value(text.clone())
+        }
+        Some(_) => return Err(malformed()),
+    };
+    // Retired membership verdicts hold the identifiable row (fail closed).
+    let retired = RETIRED_WINDOW_KEYS.iter().any(|key| map.contains_key(*key));
+    // Wrong-typed value fields and overbound metadata hold the
+    // identifiable row instead of refusing it. The strict decoders below
+    // re-check every shape; this pre-scan only decides Valid vs Held so
+    // the structural gate below fires before any hold.
+    let mut held = retired;
+    let mut overbound = false;
+    fn is_wrong_bool(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+        matches!(map.get(key), Some(v) if !v.is_null() && !v.is_boolean())
+    }
+    for key in [
+        "fullscreen",
+        "maximized",
+        "sticky",
+        "minimized",
+        "hostHidden",
+        "privileged",
+        "managed",
+        "acceptsInput",
+        "activationInhibited",
+        "toolWindow",
+        "owned",
+        "transient",
+        "modal",
+        "resizable",
+        "above",
+        "below",
+        "fullscreenExitable",
+        "suppressionAvailable",
+    ] {
+        if is_wrong_bool(map, key) {
+            held = true;
+        }
+    }
+    for key in [
+        "owner",
+        "parent",
+        "role",
+        "appId",
+        "executable",
+        "processId",
+        "class",
+        "title",
+        "type",
+        "activationPolicy",
+        "fullscreenOwner",
+    ] {
+        match map.get(key) {
+            None | Some(serde_json::Value::Null) => {}
+            Some(serde_json::Value::String(_)) => {}
+            Some(_) => {
+                held = true;
+            }
+        }
+    }
+    if matches!(map.get("layer"), Some(v) if !v.is_null() && !v.is_number()) {
+        held = true;
+    }
+    if matches!(map.get("visibility"), Some(v) if !v.is_object()) {
+        held = true;
+    }
+    if matches!(map.get("lastWrite"), Some(v) if !v.is_null() && !v.is_object()) {
+        held = true;
+    }
+    for key in ["role", "appId", "executable", "class", "title"] {
+        if let Some(serde_json::Value::String(text)) = map.get(key)
+            && text.len() > tiler_core::world_report::MAX_METADATA_TEXT_BYTES
+        {
+            overbound = true;
+            held = true;
+        }
+    }
+    // Bad process grammar holds like overbound text (typed parity): the
+    // strict decoder below would otherwise refuse what the typed grader
+    // holds. Bad owner/parent grammar is never held: it refuses below even
+    // when this row also carries a hold cause.
+    if let Some(serde_json::Value::String(text)) = map.get("processId")
+        && !tiler_core::connection::valid_process_identity_text(text)
+    {
+        held = true;
+    }
+    // Minimal identifiable candidate for the structural gate: win, out,
+    // rect, and the duplicate check. Value shapes decode strictly below.
+    let candidate = WindowFact {
+        window: window.clone(),
+        output: output.clone(),
         rect,
-        floating: req_bool(map, "floating")?,
-        fit_excluded: req_bool(map, "fitExcluded")?,
-        fullscreen: req_bool(map, "fullscreen")?,
-        maximized: req_bool(map, "maximized")?,
-        sticky: req_bool(map, "sticky")?,
-        fixed_auto: req_bool(map, "fixedAuto")?,
-        fixed_suppress: req_bool(map, "fixedSuppress")?,
-        hints: decode_hints(map.get("hints").ok_or_else(malformed)?)?,
-        minimized: req_bool(map, "minimized")?,
-        observed_workspace: opt_id_or_null(map, "observedWs")?,
+        fullscreen: None,
+        maximized: None,
+        sticky: None,
+        minimized: None,
+        hints,
         native_workspace,
-    })
+        host_hidden: None,
+        privileged: None,
+        managed: None,
+        accepts_input: None,
+        activation_inhibited: None,
+        tool_window: None,
+        owned: None,
+        transient: None,
+        modal: None,
+        resizable: None,
+        above: None,
+        below: None,
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: None,
+        process_id: None,
+        class: None,
+        title: None,
+        window_type: None,
+        activation_policy: None,
+        layer: None,
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: VisibilityFact {
+            visible: None,
+            suppression_owned: None,
+        },
+        last_write: None,
+    };
+    if held || overbound {
+        // Structural id/duplicate/rect violations refuse before any
+        // narrow hold (shared policy with the core structural check).
+        // Bad owner/parent grammar refuses here too: a hold cause
+        // (retired/overbound/wrong-type/bad-process) must not mask it.
+        // Native grammar already refused above; bad process holds.
+        for key in ["owner", "parent"] {
+            if let Some(serde_json::Value::String(text)) = map.get(key)
+                && !is_opaque_id(text)
+            {
+                return Err(unknown_value());
+            }
+        }
+        if let Some(reason) = check_window_structure(&candidate, seen_windows) {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: reason,
+            });
+        }
+        return Ok(WindowRowOutcome::Held(held_window_row(
+            &candidate, ordinal, map,
+        )));
+    }
+    let fact = WindowFact {
+        window: candidate.window.clone(),
+        output: candidate.output.clone(),
+        rect: candidate.rect,
+        fullscreen: opt_bool_or_null(map, "fullscreen")?,
+        maximized: opt_bool_or_null(map, "maximized")?,
+        sticky: opt_bool_or_null(map, "sticky")?,
+        minimized: opt_bool_or_null(map, "minimized")?,
+        hints: candidate.hints,
+        native_workspace: candidate.native_workspace.clone(),
+        host_hidden: opt_bool_or_null(map, "hostHidden")?,
+        privileged: opt_bool_or_null(map, "privileged")?,
+        managed: opt_bool_or_null(map, "managed")?,
+        accepts_input: opt_bool_or_null(map, "acceptsInput")?,
+        activation_inhibited: opt_bool_or_null(map, "activationInhibited")?,
+        tool_window: opt_bool_or_null(map, "toolWindow")?,
+        owned: opt_bool_or_null(map, "owned")?,
+        transient: opt_bool_or_null(map, "transient")?,
+        modal: opt_bool_or_null(map, "modal")?,
+        resizable: opt_bool_or_null(map, "resizable")?,
+        above: opt_bool_or_null(map, "above")?,
+        below: opt_bool_or_null(map, "below")?,
+        owner: opt_window_or_null(map, "owner")?,
+        parent: opt_window_or_null(map, "parent")?,
+        role: opt_text_or_null(map, "role")?,
+        app_id: opt_text_or_null(map, "appId")?,
+        executable: opt_text_or_null(map, "executable")?,
+        process_id: opt_process_or_null(map, "processId")?,
+        class: opt_text_or_null(map, "class")?,
+        title: opt_text_or_null(map, "title")?,
+        window_type: opt_token_or_null(map, "type", WindowType::parse)?,
+        activation_policy: opt_token_or_null(map, "activationPolicy", ActivationPolicy::parse)?,
+        layer: opt_layer_or_null(map, "layer")?,
+        fullscreen_owner: opt_token_or_null(map, "fullscreenOwner", FullscreenOwner::parse)?,
+        fullscreen_exitable: opt_bool_or_null(map, "fullscreenExitable")?,
+        suppression_available: opt_bool_or_null(map, "suppressionAvailable")?,
+        visibility: decode_visibility(map.get("visibility").ok_or_else(malformed)?)?,
+        last_write: match map.get("lastWrite") {
+            None => return Err(malformed()),
+            Some(serde_json::Value::Null) => None,
+            Some(value) => Some(decode_last_write(value)?),
+        },
+    };
+    if let Some(reason) = check_window_structure(&fact, seen_windows) {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: reason,
+        });
+    }
+    Ok(WindowRowOutcome::Valid(Box::new(fact)))
 }
 
 /// Strict v4 screen-row outcome: either a usable row or an identifiable
@@ -1916,8 +2588,18 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     }
     let windows_value = map.get("windows").ok_or_else(malformed)?;
     let mut windows = Vec::new();
-    for item in windows_value.as_array().ok_or_else(malformed)? {
-        windows.push(decode_fact(item)?);
+    let mut held_windows = Vec::new();
+    let mut seen_windows = std::collections::BTreeSet::new();
+    for (ordinal, item) in windows_value
+        .as_array()
+        .ok_or_else(malformed)?
+        .iter()
+        .enumerate()
+    {
+        match decode_fact(item, ordinal, &mut seen_windows)? {
+            WindowRowOutcome::Valid(fact) => windows.push(*fact),
+            WindowRowOutcome::Held(held) => held_windows.push(held),
+        }
     }
     let views_value = map.get("views").ok_or_else(malformed)?;
     let mut views = Vec::new();
@@ -2091,6 +2773,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             Some(_) => return Err(malformed()),
         },
         held_screens,
+        held_windows,
     };
     if let Some(reason) = validate_report_reason(&report) {
         return Err(WorldProtocolError {

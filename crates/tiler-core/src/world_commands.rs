@@ -165,6 +165,17 @@ impl WorldEngine {
                         };
                         let members_a = Self::swap_source_members(self, &src_a);
                         let members_b = Self::swap_source_members(self, &src_b);
+                        // Unknown sticky never partially swaps: a source
+                        // member without proven sticky state refuses with
+                        // the migration vocabulary and no mutation.
+                        if Self::swap_source_unknown_sticky(self, &src_a)
+                            || Self::swap_source_unknown_sticky(self, &src_b)
+                        {
+                            return CommandApplied::Rejected {
+                                kind: KIND_MIGRATION,
+                                message: MSG_MIGRATION,
+                            };
+                        }
                         let has_session_a = self.engine.session(&src_a).is_some();
                         let has_session_b = self.engine.session(&src_b).is_some();
                         if !has_session_a
@@ -272,7 +283,7 @@ impl WorldEngine {
                                         .staged
                                         .facts
                                         .get(&observed.window)
-                                        .is_some_and(|fact| fact.sticky)
+                                        .is_some_and(|fact| fact.sticky != Some(false))
                                     {
                                         ids.insert(observed.window.clone());
                                     }
@@ -281,14 +292,14 @@ impl WorldEngine {
                                     self.staged
                                         .facts
                                         .get(&link.window)
-                                        .is_some_and(|fact| fact.sticky)
+                                        .is_some_and(|fact| fact.sticky != Some(false))
                                 });
                                 let minimized_sticky =
                                     session.minimized_entries().iter().any(|(window, _, _)| {
                                         self.staged
                                             .facts
                                             .get(window)
-                                            .is_some_and(|fact| fact.sticky)
+                                            .is_some_and(|fact| fact.sticky != Some(false))
                                     });
                                 (ids, tiled_sticky || minimized_sticky)
                             };
@@ -912,13 +923,20 @@ impl WorldEngine {
                 message: MSG_IN_FLIGHT,
             };
         }
-        let decision =
-            crate::session::Session::decide_maximize_toggle(fact.fullscreen, fact.maximized);
+        // Unknown overlay authority holds: never infer a toggle default
+        // from a null fact.
+        let (Some(fullscreen), Some(maximized)) = (fact.fullscreen, fact.maximized) else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let decision = crate::session::Session::decide_maximize_toggle(fullscreen, maximized);
         self.command_result = Some(CommandResult::Maximize {
             window: window.clone(),
             maximized: decision.maximized,
             clear_fullscreen: decision.clear_fullscreen,
-            was_maximized: fact.maximized,
+            was_maximized: maximized,
         });
         self.note_command(command_seq);
         CommandApplied::NoEffect
@@ -929,6 +947,36 @@ impl WorldEngine {
     /// Retained member set for one global-unique swap side: the single-owner
     /// core membership homed at the source (tiled, float, minimized alike;
     /// floating scopes carry no session) plus staged facts homed there.
+    pub(crate) fn swap_source_unknown_sticky(engine: &WorldEngine, source: &DomainKey) -> bool {
+        // Raw unknown sticky (missing fact or `None`) must reject actions
+        // requiring proven non-sticky, never silently swap a partial
+        // subset. Proven sticky stays out; proven non-sticky moves.
+        let mut candidates: Vec<WindowId> = Vec::new();
+        for (window, state) in &engine.members {
+            if state.home == *source {
+                candidates.push(window.clone());
+            }
+        }
+        for domain in &engine.staged.domains {
+            if domain.key != *source {
+                continue;
+            }
+            for window in &domain.windows {
+                candidates.push(window.window.clone());
+            }
+            candidates.extend(domain.minimized.iter().cloned());
+        }
+        candidates.sort();
+        candidates.dedup();
+        candidates.iter().any(|window| {
+            !engine
+                .staged
+                .facts
+                .get(window)
+                .is_some_and(|fact| fact.sticky == Some(false) || fact.sticky == Some(true))
+        })
+    }
+
     /// Sticky facts stay out: they are adapter-owned all-desktop lifetimes,
     /// never swapped member state. Sorted and deduplicated for deterministic
     /// settlement.
@@ -953,7 +1001,7 @@ impl WorldEngine {
                 .staged
                 .facts
                 .get(window)
-                .is_some_and(|fact| fact.sticky)
+                .is_some_and(|fact| fact.sticky != Some(false))
         });
         members.sort();
         members.dedup();
@@ -1133,6 +1181,15 @@ impl WorldEngine {
             .session(&source_key)
             .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
         let (revision, fingerprint) = accepted.unwrap_or((0, 0));
+        // Unknown sticky never partially migrates: a source member
+        // without proven sticky state refuses with no mutation, even on
+        // the tiled session path below.
+        if Self::swap_source_unknown_sticky(self, &source_key) {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            };
+        }
         let source_staged = source_staged.expect("readable source staged");
         let staged_output = OutputDomain {
             id: source_key.output.clone(),
@@ -1158,14 +1215,19 @@ impl WorldEngine {
         // retained-transfer commit below runs unchanged. No focus or
         // frame writes either way.
         if self.floating_scopes.contains(&source_key) {
+            // Unknown sticky never silently omits a member: reject with
+            // no partial mutation instead of claiming a partial success.
+            if Self::swap_source_unknown_sticky(self, &source_key) {
+                return CommandApplied::Rejected {
+                    kind: KIND_MIGRATION,
+                    message: MSG_MIGRATION,
+                };
+            }
             let members = Self::swap_source_members(self, &source_key);
             let floats = members
                 .iter()
                 .filter(|window| {
-                    self.staged
-                        .facts
-                        .get(*window)
-                        .is_some_and(|fact| fact.floating)
+                    self.derived_for(window).floating
                         || self
                             .members
                             .get(*window)
@@ -1234,13 +1296,29 @@ impl WorldEngine {
                     })
                     .unwrap_or_default();
                 for (window, homed) in &self.staged.homing {
+                    // Unknown sticky never silently includes or omits: a
+                    // homed minimized lifetime without proven sticky
+                    // state refuses with no partial mutation.
                     if homed == &source_key
                         && !members.iter().any(|member| member == window)
-                        && self
-                            .staged
-                            .facts
-                            .get(window)
-                            .is_some_and(|fact| fact.minimized && !fact.sticky)
+                        && self.staged.facts.get(window).is_some_and(|fact| {
+                            fact.minimized == Some(true)
+                                && fact.sticky != Some(true)
+                                && fact.sticky != Some(false)
+                        })
+                    {
+                        return CommandApplied::Rejected {
+                            kind: KIND_MIGRATION,
+                            message: MSG_MIGRATION,
+                        };
+                    }
+                }
+                for (window, homed) in &self.staged.homing {
+                    if homed == &source_key
+                        && !members.iter().any(|member| member == window)
+                        && self.staged.facts.get(window).is_some_and(|fact| {
+                            fact.minimized == Some(true) && fact.sticky == Some(false)
+                        })
                     {
                         members.push(window.clone());
                     }

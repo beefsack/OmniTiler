@@ -62,16 +62,14 @@ fn report_clears(
 
 fn born_maximized(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
-        maximized: true,
-        fit_excluded: true,
+        maximized: Some(true),
         ..fact(window, output, x)
     }
 }
 
 fn born_fullscreen(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
-        fullscreen: true,
-        fit_excluded: true,
+        fullscreen: Some(true),
         ..fact(window, output, x)
     }
 }
@@ -87,11 +85,8 @@ fn fixed_hints() -> WindowSizeHints {
 
 fn fixed_maximized(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
-        maximized: true,
-        fit_excluded: true,
-        floating: true,
-        fixed_auto: true,
-        hints: fixed_hints(),
+        maximized: Some(true),
+        hints: Some(fixed_hints()),
         ..fact(window, output, x)
     }
 }
@@ -299,8 +294,8 @@ fn disabled_explicit_directional_clear_unaffected() {
     // with the capability off.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
-        floating: true,
-        maximized: true,
+        maximized: Some(true),
+        transient: Some(true),
         ..fact("win-max", "out-a", 100)
     };
     let first = report(
@@ -356,8 +351,7 @@ fn accepted_attempt_plus_unmaximized_proves_and_retires() {
     );
     let op = desire_op(&first, "win-born").expect("desire rides");
     let cleared = WindowFact {
-        maximized: false,
-        fit_excluded: false,
+        maximized: Some(false),
         ..fact("win-born", "out-a", 100)
     };
     let second = accepted(
@@ -408,8 +402,7 @@ fn external_clear_without_attempt_abandons() {
     );
     assert_eq!(engine.born_retained_len(), 1);
     let cleared = WindowFact {
-        maximized: false,
-        fit_excluded: false,
+        maximized: Some(false),
         ..fact("win-born", "out-a", 100)
     };
     accepted(
@@ -511,8 +504,7 @@ fn throw_latches_ambiguity_through_unchanged_reads() {
     // Unmaximized facts arrive with no new attempt: the staged throw is
     // ambiguous evidence, never external-clear proof.
     let cleared = WindowFact {
-        maximized: false,
-        fit_excluded: false,
+        maximized: Some(false),
         ..fact("win-born", "out-a", 100)
     };
     accepted(
@@ -596,8 +588,7 @@ fn async_success_completes_on_later_unmaximized_facts() {
     );
     assert_eq!(engine.born_retained_len(), 1, "still maximized holds");
     let cleared = WindowFact {
-        maximized: false,
-        fit_excluded: false,
+        maximized: Some(false),
         ..fact("win-born", "out-a", 100)
     };
     accepted(
@@ -641,8 +632,7 @@ fn fullscreen_birth_holds_then_exit_clears() {
     assert!(op.starts_with("op-born-"));
     // Proof retires the exit with no re-entry into the held set.
     let cleared = WindowFact {
-        maximized: false,
-        fit_excluded: false,
+        maximized: Some(false),
         ..fact("win-fs", "out-a", 100)
     };
     accepted(
@@ -682,7 +672,6 @@ fn fullscreen_exit_to_plain_consumes_hold_without_clear() {
         ),
     );
     let plain = WindowFact {
-        fit_excluded: false,
         ..fact("win-fs", "out-a", 100)
     };
     accepted(
@@ -716,7 +705,6 @@ fn later_fullscreen_on_admitted_tile_never_enters_held() {
     // clear when it restores to maximized.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let plain = WindowFact {
-        fit_excluded: false,
         ..fact("win-a", "out-a", 100)
     };
     accepted(
@@ -802,11 +790,8 @@ fn fixed_fullscreen_exit_skips_clear() {
         ),
     );
     let exit = WindowFact {
-        maximized: true,
-        fit_excluded: true,
-        floating: true,
-        fixed_auto: true,
-        hints: fixed_hints(),
+        maximized: Some(true),
+        hints: Some(fixed_hints()),
         ..fact("win-fs", "out-a", 100)
     };
     let second = accepted(
@@ -1028,7 +1013,7 @@ fn minimized_and_unreadable_hold_without_spend() {
     );
     let op = desire_op(&first, "win-born").expect("desire rides");
     let minimized = WindowFact {
-        minimized: true,
+        minimized: Some(true),
         ..born_maximized("win-born", "out-a", 100)
     };
     let second = accepted(
@@ -1105,7 +1090,7 @@ fn sticky_birth_never_clears() {
     // Sticky identities keep their overlay: no mint, no retry loop.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let sticky = WindowFact {
-        sticky: true,
+        sticky: Some(true),
         ..born_maximized("win-sticky", "out-a", 100)
     };
     let reply = accepted(
@@ -1214,7 +1199,6 @@ fn later_maximize_of_admitted_tile_never_mints() {
     // only first-sightings bind, never later transitions of admitted tiles.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let plain = WindowFact {
-        fit_excluded: false,
         ..fact("win-a", "out-a", 100)
     };
     accepted(
@@ -1326,7 +1310,6 @@ fn implicit_departure_restore_is_not_birth() {
     // close_prunes_and_replacement_rearms.)
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let plain = WindowFact {
-        fit_excluded: false,
         ..fact("win-a", "out-a", 100)
     };
     accepted(
@@ -1380,8 +1363,7 @@ fn complete_departures_bound_all_born_sets() {
     // win-old resolves (attempted) while win-hold holds fullscreen on the
     // established domain.
     let cleared = WindowFact {
-        maximized: false,
-        fit_excluded: false,
+        maximized: Some(false),
         ..fact("win-old", "out-a", 100)
     };
     accepted(
@@ -1410,13 +1392,11 @@ fn complete_departures_bound_all_born_sets() {
             vec![screen("out-a", 0)],
             vec![
                 WindowFact {
-                    maximized: false,
-                    fit_excluded: false,
+                    maximized: Some(false),
                     ..fact("win-old", "out-a", 100)
                 },
                 born_fullscreen("win-hold", "out-a", 200),
                 WindowFact {
-                    fit_excluded: false,
                     ..fact("win-seen", "out-a", 300)
                 },
             ],
@@ -1543,13 +1523,11 @@ fn cohort_clear_settles_and_converges_frames() {
     let opb = desire_op(&first, "win-b").expect("b desires");
     assert_ne!(opa, opb, "distinct one-shot tokens");
     let cleared_a = WindowFact {
-        maximized: false,
-        fit_excluded: false,
+        maximized: Some(false),
         ..fact("win-a", "out-a", 100)
     };
     let cleared_b = WindowFact {
-        maximized: false,
-        fit_excluded: false,
+        maximized: Some(false),
         ..fact("win-b", "out-a", 300)
     };
     let second = accepted(
@@ -1742,11 +1720,11 @@ fn cohort_minimized_pair_holds_without_spend() {
     // Minimized cohort facts prove nothing: no binding mints.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let minimized_a = WindowFact {
-        minimized: true,
+        minimized: Some(true),
         ..born_maximized("win-a", "out-a", 100)
     };
     let minimized_b = WindowFact {
-        minimized: true,
+        minimized: Some(true),
         ..born_maximized("win-b", "out-a", 300)
     };
     let reply = accepted(
@@ -1770,11 +1748,11 @@ fn cohort_floating_pair_never_clears() {
     // Floating cohort identities keep their overlay with no clear.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let floating_a = WindowFact {
-        floating: true,
+        transient: Some(true),
         ..born_maximized("win-a", "out-a", 100)
     };
     let floating_b = WindowFact {
-        floating: true,
+        transient: Some(true),
         ..born_maximized("win-b", "out-a", 300)
     };
     let reply = accepted(
@@ -1803,7 +1781,6 @@ fn migration_gap_defers_born_mint_until_complete_inventory() {
     let mut engine = born_clear_engine();
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let plain = WindowFact {
-        fit_excluded: false,
         ..fact("win-keep", "out-a", 100)
     };
     let first = accepted(
@@ -1884,7 +1861,7 @@ fn sticky_flip_abandons_with_no_retry() {
     );
     assert_eq!(engine.born_retained_len(), 1);
     let sticky = WindowFact {
-        sticky: true,
+        sticky: Some(true),
         ..born_maximized("win-born", "out-a", 100)
     };
     let flipped = accepted(
@@ -1931,7 +1908,8 @@ fn floating_fact_flip_abandons_and_latches() {
     );
     assert_eq!(engine.born_retained_len(), 1);
     let floating = WindowFact {
-        floating: true,
+        transient: Some(true),
+        window_type: Some(crate::world_report::WindowType::Dialog),
         ..born_maximized("win-born", "out-a", 100)
     };
     let flipped = accepted(
@@ -1979,7 +1957,8 @@ fn floating_flip_gapped_withholds_desire_then_abandons() {
     );
     let op = desire_op(&first, "win-born").expect("desire rides");
     let floating = WindowFact {
-        floating: true,
+        transient: Some(true),
+        window_type: Some(crate::world_report::WindowType::Dialog),
         ..born_maximized("win-born", "out-a", 100)
     };
     let mut gapped = report(
@@ -2025,7 +2004,7 @@ fn sticky_flip_gapped_withholds_desire() {
     );
     assert_eq!(engine.born_retained_len(), 1);
     let sticky = WindowFact {
-        sticky: true,
+        sticky: Some(true),
         ..born_maximized("win-born", "out-a", 100)
     };
     let mut gapped = report(
@@ -2328,4 +2307,69 @@ fn migration_gap_withholds_born_clear_authority() {
     );
     assert_eq!(engine.born_retained_len(), 1);
     assert!(desire_op(&recovered, "win-born").is_some());
+}
+
+#[test]
+fn retained_maximized_slot_keeps_controlled_reservation() {
+    // Retained maximized slots (a later maximize of an admitted tile)
+    // keep their controlled reservation: no born binding mints, the row
+    // keeps its allocation with controlled authorities, and no clear
+    // token rides. This guards the pre-clear cohort hold (which holds
+    // only homes with an outstanding born binding) against blanketing
+    // retained slots or keep-maximized reservations.
+    let mut engine = born_clear_engine();
+    let plain = WindowFact {
+        ..fact("win-keep", "out-a", 100)
+    };
+    accepted(
+        &mut engine,
+        &report(1, 1, vec![screen("out-a", 0)], vec![plain], None, None),
+    );
+    assert_eq!(engine.born_retained_len(), 0);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![born_maximized("win-keep", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(engine.born_retained_len(), 0, "retained slot never mints");
+    assert_eq!(desire_op(&reply, "win-keep"), None);
+    let row = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-keep")
+        .expect("retained slot row");
+    assert!(
+        row.allocation.is_some(),
+        "retained slot keeps its allocation"
+    );
+    assert_eq!(
+        row.frame_authority,
+        ScopeAuthority::Controlled,
+        "retained slot stays controlled"
+    );
+    assert_eq!(
+        row.membership_authority,
+        ScopeAuthority::Controlled,
+        "retained slot keeps membership"
+    );
+    let scope = reply
+        .scopes
+        .iter()
+        .find(|scope| {
+            scope
+                .scope
+                .covers_workspace(&OutputId("out-a".to_owned()), "ws-1")
+        })
+        .expect("retained scope row");
+    assert_eq!(
+        scope.authority,
+        ScopeAuthority::Controlled,
+        "retained scope stays controlled"
+    );
 }

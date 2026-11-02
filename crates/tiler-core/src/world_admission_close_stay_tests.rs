@@ -5,12 +5,13 @@
 //! remembered leaf, and stay sends pin exact source focus. Logical-first:
 //! screens plus window facts only.
 
-use crate::directional::{OutputId, WindowId};
+use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{StaySourceFocus, WorldEngine, WorldOutcome};
 use crate::world_report::{
-    ScreenReport, ScreenView, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    FrameSetter, MemberAttempt, ScreenReport, ScreenView, WORLD_CONTRACT_VERSION, WindowFact,
+    WorkspaceRef, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -31,26 +32,52 @@ fn screen(output: &str, x: i32) -> ScreenReport {
 fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(rect(x, 0, 40, 90)),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(crate::world_report::WindowType::Normal),
+        activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: crate::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
 fn overlay(window: &str, output: &str, x: i32, fullscreen: bool, maximized: bool) -> WindowFact {
     WindowFact {
-        fullscreen,
-        maximized,
+        fullscreen: Some(fullscreen),
+        maximized: Some(maximized),
         ..fact(window, output, x)
     }
 }
@@ -96,6 +123,7 @@ fn report(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -908,7 +936,7 @@ fn numbered_select_empty_and_minimized_targets_stay_quiet() {
     // minimized window. The updated remembered survivor win-a is the valid
     // focus target.
     let mut minimized_b = fact("win-b", "out-a", 100);
-    minimized_b.minimized = true;
+    minimized_b.minimized = Some(true);
     minimized_b.rect = None;
     let back = accepted(
         &mut engine,
@@ -972,7 +1000,7 @@ fn numbered_select_empty_and_minimized_targets_stay_quiet() {
         ),
     );
     let mut minimized_a = fact("win-a", "out-a", 0);
-    minimized_a.minimized = true;
+    minimized_a.minimized = Some(true);
     minimized_a.rect = None;
     accepted(
         &mut sole,
@@ -1572,22 +1600,32 @@ fn select_hidden_stay_arrival_without_history_focuses_first_leaf() {
             }),
         ),
     );
-    // Membership receipt settles the stay flight; the spare session is
+    // A member-attempt receipt settles the stay flight; the spare session is
     // born focusless (stay keeps the source selected).
-    let mut arrived_b = fact("win-b", "out-a", 100);
-    arrived_b.observed_workspace = Some(other.clone());
-    let settled = accepted(
-        &mut engine,
-        &report(
-            3,
-            vec![fact("win-a", "out-a", 0), arrived_b],
-            vec![("out-a", view_a.as_str())],
-            vec![],
-            "win-a",
-            None,
-            None,
-        ),
+    let arrived_b = fact("win-b", "out-a", 100);
+    let mut settle = report(
+        3,
+        vec![fact("win-a", "out-a", 0), arrived_b],
+        vec![("out-a", view_a.as_str())],
+        vec![],
+        "win-a",
+        None,
+        None,
     );
+    settle.member_attempts.push(MemberAttempt {
+        operation_id: "op-11".to_owned(),
+        window: WindowId("win-b".to_owned()),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: other.clone(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: Some(WorkspaceRef::Logical {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(other.clone()),
+        }),
+        attempt_ms: 11,
+    });
+    let settled = accepted(&mut engine, &settle);
     assert!(
         settled.transfers.is_empty(),
         "stay flight settles: {:?}",
@@ -1689,12 +1727,12 @@ fn select_remembered_fit_excluded_skips_to_eligible_later() {
     // stays a linked tiled member, so the return must skip it rather
     // than lose focus.
     let mut excluded_b = fact("win-b", "out-a", 100);
-    excluded_b.fit_excluded = true;
+    excluded_b.privileged = Some(true);
     let back = accepted(
         &mut engine,
         &report(
             4,
-            vec![fact("win-a", "out-a", 0), excluded_b],
+            vec![fact("win-a", "out-a", 0), excluded_b.clone()],
             vec![("out-a", other.as_str())],
             vec![],
             "",
@@ -1706,9 +1744,60 @@ fn select_remembered_fit_excluded_skips_to_eligible_later() {
         ),
     );
     assert_eq!(view_of(&back, "out-a"), view_a);
-    assert_eq!(back.effects.len(), 1, "{:?}", back.effects);
-    assert_eq!(back.effects[0].target.0, "win-a");
-    assert_eq!(back.effects[0].id, "fx-12");
+    // The privileged flip converges the excluded slot away exactly like a
+    // close of the retained focus with no new focus proof: the close-survivor
+    // hold fires, survivors publish held, and the return stages no focus
+    // until the adapter proves the new focus.
+    assert!(back.effects.is_empty(), "{:?}", back.effects);
+    let held_scope = back
+        .scopes
+        .iter()
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), &view_a)
+        })
+        .expect("return scope");
+    assert_eq!(
+        held_scope.authority,
+        crate::world_report::ScopeAuthority::Hold(crate::world_report::HoldReason::Unreadable)
+    );
+    // Focus proof recovers: the excluded lifetime stays gone while the
+    // eligible survivor takes the controlled scope with no new effect.
+    let recovered = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![fact("win-a", "out-a", 0), excluded_b],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let scope = recovered
+        .scopes
+        .iter()
+        .find(|status| {
+            status
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), &view_a)
+        })
+        .expect("recovered scope");
+    assert_eq!(
+        scope.authority,
+        crate::world_report::ScopeAuthority::Controlled
+    );
+    assert!(recovered.effects.is_empty());
+    assert!(
+        !recovered
+            .windows
+            .iter()
+            .any(|row| row.lifetime.0 == "win-b"),
+        "{:?}",
+        recovered.windows
+    );
 }
 
 #[test]
@@ -1763,20 +1852,30 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
             }),
         ),
     );
-    let mut arrived_b = fact("win-b", "out-a", 100);
-    arrived_b.observed_workspace = Some(other.clone());
-    let settled = accepted(
-        &mut engine,
-        &report(
-            3,
-            vec![fact("win-a", "out-a", 0), arrived_b],
-            vec![("out-a", view_a.as_str())],
-            vec![],
-            "win-a",
-            None,
-            None,
-        ),
+    let arrived_b = fact("win-b", "out-a", 100);
+    let mut settle = report(
+        3,
+        vec![fact("win-a", "out-a", 0), arrived_b],
+        vec![("out-a", view_a.as_str())],
+        vec![],
+        "win-a",
+        None,
+        None,
     );
+    settle.member_attempts.push(MemberAttempt {
+        operation_id: "op-11".to_owned(),
+        window: WindowId("win-b".to_owned()),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: other.clone(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: Some(WorkspaceRef::Logical {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(other.clone()),
+        }),
+        attempt_ms: 11,
+    });
+    let settled = accepted(&mut engine, &settle);
     assert!(
         settled.transfers.is_empty(),
         "stay flight settles: {:?}",
@@ -1802,22 +1901,31 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
         ),
     );
     let mut sticky_b = fact("win-b", "out-a", 100);
-    sticky_b.observed_workspace = Some(other.clone());
-    sticky_b.sticky = true;
-    let mut arrived_a = fact("win-a", "out-a", 0);
-    arrived_a.observed_workspace = Some(other.clone());
-    let settled = accepted(
-        &mut engine,
-        &report(
-            5,
-            vec![sticky_b, arrived_a],
-            vec![("out-a", view_a.as_str())],
-            vec![],
-            "",
-            None,
-            None,
-        ),
+    sticky_b.sticky = Some(true);
+    let arrived_a = fact("win-a", "out-a", 0);
+    let mut settle = report(
+        5,
+        vec![sticky_b, arrived_a],
+        vec![("out-a", view_a.as_str())],
+        vec![],
+        "",
+        None,
+        None,
     );
+    settle.member_attempts.push(MemberAttempt {
+        operation_id: "op-12".to_owned(),
+        window: WindowId("win-a".to_owned()),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: other.clone(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: Some(WorkspaceRef::Logical {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(other.clone()),
+        }),
+        attempt_ms: 12,
+    });
+    let settled = accepted(&mut engine, &settle);
     assert!(
         settled.transfers.is_empty(),
         "second stay flight settles: {:?}",
@@ -1830,7 +1938,7 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
     );
     // Selecting the arrival workspace skips sticky win-b for win-a.
     let mut sticky_select = fact("win-b", "out-a", 100);
-    sticky_select.sticky = true;
+    sticky_select.sticky = Some(true);
     let shown = accepted(
         &mut engine,
         &report(

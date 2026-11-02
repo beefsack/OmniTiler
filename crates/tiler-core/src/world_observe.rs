@@ -75,6 +75,48 @@ impl WorldEngine {
         self.staged.homing.get(window).cloned()
     }
 
+    /// Whether one window rides a narrowly held row this report: live
+    /// presence with no usable facts. Held windows keep membership and
+    /// slots but authorize no writes.
+    pub(crate) fn is_held_window(&self, window: &WindowId) -> bool {
+        self.staged
+            .held_windows
+            .iter()
+            .any(|held| held.window == *window)
+    }
+
+    /// Whether one window is safety/own-process excluded this report.
+    /// Excluded windows hold no membership, slot, or control, complete
+    /// and incomplete alike.
+    pub(crate) fn is_excluded_window(&self, window: &WindowId) -> bool {
+        self.staged.excluded.contains(window)
+    }
+
+    /// Core-derived classification for one staged window. Missing entries
+    /// (never expected: facts and derived stage together) fail closed to
+    /// a held carrier: no float, no tile, no geometry.
+    pub(crate) fn derived_for(
+        &self,
+        window: &WindowId,
+    ) -> crate::window_classify::ClassifiedWindow {
+        self.staged.derived.get(window).copied().unwrap_or(
+            crate::window_classify::ClassifiedWindow {
+                floating: false,
+                fit_excluded: true,
+                fixed_auto: false,
+                fixed_suppress: false,
+                overlay_fullscreen: false,
+                overlay_maximized: false,
+                sticky: false,
+                hidden: false,
+                hold: true,
+                excluded: true,
+                own_excluded: false,
+                border_only: false,
+            },
+        )
+    }
+
     /// Output owning one logical workspace id, if any ring names it.
     /// Floating-only fallback: a floating window's physical frame stays
     /// put while its logical home crosses outputs, so the physical
@@ -163,14 +205,53 @@ impl WorldEngine {
     /// native current map in [`WorldEngine::converge_native_pre`]).
     /// Tiler-owned outputs keep the logical route unchanged.
     pub(crate) fn stage_facts(&mut self, report: &WorldReport) {
+        let prior_homing = self.staged.homing.clone();
+        // Resolve output-less held rows to a real scope: the row's actual
+        // reported output first, then the retained home (live session
+        // membership, else the previous report's homing). An unhomed
+        // output-less row keeps `None`: evidence retained, no authority.
+        // The preserved `kind` carries the invalid-vs-conflicting reason
+        // so scope resolution never loses it; the rebuilt diagnostic
+        // reuses that kind, defaulting to `InvalidFact` only when the
+        // row never graded a reason. Corpus held rows always carry
+        // their output, so this path never fires there.
+        let resolved_held: Vec<crate::world_report::HeldWindowRow> = report
+            .held_windows
+            .iter()
+            .map(|held| {
+                let scope = match &held.output {
+                    Some(out) => Some(AuthorityScope::Output(out.clone())),
+                    None => self
+                        .engine
+                        .retained_home_any(&held.window)
+                        .or_else(|| prior_homing.get(&held.window).map(|key| key.output.clone()))
+                        .map(AuthorityScope::Output),
+                };
+                let mut held = held.clone();
+                held.diagnostic = scope.map(|scope| RowDiagnostic {
+                    scope,
+                    row: RowDiagnosticLane::Window,
+                    id: Some(held.window.0.clone()),
+                    kind: held.kind,
+                });
+                held
+            })
+            .collect();
+        let staged_diagnostics: Vec<RowDiagnostic> = report
+            .held_screens
+            .iter()
+            .map(|held| held.diagnostic.clone())
+            .chain(
+                resolved_held
+                    .iter()
+                    .filter_map(|held| held.diagnostic.clone()),
+            )
+            .collect();
         let mut staged = StagedReport {
             screens: report.screens.clone(),
             held_screens: report.held_screens.clone(),
-            diagnostics: report
-                .held_screens
-                .iter()
-                .map(|held| held.diagnostic.clone())
-                .collect(),
+            held_windows: resolved_held,
+            diagnostics: staged_diagnostics,
             gesture_barrier: report.gesture_barrier,
             ..StagedReport::default()
         };
@@ -185,11 +266,93 @@ impl WorldEngine {
                 .echoes
                 .insert(view.output.0.clone(), view.view.clone());
         }
+        let unavailable: &[crate::connection::FactName] = self
+            .capabilities()
+            .map(|capabilities| capabilities.unavailable_facts.as_slice())
+            .unwrap_or(&[]);
+        let own_process_id = self
+            .application_identity()
+            .and_then(|identity| identity.process_id.as_deref());
+        let fixed_predicate = self.engine.fixed_size_predicate();
+        let maximize_supported = self
+            .capabilities()
+            .map(|caps| caps.maximize)
+            .unwrap_or(true);
         for fact in &report.windows {
+            // Core-derived classification per staged fact: retained tile
+            // membership from the previous member set, explicit
+            // tile/float overrides from the session and retained floats.
+            // Resizable never feeds admission here.
+            let member_tiled = self
+                .members
+                .get(&fact.window)
+                .is_some_and(|state| !state.floating);
+            // The members map refreshes its floating mark from this same
+            // classification, so a capacity-floated exception still reads
+            // tiled here and would force the staged observation untiled
+            // (the D5 retry then mismatches the retained exception as
+            // `partial-observation`). The engine session is ground truth
+            // for tile vs exception: never claim retained tile for a
+            // window the session holds floated.
+            let engine_exception = self.engine.domain_keys().iter().any(|key| {
+                self.engine
+                    .session(key)
+                    .is_some_and(|session| session.is_exception(&fact.window))
+            });
+            let retained_tiled = member_tiled && !engine_exception;
+            // Same-lifetime safety-exclusion fallback: the sweep retires
+            // the excluded slot (never a native close), so a lifted
+            // lifetime would otherwise lose its approved intent. The
+            // neutral ledger restores only what the session held when the
+            // exclusion landed; explicit closes clear it, never reuse it.
+            let automatic_fixed = self.engine.is_automatic_fixed_float_any(&fact.window)
+                || self
+                    .excluded_intent
+                    .get(&fact.window)
+                    .is_some_and(|intent| intent.automatic_fixed);
+            let tile_override = self.engine.has_fixed_tile_override_any(&fact.window)
+                || self
+                    .excluded_intent
+                    .get(&fact.window)
+                    .is_some_and(|intent| intent.tile_override);
+            let explicit_float = self
+                .retained_floats
+                .iter()
+                .any(|retained| retained.window == fact.window);
+            let classified =
+                crate::window_classify::classify_window(crate::window_classify::ClassifyInput {
+                    fact,
+                    unavailable,
+                    fixed_predicate,
+                    maximize_supported,
+                    retained_tiled,
+                    automatic_fixed,
+                    tile_override,
+                    explicit_float,
+                    own_process_id,
+                });
+            // Own-process exclusion drops the facts before closes: the
+            // project's own overlays, borders, pager, carriers, and
+            // proof/control UI never enter membership, geometry, or
+            // focus. A separate process of the same executable is never
+            // excluded by identity alone.
+            if classified.own_excluded {
+                staged.excluded.insert(fact.window.clone());
+                continue;
+            }
+            // Known safety exclusions stay staged as facts (so focus and
+            // publish gates can deny them explicitly) but are tracked
+            // alongside: they never home, never keep membership or
+            // slots, and never authorize writes, complete and
+            // incomplete alike.
+            if classified.excluded {
+                staged.excluded.insert(fact.window.clone());
+            }
             staged
                 .fact_output
                 .insert(fact.window.clone(), fact.output.clone());
             staged.facts.insert(fact.window.clone(), fact.clone());
+            staged.derived.insert(fact.window.clone(), classified);
         }
         for id in &report.closed {
             staged.closes.insert(id.clone());
@@ -198,7 +361,9 @@ impl WorldEngine {
     }
 
     /// Occupied logical ids on one screen's ring: homed non-sticky
-    /// facts, for trailing lifecycle and send-ring resolution.
+    /// facts, for trailing lifecycle and send-ring resolution. Held rows
+    /// count through their retained homes: a narrow hold is live
+    /// presence, never an empty workspace.
     pub(crate) fn ring_occupied(&self, output: &OutputId) -> BTreeSet<String> {
         let mut occupied = BTreeSet::new();
         if let Some(ring) = self.mapping.get(&output.0) {
@@ -213,8 +378,17 @@ impl WorldEngine {
                             .staged
                             .facts
                             .get(window)
-                            .is_some_and(|fact| !fact.sticky)
+                            .is_some_and(|fact| fact.sticky != Some(true))
                     {
+                        occupied.insert(id.clone());
+                        break;
+                    }
+                }
+                if occupied.contains(id) {
+                    continue;
+                }
+                for held in &self.staged.held_windows {
+                    if self.core_homing(&held.window).as_ref() == Some(&key) {
                         occupied.insert(id.clone());
                         break;
                     }
@@ -314,9 +488,13 @@ impl WorldEngine {
     /// against adapter truth.
     pub(crate) fn build_staged_domains(&mut self, report: &WorldReport) {
         let mut homing: BTreeMap<WindowId, DomainKey> = BTreeMap::new();
-        for fact in &report.windows {
-            if let Some(key) = self.logical_homing(report, &fact.window) {
-                homing.insert(fact.window.clone(), key);
+        // Stage admitted facts only: own-process exclusion and known
+        // safety exclusions never home (logical_homing enforces both).
+        let mut staged_ids: Vec<WindowId> = self.staged.facts.keys().cloned().collect();
+        staged_ids.sort_by(|a, b| a.0.cmp(&b.0));
+        for window in &staged_ids {
+            if let Some(key) = self.logical_homing(report, window) {
+                homing.insert(window.clone(), key);
             }
         }
         self.staged.homing = homing;
@@ -381,22 +559,30 @@ impl WorldEngine {
                     let Some(fact) = self.staged.facts.get(window) else {
                         continue;
                     };
-                    if fact.minimized {
+                    let classified = self.derived_for(window);
+                    if classified.hidden {
                         minimized.push(window.clone());
+                    } else if classified.hold {
+                        // Held dependent classification: keep the retained
+                        // home with no managed geometry, never silent
+                        // absence, never inferred close.
+                        unreadable.push(window.clone());
                     } else if let Some(rect) = fact.rect {
                         windows.push(EngineWindow {
                             window: window.clone(),
                             output: key.output.clone(),
                             workspace: key.workspace.clone(),
                             rect,
-                            floating: fact.floating,
-                            fit_excluded: fact.fit_excluded,
-                            fullscreen: fact.fullscreen,
-                            maximized: fact.maximized,
-                            sticky: fact.sticky,
-                            fixed_auto: fact.fixed_auto,
-                            fixed_suppress: fact.fixed_suppress,
-                            hints: fact.hints,
+                            floating: classified.floating,
+                            fit_excluded: classified.fit_excluded,
+                            fullscreen: classified.overlay_fullscreen,
+                            maximized: classified.overlay_maximized,
+                            sticky: classified.sticky,
+                            fixed_auto: classified.fixed_auto,
+                            fixed_suppress: classified.fixed_suppress,
+                            hints: fact
+                                .hints
+                                .unwrap_or(crate::size_hints::WindowSizeHints::none()),
                         });
                     } else {
                         unreadable.push(window.clone());
@@ -413,11 +599,10 @@ impl WorldEngine {
                 } else {
                     let active = WindowId(report.focused_global.clone());
                     let homed_here = self.staged.homing.get(&active).as_ref() == Some(&&key);
-                    let active_live = self
-                        .staged
-                        .facts
-                        .get(&active)
-                        .is_some_and(|fact| !fact.minimized);
+                    let active_live = self.staged.facts.get(&active).is_some_and(|_| {
+                        let classified = self.derived_for(&active);
+                        !classified.hidden && !classified.hold
+                    });
                     if homed_here && active_live {
                         active
                     } else {
@@ -503,11 +688,24 @@ impl WorldEngine {
         {
             return Some(session.home.clone());
         }
-        let fact = report.windows.iter().find(|fact| fact.window == *window)?;
+        let staged_fact = self.staged.facts.get(window)?.clone();
+        let fact = &staged_fact;
+        let derived = self.derived_for(window);
+        // Known safety exclusions and own-process windows never home:
+        // no membership, geometry, focus, or desires.
+        if derived.own_excluded || derived.excluded {
+            return None;
+        }
         // Effective logical receipt: native-derived under the capability,
-        // adapter logical receipt otherwise. Unknown/conflicting native
-        // evidence yields `None` (hold, never collapse into the view).
+        // else `None` (native-free has no logical receipt vocabulary).
+        // Unknown/unmapped holds, never collapses into the view.
         let receipt = self.effective_logical_receipt(report, fact);
+        // Unknown output: retain the actual prior core home, then narrow
+        // hold downstream. An unhomed unknown never guesses the current
+        // screen.
+        let Some(fact_output) = fact.output.as_ref() else {
+            return self.core_homing(window);
+        };
         // In-flight migration member: the raw screen decides ahead of any
         // echo or session state, so member arrival proves independently of
         // views. Observed at the target screen homes to the target key
@@ -538,14 +736,14 @@ impl WorldEngine {
             // default (physical screen semantics); with host-owned domains
             // unknown native membership holds at the source (the adapter
             // supplies native evidence, never a collapsed view).
-            if fact.output == target_key.output {
+            if Some(fact_output) == Some(&target_key.output) {
                 match receipt.as_deref() {
                     Some(observed) if observed == target_key.workspace.0 => {
                         return Some(target_key);
                     }
                     Some(observed) => {
                         return Some(DomainKey {
-                            output: fact.output.clone(),
+                            output: fact_output.clone(),
                             workspace: WorkspaceId(observed.to_owned()),
                         });
                     }
@@ -557,14 +755,14 @@ impl WorldEngine {
                     }
                 }
             }
-            if fact.output == source_key.output {
+            if Some(fact_output) == Some(&source_key.output) {
                 match receipt.as_deref() {
                     Some(observed) if observed == source_key.workspace.0 => {
                         return Some(source_key);
                     }
                     Some(observed) => {
                         return Some(DomainKey {
-                            output: fact.output.clone(),
+                            output: fact_output.clone(),
                             workspace: WorkspaceId(observed.to_owned()),
                         });
                     }
@@ -574,28 +772,28 @@ impl WorldEngine {
                 }
             }
         }
-        if fact.minimized {
+        if derived.hidden {
             // Host-owned authoritative outputs resolve minimized
             // membership through native evidence, never the current view:
             // a known receipt homes its mapping even on a noncurrent
             // desktop at launch; unknown evidence keeps retained homing
             // (publish fences the scope, it does not bless writes) or
             // stays unhomed for newcomers.
-            if self.native_authoritative(report, &fact.output) {
+            if self.native_authoritative(report, fact_output) {
                 if let Some(observed) = receipt.as_deref()
-                    && self.known_workspace(&fact.output, observed)
+                    && self.known_workspace(fact_output, observed)
                 {
                     return Some(DomainKey {
-                        output: fact.output.clone(),
+                        output: fact_output.clone(),
                         workspace: WorkspaceId(observed.to_owned()),
                     });
                 }
                 if let Some(key) = self.core_homing(window) {
-                    if key.output == fact.output {
+                    if &key.output == fact_output {
                         return Some(key);
                     }
                     if let Some(remapped) = self.rehome_displaced(key)
-                        && remapped.output == fact.output
+                        && &remapped.output == fact_output
                     {
                         return Some(remapped);
                     }
@@ -605,8 +803,8 @@ impl WorldEngine {
             if let Some(key) = self.core_homing(window) {
                 return Some(key);
             }
-            return self.effective_view(&fact.output).map(|view| DomainKey {
-                output: fact.output.clone(),
+            return self.effective_view(fact_output).map(|view| DomainKey {
+                output: fact_output.clone(),
                 workspace: WorkspaceId(view),
             });
         }
@@ -623,7 +821,7 @@ impl WorldEngine {
             _ => None,
         }) {
             let target = found.target.clone();
-            if fact.output == target.target_output {
+            if Some(fact_output) == Some(&target.target_output) {
                 let same_output = found.source_output == target.target_output;
                 match receipt.as_deref() {
                     Some(observed) if observed == target.target_workspace => {
@@ -636,7 +834,7 @@ impl WorldEngine {
                         // Floating logical crossing preserves the physical
                         // frame: home the receipt on its owning screen
                         // instead of the physical one.
-                        if fact.floating
+                        if derived.floating
                             && let Some(owning) = self.owning_output(observed)
                         {
                             return Some(DomainKey {
@@ -645,7 +843,7 @@ impl WorldEngine {
                             });
                         }
                         return Some(DomainKey {
-                            output: fact.output.clone(),
+                            output: fact_output.clone(),
                             workspace: WorkspaceId(observed.to_owned()),
                         });
                     }
@@ -675,14 +873,14 @@ impl WorldEngine {
         // With the capability on, `receipt` is native-derived: `None`
         // holds below instead of collapsing into the current view.
         if let Some(observed) = receipt.as_deref()
-            && self.known_workspace(&fact.output, observed)
+            && self.known_workspace(fact_output, observed)
         {
             return Some(DomainKey {
-                output: fact.output.clone(),
+                output: fact_output.clone(),
                 workspace: WorkspaceId(observed.to_owned()),
             });
         }
-        if fact.floating
+        if derived.floating
             && let Some(observed) = receipt.as_deref()
             && let Some(owning) = self.owning_output(observed)
         {
@@ -706,13 +904,29 @@ impl WorldEngine {
         // withholds write authority there; keeping the homing is not a
         // proof of arrival). Outputs with no native evidence at all keep
         // the native-free path.
-        if receipt.is_none() && self.native_authoritative(report, &fact.output) {
+        if receipt.is_none() && self.native_authoritative(report, fact_output) {
             if let Some(key) = self.core_homing(window) {
-                if key.output == fact.output {
+                if &key.output == fact_output {
                     return Some(key);
                 }
                 if let Some(remapped) = self.rehome_displaced(key)
-                    && remapped.output == fact.output
+                    && &remapped.output == fact_output
+                {
+                    return Some(remapped);
+                }
+            }
+            return None;
+        }
+        // Held classification holds narrowly: retained homes persist, but
+        // a new unknown lifetime never guesses the current view (so it
+        // cannot hold a healthy sibling on the same output).
+        if derived.hold {
+            if let Some(key) = self.core_homing(window) {
+                if &key.output == fact_output {
+                    return Some(key);
+                }
+                if let Some(remapped) = self.rehome_displaced(key)
+                    && &remapped.output == fact_output
                 {
                     return Some(remapped);
                 }
@@ -722,27 +936,27 @@ impl WorldEngine {
         if self.core_homing(window).is_none()
             && !self.engine_knows_window(window)
             && self.fresh_placement_armed_for(report)
-            && !fact.floating
-            && !fact.sticky
-            && !fact.fixed_auto
-            && !fact.fixed_suppress
+            && !derived.floating
+            && !derived.sticky
+            && !derived.fixed_auto
+            && !derived.fixed_suppress
             && fact.rect.is_some()
             && let Some(key) = self.resolve_fresh_key(report)
         {
             return Some(key);
         }
         if let Some(key) = self.core_homing(window) {
-            if key.output == fact.output {
+            if &key.output == fact_output {
                 return Some(key);
             }
             if let Some(remapped) = self.rehome_displaced(key)
-                && remapped.output == fact.output
+                && &remapped.output == fact_output
             {
                 return Some(remapped);
             }
         }
-        self.effective_view(&fact.output).map(|view| DomainKey {
-            output: fact.output.clone(),
+        self.effective_view(fact_output).map(|view| DomainKey {
+            output: fact_output.clone(),
             workspace: WorkspaceId(view),
         })
     }
@@ -797,16 +1011,20 @@ impl WorldEngine {
         if let Some(key) = self.core_homing(&WindowId(report.focused_global.clone())) {
             return Some(key.output);
         }
-        let fact = report
-            .windows
-            .iter()
-            .find(|fact| fact.window.0 == report.focused_global)?;
+        // Staged admitted facts only: exclusions never provide focus proof.
+        let window = WindowId(report.focused_global.clone());
+        let fact = self.staged.facts.get(&window)?;
+        let derived = self.derived_for(&window);
+        if derived.own_excluded || derived.excluded {
+            return None;
+        }
+        let fact_output = fact.output.as_ref()?;
         if report
             .screens
             .iter()
-            .any(|screen| screen.output == fact.output)
+            .any(|screen| &screen.output == fact_output)
         {
-            return Some(fact.output.clone());
+            return Some(fact_output.clone());
         }
         None
     }

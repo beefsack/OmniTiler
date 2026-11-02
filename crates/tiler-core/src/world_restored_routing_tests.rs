@@ -17,8 +17,8 @@ use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandResult, ScopeAuthority, ScreenReport, ScreenView, TransferKind, WORLD_CONTRACT_VERSION,
-    WindowFact, WorldCommand, WorldReport,
+    CommandResult, FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport, ScreenView,
+    TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -50,38 +50,90 @@ fn incomplete_screen(output: &str) -> ScreenReport {
 fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(rect(x, 0, 40, 90)),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(crate::world_report::WindowType::Normal),
+        activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: crate::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
 fn fact_rect(window: &str, output: &str, r: Rect) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(r),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(crate::world_report::WindowType::Normal),
+        activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: crate::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
@@ -141,6 +193,7 @@ fn report_full(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -691,8 +744,7 @@ fn exhausted_move_retains_identity_pinned_transfer_and_settles_on_arrival() {
     // logical membership) plus the exact follow-view echo settles the
     // cross-output follow parent: membership alone never settles while the
     // target view is still stale.
-    let mut arrived = fact("win-a", "u2", 960);
-    arrived.observed_workspace = Some(transfer.target_workspace.clone());
+    let arrived = fact("win-a", "u2", 960);
     let mut arrival_report = report(4, 4, stacked_screens(), vec![arrived], "win-a", None, None);
     arrival_report.views = vec![crate::world_report::ScreenView {
         output: crate::directional::OutputId(transfer.target_output.0.clone()),
@@ -1208,15 +1260,14 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
     let (mut engine, screens, _, ring) = two_output_world();
     assert_eq!(ring.len(), 2);
     let mut floating = fact("win-f", "out-a", 200);
-    floating.floating = true;
+    floating.transient = Some(true);
     let mut game = fact("win-g", "out-a", 300);
-    game.fit_excluded = true;
+    game.privileged = Some(true);
     let mut pin = fact("win-s", "out-a", 400);
-    pin.sticky = true;
+    pin.sticky = Some(true);
     // A tiled resident on the target workspace: the exception joins an
     // occupied scope, exactly like the pre-replacement float fixture.
-    let mut resident = fact("win-t", "out-a", 500);
-    resident.observed_workspace = Some(ring[1].clone());
+    let resident = fact("win-t", "out-a", 500);
     accepted(
         &mut engine,
         &report(
@@ -1316,11 +1367,11 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
         ),
         "window plus follow-view flights retained under their identities: {flight:?}"
     );
-    // Membership proof settles the window flight while the echoed view
-    // confirms the follow-view flight; a fresh ordinary send then
+    // Membership proof settles the window flight (accepted member
+    // attempt naming the target) while the echoed view confirms the
+    // follow-view flight; a fresh ordinary send then
     // still works.
-    let mut arrived = fact("win-f", "out-a", 200);
-    arrived.observed_workspace = Some(ring[1].clone());
+    let arrived = fact("win-f", "out-a", 200);
     let mut settle_report = report(
         seq,
         5,
@@ -1339,6 +1390,19 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
     settle_report.views.push(ScreenView {
         output: OutputId("out-a".to_owned()),
         view: ring[1].clone(),
+    });
+    settle_report.member_attempts.push(MemberAttempt {
+        operation_id: "op-41".to_owned(),
+        window: WindowId("win-f".to_owned()),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: ring[1].clone(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: Some(WorkspaceRef::Logical {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(ring[1].clone()),
+        }),
+        attempt_ms: 41,
     });
     let settled = accepted(&mut engine, &settle_report);
     seq += 1;
@@ -1406,8 +1470,7 @@ fn deterministic_sequence_replay_matches_exactly() {
             None,
             None,
         ));
-        let mut arrived = fact("win-a", "out-a", 0);
-        arrived.observed_workspace = Some(ring[1].clone());
+        let arrived = fact("win-a", "out-a", 0);
         reports.push(report(
             4,
             3,
@@ -1473,12 +1536,12 @@ fn predicate_ingress_selects_admission_without_reclassification() {
         let mut fixed = fact("win-f", "out-a", 200);
         // Width-only pin (height present but unequal): fixed under
         // either-axis, tiled under both-axes.
-        fixed.hints = WindowSizeHints {
+        fixed.hints = Some(WindowSizeHints {
             min_w: Some(200),
             max_w: Some(200),
             min_h: Some(100),
             max_h: Some(150),
-        };
+        });
         let screens = vec![
             screen_full("out-a", rect(0, 0, 800, 600)),
             screen_full("out-b", rect(800, 0, 800, 600)),
@@ -1712,7 +1775,7 @@ fn hotplug_policy_member_transfer_is_unique_and_ignores_outsiders() {
     let stray = fact("win-stray", "out-a", 50);
     let _ = &view_c;
     let mut sticky = fact("win-pin", "out-a", 60);
-    sticky.sticky = true;
+    sticky.sticky = Some(true);
     let displaced = accepted(
         &mut engine,
         &report(
@@ -2463,7 +2526,7 @@ fn explicit_output_send_fences_match_output_route() {
     for follow in [true, false] {
         let (mut engine, screens, _view_a, view_b, _) = bootstrap_gapped_pair();
         let mut sticky = fact_rect("win-a", "out-a", rect(10, 40, 40, 90));
-        sticky.sticky = true;
+        sticky.sticky = Some(true);
         let facts = vec![
             sticky,
             fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
@@ -2495,7 +2558,7 @@ fn explicit_output_send_fences_match_output_route() {
         }
         let (mut engine, screens, _view_a, view_b, _) = bootstrap_gapped_pair();
         let mut excluded = fact_rect("win-a", "out-a", rect(10, 40, 40, 90));
-        excluded.fit_excluded = true;
+        excluded.privileged = Some(true);
         let facts = vec![
             excluded,
             fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
@@ -2592,18 +2655,21 @@ fn explicit_output_send_fences_match_output_route() {
     for follow in [true, false] {
         let (mut engine, screens, view_a, _view_b, ring) = bootstrap_gapped_pair();
         assert!(ring.len() >= 2, "pioneer needs a second workspace");
-        let mut pioneer = fact_rect("win-x", "out-a", rect(200, 40, 40, 90));
-        pioneer.observed_workspace = Some(ring[1].clone());
+        let pioneer = fact_rect("win-x", "out-a", rect(200, 40, 40, 90));
         let facts = vec![
             fact_rect("win-a", "out-a", rect(10, 40, 40, 90)),
             fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
             fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
             pioneer,
         ];
-        let _ = accepted(
-            &mut engine,
-            &report(2, 2, screens.clone(), facts.clone(), "win-a", None, None),
-        );
+        // Echo the spare so the pioneer newcomer homes there; residents
+        // keep their retained homing.
+        let mut bootstrap = report(2, 2, screens.clone(), facts.clone(), "win-a", None, None);
+        bootstrap.views.push(ScreenView {
+            output: OutputId("out-a".to_owned()),
+            view: ring[1].clone(),
+        });
+        let _ = accepted(&mut engine, &bootstrap);
         let migrated = accepted(
             &mut engine,
             &report(

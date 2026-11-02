@@ -469,25 +469,51 @@ pub(crate) fn screen() -> ScreenReport {
 pub(crate) fn fact(window: &str, frame: Option<Rect>) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId("out-a".to_owned()),
+        output: Some(OutputId("out-a".to_owned())),
         rect: frame,
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: crate::size_hints::WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(crate::size_hints::WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(crate::world_report::WindowType::Normal),
+        activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: crate::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
 pub(crate) fn minimized_fact(window: &str) -> WindowFact {
     WindowFact {
-        minimized: true,
+        minimized: Some(true),
         ..fact(window, None)
     }
 }
@@ -530,6 +556,7 @@ pub(crate) fn report_with_screens(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
@@ -1107,7 +1134,7 @@ fn engine_withholds_float_token_while_suppressed() {
     // A clamping placement attempt withholds the token while the retained
     // target stays outstanding: same core owner as tiled rows.
     let mut floating_fact = fact("w1", Some(rect(0, 0, 40, 90)));
-    floating_fact.floating = true;
+    floating_fact.transient = Some(true);
     let suppressed = accepted(
         &mut engine,
         &report(
@@ -2074,7 +2101,7 @@ fn learned_ignores_unreadable_float_overlay_and_gap() {
     assert!(engine.learned_mins.is_empty());
     // Float lifetimes never take tile policy.
     let mut floating = fact("w1", Some(grown));
-    floating.floating = true;
+    floating.transient = Some(true);
     accepted(
         &mut engine,
         &report(
@@ -2095,7 +2122,7 @@ fn learned_ignores_unreadable_float_overlay_and_gap() {
     assert!(engine.learned_mins.is_empty());
     // Fullscreen overlays never take tile policy.
     let mut overlay = fact("w1", Some(grown));
-    overlay.fullscreen = true;
+    overlay.fullscreen = Some(true);
     accepted(
         &mut engine,
         &report(
@@ -2399,12 +2426,12 @@ fn learned_max_contradiction_keeps_declared_pair() {
         h: baseline.h,
     };
     let mut capped_w1 = fact("w1", Some(grown));
-    capped_w1.hints = WindowSizeHints {
+    capped_w1.hints = Some(WindowSizeHints {
         min_w: None,
         min_h: None,
         max_w: Some(baseline.w),
         max_h: None,
-    };
+    });
     let held = accepted(
         &mut engine,
         &report(
@@ -2726,11 +2753,25 @@ fn learned_ignores_veto_table_flags() {
     for (seq_no, flag) in (2u64..).zip(["maximized", "sticky", "excluded", "auto", "suppress"]) {
         let mut flagged = fact("w1", Some(grown));
         match flag {
-            "maximized" => flagged.maximized = true,
-            "sticky" => flagged.sticky = true,
-            "excluded" => flagged.fit_excluded = true,
-            "auto" => flagged.fixed_auto = true,
-            "suppress" => flagged.fixed_suppress = true,
+            "maximized" => flagged.maximized = Some(true),
+            "sticky" => flagged.sticky = Some(true),
+            "excluded" => flagged.privileged = Some(true),
+            "auto" => {
+                flagged.hints = Some(crate::size_hints::WindowSizeHints {
+                    min_w: Some(40),
+                    min_h: Some(90),
+                    max_w: Some(40),
+                    max_h: Some(90),
+                })
+            }
+            "suppress" => {
+                flagged.hints = Some(crate::size_hints::WindowSizeHints {
+                    min_w: Some(40),
+                    min_h: Some(90),
+                    max_w: Some(40),
+                    max_h: Some(90),
+                })
+            }
             _ => unreachable!("flag table"),
         }
         accepted(
@@ -2864,12 +2905,12 @@ fn learned_max_change_suppresses_without_clearing_and_restores_without_relearn()
     // the floor: the floor is suppressed, not disproven, so it stays
     // retained while the target follows the declared pair.
     let mut capped_w1 = fact("w1", Some(grown));
-    capped_w1.hints = WindowSizeHints {
+    capped_w1.hints = Some(WindowSizeHints {
         min_w: None,
         min_h: None,
         max_w: Some(baseline.w),
         max_h: None,
-    };
+    });
     let suppressed = accepted(
         &mut engine,
         &report(
@@ -2984,12 +3025,12 @@ fn learned_declared_stronger_min_wins() {
     );
     assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
     let mut declared_w1 = fact("w1", Some(grown));
-    declared_w1.hints = WindowSizeHints {
+    declared_w1.hints = Some(WindowSizeHints {
         min_w: Some(grown.w + 80),
         min_h: None,
         max_w: None,
         max_h: None,
-    };
+    });
     let declared = accepted(
         &mut engine,
         &report(
@@ -3044,7 +3085,7 @@ fn learned_float_excursion_preserves_and_reapplies() {
     );
     assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
     let mut floating = fact("w1", Some(grown));
-    floating.floating = true;
+    floating.transient = Some(true);
     accepted(
         &mut engine,
         &report(
@@ -3620,7 +3661,7 @@ fn burst_float_attempts_never_acquire_tiled_budget() {
     // retained target with untouched authority past every backoff.
     let drifting = || {
         let mut floating = fact("w1", Some(rect(10, 10, 150, 120)));
-        floating.floating = true;
+        floating.transient = Some(true);
         floating
     };
     accepted(

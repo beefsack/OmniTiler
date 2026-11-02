@@ -759,7 +759,8 @@ impl WorldEngine {
                                 retained.source_output == retained.target.target_output;
                             // Exact native receipt feeds the same proof lane:
                             // under the capability the native-derived logical
-                            // receipt (not the raw observed field) decides,
+                            // receipt decides; native-free carries no
+                            // logical receipt vocabulary (unknown holds),
                             // without bypassing at-most-once/refusal/unknown
                             // handling around it.
                             let observed_proves = self
@@ -770,7 +771,7 @@ impl WorldEngine {
                                     if self.host_owned_workspace_domains() {
                                         self.effective_logical_receipt(report, fact)
                                     } else {
-                                        fact.observed_workspace.clone()
+                                        None
                                     }
                                 })
                                 .as_deref()
@@ -862,7 +863,7 @@ impl WorldEngine {
                         } else {
                             let fact_ok = self.staged.facts.get(window).is_some_and(|fact| {
                                 fact.rect.is_some()
-                                    && !fact.minimized
+                                    && fact.minimized != Some(true)
                                     && !self.staged.closes.contains(window)
                             });
                             let pre_key = raw.as_ref().and_then(|attempt| {
@@ -1224,7 +1225,7 @@ impl WorldEngine {
             }
             let unreadable_member = pruned.iter().any(|m| {
                 self.staged.facts.get(m).is_some_and(|f| {
-                    f.rect.is_none() && !f.minimized && !self.staged.closes.contains(m)
+                    f.rect.is_none() && f.minimized != Some(true) && !self.staged.closes.contains(m)
                 })
             });
             if unreadable_member {
@@ -1469,7 +1470,7 @@ impl WorldEngine {
         // stays outstanding with arrived members preserved.
         let unreadable_member = pruned.iter().any(|m| {
             self.staged.facts.get(m).is_some_and(|f| {
-                f.rect.is_none() && !f.minimized && !self.staged.closes.contains(m)
+                f.rect.is_none() && f.minimized != Some(true) && !self.staged.closes.contains(m)
             })
         });
         if unreadable_member {
@@ -1816,6 +1817,16 @@ impl WorldEngine {
                 retained.pending = Some(attempt.clone());
                 fresh_evidence = true;
             }
+            // Safety exclusions hold: pending placement work must not
+            // write an excluded window. (Held rows carry no facts, so the
+            // readable gate below already holds them.)
+            if self.is_excluded_window(&retained.window) {
+                if retained.pending.is_some() {
+                    retained.ambiguous = true;
+                }
+                keep.push(retained);
+                continue;
+            }
             // Every verdict below except close needs truthful readable
             // complete data: complete inventory, no gesture barrier, and a
             // non-minimized readable fact. Anything less holds without
@@ -1828,7 +1839,7 @@ impl WorldEngine {
                     .staged
                     .facts
                     .get(&retained.window)
-                    .is_some_and(|fact| !fact.minimized && fact.rect.is_some());
+                    .is_some_and(|fact| fact.minimized != Some(true) && fact.rect.is_some());
             let Some(current) = readable
                 .then(|| {
                     self.staged

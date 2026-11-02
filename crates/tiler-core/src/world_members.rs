@@ -89,13 +89,24 @@ impl WorldEngine {
     /// next report. Explicit closes always drop, even inside incomplete
     /// inventories; implicit absence drops only inside a complete
     /// inventory (never inferred closed across a gap). Unreadable,
-    /// minimized, and held facts retain homing. Initial unknown membership
-    /// admits to the core view; a truthful `observed_workspace` receipt
-    /// naming a known workspace on the observed screen wins over desire.
+    /// minimized, and held facts retain homing. Narrowly held rows count
+    /// as live presence (never a departure): a complete malformed or
+    /// conflicting row keeps its member, so a later recovery reuses the
+    /// same lifetime instead of reminting. Known and own-process safety
+    /// exclusions drop membership outright, complete and incomplete
+    /// alike (never a native close, never a minimize slot: the sweep
+    /// converges them as closes). Initial unknown membership admits to
+    /// the core view; a truthful `observed_workspace` receipt naming a
+    /// known workspace on the observed screen wins over desire.
     /// View switches never yank a resident observed on its retained screen.
     pub(crate) fn reconcile_members(&mut self, report: &WorldReport) {
         for id in &self.staged.closes {
             self.members.remove(id);
+        }
+        // Safety exclusions never enter or stay: drop even inside
+        // incomplete inventories (no stale member, no stale tiled mark).
+        for id in self.staged.excluded.clone() {
+            self.members.remove(&id);
         }
         // Live set for pruning implicit closes only when complete.
         let live_outputs: BTreeSet<String> = self
@@ -105,7 +116,11 @@ impl WorldEngine {
             .map(|screen| screen.output.0.clone())
             .collect();
         for (window, fact) in &self.staged.facts.clone() {
-            if fact.sticky {
+            if fact.sticky == Some(true) {
+                continue;
+            }
+            let derived_member = self.derived_for(window);
+            if derived_member.excluded || derived_member.own_excluded {
                 continue;
             }
             let flight_held = self.retained.iter().any(|r| match &r.target.kind {
@@ -117,12 +132,13 @@ impl WorldEngine {
             // (unknown/conflicting holds), adapter logical otherwise.
             let receipt = self.effective_logical_receipt(report, fact);
             let observed_known = receipt.as_deref().and_then(|obs| {
-                if self.known_workspace(&fact.output, obs) {
+                let output = fact.output.as_ref()?;
+                if self.known_workspace(output, obs) {
                     Some(DomainKey {
-                        output: fact.output.clone(),
+                        output: output.clone(),
                         workspace: WorkspaceId(obs.to_owned()),
                     })
-                } else if fact.floating {
+                } else if derived_member.floating {
                     // Floating logical crossing preserves the physical
                     // frame: adopt the receipt on its owning screen.
                     self.owning_output(obs).map(|output| DomainKey {
@@ -143,15 +159,18 @@ impl WorldEngine {
             // unknown native membership keeps the retained home with no
             // view adoption and never collapses (write authority is
             // fenced at publish; keeping the home invents no proof).
+            // Unknown output never adopts: no fabricated homing.
             let adopt = if !self.host_owned_workspace_domains()
                 && receipt.is_none()
                 && home_output
                     .as_ref()
-                    .is_some_and(|home| home != &fact.output)
+                    .is_some_and(|home| Some(home) != fact.output.as_ref())
                 && !flight_held
             {
-                self.effective_view(&fact.output)
-                    .filter(|view| self.known_workspace(&fact.output, view))
+                fact.output.as_ref().and_then(|output| {
+                    self.effective_view(output)
+                        .filter(|view| self.known_workspace(output, view))
+                })
             } else {
                 None
             };
@@ -161,23 +180,25 @@ impl WorldEngine {
                     // arrival stays at the committed target until
                     // settlement proves otherwise. Only explicit float and
                     // minimized marks refresh; homing never flaps back.
-                    state.floating = fact.floating;
-                    state.minimized = fact.minimized;
+                    state.floating = derived_member.floating;
+                    state.minimized = fact.minimized == Some(true);
                     state.geometry = fact.rect;
                     continue;
                 }
                 if let Some(known) = observed_known {
                     state.home = known;
-                } else if let Some(view) = adopt {
+                } else if let Some(view) = adopt
+                    && let Some(output) = fact.output.clone()
+                {
                     state.home = DomainKey {
-                        output: fact.output.clone(),
+                        output,
                         workspace: WorkspaceId(view),
                     };
                 }
                 // Contradictory receipts naming an unknown workspace hold:
                 // keep the retained home, never fight newer input.
-                state.floating = fact.floating;
-                state.minimized = fact.minimized;
+                state.floating = derived_member.floating;
+                state.minimized = fact.minimized == Some(true);
                 state.geometry = fact.rect;
             } else {
                 // Newcomer admission: truthful known receipt wins, else the
@@ -190,9 +211,11 @@ impl WorldEngine {
                     if self.host_owned_workspace_domains() {
                         None
                     } else {
-                        self.effective_view(&fact.output).map(|view| DomainKey {
-                            output: fact.output.clone(),
-                            workspace: WorkspaceId(view),
+                        fact.output.as_ref().and_then(|output| {
+                            self.effective_view(output).map(|view| DomainKey {
+                                output: output.clone(),
+                                workspace: WorkspaceId(view),
+                            })
                         })
                     }
                 });
@@ -201,8 +224,8 @@ impl WorldEngine {
                         window.clone(),
                         MemberState {
                             home,
-                            floating: fact.floating,
-                            minimized: fact.minimized,
+                            floating: derived_member.floating,
+                            minimized: fact.minimized == Some(true),
                             geometry: fact.rect,
                         },
                     );
@@ -210,7 +233,12 @@ impl WorldEngine {
             }
         }
         if report.inventory_complete {
-            let present: BTreeSet<WindowId> = self.staged.facts.keys().cloned().collect();
+            let mut present: BTreeSet<WindowId> = self.staged.facts.keys().cloned().collect();
+            // Narrowly held rows are live presence without usable facts:
+            // they never prune a retained member.
+            for held in &self.staged.held_windows {
+                present.insert(held.window.clone());
+            }
             // Outstanding transfer members stay across the gap: absent
             // without a close never infers closure while a flight names
             // them (arrival may lag one report behind the commit).

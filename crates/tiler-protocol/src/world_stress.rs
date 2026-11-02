@@ -26,14 +26,14 @@
 use serde::Deserialize as _;
 use std::collections::{BTreeMap, BTreeSet};
 
-use tiler_core::directional::{OutputId, WindowId};
+use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    AuthorityScope, OutputIdentity, ScreenReport, ScreenView, WORLD_CONTRACT_VERSION, WindowFact,
-    WorldCommand, WorldReply, WorldReport,
+    AuthorityScope, FrameSetter, MemberAttempt, OutputIdentity, ScreenReport, ScreenView,
+    WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReply, WorldReport,
 };
 
 fn rect4(v: [i32; 4]) -> Rect {
@@ -658,15 +658,41 @@ impl StressSchedule {
     }
 }
 
+struct PendingMember {
+    operation_id: String,
+    target_output: OutputId,
+    /// Logical workspace id resolved at command time: matches the retained
+    /// transfer target exactly.
+    target_workspace: String,
+    pre: Option<WorkspaceRef>,
+    attempt_ms: u64,
+}
+
 struct Pending {
     /// Latest view target (output, home/away alias) since the last receipt.
     /// Latest wins, exactly like core view retention. Aliases resolve to
     /// workspace ids when the receipt is built, so lifecycle slot rebinding
     /// between command and receipt stays consistent.
     view: Option<(String, String)>,
-    /// Window homing proofs in command order (window, home/away alias).
+    /// Window homing proofs in command order.
     member_order: Vec<String>,
-    members: BTreeMap<String, String>,
+    members: BTreeMap<String, PendingMember>,
+}
+
+fn member_proof(window: &str, member: &PendingMember) -> MemberAttempt {
+    MemberAttempt {
+        operation_id: member.operation_id.clone(),
+        window: WindowId(window.to_owned()),
+        target_output: member.target_output.clone(),
+        target_workspace: member.target_workspace.clone(),
+        setter: FrameSetter::Accepted,
+        pre: member.pre.clone(),
+        post: Some(WorkspaceRef::Logical {
+            output: member.target_output.clone(),
+            workspace: WorkspaceId(member.target_workspace.clone()),
+        }),
+        attempt_ms: member.attempt_ms,
+    }
 }
 
 impl Pending {
@@ -687,10 +713,14 @@ struct Sim {
     req: u64,
     obs: u64,
     facts: BTreeMap<String, [i32; 4]>,
-    observed: BTreeMap<String, String>,
     echo: BTreeMap<String, String>,
     live: BTreeSet<String>,
     pending: Pending,
+    /// Truthful raw membership proofs staged for the next receipt report.
+    /// Populated only when the simulated adapter actually performs the
+    /// mechanical membership write; each proof carries the same
+    /// operation/window/target/stamp as that write.
+    next_attempts: Vec<MemberAttempt>,
     /// Sends accepted since the last observation report (in-flight guard).
     outstanding: BTreeSet<String>,
     home: String,
@@ -856,19 +886,45 @@ fn build_report(
     for id in &live {
         windows.push(WindowFact {
             window: WindowId(id.clone()),
-            output: OutputId(sim.out.clone()),
+            output: Some(OutputId(sim.out.clone())),
             rect: sim.facts.get(id).copied().map(rect4),
-            floating: false,
-            fit_excluded: false,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
-            fixed_auto: false,
-            fixed_suppress: false,
-            hints: WindowSizeHints::none(),
-            minimized: false,
-            observed_workspace: sim.observed.get(id).cloned(),
-            native_workspace: None,
+            fullscreen: Some(false),
+            maximized: Some(false),
+            sticky: Some(false),
+            minimized: Some(false),
+            hints: Some(WindowSizeHints::none()),
+            native_workspace: tiler_core::world_report::NativeWorkspaceFact::Omitted,
+            host_hidden: Some(false),
+            privileged: Some(false),
+            managed: Some(true),
+            accepts_input: None,
+            activation_inhibited: Some(false),
+            tool_window: Some(false),
+            owned: Some(false),
+            transient: Some(false),
+            modal: Some(false),
+            resizable: None,
+            above: None,
+            below: None,
+            owner: None,
+            parent: None,
+            role: None,
+            app_id: None,
+            executable: None,
+            process_id: None,
+            class: Some("StressWindow".to_owned()),
+            title: None,
+            window_type: Some(tiler_core::world_report::WindowType::Normal),
+            activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+            layer: Some(0),
+            fullscreen_owner: None,
+            fullscreen_exitable: None,
+            suppression_available: None,
+            visibility: tiler_core::world_report::VisibilityFact {
+                visible: Some(true),
+                suppression_owned: Some(false),
+            },
+            last_write: None,
         });
     }
     let mut views = Vec::new();
@@ -913,12 +969,13 @@ fn build_report(
             None
         },
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
         monotonic_ms: 0,
         frames: vec![],
-        member_attempts: vec![],
+        member_attempts: sim.next_attempts.clone(),
         view_attempts: vec![],
         clear_attempts: vec![],
         creation_attempts: vec![],
@@ -936,10 +993,10 @@ fn bootstrap_binding(
         req: 1,
         obs: 1,
         facts: case.initial_facts.clone(),
-        observed: BTreeMap::new(),
         echo: BTreeMap::new(),
         live: case.initial_facts.keys().cloned().collect(),
         pending: Pending::empty(),
+        next_attempts: Vec::new(),
         outstanding: BTreeSet::new(),
         home: String::new(),
         away: String::new(),
@@ -1433,8 +1490,8 @@ fn submit(
             .iter()
             .map(|w| {
                 format!(
-                    "{} rect={:?} obs={:?}",
-                    w.window.0, w.rect, w.observed_workspace
+                    "{} rect={:?} native={:?}",
+                    w.window.0, w.rect, w.native_workspace
                 )
             })
             .collect();
@@ -1489,6 +1546,7 @@ fn submit(
             }
             sim.pairs.push((report, reply));
             refresh_away_slot(sim, at)?;
+            sim.next_attempts.clear();
             Ok(())
         }
         WorldOutcome::Duplicate(_) => Err(fail(at, "duplicate reply is not fresh acceptance")),
@@ -1543,8 +1601,35 @@ fn submit_command(
                 return Err(fail(at, "second send for a window without a receipt"));
             }
             let alias = action.workspace.clone().expect("validated");
+            let target_output = OutputId(action.output.clone().expect("validated"));
+            let target_workspace = binding
+                .get(&alias)
+                .cloned()
+                .ok_or_else(|| fail(at, "unbound workspace alias"))?;
+            let source_alias = sim
+                .homing_alias
+                .get(&window)
+                .cloned()
+                .unwrap_or_else(|| alias.clone());
+            let source_workspace = binding
+                .get(&source_alias)
+                .cloned()
+                .ok_or_else(|| fail(at, "unbound workspace alias"))?;
+            let operation_id = format!("op-{seq}");
             sim.pending.member_order.push(window.clone());
-            sim.pending.members.insert(window.clone(), alias.clone());
+            sim.pending.members.insert(
+                window.clone(),
+                PendingMember {
+                    operation_id,
+                    target_output: target_output.clone(),
+                    target_workspace: target_workspace.clone(),
+                    pre: Some(WorkspaceRef::Logical {
+                        output: target_output.clone(),
+                        workspace: WorkspaceId(source_workspace),
+                    }),
+                    attempt_ms: seq,
+                },
+            );
             sim.outstanding.insert(window.clone());
             sim.homing_alias.insert(window.clone(), alias.clone());
             if action.follow.expect("validated") {
@@ -1676,19 +1761,17 @@ fn submit_reordered_first(
         let start = n / 2;
         // Apply later-half membership proofs now; the rest plus the view
         // echo ride the follow-up receipt. Later commands prove first.
-        // Aliases resolve against the current slot binding.
-        let binding = binding_of(sim);
+        // Each proof carries the command-time target/stamp from the actual
+        // simulated write, never a re-resolved desired state.
         let later: Vec<String> = sim.pending.member_order[start..].to_vec();
+        let mut proofs = Vec::new();
         for window in &later {
-            if let Some(alias) = sim.pending.members.remove(window) {
-                let ws = binding
-                    .get(&alias)
-                    .cloned()
-                    .ok_or_else(|| fail(at, "unbound workspace alias"))?;
-                sim.observed.insert(window.clone(), ws);
+            if let Some(member) = sim.pending.members.remove(window) {
+                proofs.push(member_proof(window, &member));
             }
         }
         sim.pending.member_order.drain(start..);
+        sim.next_attempts.extend(proofs);
         submit(case, mode, engine, sim, None, None, vec![], at)?;
         recompute_foreground(sim);
         return Ok(true);
@@ -1727,13 +1810,13 @@ fn submit_receipt(
                 .ok_or_else(|| fail(at, "unbound workspace alias"))?;
             sim.echo.insert(out, ws);
         }
-        for (window, alias) in sim.pending.members.clone() {
-            let ws = binding
-                .get(&alias)
-                .cloned()
-                .ok_or_else(|| fail(at, "unbound workspace alias"))?;
-            sim.observed.insert(window, ws);
+        // Truthful raw proofs for every simulated membership actuation:
+        // same window/target/stamp as the command-time write.
+        let mut proofs = Vec::new();
+        for (window, member) in sim.pending.members.iter() {
+            proofs.push(member_proof(window, member));
         }
+        sim.next_attempts.extend(proofs);
     }
     sim.pending = Pending::empty();
     submit(case, mode, engine, sim, None, None, vec![], at)?;
@@ -1760,10 +1843,10 @@ pub fn run_stress(
         req: 0,
         obs: 0,
         facts: case.initial_facts.clone(),
-        observed: BTreeMap::new(),
         echo: BTreeMap::new(),
         live: case.initial_facts.keys().cloned().collect(),
         pending: Pending::empty(),
+        next_attempts: Vec::new(),
         outstanding: BTreeSet::new(),
         home: binding["home"].clone(),
         away: binding["away"].clone(),
@@ -1872,13 +1955,11 @@ pub fn run_stress(
                             .ok_or_else(|| fail(&at, "unbound workspace alias"))?;
                         sim.echo.insert(out, ws);
                     }
-                    for (w, alias) in sim.pending.members.clone() {
-                        let ws = binding
-                            .get(&alias)
-                            .cloned()
-                            .ok_or_else(|| fail(&at, "unbound workspace alias"))?;
-                        sim.observed.insert(w, ws);
+                    let mut proofs = Vec::new();
+                    for (w, member) in sim.pending.members.iter() {
+                        proofs.push(member_proof(w, member));
                     }
+                    sim.next_attempts.extend(proofs);
                     sim.pending = Pending::empty();
                 }
                 sim.facts
@@ -1910,18 +1991,17 @@ pub fn run_stress(
                             .ok_or_else(|| fail(&at, "unbound workspace alias"))?;
                         sim.echo.insert(out, ws);
                     }
-                    for (w, alias) in sim.pending.members.clone() {
-                        let ws = binding
-                            .get(&alias)
-                            .cloned()
-                            .ok_or_else(|| fail(&at, "unbound workspace alias"))?;
-                        sim.observed.insert(w, ws);
+                    let mut proofs = Vec::new();
+                    for (w, member) in sim.pending.members.iter() {
+                        if w != &window {
+                            proofs.push(member_proof(w, member));
+                        }
                     }
+                    sim.next_attempts.extend(proofs);
                     sim.pending = Pending::empty();
                 }
                 sim.facts.remove(&window);
                 sim.live.remove(&window);
-                sim.observed.remove(&window);
                 sim.homing_alias.remove(&window);
                 if sim.foreground.as_deref() == Some(window.as_str()) {
                     sim.foreground = None;
@@ -1964,13 +2044,11 @@ pub fn run_stress(
                             .ok_or_else(|| fail(&at, "unbound workspace alias"))?;
                         sim.echo.insert(out, ws);
                     }
-                    for (w, alias) in sim.pending.members.clone() {
-                        let ws = binding
-                            .get(&alias)
-                            .cloned()
-                            .ok_or_else(|| fail(&at, "unbound workspace alias"))?;
-                        sim.observed.insert(w, ws);
+                    let mut proofs = Vec::new();
+                    for (w, member) in sim.pending.members.iter() {
+                        proofs.push(member_proof(w, member));
                     }
+                    sim.next_attempts.extend(proofs);
                     sim.pending = Pending::empty();
                 }
                 sim.foreground = Some(window);
@@ -2136,10 +2214,10 @@ fn probe_completions(
             req: sim.req + 1,
             obs: sim.obs + 1,
             facts: sim.facts.clone(),
-            observed: sim.observed.clone(),
             echo: sim.echo.clone(),
             live: sim.live.clone(),
             pending: Pending::empty(),
+            next_attempts: Vec::new(),
             outstanding: BTreeSet::new(),
             home: sim.home.clone(),
             away: sim.away.clone(),

@@ -124,7 +124,13 @@ impl WorldEngine {
         let Some(fact) = self.staged.facts.get(window) else {
             return false;
         };
-        if fact.minimized || fact.rect.is_none() {
+        let derived = self.derived_for(window);
+        // Safety exclusions and held classifications never authorize a
+        // born clear: no membership, no geometry.
+        if derived.excluded || derived.own_excluded || derived.hold || derived.hidden {
+            return false;
+        }
+        if fact.rect.is_none() {
             return false;
         }
         // A sticky, floating, or fullscreen flip ends automatic birth
@@ -132,13 +138,16 @@ impl WorldEngine {
         // session intent, and fullscreen re-arms the held lane through
         // settlement. Fixed births float beneath their overlay. All are
         // existing trusted per-window facts, re-proven every report so a
-        // retained desire never outlives its authority.
-        if fact.sticky || fact.floating || fact.fullscreen {
+        // retained desire never outlives its authority. Raw null overlays
+        // already hold above via `derived.hold`.
+        if derived.sticky || derived.floating || derived.overlay_fullscreen {
             return false;
         }
-        if fact.fixed_auto
-            || fact.fixed_suppress
-            || is_fixed_size_with(fact.hints, self.fixed_size_predicate_setting())
+        if derived.fixed_auto
+            || derived.fixed_suppress
+            || fact
+                .hints
+                .is_some_and(|hints| is_fixed_size_with(hints, self.fixed_size_predicate_setting()))
         {
             return false;
         }
@@ -171,14 +180,16 @@ impl WorldEngine {
         // Host-owned safety: unknown native membership never proves a
         // home, and an order-conflicting projection holds every scope.
         // This mirrors the accept-time fence without consulting the
-        // conflated sweep-hold set.
+        // conflated sweep-hold set. Unknown output never authorizes.
         if self.host_owned_workspace_domains() {
             if self.native_order_conflict(report) {
                 return false;
             }
-            if self.native_authoritative(report, &fact.output)
-                && self.effective_logical_receipt(report, fact).is_none()
-            {
+            let authoritative = match fact.output.as_ref() {
+                Some(out) => self.native_authoritative(report, out),
+                None => true,
+            };
+            if authoritative && self.effective_logical_receipt(report, fact).is_none() {
                 return false;
             }
         }
@@ -277,30 +288,40 @@ impl WorldEngine {
         // same authoritative implicit-close signal the session converge
         // uses: absent from a complete inventory with no close pending;
         // never incomplete absence, never minimized omission, both of which
-        // keep the lifetime homed). A returning lifetime therefore
+        // keep the lifetime homed). Narrowly held rows are live presence,
+        // never a departure; excluded windows never reset identity (only
+        // an explicit native close does). A returning lifetime therefore
         // re-evaluates as first-seen. Gapped reports prune nothing.
         if report.inventory_complete && !report.gesture_barrier {
+            let held: BTreeSet<&WindowId> = self
+                .staged
+                .held_windows
+                .iter()
+                .map(|held| &held.window)
+                .collect();
             self.born_attempted
-                .retain(|w| self.staged.facts.contains_key(w));
+                .retain(|w| self.staged.facts.contains_key(w) || held.contains(w));
             self.born_held_fullscreen
-                .retain(|w| self.staged.facts.contains_key(w));
+                .retain(|w| self.staged.facts.contains_key(w) || held.contains(w));
             self.born_floating_first
-                .retain(|w| self.staged.facts.contains_key(w));
+                .retain(|w| self.staged.facts.contains_key(w) || held.contains(w));
             self.born_seen_nonfullscreen
-                .retain(|w| self.staged.facts.contains_key(w));
+                .retain(|w| self.staged.facts.contains_key(w) || held.contains(w));
             self.born_keep_overlay
-                .retain(|w| self.staged.facts.contains_key(w));
+                .retain(|w| self.staged.facts.contains_key(w) || held.contains(w));
         }
         // Track non-fullscreen sightings: a later fullscreen on an admitted
         // tile is a managed overlay transition, never a birth. Minimized
         // and unreadable facts carry no sighting either way, so a
         // minimized-then-restored lifetime decides on its first readable
-        // report like a first sighting.
+        // report like a first sighting. Unknown fullscreen carries no
+        // sighting: only proven `Some(false)` counts.
         for (window, fact) in &self.staged.facts {
-            if fact.minimized || fact.rect.is_none() {
+            let derived = self.derived_for(window);
+            if derived.hidden || derived.hold || derived.excluded || fact.rect.is_none() {
                 continue;
             }
-            if !fact.fullscreen {
+            if fact.fullscreen == Some(false) {
                 self.born_seen_nonfullscreen.insert(window.clone());
             }
         }
@@ -311,7 +332,11 @@ impl WorldEngine {
             let Some(fact) = self.staged.facts.get(&window).cloned() else {
                 continue;
             };
-            if fact.minimized || fact.rect.is_none() {
+            let derived = self.derived_for(&window);
+            if derived.hidden || derived.hold || derived.excluded || derived.own_excluded {
+                continue;
+            }
+            if fact.rect.is_none() {
                 continue;
             }
             if self.retained_born.iter().any(|held| held.window == window) {
@@ -332,7 +357,7 @@ impl WorldEngine {
                 self.born_held_fullscreen.remove(&window);
                 continue;
             }
-            if fact.sticky {
+            if derived.sticky {
                 continue;
             }
             // Fullscreen births hold slotless until their first exit; the
@@ -342,7 +367,7 @@ impl WorldEngine {
             // later fullscreen on an admitted tile (including a minimized
             // restore, which rides session membership) is a managed overlay
             // transition, never a birth.
-            if fact.fullscreen {
+            if derived.overlay_fullscreen {
                 if !pre_known.contains(&window)
                     && !self.born_floating_first.contains(&window)
                     && should_hold_born_fullscreen(
@@ -355,11 +380,34 @@ impl WorldEngine {
                 }
                 continue;
             }
-            if !fact.maximized {
-                // A first exit to plain (non-maximized) ends the held birth
-                // with no clear, so a later user maximize is never mistaken
-                // for the held exit.
+            // A first exit to plain (proven non-maximized) ends the held
+            // birth with no clear, so a later user maximize is never
+            // mistaken for the held exit. Unknown maximized never proves
+            // plain: with maximize support it already holds above; without
+            // it, absence is the native-free ordinary state and still
+            // counts as plain via the derived overlay.
+            let plain_exit = if self
+                .capabilities()
+                .map(|caps| caps.maximize)
+                .unwrap_or(true)
+            {
+                fact.maximized == Some(false)
+            } else {
+                !derived.overlay_maximized
+            };
+            if plain_exit {
                 self.born_held_fullscreen.remove(&window);
+                continue;
+            }
+            // From here the window reads maximized (or maximize-unsupported
+            // fullscreen-cleared): if maximize is supported, unknown already
+            // held above, so only `Some(true)` reaches here.
+            if self
+                .capabilities()
+                .map(|caps| caps.maximize)
+                .unwrap_or(true)
+                && fact.maximized != Some(true)
+            {
                 continue;
             }
             // Maximized, non-fullscreen from here. The held-fullscreen exit
@@ -372,15 +420,18 @@ impl WorldEngine {
                     continue;
                 }
                 // A fixed exit floats automatic with no clear, like a fixed
-                // birth: the broker's client-semantics flag, the explicit
-                // tile-win suppress signal, and the shared D5 exit
-                // disposition on the wire hints must all read non-fixed.
-                if fact.fixed_auto || fact.fixed_suppress {
+                // birth: the automatic latch, the explicit tile-win
+                // suppress signal, and the shared D5 exit disposition on
+                // the wire hints must all read non-fixed. Unknown hints
+                // already hold above, so `None` never reaches a decision.
+                if derived.fixed_auto || derived.fixed_suppress {
                     continue;
                 }
-                if classify_born_fullscreen_exit(fact.hints, self.fixed_size_predicate_setting())
-                    == FirstExitDisposition::FloatAutomatic
-                {
+                let fixed_exit = fact.hints.is_some_and(|hints| {
+                    classify_born_fullscreen_exit(hints, self.fixed_size_predicate_setting())
+                        == FirstExitDisposition::FloatAutomatic
+                });
+                if fixed_exit {
                     continue;
                 }
                 if !self.born_clear_authorized(report, &window, &home) {
@@ -401,12 +452,14 @@ impl WorldEngine {
             // proceed. Later maximizes of admitted tiles keep their
             // overlay, and floating-first sightings keep theirs under both
             // modes.
-            if fact.floating {
+            if derived.floating {
                 continue;
             }
-            if fact.fixed_suppress
-                || fact.fixed_auto
-                || is_fixed_size_with(fact.hints, self.fixed_size_predicate_setting())
+            if derived.fixed_suppress
+                || derived.fixed_auto
+                || fact.hints.is_some_and(|hints| {
+                    is_fixed_size_with(hints, self.fixed_size_predicate_setting())
+                })
             {
                 continue;
             }
@@ -514,6 +567,18 @@ impl WorldEngine {
                 keep.push(retained);
                 continue;
             }
+            // Narrowly held rows keep the binding with no desire: live
+            // presence with no usable facts, never a departure. Safety
+            // exclusions keep the binding too (pending work must not
+            // write/focus an excluded window); only an explicit close
+            // prunes above.
+            if self.is_held_window(&retained.window) || self.is_excluded_window(&retained.window) {
+                if retained.pending.is_some() {
+                    retained.ambiguous = true;
+                }
+                keep.push(retained);
+                continue;
+            }
             let homing = self.staged_homing(&retained.window);
             let Some(home) = homing.clone() else {
                 // Complete inventory with no homing and no close: a
@@ -539,9 +604,16 @@ impl WorldEngine {
                 self.prune_born_lifetime(&retained.window);
                 continue;
             };
-            // Minimized or unreadable facts hold without weakening the
-            // retained authority.
-            if fact.minimized || fact.rect.is_none() {
+            let derived_settle = self.derived_for(&retained.window);
+            // Minimized/hidden or unreadable facts hold without weakening
+            // the retained authority. Raw null overlay already holds via
+            // the derived hold; unknown minimized holds its dependent
+            // clear without revoking membership.
+            if derived_settle.hidden
+                || derived_settle.hold
+                || derived_settle.excluded
+                || fact.rect.is_none()
+            {
                 if retained.pending.is_some() {
                     retained.ambiguous = true;
                 }
@@ -550,12 +622,14 @@ impl WorldEngine {
             }
             // Delayed fixed transition: a birth that reads fixed only after
             // minting abandons with no retry (fixed births float beneath
-            // their overlay). The broker's client-semantics flag, the
-            // explicit suppress signal, and the live wire-hint predicate
-            // must all read non-fixed to continue.
-            if fact.fixed_auto
-                || fact.fixed_suppress
-                || is_fixed_size_with(fact.hints, self.fixed_size_predicate_setting())
+            // their overlay). The automatic latch, the explicit suppress
+            // signal, and the live wire-hint predicate must all read
+            // non-fixed to continue.
+            if derived_settle.fixed_auto
+                || derived_settle.fixed_suppress
+                || fact.hints.is_some_and(|hints| {
+                    is_fixed_size_with(hints, self.fixed_size_predicate_setting())
+                })
             {
                 self.born_attempted.insert(retained.window.clone());
                 self.emit_operation(
@@ -570,7 +644,7 @@ impl WorldEngine {
             // lifetimes keep their overlay, like fixed births. Authority
             // is re-proven every report, so a retained desire never
             // outlives the flip.
-            if fact.sticky {
+            if derived_settle.sticky {
                 self.born_attempted.insert(retained.window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
@@ -585,7 +659,7 @@ impl WorldEngine {
             // retained as outstanding session placement (same-report
             // ToggleFloat included). The flip latches floating-first so a
             // later tiled admission keeps its overlay with no second clear.
-            if fact.floating
+            if derived_settle.floating
                 || self
                     .retained_floats
                     .iter()
@@ -641,8 +715,10 @@ impl WorldEngine {
                 continue;
             }
             // A fullscreen flip abandons the born binding and re-arms the
-            // held lane: the exit may still clear through it.
-            if fact.fullscreen {
+            // held lane: the exit may still clear through it. Raw null
+            // overlay already holds above, so only proven `Some(true)`
+            // abandons here.
+            if fact.fullscreen == Some(true) {
                 self.born_held_fullscreen.insert(retained.window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
@@ -652,7 +728,7 @@ impl WorldEngine {
                 );
                 continue;
             }
-            if fact.maximized {
+            if derived_settle.overlay_maximized {
                 // Still maximized: never success. Proven refusal retires
                 // with no loop; anything else holds.
                 if retained.pending.as_ref().is_some_and(born_refused) {

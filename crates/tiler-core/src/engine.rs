@@ -678,6 +678,63 @@ impl Engine {
         self.fixed_size_predicate
     }
 
+    /// Whether any retained session carries an explicit fixed tile
+    /// override for this window. Used by the core window derivation to
+    /// enforce admission-only fixed floats.
+    #[must_use]
+    pub(crate) fn has_fixed_tile_override_any(
+        &self,
+        window: &crate::directional::WindowId,
+    ) -> bool {
+        self.sessions
+            .values()
+            .any(|session| session.has_fixed_tile_override(window))
+    }
+
+    /// Test-only fan-out for [`Session::seed_fixed_tile_override`]:
+    /// the classifier reads any retained session, and the newcomer has
+    /// no homing yet, so the seeded win rides every current session
+    /// until membership prune keeps the homed one.
+    #[cfg(test)]
+    pub(crate) fn seed_fixed_tile_override_any(&mut self, window: &crate::directional::WindowId) {
+        for session in self.sessions.values_mut() {
+            session.seed_fixed_tile_override(window);
+        }
+    }
+
+    /// Whether any retained session floats this window by automatic
+    /// fixed-size admission. Feeds the classifier latch so the automatic
+    /// float survives losing hints or a predicate change.
+    #[must_use]
+    pub(crate) fn is_automatic_fixed_float_any(
+        &self,
+        window: &crate::directional::WindowId,
+    ) -> bool {
+        self.sessions
+            .values()
+            .any(|session| session.is_automatic_fixed_float(window))
+    }
+
+    /// Retained output home for a window from live session membership:
+    /// any domain session still linking the window names its output.
+    /// Staging uses this (after the row's actual reported output) to
+    /// resolve an output-less held row's diagnostic scope; `None` means
+    /// unhomed with no authority.
+    #[must_use]
+    pub(crate) fn retained_home_any(
+        &self,
+        window: &crate::directional::WindowId,
+    ) -> Option<OutputId> {
+        self.sessions.values().find_map(|session| {
+            session
+                .snapshot()
+                .windows
+                .iter()
+                .find(|link| link.window == *window)
+                .map(|link| link.output.clone())
+        })
+    }
+
     /// Select the fixed-size admission predicate for subsequent admissions
     /// only. Propagates to every retained session on store; fresh sessions
     /// adopt it at creation. Never touches topology, revision, or existing
@@ -903,6 +960,36 @@ impl Engine {
         });
     }
 
+    /// Engine-asserted hidden set for fixed-marker preservation across one
+    /// convergence: retained ids (tiled, floating, or already minimized)
+    /// that this observation neither carries nor explicitly closes are
+    /// same-lifetime minimizes, never removals. Explicit closes clear.
+    fn hidden_for_converge(
+        session: &Session,
+        windows: &[EngineWindow],
+        closed: &[WindowId],
+    ) -> BTreeSet<WindowId> {
+        let observed: BTreeSet<&WindowId> = windows.iter().map(|window| &window.window).collect();
+        let closed: BTreeSet<&WindowId> = closed.iter().collect();
+        let mut hidden = BTreeSet::new();
+        for link in &session.snapshot().windows {
+            if !observed.contains(&link.window) && !closed.contains(&link.window) {
+                hidden.insert(link.window.clone());
+            }
+        }
+        for record in session.exception_observed() {
+            if !observed.contains(&record.window) && !closed.contains(&record.window) {
+                hidden.insert(record.window.clone());
+            }
+        }
+        for (window, _, _) in session.minimized_entries() {
+            if !observed.contains(&window) && !closed.contains(&window) {
+                hidden.insert(window);
+            }
+        }
+        hidden
+    }
+
     /// Converge one retained single-domain session to the complete current
     /// observation before its ordinary operation.
     ///
@@ -961,11 +1048,18 @@ impl Engine {
         // Retained counters predate other domains' admissions; advance
         // before convergence assigns serial-leg sequences.
         let floor = self.admission_seq_floor();
+        let hidden = self
+            .sessions
+            .get(&event.domain_key)
+            .map(|session| {
+                Self::hidden_for_converge(session, &event.windows, &event.closed_windows)
+            })
+            .unwrap_or_default();
         let Some(session_mut) = self.sessions.get_mut(&event.domain_key) else {
             return ConvergeOutcome::NoSession;
         };
         session_mut.sync_admission_counter(floor);
-        match session_mut.converge_observation(&observation, focus) {
+        match session_mut.converge_observation_with_hidden(&observation, focus, &hidden) {
             Ok(counts) => {
                 self.converged_this_op = true;
                 // Record the converged counter so the high-water mark
@@ -1070,8 +1164,11 @@ impl Engine {
         // Pair assembly keeps only the component max; advance to the
         // Engine-wide floor before convergence assigns serial-leg
         // sequences. The canonical store below records the result.
+        // Same-lifetime minimizes keep fixed markers; explicit closes
+        // clear (same fencing as the single-domain path).
         self.sync_working_counter(session);
-        match session.converge_observation(&observation, focus) {
+        let hidden = Self::hidden_for_converge(session, &event.windows, &event.closed_windows);
+        match session.converge_observation_with_hidden(&observation, focus, &hidden) {
             Ok(counts) => {
                 self.converged_this_op = true;
                 // D23 close cleanup on the assembled pair, same fencing as

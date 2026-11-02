@@ -607,6 +607,50 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
     }
 }
 
+/// Structural size estimate for one optional visibility write receipt:
+/// `null` (4) when absent; the present object
+/// `{"property":S,"target":B,"revision":"N","path":S,"setter":S,
+/// "reason":S,"pre":sample|null,"post":sample|null}` counts 80 fixed
+/// (braces, keys, commas, and the revision quotes) plus the property/path/
+/// setter/reason tokens, the target bool, the revision digits, and the two
+/// nullable samples below.
+fn last_write_estimate(last: &Option<crate::world_report::LastWrite>) -> usize {
+    match last {
+        None => 4,
+        Some(last) => {
+            80 + json_string_len(last.property.as_str())
+                + bool_len(last.target)
+                + u64_len(last.revision)
+                + json_string_len(last.path.as_str())
+                + json_string_len(last.setter.as_str())
+                + json_string_len(last.reason.as_str())
+                + visibility_sample_estimate(&last.pre)
+                + visibility_sample_estimate(&last.post)
+        }
+    }
+}
+
+/// Structural size estimate for one nullable visibility sample:
+/// `null` (4) when absent; the present object
+/// `{"obs":"N","lifetimeMatched":B|null,
+/// "visibility":{"visible":B|null,"suppressionOwned":B|null},
+/// "minimized":B|null,"hostHidden":B|null}` counts 102 fixed plus the
+/// observation digits and the five nullable bools.
+fn visibility_sample_estimate(sample: &Option<crate::world_report::VisibilitySample>) -> usize {
+    match sample {
+        None => 4,
+        Some(sample) => {
+            102 + u64_len(sample.obs)
+                + sample.lifetime_matched.map_or(4, bool_len)
+                + 32
+                + sample.visibility.visible.map_or(4, bool_len)
+                + sample.visibility.suppression_owned.map_or(4, bool_len)
+                + sample.minimized.map_or(4, bool_len)
+                + sample.host_hidden.map_or(4, bool_len)
+        }
+    }
+}
+
 /// Structural request size estimate over the same accounting: every
 /// carried string through [`json_string_len`], exact numeric widths, and
 /// per-row overhead derived field-by-field from the protocol wire layout
@@ -732,33 +776,99 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             + held.fields.len().saturating_sub(1);
     }
     for fact in &report.windows {
-        // {"win":S,"out":S,"rect":R|null,"floating":B,
-        // "fitExcluded":B,"fullscreen":B,"maximized":B,"sticky":B,
-        // "fixedAuto":B,"fixedSuppress":B,"minimized":B,
-        // "observedWs":S|null,"nativeWs":S|null,
-        // "hints":{"minW":N,"minH":N,"maxW":N,"maxH":N}} = 252 fixed
-        // plus ids, rect digits, and hint bounds (`null` counts 4).
-        bytes += 252
+        // {"win":S,"out":S|null,"rect":R|null,"fullscreen":B|null,
+        // "maximized":B|null,"sticky":B|null,"minimized":B|null,
+        // "hints":{"minW":N,"minH":N,"maxW":N,"maxH":N}|null,
+        // "nativeWs":S|null,"hostHidden":B|null,"privileged":B|null,
+        // "managed":B|null,"acceptsInput":B|null,
+        // "activationInhibited":B|null,"toolWindow":B|null,"owned":B|null,
+        // "transient":B|null,"modal":B|null,"resizable":B|null,
+        // "above":B|null,"below":B|null,"owner":S|null,"parent":S|null,
+        // "role":S|null,"appId":S|null,"executable":S|null,
+        // "processId":S|null,"class":S|null,"title":S|null,"type":S|null,
+        // "activationPolicy":S|null,"layer":N|null,"fullscreenOwner":S|null,
+        // "fullscreenExitable":B|null,"suppressionAvailable":B|null,
+        // "visibility":{"visible":B|null,"suppressionOwned":B|null},
+        // "lastWrite":{...}|null} = 523 fixed (outer braces, every key
+        // plus colon, hints and visibility braces, and the separating
+        // commas, with no values) plus ids, rect digits, hint bounds,
+        // tokens, counters, and samples (`null` counts 4; absent nullable
+        // scalars count `null`).
+        bytes += 523
             + json_string_len(&fact.window.0)
-            + json_string_len(&fact.output.0)
-            + rect_len(fact.rect)
-            + bool_len(fact.floating)
-            + bool_len(fact.fit_excluded)
-            + bool_len(fact.fullscreen)
-            + bool_len(fact.maximized)
-            + bool_len(fact.sticky)
-            + bool_len(fact.fixed_auto)
-            + bool_len(fact.fixed_suppress)
-            + bool_len(fact.minimized)
             + fact
-                .observed_workspace
-                .as_deref()
-                .map_or(4, json_string_len)
-            + fact.native_workspace.as_deref().map_or(4, json_string_len)
-            + fact.hints.min_w.map_or(4, int_len)
-            + fact.hints.min_h.map_or(4, int_len)
-            + fact.hints.max_w.map_or(4, int_len)
-            + fact.hints.max_h.map_or(4, int_len);
+                .output
+                .as_ref()
+                .map_or(4, |out| json_string_len(&out.0))
+            + rect_len(fact.rect)
+            + fact.fullscreen.map_or(4, bool_len)
+            + fact.maximized.map_or(4, bool_len)
+            + fact.sticky.map_or(4, bool_len)
+            + fact.minimized.map_or(4, bool_len)
+            + fact.hints.map_or(4, |hints| {
+                hints.min_w.map_or(4, int_len)
+                    + hints.min_h.map_or(4, int_len)
+                    + hints.max_w.map_or(4, int_len)
+                    + hints.max_h.map_or(4, int_len)
+            })
+            + match &fact.native_workspace {
+                crate::world_report::NativeWorkspaceFact::Omitted => 0,
+                crate::world_report::NativeWorkspaceFact::Null => 4,
+                crate::world_report::NativeWorkspaceFact::Value(id) => json_string_len(id),
+            }
+            + fact.host_hidden.map_or(4, bool_len)
+            + fact.privileged.map_or(4, bool_len)
+            + fact.managed.map_or(4, bool_len)
+            + fact.accepts_input.map_or(4, bool_len)
+            + fact.activation_inhibited.map_or(4, bool_len)
+            + fact.tool_window.map_or(4, bool_len)
+            + fact.owned.map_or(4, bool_len)
+            + fact.transient.map_or(4, bool_len)
+            + fact.modal.map_or(4, bool_len)
+            + fact.resizable.map_or(4, bool_len)
+            + fact.above.map_or(4, bool_len)
+            + fact.below.map_or(4, bool_len)
+            + fact.owner.as_ref().map_or(4, |id| json_string_len(&id.0))
+            + fact.parent.as_ref().map_or(4, |id| json_string_len(&id.0))
+            + fact.role.as_deref().map_or(4, json_string_len)
+            + fact.app_id.as_deref().map_or(4, json_string_len)
+            + fact.executable.as_deref().map_or(4, json_string_len)
+            + fact.process_id.as_deref().map_or(4, json_string_len)
+            + fact.class.as_deref().map_or(4, json_string_len)
+            + fact.title.as_deref().map_or(4, json_string_len)
+            + fact
+                .window_type
+                .map_or(4, |kind| json_string_len(kind.as_str()))
+            + fact
+                .activation_policy
+                .map_or(4, |policy| json_string_len(policy.as_str()))
+            + fact.layer.map_or(4, int_len)
+            + fact
+                .fullscreen_owner
+                .map_or(4, |owner| json_string_len(owner.as_str()))
+            + fact.fullscreen_exitable.map_or(4, bool_len)
+            + fact.suppression_available.map_or(4, bool_len)
+            + 32
+            + fact.visibility.visible.map_or(4, bool_len)
+            + fact.visibility.suppression_owned.map_or(4, bool_len)
+            + last_write_estimate(&fact.last_write);
+    }
+    for held in &report.held_windows {
+        // Held rows ride the wire as ordinary window objects with their
+        // carried keys: `{` + one `"key":value` per retained field +
+        // commas + `}` (values through [`raw_setting_value_estimate`]).
+        // The diagnostic is core-side only, never on the wire. The
+        // estimator runs before validation, so a non-finite retained
+        // number (which has no canonical spelling) counts the `null`
+        // width per bad scalar as a pure size bound, never as an
+        // encoding, while every carried structure and text byte counts.
+        bytes += 2
+            + held
+                .fields
+                .iter()
+                .map(|(key, value)| json_string_len(key) + 1 + raw_setting_value_estimate(value))
+                .sum::<usize>()
+            + held.fields.len().saturating_sub(1);
     }
     for view in &report.views {
         // {"out":S,"view":S} = 17 fixed.
@@ -1494,6 +1604,71 @@ pub fn encode_held_screen_canonical(
         push_json_string(&mut out, key);
         out.push(':');
         push_raw_setting_value(&mut out, value)?;
+    }
+    out.push('}');
+    Ok(out)
+}
+
+/// Exact canonical encoding for one held window row: the retained carried
+/// fields as a JSON object in stored order (canonical schema order at
+/// decode: `win`, `out`, `rect`, `fullscreen`, `maximized`, `sticky`,
+/// `minimized`, `hints`, `nativeWs`, `hostHidden`, `privileged`, `managed`,
+/// `acceptsInput`, `activationInhibited`, `toolWindow`, `owned`,
+/// `transient`, `modal`, `resizable`, `above`, `below`, `owner`, `parent`,
+/// `role`, `appId`, `executable`, `processId`, `class`, `title`, `type`,
+/// `activationPolicy`, `layer`, `fullscreenOwner`, `fullscreenExitable`,
+/// `suppressionAvailable`, `visibility`, `lastWrite`, then any other carried
+/// keys lexicographically, with the nested `hints`, `visibility`, and
+/// `lastWrite` objects in schema order). The diagnostic is core-side only,
+/// never on the wire. Checked: a non-finite retained number is an error,
+/// never a silent `null`.
+pub fn encode_held_window_canonical(
+    held: &crate::world_report::HeldWindowRow,
+) -> Result<String, NonFiniteNumber> {
+    let mut out = String::new();
+    out.push('{');
+    for (i, (key, value)) in held.fields.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_json_string(&mut out, key);
+        out.push(':');
+        push_raw_setting_value(&mut out, value)?;
+    }
+    out.push('}');
+    Ok(out)
+}
+
+/// Exact canonical encoding for one valid window row: schema key order
+/// (`win`, `out`, `rect`, `fullscreen`, `maximized`, `sticky`, `minimized`,
+/// `hints`, `nativeWs`, `hostHidden`, `privileged`, `managed`, `acceptsInput`,
+/// `activationInhibited`, `toolWindow`, `owned`, `transient`, `modal`,
+/// `resizable`, `above`, `below`, `owner`, `parent`, `role`, `appId`,
+/// `executable`, `processId`, `class`, `title`, `type`, `activationPolicy`,
+/// `layer`, `fullscreenOwner`, `fullscreenExitable`, `suppressionAvailable`,
+/// `visibility`, `lastWrite`, with the nested `hints`, `visibility`, and
+/// `lastWrite` objects in schema order). Reuses the retained raw fields so
+/// the spelling cannot drift from the held-row writer. `nativeWs` retains
+/// its wire spelling (absent stays absent, `null` stays `null`, `""` stays
+/// `""`, a known id stays itself; the immutable fixtures pin omission for
+/// ordinary rows), every other nullable fact spells `null`. Witness for the
+/// immutable message bytes: a decoded valid row must re-encode to the exact
+/// carried row bytes. Checked shape shared with the held-row writer; integer
+/// geometry and u64 counters are always finite so valid rows never fail.
+pub fn encode_window_canonical(
+    fact: &crate::world_report::WindowFact,
+) -> Result<String, NonFiniteNumber> {
+    let mut out = String::new();
+    out.push('{');
+    let mut first = true;
+    for (key, value) in crate::world_report::retained_window_fields(fact) {
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        push_json_string(&mut out, &key);
+        out.push(':');
+        push_raw_setting_value(&mut out, &value)?;
     }
     out.push('}');
     Ok(out)

@@ -88,12 +88,12 @@ fn learned_shared_fixture_converges_through_raw_reports() {
         };
         let mut wfact = fact(window, Some(grown));
         if case["declared_max"].as_str() == Some("baseline-w") {
-            wfact.hints = crate::size_hints::WindowSizeHints {
+            wfact.hints = Some(crate::size_hints::WindowSizeHints {
                 min_w: None,
                 min_h: None,
                 max_w: Some(baseline.w),
                 max_h: None,
-            };
+            });
         }
         let second = accepted(
             &mut engine,

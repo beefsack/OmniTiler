@@ -172,6 +172,52 @@
   references to removed `SendSource::HomeThenCachedLive` in `workspace_send.rs`
   and `world_command_map.rs`. This is expected port work; no adapter changes
   were made. Other adapter builds have not yet been inventoried.
+- Raw `WindowFact` now carries nullable native classification/state/identity,
+  visibility and last-write facts. Adapter verdict fields and `observedWs` are
+  removed, not accepted as a compatibility shape. Core derives ordinary and
+  dialog/sheet float admission, fixed-size origins and safety exclusions using
+  connection-owned availability; own-process equality alone excludes internal UI.
+  Separate-process same-executable/bundle windows and Settings remain ordinary.
+- Supported unreadable inputs stay unknown; only declared unavailable predicates
+  are skipped. A known float origin makes unrelated transient/modal/layer nulls
+  irrelevant. Generic-XAML executable uncertainty holds the border predicate,
+  not membership. Unknown maximize on a connection without maximize support
+  preserves membership but withholds frame/clear authority. These rules align
+  with the [Windows native evidence](windows-v4-native-evidence.md#physical-check-series-closing-summary):
+  per-window read failure never changes `unavailableFacts`, and readable elevated
+  metadata is not write authority. No contract shape change follows from those
+  probes.
+- Identifiable invalid/conflicting window rows retain raw fields, original
+  ordinals, live presence and known homes. Complete inventory no longer turns a
+  held row into closure or re-mints a born-clear operation after recovery.
+  Structural violations refuse before grading, including invalid ids masked by
+  another bad fact. Known safety/own-process exclusions retire managed slots and
+  authority, not native lifetimes; retained fixed-tile overrides and automatic
+  origins survive temporary exclusion and reset on actual lifetime termination.
+  Unknown sticky refuses affected migration/swap operations rather than silently
+  moving a partial member set.
+- Nested raw-window fixture witnesses cover accepted and held canonical bytes,
+  last-write visibility samples, closed vocabulary and retired keys. Optional
+  `nativeWs` omission, null, empty and known-id spellings remain distinct for
+  exact encoding/digests while unknown membership stays semantically unknown.
+  Test/harness logical membership echoes are replaced by native observations or
+  raw member-attempt evidence at simulated writes, not desired-state echoes.
+- Raw-window verification: 1145 core unit tests, core integration targets and
+  protocol suites 49/52/4 pass with only `workspace_unsafe_posture` filtered.
+  Build, scoped all-target clippy with warnings denied, formatting and diff
+  checks pass. The unfiltered test command at `e21d11e8` fails that workspace
+  guardrail on `allow(unsafe_code)` in the two Windows probe examples; those
+  files and the allowlist are unchanged by this increment. This integration
+  failure is not a raw-window test pass.
+- Static corpus checks remain 518 messages, 515 canonical messages, 66 catalogs /
+  346 arms / 437 enum witnesses, 71 records / 254 witnesses and 22 scenarios /
+  257 steps / 406 compiled jq assertions. All eight OPEN/TBD gates are unchanged;
+  static validation and nested byte witnesses are not full v4 scenario execution.
+- Deferred fail-closed refinements are recorded in the
+  [raw classification discriminators](../spec/reference-outcomes.md#raw-classification-hold-discriminators):
+  known floats with unreadable hints still overhold rather than defaulting hints,
+  and unselected nonordinary-kind admission stays TBD. Full visibility/focus,
+  state/intent persistence and renderer lanes remain separate increments.
 
 ## Outcome
 
@@ -180,8 +226,11 @@
   integration and bounded readiness are implemented and tested.
   Screen metadata ingress, narrow holds and gap/outer scaling are implemented
   and tested; physical reconnect identity and other metric scaling remain pending.
-  The own-process decision, target fixtures and handshake process-identity
-  foundation are reconciled; raw-window classification remains pending.
+   Raw ordinary/dialog/sheet classification and own-process exclusion are
+   consumed by the real engine, with held-row lifecycle and retained-intent
+   regressions. Unreadable-hint narrowing and unselected special-kind admission
+   remain explicitly deferred; the workspace unsafe guardrail failure above
+   remains unresolved outside this increment's changed sources.
   The remaining world report/reply paths and version are still staged; no v4
   cutover or full scenario acceptance is claimed. Full adapter build-failure
   inventory remains pending.

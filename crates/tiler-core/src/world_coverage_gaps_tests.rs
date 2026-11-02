@@ -43,25 +43,51 @@ fn tiny(output: &str, x: i32) -> ScreenReport {
 fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(rect(x, 0, 40, 90)),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(crate::world_report::WindowType::Normal),
+        activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: crate::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
 fn float_fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
-        floating: true,
+        transient: Some(true),
         ..fact(window, output, x)
     }
 }
@@ -101,6 +127,7 @@ fn report(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -260,7 +287,7 @@ fn explicit_tile_retry_failure_mints_no_focus_and_never_loops() {
         .map(|w| {
             let mut w = w.clone();
             if w.window.0 == victim {
-                w.floating = true;
+                w.transient = Some(true);
             }
             w
         })
@@ -309,9 +336,9 @@ fn explicit_tile_retry_failure_mints_no_focus_and_never_loops() {
 
 #[test]
 fn unexplained_excluded_newcomer_takes_no_activation() {
-    // A game/overlay newcomer (fit-excluded with no floating, fullscreen,
-    // or maximized origin) converges honestly but never takes automatic
-    // activation; a later clean report still mints nothing.
+    // A safety-excluded newcomer (privileged game/overlay) takes no
+    // membership row and never takes automatic activation; a later clean
+    // report still mints nothing.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = vec![roomy("out-a", 0)];
     accepted(
@@ -327,7 +354,7 @@ fn unexplained_excluded_newcomer_takes_no_activation() {
         ),
     );
     let mut game = fact("game", "out-a", 200);
-    game.fit_excluded = true;
+    game.privileged = Some(true);
     let reply = accepted(
         &mut engine,
         &report(
@@ -346,8 +373,9 @@ fn unexplained_excluded_newcomer_takes_no_activation() {
         reply.effects
     );
     assert!(
-        row_of(&reply, "game").allocation.is_some(),
-        "still converges honestly"
+        reply.windows.iter().all(|row| row.lifetime.0 != "game"),
+        "safety exclusion carries no membership row: {:?}",
+        reply.windows
     );
     let echo = accepted(
         &mut engine,
@@ -356,7 +384,7 @@ fn unexplained_excluded_newcomer_takes_no_activation() {
             screens,
             vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100), {
                 let mut game = fact("game", "out-a", 200);
-                game.fit_excluded = true;
+                game.privileged = Some(true);
                 game
             }],
             "",
@@ -369,6 +397,11 @@ fn unexplained_excluded_newcomer_takes_no_activation() {
         echo.effects.is_empty(),
         "nothing queued: {:?}",
         echo.effects
+    );
+    assert!(
+        echo.windows.iter().all(|row| row.lifetime.0 != "game"),
+        "still no membership row: {:?}",
+        echo.windows
     );
 }
 
@@ -446,7 +479,7 @@ fn fixed_hints() -> WindowSizeHints {
 
 fn fixed_fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
-        hints: fixed_hints(),
+        hints: Some(fixed_hints()),
         ..fact(window, output, x)
     }
 }
@@ -492,7 +525,7 @@ fn automatic_fixed_size_newcomer_takes_no_admission_focus() {
     );
     assert!(row_of(&arrival, "wf").floating, "fixed floats automatic");
     let mut wf = float_fact("wf", "out-a", 200);
-    wf.hints = fixed_hints();
+    wf.hints = Some(fixed_hints());
     let echo = accepted(
         &mut engine,
         &report(
@@ -530,9 +563,8 @@ fn adapter_asserted_automatic_float_newcomer_takes_no_admission_focus() {
             None,
         ),
     );
-    let mut wa = float_fact("wa", "out-a", 200);
-    wa.fixed_auto = true;
-    wa.hints = fixed_hints();
+    let mut wa = fact("wa", "out-a", 200);
+    wa.hints = Some(fixed_hints());
     let arrival = accepted(
         &mut engine,
         &report(
@@ -551,9 +583,8 @@ fn adapter_asserted_automatic_float_newcomer_takes_no_admission_focus() {
         arrival.effects
     );
     assert!(row_of(&arrival, "wa").floating, "stays floated");
-    let mut wa_echo = float_fact("wa", "out-a", 200);
-    wa_echo.fixed_auto = true;
-    wa_echo.hints = fixed_hints();
+    let mut wa_echo = fact("wa", "out-a", 200);
+    wa_echo.hints = Some(fixed_hints());
     let echo = accepted(
         &mut engine,
         &report(
@@ -576,7 +607,11 @@ fn adapter_asserted_automatic_float_newcomer_takes_no_admission_focus() {
 #[test]
 fn fixed_tile_override_newcomer_still_mints_once() {
     // D3: an explicit user tile win is ordinary admission and keeps its
-    // one-shot intent.
+    // one-shot intent. The retired adapter verdict carries no override
+    // anymore (raw facts only), and no raw-fact sequence mints the first
+    // win (persisted intent records are a later increment), so the test
+    // seeds the retained win unit-internally and exercises the approved
+    // classifier/admission algorithm downstream of it.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = vec![roomy("out-a", 0)];
     accepted(
@@ -591,8 +626,10 @@ fn fixed_tile_override_newcomer_still_mints_once() {
             None,
         ),
     );
-    let mut wt = fixed_fact("wt", "out-a", 200);
-    wt.fixed_suppress = true;
+    engine
+        .engine
+        .seed_fixed_tile_override_any(&WindowId("wt".to_owned()));
+    let wt = fixed_fact("wt", "out-a", 200);
     let arrival = accepted(
         &mut engine,
         &report(
@@ -618,8 +655,7 @@ fn fixed_tile_override_newcomer_still_mints_once() {
         "override tiles: {:?}",
         row_of(&arrival, "wt")
     );
-    let mut wt_echo = fixed_fact("wt", "out-a", 200);
-    wt_echo.fixed_suppress = true;
+    let wt_echo = fixed_fact("wt", "out-a", 200);
     let echo = accepted(
         &mut engine,
         &report(
@@ -675,7 +711,7 @@ fn explicit_focus_of_automatic_float_after_withhold_stays_quiet() {
         arrival.effects
     );
     let mut wf = float_fact("wf", "out-a", 200);
-    wf.hints = fixed_hints();
+    wf.hints = Some(fixed_hints());
     let explicit = accepted(
         &mut engine,
         &report(
@@ -969,7 +1005,7 @@ fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
         reordered_arrival.effects
     );
     let mut wz_echo = float_fact("wz", "out-a", 300);
-    wz_echo.hints = fixed_hints();
+    wz_echo.hints = Some(fixed_hints());
     let echo = accepted(
         &mut batched,
         &report(
@@ -1042,7 +1078,7 @@ fn mixed_batch_fixed_first_mints_ordinary() {
         "fixed still floats automatic"
     );
     let mut wf = float_fact("wf", "out-a", 200);
-    wf.hints = fixed_hints();
+    wf.hints = Some(fixed_hints());
     let echo = accepted(
         &mut engine,
         &report(
@@ -1109,9 +1145,9 @@ fn two_automatic_fixed_newcomers_take_no_focus() {
     assert!(row_of(&arrival, "wf").floating, "wf floats automatic");
     assert!(row_of(&arrival, "wg").floating, "wg floats automatic");
     let mut wf = float_fact("wf", "out-a", 200);
-    wf.hints = fixed_hints();
+    wf.hints = Some(fixed_hints());
     let mut wg = float_fact("wg", "out-a", 300);
-    wg.hints = fixed_hints();
+    wg.hints = Some(fixed_hints());
     let echo = accepted(
         &mut engine,
         &report(
@@ -1168,14 +1204,13 @@ fn windows_profile_automatic_fixed_withholds_while_ordinary_mints() {
         );
         let newcomer = match case {
             "automatic-fixed" => {
-                let mut wa = float_fact("wn", "out-a", 200);
-                wa.fixed_auto = true;
-                wa.hints = fixed_hints();
+                let mut wa = fact("wn", "out-a", 200);
+                wa.hints = Some(fixed_hints());
                 wa
             }
             "intentional-fixed" => {
                 let mut wa = float_fact("wn", "out-a", 200);
-                wa.hints = fixed_hints();
+                wa.hints = Some(fixed_hints());
                 wa
             }
             _ => fact("wn", "out-a", 200),
@@ -1260,7 +1295,7 @@ fn explicit_focus_command_after_withhold_succeeds_without_admission_token() {
         arrival.effects
     );
     let mut wf = float_fact("wf", "out-a", 200);
-    wf.hints = fixed_hints();
+    wf.hints = Some(fixed_hints());
     let commanded = accepted(
         &mut engine,
         &report(
@@ -1302,7 +1337,7 @@ fn maximized_sibling_suppresses_admission_without_retry() {
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let screens = vec![roomy("out-a", 0)];
     let mut max = fact("max", "out-a", 0);
-    max.maximized = true;
+    max.maximized = Some(true);
     accepted(
         &mut engine,
         &report(
@@ -1344,7 +1379,7 @@ fn maximized_sibling_suppresses_admission_without_retry() {
             vec![
                 {
                     let mut max = fact("max", "out-a", 0);
-                    max.maximized = true;
+                    max.maximized = Some(true);
                     max
                 },
                 fact("w1", "out-a", 100),
@@ -1592,9 +1627,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
     assert_eq!(stay.effects[0].target.0, "w2", "source MRU survivor");
     assert!(stay.effects[0].is_explicit_focus_for(11));
     // Exact arrival settles; the echo replays nothing.
-    let view_b = view_of(&stay, "out-b");
-    let mut arrived = fact("w0", "out-b", 800);
-    arrived.observed_workspace = Some(view_b.clone());
+    let arrived = fact("w0", "out-b", 800);
     let settled = accepted(
         &mut engine,
         &report(
@@ -1745,8 +1778,8 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
     );
     assert_eq!(stay_left.effects[0].target.0, "wb2", "out-b MRU survivor");
     let view_a = view_of(&stay_left, "out-a");
-    let mut arrived_left = fact("wb", "out-a", 0);
-    arrived_left.observed_workspace = Some(view_a.clone());
+    let _ = &view_a;
+    let arrived_left = fact("wb", "out-a", 0);
     let settled_left = accepted(
         &mut engine,
         &report(
@@ -1858,9 +1891,9 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             .collect();
         let mut bad = fact(window, "out-a", x);
         if tag == "sticky" {
-            bad.sticky = true;
+            bad.sticky = Some(true);
         } else {
-            bad.fit_excluded = true;
+            bad.privileged = Some(true);
         }
         let send = report(
             2,
@@ -2303,10 +2336,8 @@ fn floating_source_migration_carries_without_engine_tree() {
     }
     // Arrival with both views actuated settles the sessionless carry.
     let refill_ws = refill.target_workspace.clone();
-    let mut arrived = fact("w0", "out-b", 800);
-    arrived.observed_workspace = Some(view_a.clone());
-    let mut arrived_float = float_fact("wf", "out-b", 900);
-    arrived_float.observed_workspace = Some(view_a.clone());
+    let arrived = fact("w0", "out-b", 800);
+    let arrived_float = float_fact("wf", "out-b", 900);
     let mut arrival = report(
         5,
         screens.clone(),
@@ -2743,7 +2774,7 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
             "emptied source names nothing: {:?}",
             reply.effects
         );
-        // Lag keeps the flight with no replay; exact receipt settles.
+        // Lag keeps the flight with no replay; the member-attempt proof settles.
         let lag = accepted(
             &mut engine,
             &report(
@@ -2762,12 +2793,22 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
             "lag replays nothing: {:?}",
             lag.effects
         );
-        let mut arrived = float_fact("wf", "out-a", 200);
-        arrived.observed_workspace = Some(ring[1].clone());
-        let settled = accepted(
-            &mut engine,
-            &report(5, screens.clone(), vec![arrived], "wf", vec![], None, None),
-        );
+        let arrived = float_fact("wf", "out-a", 200);
+        let mut settle = report(5, screens.clone(), vec![arrived], "wf", vec![], None, None);
+        settle.member_attempts.push(MemberAttempt {
+            operation_id: "op-11".to_owned(),
+            window: WindowId("wf".to_owned()),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: ring[1].clone(),
+            setter: FrameSetter::Accepted,
+            pre: None,
+            post: Some(WorkspaceRef::Logical {
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId(ring[1].clone()),
+            }),
+            attempt_ms: 11,
+        });
+        let settled = accepted(&mut engine, &settle);
         assert!(
             settled.transfers.is_empty(),
             "exact receipt settles: {:?}",
@@ -2803,8 +2844,7 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
             .filter(|r| r.output.0 == "out-a")
             .map(|r| r.id.clone())
             .collect();
-        let mut resident = fact("wr", "out-a", 300);
-        resident.observed_workspace = Some(ring[1].clone());
+        let resident = fact("wr", "out-a", 300);
         accepted(
             &mut engine,
             &report(
@@ -2906,7 +2946,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     // frame, no explicit rect, so the centered 60% fallback is the
     // durable placement.
     let mut fullscreen_w1 = fact("w1", "out-a", 100);
-    fullscreen_w1.fullscreen = true;
+    fullscreen_w1.fullscreen = Some(true);
     fullscreen_w1.rect = Some(fullscreen_frame);
     let floated = accepted(
         &mut engine,
@@ -2987,8 +3027,8 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     // still floating. Observation-only must not flap the membership or
     // mint subject effects.
     let mut still_out = fact("w1", "out-a", 100);
-    still_out.floating = true;
-    still_out.fullscreen = true;
+    still_out.transient = Some(true);
+    still_out.fullscreen = Some(true);
     still_out.rect = Some(fullscreen_frame);
     let echo = accepted(
         &mut engine,
@@ -3028,8 +3068,8 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     // result carries no rect (tiled placement rides the snapshot) and the
     // durable placement survives (never the fullscreen frame).
     let mut float_full = fact("w1", "out-a", 100);
-    float_full.floating = true;
-    float_full.fullscreen = true;
+    float_full.transient = Some(true);
+    float_full.fullscreen = Some(true);
     float_full.rect = Some(fullscreen_frame);
     let retiled = accepted(
         &mut engine,
@@ -3104,7 +3144,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             ),
         );
         let mut fullscreen_w1 = fact("w1", "out-a", 100);
-        fullscreen_w1.fullscreen = true;
+        fullscreen_w1.fullscreen = Some(true);
         fullscreen_w1.rect = Some(fullscreen_frame);
         accepted(
             &mut engine,
@@ -3122,7 +3162,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             ),
         );
         let mut exited = fact("w1", "out-a", 100);
-        exited.floating = true;
+        exited.transient = Some(true);
         exited.rect = Some(fallback);
         let reply = accepted(
             &mut engine,
@@ -3179,7 +3219,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             ),
         );
         let mut fullscreen_w1 = fact("w1", "out-a", 100);
-        fullscreen_w1.fullscreen = true;
+        fullscreen_w1.fullscreen = Some(true);
         fullscreen_w1.rect = Some(fullscreen_frame);
         accepted(
             &mut engine,
@@ -3197,8 +3237,8 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             ),
         );
         let mut float_full = fact("w1", "out-a", 100);
-        float_full.floating = true;
-        float_full.fullscreen = true;
+        float_full.transient = Some(true);
+        float_full.fullscreen = Some(true);
         float_full.rect = Some(fullscreen_frame);
         accepted(
             &mut engine,
@@ -3281,7 +3321,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             ),
         );
         let mut floated = fact("w1", "out-a", 100);
-        floated.floating = true;
+        floated.transient = Some(true);
         floated.rect = Some(durable);
         accepted(
             &mut engine,
@@ -3299,7 +3339,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             ),
         );
         let mut fullscreen_w1 = fact("w1", "out-a", 100);
-        fullscreen_w1.fullscreen = true;
+        fullscreen_w1.fullscreen = Some(true);
         fullscreen_w1.rect = Some(fullscreen_frame);
         let reply = accepted(
             &mut engine,
@@ -3332,7 +3372,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
 
     // Maximize still refuses on the same command path, both directions.
     let mut maxed = fact("w1", "out-a", 100);
-    maxed.maximized = true;
+    maxed.maximized = Some(true);
     match engine.handle_report(&report(
         5,
         screens.clone(),
@@ -3378,8 +3418,8 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
         floated.windows
     );
     let mut maxed_float = fact("w1", "out-a", 100);
-    maxed_float.floating = true;
-    maxed_float.maximized = true;
+    maxed_float.transient = Some(true);
+    maxed_float.maximized = Some(true);
     match engine.handle_report(&report(
         3,
         screens.clone(),
@@ -3434,7 +3474,7 @@ fn toggle_maximize_command_decides_and_reports() {
     // Focused tiled fullscreen maximizes with a fullscreen clear; the
     // exact subject/sibling allocations survive, nothing retains.
     let mut fs = fact("w1", "out-a", 100);
-    fs.fullscreen = true;
+    fs.fullscreen = Some(true);
     let toggled = accepted(
         &mut engine,
         &report(
@@ -3482,7 +3522,7 @@ fn toggle_maximize_command_decides_and_reports() {
     // Maximized observation toggles back off with no clear; the base
     // tile (seed slot) is the outcome.
     let mut mx = fact("w1", "out-a", 100);
-    mx.maximized = true;
+    mx.maximized = Some(true);
     let untoggled = accepted(
         &mut engine,
         &report(
@@ -3512,8 +3552,8 @@ fn toggle_maximize_command_decides_and_reports() {
     );
     // Both-flags observation maximizes with a clear (fullscreen wins).
     let mut both = fact("w1", "out-a", 100);
-    both.fullscreen = true;
-    both.maximized = true;
+    both.fullscreen = Some(true);
+    both.maximized = Some(true);
     let both_reply = accepted(
         &mut engine,
         &report(
@@ -3643,8 +3683,8 @@ fn toggle_maximize_command_decides_and_reports() {
             ),
         );
         let mut floated_fs = fact("w1", "out-a", 100);
-        floated_fs.floating = true;
-        floated_fs.fullscreen = true;
+        floated_fs.transient = Some(true);
+        floated_fs.fullscreen = Some(true);
         floated_fs.rect = Some(rect(0, 0, 800, 600));
         let floated = accepted(
             &mut engine,
@@ -4354,4 +4394,198 @@ fn scale_once_rejects_nonfinite_without_clamp() {
     assert_eq!(WorldEngine::scale_once(8, f64::NAN), None);
     assert_eq!(WorldEngine::scale_once(8, f64::INFINITY), None);
     assert_eq!(WorldEngine::scale_once(8, f64::NEG_INFINITY), None);
+}
+
+#[test]
+fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let screens = vec![roomy("out-a", 0)];
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let arrival = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wf", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(arrival.effects.is_empty());
+    assert!(row_of(&arrival, "wf").floating);
+    let mut wf_float = float_fact("wf", "out-a", 200);
+    wf_float.hints = Some(fixed_hints());
+    let untiled = accepted(
+        &mut engine,
+        &report(
+            3,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100), wf_float],
+            "w0",
+            vec![],
+            Some(10),
+            Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                window: "wf".to_owned(),
+                float_rect: None,
+            })),
+        ),
+    );
+    match &untiled.command_result {
+        Some(CommandResult::Float {
+            window,
+            rect,
+            no_space,
+        }) => {
+            assert_eq!(window.0, "wf");
+            assert_eq!(*rect, None);
+            assert!(!*no_space);
+        }
+        other => panic!("expected unfloat tile result, got {other:?}"),
+    }
+    assert!(
+        untiled.effects.is_empty(),
+        "unfloat mints no admission focus: {:?}",
+        untiled.effects
+    );
+    assert!(untiled.transfers.is_empty());
+    assert!(!row_of(&untiled, "wf").floating);
+    assert!(
+        engine
+            .engine
+            .has_fixed_tile_override_any(&WindowId("wf".to_owned())),
+        "live command records override"
+    );
+    let echo = accepted(
+        &mut engine,
+        &report(
+            4,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wf", "out-a", 200),
+            ],
+            "wf",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(echo.effects.is_empty());
+    assert!(!row_of(&echo, "wf").floating);
+    let mut hidden_wf = fixed_fact("wf", "out-a", 200);
+    hidden_wf.minimized = Some(true);
+    let _hidden = accepted(
+        &mut engine,
+        &report(
+            5,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100), hidden_wf],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .engine
+            .has_fixed_tile_override_any(&WindowId("wf".to_owned())),
+        "override survives hide"
+    );
+    let shown = accepted(
+        &mut engine,
+        &report(
+            6,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wf", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(!row_of(&shown, "wf").floating, "override survives show");
+    assert!(
+        engine
+            .engine
+            .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
+    );
+    let view_a = view_of(&shown, "out-a");
+    let disabled = accepted(
+        &mut engine,
+        &report(
+            7,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wf", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            Some(11),
+            Some(WorldCommand::SetWorkspaceTiling {
+                output: OutputId("out-a".to_owned()),
+                workspace: view_a.clone(),
+                tiled: false,
+            }),
+        ),
+    );
+    assert!(disabled.effects.is_empty());
+    let enabled = accepted(
+        &mut engine,
+        &report(
+            8,
+            screens,
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wf", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            Some(12),
+            Some(WorldCommand::SetWorkspaceTiling {
+                output: OutputId("out-a".to_owned()),
+                workspace: view_a,
+                tiled: true,
+            }),
+        ),
+    );
+    assert!(
+        !row_of(&enabled, "wf").floating,
+        "override survives re-adoption"
+    );
+    assert!(
+        engine
+            .engine
+            .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
+    );
+    assert!(
+        enabled.effects.is_empty(),
+        "re-adoption stays quiet: {:?}",
+        enabled.effects
+    );
 }

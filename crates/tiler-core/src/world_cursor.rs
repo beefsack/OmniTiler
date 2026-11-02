@@ -29,7 +29,7 @@ pub(crate) fn cursor_game_paused(engine: &WorldEngine, report: &WorldReport) -> 
         .staged
         .facts
         .get(&focused)
-        .is_some_and(|fact| fact.fullscreen)
+        .is_some_and(|fact| fact.fullscreen == Some(true))
 }
 
 /// Whether one staged window is focus-eligible for hover coupling: homed to
@@ -55,15 +55,17 @@ fn hover_eligible(
     {
         return false;
     }
-    let Some(fact) = engine.staged.facts.get(window) else {
-        return false;
-    };
-    if fact.minimized {
+    let derived = engine.derived_for(window);
+    if derived.hidden || derived.hold || derived.excluded {
         return false;
     }
     // Unexplained fit-excluded newcomers never take automatic focus
     // (same rule as admission intent): ordinary floats stay eligible.
-    if fact.fit_excluded && !fact.floating && !fact.fullscreen && !fact.maximized {
+    if derived.fit_excluded
+        && !derived.floating
+        && !derived.overlay_fullscreen
+        && !derived.overlay_maximized
+    {
         return false;
     }
     true
@@ -84,7 +86,7 @@ fn hover_candidate(
 ) -> Option<WindowId> {
     let hit = report.cursor_hit.clone()?;
     let fact = engine.staged.facts.get(&hit)?;
-    if fact.minimized {
+    if fact.minimized == Some(true) {
         return None;
     }
     let home = engine.staged.homing.get(&hit)?.clone();

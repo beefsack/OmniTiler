@@ -11,7 +11,8 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    ScreenReport, ScreenView, TransferKind, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
+    FrameSetter, MemberAttempt, ScreenReport, ScreenView, TransferKind, WindowFact, WorkspaceRef,
+    WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -32,19 +33,45 @@ fn screen(output: &str, x: i32) -> ScreenReport {
 fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(rect(x, 0, 40, 90)),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: tiler_core::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(tiler_core::world_report::WindowType::Normal),
+        activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: tiler_core::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
@@ -92,6 +119,7 @@ fn report(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -568,7 +596,7 @@ fn equal_count_pads_shorter_rings() {
 }
 
 #[test]
-fn same_output_send_stays_pending_then_settles_on_observed_membership() {
+fn same_output_send_stays_pending_then_settles_on_member_attempt() {
     let mut engine = engine_for_mode(WorkspaceMode::PerOutputLocal);
     let first = accepted(
         &mut engine,
@@ -637,22 +665,35 @@ fn same_output_send_stays_pending_then_settles_on_observed_membership() {
         "unchanged observation stays pending: {:?}",
         calm.transfers
     );
-    // Observed logical membership at the target settles the transfer.
-    let mut arrived = fact("win-a", "out-a", 0);
-    arrived.observed_workspace = Some(target.clone());
+    // Raw membership arrival at the target settles the transfer: the
+    // adapter proves the write with an accepted attempt whose post names
+    // the target homing. (The old adapter logical-echo premise is retired:
+    // adapters never mint logical ids, so the echo field is gone.)
     let settled = accepted(
         &mut engine,
         &report(
             4,
             4,
             two_screens(),
-            vec![arrived],
+            vec![fact("win-a", "out-a", 0)],
             vec![],
             vec![],
             "",
             None,
             None,
-            vec![],
+            vec![MemberAttempt {
+                operation_id: "op-11".to_owned(),
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: target.clone(),
+                setter: FrameSetter::Accepted,
+                pre: None,
+                post: Some(WorkspaceRef::Logical {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: WorkspaceId(target.clone()),
+                }),
+                attempt_ms: 11,
+            }],
         ),
     );
     assert!(
@@ -708,23 +749,35 @@ fn unknown_membership_never_counts_as_target_receipt() {
             vec![],
         ),
     );
-    // Observed membership naming a different workspace never settles
-    // the flight: only the exact target id proves arrival.
-    let mut wrong = fact("win-a", "out-a", 0);
-    wrong.observed_workspace = Some(other);
+    // A raw attempt whose post names a different workspace never
+    // settles the flight: only an accepted post proving the exact target
+    // homing counts as arrival. (The old adapter logical-echo premise is
+    // retired: adapters never mint logical ids.)
     let held = accepted(
         &mut engine,
         &report(
             3,
             3,
             two_screens(),
-            vec![wrong],
+            vec![fact("win-a", "out-a", 0)],
             vec![],
             vec![],
             "",
             None,
             None,
-            vec![],
+            vec![MemberAttempt {
+                operation_id: "op-11".to_owned(),
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: target.clone(),
+                setter: FrameSetter::Accepted,
+                pre: None,
+                post: Some(WorkspaceRef::Logical {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: WorkspaceId(other.clone()),
+                }),
+                attempt_ms: 11,
+            }],
         ),
     );
     assert_eq!(

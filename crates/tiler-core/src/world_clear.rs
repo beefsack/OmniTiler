@@ -169,6 +169,17 @@ impl WorldEngine {
                 keep.push(retained);
                 continue;
             }
+            // Narrowly held rows and safety exclusions keep the binding:
+            // live presence with no usable facts is never a departure,
+            // and pending clears must not write an excluded window. Only
+            // an explicit close prunes above.
+            if self.is_held_window(&retained.window) || self.is_excluded_window(&retained.window) {
+                if retained.pending.is_some() {
+                    retained.ambiguous = true;
+                }
+                keep.push(retained);
+                continue;
+            }
             let homing = self.staged_homing(&retained.window);
             let Some(home) = homing.clone() else {
                 // Complete inventory with no homing and no close: a
@@ -190,9 +201,16 @@ impl WorldEngine {
                 );
                 continue;
             };
-            // Minimized or unreadable facts hold without weakening the
-            // retained authority.
-            if fact.minimized || fact.rect.is_none() {
+            // Minimized/hidden, held, excluded, or unreadable facts hold
+            // without weakening the retained authority. Raw null overlay
+            // already holds via the derived hold; unknown minimized holds
+            // its dependent clear without revoking membership.
+            let derived_clear = self.derived_for(&retained.window);
+            if derived_clear.hidden
+                || derived_clear.hold
+                || derived_clear.excluded
+                || fact.rect.is_none()
+            {
                 if retained.pending.is_some() {
                     retained.ambiguous = true;
                 }
@@ -309,8 +327,9 @@ impl WorldEngine {
                 }
             }
             // A fullscreen subject abandons: the original move can no
-            // longer proceed.
-            if fact.fullscreen {
+            // longer proceed. Only proven `Some(true)` abandons; raw null
+            // overlay already holds above via the derived hold.
+            if fact.fullscreen == Some(true) {
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -319,7 +338,7 @@ impl WorldEngine {
                 );
                 continue;
             }
-            if fact.maximized {
+            if derived_clear.overlay_maximized {
                 // Still maximized: never success. Proven refusal retires
                 // with no loop; anything else holds.
                 if retained.pending.as_ref().is_some_and(clear_refused) {
@@ -381,7 +400,8 @@ impl WorldEngine {
             // frame arrived (float arrival settles separately; tiled
             // arrival proves via the transfer).
             if retained.float_route {
-                let effective = effective_domain(&retained.home, fact.sticky, view.as_deref());
+                let effective =
+                    effective_domain(&retained.home, derived_clear.sticky, view.as_deref());
                 if self.logical_tiling(&effective.output.0, &effective.workspace.0)
                     != TilingMode::Tiled
                 {
@@ -447,7 +467,10 @@ impl WorldEngine {
                     );
                     continue;
                 };
-                if !half_snap_constraints_ok(half, fact.hints) {
+                if !fact
+                    .hints
+                    .is_some_and(|hints| half_snap_constraints_ok(half, hints))
+                {
                     self.emit_operation(
                         retained.operation_id.clone(),
                         retained.window.clone(),

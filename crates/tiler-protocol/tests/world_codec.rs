@@ -40,11 +40,45 @@ fn request_json(
 fn fact_json(id: &str, x: i32) -> String {
     format!(
         "{{\"win\":\"{id}\",\"out\":\"out\",\"rect\":[{x},0,200,200],\
-         \"floating\":false,\"fitExcluded\":false,\"fullscreen\":false,\
-         \"maximized\":false,\"sticky\":false,\"fixedAuto\":false,\
-         \"fixedSuppress\":false,\"minimized\":false,\"observedWs\":null,
-         \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}}}}"
+         \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\
+         \"minimized\":false,\
+         \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}},\
+         \"hostHidden\":false,\"privileged\":false,\"managed\":true,\
+         \"acceptsInput\":true,\"activationInhibited\":false,\
+         \"toolWindow\":false,\"owned\":false,\"transient\":false,\
+         \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\
+         \"owner\":null,\"parent\":null,\"role\":null,\"appId\":null,\
+         \"executable\":null,\"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\
+         \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
+         \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
+         \"suppressionAvailable\":null,\
+         \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
+         \"lastWrite\":null}}"
     )
+}
+
+/// Canonical v4 raw window row as JSON: every REQUIRED key present with
+/// hold-healthy values (class/type/policy/layer known so the core admits
+/// the row; identity/role nulls stay unknown). Callers override keys
+/// (e.g. `nativeWs`, `out`) for the case under test.
+fn v4_window(win: &str, out: &str, rect: [i32; 4]) -> serde_json::Value {
+    serde_json::json!({
+        "win": win, "out": out, "rect": rect,
+        "fullscreen": false, "maximized": false, "sticky": false,
+        "minimized": false,
+        "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null},
+        "hostHidden": false, "privileged": false, "managed": true,
+        "acceptsInput": true, "activationInhibited": false,
+        "toolWindow": false, "owned": false, "transient": false,
+        "modal": false, "resizable": true, "above": false, "below": false,
+        "owner": null, "parent": null, "role": null, "appId": null,
+        "executable": null, "processId": "pid-foreign-1", "class": "Synthetic",
+        "title": null, "type": "normal", "activationPolicy": "regular",
+        "layer": 0, "fullscreenOwner": null, "fullscreenExitable": null,
+        "suppressionAvailable": null,
+        "visibility": {"visible": true, "suppressionOwned": null},
+        "lastWrite": null,
+    })
 }
 
 fn one_window_request() -> String {
@@ -105,7 +139,7 @@ fn decode_minimal_observation_only_request() {
     assert_eq!(report.screens.len(), 1);
     assert_eq!(report.windows.len(), 1);
     assert_eq!(report.windows[0].window.0, "win-a");
-    assert_eq!(report.windows[0].output.0, "out");
+    assert_eq!(report.windows[0].output.as_ref().expect("out").0, "out");
     assert!(report.views.len() == 1 && report.views[0].view.is_empty());
     assert!(report.closed.is_empty());
     assert!(report.native.is_empty());
@@ -906,10 +940,20 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
     // A maximized move through the engine publishes the one-shot clear
     // desire under the originating op, and both writers encode it.
     let maximized_fact = "{\"win\":\"win-a\",\"out\":\"out\",\"rect\":[100,0,200,200],\
-          \"floating\":true,\"fitExcluded\":false,\"fullscreen\":false,\
-          \"maximized\":true,\"sticky\":false,\"fixedAuto\":false,\
-          \"fixedSuppress\":false,\"minimized\":false,\"observedWs\":null,
-          \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}}";
+          \"fullscreen\":false,\"maximized\":true,\"sticky\":false,\
+          \"minimized\":false,\
+          \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null},\
+          \"hostHidden\":false,\"privileged\":false,\"managed\":true,\
+          \"acceptsInput\":true,\"activationInhibited\":false,\
+          \"toolWindow\":false,\"owned\":false,\"transient\":true,\
+          \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\
+          \"owner\":null,\"parent\":null,\"role\":null,\"appId\":null,\
+          \"executable\":null,\"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\
+          \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
+          \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
+          \"suppressionAvailable\":null,\
+          \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\
+          \"lastWrite\":null}";
     let mut value: serde_json::Value = serde_json::from_str(&request_json(
         "adapter-1",
         "gen-1",
@@ -948,6 +992,41 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
         "estimate {request_estimate} bounds wire {}",
         value.to_string().len()
     );
+}
+
+#[test]
+fn retired_window_keys_hold_identifiable_row_with_key_retained() {
+    // Every retired adapter verdict holds the identifiable row (fail
+    // closed): the report decodes, the row leaves `windows`, and the
+    // carried key is retained in `held_windows`.
+    for key in [
+        "floating",
+        "fitExcluded",
+        "fixedAuto",
+        "fixedSuppress",
+        "observedWs",
+        "shell",
+        "tool",
+        "ownedDialog",
+        "dialog",
+        "noActivate",
+        "cannotControl",
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        let windows = value["windows"].as_array_mut().expect("windows");
+        windows[0][key] = serde_json::Value::Bool(false);
+        let report = decode_request(&value.to_string()).expect("retired holds");
+        assert!(report.windows.is_empty(), "{key}");
+        assert_eq!(report.held_windows.len(), 1, "{key}");
+        assert!(
+            report.held_windows[0]
+                .fields
+                .iter()
+                .any(|(name, _)| name == key),
+            "{key} retained"
+        );
+    }
 }
 
 #[test]
@@ -1167,17 +1246,14 @@ fn reply_operation_settled_matches_core_sizing() {
 }
 
 #[test]
-fn snapshot_rejection_names_fixed_check_reason() {
-    // A fact on an unknown screen refuses with fixed vocabulary, never
-    // payload bytes.
+fn unknown_valid_output_stays_valid_for_core_hold() {
+    // v4 premise: an unknown-but-valid output is not structurally
+    // invalid (the retired `window-output-unknown` refusal is gone).
+    // The fact decodes with its carried output; the core retains the
+    // prior home and holds the scope.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["windows"] = serde_json::json!([{
-        "win": "win-a", "out": "nope", "rect": [0, 0, 10, 10],
-        "floating": false, "fitExcluded": false, "fullscreen": false,
-        "maximized": false, "sticky": false, "fixedAuto": false,
-        "fixedSuppress": false, "minimized": false, "observedWs": null,
-        "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null},
-    }]);
+    let window = v4_window("win-a", "nope", [0, 0, 10, 10]);
+    value["windows"] = serde_json::json!([window]);
     // Unknown output screens must exist for the fact: add the screen and
     // the fact validates structurally; core then holds (not tested here).
     value["screens"] = serde_json::json!([
@@ -1185,9 +1261,12 @@ fn snapshot_rejection_names_fixed_check_reason() {
          "complete": true, "scale": 1.0,
          "identity": {"manufacturer": null, "model": null, "serial": null, "connector": null}},
     ]);
-    let error = decode_request(&value.to_string()).expect_err("unknown output refuses");
-    assert_eq!(error.kind, "snapshot-invalid");
-    assert_eq!(error.message, "window-output-unknown");
+    let report = decode_request(&value.to_string()).expect("unknown valid out decodes");
+    assert_eq!(report.windows.len(), 1);
+    assert_eq!(
+        report.windows[0].output.as_ref().map(|out| out.0.as_str()),
+        Some("nope")
+    );
 }
 
 #[test]
@@ -1327,28 +1406,35 @@ fn gesture_ingress_decodes_phases_and_refuses_unknown_tokens() {
 
 #[test]
 fn native_ws_field_decodes_and_gates() {
-    // Missing nativeWs backfills unknown (native-free reports predate it).
-    let report = decode_request(&one_window_request()).expect("missing backfills");
-    assert_eq!(report.windows[0].native_workspace, None);
+    use tiler_core::world_report::NativeWorkspaceFact;
+    // Missing nativeWs stays omitted (native-free reports predate it).
+    let report = decode_request(&one_window_request()).expect("missing stays omitted");
+    assert_eq!(
+        report.windows[0].native_workspace,
+        NativeWorkspaceFact::Omitted
+    );
     let with_native = |native: serde_json::Value| {
         let mut value: serde_json::Value =
             serde_json::from_str(&one_window_request()).expect("valid");
         value["native"] = serde_json::json!([{"out": "out", "order": ["d1"], "current": "d1", "occupancy": [{"native": "d1", "count": null}]}]);
-        value["windows"] = serde_json::json!([{
-            "win": "win-a", "out": "out", "rect": [0, 0, 200, 200],
-            "floating": false, "fitExcluded": false, "fullscreen": false,
-            "maximized": false, "sticky": false, "fixedAuto": false,
-            "fixedSuppress": false, "minimized": false, "observedWs": null,
-            "nativeWs": native,
-            "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null},
-        }]);
+        let mut window = v4_window("win-a", "out", [0, 0, 200, 200]);
+        window["nativeWs"] = native;
+        value["windows"] = serde_json::json!([window]);
         decode_request(&value.to_string())
     };
-    // Null and empty mean unknown, never proof of absence.
+    // Null, empty, and missing are distinct spellings of the same unknown.
     let report = with_native(serde_json::Value::Null).expect("null decodes");
-    assert_eq!(report.windows[0].native_workspace, None);
+    assert_eq!(
+        report.windows[0].native_workspace,
+        NativeWorkspaceFact::Null
+    );
+    assert_eq!(report.windows[0].native_workspace.as_deref(), None);
     let report = with_native(serde_json::Value::String(String::new())).expect("empty decodes");
-    assert_eq!(report.windows[0].native_workspace, None);
+    assert_eq!(
+        report.windows[0].native_workspace,
+        NativeWorkspaceFact::Value(String::new())
+    );
+    assert_eq!(report.windows[0].native_workspace.as_deref(), None);
     // A valid opaque native id decodes.
     let report = with_native(serde_json::Value::String("d1".to_owned())).expect("id decodes");
     assert_eq!(report.windows[0].native_workspace.as_deref(), Some("d1"));
@@ -1361,14 +1447,9 @@ fn native_ws_field_decodes_and_gates() {
     assert_eq!(error.kind, "malformed");
     // Capability off with native evidence refuses at the core gate.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["windows"] = serde_json::json!([{
-        "win": "win-a", "out": "out", "rect": [0, 0, 200, 200],
-        "floating": false, "fitExcluded": false, "fullscreen": false,
-        "maximized": false, "sticky": false, "fixedAuto": false,
-        "fixedSuppress": false, "minimized": false, "observedWs": null,
-        "nativeWs": "d1",
-        "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null},
-    }]);
+    let mut window = v4_window("win-a", "out", [0, 0, 200, 200]);
+    window["nativeWs"] = serde_json::Value::String("d1".to_owned());
+    value["windows"] = serde_json::json!([window]);
     let report = decode_request(&value.to_string()).expect("native fact decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
     assert!(
@@ -1382,14 +1463,9 @@ fn native_ws_estimate_bounds_actual_wire() {
     // a wire message carrying a realistic Space-style id.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["native"] = serde_json::json!([{"out": "out", "order": ["9f1c-0005-space"], "current": "9f1c-0005-space", "occupancy": [{"native": "9f1c-0005-space", "count": null}]}]);
-    value["windows"] = serde_json::json!([{
-        "win": "win-a", "out": "out", "rect": [0, 0, 200, 200],
-        "floating": false, "fitExcluded": false, "fullscreen": false,
-        "maximized": false, "sticky": false, "fixedAuto": false,
-        "fixedSuppress": false, "minimized": false, "observedWs": null,
-        "nativeWs": "9f1c-0005-space",
-        "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null},
-    }]);
+    let mut window = v4_window("win-a", "out", [0, 0, 200, 200]);
+    window["nativeWs"] = serde_json::Value::String("9f1c-0005-space".to_owned());
+    value["windows"] = serde_json::json!([window]);
     let wire = value.to_string();
     assert!(wire.contains("\"nativeWs\":\"9f1c-0005-space\""));
     let report = decode_request(&wire).expect("native report decodes");
@@ -1530,16 +1606,8 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
              "identity": {"manufacturer": null, "model": null, "serial": null, "connector": null}},
         ]);
         value["windows"] = serde_json::json!([
-            {"win": "win-a", "out": "out-a", "rect": [10, 0, 200, 200],
-             "floating": false, "fitExcluded": false, "fullscreen": false,
-             "maximized": false, "sticky": false, "fixedAuto": false,
-             "fixedSuppress": false, "minimized": false, "observedWs": null,
-             "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null}},
-            {"win": "win-b", "out": "out-b", "rect": [810, 0, 200, 200],
-             "floating": false, "fitExcluded": false, "fullscreen": false,
-             "maximized": false, "sticky": false, "fixedAuto": false,
-             "fixedSuppress": false, "minimized": false, "observedWs": null,
-             "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null}},
+            v4_window("win-a", "out-a", [10, 0, 200, 200]),
+            v4_window("win-b", "out-b", [810, 0, 200, 200]),
         ]);
         value["actionForeground"] = serde_json::json!("out-a");
         value["actionOutputs"] = serde_json::json!(["out-a", "out-b"]);
@@ -3001,4 +3069,419 @@ fn executable_null_rows_keep_an_independent_known_process_id() {
             "{file}: full-unavailable context keeps null/null"
         );
     }
+}
+
+#[test]
+fn bad_process_grammar_holds_with_invalid_kind_parity() {
+    use tiler_core::world_report::RowDiagnosticKind;
+    // Bad process grammar holds (typed parity): the row leaves `windows`
+    // with its carried pid retained and an InvalidFact kind.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["windows"][0]["processId"] = serde_json::json!("has space");
+    let report = decode_request(&value.to_string()).expect("bad process holds");
+    assert!(report.windows.is_empty());
+    assert_eq!(report.held_windows.len(), 1);
+    let held = &report.held_windows[0];
+    assert_eq!(held.kind, RowDiagnosticKind::InvalidFact);
+    let diagnostic = held.diagnostic.as_ref().expect("scoped diagnostic");
+    assert_eq!(diagnostic.kind, RowDiagnosticKind::InvalidFact);
+    assert_eq!(
+        held.fields.iter().find(|(k, _)| k == "processId"),
+        Some(&(
+            "processId".to_owned(),
+            tiler_core::connection::RawSettingValue::String("has space".to_owned())
+        ))
+    );
+}
+
+#[test]
+fn masked_owner_with_overbound_refuses_decoder() {
+    // A hold cause (retired key) must not mask a bad owner reference.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["windows"][0]["floating"] = serde_json::Value::Bool(false);
+    value["windows"][0]["owner"] = serde_json::json!("has space");
+    let error = decode_request(&value.to_string()).expect_err("masked owner refuses");
+    assert_eq!(error.kind, "unknown-value");
+}
+
+#[test]
+fn masked_owner_with_bad_process_refuses_decoder() {
+    // Bad process holds, but a bad owner in the same row still refuses.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["windows"][0]["processId"] = serde_json::json!("has space");
+    value["windows"][0]["owner"] = serde_json::json!("also bad!");
+    assert!(decode_request(&value.to_string()).is_err());
+}
+
+#[test]
+fn output_null_decodes_without_fabricated_scope() {
+    // `out: null` decodes with no output authority: the held/valid row
+    // retains evidence but names no scope.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["windows"][0]["out"] = serde_json::Value::Null;
+    let report = decode_request(&value.to_string()).expect("null out decodes");
+    assert_eq!(report.windows.len(), 1);
+    assert_eq!(report.windows[0].output, None);
+}
+
+/// Stage exact nested window-row bytes into the current parent report shape:
+/// outputs retargeted to `out-a` so staged rows stay homed, while every
+/// window row is spliced textually from the immutable fixture so no `Value`
+/// round-trip can sort keys or respell numbers.
+fn stage_fixture_window_rows(rows: &[&str]) -> String {
+    let wire = one_window_request()
+        .replace("\"out\":\"out\"", "\"out\":\"out-a\"")
+        .replace("[\"out\"]", "[\"out-a\"]");
+    splice_lane(&wire, "windows", &format!("[{}]", rows.join(",")))
+}
+
+/// Immutable v4 message bytes pin the canonical window-row spelling: a
+/// healthy row and a nullable row must re-encode to their exact carried
+/// bytes (LastWrite/VisibilitySample nested key order, counters as decimal
+/// strings, preserved valid bytes), while a retired-key row holds narrowly
+/// with its exact carried bytes. Expected bytes come from the fixture files
+/// themselves, never from a `Value` re-serialization or a hand-authored row.
+#[test]
+fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
+    use tiler_core::world_report::{
+        RowDiagnosticKind, RowDiagnosticLane, encode_held_window_canonical,
+        encode_window_canonical, report_digest, report_estimate, validate_report,
+    };
+
+    fn raw_window(message: &str) -> String {
+        let rows = raw_lane_elements(message, "windows");
+        assert_eq!(rows.len(), 1, "one raw row");
+        rows[0].to_owned()
+    }
+
+    // 1. Healthy row: full `lastWrite` with pre/post samples.
+    let healthy_raw = raw_window(include_str!(
+        "../../../test-fixtures/world-wire/v4/messages/report-last-write-accepted.json"
+    ));
+    assert!(
+        !healthy_raw.contains("\"nativeWs\""),
+        "ordinary row omits nativeWs"
+    );
+    let staged = stage_fixture_window_rows(&[&healthy_raw]);
+    let report = decode_request(&staged).expect("healthy row decodes");
+    assert_eq!(report.windows.len(), 1);
+    assert!(report.held_windows.is_empty());
+    let fact = &report.windows[0];
+    assert_eq!(
+        fact.native_workspace,
+        tiler_core::world_report::NativeWorkspaceFact::Omitted
+    );
+    let last = fact.last_write.as_ref().expect("lastWrite rides");
+    assert_eq!(
+        last.property,
+        tiler_core::world_report::LastWriteProperty::Visibility
+    );
+    assert_eq!(last.revision, 1);
+    assert_eq!(last.path, tiler_core::world_report::LastWritePath::Staged);
+    assert_eq!(
+        last.setter,
+        tiler_core::world_report::VisibilitySetter::Accepted
+    );
+    assert_eq!(last.pre.as_ref().expect("pre").obs, 1);
+    assert_eq!(last.post.as_ref().expect("post").obs, 1);
+    assert_eq!(
+        encode_window_canonical(fact).expect("finite row"),
+        healthy_raw,
+        "lossless healthy canonical bytes"
+    );
+    assert!(validate_report(&report));
+    let estimate = report_estimate(&report);
+    assert!(
+        estimate >= staged.len(),
+        "estimate {estimate} bounds wire {}",
+        staged.len()
+    );
+    assert_eq!(
+        report_digest(&report),
+        report_digest(&decode_request(&staged).expect("redigest")),
+        "digest stable over identical bytes"
+    );
+
+    // 2. Nullable row: `pre`/`post` null samples stay unknown, never defaults.
+    let nullable_raw = raw_window(include_str!(
+        "../../../test-fixtures/world-wire/v4/messages/report-last-write-preimage-unavailable.json"
+    ));
+    let staged = stage_fixture_window_rows(&[&nullable_raw]);
+    let report = decode_request(&staged).expect("nullable row decodes");
+    assert_eq!(report.windows.len(), 1);
+    assert!(report.held_windows.is_empty());
+    let fact = &report.windows[0];
+    let last = fact.last_write.as_ref().expect("lastWrite rides");
+    assert!(last.pre.is_none() && last.post.is_none());
+    assert_eq!(
+        encode_window_canonical(fact).expect("finite row"),
+        nullable_raw,
+        "lossless nullable canonical bytes"
+    );
+    assert!(validate_report(&report));
+    let estimate = report_estimate(&report);
+    assert!(
+        estimate >= staged.len(),
+        "estimate {estimate} bounds wire {}",
+        staged.len()
+    );
+    assert_ne!(
+        report_digest(
+            &decode_request(&stage_fixture_window_rows(&[&healthy_raw])).expect("healthy")
+        ),
+        report_digest(&report),
+        "digest separates healthy from nullable"
+    );
+
+    // 3. Held row: retired `floating` verdict holds the identifiable row with
+    // its carried key retained (fail closed, never a silent drop).
+    let held_raw = raw_window(include_str!(
+        "../../../test-fixtures/world-wire/v4/messages/invalid-removed-window-floating.json"
+    ));
+    let staged = stage_fixture_window_rows(&[&held_raw]);
+    let report = decode_request(&staged).expect("retired holds");
+    assert!(report.windows.is_empty(), "no valid row");
+    assert_eq!(report.held_windows.len(), 1, "one held row");
+    let held = &report.held_windows[0];
+    assert_eq!(held.window.0, "win-a");
+    assert_eq!(held.ordinal, 0, "original windows index");
+    assert_eq!(
+        held.output.as_ref().map(|out| out.0.as_str()),
+        Some("out-a")
+    );
+    assert_eq!(held.kind, RowDiagnosticKind::InvalidFact);
+    let diagnostic = held.diagnostic.as_ref().expect("scoped diagnostic");
+    assert_eq!(diagnostic.kind, RowDiagnosticKind::InvalidFact);
+    assert_eq!(diagnostic.row, RowDiagnosticLane::Window);
+    assert_eq!(diagnostic.id.as_deref(), Some("win-a"));
+    assert!(
+        held.fields.iter().any(|(name, value)| name == "floating"
+            && *value == tiler_core::connection::RawSettingValue::Bool(false)),
+        "retired key retained"
+    );
+    assert_eq!(
+        encode_held_window_canonical(held).expect("finite canonical row"),
+        held_raw,
+        "lossless held canonical bytes"
+    );
+    assert!(validate_report(&report));
+    let estimate = report_estimate(&report);
+    assert!(
+        estimate >= staged.len(),
+        "estimate {estimate} bounds wire {}",
+        staged.len()
+    );
+}
+
+/// The valid writer spells lexical escapes canonically, emits `hints: null`
+/// for unknown hints, and preserves `nativeWs` spelling exactly: absent stays
+/// absent, `null` stays `null`, `""` stays `""`, a known id stays itself.
+/// A prior revision asserted null/empty collapse to omission; that expectation
+/// was incorrect and is replaced here with exact preservation. No fixture is
+/// weakened: the immutable healthy row still omits, and each spelling
+/// round-trips to its own exact bytes with a distinct digest.
+#[test]
+fn v4_window_canonical_spells_escapes_and_preserves_native_ws() {
+    use tiler_core::world_report::{
+        NativeWorkspaceFact, encode_window_canonical, report_digest, report_estimate,
+    };
+
+    let healthy_raw = {
+        let message = include_str!(
+            "../../../test-fixtures/world-wire/v4/messages/report-last-write-accepted.json"
+        );
+        let rows = raw_lane_elements(message, "windows");
+        assert_eq!(rows.len(), 1);
+        rows[0].to_owned()
+    };
+    let staged = stage_fixture_window_rows(&[&healthy_raw]);
+    let report = decode_request(&staged).expect("healthy row decodes");
+    let mut fact = report.windows[0].clone();
+    fact.title = Some("a\"b\\c\u{1}é".to_owned());
+    fact.hints = None;
+    let wire = encode_window_canonical(&fact).expect("finite row");
+    assert!(
+        wire.contains("\"title\":\"a\\\"b\\\\c\\u0001é\""),
+        "lexical escapes spell canonically, got {wire}"
+    );
+    assert!(wire.contains("\"hints\":null"), "unknown hints spell null");
+    assert!(
+        !wire.contains("\"nativeWs\""),
+        "omitted nativeWs stays omitted"
+    );
+    // A re-decode of the escaped bytes preserves the text exactly.
+    let restaged = stage_fixture_window_rows(&[&wire]);
+    let roundtrip = decode_request(&restaged).expect("escaped row decodes");
+    assert_eq!(roundtrip.windows[0].title.as_deref(), Some("a\"b\\c\u{1}é"));
+    assert_eq!(roundtrip.windows[0].hints, None);
+
+    // Each `nativeWs` spelling decodes to its typed twin and re-encodes to
+    // its exact carried bytes; digests stay distinct for exact request
+    // identity even though all three unknown spellings mean the same
+    // semantically.
+    let cases: &[(&str, NativeWorkspaceFact, &str)] = &[
+        (
+            "omitted",
+            NativeWorkspaceFact::Omitted,
+            healthy_raw.as_str(),
+        ),
+        ("null", NativeWorkspaceFact::Null, "null"),
+        ("empty", NativeWorkspaceFact::Value(String::new()), "\"\""),
+        ("id", NativeWorkspaceFact::Value("d1".to_owned()), "\"d1\""),
+    ];
+    let mut digests = Vec::new();
+    for (label, expected, _spelling) in cases.iter() {
+        let with_native = match *label {
+            "omitted" => healthy_raw.clone(),
+            _ => healthy_raw.replacen(
+                "\"hostHidden\"",
+                &format!(
+                    "\"nativeWs\":{},\"hostHidden\"",
+                    match *label {
+                        "null" => "null".to_owned(),
+                        "empty" => "\"\"".to_owned(),
+                        _ => "\"d1\"".to_owned(),
+                    }
+                ),
+                1,
+            ),
+        };
+        let staged = stage_fixture_window_rows(&[&with_native]);
+        let report = decode_request(&staged).expect("native spelling decodes");
+        assert_eq!(
+            &report.windows[0].native_workspace, expected,
+            "{label} typed twin identical"
+        );
+        // Semantic readers treat all three unknowns the same.
+        match *label {
+            "id" => assert_eq!(report.windows[0].native_workspace.as_deref(), Some("d1")),
+            _ => assert_eq!(report.windows[0].native_workspace.as_deref(), None),
+        }
+        assert_eq!(
+            encode_window_canonical(&report.windows[0]).expect("finite row"),
+            with_native,
+            "{label} re-encodes to exact carried bytes"
+        );
+        let estimate = report_estimate(&report);
+        assert!(
+            estimate >= staged.len(),
+            "estimate {estimate} bounds wire {}",
+            staged.len()
+        );
+        digests.push(report_digest(&report));
+    }
+    for i in 0..digests.len() {
+        for j in (i + 1)..digests.len() {
+            assert_ne!(
+                digests[i], digests[j],
+                "wire spellings {i} and {j} digest distinctly"
+            );
+        }
+    }
+}
+
+/// Closed window vocabularies refuse directly while every retired verdict
+/// key holds its identifiable row with the key retained.
+#[test]
+fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
+    use tiler_core::world_report::{
+        RowDiagnosticKind, encode_held_window_canonical, encode_window_canonical,
+    };
+
+    // Unknown closed enum token refuses with fixed vocabulary.
+    let unknown = {
+        let message = include_str!(
+            "../../../test-fixtures/world-wire/v4/messages/invalid-window-type-unknown.json"
+        );
+        let rows = raw_lane_elements(message, "windows");
+        assert_eq!(rows.len(), 1);
+        rows[0].to_owned()
+    };
+    let error =
+        decode_request(&stage_fixture_window_rows(&[&unknown])).expect_err("unknown type refuses");
+    assert_eq!(error.kind, "unknown-value");
+
+    // Wrong-typed `type` holds the identifiable row with exact bytes.
+    let mistyped = {
+        let message = include_str!(
+            "../../../test-fixtures/world-wire/v4/messages/invalid-window-type-bool.json"
+        );
+        let rows = raw_lane_elements(message, "windows");
+        assert_eq!(rows.len(), 1);
+        rows[0].to_owned()
+    };
+    let report = decode_request(&stage_fixture_window_rows(&[&mistyped])).expect("mistyped holds");
+    assert!(report.windows.is_empty());
+    assert_eq!(report.held_windows.len(), 1);
+    assert_eq!(report.held_windows[0].kind, RowDiagnosticKind::InvalidFact);
+    assert_eq!(
+        encode_held_window_canonical(&report.held_windows[0]).expect("finite row"),
+        mistyped
+    );
+
+    // All eleven retired verdict keys hold with the key retained and exact
+    // bytes (fixture-derived healthy row plus one carried retired key).
+    let healthy = {
+        let message = include_str!(
+            "../../../test-fixtures/world-wire/v4/messages/report-last-write-accepted.json"
+        );
+        let rows = raw_lane_elements(message, "windows");
+        assert_eq!(rows.len(), 1);
+        rows[0].to_owned()
+    };
+    for key in [
+        "floating",
+        "fitExcluded",
+        "fixedAuto",
+        "fixedSuppress",
+        "observedWs",
+        "shell",
+        "tool",
+        "ownedDialog",
+        "dialog",
+        "noActivate",
+        "cannotControl",
+    ] {
+        let mut row = healthy.clone();
+        row.pop();
+        row.push_str(&format!(",\"{key}\":false}}"));
+        let report = decode_request(&stage_fixture_window_rows(&[&row])).expect("{key} holds");
+        assert!(report.windows.is_empty(), "{key}");
+        assert_eq!(report.held_windows.len(), 1, "{key}");
+        assert_eq!(
+            report.held_windows[0].kind,
+            RowDiagnosticKind::InvalidFact,
+            "{key}"
+        );
+        assert!(
+            report.held_windows[0]
+                .fields
+                .iter()
+                .any(|(name, _)| name == key),
+            "{key} retained"
+        );
+        assert_eq!(
+            encode_held_window_canonical(&report.held_windows[0]).expect("finite row"),
+            row,
+            "{key}: lossless held bytes"
+        );
+    }
+
+    // A non-finite retained number never spells `null`: the held writer errs.
+    let nonfinite = tiler_core::world_report::HeldWindowRow {
+        window: tiler_core::directional::WindowId("win-a".to_owned()),
+        ordinal: 0,
+        output: Some(tiler_core::directional::OutputId("out-a".to_owned())),
+        fields: vec![(
+            "layer".to_owned(),
+            tiler_core::connection::RawSettingValue::Number(f64::NAN),
+        )],
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    };
+    assert!(encode_held_window_canonical(&nonfinite).is_err());
+    // Valid integer geometry is always finite: the valid writer never fails.
+    let staged = stage_fixture_window_rows(&[&healthy]);
+    let report = decode_request(&staged).expect("healthy decodes");
+    assert!(encode_window_canonical(&report.windows[0]).is_ok());
 }

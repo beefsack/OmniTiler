@@ -178,7 +178,7 @@ impl WorldEngine {
                 .staged
                 .facts
                 .get(&WindowId(ingress.foreground.clone()))
-                .is_some_and(|fact| &fact.output == output)
+                .is_some_and(|fact| fact.output.as_ref() == Some(output))
         {
             return BorderPresentation {
                 visible: false,
@@ -241,6 +241,17 @@ impl WorldEngine {
                 outer: None,
             };
         };
+        // Foreground shell eligibility derives from the raw fact's class
+        // and executable through the staged classification when the
+        // foreground is fact-backed; the staged wire flag covers only
+        // non-fact-backed foregrounds. Shell surfaces never tile, float,
+        // or fit-exclude by this signal: it hides the ring only.
+        let shell = self
+            .staged
+            .derived
+            .get(&WindowId(ingress.foreground.clone()))
+            .map(|classified| classified.border_only)
+            .unwrap_or(ingress.foreground_shell);
         let eligibility = BorderEligibilityFacts {
             enabled: true,
             has_window: true,
@@ -249,7 +260,7 @@ impl WorldEngine {
             maximized: ingress.foreground_maximized,
             cloaked: ingress.foreground_cloaked,
             hidden_workspace: ingress.foreground_hidden_workspace,
-            shell: ingress.foreground_shell,
+            shell,
         };
         if let Err(reason) = border_eligibility(&eligibility) {
             return BorderPresentation {
@@ -328,7 +339,7 @@ impl WorldEngine {
                 .staged
                 .facts
                 .get(&WindowId(ingress.foreground.clone()))
-                .is_some_and(|fact| &fact.output == output)
+                .is_some_and(|fact| fact.output.as_ref() == Some(output))
         {
             return PresentationUnderlay::Hidden {
                 base_revision: None,
@@ -784,10 +795,10 @@ impl WorldEngine {
         }
         let focused = WindowId(report.focused_global.clone());
         let fact = self.staged.facts.get(&focused)?;
-        if !fact.fullscreen {
+        if fact.fullscreen != Some(true) {
             return None;
         }
-        Some(fact.output.clone())
+        fact.output.clone()
     }
 
     /// Compute the uniform per-reply presentation for one accepted report:
@@ -840,19 +851,45 @@ mod tests {
     fn fact(window: &str, output: &str, x: i32) -> WindowFact {
         WindowFact {
             window: WindowId(window.to_owned()),
-            output: OutputId(output.to_owned()),
+            output: Some(OutputId(output.to_owned())),
             rect: Some(rect(x, 0, 40, 90)),
-            floating: false,
-            fit_excluded: false,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
-            fixed_auto: false,
-            fixed_suppress: false,
-            hints: WindowSizeHints::none(),
-            minimized: false,
-            observed_workspace: None,
-            native_workspace: None,
+            fullscreen: Some(false),
+            maximized: Some(false),
+            sticky: Some(false),
+            hints: Some(WindowSizeHints::none()),
+            minimized: Some(false),
+            native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+            host_hidden: Some(false),
+            privileged: Some(false),
+            managed: Some(true),
+            accepts_input: Some(true),
+            activation_inhibited: Some(false),
+            tool_window: Some(false),
+            owned: Some(false),
+            transient: Some(false),
+            modal: Some(false),
+            resizable: Some(true),
+            above: Some(false),
+            below: Some(false),
+            owner: None,
+            parent: None,
+            role: None,
+            app_id: None,
+            executable: Some("synthetic.exe".to_owned()),
+            process_id: Some("foreign-pid".to_owned()),
+            class: Some("Synthetic".to_owned()),
+            title: None,
+            window_type: Some(crate::world_report::WindowType::Normal),
+            activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+            layer: Some(0),
+            fullscreen_owner: None,
+            fullscreen_exitable: None,
+            suppression_available: None,
+            visibility: crate::world_report::VisibilityFact {
+                visible: Some(true),
+                suppression_owned: None,
+            },
+            last_write: None,
         }
     }
 
@@ -907,6 +944,7 @@ mod tests {
             action_outputs: Vec::new(),
             primary_output: None,
             held_screens: Vec::new(),
+            held_windows: Vec::new(),
             inventory_complete: true,
             gesture_barrier: false,
             gesture,
@@ -1613,7 +1651,7 @@ mod tests {
                     fact("win-b", "out-a", 100),
                     fact("win-c", "out-b", 800),
                     WindowFact {
-                        floating: true,
+                        transient: Some(true),
                         ..fact("win-u", "out-a", 200)
                     },
                 ],

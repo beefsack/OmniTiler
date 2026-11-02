@@ -352,10 +352,17 @@ impl WorldEngine {
             return None;
         }
         let fact = self.staged.facts.get(window)?;
-        if fact.minimized || fact.floating || fact.fullscreen || fact.maximized {
+        let derived = self.derived_for(window);
+        if derived.hidden
+            || derived.hold
+            || derived.excluded
+            || derived.floating
+            || derived.overlay_fullscreen
+            || derived.overlay_maximized
+        {
             return None;
         }
-        if fact.fit_excluded || fact.sticky || fact.fixed_auto || fact.fixed_suppress {
+        if derived.fit_excluded || derived.sticky || derived.fixed_auto || derived.fixed_suppress {
             return None;
         }
         let rect = fact.rect?;
@@ -422,12 +429,18 @@ impl WorldEngine {
         // Declared-maximum contradiction per axis: past a meaningful cap a
         // size proves nothing portable.
         if let Some(w) = grow_w
-            && (!meaningful_learned(w) || fact.hints.meaningful_max_w().is_some_and(|mx| w > mx))
+            && (!meaningful_learned(w)
+                || fact
+                    .hints
+                    .is_some_and(|hints| hints.meaningful_max_w().is_some_and(|mx| w > mx)))
         {
             grow_w = None;
         }
         if let Some(h) = grow_h
-            && (!meaningful_learned(h) || fact.hints.meaningful_max_h().is_some_and(|mx| h > mx))
+            && (!meaningful_learned(h)
+                || fact
+                    .hints
+                    .is_some_and(|hints| hints.meaningful_max_h().is_some_and(|mx| h > mx)))
         {
             grow_h = None;
         }
@@ -510,18 +523,13 @@ impl WorldEngine {
             let Some(rect) = self.eligible_fact(report, &window) else {
                 continue;
             };
-            let hints = self
-                .staged
-                .facts
-                .get(&window)
-                .map(|fact| fact.hints)
-                .unwrap_or_else(WindowSizeHints::none);
-            let conflict_w = learned
-                .min_w
-                .is_some_and(|floor| hints.meaningful_max_w().is_some_and(|cap| cap < floor));
-            let conflict_h = learned
-                .min_h
-                .is_some_and(|floor| hints.meaningful_max_h().is_some_and(|cap| cap < floor));
+            let hints = self.staged.facts.get(&window).and_then(|fact| fact.hints);
+            let conflict_w = learned.min_w.is_some_and(|floor| {
+                hints.is_some_and(|hints| hints.meaningful_max_w().is_some_and(|cap| cap < floor))
+            });
+            let conflict_h = learned.min_h.is_some_and(|floor| {
+                hints.is_some_and(|hints| hints.meaningful_max_h().is_some_and(|cap| cap < floor))
+            });
             let clear_w =
                 !undercut_w && !conflict_w && learned.min_w.is_some_and(|floor| rect.w < floor);
             let clear_h =
@@ -646,7 +654,7 @@ impl WorldEngine {
         self.update_burst_observations(report);
         for attempt in &report.frames {
             let (fact_rect, minimized) = match self.staged.facts.get(&attempt.window) {
-                Some(fact) => (fact.rect, fact.minimized),
+                Some(fact) => (fact.rect, fact.minimized == Some(true)),
                 None => continue,
             };
             if minimized {

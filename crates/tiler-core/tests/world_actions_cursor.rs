@@ -57,20 +57,64 @@ fn screen(output: &str, x: i32) -> tiler_core::world_report::ScreenReport {
 fn fact(window: &str, output: &str, frame: Rect) -> tiler_core::world_report::WindowFact {
     tiler_core::world_report::WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(frame),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: tiler_core::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(tiler_core::world_report::WindowType::Normal),
+        activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: tiler_core::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
+}
+
+/// Identity-stripped facts for reports after a no-native-identity reboot:
+/// the rebooted handshake declares `Executable`/`ProcessId` unavailable, so
+/// carried identities must be null (a carried value holds the row as a
+/// `ConflictingFact` instead of homing it). Pre-reboot reports keep the
+/// known foreign pid the supported handshake requires.
+fn anon_facts(
+    facts: Vec<tiler_core::world_report::WindowFact>,
+) -> Vec<tiler_core::world_report::WindowFact> {
+    facts
+        .into_iter()
+        .map(|fact| tiler_core::world_report::WindowFact {
+            executable: None,
+            process_id: None,
+            ..fact
+        })
+        .collect()
 }
 
 fn parse_switch(token: &str) -> SwitchTarget {
@@ -205,6 +249,7 @@ fn report(
         action_outputs: Vec::new(),
         primary_output: Some(OutputId("out-a".to_owned())),
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -560,7 +605,14 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
     let (mut engine, _) = seed_engine(&mut seq);
     reboot(&mut engine, &case, "adapter-2");
     seq += 1;
-    let mut rebooted = report(seq, scene_facts(), "", Some(case.cursor), None, None);
+    let mut rebooted = report(
+        seq,
+        anon_facts(scene_facts()),
+        "",
+        Some(case.cursor),
+        None,
+        None,
+    );
     rebooted.adapter_incarnation = "adapter-2".to_owned();
     rebooted.core_generation = engine.core_generation().to_owned();
     let bootstrapped = accepted(&mut engine, &rebooted);
@@ -568,7 +620,7 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
     seq += 1;
     let mut arrival_report = report(
         seq,
-        arrival_facts(
+        anon_facts(arrival_facts(
             "out-a",
             Rect {
                 x: 100,
@@ -576,7 +628,7 @@ fn fresh_i3_retained_focus_covers_foreground_loss() {
                 w: 200,
                 h: 150,
             },
-        ),
+        )),
         "",
         Some(case.cursor),
         None,

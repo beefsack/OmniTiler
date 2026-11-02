@@ -32,19 +32,45 @@ fn screen_rect(output: &str, full: Rect, work: Rect) -> ScreenReport {
 fn fact_at(window: &str, output: &str, rect: Rect) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(rect),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(crate::world_report::WindowType::Normal),
+        activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: crate::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
@@ -78,6 +104,7 @@ fn report_screens(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -338,10 +365,10 @@ fn sessionless_protected_members_carry_no_placement() {
         );
         let mut flagged = fact_at("w0", "out-a", rect(100, 100, 40, 90));
         match flag {
-            "maximized" => flagged.maximized = true,
-            "fullscreen" => flagged.fullscreen = true,
-            "sticky" => flagged.sticky = true,
-            "excluded" => flagged.fit_excluded = true,
+            "maximized" => flagged.maximized = Some(true),
+            "fullscreen" => flagged.fullscreen = Some(true),
+            "sticky" => flagged.sticky = Some(true),
+            "excluded" => flagged.privileged = Some(true),
             _ => unreachable!("flag table"),
         }
         let held = accepted(
@@ -354,7 +381,19 @@ fn sessionless_protected_members_carry_no_placement() {
                 None,
             ),
         );
-        let row = row_of(&held, "w0");
+        let row = match flag {
+            // Safety exclusions never ride transfers: no slot, no control,
+            // not even a membership-only row.
+            "excluded" => {
+                assert!(
+                    held.windows.iter().all(|row| row.lifetime.0 != "w0"),
+                    "{flag}: excluded member must publish no row: {:?}",
+                    held.windows
+                );
+                continue;
+            }
+            _ => row_of(&held, "w0"),
+        };
         assert!(row.allocation.is_none(), "{flag}: {row:?}");
         assert!(
             row.effective_frame.is_none(),

@@ -176,7 +176,9 @@ impl ApplicationIdentity {
 /// non-empty, within the metadata bound, and NUL-free.
 #[must_use]
 pub fn valid_identity_text(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 4096 && !value.contains('\0')
+    !value.is_empty()
+        && value.len() <= crate::world_report::MAX_METADATA_TEXT_BYTES
+        && !value.contains('\0')
 }
 
 /// Carried `processId` grammar shared with the wire codec: the existing

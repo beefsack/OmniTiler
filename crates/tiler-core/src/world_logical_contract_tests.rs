@@ -5,13 +5,13 @@
 //! facts are the only observations, and every workspace id is core-minted
 //! (`ws-<n>`).
 
-use crate::directional::{OutputId, WindowId};
+use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    HoldReason, ScopeAuthority, ScreenReport, ScreenView, SendSource, TransferKind,
-    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    FrameSetter, HoldReason, MemberAttempt, ScopeAuthority, ScreenReport, ScreenView, SendSource,
+    TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -32,25 +32,51 @@ fn screen(output: &str, x: i32) -> ScreenReport {
 fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
+        output: Some(OutputId(output.to_owned())),
         rect: Some(rect(x, 0, 40, 90)),
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: false,
-        observed_workspace: None,
-        native_workspace: None,
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(crate::world_report::WindowType::Normal),
+        activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: crate::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
     }
 }
 
 fn minimized_fact(window: &str, output: &str) -> WindowFact {
     WindowFact {
-        minimized: true,
+        minimized: Some(true),
         rect: None,
         ..fact(window, output, 0)
     }
@@ -167,6 +193,7 @@ fn report_attempts(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
+        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier,
         gesture: None,
@@ -685,31 +712,41 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
     // Explicit cross-output send refuses at the engine boundary (parked
     // explicit-vs-directional mismatch): directional sends own the
     // crossing, even when the logical target is known. The prior
-    // same-output flight settles on the observed membership carried in
+    // same-output flight settles on the member-attempt proof carried in
     // the observation-only report above (a rejected command would discard
     // the settlement with it).
     let view_b = output_view(&first, "out-b").expect("view b");
-    let mut arrived = fact("win-a", "out-a", 0);
-    arrived.observed_workspace = Some(ring_a[1].clone());
-    // The window flight settles on the membership receipt while the
+    let arrived = fact("win-a", "out-a", 0);
+    // The window flight settles on the member-attempt proof while the
     // follow-view flight confirms on the echoed view: each proves
     // independently, so the report carries both proofs.
-    let settled = accepted(
-        &mut engine,
-        &report(
-            3,
-            3,
-            two_screens(),
-            vec![arrived, fact("win-b", "out-a", 100)],
-            vec![("out-a", ring_a[1].as_str())],
-            vec![],
-            "win-a",
-            None,
-            None,
-            true,
-            false,
-        ),
+    let mut settle = report(
+        3,
+        3,
+        two_screens(),
+        vec![arrived, fact("win-b", "out-a", 100)],
+        vec![("out-a", ring_a[1].as_str())],
+        vec![],
+        "win-a",
+        None,
+        None,
+        true,
+        false,
     );
+    settle.member_attempts.push(MemberAttempt {
+        operation_id: "op-11".to_owned(),
+        window: WindowId("win-a".to_owned()),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: ring_a[1].clone(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: Some(WorkspaceRef::Logical {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(ring_a[1].clone()),
+        }),
+        attempt_ms: 11,
+    });
+    let settled = accepted(&mut engine, &settle);
     assert!(
         settled.transfers.is_empty(),
         "membership proof settles: {:?}",
@@ -2976,7 +3013,7 @@ fn minimized_fullscreen_and_hidden_facts_stay_truthful() {
         ),
     );
     let mut hidden = fact("win-full", "out-a", 100);
-    hidden.fullscreen = true;
+    hidden.fullscreen = Some(true);
     let reply = accepted(
         &mut engine,
         &report(
@@ -3035,13 +3072,12 @@ fn unexplained_fit_excluded_newcomers_hold_their_scope() {
         ),
     );
     let view_a = output_view(&first, "out-a").expect("view a");
-    // An unexplained fit-excluded window (game/overlay with no floating,
-    // fullscreen, or maximized origin) rides as an exception with no
-    // authority and never takes automatic activation itself: any admission
-    // intent names only ordinary newcomers. The scope stays controlled
-    // around the reserved overlay.
+    // A safety-excluded window (privileged game/overlay) rides with no
+    // membership row and never takes automatic activation itself: any
+    // admission intent names only ordinary newcomers. The scope stays
+    // controlled around the excluded overlay.
     let mut overlay = fact("win-game", "out-a", 100);
-    overlay.fit_excluded = true;
+    overlay.privileged = Some(true);
     let reply = accepted(
         &mut engine,
         &report(
@@ -3068,9 +3104,13 @@ fn unexplained_fit_excluded_newcomers_hold_their_scope() {
         scope_of(&reply, "out-a", &view_a),
         ScopeAuthority::Controlled
     );
-    // The game rides converged (tiled or exception per Engine policy)
-    // with no automatic activation of its own.
-    let _ = window_row(&reply, "win-game");
+    // The game carries no membership row (safety exclusion homes
+    // nothing) with no automatic activation of its own.
+    assert!(
+        reply.windows.iter().all(|row| row.lifetime.0 != "win-game"),
+        "excluded overlay has no row: {:?}",
+        reply.windows
+    );
 }
 
 #[test]
