@@ -461,6 +461,7 @@ impl WorldEngine {
                     sticky_meta: Some(meta),
                     fullscreen_meta: None,
                     maximize_meta: None,
+                    above_meta: None,
                 },
             );
             self.note_command(command_seq);
@@ -507,6 +508,7 @@ impl WorldEngine {
                 sticky_meta: Some(meta),
                 fullscreen_meta: None,
                 maximize_meta: None,
+                above_meta: None,
             },
         );
         CommandApplied::NoEffect
@@ -597,6 +599,7 @@ impl WorldEngine {
                 sticky_meta: Some(meta),
                 fullscreen_meta: None,
                 maximize_meta: None,
+                above_meta: None,
             },
         );
         self.note_command(command_seq);

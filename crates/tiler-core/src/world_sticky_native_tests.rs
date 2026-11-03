@@ -2722,6 +2722,7 @@ fn insert_generic_binding(
             sticky_meta: None,
             fullscreen_meta: None,
             maximize_meta: None,
+            above_meta: None,
         },
     );
 }

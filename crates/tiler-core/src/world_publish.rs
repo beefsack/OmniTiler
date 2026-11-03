@@ -1206,6 +1206,11 @@ impl WorldEngine {
                 state: Vec::new(),
             });
         }
+        // Commandless persistent above: one mutating
+        // reconcile plus central decoration over the assembled rows, after
+        // membership/commands are complete. Runs before the sticky row so
+        // each lane keeps its exact target authority.
+        self.reconcile_and_decorate_native_above_state(report, held_scopes, &mut windows);
         // Composed sticky visibility: central decoration over the
         // assembled rows (sticky-only, owner-output rows). Independent of
         // the frame/member lanes above; touches visibility fields only.

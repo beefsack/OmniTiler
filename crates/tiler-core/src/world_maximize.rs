@@ -130,6 +130,7 @@ impl WorldEngine {
                         home: home.clone(),
                     }),
                     maximize_meta: None,
+                    above_meta: None,
                 },
             );
         }
@@ -153,6 +154,7 @@ impl WorldEngine {
                         home,
                         clear_fullscreen: decision.clear_fullscreen,
                     }),
+                    above_meta: None,
                 },
             );
         } else if self

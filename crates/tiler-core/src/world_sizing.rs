@@ -2679,8 +2679,9 @@ pub const MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES: usize = 512;
 /// Maximum per-published-window outbound target lane cost for the current
 /// engine: the composed sticky show plus at most one native sticky state
 /// target plus at most one native fullscreen state target plus at most one
-/// native maximize state target dominate the default suffix. The worst row
-/// carries the longest quoted command correlation
+/// native maximize state target plus at most one commandless native above
+/// state target dominate the default suffix. The worst row carries the
+/// longest quoted command correlation
 /// (`,"cmdSeq":"18446744073709551615"`, 32), the composed show object
 /// (`,"visibility":{"shown":true,
 /// "rev":"18446744073709551615","fallback":false}`, 14 + 31 + 4 + 20 + 5
@@ -2688,9 +2689,10 @@ pub const MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES: usize = 512;
 /// `,"visibility_auth":"hold"` (25) plus
 /// `,"visibility_hold":"incomplete-inventory"` (41)), the state array with
 /// one sticky row (`,"state":[{...}]`, 11 plus 113, see below), one comma
-/// (1), one fullscreen row (117, see below), one comma (1), and one
-/// maximize row (116, see below): 32 + 74 + 25 + 41 + 11 +
-/// 113 + 1 + 117 + 1 + 116 = 531. The largest single sticky state row is a
+/// (1), one fullscreen row (117, see below), one comma (1), one maximize
+/// row (116, see below), one comma (1), and one commandless above row
+/// (94, see below): 32 + 74 + 25 + 41 + 11 +
+/// 113 + 1 + 117 + 1 + 116 + 1 + 94 = 626. The largest single sticky state row is a
 /// `Hold` with the longest hold reason, a false value, and the longest
 /// quoted command sequence: 50 + 8 (`"sticky"`) + 5 (`false`) + 6
 /// (`"hold"`) + 22 (`"incomplete-inventory"`) + 22 (quoted `u64::MAX`) =
@@ -2698,12 +2700,15 @@ pub const MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES: usize = 512;
 /// `"fullscreen"` (10 letters, 12 quoted): 50 + 12 + 5 + 6 + 22 + 22 =
 /// 117. The largest single maximize state row is the same shape with
 /// `"maximized"` (9 letters, 11 quoted): 50 + 11 + 5 + 6 + 22 + 22 = 116.
+/// The largest single above state row is commandless (`command_seq: None`,
+/// a quoted `u64::MAX` is never produced here so no speculative 18 is
+/// budgeted): 50 + 7 (`"above"`) + 5 (`false`) + 6 (`"hold"`) + 22
+/// (`"incomplete-inventory"`) + 4 (`null`) = 94.
 /// The common `Controlled` show with a controlled sticky target costs
 /// less; the precomposed default suffix costs 94 with null correlation and
-/// 112 with the longest quoted counter. No speculative above budget;
-/// commandless above is not implemented yet and reserves nothing here;
-/// the exact staged gate stays the backstop.
-pub const MAX_TARGET_LANES_PER_WINDOW: usize = 531;
+/// 112 with the longest quoted counter. The exact staged gate stays the
+/// backstop.
+pub const MAX_TARGET_LANES_PER_WINDOW: usize = 626;
 
 /// Conservative pre-mutation reply upper bound for one report: the request
 /// estimate plus worst-case generated state. Any publishable reply for this
@@ -2761,9 +2766,11 @@ pub const MAX_TARGET_LANES_PER_WINDOW: usize = 531;
 ///   carries at most one composed sticky show plus the command correlation
 ///   and at most one native sticky state target plus at most one native
 ///   fullscreen state target plus at most one native maximize state target
-///   (531 worst case with the longest quoted counter, longest revision,
+///   plus at most one commandless native above state target
+///   (626 worst case with the longest quoted counter, longest revision,
 ///   longest authority/hold pair, largest sticky row, largest fullscreen
-///   row, and largest maximize row; see [`MAX_TARGET_LANES_PER_WINDOW`]).
+///   row, largest maximize row, and largest commandless above row with
+///   `command_seq: None`; see [`MAX_TARGET_LANES_PER_WINDOW`]).
 ///   The default suffix costs 94 with a null correlation and 112 with the
 ///   longest quoted counter. The count is the union of every
 ///   publication source, summed as a conservative upper bound (deduped
@@ -2775,7 +2782,7 @@ pub const MAX_TARGET_LANES_PER_WINDOW: usize = 531;
 ///   that left staged small), plus retained mover rows (one per outstanding
 ///   window transfer plus every migration member). No per-window headroom
 ///   beyond one composed show plus one sticky target plus one fullscreen
-///   target plus one maximize target and no
+///   target plus one maximize target plus one commandless above target and no
 ///   operation-settled headroom reuse.
 /// - envelope slack: 4096 base covers envelope slack and array commas.
 #[must_use]
@@ -3197,7 +3204,7 @@ mod target_lane_sizing_tests {
     }
 
     #[test]
-    fn engine_default_lanes_cost_94_and_per_window_max_531() {
+    fn engine_default_lanes_cost_94_and_per_window_max_626() {
         // The current engine emits null visibility, untouched authority,
         // and an empty state array on every row: 94 bytes with a null
         // correlation, 112 with the longest quoted counter. The
@@ -3205,7 +3212,8 @@ mod target_lane_sizing_tests {
         // covers the worst composed sticky show plus the largest single
         // native sticky state row plus the largest single native
         // fullscreen state row plus the largest single native maximize
-        // state row (see below).
+        // state row plus the largest single commandless native above row
+        // (see below).
         let null = lane_window(None, None, ScopeAuthority::Untouched, Vec::new());
         let null_bytes = encoded_lanes(&null);
         assert_eq!(
@@ -3226,7 +3234,7 @@ mod target_lane_sizing_tests {
         );
         assert_eq!(max_bytes.len(), 112);
         assert_eq!(window_target_lanes_estimate(&max), 112);
-        assert_eq!(MAX_TARGET_LANES_PER_WINDOW, 531);
+        assert_eq!(MAX_TARGET_LANES_PER_WINDOW, 626);
     }
 
     #[test]
@@ -3308,15 +3316,17 @@ mod target_lane_sizing_tests {
         assert_eq!(two_bytes.len(), 32 + 74 + 25 + 41 + 11 + 113 + 1 + 117);
         assert_eq!(window_target_lanes_estimate(&two), two_bytes.len());
         assert_eq!(two_bytes.len(), 414);
-        // Worst publishable row: the longest quoted correlation, the
-        // composed show with the longest revision, the longest
-        // authority/hold pair, the largest single sticky state row, one
-        // comma, the largest single fullscreen state row (hold with
+        // Worst publishable three-state row (historical checkpoint): the longest
+        // quoted correlation, the composed show with the longest revision,
+        // the longest authority/hold pair, the largest single sticky state
+        // row, one comma, the largest single fullscreen state row (hold with
         // longest reason, false value, longest quoted seq), one comma, and
         // the largest single maximize state row (hold with longest reason,
         // false value, longest quoted seq; "maximized" is 9 letters, 11
         // quoted, so 50 + 11 + 5 + 6 + 22 + 22 = 116).
-        // 32 + 74 + 25 + 41 + 11 + 113 + 1 + 117 + 1 + 116 = 531.
+        // 32 + 74 + 25 + 41 + 11 + 113 + 1 + 117 + 1 + 116 = 531. The
+        // per-window max is wider now that a commandless above row can
+        // coexist (see below).
         let worst = lane_window(
             Some(u64::MAX),
             Some(VisibilityTarget {
@@ -3353,7 +3363,66 @@ mod target_lane_sizing_tests {
         );
         assert_eq!(window_target_lanes_estimate(&worst), bytes.len());
         assert_eq!(bytes.len(), 531);
-        assert_eq!(MAX_TARGET_LANES_PER_WINDOW, bytes.len());
+        assert_eq!(MAX_TARGET_LANES_PER_WINDOW, 626);
+    }
+
+    #[test]
+    fn commandless_above_coexists_with_three_state_rows_sets_per_window_max() {
+        // Four-row witness: the longest quoted correlation, the composed
+        // show with the longest revision, the longest authority/hold pair,
+        // the largest single sticky/fullscreen/maximize rows (quoted
+        // u64::MAX each), one comma, and the largest single commandless
+        // above row (hold with longest reason, false value, command_seq
+        // None: 50 + 7 (`"above"`) + 5 (`false`) + 6 (`"hold"`) + 22
+        // (`"incomplete-inventory"`) + 4 (`null`) = 94). Derived from the
+        // actual encoder, never asserted arithmetic.
+        let worst = lane_window(
+            Some(u64::MAX),
+            Some(VisibilityTarget {
+                shown: true,
+                revision: u64::MAX,
+                fallback: false,
+            }),
+            ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+            vec![
+                StateTarget {
+                    property: StateProperty::Sticky,
+                    value: false,
+                    authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+                    command_seq: Some(u64::MAX),
+                },
+                StateTarget {
+                    property: StateProperty::Fullscreen,
+                    value: false,
+                    authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+                    command_seq: Some(u64::MAX),
+                },
+                StateTarget {
+                    property: StateProperty::Maximized,
+                    value: false,
+                    authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+                    command_seq: Some(u64::MAX),
+                },
+                StateTarget {
+                    property: StateProperty::Above,
+                    value: false,
+                    authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+                    command_seq: None,
+                },
+            ],
+        );
+        let bytes = encoded_lanes(&worst);
+        assert_eq!(
+            window_target_lanes_estimate(&worst),
+            bytes.len(),
+            "estimator stays exact on the four-row witness"
+        );
+        assert_eq!(
+            bytes.len(),
+            32 + 74 + 25 + 41 + 11 + 113 + 1 + 117 + 1 + 116 + 1 + 94
+        );
+        assert_eq!(bytes.len(), 626);
+        assert_eq!(MAX_TARGET_LANES_PER_WINDOW, 626);
     }
 
     #[test]

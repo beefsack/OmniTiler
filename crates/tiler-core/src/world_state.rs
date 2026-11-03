@@ -42,6 +42,7 @@ pub(crate) struct RetainedStateBinding {
     pub(crate) sticky_meta: Option<NativeStickyMeta>,
     pub(crate) fullscreen_meta: Option<NativeFullscreenMeta>,
     pub(crate) maximize_meta: Option<NativeMaximizeMeta>,
+    pub(crate) above_meta: Option<NativeAboveMeta>,
 }
 
 /// Typed native fullscreen command-sequence carrier. Separate from
@@ -68,6 +69,19 @@ pub(crate) struct NativeMaximizeMeta {
     pub(crate) command_seq: u64,
     pub(crate) home: DomainKey,
     pub(crate) clear_fullscreen: bool,
+}
+
+/// Commandless native above owner carrier. No command sequence:
+/// acquisition is policy-driven, never an explicit command. Only the
+/// issuing home scope is retained for lifetime isolation plus one
+/// external-clear latch bit: external below or a cleared proven true
+/// relinquishes ownership and blocks reacquisition until lifetime end or native
+/// preowned-above reset. The authorizing revision stays internal to the
+/// retained target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeAboveMeta {
+    pub(crate) home: DomainKey,
+    pub(crate) latched: bool,
 }
 
 #[must_use]

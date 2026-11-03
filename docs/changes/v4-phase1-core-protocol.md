@@ -790,12 +790,12 @@
 - Native maximize subunit is implemented: ToggleMaximize produces typed retained
   Maximized targets, with same-revision/command fullscreen-clear pairing for
   explicit R-MAX-11 replacement. Already-maximized fullscreen replacement needs
-   only the clear leg; settled maximize gains no write on fullscreen entry/exit.
+  only the clear leg; settled maximize gains no write on fullscreen entry/exit.
   Results remain descriptive. Publication revalidates safety and exact paired
   clear authority, holds ordinary/unmaximize targets under active fullscreen,
   and never renews spent targets. The actual three-property suffix maximum is
-  531 bytes (Maximized row 116), verified against the encoder; above is not yet
-  produced or reserved.
+  531 bytes (Maximized row 116), verified against the encoder; above was not yet
+  produced or reserved at this checkpoint.
 - Maximize subunit verification: 20 real-command producer/publication tests pass.
   Failing-first regressions reproduced the both-true missing-key cap overflow and
   unmaximize authority under active fullscreen before correction. Both pending
@@ -810,11 +810,41 @@
   49/4/15/8/2/54/4), with only workspace_unsafe_posture filtered as above; build,
   scoped all-target clippy with warnings denied and formatting pass. Diff whitespace,
   added ASCII and local links pass; protocol, adapters and immutable fixtures are
-  unchanged. This verifies native maximize and its fullscreen hold, not the whole
-  native maximize/above increment: above is unimplemented.
+  unchanged. This checkpoint verified native maximize and its fullscreen hold;
+  above followed separately below.
   The [pending-maximize/fullscreen discriminator](../spec/reference-outcomes.md#pending-maximize-intent-at-fullscreen-entry)
   now selects retain/hold/apply-after-exit for both pending target values; native
   ordering and host applied outcomes remain TBD.
+- Persistent above now uses one commandless retained-state owner and external-clear
+  latch over the assembled float union, including capacity and empty workspace-floating
+  scopes. Exact StateAttempt proof gates owned release and focused-fullscreen scope
+  suspension/resumption. Sticky keeps the same owner; external below/above-clear
+  relinquishes it without a stacking write, retaining the latch until lifetime end
+  or native preowned-above reset. Latching preserves the original tuple and attempt
+  evidence. Preexisting above/below, unreadable facts and native overlays grant no
+  new write authority; spent setters never retry. Durable preimages remain the
+  adapter's mandatory pre-write obligation, with no new availability fact.
+- Above verification: 19 focused tests cover acquisition/proof/release, suspension,
+  latch/reset, sticky transitions, capacity/workspace-floating membership and binding
+  cap/replacement. Failing-first regressions reproduced first-report floating-scope
+  suppression, external clear concurrent with tiling issuing an extra release, and
+  pending acquire/release retaining write authority after below became true; a
+  pending acquire also incorrectly retained authority after above became true.
+  The three suspension/latch/sticky lifecycle tests were first run after implementation,
+  not claimed failing-first. Independent review's dynamic stacking findings were
+  corrected and re-reviewed with no remaining scoped blocker.
+- The actual four-property encoder witness is 626 bytes: the prior 531-byte suffix,
+  one comma and a 94-byte commandless Above row. The reserve regression failed at
+  531 before correction; structural estimation and canonical encoding now agree
+  exactly. The binding cap uses a running count for new acquisitions and permits
+  same-key release/resume replacements without growth.
+- Final native maximize/above verification passes the exact filtered core/protocol
+  test gate (1434 core unit tests, every integration target, protocol suites
+  49/4/15/8/2/54/4), with only workspace_unsafe_posture filtered as above. Build,
+  scoped all-target clippy with warnings denied, formatting, diff whitespace,
+  added ASCII and local links pass. Protocol, adapters and immutable fixtures are
+  unchanged. Native host/preimage recovery and all eight OPEN/TBD gates remain
+  unproven; core-composed maximize remains the next separate increment.
 
 ## Adapter compile-failure inventory
 
@@ -869,7 +899,8 @@
         flag retention remains TBD.
         Native maximize target production, explicit fullscreen replacement and
         newer-fullscreen pending/active holds are implemented and offline-tested;
-        persistent above remains pending.
+        persistent above acquisition, owned release/suspension and external-clear
+        latching are implemented and offline-tested.
      General no-intent clears, remaining visibility/state policy and host storage
      acceptance remain pending.
   The core-composed maximize contract is approved and recorded; implementation

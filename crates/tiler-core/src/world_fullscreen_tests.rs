@@ -620,6 +620,7 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
                 sticky_meta: None,
                 fullscreen_meta: None,
                 maximize_meta: None,
+                above_meta: None,
             },
         );
     }
@@ -661,6 +662,7 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
                 sticky_meta: None,
                 fullscreen_meta: None,
                 maximize_meta: None,
+                above_meta: None,
             },
         );
     }

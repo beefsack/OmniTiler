@@ -232,6 +232,7 @@ impl WorldEngine {
                 sticky_meta: None,
                 fullscreen_meta: Some(NativeFullscreenMeta { command_seq, home }),
                 maximize_meta: None,
+                above_meta: None,
             },
         );
         self.note_command(command_seq);

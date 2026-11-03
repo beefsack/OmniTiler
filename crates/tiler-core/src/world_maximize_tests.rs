@@ -192,6 +192,7 @@ fn ordinary_max_mints_binding_and_revokes_stale_fullscreen_entry() {
             sticky_meta: None,
             fullscreen_meta: None,
             maximize_meta: None,
+            above_meta: None,
         },
     );
     let rev_before = engine.state_revision;
@@ -312,6 +313,7 @@ fn both_true_mints_only_fullscreen_leg_and_cancels_obsolete_max() {
             sticky_meta: None,
             fullscreen_meta: None,
             maximize_meta: None,
+            above_meta: None,
         },
     );
     let reply = accepted(
@@ -429,6 +431,7 @@ fn dual_pair_cap_refusal_mints_neither_leg() {
                 sticky_meta: None,
                 fullscreen_meta: None,
                 maximize_meta: None,
+                above_meta: None,
             },
         );
     }
@@ -481,6 +484,7 @@ fn fill_above(engine: &mut WorldEngine, prefix: &str, count: usize) {
                 sticky_meta: None,
                 fullscreen_meta: None,
                 maximize_meta: None,
+                above_meta: None,
             },
         );
     }
