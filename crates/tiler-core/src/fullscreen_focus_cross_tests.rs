@@ -775,9 +775,10 @@ fn world_non_fullscreen_control_plans_local_sibling() {
         "gen-1",
         "adapter-1",
         HostCapabilities {
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..HostCapabilities::default()
         },
         vec![

@@ -18,6 +18,9 @@ fn fs_caps() -> HostCapabilities {
     HostCapabilities {
         fullscreen: true,
         native_sticky: true,
+        // Fixtures carry native maximize facts; the lane under test is
+        // fullscreen-only, so the orthogonal native route stays valid.
+        maximize: true,
         ..Default::default()
     }
 }
@@ -302,15 +305,14 @@ fn unreadable_fullscreen_consumes_state_unknown() {
 #[test]
 fn unsupported_caps_consume_state_unsupported() {
     let mut engine = unsupported_engine();
-    accepted(&mut engine, &bootstrap(vec![fs_fact("win-a", None, false)]));
+    // All caps stay absent here: the null native claim reaches the
+    // intended fullscreen-unsupported gate instead of grading.
+    let mut seed = fs_fact("win-a", None, false);
+    seed.maximized = None;
+    accepted(&mut engine, &bootstrap(vec![seed.clone()]));
     let reply = accepted(
         &mut engine,
-        &cmd(
-            2,
-            1,
-            vec![fs_fact("win-a", None, false)],
-            set_fullscreen("win-a", true),
-        ),
+        &cmd(2, 1, vec![seed], set_fullscreen("win-a", true)),
     );
     assert_eq!(
         reply.command_result,
@@ -727,11 +729,14 @@ fn unsupported_caps_with_null_fullscreen_consumes_state_unsupported() {
         ("toggle", toggle_fullscreen("win-a")),
     ] {
         let mut engine = unsupported_engine();
-        accepted(&mut engine, &bootstrap(vec![fs_fact("win-a", None, false)]));
-        let reply = accepted(
-            &mut engine,
-            &cmd(2, 1, vec![fs_unknown_fact("win-a", None)], command),
-        );
+        // All caps stay absent here: null native claims reach the
+        // intended fullscreen-unsupported gate instead of grading.
+        let mut seed = fs_fact("win-a", None, false);
+        seed.maximized = None;
+        accepted(&mut engine, &bootstrap(vec![seed]));
+        let mut unknown = fs_unknown_fact("win-a", None);
+        unknown.maximized = None;
+        let reply = accepted(&mut engine, &cmd(2, 1, vec![unknown], command));
         assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {

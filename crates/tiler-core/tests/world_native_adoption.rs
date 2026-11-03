@@ -205,9 +205,10 @@ fn engine_host_owned(mode: WorkspaceMode, equal_count: bool) -> WorldEngine {
         HostCapabilities {
             host_owned: true,
             equal_count,
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
         vec![
@@ -244,9 +245,10 @@ fn rebind(engine: &mut WorldEngine, adapter: &str, mode: WorkspaceMode, equal_co
                 host_owned: true,
                 equal_count,
                 unavailable_facts: vec![FactName::Executable, FactName::ProcessId],
-                // Fixtures carry native sticky facts; only native identity
-                // is unavailable on this rebind lane.
+                // Fixtures carry native sticky and maximize facts; only
+                // native identity is unavailable on this rebind lane.
                 native_sticky: true,
+                maximize: true,
                 ..Default::default()
             },
         })

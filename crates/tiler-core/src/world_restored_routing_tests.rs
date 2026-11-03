@@ -802,9 +802,10 @@ fn capacity_float_fallback_retains_identity_pinned_window_transfer() {
         "gen-1",
         "adapter-1",
         crate::connection::HostCapabilities {
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
         vec![(
@@ -1573,9 +1574,10 @@ fn predicate_ingress_selects_admission_without_reclassification() {
         "gen-1",
         "adapter-1",
         crate::connection::HostCapabilities {
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
         vec![(

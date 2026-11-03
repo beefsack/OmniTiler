@@ -13,7 +13,7 @@ use crate::directional::{Direction, OutputId, SameAxisMove, WindowId, WorkspaceI
 use crate::engine::Engine;
 use crate::ids::CorrelationId;
 use crate::seed::EngineWindow;
-use crate::session::{DomainKey, OutputDomain};
+use crate::session::{DomainKey, OutputDomain, RefusalKind};
 use crate::world_engine::{
     KIND_DIRECTION, KIND_IN_FLIGHT, KIND_MIGRATION, KIND_OPERATION, KIND_SCOPE_HELD,
     KIND_SEND_TARGET, KIND_SEND_WINDOW, KIND_SNAPSHOT, MSG_DIRECTION, MSG_IN_FLIGHT,
@@ -448,6 +448,25 @@ impl WorldEngine {
         // without one (or on vertical) they retain with no staging, like a
         // lattice miss. Tiled subjects fall through unchanged.
         let fullscreen_subject = source_row.fullscreen;
+        // Core-composed maximize overlay (world-owned bit, no native
+        // state): a composed subject skips same-output siblings like the
+        // native overlay. Float/sticky subjects refuse exactly like a
+        // native maximized subject; tiled subjects continue to the
+        // adjacent output below, never the local leg. Fullscreen subjects
+        // keep their existing R-MAX-02 path. Native caps/maximize=true is
+        // unaffected: the bit is only ever set on the composed route.
+        let composed_overlay = !self.capabilities().is_some_and(|caps| caps.maximize)
+            && self.composed_maximized.contains(window);
+        if composed_overlay && !fullscreen_subject && (source_row.floating || source_row.sticky) {
+            self.command_result = Some(CommandResult::Directional {
+                outcome: DirectionalOutcome::FocusRefusedMaximize,
+                target: None,
+                rect: None,
+                cause: None,
+            });
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
+        }
         if (source_row.floating || source_row.sticky) && !fullscreen_subject {
             let mut staged: Vec<EngineWindow> = Vec::new();
             for domain in &self.staged.domains {
@@ -498,6 +517,87 @@ impl WorldEngine {
         let cross_target = matches!(direction_parsed, Direction::Left | Direction::Right)
             .then(|| self.core_topology_target(&source_key.output, direction_parsed))
             .flatten();
+        if composed_overlay {
+            // Composed tiled subject: same-output siblings never win, so
+            // the local leg is bypassed entirely. With an adjacent output
+            // the target is selected at world level through the shared
+            // entry-edge ranking (memory-aware, like the session cross
+            // leg) and applied as a best-effort explicit focus effect with
+            // the canonical slot advanced; the session commits nothing, so
+            // no native or Engine mutation rides along. Without one (or on
+            // vertical) refuse with the unchanged session vocabulary, like
+            // a session Unchanged verdict. Safety/arrival/hold gates above
+            // are unchanged, and no native clear is minted.
+            let Some(target_output) = cross_target else {
+                return CommandApplied::Rejected {
+                    kind: RefusalKind::Unchanged.as_str(),
+                    message: RefusalKind::Unchanged.message(),
+                };
+            };
+            let Some(source_staged) = self
+                .staged
+                .domains
+                .iter()
+                .find(|d| d.readable && d.key == source_key)
+            else {
+                return CommandApplied::Rejected {
+                    kind: KIND_OPERATION,
+                    message: MSG_OPERATION,
+                };
+            };
+            let Some(((_, _), (_, target_key), _, _)) = self.directional_pair_for_target(
+                &source_key,
+                source_staged,
+                direction_parsed,
+                &target_output,
+                held_scopes,
+            ) else {
+                return CommandApplied::Rejected {
+                    kind: KIND_OPERATION,
+                    message: MSG_OPERATION,
+                };
+            };
+            let selected = self
+                .engine
+                .session(&target_key)
+                .and_then(|session| {
+                    let usable = crate::geometry::inset_bounds(
+                        source_staged.bounds,
+                        source_staged.outer_gap,
+                    )
+                    .ok()?;
+                    let source_perp = match direction_parsed {
+                        Direction::Left | Direction::Right => {
+                            (usable.y, usable.y.checked_add(usable.h)?)
+                        }
+                        Direction::Up | Direction::Down => {
+                            (usable.x, usable.x.checked_add(usable.w)?)
+                        }
+                    };
+                    let leaf = session.select_cross_output_edge_target(
+                        &target_key,
+                        direction_parsed,
+                        source_perp,
+                    )?;
+                    session.focused_window_for(&leaf, &target_key)
+                })
+                .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&target_key))
+                .filter(|window| by_id.get(window).is_some_and(|row| !row.floating))
+                .filter(|window| !self.is_exception_window_any(window));
+            let Some(target_window) = selected else {
+                return CommandApplied::Rejected {
+                    kind: RefusalKind::Unchanged.as_str(),
+                    message: RefusalKind::Unchanged.message(),
+                };
+            };
+            self.note_command(command_seq);
+            let _ = self.record_command_focus(&target_window, held_scopes);
+            return CommandApplied::Effect(OneShotEffect::explicit_focus(
+                command_seq,
+                target_window,
+                self.state_revision + 1,
+            ));
+        }
         if cross_target.is_some() {
             // R-MAX-02: the cross command carries the float origin exactly
             // when the subject floats (only fullscreen floats reach here;
@@ -806,6 +906,19 @@ impl WorldEngine {
             }
             None => {}
         }
+        // Core-composed maximize overlay (world-owned bit, no native
+        // state): ordinary move policy runs on the unmaximized base, so the
+        // bit clears locally with no native clear or readback once the
+        // float half-snap geometry (or tiled routing target) resolves.
+        // Unavailable-authority preflights (unknown screen/work area,
+        // unscalable or invalid geometry, hard topology refusals) retain
+        // the bit with no token and no deferred clear; a resolved half
+        // completes the local clear before the dependent constraints
+        // result, which restores the base through the one-shot lane on
+        // refusal. Directional no-op outcomes keep the clear like a bound
+        // native NeedClear, and a hard tiled refusal below restores it.
+        let composed_overlay = !self.capabilities().is_some_and(|caps| caps.maximize)
+            && self.composed_maximized.contains(window);
         if source_row.floating || source_row.sticky {
             // Float and sticky half-snaps share the uniform retained
             // float-placement lane: the stable `frame_operation` token is
@@ -854,6 +967,11 @@ impl WorldEngine {
                 self.note_command(command_seq);
                 return CommandApplied::NoEffect;
             };
+            // Geometry resolved: the local clear completes before the
+            // dependent ordinary constraints result.
+            if composed_overlay {
+                self.composed_maximized.remove(window);
+            }
             if !half_snap_constraints_ok(half, source_row.hints) {
                 self.command_result = Some(CommandResult::Directional {
                     outcome: DirectionalOutcome::MoveFloatRefusedConstraints,
@@ -862,6 +980,35 @@ impl WorldEngine {
                     cause: None,
                 });
                 self.note_command(command_seq);
+                if composed_overlay {
+                    // Native parity: the overlay already cleared above like
+                    // a completed native clear, so the refusal returns to
+                    // the retained session base through the existing
+                    // one-shot placement lane (never a bare echo).
+                    if let Some(base) = self
+                        .engine
+                        .session(&home)
+                        .and_then(|session| session.floating_geometry(window))
+                    {
+                        let operation_id = format!("op-{command_seq}");
+                        self.retained_floats.retain(|held| held.window != *window);
+                        self.retained_floats
+                            .push(crate::world_engine::RetainedFloat {
+                                operation_id,
+                                command_seq,
+                                window: window.clone(),
+                                target: base,
+                                source: Some(source_row.rect),
+                                output: effective.output.clone(),
+                                workspace: effective.workspace.0.clone(),
+                                ambiguous: false,
+                                pending: None,
+                            });
+                    } else {
+                        // No base to restore: fail closed with the bit kept.
+                        self.composed_maximized.insert(window.clone());
+                    }
+                }
                 return CommandApplied::NoEffect;
             }
             self.command_result = Some(CommandResult::Directional {
@@ -898,13 +1045,21 @@ impl WorldEngine {
         // The dispatch-selected target is pinned through the validated
         // reciprocal pair (no re-ranking of any relocated mover within
         // this report): fresh topology only validates forward/reverse
-        // touch, never re-ranks the mover frame.
+        // touch, never re-ranks the mover frame. Tiled routing resolves
+        // now: the local clear completes before ordinary tiled policy,
+        // with the existing restores below.
+        if composed_overlay {
+            self.composed_maximized.remove(window);
+        }
         let pinned = match self.window_topology_target(
             &source_key.output,
             direction_parsed,
             &source_row.rect,
         ) {
             Err(_) => {
+                if composed_overlay {
+                    self.composed_maximized.insert(window.clone());
+                }
                 return CommandApplied::Rejected {
                     kind: KIND_OPERATION,
                     message: MSG_OPERATION,
@@ -943,6 +1098,9 @@ impl WorldEngine {
             };
             self.run_local_operation(report, command_seq, &local_command, by_id, held_scopes)
         };
+        if composed_overlay && matches!(applied, CommandApplied::Rejected { .. }) {
+            self.composed_maximized.insert(window.clone());
+        }
         match applied {
             CommandApplied::NoEffect => CommandApplied::Effect(OneShotEffect::explicit_focus(
                 command_seq,
@@ -1474,6 +1632,29 @@ impl WorldEngine {
                 };
             }
         }
+        // B9 intentional unfloat on the composed route
+        // (`caps.maximize == false`): the world-owned bit clears locally
+        // only after every refusal preflight below passes, with no
+        // observe-clear wait. A tiled subject with the bit refuses like
+        // native maximized (`not-tiled`); any refusal below retains a set
+        // bit, so safety/fullscreen/arrival/hints gates stay unchanged.
+        // The actual removal runs after the inset gate; a rejected finish
+        // below still restores it.
+        let mut composed_should_clear = false;
+        if let CoreCommand::ToggleFloat { window, .. } = command
+            && !self.capabilities().is_some_and(|caps| caps.maximize)
+            && self.composed_maximized.contains(&WindowId(window.clone()))
+        {
+            let subject = WindowId(window.clone());
+            if self.is_exception_window_any(&subject) {
+                composed_should_clear = true;
+            } else if self.is_tiled_window_any(&subject) {
+                return CommandApplied::Rejected {
+                    kind: RefusalKind::NotTiled.as_str(),
+                    message: RefusalKind::NotTiled.message(),
+                };
+            }
+        }
         let (domain_key, domain_report) = match self.operation_domain_staged(command, held_scopes) {
             Some(found) => found,
             None => {
@@ -1517,6 +1698,10 @@ impl WorldEngine {
                 message: MSG_SCOPE_HELD,
             };
         };
+        let mut composed_cleared = false;
+        if composed_should_clear && let CoreCommand::ToggleFloat { window, .. } = command {
+            composed_cleared = self.composed_maximized.remove(&WindowId(window.clone()));
+        }
         let event = CoreEvent {
             owner,
             generation: self.core_generation.clone(),
@@ -1535,7 +1720,14 @@ impl WorldEngine {
             target_windows: Vec::new(),
             command: command.clone(),
         };
-        self.finish_operation_event(report, command_seq, &event)
+        let applied = self.finish_operation_event(report, command_seq, &event);
+        if composed_cleared
+            && matches!(applied, CommandApplied::Rejected { .. })
+            && let CoreCommand::ToggleFloat { window, .. } = command
+        {
+            self.composed_maximized.insert(WindowId(window.clone()));
+        }
+        applied
     }
 
     /// Correlated per-command outcome from one [`CoreReply`]: `Some` only for

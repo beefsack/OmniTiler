@@ -1034,9 +1034,10 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
     let mut engine = connected_engine(
         "gen-1",
         HostCapabilities {
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
     );
@@ -1526,9 +1527,10 @@ fn native_ws_field_decodes_and_gates() {
     let mut engine = connected_engine(
         "gen-1",
         HostCapabilities {
-            // Fixture carries a native sticky fact; only host-owned domains
-            // stay off so the native gate still refuses.
+            // Fixture carries native sticky and maximize facts; only
+            // host-owned domains stay off so the native gate still refuses.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
     );
@@ -1711,9 +1713,10 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
     let mut engine = connected_engine(
         "gen-1",
         HostCapabilities {
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
     );
@@ -1770,9 +1773,10 @@ fn toggle_maximize_decodes_and_result_encodes() {
     let mut engine = connected_engine(
         "gen-1",
         HostCapabilities {
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
     );

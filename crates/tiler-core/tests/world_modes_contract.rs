@@ -144,9 +144,10 @@ fn engine_for_mode(mode: WorkspaceMode) -> WorldEngine {
     engine_for_mode_with_capabilities(
         mode,
         tiler_core::connection::HostCapabilities {
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
     )
@@ -546,9 +547,10 @@ fn shared_disconnect_discards_history_without_displacement() {
 fn equal_count_pads_shorter_rings() {
     let capabilities = tiler_core::connection::HostCapabilities {
         equal_count: true,
-        // Fixtures carry native sticky facts; the lane under test is the
-        // native route.
+        // Fixtures carry native sticky and maximize facts; the lane under
+        // test is the native route.
         native_sticky: true,
+        maximize: true,
         ..Default::default()
     };
     let mut engine = engine_for_mode_with_capabilities(WorkspaceMode::PerOutputLocal, capabilities);

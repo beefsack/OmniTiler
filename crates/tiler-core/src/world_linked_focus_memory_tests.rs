@@ -742,9 +742,10 @@ fn global_unique_engine() -> WorldEngine {
         "gen-1",
         "adapter-1",
         crate::connection::HostCapabilities {
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
         vec![(

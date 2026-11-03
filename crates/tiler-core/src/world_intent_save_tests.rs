@@ -27,9 +27,10 @@ fn zero_gap_engine() -> WorldEngine {
         "gen-1",
         "adapter-1",
         crate::connection::HostCapabilities {
-            // Fixtures carry native sticky facts; the save lane under test
-            // is the native route.
+            // Fixtures carry native sticky and maximize facts; the save
+            // lane under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
         vec![(
@@ -139,7 +140,8 @@ fn row_for<'a>(
 fn rehandshake(engine: &mut WorldEngine) -> String {
     // Default capabilities: host-owned mode would change homing under the
     // new generation, so round-trips stay on the plain lane. Native sticky
-    // stays supported: the fixtures carry native sticky facts.
+    // and maximize stay supported: the fixtures carry native sticky and
+    // maximize facts.
     let reply = engine.handshake(&crate::connection::HandshakeRequest {
         adapter: "adapter-2".to_owned(),
         request: "handshake-2".to_owned(),
@@ -150,6 +152,7 @@ fn rehandshake(engine: &mut WorldEngine) -> String {
         },
         capabilities: crate::connection::HostCapabilities {
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
     });

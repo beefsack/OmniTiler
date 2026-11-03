@@ -789,11 +789,45 @@ impl WorldEngine {
                     .facts
                     .get(&geometry.window)
                     .is_none_or(|fact| fact.minimized == Some(true) || fact.rect.is_none());
-                let unknown_maximized = self
-                    .staged
-                    .facts
-                    .get(&geometry.window)
-                    .is_some_and(|fact| fact.maximized.is_none());
+                // `maximized: null` with unsupported caps is the
+                // contract-valid absent value (macOS provisional
+                // contract): ordinary admission, never an unknown hold.
+                // Supported-but-null keeps the narrow unknown hold.
+                let unknown_maximized = self.capabilities().is_some_and(|caps| caps.maximize)
+                    && self
+                        .staged
+                        .facts
+                        .get(&geometry.window)
+                        .is_some_and(|fact| fact.maximized.is_none());
+                // Core-composed maximize (`caps.maximize == false`): the
+                // owned bit selects the truthful output work area as the
+                // published frame while the tile allocation below stays
+                // the retained slot. Unsupported native `maximized` stays
+                // null whether or not the bit is set. R-MAX-11: the
+                // overlay writes only after a readable native exit. Raw
+                // fullscreen true or unknown, or a pending unattempted
+                // fullscreen entry, withholds the overlay while the bit
+                // stays retained; a withheld window publishes exactly like
+                // an uncomposed row, except a pending entry additionally
+                // holds the base frame write (no shared reply with the
+                // queued entry). A missing work area fails closed.
+                let composed = !self.capabilities().is_some_and(|caps| caps.maximize)
+                    && self.composed_maximized.contains(&geometry.window);
+                let work_area = self.composed_work_area(&geometry.output);
+                let composed_active = composed
+                    && self
+                        .staged
+                        .facts
+                        .get(&geometry.window)
+                        .is_some_and(|fact| fact.fullscreen == Some(false))
+                    && !self.fullscreen_entry_pending(&geometry.window);
+                let composed_gated = self.composed_frame_gated(&geometry.window);
+                let desired = if composed_active {
+                    work_area.unwrap_or(geometry.rect)
+                } else {
+                    geometry.rect
+                };
+                let work_missing = composed_active && work_area.is_none();
                 let (clear_operation, command_seq) = if report.gesture_barrier
                     || fact_unreadable
                     || unknown_maximized
@@ -814,8 +848,10 @@ impl WorldEngine {
                         None => (self.born_desire_for(&geometry.window, report), None),
                     }
                 };
-                // Core-owned frame policy (stage 3a): an exact desired match
-                // clears retained memory (completion is desired == observed,
+                // Core-owned frame policy (stage 3a) over the actually
+                // published frame: the composed work-area overlay, else the
+                // tile allocation. An exact desired match clears retained
+                // memory (completion is desired == observed,
                 // never setter success); a suppressed pair publishes a
                 // constraint-clamp hold with the desire intact so the adapter
                 // skips the write and retries only on genuine change. The
@@ -825,13 +861,13 @@ impl WorldEngine {
                     .facts
                     .get(&geometry.window)
                     .and_then(|fact| fact.rect);
-                if observed == Some(geometry.rect) {
+                if observed == Some(desired) {
                     self.frames.remove(&geometry.window);
                 }
                 let frame_suppressed = observed.is_some_and(|current| {
                     self.frame_suppressed(
                         &geometry.window,
-                        &geometry.rect,
+                        &desired,
                         Some(current),
                         report.monotonic_ms,
                     )
@@ -839,7 +875,7 @@ impl WorldEngine {
                 let burst_held = Self::frame_burst_gate(
                     &mut self.frame_bursts,
                     &geometry.window,
-                    &geometry.rect,
+                    &desired,
                     observed,
                     report.monotonic_ms,
                 );
@@ -848,21 +884,21 @@ impl WorldEngine {
                     output: geometry.output.clone(),
                     workspace: geometry.workspace.0.clone(),
                     allocation: Some(geometry.rect),
-                    effective_frame: if fullscreen {
-                        None
-                    } else {
-                        Some(geometry.rect)
-                    },
+                    effective_frame: if fullscreen { None } else { Some(desired) },
                     frame_authority: if fullscreen {
                         ScopeAuthority::Untouched
-                    } else if unknown_maximized {
+                    } else if composed_gated {
+                        ScopeAuthority::Hold(HoldReason::ConstraintClamp)
+                    } else if work_missing {
                         ScopeAuthority::Hold(HoldReason::Unreadable)
                     } else if frame_suppressed || burst_held {
                         ScopeAuthority::Hold(HoldReason::ConstraintClamp)
                     } else if frame_hold {
                         ScopeAuthority::Hold(HoldReason::GestureBarrier)
-                    } else {
+                    } else if !unknown_maximized {
                         ScopeAuthority::Controlled
+                    } else {
+                        ScopeAuthority::Hold(HoldReason::Unreadable)
                     },
                     membership_authority: ScopeAuthority::Controlled,
                     // Tiled rows never carry a float-placement token.
@@ -995,15 +1031,105 @@ impl WorldEngine {
                 // NeedClear supersedes any retained same-window float at
                 // mint, so a stale placement never rides alongside the new
                 // clear; the slot carries the surviving token.
+                // Core-composed maximize on a float base: the owned bit
+                // selects the truthful output work area under a `Controlled`
+                // frame lane (plain floats stay `Untouched`). The session
+                // float base is never overwritten by the observed composed
+                // frame: convergence never fabricates float geometry from
+                // observations, so clear restores the base exactly. No
+                // placement token is minted; an unavailable composed write
+                // fails closed to the untouched base frame. R-MAX-11: raw
+                // fullscreen true or unknown withholds the overlay and any
+                // placement token while the bit stays retained; a pending
+                // unattempted fullscreen entry withholds the same writes
+                // (the shared composed gate below); a withheld window
+                // publishes exactly like an uncomposed float.
+                let composed = !self.capabilities().is_some_and(|caps| caps.maximize)
+                    && self.composed_maximized.contains(&observed.window);
+                let work_area = self.composed_work_area(&observed.output);
+                let float_base =
+                    retained_target.or_else(|| session.floating_geometry(&observed.window));
+                let composed_home = DomainKey {
+                    output: observed.output.clone(),
+                    workspace: observed.workspace.clone(),
+                };
+                let fullscreen_released = staged
+                    .facts
+                    .get(&observed.window)
+                    .is_some_and(|fact| fact.fullscreen == Some(false));
+                let composed_active = composed
+                    && fullscreen_released
+                    && !self.fullscreen_entry_pending(&observed.window);
+                let composed_controlled = composed_active
+                    && work_area.is_some()
+                    && report.inventory_complete
+                    && !report.gesture_barrier
+                    && !self.floating_scopes.contains(&composed_home)
+                    && !self.hold_reasons.contains_key(&composed_home)
+                    && !self.is_held_window(&observed.window)
+                    && !self.is_excluded_window(&observed.window)
+                    && !in_flight
+                    && !self.derived_for(&observed.window).hidden
+                    && staged
+                        .facts
+                        .get(&observed.window)
+                        .is_some_and(|fact| fact.hints.is_some() && fact.minimized != Some(true));
+                // Shared clamp policy against the actually published frame
+                // (like the tiled lane above): a suppressed pair publishes
+                // a constraint-clamp hold with the desire intact so the
+                // adapter skips the write and retries only on genuine
+                // change, never an auto-authorized retry outside policy.
+                let overlay_frame = work_area.or(float_base);
+                let overlay_observed = staged
+                    .facts
+                    .get(&observed.window)
+                    .and_then(|fact| fact.rect);
+                let mut overlay_suppressed = false;
+                let mut overlay_burst = false;
+                if composed_active && let Some(desired) = overlay_frame {
+                    overlay_suppressed = overlay_observed.is_some_and(|current| {
+                        self.frame_suppressed(
+                            &observed.window,
+                            &desired,
+                            Some(current),
+                            report.monotonic_ms,
+                        )
+                    });
+                    overlay_burst = Self::frame_burst_gate(
+                        &mut self.frame_bursts,
+                        &observed.window,
+                        &desired,
+                        overlay_observed,
+                        report.monotonic_ms,
+                    );
+                }
+                // No placement write beside the owned overlay while native
+                // fullscreen is unreleased, nor while a native entry pends
+                // (shared composed gate): the lane carries one frame
+                // authority only.
+                if composed && !fullscreen_released || self.composed_frame_gated(&observed.window) {
+                    frame_operation = None;
+                    frame_seq = None;
+                }
                 let command_seq = frame_seq.or(clear_seq);
                 windows.push(WindowDesire {
                     lifetime: observed.window.clone(),
                     output: observed.output.clone(),
                     workspace: observed.workspace.0.clone(),
                     allocation: None,
-                    effective_frame: retained_target
-                        .or_else(|| session.floating_geometry(&observed.window)),
-                    frame_authority: ScopeAuthority::Untouched,
+                    effective_frame: if composed_active {
+                        overlay_frame
+                    } else {
+                        float_base
+                    },
+                    frame_authority: if composed_controlled && !overlay_suppressed && !overlay_burst
+                    {
+                        ScopeAuthority::Controlled
+                    } else if composed_active && (overlay_suppressed || overlay_burst) {
+                        ScopeAuthority::Hold(HoldReason::ConstraintClamp)
+                    } else {
+                        ScopeAuthority::Untouched
+                    },
                     membership_authority: if in_flight {
                         ScopeAuthority::Controlled
                     } else {

@@ -27,9 +27,10 @@ fn engine_host_owned(mode: WorkspaceMode, equal_count: bool) -> WorldEngine {
         HostCapabilities {
             host_owned: true,
             equal_count,
-            // Fixtures carry native sticky facts (including a sticky homing
-            // probe); the lane under test is the native route.
+            // Fixtures carry native sticky and maximize facts (including a
+            // sticky homing probe); the lane under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
         vec![("mode".to_owned(), RawSettingValue::String(token.to_owned()))],

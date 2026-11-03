@@ -67,9 +67,10 @@ fn engine_for(switch_target: SwitchTarget, fresh_placement: FreshPlacement) -> W
         switch_target,
         fresh_placement,
         HostCapabilities {
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..HostCapabilities::default()
         },
     )
@@ -109,9 +110,10 @@ fn rebind(
                 process_id: None,
             },
             capabilities: HostCapabilities {
-                // Fixtures carry native sticky facts; only native identity
-                // is unavailable on this rebind lane.
+                // Fixtures carry native sticky and maximize facts; only
+                // native identity is unavailable on this rebind lane.
                 native_sticky: true,
+                maximize: true,
                 ..HostCapabilities::without_native_identity()
             },
         })
@@ -1072,9 +1074,10 @@ fn retained_settings_are_observable() {
         FreshPlacement::CursorOutputMru,
         HostCapabilities {
             warp: true,
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..HostCapabilities::default()
         },
     );

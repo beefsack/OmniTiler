@@ -156,9 +156,10 @@ fn engine_with_zero_outer_gap() -> WorldEngine {
         "gen-1",
         "adapter-1",
         crate::connection::HostCapabilities {
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the
+            // lane under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
         vec![(
@@ -1193,9 +1194,10 @@ fn windows_profile_automatic_fixed_withholds_while_ordinary_mints() {
             "gen-1",
             "adapter-1",
             crate::connection::HostCapabilities {
-                // Fixtures carry native sticky facts; the lane under test is
-                // the native route.
+                // Fixtures carry native sticky and maximize facts; the
+                // lane under test is the native route.
                 native_sticky: true,
+                maximize: true,
                 ..Default::default()
             },
             config,
@@ -1991,9 +1993,10 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             "gen-1",
             "adapter-1",
             crate::connection::HostCapabilities {
-                // Fixtures carry native sticky facts; the lane under test is
-                // the native route.
+                // Fixtures carry native sticky and maximize facts; the
+                // lane under test is the native route.
                 native_sticky: true,
+                maximize: true,
                 ..Default::default()
             },
             vec![(
@@ -3480,7 +3483,19 @@ fn toggle_maximize_command_decides_and_reports() {
         }
     }
     let screens = vec![roomy("out-a", 0)];
-    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    // Native paired-clear legs need fullscreen authority alongside the
+    // native maximize facts the fixtures carry.
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities {
+            native_sticky: true,
+            maximize: true,
+            fullscreen: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation");
     let seed = vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)];
     let first = accepted(
         &mut engine,
@@ -3493,6 +3508,8 @@ fn toggle_maximize_command_decides_and_reports() {
     // exact subject/sibling allocations survive, nothing retains.
     let mut fs = fact("w1", "out-a", 100);
     fs.fullscreen = Some(true);
+    // The native paired clear needs proven exitability.
+    fs.fullscreen_exitable = Some(true);
     let toggled = accepted(
         &mut engine,
         &report(
@@ -3571,6 +3588,7 @@ fn toggle_maximize_command_decides_and_reports() {
     // Both-flags observation maximizes with a clear (fullscreen wins).
     let mut both = fact("w1", "out-a", 100);
     both.fullscreen = Some(true);
+    both.fullscreen_exitable = Some(true);
     both.maximized = Some(true);
     let both_reply = accepted(
         &mut engine,
@@ -3672,7 +3690,17 @@ fn toggle_maximize_command_decides_and_reports() {
     // float keeps its durable placement and untouched frames.
     {
         let durable = rect(10, 10, 100, 100);
-        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound_with_capabilities(
+            "gen-1",
+            "adapter-1",
+            crate::connection::HostCapabilities {
+                native_sticky: true,
+                maximize: true,
+                fullscreen: true,
+                ..Default::default()
+            },
+        )
+        .expect("generation");
         accepted(
             &mut engine,
             &report(
@@ -3703,6 +3731,7 @@ fn toggle_maximize_command_decides_and_reports() {
         let mut floated_fs = fact("w1", "out-a", 100);
         floated_fs.transient = Some(true);
         floated_fs.fullscreen = Some(true);
+        floated_fs.fullscreen_exitable = Some(true);
         floated_fs.rect = Some(rect(0, 0, 800, 600));
         let floated = accepted(
             &mut engine,
@@ -3760,9 +3789,10 @@ fn toggle_maximize_command_decides_and_reports() {
             "gen-1",
             "adapter-1",
             crate::connection::HostCapabilities {
-                // Fixtures carry native sticky facts; the lane under test is
-                // the native route.
+                // Fixtures carry native sticky and maximize facts; the
+                // lane under test is the native route.
                 native_sticky: true,
+                maximize: true,
                 ..Default::default()
             },
             vec![(
@@ -3886,9 +3916,10 @@ fn engine_with_gaps(inner: f64, outer: f64) -> WorldEngine {
         "gen-1",
         "adapter-1",
         crate::connection::HostCapabilities {
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the
+            // lane under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
         vec![

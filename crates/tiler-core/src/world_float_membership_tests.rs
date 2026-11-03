@@ -483,7 +483,22 @@ fn migrated_session(
     }
 
     let mut engine = if host_owned {
-        WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation")
+        // Host-owned receipts with native-supported facts: the oracle
+        // facts carry non-null native `maximized`, which needs
+        // `caps.maximize == true` to stay valid (unsupported caps would
+        // grade every row to a narrow conflicting hold). The
+        // ANY-non-null unsupported grading itself is unchanged.
+        WorldEngine::new_test_bound_with_capabilities(
+            "gen-1",
+            "adapter-1",
+            crate::connection::HostCapabilities {
+                host_owned: true,
+                native_sticky: true,
+                maximize: true,
+                ..crate::connection::HostCapabilities::default()
+            },
+        )
+        .expect("generation")
     } else {
         WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
     };

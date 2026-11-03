@@ -1060,9 +1060,10 @@ fn bind_engine(
             process_id: None,
         },
         capabilities: HostCapabilities {
-            // Stress facts carry native sticky facts; only native identity
-            // is unavailable on this lane.
+            // Stress facts carry native sticky and maximize facts; only
+            // native identity is unavailable on this lane.
             native_sticky: true,
+            maximize: true,
             ..HostCapabilities::without_native_identity()
         },
     });

@@ -927,6 +927,34 @@ impl super::Session {
             .and_then(|record| record.floating_geometry)
     }
 
+    /// Adopt one user-placed float rect for a retained floating exception.
+    /// Updates both the live exception geometry and the durable retained
+    /// placement so clear/unfloat restore the user placement exactly. Only
+    /// for floating non-sticky exceptions; refuses unknown windows,
+    /// non-float exceptions, and malformed rects with no mutation.
+    pub(crate) fn adopt_float_placement(&mut self, window: &WindowId, rect: Rect) -> bool {
+        if rect.w <= 0
+            || rect.h <= 0
+            || rect.x.checked_add(rect.w).is_none()
+            || rect.y.checked_add(rect.h).is_none()
+        {
+            return false;
+        }
+        let Some(record) = self.exceptions.get_mut(window) else {
+            return false;
+        };
+        if !record.flags.floating
+            || record.flags.sticky
+            || record.flags.fullscreen
+            || record.flags.maximized
+        {
+            return false;
+        }
+        record.floating_geometry = Some(rect);
+        self.retained_float_geometry.insert(window.clone(), rect);
+        true
+    }
+
     /// Durable retained intentional-float geometry that survives unfloat. A
     /// window keeps its last floating placement here while tiled, so the next
     /// float can select it instead of recomputing the centered fallback.

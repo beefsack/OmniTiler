@@ -855,15 +855,14 @@ fn unsupported_route_consumes_with_state_unsupported() {
     let mut engine =
         WorldEngine::new_test_bound_with_capabilities("gen-1", "adapter-1", unsupported_caps())
             .expect("generation");
-    accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
+    // All sticky routes stay absent here: the null native maximize claim
+    // reaches the intended sticky-unsupported gate instead of grading.
+    let mut seed = cfact("win-a", "out-a", 0);
+    seed.maximized = None;
+    accepted(&mut engine, &bootstrap(vec![seed.clone()]));
     let reply = accepted(
         &mut engine,
-        &cmd(
-            2,
-            1,
-            vec![cfact("win-a", "out-a", 0)],
-            set_sticky("win-a", true),
-        ),
+        &cmd(2, 1, vec![seed], set_sticky("win-a", true)),
     );
     assert_eq!(
         reply.command_result,

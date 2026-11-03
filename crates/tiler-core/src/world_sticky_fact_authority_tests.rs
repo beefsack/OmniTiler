@@ -13,6 +13,9 @@ use crate::world_report::{IntentRecord, RowDiagnosticKind, RowDiagnosticLane};
 fn caps(native_sticky: bool) -> crate::connection::HostCapabilities {
     crate::connection::HostCapabilities {
         native_sticky,
+        // Fixtures carry native maximize facts; the lane under test is
+        // sticky, so the orthogonal native maximize route stays valid.
+        maximize: true,
         ..Default::default()
     }
 }
@@ -388,7 +391,7 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
         None,
     );
     assert!(
-        grade_conflicting_windows(&dup_report, &[], false).is_none(),
+        grade_conflicting_windows(&dup_report, &[], false, true).is_none(),
         "duplicate ids never grade to a hold"
     );
     for (label, mut bad) in [
@@ -422,7 +425,7 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
             None,
         );
         assert!(
-            grade_conflicting_windows(&report, &[], false).is_none(),
+            grade_conflicting_windows(&report, &[], false, true).is_none(),
             "{label} violation never grades to a hold"
         );
         bad.window = WindowId(format!("win-bad-{label}-engine"));
@@ -461,7 +464,7 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
         None,
     );
     assert!(
-        grade_conflicting_windows(&raw, &[], false).is_none(),
+        grade_conflicting_windows(&raw, &[], false, true).is_none(),
         "gradable invalid row never double-holds as conflicting"
     );
     let graded = grade_invalid_windows(&raw).expect("overbound grades invalid");
@@ -480,7 +483,7 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
         sticky.1
     );
     assert!(
-        grade_conflicting_windows(&graded, &[], false).is_none(),
+        grade_conflicting_windows(&graded, &[], false, true).is_none(),
         "already-held invalid row never re-grades"
     );
     // Ordinal preservation across successive conflicts: the first held row
@@ -498,13 +501,13 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
         None,
         None,
     );
-    let mut staged = grade_conflicting_windows(&base, &[], false).expect("first grades");
+    let mut staged = grade_conflicting_windows(&base, &[], false, true).expect("first grades");
     assert_eq!(staged.held_windows.len(), 1);
     assert_eq!(staged.held_windows[0].ordinal, 0);
     let mut second = fact("win-second", "out-a", 200);
     second.sticky = Some(true);
     staged.windows.push(second);
-    let restaged = grade_conflicting_windows(&staged, &[], false).expect("second grades");
+    let restaged = grade_conflicting_windows(&staged, &[], false, true).expect("second grades");
     assert_eq!(restaged.held_windows.len(), 2);
     assert_eq!(restaged.held_windows[0].ordinal, 0);
     assert_eq!(restaged.held_windows[1].ordinal, 1);

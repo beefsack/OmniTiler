@@ -21,6 +21,9 @@ fn engine_with(native_sticky: bool) -> WorldEngine {
         "adapter-1",
         crate::connection::HostCapabilities {
             native_sticky,
+            // Fixtures carry native maximize facts; keep the maximize lane
+            // supported so the sticky lane under test stays isolated.
+            maximize: true,
             ..Default::default()
         },
     )
@@ -52,6 +55,7 @@ fn rehandshake(engine: &mut WorldEngine) -> String {
         },
         capabilities: crate::connection::HostCapabilities {
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
     });

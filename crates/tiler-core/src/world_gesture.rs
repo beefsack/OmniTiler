@@ -331,10 +331,13 @@ impl WorldEngine {
     }
 
     /// Validate one gesture start: exact known lifetime, readable fact,
-    /// complete inventory, readable unheld tiled homing, and no overlay,
-    /// float, or sticky lane. Unmanaged, minimized, hidden (unreadable),
-    /// fullscreen/maximized, floating, or held starts fail closed with no
-    /// retained session. `home` is the retained membership homing when
+    /// complete inventory, readable unheld tiled homing, and no overlay
+    /// or sticky lane. Unmanaged, minimized, hidden (unreadable),
+    /// fullscreen/maximized, ordinary floating, or held starts fail closed
+    /// with no retained session. Owned core-composed floats (unsupported
+    /// maximize, overlay bit set, retained float exception) bind and
+    /// continue so an explicit user drag unmaximizes to the release
+    /// placement. `home` is the retained membership homing when
     /// known (never yanked by the observed screen), else the staged
     /// homing for a genuinely new lifetime.
     fn gesture_start_valid(
@@ -377,7 +380,12 @@ impl WorldEngine {
             return false;
         }
         if derived.floating || derived.sticky {
-            return false;
+            // Composed-float-only permit: an owned core-composed overlay
+            // on a float base binds and continues; ordinary floats and
+            // sticky still refuse with no session.
+            if !self.is_owned_composed_float(&ingress.window) {
+                return false;
+            }
         }
         true
     }
@@ -424,9 +432,37 @@ impl WorldEngine {
             return false;
         }
         if derived.floating || derived.sticky {
-            return false;
+            // Composed-float-only permit, mirroring the start gate above.
+            if !self.is_owned_composed_float(&retained.window) {
+                return false;
+            }
         }
         true
+    }
+
+    /// Whether one window is an owned core-composed float: `caps.maximize`
+    /// unsupported, the lifetime-local overlay bit set, a retained floating
+    /// (non-sticky) exception, and no native overlay. The composed permit
+    /// below keys off exactly this: ordinary floats and sticky never pass.
+    fn is_owned_composed_float(&self, window: &WindowId) -> bool {
+        if self.capabilities().is_some_and(|caps| caps.maximize) {
+            return false;
+        }
+        if !self.composed_maximized.contains(window) {
+            return false;
+        }
+        let derived = self.derived_for(window);
+        if !derived.floating || derived.sticky {
+            return false;
+        }
+        if derived.overlay_fullscreen || derived.overlay_maximized {
+            return false;
+        }
+        self.engine.domain_keys().iter().any(|key| {
+            self.engine
+                .session(key)
+                .is_some_and(|session| session.is_exception(window))
+        })
     }
 
     /// Release-frame ground truth for the retained window: the staged
@@ -485,6 +521,12 @@ impl WorldEngine {
             return GestureOutcome::Held;
         }
         if self.gesture_game_paused(report, &retained) {
+            return GestureOutcome::Held;
+        }
+        if self.is_owned_composed_float(&retained.window) {
+            // Owned composed floats publish no drag preview: the overlay
+            // is already the work area, and the release adopts the native
+            // frame. Hold the session for the terminal phase.
             return GestureOutcome::Held;
         }
         if retained.kind != GestureKind::Move {
@@ -587,7 +629,7 @@ impl WorldEngine {
         &mut self,
         report: &WorldReport,
         ingress: &GestureIngress,
-        held_scopes: &BTreeSet<DomainKey>,
+        held_scopes: &mut BTreeSet<DomainKey>,
     ) -> GestureOutcome {
         let retained = self
             .gesture
@@ -631,8 +673,15 @@ impl WorldEngine {
         }
         let owned = self.staged_carriers();
         let by_id: BTreeMap<&WindowId, &EngineWindow> = by_id_of(&owned);
+        // Owned composed floats never route into the tiled drag admission:
+        // a real move/resize adopts the staged release frame as the new
+        // Session float placement, with no Engine handle, no transfer,
+        // and no placement token. A release observed on another output
+        // adopts in that output's effective view through the existing
+        // membership owner.
+        let owned_float = self.is_owned_composed_float(&retained.window);
         let outcome = match intent {
-            Some(GestureIntent::MoveDrop { x, y }) => {
+            Some(GestureIntent::MoveDrop { x, y }) if !owned_float => {
                 self.gesture_move_release(report, &retained, x, y, &by_id, held_scopes)
             }
             Some(GestureIntent::PointerResize {
@@ -640,7 +689,7 @@ impl WorldEngine {
                 boundary,
                 direction2,
                 boundary2,
-            }) => self.gesture_resize_release(
+            }) if !owned_float => self.gesture_resize_release(
                 report,
                 &retained,
                 direction,
@@ -649,6 +698,9 @@ impl WorldEngine {
                 boundary2,
                 held_scopes,
             ),
+            Some(GestureIntent::MoveDrop { .. }) | Some(GestureIntent::PointerResize { .. }) => {
+                self.gesture_float_release(report, &retained, release_frame, held_scopes)
+            }
             None => {
                 // No change (or a cursor-less move): snap back with no
                 // commit. The published snapshot reasserts accepted state.
@@ -659,7 +711,20 @@ impl WorldEngine {
             }
         };
         // Exactly one precise terminal record per incorporated release:
-        // `committed` is true only on a real move/resize commit.
+        // `committed` is true only on a real move/resize commit. A
+        // committed explicit user move/resize clears the lifetime-local
+        // core-composed maximize bit before the caller's resweep/restage
+        // and publication, so the reflow publishes the committed base.
+        // An explicit composed-float drag to a valid but empty
+        // destination clears the bit inside the float lane before
+        // destination admission even though the release refuses with no
+        // commit, so the reflow publishes the ordinary dragged base.
+        // No-op, cancel, refused, and cursor-less terminals never clear;
+        // delayed/clamped `FrameAttempt` readbacks never reach this lane.
+        // The tiled base is whatever the committed Session drag/resize
+        // already retained; the composed-float base is the adopted release
+        // frame: no placement token is minted on either lane, unlike the
+        // explicit toggle-off restore lane.
         let committed = matches!(
             outcome,
             GestureOutcome::Settled {
@@ -667,6 +732,9 @@ impl WorldEngine {
                 ..
             }
         );
+        if committed {
+            self.composed_maximized.remove(&retained.window);
+        }
         self.record_gesture_terminal(retained.id, committed);
         outcome
     }
@@ -888,6 +956,178 @@ impl WorldEngine {
                 committed: false,
                 result: None,
             },
+        }
+    }
+
+    /// Commit an owned composed-float release: adopt the staged release
+    /// frame as the new Session float placement (live geometry plus the
+    /// durable retained copy), revoke any stale same-window placement
+    /// token the explicit lanes minted, and report committed so the caller
+    /// clears the overlay bit before resweep/publication. The destination
+    /// is the actual [`Self::logical_homing`] for the release report: the
+    /// release runs after the retained gesture clears, so the homing sees
+    /// the native receipt, held, and unknown evidence exactly like any
+    /// other observation. Same-homing adopts in place; a different homing
+    /// to a session-owned destination moves the existing exception record
+    /// with the existing extract/insert primitives, like the sticky
+    /// cross-output path. An explicit drag to a valid readable unheld
+    /// destination clears the bit before destination admission,
+    /// independent of whether a destination session exists: an empty
+    /// destination (no session) then refuses with no transfer and no
+    /// minted session, and the window flows through exactly the existing
+    /// ordinary-float observation path, so its base is whatever that path
+    /// already produces. Unhomed, unreadable or held targets and
+    /// malformed frames refuse with the bit retained. No Engine handle,
+    /// no transfer, no placement token on the float lane: the native
+    /// frame already moved, so the commit only records it.
+    fn gesture_float_release(
+        &mut self,
+        report: &WorldReport,
+        retained: &RetainedGesture,
+        release_frame: crate::geometry::Rect,
+        held_scopes: &mut BTreeSet<DomainKey>,
+    ) -> GestureOutcome {
+        if release_frame.w <= 0
+            || release_frame.h <= 0
+            || release_frame.x.checked_add(release_frame.w).is_none()
+            || release_frame.y.checked_add(release_frame.h).is_none()
+        {
+            return GestureOutcome::Settled {
+                committed: false,
+                result: None,
+            };
+        }
+        let Some(target_key) = self.logical_homing(report, &retained.window) else {
+            return GestureOutcome::Settled {
+                committed: false,
+                result: None,
+            };
+        };
+        if target_key == retained.home {
+            let Some(session) = self.engine.session_mut(&retained.home) else {
+                return GestureOutcome::Settled {
+                    committed: false,
+                    result: None,
+                };
+            };
+            if !session.adopt_float_placement(&retained.window, release_frame) {
+                return GestureOutcome::Settled {
+                    committed: false,
+                    result: None,
+                };
+            }
+            self.retained_floats
+                .retain(|held| held.window != retained.window);
+            return GestureOutcome::Settled {
+                committed: true,
+                result: None,
+            };
+        }
+        // Cross-output: the destination domain must already be staged
+        // readable and unheld; unreadable or held targets refuse with
+        // the bit retained. An explicit drag clears the bit before
+        // destination admission, independent of whether a destination
+        // session exists: an empty destination (no session) then refuses
+        // with no transfer and no minted session, matching the ordinary
+        // float dragged outcome on the same observation.
+        let readable = self
+            .staged
+            .domains
+            .iter()
+            .any(|domain| domain.readable && domain.key == target_key);
+        if !readable || held_scopes.contains(&target_key) {
+            return GestureOutcome::Settled {
+                committed: false,
+                result: None,
+            };
+        }
+        self.composed_maximized.remove(&retained.window);
+        if self.engine.session(&target_key).is_none()
+            || self.engine.session(&retained.home).is_none()
+        {
+            // Restage without the cleared gesture shield so the scopes
+            // below converge the same unshielded staging the ordinary
+            // refused-gesture path swept: no transfer, no membership
+            // change from the gesture lane, no minted session.
+            self.build_staged_domains(report);
+            // Converge exactly the two scopes the shield diverged with
+            // the existing sweep, mirroring the report sweep tail: the
+            // stale home scope reconciles empty and the empty
+            // destination reconciles its observed carrier.
+            let (Some(owner), Some(correlation)) = (
+                self.connection_owner.clone(),
+                CorrelationId::parse(&report.request_id),
+            ) else {
+                return GestureOutcome::Settled {
+                    committed: false,
+                    result: None,
+                };
+            };
+            let domains = self.staged.domains.clone();
+            for domain in &domains {
+                if domain.key != target_key && domain.key != retained.home {
+                    continue;
+                }
+                if !domain.readable {
+                    continue;
+                }
+                self.sweep_domain(domain, &owner, &correlation, held_scopes);
+            }
+            self.settle_intent_admissions();
+            return GestureOutcome::Settled {
+                committed: false,
+                result: None,
+            };
+        }
+        let mut ids = BTreeSet::new();
+        ids.insert(retained.window.clone());
+        let moved = self
+            .engine
+            .session_mut(&retained.home)
+            .map(|session| session.extract_exception_floats(&ids));
+        let Some(moved) = moved else {
+            return GestureOutcome::Settled {
+                committed: false,
+                result: None,
+            };
+        };
+        if moved.is_empty() {
+            return GestureOutcome::Settled {
+                committed: false,
+                result: None,
+            };
+        }
+        self.engine
+            .session_mut(&target_key)
+            .expect("target session checked")
+            .insert_exception_floats(moved, &target_key);
+        let adopted = self
+            .engine
+            .session_mut(&target_key)
+            .expect("target session checked")
+            .adopt_float_placement(&retained.window, release_frame);
+        if !adopted {
+            let mut back = BTreeSet::new();
+            back.insert(retained.window.clone());
+            let moved = self
+                .engine
+                .session_mut(&target_key)
+                .expect("target session checked")
+                .extract_exception_floats(&back);
+            if let Some(home) = self.engine.session_mut(&retained.home) {
+                home.insert_exception_floats(moved, &retained.home);
+            }
+            return GestureOutcome::Settled {
+                committed: false,
+                result: None,
+            };
+        }
+        self.commit_send_member(&retained.window, &target_key);
+        self.retained_floats
+            .retain(|held| held.window != retained.window);
+        GestureOutcome::Settled {
+            committed: true,
+            result: None,
         }
     }
 

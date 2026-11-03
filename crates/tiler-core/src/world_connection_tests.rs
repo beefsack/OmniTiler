@@ -726,9 +726,10 @@ fn supported_null_process_holds_only_dependent_row_while_unavailable_admits() {
         "adapter-1",
         HostCapabilities {
             unavailable_facts: vec![FactName::ProcessId],
-            // Fixtures carry native sticky facts; only processId is
-            // unavailable in this lane.
+            // Fixtures carry native sticky and maximize facts; only
+            // processId is unavailable in this lane.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
     )
@@ -907,8 +908,8 @@ fn held_invalid_and_conflicting_keep_kind_parity() {
     conflict.privileged = Some(true);
     let mut base = report(2, true);
     base.windows = vec![conflict];
-    let graded =
-        grade_conflicting_windows(&base, &[FactName::Privileged], true).expect("conflict grades");
+    let graded = grade_conflicting_windows(&base, &[FactName::Privileged], true, true)
+        .expect("conflict grades");
     assert_eq!(graded.windows.len(), 0);
     assert_eq!(graded.held_windows.len(), 1);
     let held = &graded.held_windows[0];
@@ -953,9 +954,19 @@ fn masked_owner_with_overbound_refuses_typed() {
 }
 
 #[test]
-fn ordinary_maximized_null_without_maximize_holds_frame_only() {
-    use crate::world_report::HoldReason;
-    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+fn ordinary_maximized_null_without_maximize_stays_controlled() {
+    // Unsupported half keeps explicit `maximize: false`: the null fact is
+    // the contract-valid absent value on that route.
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            native_sticky: true,
+            maximize: false,
+            ..Default::default()
+        },
+    )
+    .expect("generation");
     let mut unknown = identity_fact(
         "win-unknown",
         None,
@@ -964,13 +975,16 @@ fn ordinary_maximized_null_without_maximize_holds_frame_only() {
         "Synthetic",
     );
     unknown.maximized = None;
-    let healthy = identity_fact(
+    let mut healthy = identity_fact(
         "win-healthy",
         None,
         Some("test-own-executable"),
         Some("foreign-pid-10"),
         "Synthetic",
     );
+    // The unsupported half exercises null handling throughout: a non-null
+    // native claim grades conflicting there, so the sibling stays null too.
+    healthy.maximized = None;
     let reply = accepted_reply(&mut engine, &identity_report(1, vec![unknown, healthy]));
     assert!(reply.ready);
     let row_unknown = reply
@@ -985,8 +999,8 @@ fn ordinary_maximized_null_without_maximize_holds_frame_only() {
     );
     assert_eq!(
         row_unknown.frame_authority,
-        ScopeAuthority::Hold(HoldReason::Unreadable),
-        "unknown overlay holds frame narrowly: {row_unknown:?}"
+        ScopeAuthority::Controlled,
+        "unsupported null is the contract-valid absent value (world contract): {row_unknown:?}"
     );
     assert!(
         row_unknown.allocation.is_some(),

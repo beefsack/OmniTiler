@@ -2828,6 +2828,7 @@ fn desire_cmdseq_born_clear_is_commandless() {
         crate::connection::HostCapabilities {
             birth_clear: true,
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
     )

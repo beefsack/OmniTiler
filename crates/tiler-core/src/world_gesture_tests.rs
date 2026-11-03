@@ -187,9 +187,10 @@ fn rebind(engine: &mut WorldEngine, adapter: &str) {
             process_id: None,
         },
         capabilities: crate::connection::HostCapabilities {
-            // Fixtures carry native sticky facts; only native identity is
-            // unavailable on this rebind lane.
+            // Fixtures carry native sticky and maximize facts; only native
+            // identity is unavailable on this rebind lane.
             native_sticky: true,
+            maximize: true,
             ..crate::connection::HostCapabilities::without_native_identity()
         },
     });

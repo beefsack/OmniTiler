@@ -285,9 +285,10 @@ fn engine_for_case(case: &Case) -> WorldEngine {
         "gen-1",
         "adapter-1",
         tiler_core::connection::HostCapabilities {
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
         vec![
@@ -325,9 +326,10 @@ fn reboot(engine: &mut WorldEngine, case: &Case, adapter: &str) {
                 process_id: None,
             },
             capabilities: tiler_core::connection::HostCapabilities {
-                // Fixtures carry native sticky facts; only native identity
-                // is unavailable on this reboot lane.
+                // Fixtures carry native sticky and maximize facts; only
+                // native identity is unavailable on this reboot lane.
                 native_sticky: true,
+                maximize: true,
                 ..tiler_core::connection::HostCapabilities::without_native_identity()
             },
         })

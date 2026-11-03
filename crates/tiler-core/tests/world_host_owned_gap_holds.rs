@@ -178,9 +178,10 @@ fn engine_host_owned_mode(mode: &str, equal_count: bool) -> WorldEngine {
         tiler_core::connection::HostCapabilities {
             host_owned: true,
             equal_count,
-            // Fixtures carry native sticky facts; the lane under test is
-            // the native route.
+            // Fixtures carry native sticky and maximize facts; the lane
+            // under test is the native route.
             native_sticky: true,
+            maximize: true,
             ..Default::default()
         },
         vec![("mode".to_owned(), RawSettingValue::String(mode.to_owned()))],

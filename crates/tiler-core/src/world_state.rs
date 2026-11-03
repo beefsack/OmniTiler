@@ -114,6 +114,35 @@ pub(crate) fn state_fact_value(
 }
 
 impl WorldEngine {
+    /// Pending unattempted native fullscreen entry: an unspent retained
+    /// `Fullscreen=true` binding with no observed attempt yet. While one
+    /// is outstanding, the core-composed overlay withholds every frame
+    /// write, so a queued native entry never shares a reply with an
+    /// overlay or restore write. After the attempt is observed, the first
+    /// readable exit releases the overlay with no fullscreen retry.
+    pub(crate) fn fullscreen_entry_pending(&self, window: &WindowId) -> bool {
+        self.retained_states
+            .get(&(window.clone(), StateProperty::Fullscreen))
+            .is_some_and(|binding| {
+                !binding.spent
+                    && binding.pending.is_none()
+                    && binding.target.value
+                    && binding.fullscreen_meta.is_some()
+            })
+    }
+
+    /// Shared composed-frame gate while a native fullscreen entry pends
+    /// (unattempted): no composed frame write shares a reply with the
+    /// queued native entry. Covers the tiled overlay/base write, the
+    /// float restore token, and max-off bit removal; the queued native
+    /// entry itself still publishes, and raw-true/raw-exit withholding is
+    /// unchanged.
+    pub(crate) fn composed_frame_gated(&self, window: &WindowId) -> bool {
+        !self.capabilities().is_some_and(|caps| caps.maximize)
+            && self.composed_maximized.contains(window)
+            && self.fullscreen_entry_pending(window)
+    }
+
     pub(crate) fn settle_states(&mut self, report: &WorldReport) {
         if self.retained_states.len() > MAX_RETAINED_STATE_BINDINGS {
             return;

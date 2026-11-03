@@ -118,9 +118,10 @@ fn set_born_policy(
 fn born_clear_engine() -> WorldEngine {
     let capabilities = crate::connection::HostCapabilities {
         birth_clear: true,
-        // Fixtures carry native sticky facts; the born lane under test is
-        // the native route.
+        // Fixtures carry native sticky and maximize facts; the born lane
+        // under test is the native route.
         native_sticky: true,
+        maximize: true,
         ..Default::default()
     };
     WorldEngine::new_test_bound_with_capabilities("gen-1", "adapter-1", capabilities)

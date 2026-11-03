@@ -1,10 +1,23 @@
-//! Native maximize production: `ToggleMaximize` over caps.maximize.
+//! Maximize production: `ToggleMaximize` over `caps.maximize`, plus the
+//! core-composed foundation when unsupported.
 //!
-//! Native-only route over `caps.maximize`; unsupported keeps the existing
-//! descriptive result-only path (no native targets, no fake
-//! `StateUnsupported`). Readable unknown `fullscreen`/`maximized` consumes
-//! a typed `StateUnknown` rejection, with the held/minimized/excluded/
-//! hidden safety refusals taking precedence before any unknown mapping.
+//! Native route over `caps.maximize` (unchanged; see below). Unsupported
+//! keeps no descriptive path: the composed route flips a lifetime-local
+//! owned bit selecting the output work-area frame under the existing
+//! per-row `Controlled` frame lane, with no native targets and no fake
+//! `StateUnsupported`. Readable unknown `fullscreen` consumes a typed
+//! `StateUnknown` rejection; a non-null native `maximized` fact and
+//! unavailable frame authority fail closed through the existing
+//! `operation-refused` gate with no overlay intent change. An explicit
+//! toggle on readable native fullscreen replaces it (R-MAX-11): the
+//! existing fullscreen capability/exitability gates apply exactly, then
+//! only a native `Fullscreen=false` binding is minted with the requested
+//! composed intent retained, and every composed frame write stays
+//! withheld until a readable exit.
+//! Native route (unchanged): readable unknown `fullscreen`/`maximized`
+//! consumes a typed `StateUnknown` rejection, with the held/minimized/
+//! excluded/hidden safety refusals taking precedence before any unknown
+//! mapping.
 //! A needed fullscreen clear additionally requires `caps.fullscreen`
 //! (`StateUnsupported` without it) and `fullscreen_exitable == Some(true)`
 //! (`FullscreenNotExitable` for `Some(false)`, `StateUnknown` for unknown).
@@ -23,7 +36,9 @@
 use crate::directional::WindowId;
 use crate::session::DomainKey;
 use crate::world_commands::CommandApplied;
-use crate::world_engine::{KIND_OPERATION, MSG_OPERATION, WorldEngine};
+use crate::world_engine::{
+    KIND_FOCUS, KIND_OPERATION, MSG_FOCUS, MSG_OPERATION, RetainedFloat, WorldEngine,
+};
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, CommandResult, HoldReason, ScopeAuthority, StateProperty,
     StateTarget, TransferKind, WindowDesire, WorldReport,
@@ -184,6 +199,275 @@ impl WorldEngine {
         });
         self.note_command(command_seq);
         CommandApplied::NoEffect
+    }
+
+    /// Core-composed maximize toggle (`caps.maximize == false`): flips the
+    /// lifetime-local owned bit that selects the output work-area frame
+    /// under the existing per-row `Controlled` frame lane. Raw `maximized`
+    /// stays null, no `Maximized` state target is minted, and no intent
+    /// record is written; the tile slot/allocation or float base stays
+    /// retained in the session, so clear restores it. A request with
+    /// unavailable frame authority is refused through the existing
+    /// `operation-refused` gate with no overlay intent change and no
+    /// deferred composition: a fresh press is required. A non-null native
+    /// `maximized` fact conflicts with the core-owned overlay and fails
+    /// closed. An explicit toggle on readable native fullscreen (R-MAX-11)
+    /// replaces it: the existing fullscreen capability/exitability gates
+    /// apply exactly, then only a native `Fullscreen=false` binding is
+    /// minted through the typed producer (no `Maximized` target), the
+    /// requested composed intent is retained immediately, and every
+    /// composed frame write stays withheld until a readable exit. While a
+    /// native fullscreen entry pends, max-off refuses with the bit
+    /// retained (the removal itself is a withheld write) while max-on
+    /// supersedes the older entry through the existing native revocation
+    /// lane and activates immediately.
+    pub(crate) fn execute_composed_maximize(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        window: &WindowId,
+        home: DomainKey,
+    ) -> CommandApplied {
+        let Some(fact) = self.staged.facts.get(window) else {
+            return refused(KIND_FOCUS, MSG_FOCUS);
+        };
+        // R-MAX-11 replacement starts here: readable fullscreen arms the
+        // native clear below; any other unreadable value fails closed with
+        // a typed unknown rejection.
+        let needs_fullscreen_clear = match fact.fullscreen {
+            Some(false) => false,
+            Some(true) => true,
+            None => {
+                self.command_result = Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::StateUnknown,
+                });
+                self.note_command(command_seq);
+                return CommandApplied::NoEffect;
+            }
+        };
+        if fact.maximized.is_some() {
+            // Any native maximized claim (false or true) conflicts with
+            // the core-owned overlay: fail closed, never project or
+            // compose around it.
+            return refused(KIND_OPERATION, MSG_OPERATION);
+        }
+        if self
+            .staged
+            .held_windows
+            .iter()
+            .any(|held| held.window == *window)
+        {
+            // Graded-held rows (conflicting/invalid) never compose: the
+            // overlay grants no write the row itself could not carry.
+            return refused(KIND_OPERATION, MSG_OPERATION);
+        }
+        if self.is_held_window(window)
+            || fact.minimized == Some(true)
+            || self.is_excluded_window(window)
+        {
+            return refused(KIND_OPERATION, MSG_OPERATION);
+        }
+        let derived = self.derived_for(window);
+        if derived.own_excluded || derived.excluded || derived.hidden || derived.hold {
+            return refused(KIND_OPERATION, MSG_OPERATION);
+        }
+        if !needs_fullscreen_clear && derived.overlay_fullscreen {
+            return refused(KIND_OPERATION, MSG_OPERATION);
+        }
+        // Frame-write availability mirrors the publish lane: the overlay
+        // grants no write the row itself could not carry. Floating
+        // workspaces publish untouched rows, held scopes never compose.
+        if !report.inventory_complete
+            || report.gesture_barrier
+            || self.floating_scopes.contains(&home)
+            || self.hold_reasons.contains_key(&home)
+        {
+            return refused(KIND_OPERATION, MSG_OPERATION);
+        }
+        let work_area = self
+            .staged
+            .screens
+            .iter()
+            .find(|screen| screen.output == home.output)
+            .filter(|screen| screen.complete)
+            .and_then(|screen| screen.work_area)
+            .filter(|area| area.w > 0 && area.h > 0);
+        if work_area.is_none() {
+            return refused(KIND_OPERATION, MSG_OPERATION);
+        }
+        // Hints-gated float readability mirrors the publish lane: the
+        // overlay grants `Controlled` over a float base only with readable
+        // hints (B9 refuses unreadable unfloat the same way). A float
+        // toggle with unreadable hints refuses with no intent change;
+        // tiled rows carry no hints requirement. The R-MAX-11 replacement
+        // above keeps its specified retain-and-withhold path.
+        if derived.floating
+            && self
+                .staged
+                .facts
+                .get(window)
+                .is_none_or(|fact| fact.hints.is_none())
+        {
+            return refused(KIND_OPERATION, MSG_OPERATION);
+        }
+        let was = self.composed_maximized.contains(window);
+        if needs_fullscreen_clear {
+            // Explicit fullscreen replacement resolves the native veto
+            // through the existing gates exactly: missing capability and
+            // unproven exitability consume the typed rejections with no
+            // intent change, like the native replacement leg.
+            if !self.capabilities().is_some_and(|caps| caps.fullscreen) {
+                self.command_result = Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::StateUnsupported,
+                });
+                self.note_command(command_seq);
+                return CommandApplied::NoEffect;
+            }
+            match fact.fullscreen_exitable {
+                Some(true) => {}
+                Some(false) => {
+                    self.command_result = Some(CommandResult::Rejected {
+                        kind: CommandRejectKind::FullscreenNotExitable,
+                    });
+                    self.note_command(command_seq);
+                    return CommandApplied::NoEffect;
+                }
+                None => {
+                    self.command_result = Some(CommandResult::Rejected {
+                        kind: CommandRejectKind::StateUnknown,
+                    });
+                    self.note_command(command_seq);
+                    return CommandApplied::NoEffect;
+                }
+            }
+            let full_key = (window.clone(), StateProperty::Fullscreen);
+            if !self.retained_states.contains_key(&full_key)
+                && self.retained_states.len() >= MAX_RETAINED_STATE_BINDINGS
+            {
+                return refused(KIND_OPERATION, MSG_OPERATION);
+            }
+            let revision = self.state_revision + 1;
+            self.retained_states.insert(
+                full_key,
+                crate::world_state::RetainedStateBinding {
+                    target: crate::world_state::RetainedStateTarget {
+                        window: window.clone(),
+                        property: StateProperty::Fullscreen,
+                        value: false,
+                        revision,
+                    },
+                    pending: None,
+                    spent: false,
+                    disposition: AttemptOutcome::Unattempted,
+                    sticky_meta: None,
+                    fullscreen_meta: Some(NativeFullscreenMeta {
+                        command_seq,
+                        home: home.clone(),
+                    }),
+                    maximize_meta: None,
+                    above_meta: None,
+                },
+            );
+            // A new explicit max-on revokes the obsolete same-window float
+            // placement token before the work-area frame; the session base
+            // stays retained and other windows keep their tokens.
+            self.retained_floats.retain(|held| held.window != *window);
+            self.composed_maximized.insert(window.clone());
+            self.command_result = Some(CommandResult::Maximize {
+                window: window.clone(),
+                maximized: true,
+                clear_fullscreen: true,
+                was_maximized: was,
+            });
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
+        }
+        if was {
+            // While a native fullscreen entry pends, removing the overlay
+            // bit would write the base frame beside the queued entry: the
+            // shared composed gate refuses with the bit retained, exactly
+            // like the other unavailable-authority refusals above.
+            if self.composed_frame_gated(window) {
+                return refused(KIND_OPERATION, MSG_OPERATION);
+            }
+            // A float clear needs its retained session base: a missing
+            // base refuses before the bit mutates, never a pretend
+            // restore. Tiled clear needs no token (the lane above carries
+            // it Controlled).
+            let session_base = self
+                .engine
+                .session(&home)
+                .and_then(|session| session.floating_geometry(window));
+            let is_float = self
+                .engine
+                .session(&home)
+                .is_some_and(|session| session.is_exception(window));
+            if is_float && session_base.is_none() {
+                return refused(KIND_OPERATION, MSG_OPERATION);
+            }
+            self.composed_maximized.remove(window);
+            // Float clear restores the retained session base through the
+            // existing one-shot placement token (same retain-then-push
+            // lane as explicit placements): the adapter actuates the
+            // base exactly once and observation confirms it.
+            if let Some(base) = session_base {
+                let source = self.staged.facts.get(window).and_then(|fact| fact.rect);
+                let operation_id = format!("op-{command_seq}");
+                self.retained_floats.retain(|held| held.window != *window);
+                self.retained_floats.push(RetainedFloat {
+                    operation_id,
+                    command_seq,
+                    window: window.clone(),
+                    target: base,
+                    source,
+                    output: home.output.clone(),
+                    workspace: home.workspace.0.clone(),
+                    ambiguous: false,
+                    pending: None,
+                });
+            }
+        } else {
+            // Latest-explicit precedence over an older queued fullscreen
+            // entry, mirroring ordinary native maximize: the new overlay
+            // intent supersedes the unattempted entry, so the overlay
+            // activates immediately with no new policy fork.
+            if self
+                .retained_states
+                .get(&(window.clone(), StateProperty::Fullscreen))
+                .is_some_and(|binding| binding.target.value)
+            {
+                self.retained_states
+                    .remove(&(window.clone(), StateProperty::Fullscreen));
+            }
+            // A new explicit max-on revokes the obsolete same-window float
+            // placement token before the work-area frame; the session base
+            // stays retained and other windows keep their tokens.
+            self.retained_floats.retain(|held| held.window != *window);
+            self.composed_maximized.insert(window.clone());
+        }
+        self.command_result = Some(CommandResult::Maximize {
+            window: window.clone(),
+            maximized: !was,
+            clear_fullscreen: false,
+            was_maximized: was,
+        });
+        self.note_command(command_seq);
+        CommandApplied::NoEffect
+    }
+
+    /// Truthful output work area for one screen, if the staged report
+    /// carries a complete screen with a positive area.
+    pub(crate) fn composed_work_area(
+        &self,
+        output: &crate::directional::OutputId,
+    ) -> Option<crate::geometry::Rect> {
+        self.staged
+            .screens
+            .iter()
+            .find(|screen| screen.output == *output)
+            .filter(|screen| screen.complete)
+            .and_then(|screen| screen.work_area)
+            .filter(|area| area.w > 0 && area.h > 0)
     }
 
     /// Central native maximize state publication over the assembled rows.

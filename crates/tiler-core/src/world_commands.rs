@@ -937,24 +937,9 @@ impl WorldEngine {
             };
         }
         if !self.capabilities().is_some_and(|caps| caps.maximize) {
-            // Composed route is not implemented yet: preserve the existing
-            // descriptive result-only handling with no native targets and
-            // no fake unavailability.
-            let (Some(fullscreen), Some(maximized)) = (fact.fullscreen, fact.maximized) else {
-                return CommandApplied::Rejected {
-                    kind: KIND_OPERATION,
-                    message: MSG_OPERATION,
-                };
-            };
-            let decision = crate::session::Session::decide_maximize_toggle(fullscreen, maximized);
-            self.command_result = Some(CommandResult::Maximize {
-                window: window.clone(),
-                maximized: decision.maximized,
-                clear_fullscreen: decision.clear_fullscreen,
-                was_maximized: maximized,
-            });
-            self.note_command(command_seq);
-            return CommandApplied::NoEffect;
+            // Core-composed route: a lifetime-local owned bit selects the
+            // work-area frame under the existing per-row frame lane.
+            return self.execute_composed_maximize(report, command_seq, window, home);
         }
         // Native route: safety refusals precede unknown mapping; unreadable
         // needed state consumes a typed StateUnknown rejection.

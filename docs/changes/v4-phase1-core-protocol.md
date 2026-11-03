@@ -59,8 +59,12 @@
 - State increment includes the approved [core-composed maximize route](v4-migration.md#core-composed-maximize-amendment)
   after lifetime-fenced intent consumption: maximize=true native unchanged;
   maximize=false uses existing frame authority and a runtime-owned overlay bit,
-  with no adapter policy or opaque-intent extension. State implementation and
-  composed-route regression coverage remain pending.
+  with no adapter policy or opaque-intent extension. Composed implementation covers
+  ordinary tile/float toggle, base restoration, capability grading,
+  fullscreen/frame-policy integration, gestures, sends, directional operations and
+  intentional unfloat. Empty-destination float drags match the existing ordinary
+  path after clearing the bit; ordinary-path geometry loss is not repaired here.
+  Final verification and the tentative directional preflight choice are below.
 - Sticky commands are split into composed and native increments. The composed
   increment adds neutral set/toggle WorldCommand variants, same-output visibility
   and canonical saves, replacing the ToggleFloat fence only on that route.
@@ -845,6 +849,84 @@
   added ASCII and local links pass. Protocol, adapters and immutable fixtures are
   unchanged. Native host/preimage recovery and all eight OPEN/TBD gates remain
   unproven; core-composed maximize remains the next separate increment.
+- Composed maximize is implemented with a lifetime-local bit, retained
+  tile allocation/float placement and existing float-placement tokens for base
+  restoration. Unsupported native maximize is now capability-graded: null is
+  ordinary, while either boolean is conflicting-held. Synthetic native-fact test
+  setup declares matching support; explicit composed fixtures retain null facts.
+  Initial attempts incorrectly allowed false native claims and echoed a base
+  frame without restore authority; failing-first regressions reproduced both and
+  the ordinary-route focused checks now pass. No new wire field or intent data
+  was added.
+- Pending fullscreen-on now withholds the tiled base write and float placement
+  token as well as the composed frame. Real-command regressions cover pending,
+  active and exited fullscreen, explicit replacement and later work-area changes.
+  Explicit committed gestures clear the bit; cancel/no-op/refused terminals and
+  clamped readback retain it. Composed floats adopt the actual user release frame,
+  not a quiet overlay observation. Directional focus skips local siblings, move
+  clears locally, and intentional unfloat fresh-admits without a native clear.
+  Tile/float sends preserve the bit and recompute the destination overlay after
+  arrival; work-area changes recompute in place with bases retained.
+- Review found clear-before-refusal early exits in directional move and intentional
+  unfloat; their internal paths now preserve the bit, with direct command-seam
+  regression checks. Normal rejected reports already discard the staged candidate,
+  so report-level refusal tests alone did not discriminate those internal paths.
+  Review also found an unsupported cross-output float-gesture refusal. Healthy
+  occupied-destination releases now reuse ordinary logical homing and carry the
+  existing float record; unknown or held destinations remain fenced.
+- Empty-destination float drags clear the bit before destination admission and
+  converge through the existing ordinary observation sweep, with no special
+  composed admission or transfer. A failing-first paired regression compares the
+  composed and ordinary arms through release and quiet follow-up. Both have the
+  same homing, row and retained state. The ordinary arm already loses retained
+  float geometry on this crossing (null effective frame, untouched authority);
+  that pre-existing defect is recorded, not fixed by composition. No valid empty
+  destination retains the bit merely because a layout session is absent.
+  An earlier source-adopt plus membership-commit attempt lost the base on the
+  next sweep and was reverted; clear-only and restage-only attempts also left
+  shielded session state until the ordinary sweep reconverged the affected scopes.
+- Directional float move clears before dependent half-snap constraints, matching
+  the native proven-clear continuation. A constrained half-snap refusal originally
+  only echoed the base without actuation; failing-first coverage now requires its
+  existing one-shot base-restore token. Successful half-snaps keep exactly their
+  own token, with no native clear. Unavailable geometry remains a preflight under
+  the tentative choice below, not an automatically deferred clear.
+- Fifty-five focused composed regressions pass, including ordinary empty-output
+  parity, constrained base restoration and unreadable-work-area recovery. Fresh
+  independent review and its directional follow-up have no outstanding finding.
+  Synthetic native
+  boolean fixtures declare maximize support in core and protocol test helpers;
+  production capability defaults and immutable wire fixtures are unchanged.
+- Final composed-increment verification passes the exact filtered core/protocol
+  gate (1489 core unit tests, every selected integration target, protocol suites
+  49/4/15/8/2/54/4), core/protocol build, scoped all-target clippy with warnings
+  denied, formatting, diff whitespace, added/new-file ASCII and 274 local link
+  paths across this note and the reference outcomes. Only the previously recorded
+  workspace unsafe-posture guardrail is filtered. No adapter or immutable fixture
+  changes, native delivery, full scenario execution or baseline float-geometry
+  repair are included. The tentative choice below still awaits user review.
+
+## Tentative decisions pending user review
+
+- Case: a composed-maximized float receives directional move after its screen or
+  work area becomes unavailable, or half-snap geometry cannot be computed.
+  Chosen behavior: retain the bit, emit the existing directional refusal, mint no
+  placement token and perform no deferred clear on recovery; a fresh move may
+  clear. Once geometry resolves, the local clear precedes ordinary constraints;
+  a constraint refusal restores the retained base with one authorized token.
+  Evidence: the approved unavailable-frame-authority refusal and unchanged safety
+  gates in the [world contract](../porting/world-contract.md#window-state-policy),
+  plus native clear-before-ordinary continuation in `world_clear.rs` and the
+  Tier 1 [R-MAX-08](../spec/reference-outcomes/maximize-fullscreen.md#r-max-08-focus-and-move-while-maximized)
+  COSMIC clear-then-ordinary model. That source does not establish unavailable
+  external frame authority. Native state clear can restore without a core-computed
+  frame, whereas composition
+  cannot authorize a frame on an unknown scope. The readable-to-unreadable-to-
+  recovered regression passes; exact native/reference timing remains TBD.
+  Alternatives: clear the bit without an authorized base restore, or retain a
+  restore token for later authority recovery. Neither alternative was selected;
+  the former leaves the old overlay pixels, the latter adds deferred actuation.
+  This is not promoted to an approved decision.
 
 ## Adapter compile-failure inventory
 
@@ -903,8 +985,9 @@
         latching are implemented and offline-tested.
      General no-intent clears, remaining visibility/state policy and host storage
      acceptance remain pending.
-  The core-composed maximize contract is approved and recorded; implementation
-  belongs to the dependent state increment, with native outcomes still TBD.
+   The core-composed maximize increment is implemented and offline-verified,
+   including ordinary empty-output float-drag parity; the directional preflight
+   choice above remains tentative, and native outcomes remain TBD.
   The remaining world report/reply paths and version are still staged; no v4
   cutover or full scenario acceptance is claimed. Full adapter build-failure
   inventory remains pending.

@@ -3746,8 +3746,12 @@ fn conflicting_window(
     fact: &WindowFact,
     unavailable: &[crate::connection::FactName],
     native_sticky_supported: bool,
+    maximize_supported: bool,
 ) -> bool {
     if !native_sticky_supported && fact.sticky.is_some() {
+        return true;
+    }
+    if !maximize_supported && fact.maximized.is_some() {
         return true;
     }
     use crate::connection::FactName;
@@ -3784,9 +3788,11 @@ fn conflicting_window(
 /// any id/duplicate/rect violation refuses the whole report instead of
 /// grading around it.
 ///
-/// Capability-aware for sticky: without `nativeSticky` support any non-null
-/// sticky (false or true) grades to the same narrow hold. A composed-route
-/// `sticky: null` never grades.
+/// Capability-aware for sticky and maximize: without `nativeSticky`
+/// support any non-null sticky (false or true) grades to the same narrow
+/// hold, and without `maximize` support any non-null maximized (false or
+/// true) does likewise. A composed-route `sticky: null` or
+/// `maximized: null` never grades.
 ///
 /// Normalization mirrors [`grade_invalid_windows`]: conflicting rows move to
 /// `held_windows` with their fields retained and a `ConflictingFact`
@@ -3796,8 +3802,9 @@ pub fn grade_conflicting_windows(
     report: &WorldReport,
     unavailable: &[crate::connection::FactName],
     native_sticky_supported: bool,
+    maximize_supported: bool,
 ) -> Option<WorldReport> {
-    if unavailable.is_empty() && native_sticky_supported {
+    if unavailable.is_empty() && native_sticky_supported && maximize_supported {
         return None;
     }
     {
@@ -3834,7 +3841,13 @@ pub fn grade_conflicting_windows(
         let slot = free.next()?;
         // Invalid-gradable rows belong to the invalid grader; conflicting
         // grading never double-holds them.
-        if !gradable_window(fact) && conflicting_window(fact, unavailable, native_sticky_supported)
+        if !gradable_window(fact)
+            && conflicting_window(
+                fact,
+                unavailable,
+                native_sticky_supported,
+                maximize_supported,
+            )
         {
             graded.push(HeldWindowRow {
                 window: fact.window.clone(),

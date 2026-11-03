@@ -705,10 +705,14 @@ fn exact_redelivery_idempotent_conflicting_repeat_keeps_original() {
 #[test]
 fn offroute_matrix_all_four_properties_narrow() {
     let mut engine = engine_with(caps_none());
+    // All caps stay absent here: null native claims keep the attempt
+    // policy under test instead of grading.
     let mut fa = fact("win-a", "out-a", 0);
     fa.sticky = None;
+    fa.maximized = None;
     let mut fb = fact("win-b", "out-b", 800);
     fb.sticky = None;
+    fb.maximized = None;
     accepted(
         &mut engine,
         &report_full(
@@ -806,6 +810,7 @@ fn offroute_scope_falls_back_to_proven_home_then_no_invention() {
     let mut engine = engine_with(caps_none());
     let mut fa = fact("win-a", "out-a", 0);
     fa.sticky = None;
+    fa.maximized = None;
     accepted(
         &mut engine,
         &report_full(
@@ -822,6 +827,7 @@ fn offroute_scope_falls_back_to_proven_home_then_no_invention() {
     let mut unknown = fact("win-a", "out-a", 0);
     unknown.output = None;
     unknown.sticky = None;
+    unknown.maximized = None;
     let reply = accepted(
         &mut engine,
         &with_attempts(
@@ -862,6 +868,7 @@ fn offroute_scope_falls_back_to_proven_home_then_no_invention() {
                 vec![{
                     let mut keep = fact("win-a", "out-a", 0);
                     keep.sticky = None;
+                    keep.maximized = None;
                     keep
                 }],
                 vec![],
@@ -896,8 +903,11 @@ fn offroute_scope_falls_back_to_proven_home_then_no_invention() {
 #[test]
 fn offroute_held_first_appearance_uses_held_output() {
     let mut engine = engine_with(caps_none());
+    // All caps stay absent here: the null native claim keeps the
+    // proven-home fallback under test instead of grading.
     let mut fa = fact("win-a", "out-a", 0);
     fa.sticky = None;
+    fa.maximized = None;
     accepted(
         &mut engine,
         &report_full(
@@ -973,10 +983,14 @@ fn offroute_held_first_appearance_uses_held_output() {
 #[test]
 fn offroute_diagnostics_survive_command_restage() {
     let mut engine = engine_with(caps_none());
+    // All caps stay absent here: null native claims keep the restage
+    // policy under test instead of grading.
     let mut fa = fact("win-a", "out-a", 0);
     fa.sticky = None;
+    fa.maximized = None;
     let mut fb = fact("win-b", "out-a", 400);
     fb.sticky = None;
+    fb.maximized = None;
     accepted(
         &mut engine,
         &report_full(
@@ -1400,6 +1414,9 @@ fn reply_bound_state_term_rejected_without_mutation() {
     };
     let mut engine = engine_with(crate::connection::HostCapabilities {
         native_sticky: true,
+        // Fixtures carry native maximize facts; the lane under test is
+        // reply-bound sizing, so the orthogonal native route stays valid.
+        maximize: true,
         ..Default::default()
     });
     accepted(

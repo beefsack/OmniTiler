@@ -547,6 +547,14 @@ pub struct WorldEngine {
     /// flip to tile-on-launch never reclears them. Pruned like
     /// `born_attempted`.
     pub(crate) born_keep_overlay: BTreeSet<WindowId>,
+    /// Lifetime-local core-composed maximize bits (`caps.maximize == false`
+    /// only): windows whose published frame is the output work area under
+    /// the existing `Controlled` frame lane. The tile slot/allocation or
+    /// float base placement stays retained in the session; clear restores
+    /// it. No native `Maximized` target is emitted, no intent record is
+    /// written, and restart drops the bit with the engine. Pruned with the
+    /// live inventory in [`WorldEngine::finish`].
+    pub(crate) composed_maximized: BTreeSet<WindowId>,
     /// Core-owned frame anti-fighting memory (stage 3a): per-lifetime clamp
     /// suppression plus transient retry backoff over mechanical
     /// [`FrameAttempt`](crate::world_report::FrameAttempt) facts. Bounded by
@@ -928,9 +936,11 @@ impl WorldEngine {
             generation_seed,
             adapter,
             HostCapabilities {
-                // Synthetic fixtures carry native sticky facts; opt into the
-                // native route explicitly so the intended lane stays valid.
+                // Synthetic fixtures carry native sticky and maximize
+                // facts; opt into the native routes explicitly so the
+                // intended lanes stay valid.
                 native_sticky: true,
+                maximize: true,
                 ..HostCapabilities::default()
             },
         )
@@ -1024,9 +1034,11 @@ impl WorldEngine {
     pub fn new_test_host_owned(generation_seed: &str, adapter: &str) -> Option<Self> {
         let capabilities = HostCapabilities {
             host_owned: true,
-            // Synthetic fixtures carry native sticky facts; opt into the
-            // native route explicitly so the intended lane stays valid.
+            // Synthetic fixtures carry native sticky and maximize facts;
+            // opt into the native routes explicitly so the intended lanes
+            // stay valid.
             native_sticky: true,
+            maximize: true,
             ..HostCapabilities::default()
         };
         Self::new_test_bound_with_capabilities(generation_seed, adapter, capabilities)
@@ -1037,8 +1049,10 @@ impl WorldEngine {
         let capabilities = HostCapabilities {
             host_owned: true,
             equal_count: true,
-            // Same native-sticky fixture rationale as the other defaults.
+            // Same native-sticky/maximize fixture rationale as the other
+            // defaults.
             native_sticky: true,
+            maximize: true,
             ..HostCapabilities::default()
         };
         Self::new_test_bound_with_capabilities(generation_seed, adapter, capabilities)
@@ -1114,6 +1128,7 @@ impl WorldEngine {
             born_floating_first: BTreeSet::new(),
             born_seen_nonfullscreen: BTreeSet::new(),
             born_keep_overlay: BTreeSet::new(),
+            composed_maximized: BTreeSet::new(),
             frames: BTreeMap::new(),
             consumed_frames: BTreeMap::new(),
             frame_bursts: BTreeMap::new(),
@@ -1806,8 +1821,17 @@ impl WorldEngine {
             .as_ref()
             .map(|capabilities| capabilities.native_sticky)
             .unwrap_or(true);
-        let graded_conflicting =
-            grade_conflicting_windows(report, unavailable, native_sticky_supported);
+        let maximize_supported = self
+            .capabilities
+            .as_ref()
+            .map(|capabilities| capabilities.maximize)
+            .unwrap_or(true);
+        let graded_conflicting = grade_conflicting_windows(
+            report,
+            unavailable,
+            native_sticky_supported,
+            maximize_supported,
+        );
         let report = graded_conflicting.as_ref().map_or(report, |owned| owned);
         if report_estimate(report) > WORLD_MAX_REQUEST_BYTES {
             return WorldOutcome::Rejected {
@@ -3275,6 +3299,39 @@ impl WorldEngine {
                 self.excluded_intent.retain(|id, _| !closed.contains(id));
             }
             self.prune_state_bindings(report);
+            // Lifetime-local composed maximize follows the live inventory:
+            // a complete report drops dead identities (engine/member-known
+            // lifetimes stay like the state bindings above), explicit closes
+            // always prune, and restart drops the bit with the engine.
+            if !report.closed.is_empty() {
+                let closed: BTreeSet<WindowId> = report.closed.iter().cloned().collect();
+                self.composed_maximized
+                    .retain(|window| !closed.contains(window));
+            }
+            if report.inventory_complete {
+                let live: BTreeSet<&WindowId> =
+                    report.windows.iter().map(|fact| &fact.window).collect();
+                let held: BTreeSet<&WindowId> = report
+                    .held_windows
+                    .iter()
+                    .map(|held| &held.window)
+                    .collect();
+                let excluded = self.staged.excluded.clone();
+                let known: BTreeSet<WindowId> = self
+                    .composed_maximized
+                    .iter()
+                    .filter(|window| {
+                        self.engine_knows_window_any(window) || self.members.contains_key(*window)
+                    })
+                    .cloned()
+                    .collect();
+                self.composed_maximized.retain(|window| {
+                    live.contains(window)
+                        || held.contains(window)
+                        || excluded.contains(window)
+                        || known.contains(window)
+                });
+            }
         }
         // Retain the last-known focused output before membership converges,
         // so the latch reflects strictly prior retention: a stealing
