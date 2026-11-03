@@ -657,11 +657,15 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   native-Spaces behavior remains unsupported until its route is proven.
   [R14](../decisions/contract.md#window-state-commands-r14).
 - Fullscreen-on from maximized enters immediately: maximize and fullscreen are
-  independent overlays, with fullscreen taking precedence only while active.
-  Ordinary fullscreen exit returns to retained maximize. The native route issues
-  no unmaximize on entry or extra maximize on exit; host flag retention remains
-  a native acceptance gate. The composed route keeps its owned maximize bit and
-  recomputes the work-area frame on exit. Explicit R-MAX-11 replacement is separate.
+  independent overlays. Ordinary fullscreen exit returns to retained maximize.
+  For settled maximize, the native route issues no unmaximize on entry or extra
+  maximize on exit; host flag retention remains a native acceptance gate. A pending,
+  unattempted native maximize-on/off target is retained but held while a newer
+  fullscreen-on is pending or active, even before raw facts change, then applied
+  after exit. The latest maximize command's requested state is the exit destination;
+  no unordered same-reply Fullscreen=true plus Maximized write authority is allowed.
+  The composed route keeps its owned maximize bit and recomputes the work-area
+  frame on exit. Explicit R-MAX-11 clear-before-maximize replacement is separate.
 - Sticky command support is semantic: nativeSticky permits native sticky
   StateTarget/StateAttempt actuation. Without nativeSticky, windowSuppression
   permits core to compose visibility across its managed workspaces from retained

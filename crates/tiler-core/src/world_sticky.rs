@@ -460,6 +460,7 @@ impl WorldEngine {
                     disposition: AttemptOutcome::Unattempted,
                     sticky_meta: Some(meta),
                     fullscreen_meta: None,
+                    maximize_meta: None,
                 },
             );
             self.note_command(command_seq);
@@ -505,6 +506,7 @@ impl WorldEngine {
                 disposition: AttemptOutcome::Unattempted,
                 sticky_meta: Some(meta),
                 fullscreen_meta: None,
+                maximize_meta: None,
             },
         );
         CommandApplied::NoEffect
@@ -594,6 +596,7 @@ impl WorldEngine {
                 disposition: AttemptOutcome::Unattempted,
                 sticky_meta: Some(meta),
                 fullscreen_meta: None,
+                maximize_meta: None,
             },
         );
         self.note_command(command_seq);

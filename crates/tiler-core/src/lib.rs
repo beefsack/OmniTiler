@@ -41,6 +41,7 @@ pub mod world_engine;
 mod world_frames;
 pub(crate) mod world_fullscreen;
 mod world_gesture;
+pub(crate) mod world_maximize;
 pub mod world_members;
 pub mod world_model;
 pub mod world_native;
@@ -131,6 +132,8 @@ mod world_intent_save_tests;
 mod world_linked_focus_memory_tests;
 #[cfg(test)]
 mod world_logical_contract_tests;
+#[cfg(test)]
+mod world_maximize_tests;
 #[cfg(test)]
 mod world_migration_refusal_tests;
 #[cfg(test)]

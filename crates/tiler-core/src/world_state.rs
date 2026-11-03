@@ -41,6 +41,7 @@ pub(crate) struct RetainedStateBinding {
     pub(crate) disposition: AttemptOutcome,
     pub(crate) sticky_meta: Option<NativeStickyMeta>,
     pub(crate) fullscreen_meta: Option<NativeFullscreenMeta>,
+    pub(crate) maximize_meta: Option<NativeMaximizeMeta>,
 }
 
 /// Typed native fullscreen command-sequence carrier. Separate from
@@ -53,6 +54,20 @@ pub(crate) struct RetainedStateBinding {
 pub(crate) struct NativeFullscreenMeta {
     pub(crate) command_seq: u64,
     pub(crate) home: DomainKey,
+}
+
+/// Typed native maximize command-sequence carrier. Separate from
+/// [`NativeFullscreenMeta`]: only the originating typed command sequence,
+/// the issuing home scope, and whether the authorizing command also clears
+/// fullscreen (paired fullscreen replacement) are retained. The paired
+/// flag lets publication require the exact matching fullscreen-false leg
+/// (same command sequence and revision) while raw fullscreen stays true.
+/// The authorizing revision stays internal to the retained target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeMaximizeMeta {
+    pub(crate) command_seq: u64,
+    pub(crate) home: DomainKey,
+    pub(crate) clear_fullscreen: bool,
 }
 
 #[must_use]

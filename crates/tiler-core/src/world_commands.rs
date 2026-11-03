@@ -877,12 +877,13 @@ impl WorldEngine {
         }
     }
 
-    /// Maximize toggle: the focused subject only, over readable
-    /// staged homing outside held scopes, with no retained transfer for the
-    /// window. The [`crate::session::Session`] decision flips the maximized
-    /// flag (fullscreen always maximizes with a fullscreen clear); the
-    /// correlated result authorizes the native transition while the snapshot
-    /// retains base membership. Never retains, never mutates topology.
+    /// Maximize toggle: the focused subject only, over staged homing
+    /// outside held scopes, with no retained transfer for the window. The
+    /// [`crate::session::Session`] decision flips the maximized flag
+    /// (fullscreen always maximizes with a fullscreen clear); the
+    /// retained targets authorize the native transition while the result
+    /// describes intent and the snapshot retains base membership. Never
+    /// mutates topology. The composed route keeps the descriptive result only.
     pub(crate) fn toggle_maximize(
         &mut self,
         report: &WorldReport,
@@ -935,23 +936,53 @@ impl WorldEngine {
                 message: MSG_IN_FLIGHT,
             };
         }
-        // Unknown overlay authority holds: never infer a toggle default
-        // from a null fact.
-        let (Some(fullscreen), Some(maximized)) = (fact.fullscreen, fact.maximized) else {
+        if !self.capabilities().is_some_and(|caps| caps.maximize) {
+            // Composed route is not implemented yet: preserve the existing
+            // descriptive result-only handling with no native targets and
+            // no fake unavailability.
+            let (Some(fullscreen), Some(maximized)) = (fact.fullscreen, fact.maximized) else {
+                return CommandApplied::Rejected {
+                    kind: KIND_OPERATION,
+                    message: MSG_OPERATION,
+                };
+            };
+            let decision = crate::session::Session::decide_maximize_toggle(fullscreen, maximized);
+            self.command_result = Some(CommandResult::Maximize {
+                window: window.clone(),
+                maximized: decision.maximized,
+                clear_fullscreen: decision.clear_fullscreen,
+                was_maximized: maximized,
+            });
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
+        }
+        // Native route: safety refusals precede unknown mapping; unreadable
+        // needed state consumes a typed StateUnknown rejection.
+        if self.is_held_window(window)
+            || fact.minimized == Some(true)
+            || self.is_excluded_window(window)
+        {
             return CommandApplied::Rejected {
                 kind: KIND_OPERATION,
                 message: MSG_OPERATION,
             };
+        }
+        let derived = self.derived_for(window);
+        if derived.own_excluded || derived.excluded || derived.hidden {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        }
+        let (Some(fullscreen), Some(maximized)) = (fact.fullscreen, fact.maximized) else {
+            self.command_result = Some(CommandResult::Rejected {
+                kind: crate::world_report::CommandRejectKind::StateUnknown,
+            });
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
         };
-        let decision = crate::session::Session::decide_maximize_toggle(fullscreen, maximized);
-        self.command_result = Some(CommandResult::Maximize {
-            window: window.clone(),
-            maximized: decision.maximized,
-            clear_fullscreen: decision.clear_fullscreen,
-            was_maximized: maximized,
-        });
-        self.note_command(command_seq);
-        CommandApplied::NoEffect
+        let exitable = fact.fullscreen_exitable;
+        self.execute_native_maximize(command_seq, window, home, fullscreen, maximized, exitable)
     }
 }
 

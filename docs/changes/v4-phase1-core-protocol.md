@@ -89,6 +89,21 @@
   publication and command-sizing paths: pending same-window transfers must hold
   native write authority, and command estimates must match encoded spelling.
   Keep these corrections separate from new state policy and composed maximize.
+- Native maximize/above follows the existing per-property target/attempt lane.
+  Keep Maximize results descriptive, not write authority; explicit R-MAX-11
+  replacement authorizes the needed fullscreen-clear and maximize targets in one
+  reply, with clear-before-maximize native ordering and no intermediate readback.
+  User 2026-11-03 selected retaining an unattempted maximize-on/off target but
+  holding it while newer fullscreen-on is pending or active, including unchanged
+  raw facts, then applying it after exit. No unordered fullscreen-on/maximize
+  write authority shares a reply. Settled overlay preservation and R-MAX-11
+  replacement remain unchanged; COSMIC save/restore is the nearest analogy,
+  not proof of an equivalent external pending-target model or native ordering.
+  Persistent above uses the approved float union, one ownership/external-clear
+  latch and commandless correlation. Durable preimages remain the adapter's
+  mandatory persist-before-write obligation, not a new core fact or wire field.
+  Extend target reservations from exact encoder witnesses for actual coexistence;
+  composed maximize remains a separate dependent increment.
 
 ## Evidence
 
@@ -772,6 +787,34 @@
   pass. Protocol, adapters and immutable fixtures are unchanged. Native maximize,
   persistent above and core-composed maximize remain dependent work; all eight
   OPEN/TBD evidence gates remain unchanged.
+- Native maximize subunit is implemented: ToggleMaximize produces typed retained
+  Maximized targets, with same-revision/command fullscreen-clear pairing for
+  explicit R-MAX-11 replacement. Already-maximized fullscreen replacement needs
+   only the clear leg; settled maximize gains no write on fullscreen entry/exit.
+  Results remain descriptive. Publication revalidates safety and exact paired
+  clear authority, holds ordinary/unmaximize targets under active fullscreen,
+  and never renews spent targets. The actual three-property suffix maximum is
+  531 bytes (Maximized row 116), verified against the encoder; above is not yet
+  produced or reserved.
+- Maximize subunit verification: 20 real-command producer/publication tests pass.
+  Failing-first regressions reproduced the both-true missing-key cap overflow and
+  unmaximize authority under active fullscreen before correction. Both pending
+  maximize-on/off regressions also failed before the newer-fullscreen hold, then
+  passed through unchanged facts, active fullscreen and exact-tuple exit recovery.
+  Ambiguous fullscreen-on releases maximize at the first readable still-false
+  post-attempt report without retrying the spent fullscreen target; unreadable
+  facts retain the hold. This characterization passed before and after the
+  hold-predicate simplification, not a failing-first bug fix; no settlement state,
+  event or counter was added. Independent review found no scoped blocker.
+  Direct filtered core/protocol tests pass (1414 core unit tests, every integration target, protocol suites
+  49/4/15/8/2/54/4), with only workspace_unsafe_posture filtered as above; build,
+  scoped all-target clippy with warnings denied and formatting pass. Diff whitespace,
+  added ASCII and local links pass; protocol, adapters and immutable fixtures are
+  unchanged. This verifies native maximize and its fullscreen hold, not the whole
+  native maximize/above increment: above is unimplemented.
+  The [pending-maximize/fullscreen discriminator](../spec/reference-outcomes.md#pending-maximize-intent-at-fullscreen-entry)
+  now selects retain/hold/apply-after-exit for both pending target values; native
+  ordering and host applied outcomes remain TBD.
 
 ## Adapter compile-failure inventory
 
@@ -821,9 +864,12 @@
       same-output show targets are implemented and offline-tested; native sticky
        target production, proof-gated clear admission and exact-prior refusal
        rollback are implemented and offline-tested.
-       Native fullscreen set/toggle target production, proof settlement and
-       dynamic publication gates are implemented and offline-tested; native host
-       flag retention remains TBD.
+        Native fullscreen set/toggle target production, proof settlement and
+        dynamic publication gates are implemented and offline-tested; native host
+        flag retention remains TBD.
+        Native maximize target production, explicit fullscreen replacement and
+        newer-fullscreen pending/active holds are implemented and offline-tested;
+        persistent above remains pending.
      General no-intent clears, remaining visibility/state policy and host storage
      acceptance remain pending.
   The core-composed maximize contract is approved and recorded; implementation

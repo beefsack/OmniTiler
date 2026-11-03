@@ -1217,6 +1217,11 @@ impl WorldEngine {
         // rows beside the sticky row. Touches state lanes only; coexists
         // with the sticky row on one window.
         self.decorate_native_fullscreen_state(report, held_scopes, &mut windows);
+        // Native maximize state: central decoration after the fullscreen
+        // row so the paired-clear gate inspects the exact clear row
+        // authority. Touches state lanes only; coexists with the
+        // sticky/fullscreen rows on one window.
+        self.decorate_native_maximize_state(report, held_scopes, &mut windows);
         let mut by_output: BTreeMap<OutputId, Vec<ScopeStatus>> = BTreeMap::new();
         for status in scopes {
             let output = match &status.scope {
