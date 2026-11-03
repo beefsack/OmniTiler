@@ -29,7 +29,7 @@ fn base_request(native_value: &str) -> String {
          \"complete\":true,\"gesture\":false,\"cursor\":null,\
          \"actionForeground\":null,\"actionCached\":null,\
          \"actionOutputs\":[\"out\"],\
-         \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}},\"intentRecords\":[],\"stateAttempts\":[]}}"
+         \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}},\"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[]}}"
     )
 }
 

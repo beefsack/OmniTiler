@@ -31,6 +31,14 @@
   rely on it. Command-local rejection is now converted without weakening envelope
   validation or retaining partial command mutations; visibility/focus/selection
   completion is the next dependent increment.
+- Visibility/focus/selection is split at its missing evidence vocabulary. First
+  add required focusFeedback ingress with exclusive native/output arrival shapes,
+  nullable raw foreground facts, report-wide bounds, digest/size accounting and
+  connection-owned host-arm validation. Nested immutable rows exercise the staged
+  envelope; no full v4 envelope or settlement claim follows. Focus grants,
+  switchSettled output, general visibility targets and native-free selection
+  completion follow separately. This first slice emits no new authority, removes
+  no legacy envelope keys and leaves renderer input and version cutover untouched.
 
 - Intent dependency order: validate/canonically encode the core-owned opaque
   inner record first; then wire outer report/reply records and consume them in
@@ -940,6 +948,46 @@
   No adapter, immutable fixture, protocol source, wire shape/version or approved policy
   changes are included. Full codec/scenario and native acceptance remain pending;
   all eight OPEN/TBD gates remain unchanged.
+- Required focusFeedback ingress is implemented with typed raw focus rows and
+  exclusive native/output arrival brackets. Existing nullable visibility samples,
+  setter/reason catalogs and native workspace references are reused. Missing/null
+  lanes, malformed shapes and invalid ids/counters/geometry refuse; readable-shape
+  nulls and mismatched facts remain evidence, not readiness verdicts. The engine
+  checks the arrival arm against handshake-owned host capability before adoption,
+  even for a null home/output; the context-free decoder does not infer that
+  capability from native observations. Repeated evidence rows remain permitted.
+- A failing-first nested immutable-fixture regression reproduced unknown-field
+  refusal while its otherwise-identical staged envelope without focusFeedback
+  decoded. The lane is now required, including empty arrays. Core/protocol
+  constructors and synthetic request envelopes carry it explicitly; no tolerant
+  backfill or immutable fixture edit was introduced. Bounds cover 1024 feedback
+  rows and 10000 arrival brackets across the whole report, including split rows.
+  Digest coverage includes raw fields, nulls, arm and row/bracket order; existing
+  full typed equality remains authoritative for duplicate/reuse detection. The
+  required empty lane adds 19 bytes to request accounting; nested marginal costs
+  match immutable compact rows and independent output/native literal witnesses.
+- Eight focused core regressions and eleven protocol ingress tests pass. Coverage
+  includes all four focus-feedback and seven valid arrival fixture rows, eight
+  structural arrival refusals, both wrong-host fixture contexts, global bounds,
+  request reuse/duplicate caching and no authority from uncorrelated evidence.
+  Fresh independent review found no production defect. Its test-only refinements
+  now directly swap distinct rows/brackets, span the bracket cap across rows,
+  check protocol-level refusal non-mutation and pin existing shared-helper error
+  vocabulary without changing other lanes. Initial compile checks found an
+  estimator-name collision and omitted test/example constructor fields; narrow
+  mechanical corrections resolved both. No semantic workaround was needed.
+- Final focus-ingress verification passes the exact filtered core/protocol gate
+  (1503 core unit tests, every selected integration target and protocol suites
+  49/11/4/15/8/2/54/4), core/protocol build and scoped all-target clippy with warnings
+  denied. Only workspace_unsafe_posture remains filtered. Initial formatting
+  drift in three changed source files was reconciled with layout-only patches;
+  the final formatting, diff whitespace, added/new-file ASCII and 274 local
+  link-path checks pass. No adapter, immutable fixture, wire-version
+  or approved-policy changes are included. This is nested-row ingress through
+  the staged envelope, not full v4 message decoding, focus settlement or selection
+  completion. Focus/effect correlation, switchSettled, general visibility targets
+  and native-free selection remain dependent work; all eight OPEN/TBD gates stay
+  unchanged.
 
 ## Tentative decisions pending user review
 
@@ -1026,6 +1074,9 @@
    Accepted-report command rejection now retains trustworthy observations while
    rolling back partial command mutations, consuming the sequence and publishing
    the existing typed rejected result. Envelope failures still adopt nothing.
+   Required focusFeedback/arrival ingress is implemented and offline-tested with
+   bounds, digest/size accounting and authoritative host-arm fencing; it grants
+   no focus authority and does not complete visibility or selection settlement.
   The remaining world report/reply paths and version are still staged; no v4
   cutover or full scenario acceptance is claimed. Full adapter build-failure
   inventory remains pending.

@@ -1874,6 +1874,24 @@ impl WorldEngine {
                 message: "native-without-capability",
             };
         }
+        // Authoritative host-arm gate for readiness brackets: the native
+        // arm rides only on host-owned hosts, the observed-output arm only
+        // elsewhere. Checked before any adoption even when home/out is
+        // null; a null location is valid evidence but never proves
+        // readiness. Context-free structural validation above allows both
+        // shapes.
+        let host_owned = self.host_owned_workspace_domains();
+        let arrival_host_mismatch = report.focus_feedback.iter().any(|row| {
+            row.arrival
+                .iter()
+                .any(|bracket| bracket.location.is_native() != host_owned)
+        });
+        if arrival_host_mismatch {
+            return WorldOutcome::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: "arrival-host-mismatch",
+            };
+        }
         let Some(owner) = self.connection_owner.clone() else {
             return WorldOutcome::Rejected {
                 kind: KIND_OWNER,

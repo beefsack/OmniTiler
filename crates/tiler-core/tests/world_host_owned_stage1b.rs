@@ -173,6 +173,7 @@ fn report(
         clear_attempts: Vec::new(),
         creation_attempts: creations,
         state_attempts: Vec::new(),
+        focus_feedback: Vec::new(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -1777,6 +1778,7 @@ fn creation_triple_mismatch_is_invalid() {
             ),
         ],
         state_attempts: Vec::new(),
+        focus_feedback: Vec::new(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),

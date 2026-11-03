@@ -160,6 +160,7 @@ fn report(
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        focus_feedback: Vec::new(),
         presentation: PresentationIngress {
             pager_order: order,
             pager_frames: frames,

@@ -7,8 +7,8 @@
 //! typed mechanical facts, closed shape/counter/duplicate/cap gates refuse
 //! with fixed vocabulary, the digest separates every raw field so changed
 //! reuse still fences, and the size estimate covers the rows exactly. The
-//! full v4 envelopes are NOT decoded here: they stage lanes beyond this
-//! increment (focusFeedback, rendererInput) and a newer wire version.
+//! full v4 envelopes are NOT decoded here: they stage the rendererInput
+//! lane beyond this increment and a newer wire version.
 //!
 //! Offline only: no D-Bus, no KWin.
 
@@ -56,7 +56,7 @@ fn envelope(rows: &serde_json::Value) -> String {
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"out\"],\
           \"focused\":\"\",\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}},\
-          \"intentRecords\":[],\"stateAttempts\":{rows}}}"
+          \"intentRecords\":[],\"stateAttempts\":{rows},\"focusFeedback\":[]}}"
     )
 }
 

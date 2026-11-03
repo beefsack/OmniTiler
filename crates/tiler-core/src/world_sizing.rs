@@ -65,6 +65,94 @@ fn workspace_ref_option_len(reference: &Option<crate::world_report::WorkspaceRef
     reference.as_ref().map_or(4, workspace_ref_len)
 }
 
+/// Structural request size estimate for one identity-bound visibility
+/// read: `{"obs":"N","lifetimeMatched":B|null,"visibility":{"visible":B|
+/// null,"suppressionOwned":B|null},"minimized":B|null,"hostHidden":B|null}`
+/// = 102 fixed (braces, quoted keys, colons, commas, quotes around the
+/// decimal watermark, and the nested visibility object) plus the watermark
+/// digits and the nullable bools (`null` counts 4 each). The sibling
+/// nullable-sample estimator below keeps its own wider fixed count; this
+/// value form is exact for the always-present bracket reads.
+fn visibility_sample_value_estimate(sample: &crate::world_report::VisibilitySample) -> usize {
+    102 + u64_len(sample.obs)
+        + sample.lifetime_matched.map_or(4, bool_len)
+        + sample.visibility.visible.map_or(4, bool_len)
+        + sample.visibility.suppression_owned.map_or(4, bool_len)
+        + sample.minimized.map_or(4, bool_len)
+        + sample.host_hidden.map_or(4, bool_len)
+}
+
+/// Structural request size estimate for one readiness bracket: the subject,
+/// watermark, both samples, the exclusive arm, and the frame. The native
+/// arm carries `,"home":R|null` (a namespaced workspace ref, `null` when
+/// unreadable); the output arm carries `,"out":S|null` (an opaque output,
+/// `null` when unknown). The native arm costs one byte more
+/// (`,"home":` versus `,"out":`); both kind tokens are equal length.
+fn arrival_bracket_estimate(bracket: &crate::world_report::ArrivalBracket) -> usize {
+    // {"win":S,"obs":"N","before":{...},"kind":"native"|"output",
+    // "home"|"out":V,"frame":R|null,"after":{...}}: outer braces, quoted
+    // keys, colons, commas, quotes around the decimal watermark and the
+    // kind token (68 output, 69 native) plus ids, digits, samples, the
+    // location value, and the frame (`null` counts 4).
+    let fixed = match &bracket.location {
+        crate::world_report::ArrivalLocation::Native { .. } => 69,
+        crate::world_report::ArrivalLocation::Output { .. } => 68,
+    };
+    fixed
+        + json_string_len(&bracket.window.0)
+        + u64_len(bracket.obs)
+        + visibility_sample_value_estimate(&bracket.before)
+        + match &bracket.location {
+            crate::world_report::ArrivalLocation::Native { home } => {
+                home.as_ref().map_or(4, |reference| {
+                    use crate::world_report::WorkspaceRef as Ref;
+                    match reference {
+                        Ref::Logical { output, workspace } => {
+                            "{\"kind\":\"logical\",\"out\":,\"ws\":}".len()
+                                + json_string_len(&output.0)
+                                + json_string_len(&workspace.0)
+                        }
+                        Ref::Native { output, workspace } => {
+                            "{\"kind\":\"native\",\"out\":,\"ws\":}".len()
+                                + json_string_len(&output.0)
+                                + json_string_len(workspace.as_str())
+                        }
+                    }
+                })
+            }
+            crate::world_report::ArrivalLocation::Output { out } => {
+                out.as_ref().map_or(4, |id| json_string_len(&id.0))
+            }
+        }
+        + rect_len(bracket.frame)
+        + visibility_sample_value_estimate(&bracket.after)
+}
+
+/// Structural request size estimate for one correlated focus evidence row:
+/// `{"id":S,"target":S,"rev":"N","setter":S,"reason":S,"pre":S|null,
+/// "post":S|null,"foregroundProven":B,"arrival":[...],"attemptMs":"N"}`
+/// = 109 fixed (braces, quoted keys, colons, commas, quotes around the
+/// two decimal stamps, and the empty arrival brackets) plus ids, tokens,
+/// nullable endpoints (`null` counts 4 each), the proof bool, the brackets
+/// (one comma per extra bracket), and the stamp digits.
+fn focus_feedback_estimate(row: &crate::world_report::FocusFeedback) -> usize {
+    109 + json_string_len(&row.id)
+        + json_string_len(&row.target.0)
+        + u64_len(row.revision)
+        + json_string_len(row.setter.as_str())
+        + json_string_len(row.reason.as_str())
+        + row.pre.as_ref().map_or(4, |id| json_string_len(&id.0))
+        + row.post.as_ref().map_or(4, |id| json_string_len(&id.0))
+        + bool_len(row.foreground_proven)
+        + row
+            .arrival
+            .iter()
+            .map(arrival_bracket_estimate)
+            .sum::<usize>()
+        + row.arrival.len().saturating_sub(1)
+        + u64_len(row.attempt_ms)
+}
+
 /// Bound on one canonical binary64 spelling: the longest finite expansion
 /// is the smallest subnormal (`5e-324`: `0.` plus 323 zeros plus one
 /// digit, 327 bytes) and the longest large expansion is `f64::MAX` (309
@@ -921,10 +1009,13 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // registry counts its brackets plus one comma per entry. The workspace
     // mode token rides as `"mode":S` (9 fixed plus the token); membership
     // evidence rides per fact below (absent counts `null`).
-    // The required ,"stateAttempts":[] section adds 20 to the base.
+    // The required ,"stateAttempts":[] section adds 20 to the base, and the
+    // required ,"focusFeedback":[] lane adds its exact 19 (comma, quoted
+    // key, colon, and empty brackets).
     let mut bytes = 471
         + 36
         + 20
+        + 19
         + 17
         + gesture_estimate(report)
         + usize_len(report.contract_version as usize)
@@ -1226,6 +1317,14 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // returns are a separate lane below.
     // Opaque host storage return rides after the presentation ingress with
     // exact escaped widths (control/quote/backslash per `json_string_len`).
+    // Correlated focus evidence rides after the native-state lane with the
+    // same exact accounting (one comma per row inside the brackets).
+    for (i, row) in report.focus_feedback.iter().enumerate() {
+        if i > 0 {
+            bytes += 1;
+        }
+        bytes += focus_feedback_estimate(row);
+    }
     bytes += intent_records_estimate(&report.intent_records);
     bytes
 }

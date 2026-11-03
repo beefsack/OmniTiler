@@ -743,6 +743,78 @@ pub struct StateAttempt {
     pub attempt_ms: u64,
 }
 
+/// Bound on correlated one-shot native focus evidence rows per report
+/// (`focusFeedback`): raw facts only, never focus proof or authority.
+pub const MAX_WORLD_FOCUS_FEEDBACK: usize = 1024;
+/// Bound on readiness brackets TOTAL across every focus row per report:
+/// no per-row duplicate or per-bracket uniqueness rule is implied, only
+/// this total.
+pub const MAX_ARRIVAL_BRACKETS_TOTAL: usize = 10_000;
+
+/// Exclusive native/output location for one readiness bracket: the
+/// native-home arm only on host-owned hosts, the observed-output arm only
+/// elsewhere. `None` home/out/frame is valid unreadable evidence that
+/// cannot prove readiness, never a default. A non-null native home must
+/// use the native namespace; no logical home is returned by the adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArrivalLocation {
+    Native { home: Option<WorkspaceRef> },
+    Output { out: Option<OutputId> },
+}
+
+impl ArrivalLocation {
+    /// Wire token for the carried arm, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn kind_str(&self) -> &'static str {
+        match self {
+            Self::Native { .. } => "native",
+            Self::Output { .. } => "output",
+        }
+    }
+
+    /// True for the native-home arm.
+    #[must_use]
+    pub const fn is_native(&self) -> bool {
+        matches!(self, Self::Native { .. })
+    }
+}
+
+/// One raw readiness bracket: the arrival subject, the common source
+/// watermark, the first lifetime/visibility read, the exclusive location
+/// read BETWEEN before/after, the native frame read BETWEEN, and the final
+/// read. Facts only, never a readiness verdict: unreadable or mismatched
+/// facts are preserved as facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrivalBracket {
+    pub window: WindowId,
+    pub obs: u64,
+    pub before: VisibilitySample,
+    pub location: ArrivalLocation,
+    pub frame: Option<Rect>,
+    pub after: VisibilitySample,
+}
+
+/// One correlated one-shot native focus evidence row: the existing focus
+/// grant correlation plus the at-most-once call/no-call disposition, the
+/// mechanical reason, the live foreground before/after (`None` unknown,
+/// never empty), the foreground proof, the readiness brackets, and the
+/// original stamp. Blocked subjects carry their `LastWrite` no-call
+/// evidence, not a different array arm. Raw facts only; uncorrelated
+/// ingress mints no authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusFeedback {
+    pub id: String,
+    pub target: WindowId,
+    pub revision: u64,
+    pub setter: VisibilitySetter,
+    pub reason: VisibilityReason,
+    pub pre: Option<WindowId>,
+    pub post: Option<WindowId>,
+    pub foreground_proven: bool,
+    pub arrival: Vec<ArrivalBracket>,
+    pub attempt_ms: u64,
+}
+
 /// One normalized pager frame source row (stage 5): an opaque member
 /// lifetime plus its distinct frame sources in adapter units. `live` is the
 /// fresh native frame from this tick's enumeration (observed visible frame
@@ -1854,6 +1926,13 @@ pub struct WorldReport {
     /// observation. Required on the wire (`stateAttempts`, possibly
     /// empty); raw rows ride verbatim, including original stamps.
     pub state_attempts: Vec<StateAttempt>,
+    /// Correlated one-shot native focus evidence since the previous report
+    /// (at most [`MAX_WORLD_FOCUS_FEEDBACK`] rows, at most
+    /// [`MAX_ARRIVAL_BRACKETS_TOTAL`] brackets total across rows).
+    /// Raw mechanical facts only; the core mints no authority from
+    /// uncorrelated ingress. Required on the wire (`focusFeedback`,
+    /// possibly empty); raw rows ride verbatim, including original stamps.
+    pub focus_feedback: Vec<FocusFeedback>,
     /// Normalized presentation ingress (stage 5): the genuinely observed
     /// foreground lifetime plus host-scaled style and movement facts. The
     /// core publishes uniform border/underlay/pager presentation in the
@@ -2234,7 +2313,11 @@ pub fn classify_request(
 /// attempts (operation, window, target, setter, pre/post homing, native
 /// pre/post ids, stamp), view attempts (owning operation, target, setter,
 /// pre/post/baseline views, native pre/post/baseline ids, stamp), and clear attempts (operation, window, setter,
-/// pre/post maximized states, stamp).
+/// pre/post maximized states, stamp), state attempts (window, property,
+/// target, revision, setter, pre/post proofs, stamp), and focus feedback
+/// rows (id, target, revision, setter, reason, pre/post foreground,
+/// proof, brackets with subject, watermark, samples, arm, location,
+/// frame, and stamp).
 /// Duplicate detection still compares full typed input equality (see
 /// [`WorldEngine`](crate::world_engine::WorldEngine)); the digest is only
 /// a fast pre-check, never the identity.
@@ -2977,6 +3060,75 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         feed(&mut hash, &attempt.attempt_ms.to_string());
         sep(&mut hash);
     }
+    // Correlated one-shot native focus evidence: every carried field,
+    // presence bit, row and bracket order, arm, and original stamp
+    // separates the digest (duplicate detection compares full typed input
+    // equality; changed reuse still fences the hold).
+    for row in &report.focus_feedback {
+        feed(&mut hash, &row.id);
+        sep(&mut hash);
+        feed(&mut hash, &row.target.0);
+        sep(&mut hash);
+        feed(&mut hash, &row.revision.to_string());
+        sep(&mut hash);
+        feed(&mut hash, row.setter.as_str());
+        sep(&mut hash);
+        feed(&mut hash, row.reason.as_str());
+        sep(&mut hash);
+        for endpoint in [&row.pre, &row.post] {
+            feed(
+                &mut hash,
+                endpoint
+                    .as_ref()
+                    .map(|window| window.0.as_str())
+                    .unwrap_or_default(),
+            );
+            sep(&mut hash);
+            flag(&mut hash, endpoint.is_some());
+        }
+        flag(&mut hash, row.foreground_proven);
+        feed(&mut hash, &row.attempt_ms.to_string());
+        sep(&mut hash);
+        for bracket in &row.arrival {
+            feed(&mut hash, &bracket.window.0);
+            sep(&mut hash);
+            feed(&mut hash, &bracket.obs.to_string());
+            sep(&mut hash);
+            feed_visibility_sample(&mut hash, &bracket.before);
+            feed(&mut hash, bracket.location.kind_str());
+            sep(&mut hash);
+            match &bracket.location {
+                ArrivalLocation::Native { home } => {
+                    flag(&mut hash, home.is_some());
+                    if let Some(home) = home.as_ref() {
+                        feed(&mut hash, &workspace_ref_fingerprint(home));
+                        sep(&mut hash);
+                        flag(&mut hash, matches!(home, WorkspaceRef::Native { .. }));
+                    }
+                }
+                ArrivalLocation::Output { out } => {
+                    feed(
+                        &mut hash,
+                        out.as_ref().map(|id| id.0.as_str()).unwrap_or_default(),
+                    );
+                    sep(&mut hash);
+                    flag(&mut hash, out.is_some());
+                }
+            }
+            feed(
+                &mut hash,
+                &bracket
+                    .frame
+                    .map(|rect| format!("{},{},{},{}", rect.x, rect.y, rect.w, rect.h))
+                    .unwrap_or_default(),
+            );
+            sep(&mut hash);
+            flag(&mut hash, bracket.frame.is_some());
+            feed_visibility_sample(&mut hash, &bracket.after);
+        }
+        feed(&mut hash, "#arrival-end");
+        sep(&mut hash);
+    }
     // Stage-5 presentation ingress: every normalized fact separates the
     // digest (duplicate detection still compares full typed input).
     let ingress = &report.presentation;
@@ -3049,6 +3201,39 @@ fn workspace_ref_fingerprint(reference: &WorkspaceRef) -> String {
         WorkspaceRef::Native { output, workspace } => {
             format!("native/{}/{}", output.0, workspace.as_str())
         }
+    }
+}
+
+/// Feed one identity-bound visibility read into the report digest: the
+/// watermark, every presence bit, and every carried fact. Unknown stays
+/// distinct from every known value.
+fn feed_visibility_sample(hash: &mut u64, sample: &VisibilitySample) {
+    fn feed(hash: &mut u64, text: &str) {
+        for byte in text.bytes() {
+            *hash ^= u64::from(byte);
+            *hash = hash.wrapping_mul(1099511628211);
+        }
+    }
+    fn sep(hash: &mut u64) {
+        *hash ^= 0xff;
+        *hash = hash.wrapping_mul(1099511628211);
+    }
+    fn flag(hash: &mut u64, set: bool) {
+        feed(hash, if set { "1" } else { "0" });
+        sep(hash);
+    }
+    feed(hash, &sample.obs.to_string());
+    sep(hash);
+    for value in [
+        sample.lifetime_matched,
+        sample.visibility.visible,
+        sample.visibility.suppression_owned,
+        sample.minimized,
+        sample.host_hidden,
+    ] {
+        feed(hash, &value.map(|set| set.to_string()).unwrap_or_default());
+        sep(hash);
+        flag(hash, value.is_some());
     }
 }
 
@@ -3913,7 +4098,17 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         || report.clear_attempts.len() > MAX_WORLD_CLEAR_ATTEMPTS
         || report.creation_attempts.len() > MAX_WORLD_CREATION_ATTEMPTS
         || report.state_attempts.len() > MAX_WORLD_STATE_ATTEMPTS
+        || report.focus_feedback.len() > MAX_WORLD_FOCUS_FEEDBACK
         || report.intent_records.len() > MAX_INTENT_RECORDS
+    {
+        return Some("section-over-cap");
+    }
+    if report
+        .focus_feedback
+        .iter()
+        .map(|row| row.arrival.len())
+        .sum::<usize>()
+        > MAX_ARRIVAL_BRACKETS_TOTAL
     {
         return Some("section-over-cap");
     }
@@ -4326,6 +4521,55 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
             }
             if !seen_states.insert((attempt.window.0.clone(), attempt.property)) {
                 return Some("duplicate-state-attempt");
+            }
+        }
+    }
+    {
+        // Correlated one-shot native focus evidence: typed string, geometry,
+        // and fixed-vocabulary rules only. Context-free structural shape
+        // allows both arms; the engine host gate below owns the
+        // hostOwned/native-only versus tiler-owned/output-only arm check.
+        // No duplicate or redelivery restriction: repeated rows are
+        // preserved as facts for the duplicate/reuse fence. Unreadable or
+        // mismatched facts stay facts here; they never prove readiness.
+        for row in &report.focus_feedback {
+            if !is_opaque_id(&row.id) {
+                return Some("focus-id-invalid");
+            }
+            if !is_opaque_id(&row.target.0) {
+                return Some("focus-target-invalid");
+            }
+            for endpoint in [&row.pre, &row.post].into_iter().flatten() {
+                if !is_opaque_id(&endpoint.0) {
+                    return Some("focus-foreground-invalid");
+                }
+            }
+            for bracket in &row.arrival {
+                if !is_opaque_id(&bracket.window.0) {
+                    return Some("arrival-window-invalid");
+                }
+                match &bracket.location {
+                    ArrivalLocation::Native { home } => {
+                        if let Some(home) = home.as_ref() {
+                            let is_native = matches!(home, WorkspaceRef::Native { .. });
+                            if !is_native || !valid_attempt_workspace_ref(home) {
+                                return Some("arrival-home-invalid");
+                            }
+                        }
+                    }
+                    ArrivalLocation::Output { out } => {
+                        if let Some(out) = out.as_ref()
+                            && !is_opaque_id(&out.0)
+                        {
+                            return Some("arrival-output-invalid");
+                        }
+                    }
+                }
+                if let Some(frame) = bracket.frame
+                    && !valid_carried_rect(frame.x, frame.y, frame.w, frame.h)
+                {
+                    return Some("arrival-frame-invalid");
+                }
             }
         }
     }

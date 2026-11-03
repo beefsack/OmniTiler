@@ -71,9 +71,10 @@ fn envelope(intent_records: serde_json::Value) -> String {
     )
     .expect("valid envelope");
     value["intentRecords"] = intent_records;
-    // Required native-state lane under test elsewhere; the opaque-lane
-    // envelope carries it empty.
+    // Required native-state lane under test elsewhere; both attempt lanes
+    // ride the opaque-lane envelope empty.
     value["stateAttempts"] = serde_json::json!([]);
+    value["focusFeedback"] = serde_json::json!([]);
     value.to_string()
 }
 

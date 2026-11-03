@@ -156,6 +156,17 @@
 //!   native-state write/proof facts only (immediate pre/post property
 //!   states); at most one entry per window property across every carried
 //!   revision. The core owns every state verdict.
+//! focusFeedback[] (required, no tolerant backfill: missing refuses):
+//!   {id, target, rev:"u64", setter:accepted|refused|threw|not-called,
+//!    reason:""|closed-token, pre:id|null, post:id|null,
+//!    foregroundProven:bool,
+//!    arrival:[{win, obs:"u64", before:{...}, kind:native|output,
+//!    home:WorkspaceRef|null|out:id|null, frame:R|null, after:{...}}],
+//!    attemptMs:"u64"} - mechanical one-shot native focus evidence only
+//!   (at-most-once call/no-call plus readiness brackets); no duplicate or
+//!   redelivery restriction. Both bracket arms decode context-free; the
+//!   engine host gate owns the native/output check. The core owns every
+//!   focus verdict.
 //! creationAttempts[] (optional, tolerant: missing backfills []):
 //!   {op, ws, out, setter:accepted|refused|threw,
 //!    before:[id...], after:[id...],
@@ -219,13 +230,14 @@ use tiler_core::ids::{
     MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_NATIVE_WORKSPACE_ID_LEN, NativeWorkspaceId,
 };
 use tiler_core::world_report::{
-    ActivationPolicy, AuthorityScope, FullscreenOwner, HeldScreenRow, HeldWindowRow, HoldReason,
-    IntentRecord, LastWrite, LastWritePath, LastWriteProperty, MAX_INTENT_RECORDS,
-    NativeObservation, NativeWorkspaceFact, OutputIdentity, PresentationIngress, RowDiagnostic,
-    RowDiagnosticKind, RowDiagnosticLane, ScreenReport, ScreenView, TransferKind, VisibilityFact,
-    VisibilityReason, VisibilitySample, VisibilitySetter, WORLD_CONTRACT_VERSION, WindowFact,
-    WindowType, WorkspaceRef, WorldCommand, WorldReply, WorldReport, check_screen_structure,
-    check_window_structure, validate_report_reason,
+    ActivationPolicy, ArrivalBracket, ArrivalLocation, AuthorityScope, FocusFeedback,
+    FullscreenOwner, HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, LastWrite,
+    LastWritePath, LastWriteProperty, MAX_INTENT_RECORDS, NativeObservation, NativeWorkspaceFact,
+    OutputIdentity, PresentationIngress, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
+    ScreenReport, ScreenView, TransferKind, VisibilityFact, VisibilityReason, VisibilitySample,
+    VisibilitySetter, WORLD_CONTRACT_VERSION, WindowFact, WindowType, WorkspaceRef, WorldCommand,
+    WorldReply, WorldReport, check_screen_structure, check_window_structure,
+    validate_report_reason,
 };
 
 /// World protocol contract version (equals the core world contract version).
@@ -1860,6 +1872,97 @@ pub fn decode_state_attempt(
     })
 }
 
+/// Decode one correlated focus-evidence row. Every key is required on the
+/// wire (`id`, `target`, `rev`, `setter`, `reason`, `pre`, `post`,
+/// `foregroundProven`, `arrival`, `attemptMs`); absence refuses as malformed,
+/// unknown keys refuse as unknown-field, and unknown setter/reason tokens
+/// or bad decimal counters refuse as unknown-value. `pre`/`post` are
+/// required nullable foreground lifetimes (`null` is unknown, never empty).
+/// Bracket arm selection is context-free here; the engine host gate owns
+/// the native/output check.
+fn decode_focus_feedback(value: &serde_json::Value) -> Result<FocusFeedback> {
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "id",
+            "target",
+            "rev",
+            "setter",
+            "reason",
+            "pre",
+            "post",
+            "foregroundProven",
+            "arrival",
+            "attemptMs",
+        ],
+    )?;
+    let setter_text = req_str(map, "setter")?;
+    let setter = VisibilitySetter::parse(setter_text).ok_or_else(unknown_value)?;
+    let reason_text = req_str(map, "reason")?;
+    let reason = VisibilityReason::parse(reason_text).ok_or_else(unknown_value)?;
+    let arrival_value = map.get("arrival").ok_or_else(malformed)?;
+    let mut arrival = Vec::new();
+    for item in arrival_value.as_array().ok_or_else(malformed)? {
+        arrival.push(decode_arrival_bracket(item)?);
+    }
+    Ok(FocusFeedback {
+        id: req_id(map, "id")?,
+        target: WindowId(req_id(map, "target")?),
+        revision: req_u64_str(map, "rev")?,
+        setter,
+        reason,
+        pre: opt_window_or_null(map, "pre")?,
+        post: opt_window_or_null(map, "post")?,
+        foreground_proven: req_bool(map, "foregroundProven")?,
+        arrival,
+        attempt_ms: req_u64_str(map, "attemptMs")?,
+    })
+}
+
+/// Decode one readiness bracket. `win`, `obs`, `before`, `kind`, `frame`,
+/// and `after` are required in both arms; the exclusive location key rides
+/// the selected arm only (`home` for `native`, `out` for `output`) and is
+/// itself required there (nullable: `null` is unreadable evidence, never a
+/// default), while the other arm's key is forbidden. A non-null native
+/// `home` must use the native workspace namespace. Unknown kinds refuse as
+/// unknown-value; missing keys refuse as malformed. `frame` is a required
+/// nullable checked carried rect; unknown or mismatched sample facts are
+/// preserved as facts, never verdicts.
+fn decode_arrival_bracket(value: &serde_json::Value) -> Result<ArrivalBracket> {
+    let map = as_object(value)?;
+    let kind = req_str(map, "kind")?;
+    let location = match kind {
+        "native" => {
+            check_keys(
+                map,
+                &["win", "obs", "before", "kind", "home", "frame", "after"],
+            )?;
+            ArrivalLocation::Native {
+                home: opt_workspace_ref_or_null(map, "home", true)?,
+            }
+        }
+        "output" => {
+            check_keys(
+                map,
+                &["win", "obs", "before", "kind", "out", "frame", "after"],
+            )?;
+            ArrivalLocation::Output {
+                out: opt_id_or_null(map, "out")?.map(OutputId),
+            }
+        }
+        _ => return Err(unknown_value()),
+    };
+    Ok(ArrivalBracket {
+        window: WindowId(req_id(map, "win")?),
+        obs: req_u64_str(map, "obs")?,
+        before: decode_visibility_sample(map.get("before").ok_or_else(malformed)?)?,
+        location,
+        frame: opt_rect_or_null(map, "frame")?,
+        after: decode_visibility_sample(map.get("after").ok_or_else(malformed)?)?,
+    })
+}
+
 fn decode_creation_attempt(
     value: &serde_json::Value,
 ) -> Result<tiler_core::world_report::NativeCreationAttempt> {
@@ -2610,6 +2713,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "presentation",
             "intentRecords",
             "stateAttempts",
+            "focusFeedback",
         ],
         &[
             "cursorHit",
@@ -2742,6 +2846,17 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     for item in state_attempts_value.as_array().ok_or_else(malformed)? {
         state_attempts.push(decode_state_attempt(item)?);
     }
+    // Required correlated focus evidence: closed mechanical rows, no
+    // missing tolerance (adapters always carry the lane, possibly empty).
+    // Unknown fields/values refuse in the closed decoders above; lane and
+    // total caps plus the host-arm gate refuse in the core gate below. The
+    // decoder never infers hostOwned from native[] or any other report
+    // fact: both arms decode context-free here.
+    let focus_feedback_value = map.get("focusFeedback").ok_or_else(malformed)?;
+    let mut focus_feedback = Vec::new();
+    for item in focus_feedback_value.as_array().ok_or_else(malformed)? {
+        focus_feedback.push(decode_focus_feedback(item)?);
+    }
     // Tolerant gesture ingress: missing backfills observation-only (`None`).
     // A present value carries the exact normalized shape; unknown
     // fields/values refuse.
@@ -2871,6 +2986,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         presentation: decode_presentation(map.get("presentation").ok_or_else(malformed)?)?,
         intent_records,
         state_attempts,
+        focus_feedback,
         primary_output: match map.get("primary") {
             // Host-designated primary: absent means unknown (no fallback
             // to any per-screen flag: `primary` is not a screen key and
