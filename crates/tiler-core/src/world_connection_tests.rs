@@ -61,6 +61,7 @@ fn report(seq: u64, complete: bool) -> WorldReport {
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -725,6 +726,9 @@ fn supported_null_process_holds_only_dependent_row_while_unavailable_admits() {
         "adapter-1",
         HostCapabilities {
             unavailable_facts: vec![FactName::ProcessId],
+            // Fixtures carry native sticky facts; only processId is
+            // unavailable in this lane.
+            native_sticky: true,
             ..Default::default()
         },
     )
@@ -904,7 +908,7 @@ fn held_invalid_and_conflicting_keep_kind_parity() {
     let mut base = report(2, true);
     base.windows = vec![conflict];
     let graded =
-        grade_conflicting_windows(&base, &[FactName::Privileged]).expect("conflict grades");
+        grade_conflicting_windows(&base, &[FactName::Privileged], true).expect("conflict grades");
     assert_eq!(graded.windows.len(), 0);
     assert_eq!(graded.held_windows.len(), 1);
     let held = &graded.held_windows[0];
@@ -1017,6 +1021,9 @@ fn ordinary_maximized_null_without_maximize_holds_frame_only() {
         "adapter-1",
         HostCapabilities {
             maximize: true,
+            // Fixtures carry native sticky facts; the maximize lane under
+            // test is the native route.
+            native_sticky: true,
             ..Default::default()
         },
     )

@@ -51,6 +51,8 @@ pub mod world_report;
 pub mod world_sends;
 pub mod world_settle;
 pub mod world_sizing;
+pub(crate) mod world_state;
+pub(crate) mod world_sticky;
 pub mod world_tiling_views;
 
 #[cfg(test)]
@@ -119,6 +121,10 @@ mod world_global_swap_tests;
 #[cfg(test)]
 mod world_held_presence_tests;
 #[cfg(test)]
+mod world_intent_restore_tests;
+#[cfg(test)]
+mod world_intent_save_tests;
+#[cfg(test)]
 mod world_linked_focus_memory_tests;
 #[cfg(test)]
 mod world_logical_contract_tests;
@@ -132,6 +138,16 @@ mod world_pager_presentation_tests;
 mod world_restored_routing_tests;
 #[cfg(test)]
 mod world_sessionless_migration_tests;
+#[cfg(test)]
+mod world_state_attempt_tests;
+#[cfg(test)]
+mod world_sticky_composed_tests;
+#[cfg(test)]
+mod world_sticky_fact_authority_tests;
+#[cfg(test)]
+mod world_sticky_native_tests;
+#[cfg(test)]
+mod world_sticky_restore_tests;
 #[cfg(test)]
 mod world_toggle_tests;
 #[cfg(test)]

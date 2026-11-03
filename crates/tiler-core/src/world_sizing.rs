@@ -89,6 +89,126 @@ fn scope_status_estimate(scope: &crate::world_report::ScopeStatus) -> usize {
         + json_string_len(scope.authority.hold_reason().map_or("", HoldReason::as_str))
 }
 
+/// Structural size estimate for the frozen outbound target suffix after
+/// `clear_op`: `,"cmdSeq":null|"N"` (10 plus 4 or 2+digits),
+/// `,"visibility":null|{...}` (14 plus 4 or 31+bools+digits),
+/// `,"visibility_auth":S` (19 plus token), `,"visibility_hold":S` (19 plus
+/// token), `,"state":[...]` (11 plus rows). Exact: mirrors
+/// [`encode_window_target_lanes`] byte-for-byte.
+#[must_use]
+pub fn window_target_lanes_estimate(window: &crate::world_report::WindowDesire) -> usize {
+    let mut bytes = 10 + window.command_seq.map_or(4, |seq| 2 + u64_len(seq));
+    bytes += 14
+        + match &window.visibility {
+            None => 4,
+            Some(target) => {
+                // {"shown":B,"rev":"N","fallback":B} = 31 fixed (braces,
+                // keys+colons, commas, rev quotes) plus values.
+                31 + bool_len(target.shown) + u64_len(target.revision) + bool_len(target.fallback)
+            }
+        };
+    bytes += 19 + json_string_len(window.visibility_authority.as_str());
+    bytes += 19
+        + json_string_len(
+            window
+                .visibility_authority
+                .hold_reason()
+                .map_or("", HoldReason::as_str),
+        );
+    // ,"state":[] = 11; each row {"property":S,"value":B,"auth":S,
+    // "reason":S,"cmdSeq":null|"N"} = 50 fixed plus values.
+    bytes += 11;
+    for target in &window.state {
+        bytes += 50
+            + json_string_len(target.property.as_str())
+            + bool_len(target.value)
+            + json_string_len(target.authority.as_str())
+            + json_string_len(
+                target
+                    .authority
+                    .hold_reason()
+                    .map_or("", HoldReason::as_str),
+            )
+            + target.command_seq.map_or(4, |seq| 2 + u64_len(seq));
+    }
+    bytes += window.state.len().saturating_sub(1);
+    bytes
+}
+
+/// Exact canonical encoding for the frozen outbound target suffix after
+/// `clear_op`, with frozen key order (mirrored by
+/// [`window_target_lanes_estimate`] and the protocol codec):
+/// `,"cmdSeq":null|"N","visibility":null|{"shown":B,"rev":"N",
+/// "fallback":B},"visibility_auth":S,"visibility_hold":S,"state":[...]` where
+/// each state row is `{"property":S,"value":B,"auth":S,"reason":S,
+/// "cmdSeq":null|"N"}`. Counters encode as quoted decimal strings, never
+/// JSON numbers.
+pub fn encode_window_target_lanes(out: &mut String, window: &crate::world_report::WindowDesire) {
+    out.push_str(",\"cmdSeq\":");
+    match window.command_seq {
+        None => out.push_str("null"),
+        Some(seq) => {
+            out.push('"');
+            out.push_str(&seq.to_string());
+            out.push('"');
+        }
+    }
+    out.push_str(",\"visibility\":");
+    match &window.visibility {
+        None => out.push_str("null"),
+        Some(target) => {
+            out.push_str("{\"shown\":");
+            out.push_str(if target.shown { "true" } else { "false" });
+            out.push_str(",\"rev\":\"");
+            out.push_str(&target.revision.to_string());
+            out.push_str("\",\"fallback\":");
+            out.push_str(if target.fallback { "true" } else { "false" });
+            out.push('}');
+        }
+    }
+    out.push_str(",\"visibility_auth\":");
+    push_json_string(out, window.visibility_authority.as_str());
+    out.push_str(",\"visibility_hold\":");
+    push_json_string(
+        out,
+        window
+            .visibility_authority
+            .hold_reason()
+            .map_or("", HoldReason::as_str),
+    );
+    out.push_str(",\"state\":[");
+    for (i, target) in window.state.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"property\":");
+        push_json_string(out, target.property.as_str());
+        out.push_str(",\"value\":");
+        out.push_str(if target.value { "true" } else { "false" });
+        out.push_str(",\"auth\":");
+        push_json_string(out, target.authority.as_str());
+        out.push_str(",\"reason\":");
+        push_json_string(
+            out,
+            target
+                .authority
+                .hold_reason()
+                .map_or("", HoldReason::as_str),
+        );
+        out.push_str(",\"cmdSeq\":");
+        match target.command_seq {
+            None => out.push_str("null"),
+            Some(seq) => {
+                out.push('"');
+                out.push_str(&seq.to_string());
+                out.push('"');
+            }
+        }
+        out.push('}');
+    }
+    out.push(']');
+}
+
 fn push_authority_scope(out: &mut String, scope: &AuthorityScope) {
     match scope {
         AuthorityScope::Output(output) => {
@@ -330,7 +450,8 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
             + json_string_len(window.frame_operation.as_deref().unwrap_or_default())
             + bool_len(window.floating)
             + json_string_len(window.float_origin.map_or("", FloatOrigin::as_str))
-            + json_string_len(window.clear_operation.as_deref().unwrap_or_default());
+            + json_string_len(window.clear_operation.as_deref().unwrap_or_default())
+            + window_target_lanes_estimate(window);
     }
     bytes += reply.windows.len().saturating_sub(1);
     for transfer in &reply.transfers {
@@ -367,6 +488,71 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     bytes += presentation_estimate(&reply.presentation);
     bytes += intent_writes_estimate(&reply.intent_writes);
     bytes
+}
+
+/// Maximum escaped canonical JSON width of one staged sticky/float save
+/// value: the sticky command path stages `IntentData` canonical forms with
+/// an always-present float lane (`Some(true)` on sticky-on, the prior on
+/// sticky-off, `Some(false)` on the sticky-clearing toggle) and a sticky
+/// lane of `true`/`false` (sticky-on) or `null` (sticky-off/clear). The
+/// longest staged forms are
+/// `{"v":1,"float":true,"stickyPrior":false}` and
+/// `{"v":1,"float":false,"stickyPrior":null}`: 40 bytes with six `"`
+/// characters, so [`json_string_len`] spells each as 2 + 40 + 6 = 48.
+/// Every other staged form is shorter (47). Canonical bytes are ASCII
+/// without `\` or C0 controls, so no other escaping applies; opaque
+/// subject ids likewise never escape ([`crate::bounds::is_opaque_id`]).
+pub const MAX_INTENT_SAVE_DATA_JSON: usize = 48;
+
+/// Pre-mutation bound for the at-most-one sticky/float save row, gated on
+/// the report's own command: `{"win":,"data":}` is 16 punctuation plus the
+/// subject id plus the save value above (a single row carries no comma).
+/// Reserved for `SetSticky`, `ToggleSticky`, and the sticky-clearing
+/// `ToggleFloat`; zero for every other report. Conservative like every
+/// other [`reply_upper_bound`] term; the exact-encoded staged reply stays
+/// the commit backstop.
+#[must_use]
+pub fn max_intent_save_bound(report: &WorldReport) -> usize {
+    let window: &str = match report.command.as_ref() {
+        Some(WorldCommand::SetSticky { window, .. }) => window.0.as_str(),
+        Some(WorldCommand::ToggleSticky { window }) => window.0.as_str(),
+        Some(WorldCommand::Operation(CoreCommand::ToggleFloat { window, .. })) => window.as_str(),
+        _ => return 0,
+    };
+    16 + json_string_len(window) + MAX_INTENT_SAVE_DATA_JSON
+}
+
+/// Maximum escaped canonical JSON width of one rollback save value: every
+/// `IntentData` shape the proven-refusal rollback can restore (all nine
+/// `(float, sticky_prior)` combinations, including record-free priors never
+/// carried on this report). The longest canonical form is
+/// `{"v":1,"float":false,"stickyPrior":false}`: 41 bytes with six `"`
+/// characters, so [`json_string_len`] spells it as 2 + 41 + 6 = 49. The
+/// command-path staged family tops out at 48
+/// ([`MAX_INTENT_SAVE_DATA_JSON`]); rollback reserves the wider shape. A
+/// null-clear rollback (`data: null`, 4) is cheaper and stays covered.
+pub const MAX_INTENT_ROLLBACK_DATA_JSON: usize = 49;
+
+/// Maximum per-row rollback write width in the published `intentWrites`
+/// section: `{"win":,"data":}` is 16 punctuation plus the longest opaque
+/// subject id (128 raw bytes, never escaped, so 130 quoted) plus
+/// [`MAX_INTENT_ROLLBACK_DATA_JSON`], plus one array comma. Exactly
+/// 16 + 130 + 49 + 1 = 196. The comma overcounts the final row by one,
+/// conservatively.
+pub const MAX_INTENT_ROLLBACK_ROW_BYTES: usize = 196;
+
+/// Pre-mutation bound for queued native sticky rollback writes: one
+/// [`MAX_INTENT_ROLLBACK_ROW_BYTES`] per potentially generated write. The
+/// count is the pending-rollback reserve (every sticky binding with
+/// `sticky_meta` and `!followup_done`, any disposition, plus already-queued
+/// writes), never the report's own `stateAttempts` length, so record-free
+/// priors and commandless proofs reserve alike. Conservative like every
+/// other [`reply_upper_bound`] term; the exact-encoded staged reply stays
+/// the commit backstop. Kept separate from [`max_intent_save_bound`] (the
+/// command's own save row, at most 194 with a max-length id).
+#[must_use]
+pub fn max_intent_rollback_bound(count: usize) -> usize {
+    count.saturating_mul(MAX_INTENT_ROLLBACK_ROW_BYTES)
 }
 
 /// Structural size estimate for the core intent save/clear section:
@@ -645,6 +831,10 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
                 + bool_len(*clear_fullscreen)
                 + bool_len(*was_maximized)
         }
+        CommandResult::Rejected { kind } => {
+            // {"op":"rejected","kind":S} = 25 fixed.
+            25 + json_string_len(kind.as_str())
+        }
     }
 }
 
@@ -701,7 +891,7 @@ fn visibility_sample_estimate(sample: &Option<crate::world_report::VisibilitySam
 /// `noSpaceResult`, `switchTarget`, `freshPlacement`, nullable `cursor`,
 /// nullable `cursorHit`, nullable action-context outputs, `defaultTiled`/`focused`/`complete`/`gesture`/
 /// `focusFollowsCursor`/`cursorWarp` values, `monotonicMs` decimal string,
-/// `frameAttempts`, `memberAttempts`, `viewAttempts`).
+/// `frameAttempts`, `memberAttempts`, `viewAttempts`, `stateAttempts`).
 /// Conservative: any compact encoding of the report fits within this
 /// bound (locked by `request_estimate_bounds_actual_wire_bytes`). The
 /// adapter must emit compact JSON with no whitespace; key order does not
@@ -731,7 +921,8 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // registry counts its brackets plus one comma per entry. The workspace
     // mode token rides as `"mode":S` (9 fixed plus the token); membership
     // evidence rides per fact below (absent counts `null`).
-    let mut bytes = 451
+    // The required ,"stateAttempts":[] section adds 20 to the base.
+    let mut bytes = 471
         + 36
         + 20
         + 17
@@ -1014,6 +1205,23 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             bytes += json_string_len(id) + 1;
         }
     }
+    for attempt in &report.state_attempts {
+        // {"win":S,"property":S,"target":B,"rev":"u64","setter":S,
+        // "pre":B|null,"post":B|null,"attemptMs":"u64"} = 79 fixed (8
+        // quoted keys plus colons, commas, braces, and the two quoted
+        // decimal stamps) plus the window id, property token, target
+        // bool, revision digits, setter token, nullable pre/post proofs
+        // (`null` counts 4 each), and stamp digits.
+        bytes += 79
+            + json_string_len(&attempt.window.0)
+            + json_string_len(attempt.property.as_str())
+            + bool_len(attempt.target)
+            + u64_len(attempt.revision)
+            + json_string_len(attempt.setter.as_str())
+            + attempt.pre.map_or(4, bool_len)
+            + attempt.post.map_or(4, bool_len)
+            + u64_len(attempt.attempt_ms);
+    }
     // No adapter-projected restoration key is admitted; opaque storage
     // returns are a separate lane below.
     // Opaque host storage return rides after the presentation ingress with
@@ -1225,6 +1433,14 @@ fn command_estimate_owned(command: &WorldCommand) -> usize {
         WorldCommand::ToggleMaximize { window } => {
             // {"op":"toggle-maximize","win":S} = 31 fixed.
             31 + json_string_len(&window.0)
+        }
+        WorldCommand::SetSticky { window, value } => {
+            // {"op":"set-sticky","win":S,"value":B} = 35 fixed.
+            35 + json_string_len(&window.0) + bool_len(*value)
+        }
+        WorldCommand::ToggleSticky { window } => {
+            // {"op":"toggle-sticky","win":S} = 28 fixed.
+            28 + json_string_len(&window.0)
         }
         WorldCommand::Operation(command) => {
             // {"op":"operation","command":{...}} = 30 fixed.
@@ -1928,6 +2144,7 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
             &mut out,
             window.clear_operation.as_deref().unwrap_or_default(),
         );
+        encode_window_target_lanes(&mut out, window);
         out.push('}');
     }
     out.push_str("],\"transfers\":[");
@@ -2431,6 +2648,11 @@ pub fn encode_command_result(out: &mut String, result: &Option<CommandResult>) {
             out.push_str(if *was_maximized { "true" } else { "false" });
             out.push('}');
         }
+        Result::Rejected { kind } => {
+            out.push_str("{\"op\":\"rejected\",\"kind\":");
+            push_json_string(out, kind.as_str());
+            out.push('}');
+        }
     }
 }
 
@@ -2439,6 +2661,32 @@ pub fn encode_command_result(out: &mut String, result: &Option<CommandResult>) {
 pub fn reply_exact_bytes(reply: &WorldReply) -> usize {
     encode_reply_canonical(reply).len()
 }
+
+/// Maximum per-offroute-native-state-attempt diagnostic cost: scope (155)
+/// plus lane/kind tokens (30) plus id (130) plus punctuation (30) = 345,
+/// rounded to 512. Independently derived like the held-screen row cost, never
+/// borrowed from other headroom.
+pub const MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES: usize = 512;
+
+/// Maximum per-published-window outbound target lane cost for the current
+/// engine: the composed sticky show plus at most one native sticky state
+/// target dominate the default suffix. The worst row carries the longest
+/// quoted command correlation (`,"cmdSeq":"18446744073709551615"`, 32),
+/// the composed show object (`,"visibility":{"shown":true,
+/// "rev":"18446744073709551615","fallback":false}`, 14 + 31 + 4 + 20 + 5
+/// = 74), the longest authority/hold pair (`Hold(IncompleteInventory)`:
+/// `,"visibility_auth":"hold"` (25) plus
+/// `,"visibility_hold":"incomplete-inventory"` (41)), the state array with
+/// one sticky row (`,"state":[{...}]`, 11 plus 113, see below): 32 + 74 +
+/// 25 + 41 + 11 + 113 = 296. The largest single sticky state row is a
+/// `Hold` with the longest hold reason, a false value, and the longest
+/// quoted command sequence: 50 + 8 (`"sticky"`) + 5 (`false`) + 6
+/// (`"hold"`) + 22 (`"incomplete-inventory"`) + 22 (quoted `u64::MAX`) =
+/// 113. The common `Controlled` show with a controlled sticky target costs
+/// less; the precomposed default suffix costs 94 with null correlation and
+/// 112 with the longest quoted counter. No speculative extra state budget;
+/// the exact staged gate stays the backstop.
+pub const MAX_TARGET_LANES_PER_WINDOW: usize = 296;
 
 /// Conservative pre-mutation reply upper bound for one report: the request
 /// estimate plus worst-case generated state. Any publishable reply for this
@@ -2482,11 +2730,33 @@ pub fn reply_exact_bytes(reply: &WorldReply) -> usize {
 /// - held-row diagnostics (at most one per held screen row): scope (155) plus
 ///   lane/kind tokens (30) plus id (130) plus punctuation (30) = 345,
 ///   rounded to 512 each.
+/// - offroute native-state attempt diagnostics (at most one per carried
+///   `stateAttempts` row): [`MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES`] each,
+///   independently derived like the held-screen row cost.
 /// - core intent save/clear section (`intentWrites`): the empty 18-byte
-///   section is covered by the 4096 envelope slack below. Future nonempty
-///   writes publish at the consumption increment and need their own
-///   pre-mutation bound there; no max-write reservation is added here (it
-///   would overreject every report).
+///   section is covered by the 4096 envelope slack below. The at-most-one
+///   sticky/float save row reserves [`max_intent_save_bound`] (16
+///   punctuation plus the command's subject id plus
+///   [`MAX_INTENT_SAVE_DATA_JSON`], at most 194), gated on the report's
+///   own command (`SetSticky`, `ToggleSticky`, or the sticky-clearing
+///   `ToggleFloat`) so non-save reports reserve nothing.
+/// - outbound target lanes (current engine only): each published window
+///   carries at most one composed sticky show plus the command correlation
+///   and at most one native sticky state target (296 worst case with the
+///   longest quoted counter, longest revision, longest authority/hold pair,
+///   and largest sticky state row; see [`MAX_TARGET_LANES_PER_WINDOW`]).
+///   The default suffix costs 94 with a null correlation and 112 with the
+///   longest quoted counter. The count is the union of every
+///   publication source, summed as a conservative upper bound (deduped
+///   lifetimes counted twice still fit): the current carried windows plus
+///   held rows, plus the prior staged windows (held scopes publish retained
+///   lifetimes without a live fact in this report), plus the retained
+///   session/member footprint (tiled links plus exceptions plus minimize
+///   slots across retained domains, which survive a gapped previous report
+///   that left staged small), plus retained mover rows (one per outstanding
+///   window transfer plus every migration member). No per-window headroom
+///   beyond one composed show plus one sticky state target and no
+///   operation-settled headroom reuse.
 /// - envelope slack: 4096 base covers envelope slack and array commas.
 #[must_use]
 pub fn reply_upper_bound(
@@ -2494,8 +2764,16 @@ pub fn reply_upper_bound(
     retained_transfers: usize,
     logical_workspaces: usize,
     created_workspaces: usize,
+    staged_windows: usize,
+    retained_windows: usize,
 ) -> usize {
     let report_windows: usize = report.windows.len().saturating_add(report.closed.len());
+    let published_windows: usize = report
+        .windows
+        .len()
+        .saturating_add(report.held_windows.len())
+        .saturating_add(staged_windows)
+        .saturating_add(retained_windows);
     report_estimate(report)
         .saturating_add(retained_transfers.saturating_mul(512))
         .saturating_add(created_workspaces.saturating_mul(512))
@@ -2515,6 +2793,14 @@ pub fn reply_upper_bound(
         .saturating_add(report_windows.saturating_mul(768))
         .saturating_add(logical_workspaces.saturating_mul(384))
         .saturating_add(report.held_screens.len().saturating_mul(512))
+        .saturating_add(
+            report
+                .state_attempts
+                .len()
+                .saturating_mul(MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES),
+        )
+        .saturating_add(max_intent_save_bound(report))
+        .saturating_add(published_windows.saturating_mul(MAX_TARGET_LANES_PER_WINDOW))
 }
 
 #[cfg(test)]
@@ -2731,5 +3017,361 @@ mod canonical_scalar_tests {
         assert_eq!(over.len(), 257);
         assert_eq!(json_string_len(&over), 259);
         assert_eq!(encoded_string(&over).len(), json_string_len(&over));
+    }
+}
+
+#[cfg(test)]
+mod target_lane_sizing_tests {
+    use super::*;
+    use crate::directional::{OutputId, WindowId};
+    use crate::world_report::{
+        HoldReason, ScopeAuthority, StateProperty, StateTarget, VisibilityTarget, WindowDesire,
+    };
+
+    fn lane_window(
+        command_seq: Option<u64>,
+        visibility: Option<VisibilityTarget>,
+        visibility_authority: ScopeAuthority,
+        state: Vec<StateTarget>,
+    ) -> WindowDesire {
+        WindowDesire {
+            lifetime: WindowId("win-a".to_owned()),
+            output: OutputId("out-a".to_owned()),
+            workspace: "ws-a".to_owned(),
+            allocation: None,
+            effective_frame: None,
+            frame_authority: ScopeAuthority::Untouched,
+            membership_authority: ScopeAuthority::Untouched,
+            floating: false,
+            float_origin: None,
+            frame_operation: None,
+            clear_operation: None,
+            command_seq,
+            visibility,
+            visibility_authority,
+            state,
+        }
+    }
+
+    fn encoded_lanes(window: &WindowDesire) -> String {
+        let mut out = String::new();
+        encode_window_target_lanes(&mut out, window);
+        out
+    }
+
+    fn all_authorities() -> Vec<ScopeAuthority> {
+        let mut authorities = vec![ScopeAuthority::Controlled, ScopeAuthority::Untouched];
+        for reason in [
+            HoldReason::Unreadable,
+            HoldReason::IncompleteInventory,
+            HoldReason::GestureBarrier,
+            HoldReason::RefusedTarget,
+            HoldReason::AmbiguousCreation,
+            HoldReason::OccupiedRemoval,
+            HoldReason::ConstraintClamp,
+            HoldReason::Minimized,
+        ] {
+            authorities.push(ScopeAuthority::Hold(reason));
+        }
+        authorities
+    }
+
+    #[test]
+    fn estimate_matches_encoding_across_lane_matrix() {
+        let properties = [
+            StateProperty::Fullscreen,
+            StateProperty::Maximized,
+            StateProperty::Sticky,
+            StateProperty::Above,
+        ];
+        let revisions = [0, 1, u64::MAX];
+        let seqs = [None, Some(0), Some(1), Some(u64::MAX)];
+        for authority in all_authorities() {
+            for seq in seqs {
+                for shown in [false, true] {
+                    for fallback in [false, true] {
+                        for revision in revisions {
+                            let window = lane_window(
+                                seq,
+                                Some(VisibilityTarget {
+                                    shown,
+                                    revision,
+                                    fallback,
+                                }),
+                                authority,
+                                Vec::new(),
+                            );
+                            assert_eq!(
+                                window_target_lanes_estimate(&window),
+                                encoded_lanes(&window).len(),
+                                "visibility {shown}/{fallback}/{revision} {authority:?} {seq:?}"
+                            );
+                        }
+                    }
+                }
+                let window = lane_window(seq, None, authority, Vec::new());
+                assert_eq!(
+                    window_target_lanes_estimate(&window),
+                    encoded_lanes(&window).len(),
+                    "null visibility {authority:?} {seq:?}"
+                );
+                for property in properties {
+                    for value in [false, true] {
+                        for state_seq in seqs {
+                            let window = lane_window(
+                                seq,
+                                None,
+                                authority,
+                                vec![StateTarget {
+                                    property,
+                                    value,
+                                    authority,
+                                    command_seq: state_seq,
+                                }],
+                            );
+                            assert_eq!(
+                                window_target_lanes_estimate(&window),
+                                encoded_lanes(&window).len(),
+                                "state {property:?}/{value} {authority:?} {seq:?}/{state_seq:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Multi-row state arrays count one comma per extra row.
+        let multi = lane_window(
+            Some(7),
+            Some(VisibilityTarget {
+                shown: true,
+                revision: 1,
+                fallback: false,
+            }),
+            ScopeAuthority::Controlled,
+            vec![
+                StateTarget {
+                    property: StateProperty::Above,
+                    value: true,
+                    authority: ScopeAuthority::Controlled,
+                    command_seq: None,
+                },
+                StateTarget {
+                    property: StateProperty::Fullscreen,
+                    value: false,
+                    authority: ScopeAuthority::Hold(HoldReason::RefusedTarget),
+                    command_seq: Some(1),
+                },
+                StateTarget {
+                    property: StateProperty::Maximized,
+                    value: true,
+                    authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+                    command_seq: Some(u64::MAX),
+                },
+            ],
+        );
+        assert_eq!(
+            window_target_lanes_estimate(&multi),
+            encoded_lanes(&multi).len(),
+            "multi-row lanes stay exact"
+        );
+    }
+
+    #[test]
+    fn engine_default_lanes_cost_94_and_per_window_max_296() {
+        // The current engine emits null visibility, untouched authority,
+        // and an empty state array on every row: 94 bytes with a null
+        // correlation, 112 with the longest quoted counter. The
+        // per-published-window pre-mutation reserve is wider: it also
+        // covers the worst composed sticky show plus the largest single
+        // native sticky state row (see below).
+        let null = lane_window(None, None, ScopeAuthority::Untouched, Vec::new());
+        let null_bytes = encoded_lanes(&null);
+        assert_eq!(
+            null_bytes,
+            ",\"cmdSeq\":null,\"visibility\":null,\
+             \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
+             \"state\":[]"
+        );
+        assert_eq!(null_bytes.len(), 94);
+        assert_eq!(window_target_lanes_estimate(&null), 94);
+        let max = lane_window(Some(u64::MAX), None, ScopeAuthority::Untouched, Vec::new());
+        let max_bytes = encoded_lanes(&max);
+        assert_eq!(
+            max_bytes,
+            ",\"cmdSeq\":\"18446744073709551615\",\"visibility\":null,\
+             \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
+             \"state\":[]"
+        );
+        assert_eq!(max_bytes.len(), 112);
+        assert_eq!(window_target_lanes_estimate(&max), 112);
+        assert_eq!(MAX_TARGET_LANES_PER_WINDOW, 296);
+    }
+
+    #[test]
+    fn composed_show_plus_sticky_state_max_row_sets_per_window_max() {
+        // Worst publishable row: the longest quoted correlation, the
+        // composed show with the longest revision, the longest
+        // authority/hold pair, and the largest single sticky state row
+        // (hold with longest reason, false value, longest quoted seq).
+        // 32 + 74 + 25 + 41 + 11 + 113 = 296.
+        let worst = lane_window(
+            Some(u64::MAX),
+            Some(VisibilityTarget {
+                shown: true,
+                revision: u64::MAX,
+                fallback: false,
+            }),
+            ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+            vec![StateTarget {
+                property: StateProperty::Sticky,
+                value: false,
+                authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+                command_seq: Some(u64::MAX),
+            }],
+        );
+        let bytes = encoded_lanes(&worst);
+        assert_eq!(bytes.len(), 32 + 74 + 25 + 41 + 11 + 113);
+        assert_eq!(window_target_lanes_estimate(&worst), bytes.len());
+        assert_eq!(MAX_TARGET_LANES_PER_WINDOW, bytes.len());
+        // The common controlled show is cheaper: 32 + 74 + 31 + 21 + 11.
+        let controlled = lane_window(
+            Some(u64::MAX),
+            Some(VisibilityTarget {
+                shown: true,
+                revision: u64::MAX,
+                fallback: false,
+            }),
+            ScopeAuthority::Controlled,
+            Vec::new(),
+        );
+        let controlled_bytes = encoded_lanes(&controlled);
+        assert_eq!(controlled_bytes.len(), 32 + 74 + 31 + 21 + 11);
+        assert_eq!(
+            window_target_lanes_estimate(&controlled),
+            controlled_bytes.len()
+        );
+    }
+
+    #[test]
+    fn staged_sticky_save_family_max_is_48() {
+        use crate::intent_data::{IntentData, encode_intent_data};
+        // Every save the composed sticky path stages: sticky-on records
+        // `(Some(true), prior)`, sticky-off records `(prior, None)`, and
+        // the sticky-clearing toggle records `(Some(false), None)`.
+        let staged = [
+            IntentData::new(Some(true), Some(true)),
+            IntentData::new(Some(true), Some(false)),
+            IntentData::new(Some(true), None),
+            IntentData::new(Some(false), None),
+        ];
+        let mut widest = 0;
+        for save in staged {
+            widest = widest.max(json_string_len(&encode_intent_data(&save)));
+        }
+        assert_eq!(widest, 48);
+        assert_eq!(MAX_INTENT_SAVE_DATA_JSON, 48);
+    }
+
+    #[test]
+    fn rollback_prior_family_max_is_49_and_rows_fit_bound() {
+        use crate::intent_data::{IntentData, encode_intent_data};
+        use crate::world_report::IntentWrite;
+        // All nine rollback shapes the proven-refusal path can restore,
+        // including the record-free `(None, None)` and the escaped-49
+        // `(Some(false), Some(false))` outside the command-save family.
+        let priors = [
+            (IntentData::new(None, None), 47),
+            (IntentData::new(None, Some(false)), 48),
+            (IntentData::new(None, Some(true)), 47),
+            (IntentData::new(Some(false), None), 48),
+            (IntentData::new(Some(false), Some(false)), 49),
+            (IntentData::new(Some(false), Some(true)), 48),
+            (IntentData::new(Some(true), None), 47),
+            (IntentData::new(Some(true), Some(false)), 48),
+            (IntentData::new(Some(true), Some(true)), 47),
+        ];
+        let mut widest = 0;
+        for (prior, expected) in priors {
+            let encoded = encode_intent_data(&prior);
+            assert_eq!(json_string_len(&encoded), expected, "{prior:?}");
+            widest = widest.max(expected);
+        }
+        assert_eq!(widest, 49);
+        assert_eq!(MAX_INTENT_ROLLBACK_DATA_JSON, 49);
+        assert_eq!(MAX_INTENT_ROLLBACK_ROW_BYTES, 16 + 130 + 49 + 1);
+        // One max-id rollback row costs 195 on the wire; the per-row bound
+        // reserves one comma conservatively.
+        let max_id = "w".repeat(128);
+        let row = IntentWrite {
+            win: crate::directional::WindowId(max_id),
+            data: Some(encode_intent_data(&IntentData::new(
+                Some(false),
+                Some(false),
+            ))),
+        };
+        let writes = vec![row];
+        assert_eq!(intent_writes_estimate(&writes), 18 + 16 + 130 + 49);
+        assert!(intent_writes_estimate(&writes) <= 18 + max_intent_rollback_bound(1));
+        assert_eq!(max_intent_rollback_bound(1), 196);
+        // Three max rows: three bodies plus two commas stay under the bound.
+        let max_rows: Vec<IntentWrite> = (0..3)
+            .map(|i| IntentWrite {
+                win: crate::directional::WindowId(format!("w{i}") + &"w".repeat(126)),
+                data: Some(encode_intent_data(&IntentData::new(
+                    Some(false),
+                    Some(false),
+                ))),
+            })
+            .collect();
+        let section = intent_writes_estimate(&max_rows) - 18;
+        assert_eq!(section, 3 * (16 + 130 + 49) + 2);
+        assert!(section <= max_intent_rollback_bound(3));
+        // Rollback plus an unrelated max-id command save share one section:
+        // 195 + 194 + 1 comma = 390 fits the split prebound exactly.
+        let save_row = IntentWrite {
+            win: crate::directional::WindowId("w".repeat(128)),
+            data: Some(encode_intent_data(&IntentData::new(Some(false), None))),
+        };
+        let both = vec![max_rows[0].clone(), save_row];
+        let both_section = intent_writes_estimate(&both) - 18;
+        assert_eq!(both_section, (16 + 130 + 49) + (16 + 130 + 48) + 1);
+        assert!(both_section <= max_intent_rollback_bound(1) + 194);
+    }
+
+    #[test]
+    fn visibility_object_and_state_row_spell_frozen_order() {
+        // Byte witnesses for the frozen suffix order after `clear_op`:
+        // `cmdSeq`, `visibility`, `visibility_auth`, `visibility_hold`,
+        // `state` (mirrors the immutable v4 reply fixtures).
+        let shown = lane_window(
+            None,
+            Some(VisibilityTarget {
+                shown: true,
+                revision: 1,
+                fallback: false,
+            }),
+            ScopeAuthority::Controlled,
+            Vec::new(),
+        );
+        let shown_bytes = encoded_lanes(&shown);
+        assert!(
+            shown_bytes
+                .contains("\"visibility\":{\"shown\":true,\"rev\":\"1\",\"fallback\":false}")
+        );
+        let row = lane_window(
+            None,
+            None,
+            ScopeAuthority::Untouched,
+            vec![StateTarget {
+                property: StateProperty::Above,
+                value: true,
+                authority: ScopeAuthority::Controlled,
+                command_seq: None,
+            }],
+        );
+        assert!(encoded_lanes(&row).contains(
+            "\"state\":[{\"property\":\"above\",\"value\":true,\
+             \"auth\":\"controlled\",\"reason\":\"\",\"cmdSeq\":null}]"
+        ));
     }
 }

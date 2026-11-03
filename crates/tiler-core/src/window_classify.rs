@@ -93,10 +93,16 @@ pub struct ClassifyInput<'a> {
     pub unavailable: &'a [FactName],
     pub fixed_predicate: FixedSizePredicate,
     pub maximize_supported: bool,
+    pub native_sticky_supported: bool,
     pub retained_tiled: bool,
     pub automatic_fixed: bool,
     pub tile_override: bool,
     pub explicit_float: bool,
+    /// Restored semantic sticky intent for this lifetime: a pending
+    /// whole sticky-bearing record or committed sticky-prior provenance.
+    /// Never an adapter fact projection: raw facts stay the sole public
+    /// input and this carrier only proves the sticky float.
+    pub semantic_sticky: bool,
     pub own_process_id: Option<&'a str>,
 }
 
@@ -213,7 +219,15 @@ pub fn classify_window(input: ClassifyInput<'_>) -> ClassifiedWindow {
 
     let overlay_fullscreen = fact.fullscreen == Some(true);
     let overlay_maximized = fact.maximized == Some(true);
-    let sticky = fact.sticky == Some(true);
+    // Sticky authority is capability-gated: without nativeSticky no raw
+    // value (true or false) authorizes sticky, and grading holds the row
+    // narrowly. The gate here keeps a pure-classify bypass from granting
+    // that authority. Restored semantic sticky intent (pending whole
+    // sticky-bearing records or committed prior provenance) proves sticky
+    // independently of the raw fact: it never projects adapter facts and
+    // never authorizes native writes, only the sticky float membership.
+    let sticky =
+        (input.native_sticky_supported && fact.sticky == Some(true)) || input.semantic_sticky;
     let hidden = fact.minimized == Some(true) || fact.host_hidden == Some(true);
 
     // Own-process exclusion needs known equality on both sides; a
@@ -400,7 +414,9 @@ pub fn classify_window(input: ClassifyInput<'_>) -> ClassifiedWindow {
     // are unreadable) stays floating without inventing an empty hint
     // set. The fabricated `none` never authorizes a write.
     // Ordinary newcomers (and tile-override carriers) still hold.
-    let float_without_hints = if input.explicit_float {
+    // Semantic sticky intent proves the sticky float without constraint
+    // facts, exactly like an explicit float origin.
+    let float_without_hints = if input.explicit_float || input.semantic_sticky {
         true
     } else if input.tile_override {
         false
@@ -414,17 +430,26 @@ pub fn classify_window(input: ClassifyInput<'_>) -> ClassifiedWindow {
     }
     // Unknown action properties hold their dependent action: never a
     // silent false (or, for overlays, true) authority, and never an
-    // admission default. Hints, fullscreen, minimized, host-hidden, and
-    // sticky carry no unavailable-fact names. Maximized is
+    // admission default. Hints, fullscreen, minimized, and host-hidden
+    // carry no unavailable-fact names. Maximized and sticky are
     // capability-gated: `maximized: null` with `maximize: false` (macOS
-    // provisional contract425) must not hold membership; the unknown
-    // overlay then gates only geometry/clear behavior downstream, never
-    // admission here. Full action-specific refinement is deferred.
-    if fact.fullscreen.is_none()
-        || fact.minimized.is_none()
-        || fact.host_hidden.is_none()
-        || fact.sticky.is_none()
-    {
+    // provisional contract425) and `sticky: null` with `nativeSticky: false`
+    // (composed route) must not hold membership; the unknown overlay then
+    // gates only geometry/clear behavior downstream, never admission here.
+    // Full action-specific refinement is deferred.
+    if fact.fullscreen.is_none() || fact.minimized.is_none() || fact.host_hidden.is_none() {
+        hold = true;
+    }
+    // Sticky null holds with native support (the composed route
+    // carries null as the ordinary value). Restored semantic sticky intent
+    // is never native read completion, so it never lifts this hold; only
+    // `nativeSticky: false` raw null is the normal composed value. An
+    // unsupported non-null sticky never authorizes and fails closed here
+    // so even a grading bypass grants no sticky/float/tile authority.
+    if fact.sticky.is_none() && input.native_sticky_supported {
+        hold = true;
+    }
+    if !input.native_sticky_supported && fact.sticky.is_some() {
         hold = true;
     }
     if fact.maximized.is_none() && input.maximize_supported {
@@ -462,7 +487,11 @@ pub fn classify_window(input: ClassifyInput<'_>) -> ClassifiedWindow {
     let fixed_now = fact
         .hints
         .is_some_and(|hints| is_fixed_size_with(hints, input.fixed_predicate));
-    let (floating, fixed_auto, fixed_suppress) = if input.explicit_float {
+    // Semantic sticky intent dominates the float lane: a sticky float
+    // regardless of the incoming float value, never an automatic origin
+    // and never a tile win. Safety exclusion above already refused; this
+    // never overrides it.
+    let (floating, fixed_auto, fixed_suppress) = if input.semantic_sticky || input.explicit_float {
         (true, false, false)
     } else if input.tile_override {
         (false, false, true)
@@ -521,10 +550,12 @@ pub fn classify_newcomer(
         unavailable,
         fixed_predicate,
         maximize_supported: true,
+        native_sticky_supported: true,
         retained_tiled: false,
         automatic_fixed: false,
         tile_override: false,
         explicit_float: false,
+        semantic_sticky: false,
         own_process_id: None,
     })
 }

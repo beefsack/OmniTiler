@@ -702,6 +702,15 @@ impl Engine {
         }
     }
 
+    /// Production commit for restored explicit tiles: records the
+    /// override in every session currently homing the window tiled.
+    /// Unknown windows are ignored; existing marks are kept.
+    pub(crate) fn commit_fixed_tile_override(&mut self, window: &crate::directional::WindowId) {
+        for session in self.sessions.values_mut() {
+            session.insert_fixed_tile_override(window);
+        }
+    }
+
     /// Whether any retained session floats this window by automatic
     /// fixed-size admission. Feeds the classifier latch so the automatic
     /// float survives losing hints or a predicate change.

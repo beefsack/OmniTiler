@@ -118,6 +118,9 @@ fn set_born_policy(
 fn born_clear_engine() -> WorldEngine {
     let capabilities = crate::connection::HostCapabilities {
         birth_clear: true,
+        // Fixtures carry native sticky facts; the born lane under test is
+        // the native route.
+        native_sticky: true,
         ..Default::default()
     };
     WorldEngine::new_test_bound_with_capabilities("gen-1", "adapter-1", capabilities)
@@ -2063,6 +2066,7 @@ fn explicit_float_intent_supersedes_birth() {
     assert_eq!(engine.born_retained_len(), 1);
     engine.retained_floats.push(RetainedFloat {
         operation_id: "op-7".to_owned(),
+        command_seq: 7,
         window: WindowId("win-born".to_owned()),
         target: Rect {
             x: 600,

@@ -27,6 +27,9 @@ fn engine_host_owned(mode: WorkspaceMode, equal_count: bool) -> WorldEngine {
         HostCapabilities {
             host_owned: true,
             equal_count,
+            // Fixtures carry native sticky facts (including a sticky homing
+            // probe); the lane under test is the native route.
+            native_sticky: true,
             ..Default::default()
         },
         vec![("mode".to_owned(), RawSettingValue::String(token.to_owned()))],
@@ -149,6 +152,7 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),

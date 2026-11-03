@@ -483,6 +483,7 @@ impl WorldEngine {
                     .retain(|held| held.window != retained.window);
                 self.retained_floats.push(RetainedFloat {
                     operation_id: retained.operation_id.clone(),
+                    command_seq: retained.command_seq,
                     window: retained.window.clone(),
                     target: half,
                     source: fact.rect,
@@ -578,11 +579,7 @@ impl WorldEngine {
                     keep.push(retained);
                     continue;
                 }
-                let command_seq: u64 = retained
-                    .operation_id
-                    .strip_prefix("op-")
-                    .and_then(|suffix| suffix.parse::<u64>().ok())
-                    .unwrap_or(0);
+                let command_seq: u64 = retained.command_seq;
                 let pinned = match self.window_topology_target(
                     &source_row.output,
                     direction_parsed,

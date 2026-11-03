@@ -774,11 +774,17 @@ impl WorldEngine {
                 // dispatches the native clear at most once and reports a
                 // correlated `ClearAttempt`; the commandless settlement
                 // resumes the original intent under this same identity on
-                // proof. Never a second command or child id.
+                // proof. Never a second command or child id. The newer
+                // intent supersedes any outstanding same-window float
+                // placement (mirroring float-mint replacement), so the
+                // reply never co-publishes a stale placement with the new
+                // clear.
                 let operation_id = format!("op-{command_seq}");
+                self.retained_floats.retain(|held| held.window != window);
                 self.retained_clears
                     .push(crate::world_engine::RetainedClear {
                         operation_id,
+                        command_seq,
                         window: window.clone(),
                         direction: direction.to_owned(),
                         home: home.clone(),
@@ -877,6 +883,7 @@ impl WorldEngine {
             self.retained_floats
                 .push(crate::world_engine::RetainedFloat {
                     operation_id,
+                    command_seq,
                     window: window.clone(),
                     target: half,
                     source: Some(source_row.rect),
@@ -1425,6 +1432,48 @@ impl WorldEngine {
                 message: MSG_OPERATION,
             };
         }
+        // Sticky-subject ToggleFloat: a subject with usable sticky
+        // restore authority (committed prior provenance or a
+        // non-conflicted pending whole sticky-bearing record) clears
+        // sticky and tiles through the composed sticky transition, which
+        // converges transactionally instead of partially transitioning
+        // (tiling the exception, then resurrecting sticky on the next
+        // report). Native sticky subjects clear through the native
+        // hold path; unsupported keeps refusing here.
+        // Block-only or conflicted subjects confer no usable restore
+        // authority, so their ordinary commands still run while
+        // publication stays blocked. Existing native sticky refusals in
+        // the session lane are unchanged.
+        if let CoreCommand::ToggleFloat { window, .. } = command {
+            let window_id = WindowId(window.clone());
+            let usable_pending = self.pending_intent.get(&window_id).is_some_and(|data| {
+                data.sticky_prior.is_some() && !self.intent_conflicts.contains(&window_id)
+            });
+            let native_sticky_subject = self.sticky_route()
+                == crate::world_sticky::StickyRoute::Native
+                && self.sticky_current(&window_id) == Some(true);
+            if self.restored_sticky.contains_key(&window_id)
+                || usable_pending
+                || native_sticky_subject
+            {
+                // Composed sticky subjects clear sticky and tile through
+                // the sticky transition; native sticky subjects clear
+                // through the native hold path; unsupported keeps
+                // refusing here instead of partially transitioning.
+                if self.sticky_route() != crate::world_sticky::StickyRoute::Unsupported {
+                    return self.execute_sticky_toggle_float(
+                        report,
+                        command_seq,
+                        &window_id,
+                        held_scopes,
+                    );
+                }
+                return CommandApplied::Rejected {
+                    kind: KIND_OPERATION,
+                    message: MSG_OPERATION,
+                };
+            }
+        }
         let (domain_key, domain_report) = match self.operation_domain_staged(command, held_scopes) {
             Some(found) => found,
             None => {
@@ -1598,6 +1647,7 @@ impl WorldEngine {
                     self.retained_floats
                         .push(crate::world_engine::RetainedFloat {
                             operation_id: format!("op-{command_seq}"),
+                            command_seq,
                             window,
                             target: *target,
                             source,
@@ -1867,7 +1917,9 @@ pub(crate) fn command_window(command: &WorldCommand) -> Option<WindowId> {
         | WorldCommand::Send { window, .. }
         | WorldCommand::SendRelative { window, .. }
         | WorldCommand::SendNumbered { window, .. }
-        | WorldCommand::ToggleMaximize { window } => Some(window.clone()),
+        | WorldCommand::ToggleMaximize { window }
+        | WorldCommand::SetSticky { window, .. }
+        | WorldCommand::ToggleSticky { window } => Some(window.clone()),
         WorldCommand::Operation(command) => match command {
             CoreCommand::Move { window, .. }
             | CoreCommand::Focus { window, .. }

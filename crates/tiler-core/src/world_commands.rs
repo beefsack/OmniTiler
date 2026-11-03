@@ -859,6 +859,12 @@ impl WorldEngine {
             WorldCommand::ToggleMaximize { window } => {
                 self.toggle_maximize(report, command_seq, window, held_scopes)
             }
+            WorldCommand::SetSticky { window, value } => {
+                self.execute_sticky_command(report, command_seq, window, Some(*value), held_scopes)
+            }
+            WorldCommand::ToggleSticky { window } => {
+                self.execute_sticky_command(report, command_seq, window, None, held_scopes)
+            }
             WorldCommand::Operation(command) => {
                 self.execute_operation(report, command_seq, command, &by_id, held_scopes)
             }

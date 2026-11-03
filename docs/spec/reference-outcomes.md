@@ -51,6 +51,36 @@ counterpart. Those sources do not prove macOS delivery or the sequences below.
 | Compose from tile, then float in separate runs; orderly-restart tiler and reobserve exact surviving window | Drop overlay and return to retained base; no maximize persistence or IntentRecord extension and no new M3 dependency | Orderly-stop base restoration and post-restart native geometry TBD; existing float restart identity/storage gates remain separate |
 | With maximize=false, request maximize while the subject's frame authority is unavailable; restore authority without a new command, then press again | User 2026-11-03: refuse via the existing applicable refusal gate, with overlay intent unchanged. No deferred/automatic composition on authority recovery; a fresh press is required. Existing refusal precedent, no new product semantics | Native refusal/recovery delivery TBD; Tier 1 retained-slot sources do not establish unavailable external frame-authority handling |
 
+### Native fullscreen entry from maximized
+
+| Minimal action sequence | Tier 1 source evidence | Unselected core behavior / native gate |
+| --- | --- | --- |
+| With A maximized and not fullscreen, request fullscreen-on, then explicitly exit fullscreen; repeat from tiled and floating bases | COSMIC enters immediately and saves/restores maximized state (`cosmic-comp` @ `3d55cba06c9cf6f27609cdefb520f7857dba20af`: `src/input/actions.rs:927-953`, `src/shell/mod.rs:4931-4940,2679-2848`, `src/shell/workspace.rs:273-328,1091-1126`). Hyprland project fullscreen overwrites MAXIMIZED with FULLSCREEN, then exits to base without restoring maximize; its client path has separate maximize restoration (`Hyprland` @ `19fb395d45314960e6f79f17994a84094f1cd4f6`: `FullscreenHandler.cpp:150-162`, `ConfigActions.cpp:338-348`, `FullscreenController.cpp:326-331,419,457-458`). Source-only; i3/sway have no maximize counterpart | Ours entry behavior and exit restoration remain TBD. The selected [R-MAX-11](reference-outcomes/maximize-fullscreen.md#r-max-11-maximize-toggle-on-fullscreen) covers the opposite direction (fullscreen to maximize), not this sequence. Neither source establishes external native boolean-flag ordering or KWin applied-state outcomes |
+
+### Opaque intent import timing
+
+| Minimal action sequence | Selected core outcome | Unproven native outcome |
+| --- | --- | --- |
+| Return a verified float/tile intent record with a held/unreadable window; recover admissibility without returning the record again; separately admit without a record, return one late, then make a newer runtime choice | User 2026-11-03: retain pending intent until first successful admission; after admission ignore late records, never overwrite newer runtime intent. Adapter returns storage in or before the first admissible report; late return is diagnostic only, no write authority | Native slot/store read ordering and held-to-admissible restart restoration TBD; [R-FLT-05](reference-outcomes/floating.md#r-flt-05-restart-with-a-sticky-float) establishes i3 restart carry, not asynchronous late-record handling |
+
+### Sticky intent current-mode encoding
+
+| Minimal action sequence | Selected core encoding | Unproven native outcome |
+| --- | --- | --- |
+| Sticky-on an ordinary tile, then an ordinary float in separate runs; inspect the full saved record; restart and sticky-off. Separately import each float=null/false/true with stickyPrior=false/true | Sticky-on saves float=true and stickyPrior=previous mode; sticky-off saves float=prior and stickyPrior=null. Every non-null stickyPrior restores sticky-float intent and carries the off destination mode; the float lane never overrides that prior. Current-mode encoding, not new sticky behavior | Native save/delivery/restart and off admission remain TBD. [R-FLT-02](reference-outcomes/floating.md#r-flt-02-backfill-sticky-across-a-workspace-switch-scrolling) supports COSMIC's float-first, remembered-mode behavior, not this private record encoding |
+
+### Native-state attempt correlation
+
+| Minimal action sequence | Core correlation / settlement rule | Evidence / remaining gate |
+| --- | --- | --- |
+| Authorize a native property target in reply revision R; carry its attempt in a later observation with rev=R; lose readability, then recover without another attempt. Separately change each correlation field or redeliver the original stamp | Match window/property/target/authorizing reply revision, not later obs/reqSeq or attemptMs. Capture matched raw evidence as spent before holds; recover proof from readable staged state without replay. Unmatched evidence grants no authority; repeated evidence cannot replace the original | Immutable `window-state` pairs `native-sticky-target` revision 2 with `native-sticky-observed` observation 3 and attempt rev=2. Internal bound-target regressions exercise settlement; target producers, native delivery and whole-scenario execution remain TBD. This is wire correlation, not a new reference-WM policy |
+
+### Native sticky refusal and saved intent
+
+| Minimal action sequence | Established constraints | Selected core rule / native evidence gate |
+| --- | --- | --- |
+| Start with tiled A; request native sticky-on, atomically save the requested sticky record before its property write; return an exact correlated explicit refusal with pre=post=false and readable staged sticky=false; restart without another command. Separately return an ambiguous/unproven outcome and later readable observation | Refusal proves no native transition and permits no blind retry. Existing KDE persists the new float/sticky intent only after successful readback (`kwin/src/world-native.ts`, `setStickyNative`); v4 storage must publish before dependent writes. Tier 1 [R-FLT-02](reference-outcomes/floating.md#r-flt-02-backfill-sticky-across-a-workspace-switch-scrolling) establishes sticky float/prior-mode behavior, not failed external setter/storage ordering | User 2026-11-03: pre-write save remains for crash safety. Proven refusal restores the pre-command saved record, or null-clears if none existed, with no automatic retry. Ambiguous/unproven outcomes keep the requested record; later native observation reconciles under existing fact-authority rules, without retry. This applies the existing failed-transition rule, not new product semantics. Native save/rollback/restart outcomes remain TBD; immutable native-sticky fixtures cover success only |
+
 ### Raw classification hold discriminators
 
 | Minimal action sequence | Current conservative core behavior | Unsupported outcome / remaining work |

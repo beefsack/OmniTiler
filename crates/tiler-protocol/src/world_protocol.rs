@@ -149,6 +149,13 @@
 //!   maximize-clear write/proof facts only (immediate pre/post maximized
 //!   states); at most one entry per retained clear operation. The core
 //!   owns directional clear completion.
+//! stateAttempts[] (required, no tolerant backfill: missing refuses):
+//!   {win, property:fullscreen|maximized|sticky|above, target:bool,
+//!    rev:"u64", setter:accepted|refused|threw,
+//!    pre:bool|null, post:bool|null, attemptMs:"u64"} - mechanical
+//!   native-state write/proof facts only (immediate pre/post property
+//!   states); at most one entry per window property across every carried
+//!   revision. The core owns every state verdict.
 //! creationAttempts[] (optional, tolerant: missing backfills []):
 //!   {op, ws, out, setter:accepted|refused|threw,
 //!    before:[id...], after:[id...],
@@ -166,7 +173,8 @@
 //!   select-relative|select-previous|select-trailing|send-relative|
 //!   send-numbered|set-workspace-tiling|toggle-workspace-tiling|
 //!   migrate-workspace|focus-directional|move-directional|send-directional|
-//!   migrate-directional|operation (fields per variant, see decode; every
+//!   migrate-directional|set-sticky|toggle-sticky|operation
+//!   (fields per variant, see decode; every
 //!   `ws` field names a stable core logical workspace id; the four
 //!   selection commands carry `"out":null` for core-resolved output or an
 //!   opaque id for a genuinely semantic explicit output)
@@ -1815,6 +1823,42 @@ fn decode_clear_attempt(
     })
 }
 
+/// Decode one raw native-state attempt row. Every key is required on the
+/// wire (`win`, `property`, `target`, `rev`, `setter`, `pre`, `post`,
+/// `attemptMs`); absence refuses as malformed, unknown keys refuse as
+/// unknown-field, and unknown property/setter tokens or bad decimal
+/// counters refuse as unknown-value. `pre`/`post` are required nullable
+/// immediate proofs (`null` is unreadable, never a default).
+pub fn decode_state_attempt(
+    value: &serde_json::Value,
+) -> Result<tiler_core::world_report::StateAttempt> {
+    use tiler_core::world_report::StateProperty;
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "win",
+            "property",
+            "target",
+            "rev",
+            "setter",
+            "pre",
+            "post",
+            "attemptMs",
+        ],
+    )?;
+    Ok(tiler_core::world_report::StateAttempt {
+        window: WindowId(req_id(map, "win")?),
+        property: StateProperty::parse(req_str(map, "property")?).ok_or_else(unknown_value)?,
+        target: req_bool(map, "target")?,
+        revision: req_u64_str(map, "rev")?,
+        setter: parse_frame_setter(req_str(map, "setter")?)?,
+        pre: opt_bool_or_null(map, "pre")?,
+        post: opt_bool_or_null(map, "post")?,
+        attempt_ms: req_u64_str(map, "attemptMs")?,
+    })
+}
+
 fn decode_creation_attempt(
     value: &serde_json::Value,
 ) -> Result<tiler_core::world_report::NativeCreationAttempt> {
@@ -2481,6 +2525,19 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
                 window: WindowId(req_id(map, "win")?),
             })
         }
+        "set-sticky" => {
+            check_keys(map, &["op", "win", "value"])?;
+            Ok(WorldCommand::SetSticky {
+                window: WindowId(req_id(map, "win")?),
+                value: req_bool(map, "value")?,
+            })
+        }
+        "toggle-sticky" => {
+            check_keys(map, &["op", "win"])?;
+            Ok(WorldCommand::ToggleSticky {
+                window: WindowId(req_id(map, "win")?),
+            })
+        }
         "operation" => {
             check_keys(map, &["op", "command"])?;
             let inner = map.get("command").ok_or_else(malformed)?;
@@ -2538,6 +2595,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "actionOutputs",
             "presentation",
             "intentRecords",
+            "stateAttempts",
         ],
         &[
             "cursorHit",
@@ -2660,6 +2718,15 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         for item in value.as_array().ok_or_else(malformed)? {
             creation_attempts.push(decode_creation_attempt(item)?);
         }
+    }
+    // Required native-state attempts: closed mechanical rows, no missing
+    // tolerance (adapters always carry the lane, possibly empty). Unknown
+    // fields/values refuse; per-property duplicates and bad window ids
+    // refuse in the core gate below.
+    let state_attempts_value = map.get("stateAttempts").ok_or_else(malformed)?;
+    let mut state_attempts = Vec::new();
+    for item in state_attempts_value.as_array().ok_or_else(malformed)? {
+        state_attempts.push(decode_state_attempt(item)?);
     }
     // Tolerant gesture ingress: missing backfills observation-only (`None`).
     // A present value carries the exact normalized shape; unknown
@@ -2789,6 +2856,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         creation_attempts,
         presentation: decode_presentation(map.get("presentation").ok_or_else(malformed)?)?,
         intent_records,
+        state_attempts,
         primary_output: match map.get("primary") {
             // Host-designated primary: absent means unknown (no fallback
             // to any per-screen flag: `primary` is not a screen key and
@@ -3018,6 +3086,7 @@ pub fn encode_reply(reply: &WorldReply) -> String {
             &mut out,
             window.clear_operation.as_deref().unwrap_or_default(),
         );
+        tiler_core::world_sizing::encode_window_target_lanes(&mut out, window);
         out.push('}');
     }
     out.push_str("],\"transfers\":[");

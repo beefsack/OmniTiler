@@ -876,6 +876,15 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   [Intent](../decisions/contract.md#intent-ownership-and-persistence),
   [evidence](../changes/v4-migration.md#b-reconciliations-and-open-points).
 
+- Import closes at the window's first successful admission. Core retains pending
+  records through held/unreadable observations; after admission it ignores late
+  records and never overwrites newer runtime intent. An adapter must return a
+  stored record in or before the report where its window is first observed
+  admissible. A later return is ignored (diagnostic only, no write authority).
+  This is an ordering obligation, not a new storage capability: per-window native
+  slots and pre-loaded atomic stores both satisfy it. Native delivery of that
+  ordering remains a port acceptance check, not proof from offline import tests.
+
 - Composed maximize is runtime-only: orderly restart drops it and restores base,
   with no maximize field or base-geometry extension in this record. This adds no
   M3 persistence dependency; intentional-float/sticky restart obligations remain.
@@ -889,6 +898,13 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | Core intent data (inside string) | `v` | integer 1 | no | Storage format version, independent of wire v. |
 | | `float` | bool | yes | Explicit float/tile override; null means no override. |
 | | `stickyPrior` | bool | yes | Non-null means retained sticky intent and prior float/tile intent for sticky-off; null means not sticky, independent of native fact availability. |
+
+- Sticky is float-only: sticky-on saves `float:true` and records the previous
+  float/tile mode in `stickyPrior`. Sticky-off saves `float:<prior mode>` and
+  `stickyPrior:null`. This is the core's current-mode encoding, not a new
+  product behavior. All six sticky-bearing input combinations remain accepted:
+  non-null `stickyPrior` restores sticky-float intent and determines sticky-off
+  membership, even when the returned `float` lane is null or false.
 
 ## Raw attempts and settlement
 
@@ -914,6 +930,13 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `pre,post` | bool | yes | Observed property immediately around call. |
 | | `attemptMs` | Counter | no | Original stamp. |
 
+- StateAttempt `rev` is the authorizing WorldReply `rev`, not the later report's
+  `obs` or `reqSeq`, nor the write's `attemptMs`. Match the exact window,
+  property, target and authorizing revision; observation-only replies do not
+  reauthorize a spent write. The immutable `window-state` scenario pairs
+  `native-sticky-target` at revision 2 with `native-sticky-observed` at observation
+  3 carrying attempt revision 2. See the
+  [correlation discriminator](../spec/reference-outcomes.md#native-state-attempt-correlation).
 - Member evidence uses the namespace allowed by hard capability; core alone
   translates native bindings. Remove parallel `nativePre/nativePost/nativeBase`.
   ViewAttempt permits no logical arm; native-free visibility/focus completes

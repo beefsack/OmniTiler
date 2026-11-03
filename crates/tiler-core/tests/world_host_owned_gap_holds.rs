@@ -149,6 +149,7 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: creations,
+        state_attempts: Vec::new(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -177,6 +178,9 @@ fn engine_host_owned_mode(mode: &str, equal_count: bool) -> WorldEngine {
         tiler_core::connection::HostCapabilities {
             host_owned: true,
             equal_count,
+            // Fixtures carry native sticky facts; the lane under test is
+            // the native route.
+            native_sticky: true,
             ..Default::default()
         },
         vec![("mode".to_owned(), RawSettingValue::String(mode.to_owned()))],

@@ -131,6 +131,7 @@ fn report_obs(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),

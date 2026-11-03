@@ -13,12 +13,176 @@ use crate::geometry::Rect;
 use crate::session::{DomainKey, RefusalKind};
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
-    CommandResult, FloatOrigin, HoldReason, OneShotEffect, OutputDesire, ScopeAuthority,
-    ScopeStatus, TilingMode, TransferKind, WORLD_CONTRACT_VERSION, WindowDesire, WorkspaceDesire,
-    WorldReply, WorldReport, workspace_authority_scope,
+    CommandResult, FloatOrigin, HoldReason, IntentWrite, OneShotEffect, OutputDesire,
+    ScopeAuthority, ScopeStatus, TilingMode, TransferKind, WORLD_CONTRACT_VERSION, WindowDesire,
+    WorkspaceDesire, WorldCommand, WorldReply, WorldReport, workspace_authority_scope,
 };
 
 impl WorldEngine {
+    /// Sticky-command save drain plus proven-refusal rollback merge plus
+    /// ordinary ToggleFloat fallback. Queued rollback writes (at most one
+    /// per window, latest wins) drain exactly once on every non-rejected
+    /// reply: fresh command replies, commandless observation replies,
+    /// consumed-command replies, and saturated-generation replies all emit
+    /// them, because the prior they restore is exact known state, not a
+    /// new unsafe save. A matching fresh sticky-command save supersedes
+    /// that window's rollback (the successful transition replaces the
+    /// deferred record); an unrelated non-matching queued save is dropped
+    /// exactly as before and never erases a rollback. Anything else falls
+    /// back to the existing ordinary `toggle_float_intent_save`
+    /// (consumed/saturated/blocks still suppress there), whose same-window
+    /// fresh save likewise wins over a stale rollback. Consumed and
+    /// saturated replies suppress only command and ordinary saves. Every
+    /// resulting write upserts bounded `sticky_saved` knowledge (`Some`
+    /// decodes and stores, `None` clears) for future native rollback;
+    /// undecodable rows are ignored. Import and late-input policy are
+    /// untouched (see `ingest_intent_records`). The rollback lane reserves
+    /// [`crate::world_sizing::max_intent_rollback_bound`] at the
+    /// pre-mutation gate; the merged section stays under
+    /// [`crate::world_report::MAX_INTENT_WRITES`] via the existing commit
+    /// gate (over-cap rejects without adopting, never a silent drop).
+    pub(crate) fn drain_intent_saves(
+        &mut self,
+        report: &WorldReport,
+        command_consumed: bool,
+        command_result: &Option<CommandResult>,
+    ) -> Vec<IntentWrite> {
+        let queued = self.sticky_command_save.take();
+        // Proven-refusal rollback writes drain on every non-rejected reply:
+        // commandless, consumed, and saturated replies still emit them.
+        // Rejected envelopes drop the whole staged candidate upstream, so
+        // nothing leaks there.
+        let mut merged: Vec<IntentWrite> = std::mem::take(&mut self.sticky_rollback_saves)
+            .into_values()
+            .collect();
+        if command_consumed || self.intent_sticky_saturated {
+            // Consumed/saturated suppress command and ordinary saves, never
+            // rollback: the prior is exact known state, not a new save.
+            self.upsert_intent_save_knowledge(&merged);
+            return merged;
+        }
+        if let Some(save) = queued {
+            let matches = match report.command.as_ref() {
+                Some(WorldCommand::SetSticky { window, .. }) => window == &save.win,
+                Some(WorldCommand::ToggleSticky { window }) => window == &save.win,
+                Some(WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
+                    window,
+                    ..
+                })) => WindowId(window.clone()) == save.win,
+                _ => false,
+            };
+            if matches {
+                // A fresh same-window save wins over a pending rollback.
+                merged.retain(|write| write.win != save.win);
+                merged.push(save);
+                self.upsert_intent_save_knowledge(&merged);
+                return merged;
+            }
+        }
+        let ordinary = self.toggle_float_intent_save(report, false, command_result);
+        if !ordinary.is_empty() {
+            // A fresh same-window ordinary save wins over a stale rollback.
+            for write in &ordinary {
+                merged.retain(|queued| queued.win != write.win);
+            }
+            merged.extend(ordinary);
+        }
+        self.upsert_intent_save_knowledge(&merged);
+        merged
+    }
+
+    /// Bounded latest-wins `sticky_saved` knowledge from published writes.
+    /// A cap drop latches [`Self::sticky_saved_incomplete`] fail-closed so
+    /// native priors stay unknown even after later prunes.
+    fn upsert_intent_save_knowledge(&mut self, writes: &[IntentWrite]) {
+        for write in writes {
+            match write.data.as_deref() {
+                Some(raw) => {
+                    let Ok(data) = crate::intent_data::decode_intent_data(raw) else {
+                        continue;
+                    };
+                    if self.sticky_saved.contains_key(&write.win)
+                        || self.sticky_saved.len() < crate::world_report::MAX_INTENT_RECORDS
+                    {
+                        self.sticky_saved.insert(write.win.clone(), data);
+                    } else {
+                        self.sticky_saved_incomplete = true;
+                    }
+                }
+                None => {
+                    self.sticky_saved.remove(&write.win);
+                }
+            }
+        }
+    }
+
+    /// At-most-one canonical explicit float/tile save for a successful
+    /// non-consumed ToggleFloat: exactly
+    /// `{"v":1,"float":<bool>,"stickyPrior":null}` for the command window,
+    /// published in the same reply before any dependent adapter write.
+    /// The bool is verified from both the command result variant and the
+    /// committed post-state, which must agree: a float save needs a
+    /// non-automatic exception, an unfloat save needs a tiled link (the
+    /// fixed-tile override already committed transactionally through the
+    /// lifecycle suppress origin; the save records it, never clears it).
+    /// A no-space retry (`rect: None`, `no_space: true`) emits nothing:
+    /// the window never left float, so no tile may be manufactured and
+    /// no redundant float is published. Consumed, rejected, held,
+    /// non-toggle, restore, and bootstrap reports emit nothing, as do
+    /// reports under a sticky block or the saturation latch. Duplicate
+    /// requests repeat the cached reply (and its save); a later consumed
+    /// command report carries no Float result and emits nothing.
+    pub(crate) fn toggle_float_intent_save(
+        &self,
+        report: &WorldReport,
+        command_consumed: bool,
+        command_result: &Option<CommandResult>,
+    ) -> Vec<IntentWrite> {
+        if command_consumed || self.intent_sticky_saturated {
+            return Vec::new();
+        }
+        let window = match report.command.as_ref() {
+            Some(WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
+                window,
+                ..
+            })) => WindowId(window.clone()),
+            _ => return Vec::new(),
+        };
+        if self.intent_sticky_blocks.contains(&window) {
+            return Vec::new();
+        }
+        let (result_window, rect, no_space) = match command_result {
+            Some(CommandResult::Float {
+                window,
+                rect,
+                no_space,
+            }) => (window, rect, no_space),
+            _ => return Vec::new(),
+        };
+        if result_window != &window || *no_space {
+            return Vec::new();
+        }
+        let float = if rect.is_some() {
+            if !self.is_exception_window_any(&window)
+                || self.engine.is_automatic_fixed_float_any(&window)
+            {
+                return Vec::new();
+            }
+            true
+        } else {
+            if !self.is_tiled_window_any(&window) {
+                return Vec::new();
+            }
+            false
+        };
+        vec![IntentWrite {
+            win: window,
+            data: Some(crate::intent_data::encode_intent_data(
+                &crate::intent_data::IntentData::new(Some(float), None),
+            )),
+        }]
+    }
+
     /// One-place hold classification for sweep failures (capacity B).
     /// This is the single replaceable policy: only proven geometric
     /// exhaustion keeps topology and holds as [`HoldReason::ConstraintClamp`].
@@ -270,6 +434,10 @@ impl WorldEngine {
                         clear_operation: None,
                         floating: false,
                         float_origin: None,
+                        command_seq: None,
+                        visibility: None,
+                        visibility_authority: ScopeAuthority::Untouched,
+                        state: Vec::new(),
                     });
                 }
                 for window in &domain.minimized {
@@ -291,6 +459,10 @@ impl WorldEngine {
                         clear_operation: None,
                         floating: false,
                         float_origin: None,
+                        command_seq: None,
+                        visibility: None,
+                        visibility_authority: ScopeAuthority::Untouched,
+                        state: Vec::new(),
                     });
                 }
                 continue;
@@ -366,6 +538,10 @@ impl WorldEngine {
                             clear_operation,
                             floating: false,
                             float_origin: None,
+                            command_seq: None,
+                            visibility: None,
+                            visibility_authority: ScopeAuthority::Untouched,
+                            state: Vec::new(),
                         });
                     }
                     for window in &domain.minimized {
@@ -384,6 +560,10 @@ impl WorldEngine {
                             clear_operation: None,
                             floating: false,
                             float_origin: None,
+                            command_seq: None,
+                            visibility: None,
+                            visibility_authority: ScopeAuthority::Untouched,
+                            state: Vec::new(),
                         });
                     }
                     for window in &domain.unreadable {
@@ -402,6 +582,10 @@ impl WorldEngine {
                             clear_operation: None,
                             floating: false,
                             float_origin: None,
+                            command_seq: None,
+                            visibility: None,
+                            visibility_authority: ScopeAuthority::Untouched,
+                            state: Vec::new(),
                         });
                     }
                 }
@@ -447,6 +631,10 @@ impl WorldEngine {
                             clear_operation: None,
                             floating: false,
                             float_origin: None,
+                            command_seq: None,
+                            visibility: None,
+                            visibility_authority: ScopeAuthority::Untouched,
+                            state: Vec::new(),
                         });
                     }
                     continue;
@@ -606,21 +794,25 @@ impl WorldEngine {
                     .facts
                     .get(&geometry.window)
                     .is_some_and(|fact| fact.maximized.is_none());
-                let clear_operation = if report.gesture_barrier
+                let (clear_operation, command_seq) = if report.gesture_barrier
                     || fact_unreadable
                     || unknown_maximized
                     || self.is_held_window(&geometry.window)
                     || self.is_excluded_window(&geometry.window)
                 {
-                    None
+                    (None, None)
                 } else {
-                    self.retained_clears
-                        .iter()
-                        .find(|retained| {
-                            retained.window == geometry.window && retained.pending.is_none()
-                        })
-                        .map(|retained| retained.operation_id.clone())
-                        .or_else(|| self.born_desire_for(&geometry.window, report))
+                    match self.retained_clears.iter().find(|retained| {
+                        retained.window == geometry.window && retained.pending.is_none()
+                    }) {
+                        Some(retained) => (
+                            Some(retained.operation_id.clone()),
+                            Some(retained.command_seq),
+                        ),
+                        // Born commandless clears ride the token lane
+                        // with no command correlation.
+                        None => (self.born_desire_for(&geometry.window, report), None),
+                    }
                 };
                 // Core-owned frame policy (stage 3a): an exact desired match
                 // clears retained memory (completion is desired == observed,
@@ -676,6 +868,10 @@ impl WorldEngine {
                     // Tiled rows never carry a float-placement token.
                     frame_operation: None,
                     clear_operation,
+                    command_seq,
+                    visibility: None,
+                    visibility_authority: ScopeAuthority::Untouched,
+                    state: Vec::new(),
                     floating: false,
                     float_origin: None,
                 });
@@ -707,16 +903,13 @@ impl WorldEngine {
                 // published frame is the retained desire (directional
                 // half-snaps, explicit placements), falling back to the
                 // session geometry only with no outstanding target.
-                let retained_target = self
+                let retained_float = self
                     .retained_floats
                     .iter()
-                    .find(|held| held.window == observed.window)
-                    .map(|held| held.target);
-                let mut frame_operation = self
-                    .retained_floats
-                    .iter()
-                    .find(|held| held.window == observed.window)
-                    .map(|held| held.operation_id.clone());
+                    .find(|held| held.window == observed.window);
+                let retained_target = retained_float.map(|held| held.target);
+                let mut frame_operation = retained_float.map(|held| held.operation_id.clone());
+                let mut frame_seq = retained_float.map(|held| held.command_seq);
                 if frame_operation.is_some() {
                     let target =
                         retained_target.or_else(|| session.floating_geometry(&observed.window));
@@ -737,6 +930,7 @@ impl WorldEngine {
                             ) =>
                         {
                             frame_operation = None;
+                            frame_seq = None;
                         }
                         _ => {}
                     }
@@ -751,6 +945,7 @@ impl WorldEngine {
                         .is_none_or(|fact| fact.hints.is_none())
                 {
                     frame_operation = None;
+                    frame_seq = None;
                 }
                 // Explicit ordinary-float classification (D4/D5): every
                 // retained exception row in a controlled scope converges
@@ -776,18 +971,31 @@ impl WorldEngine {
                         .facts
                         .get(&observed.window)
                         .is_none_or(|fact| fact.hints.is_none());
-                let clear_operation = if report.gesture_barrier
+                let (clear_operation, clear_seq) = if report.gesture_barrier
                     || fact_unreadable
                     || float_blocked
                     || self.is_held_window(&observed.window)
                     || self.is_excluded_window(&observed.window)
                 {
-                    None
+                    (None, None)
                 } else {
-                    directional
-                        .map(|retained| retained.operation_id.clone())
-                        .or_else(|| self.born_desire_for(&observed.window, report))
+                    match directional {
+                        Some(retained) => (
+                            Some(retained.operation_id.clone()),
+                            Some(retained.command_seq),
+                        ),
+                        // Born commandless clears ride the token lane
+                        // with no command correlation.
+                        None => (self.born_desire_for(&observed.window, report), None),
+                    }
                 };
+                // Single command slot for the row. The clear->float continuation
+                // resumes under the originating operation id, so the normal
+                // case carries one sequence for both tokens. A later
+                // NeedClear supersedes any retained same-window float at
+                // mint, so a stale placement never rides alongside the new
+                // clear; the slot carries the surviving token.
+                let command_seq = frame_seq.or(clear_seq);
                 windows.push(WindowDesire {
                     lifetime: observed.window.clone(),
                     output: observed.output.clone(),
@@ -803,6 +1011,10 @@ impl WorldEngine {
                     },
                     frame_operation,
                     clear_operation,
+                    command_seq,
+                    visibility: None,
+                    visibility_authority: ScopeAuthority::Untouched,
+                    state: Vec::new(),
                     floating: true,
                     float_origin,
                 });
@@ -838,6 +1050,10 @@ impl WorldEngine {
                     clear_operation: None,
                     floating: false,
                     float_origin: None,
+                    command_seq: None,
+                    visibility: None,
+                    visibility_authority: ScopeAuthority::Untouched,
+                    state: Vec::new(),
                 });
             }
         }
@@ -902,6 +1118,10 @@ impl WorldEngine {
                 clear_operation: None,
                 floating: false,
                 float_origin: None,
+                command_seq: None,
+                visibility: None,
+                visibility_authority: ScopeAuthority::Untouched,
+                state: Vec::new(),
             });
         }
         // Explicit minimized facts without a retained slot row: the adapter
@@ -980,8 +1200,19 @@ impl WorldEngine {
                 clear_operation: None,
                 floating: false,
                 float_origin: None,
+                command_seq: None,
+                visibility: None,
+                visibility_authority: ScopeAuthority::Untouched,
+                state: Vec::new(),
             });
         }
+        // Composed sticky visibility: central decoration over the
+        // assembled rows (sticky-only, owner-output rows). Independent of
+        // the frame/member lanes above; touches visibility fields only.
+        self.decorate_sticky_visibility(report, held_scopes, &mut windows);
+        // Native sticky state: central decoration over the assembled rows
+        // beside the composed call. Touches state lanes only.
+        self.decorate_native_sticky_state(report, held_scopes, &mut windows);
         let mut by_output: BTreeMap<OutputId, Vec<ScopeStatus>> = BTreeMap::new();
         for status in scopes {
             let output = match &status.scope {
@@ -1024,6 +1255,11 @@ impl WorldEngine {
         // Capability-named note: explicit creation desires only; the reply
         // carries one stable op per outstanding authorization.
         let native_creations = self.native_creation_desires(report);
+        // Real-engine canonical intent saves (at most one): a staged
+        // sticky-command save drains exactly once on its successful fresh
+        // command, else the ordinary ToggleFloat save; the exact-encoding
+        // gate below still commits it atomically with the rest of the reply.
+        let intent_writes = self.drain_intent_saves(report, command_consumed, &command_result);
         WorldReply {
             contract_version: WORLD_CONTRACT_VERSION,
             adapter_incarnation: report.adapter_incarnation.clone(),
@@ -1046,7 +1282,7 @@ impl WorldEngine {
             native_creations,
             cursor_warp,
             presentation: crate::world_presentation::WorldPresentation::default(),
-            intent_writes: Vec::new(),
+            intent_writes,
         }
     }
 
@@ -1092,6 +1328,10 @@ impl WorldEngine {
                 clear_operation,
                 floating: false,
                 float_origin: None,
+                command_seq: None,
+                visibility: None,
+                visibility_authority: ScopeAuthority::Untouched,
+                state: Vec::new(),
             });
         }
         for observed in session.exception_observed() {
@@ -1117,6 +1357,10 @@ impl WorldEngine {
                 clear_operation,
                 floating: false,
                 float_origin: None,
+                command_seq: None,
+                visibility: None,
+                visibility_authority: ScopeAuthority::Untouched,
+                state: Vec::new(),
             });
         }
         for (window, output, workspace) in session.minimized_entries() {
@@ -1141,6 +1385,10 @@ impl WorldEngine {
                 clear_operation: None,
                 floating: false,
                 float_origin: None,
+                command_seq: None,
+                visibility: None,
+                visibility_authority: ScopeAuthority::Untouched,
+                state: Vec::new(),
             });
         }
     }

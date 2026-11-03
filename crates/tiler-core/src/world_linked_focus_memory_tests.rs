@@ -117,6 +117,7 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -740,7 +741,12 @@ fn global_unique_engine() -> WorldEngine {
     WorldEngine::new_test_bound_with_initial_settings(
         "gen-1",
         "adapter-1",
-        crate::connection::HostCapabilities::default(),
+        crate::connection::HostCapabilities {
+            // Fixtures carry native sticky facts; the lane under test is
+            // the native route.
+            native_sticky: true,
+            ..Default::default()
+        },
         vec![(
             "mode".to_owned(),
             crate::connection::RawSettingValue::String("global-unique".to_owned()),

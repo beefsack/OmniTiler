@@ -59,8 +59,9 @@ use crate::world_report::{
     CommandResult, FrameAttempt, HoldReason, TilingMode, TransferKind, TransferTarget,
     WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldCommand,
     WorldReply, WorldReport, encode_reply_canonical, grade_conflicting_windows,
-    grade_invalid_screens, grade_invalid_windows, reply_estimate, reply_upper_bound, report_digest,
-    report_estimate, validate_intent_writes_reason, validate_report_reason,
+    grade_invalid_screens, grade_invalid_windows, max_intent_rollback_bound, reply_estimate,
+    reply_upper_bound, report_digest, report_estimate, validate_intent_writes_reason,
+    validate_report_reason,
 };
 
 pub(crate) const KIND_VERSION: &str = "unsupported-version";
@@ -246,6 +247,7 @@ pub(crate) struct RetainedTransfer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainedFloat {
     pub(crate) operation_id: String,
+    pub(crate) command_seq: u64,
     pub(crate) window: WindowId,
     pub(crate) target: crate::geometry::Rect,
     pub(crate) source: Option<crate::geometry::Rect>,
@@ -293,6 +295,7 @@ pub(crate) struct RetainedFloat {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainedClear {
     pub(crate) operation_id: String,
+    pub(crate) command_seq: u64,
     pub(crate) window: WindowId,
     pub(crate) direction: String,
     pub(crate) home: DomainKey,
@@ -494,6 +497,16 @@ pub struct WorldEngine {
     /// Outstanding explicit float-placement targets, at most one per window.
     /// Bounded by the window inventory itself.
     pub(crate) retained_floats: Vec<RetainedFloat>,
+    /// Outstanding internal native-state bindings (state lane, early
+    /// increment): exact authorized targets plus retained raw evidence, spent
+    /// latches, and internal dispositions. See [`crate::world_state`]. At
+    /// most four per known lifetime (one per property), globally capped by
+    /// [`crate::world_state::MAX_RETAINED_STATE_BINDINGS`]; never a row,
+    /// slot, wire value, or membership proof.
+    pub(crate) retained_states: BTreeMap<
+        (WindowId, crate::world_report::StateProperty),
+        crate::world_state::RetainedStateBinding,
+    >,
     /// Outstanding directional maximize-clear authorizations, at most one
     /// per window. Bounded by the window inventory itself; each entry is
     /// commandless (no second command consumes it), superseded by any
@@ -741,6 +754,105 @@ pub struct WorldEngine {
     /// (see [`ExcludedIntent`]). Keyed by stable lifetime; never a row,
     /// never a slot, never a public wire value.
     pub(crate) excluded_intent: BTreeMap<WindowId, ExcludedIntent>,
+    /// Pending opaque intent restores not yet admitted (first-admission
+    /// import only). Usable records only: non-sticky `float` `Some` rows
+    /// plus whole sticky-bearing records (`stickyPrior` `Some` with any
+    /// `float` lane, including `None`); invalid, null/null, conflicting,
+    /// and closed subjects never store. Jointly bounded with
+    /// [`Self::intent_conflicts`] by
+    /// [`crate::world_report::MAX_INTENT_RECORDS`].
+    pub(crate) pending_intent: BTreeMap<WindowId, crate::intent_data::IntentData>,
+    /// Windows with conflicting duplicate intent rows (same report distinct
+    /// raw strings, or cross-report differing values before admission).
+    /// Conflicting subjects confer no import authority. Jointly bounded
+    /// with [`Self::pending_intent`].
+    pub(crate) intent_conflicts: BTreeSet<WindowId>,
+    /// Lifetimes whose first successful admission already happened. Late
+    /// intent rows for these lifetimes are ignored forever (even through
+    /// temporary exclusion, holds, or minimize), so newer runtime intent
+    /// is never overwritten. Pruned on explicit close and proven complete
+    /// departure; reset on handshake.
+    pub(crate) intent_admitted: BTreeSet<WindowId>,
+    /// Durable explicit-float provenance for restored intentional floats
+    /// (`float:true` wins) plus successful runtime float commands. Feeds
+    /// the stage-time classifier so a restored float survives later
+    /// ordinary facts and safety exclusion/recovery with no geometry,
+    /// focus, or clear ops. Only explicit wins enter: automatic and
+    /// capacity floats never do. Cleared when the lifetime tiles again
+    /// (runtime unfloat wins), on explicit close, and on proven complete
+    /// departure; reset on handshake. Never a row, slot, or wire value.
+    pub(crate) restored_floats: BTreeSet<WindowId>,
+    /// Lifetime-scoped sticky-prior provenance for restored semantic
+    /// sticky intent: the exact `stickyPrior` bool committed only on a real
+    /// healthy float success (non-automatic exception, including healthy
+    /// floating-workspace newcomers). Feeds the stage-time classifier so a
+    /// restored sticky float survives later ordinary facts and safety
+    /// exclusion/recovery with no geometry, focus, or clear ops, and never
+    /// converts into ordinary [`Self::restored_floats`] or a tile win.
+    /// Survives record-free reports, holds, minimize, exclusion, observed
+    /// native `false`, and handoff across workspace floating/tiling;
+    /// pruned only on explicit close, proven own-process, and proven
+    /// complete departure; reset on handshake (fresh construction). Never
+    /// a row, slot, wire value, or native-fact completion. Jointly bounded
+    /// with [`Self::pending_intent`]/[`Self::intent_conflicts`] (a
+    /// pending-to-retained commit holds the joint count steady).
+    pub(crate) restored_sticky: BTreeMap<WindowId, bool>,
+    /// Lifetime-scoped exact saved-record knowledge for sticky rollback:
+    /// the last published or first-imported [`IntentData`] per window,
+    /// including nullable imported shapes (never synthesized from the
+    /// current float bool). Established by first accepted imports and by
+    /// prior emitted ToggleFloat/sticky saves; late ignored imports never
+    /// clobber newer runtime state. Pruned on own-process proof, explicit
+    /// close, proven complete departure, and handshake reset like the
+    /// other intent ledgers. Bounded by [`MAX_INTENT_RECORDS`].
+    pub(crate) sticky_saved: BTreeMap<WindowId, crate::intent_data::IntentData>,
+    /// Generation-scoped fail-closed latch for exact saved-record knowledge:
+    /// set when a first-admission exact prior is lost to a bound
+    /// (`sticky_saved` or joint-ledger cap) or to conflicting imports, and
+    /// reset on handshake (fresh construction). While set, native commands
+    /// refuse as unknown even if the maps later shrink, because a pruned
+    /// length can no longer prove the prior was `None`. Late ignored
+    /// imports (already admitted) and malformed records never set it;
+    /// ordinary/composed save emission is unchanged, only native prior
+    /// reads fail closed.
+    pub(crate) sticky_saved_incomplete: bool,
+    /// Stable composed-visibility authorization revision per sticky window
+    /// (issuing reply revision, retained across observation-only replies).
+    /// Plain observation never renews it; a fresh explicit command
+    /// reauthorizes. Pruned with [`Self::sticky_saved`].
+    pub(crate) sticky_visible_rev: BTreeMap<WindowId, u64>,
+    /// Staged sticky command save for the reply being built (execute
+    /// stages, publish drains next unit). At most one per command: only
+    /// the successful accepted transition stages; same-state consumes
+    /// stage nothing; envelope rejections never reach staging.
+    pub(crate) sticky_command_save: Option<crate::world_report::IntentWrite>,
+    /// Staged proven-refusal rollback writes for the reply being built
+    /// (followup stages pre-sweep, publish drains). Latest-wins per window:
+    /// at most one write per lifetime, bounded by the live inventory. The
+    /// write restores the exact pre-command saved record (or null-clears
+    /// when there was none). Drained on commandless, consumed, and
+    /// saturated replies alike; a same-window fresh command save
+    /// supersedes at merge. Envelope rejections drop the whole staged
+    /// candidate, so nothing leaks. Budget prebound in the reply-size
+    /// reservation via [`crate::world_sizing::max_intent_rollback_bound`].
+    pub(crate) sticky_rollback_saves: BTreeMap<WindowId, crate::world_report::IntentWrite>,
+    /// Lifetime-scoped save blocks for deferred sticky intent: lifetimes
+    /// with a pre-admission `stickyPrior` non-null record. A blocked
+    /// lifetime publishes no intent save, even on a later successful
+    /// runtime ToggleFloat, because sticky semantics are not implemented
+    /// yet and a null-sticky save would erase the deferred record. The
+    /// set carries no sticky contents (none are chosen); it confers no
+    /// admission or native authority. Survives admission (unlike
+    /// conflicts), holds, exclusion, minimize, and record-free reports;
+    /// dropped on explicit close, proven own-process, and proven complete
+    /// departure; reset on handshake. Jointly bounded with
+    /// [`Self::pending_intent`]/[`Self::intent_conflicts`].
+    pub(crate) intent_sticky_blocks: BTreeSet<WindowId>,
+    /// Generation-scoped saturation latch: set when a sticky block cannot
+    /// be retained at the joint cap, and suppresses every intent save
+    /// until handshake reset. Fail-closed by construction: a dropped
+    /// block would allow a save to erase deferred sticky intent.
+    pub(crate) intent_sticky_saturated: bool,
     /// Retained pager presentation live frames (stage 5): fresh native
     /// frames per roster lifetime, rebuilt wholesale by every
     /// [`WorldEngine::retain_pager_presentation`] call from the normalized
@@ -816,6 +928,9 @@ impl WorldEngine {
             generation_seed,
             adapter,
             HostCapabilities {
+                // Synthetic fixtures carry native sticky facts; opt into the
+                // native route explicitly so the intended lane stays valid.
+                native_sticky: true,
                 ..HostCapabilities::default()
             },
         )
@@ -909,6 +1024,9 @@ impl WorldEngine {
     pub fn new_test_host_owned(generation_seed: &str, adapter: &str) -> Option<Self> {
         let capabilities = HostCapabilities {
             host_owned: true,
+            // Synthetic fixtures carry native sticky facts; opt into the
+            // native route explicitly so the intended lane stays valid.
+            native_sticky: true,
             ..HostCapabilities::default()
         };
         Self::new_test_bound_with_capabilities(generation_seed, adapter, capabilities)
@@ -919,6 +1037,8 @@ impl WorldEngine {
         let capabilities = HostCapabilities {
             host_owned: true,
             equal_count: true,
+            // Same native-sticky fixture rationale as the other defaults.
+            native_sticky: true,
             ..HostCapabilities::default()
         };
         Self::new_test_bound_with_capabilities(generation_seed, adapter, capabilities)
@@ -985,6 +1105,7 @@ impl WorldEngine {
             command_highwater: None,
             retained: Vec::new(),
             retained_floats: Vec::new(),
+            retained_states: BTreeMap::new(),
             retained_clears: Vec::new(),
             retained_born: Vec::new(),
             born_seq: 0,
@@ -1031,6 +1152,18 @@ impl WorldEngine {
             fresh_focus: crate::fresh_focus::FreshFocusMemory::default(),
             staged: StagedReport::default(),
             excluded_intent: BTreeMap::new(),
+            pending_intent: BTreeMap::new(),
+            intent_conflicts: BTreeSet::new(),
+            intent_admitted: BTreeSet::new(),
+            restored_floats: BTreeSet::new(),
+            restored_sticky: BTreeMap::new(),
+            sticky_saved: BTreeMap::new(),
+            sticky_saved_incomplete: false,
+            sticky_visible_rev: BTreeMap::new(),
+            sticky_command_save: None,
+            sticky_rollback_saves: BTreeMap::new(),
+            intent_sticky_blocks: BTreeSet::new(),
+            intent_sticky_saturated: false,
             presentation_live: BTreeMap::new(),
             presentation_float: BTreeMap::new(),
             presentation_tile: BTreeMap::new(),
@@ -1668,7 +1801,13 @@ impl WorldEngine {
             .as_ref()
             .map(|capabilities| capabilities.unavailable_facts.as_slice())
             .unwrap_or(&[]);
-        let graded_conflicting = grade_conflicting_windows(report, unavailable);
+        let native_sticky_supported = self
+            .capabilities
+            .as_ref()
+            .map(|capabilities| capabilities.native_sticky)
+            .unwrap_or(true);
+        let graded_conflicting =
+            grade_conflicting_windows(report, unavailable, native_sticky_supported);
         let report = graded_conflicting.as_ref().map_or(report, |owned| owned);
         if report_estimate(report) > WORLD_MAX_REQUEST_BYTES {
             return WorldOutcome::Rejected {
@@ -1774,12 +1913,21 @@ impl WorldEngine {
         // cannot fit.
         let retained_len = self.retained.len() + self.retained_floats.len();
         let created_len = report.screens.len();
+        let staged_windows = self
+            .staged
+            .facts
+            .len()
+            .saturating_add(self.staged.held_windows.len());
         if reply_upper_bound(
             report,
             retained_len,
             self.engine.domain_keys().len(),
             created_len,
-        ) > WORLD_MAX_REPLY_BYTES
+            staged_windows,
+            self.retained_publish_footprint(),
+        )
+        .saturating_add(max_intent_rollback_bound(self.rollback_reserve_count()))
+            > WORLD_MAX_REPLY_BYTES
         {
             return WorldOutcome::Rejected {
                 kind: KIND_REPLY_SIZE,
@@ -1818,6 +1966,38 @@ impl WorldEngine {
                         .is_some_and(|rect| rect.w > 0 && rect.h > 0)
             });
         if !self.initial_settings_accepted || (!self.ready_latched && !usable_initial_observation) {
+            // Bootstrap still ingests validated intent rows so records
+            // delivered in incomplete pre-ready inventories survive until
+            // the first usable fact. No admission, sweep, or writes here.
+            // Complete/closed cleanup applies immediately too so stale
+            // orphans and conflicts cannot exhaust the joint bound before
+            // ready; retention pre-ready is bounded pending data, never
+            // report or write authority.
+            self.ingest_intent_records(report);
+            if report.inventory_complete {
+                let live: BTreeSet<WindowId> = report
+                    .windows
+                    .iter()
+                    .map(|fact| fact.window.clone())
+                    .collect();
+                let held: BTreeSet<WindowId> = report
+                    .held_windows
+                    .iter()
+                    .map(|held| held.window.clone())
+                    .collect();
+                self.pending_intent
+                    .retain(|id, _| live.contains(id) || held.contains(id));
+                self.intent_conflicts
+                    .retain(|id| live.contains(id) || held.contains(id));
+                self.restored_floats
+                    .retain(|id| live.contains(id) || held.contains(id));
+                self.restored_sticky
+                    .retain(|id, _| live.contains(id) || held.contains(id));
+                self.intent_admitted
+                    .retain(|id| live.contains(id) || held.contains(id));
+                self.intent_sticky_blocks
+                    .retain(|id| live.contains(id) || held.contains(id));
+            }
             return WorldOutcome::Accepted(self.bootstrap_report_reply(report, &correlation));
         }
         // Stage everything past this point on a clone. Exact-encoding
@@ -1831,10 +2011,11 @@ impl WorldEngine {
         match outcome {
             WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
                 // Outbound intent lane gate: every published/cached reply
-                // originates valid. The engine emits no writes in this
-                // increment, so this gate admits; a future increment that
-                // publishes decisions must pass here before the candidate
-                // commits or encodes. Fixed check vocabulary, never payload.
+                // originates valid. This increment publishes at most one
+                // ToggleFloat save (see `toggle_float_intent_save`); the
+                // gate admits empty and single-save replies alike and must
+                // pass here before the candidate commits or encodes. Fixed
+                // check vocabulary, never payload.
                 if let Some(reason) = validate_intent_writes_reason(&reply.intent_writes) {
                     return WorldOutcome::Rejected {
                         kind: KIND_SNAPSHOT,
@@ -1903,11 +2084,622 @@ impl WorldEngine {
         }
     }
 
-    /// Run one accepted report on the staged candidate: converge logical
-    /// rings/views, stage the observation, settle retained state, sweep
-    /// every readable logical workspace, execute at most one command, and
-    /// publish one globally monotonic revision. Called only on the clone;
-    /// the caller adopts the candidate after the exact-encoding gate.
+    /// Joint intent ledger occupancy: pending restores plus conflict marks
+    /// plus sticky save blocks plus retained sticky-prior provenance share
+    /// the single [`crate::world_report::MAX_INTENT_RECORDS`] cap, so every
+    /// insert branch below (and the sticky-block insert) must gate on this,
+    /// never on a partial sum. A pending-to-retained sticky commit removes
+    /// the pending entry first, so it holds the joint count steady.
+    pub(crate) fn intent_ledger_used(&self) -> usize {
+        self.pending_intent.len()
+            + self.intent_conflicts.len()
+            + self.intent_sticky_blocks.len()
+            + self.restored_sticky.len()
+    }
+
+    /// Record one lifetime-scoped save block for deferred sticky intent.
+    /// Jointly bounded with pending/conflicts by
+    /// [`crate::world_report::MAX_INTENT_RECORDS`]: when the bound leaves
+    /// no room, the generation-scoped saturation latch trips instead and
+    /// every save is suppressed until handshake reset. Fail-closed: a
+    /// dropped block would let a save erase deferred sticky intent.
+    /// Blocks confer no admission or native authority.
+    pub(crate) fn insert_intent_sticky_block(&mut self, win: &WindowId) {
+        if self.intent_sticky_blocks.contains(win) {
+            return;
+        }
+        if self.intent_ledger_used() < crate::world_report::MAX_INTENT_RECORDS {
+            self.intent_sticky_blocks.insert(win.clone());
+        } else {
+            self.intent_sticky_saturated = true;
+        }
+    }
+
+    /// First-accepted exact saved-record store: inserts only when no newer
+    /// runtime save exists (no late clobber). A cap drop latches
+    /// [`Self::sticky_saved_incomplete`] fail-closed instead of silently
+    /// losing the exact prior.
+    pub(crate) fn remember_first_sticky_saved(
+        &mut self,
+        win: &WindowId,
+        data: crate::intent_data::IntentData,
+    ) {
+        if self.sticky_saved.contains_key(win) {
+            return;
+        }
+        if self.sticky_saved.len() < crate::world_report::MAX_INTENT_RECORDS {
+            self.sticky_saved.insert(win.clone(), data);
+        } else {
+            self.sticky_saved_incomplete = true;
+        }
+    }
+
+    /// Conflicting imports invalidate any first-cached exact prior: drop
+    /// the bogus saved record and latch incomplete fail-closed.
+    pub(crate) fn drop_saved_as_conflicting(&mut self, win: &WindowId) {
+        self.sticky_saved.remove(win);
+        self.sticky_saved_incomplete = true;
+    }
+
+    pub(crate) fn ingest_intent_records(&mut self, report: &WorldReport) {
+        use std::collections::{BTreeMap, BTreeSet};
+        let closed: BTreeSet<&WindowId> = report.closed.iter().collect();
+        // Explicit closes end the lifetime: drop every ledger entry and
+        // never store a closed subject.
+        for id in &report.closed {
+            self.pending_intent.remove(id);
+            self.intent_conflicts.remove(id);
+            self.intent_admitted.remove(id);
+            self.restored_floats.remove(id);
+            self.restored_sticky.remove(id);
+            self.intent_sticky_blocks.remove(id);
+            self.sticky_saved.remove(id);
+            self.sticky_visible_rev.remove(id);
+            self.sticky_rollback_saves.remove(id);
+        }
+        // Own-process facts prove no import authority: drop pending and
+        // conflict entries for proven-own subjects without touching
+        // unrelated safety-held windows (which must stay recoverable).
+        // Safety exclusion (`owned`/privileged) is not own-process and
+        // never prunes here.
+        let own_pid: Option<String> = self
+            .application_identity
+            .as_ref()
+            .and_then(|identity| identity.process_id.clone());
+        let mut own_proven: BTreeSet<WindowId> = BTreeSet::new();
+        if let Some(own) = own_pid.as_deref() {
+            for fact in &report.windows {
+                if fact.process_id.as_deref() == Some(own) {
+                    own_proven.insert(fact.window.clone());
+                }
+            }
+        }
+        for id in &own_proven {
+            self.pending_intent.remove(id);
+            self.intent_conflicts.remove(id);
+            self.restored_floats.remove(id);
+            self.restored_sticky.remove(id);
+            self.intent_sticky_blocks.remove(id);
+            self.sticky_saved.remove(id);
+            self.sticky_visible_rev.remove(id);
+            self.sticky_rollback_saves.remove(id);
+        }
+        // Group raw rows by subject; >1 distinct string is a conflict.
+        let mut grouped: BTreeMap<&WindowId, BTreeSet<&str>> = BTreeMap::new();
+        for record in &report.intent_records {
+            if closed.contains(&record.win) {
+                continue;
+            }
+            if own_proven.contains(&record.win) {
+                continue;
+            }
+            grouped
+                .entry(&record.win)
+                .or_default()
+                .insert(record.data.as_str());
+        }
+        for (win, raws) in grouped {
+            // First-admission fence: already admitted lifetimes ignore late
+            // rows forever, even through exclusion/holds/minimize. Late
+            // rows never inhibit later runtime saves either.
+            if self.intent_admitted.contains(win) {
+                continue;
+            }
+            // Sticky-preservation scan before any conflict handling: a
+            // deferred stickyPrior non-null value in ANY duplicate row
+            // blocks later saves for this lifetime, even when the mixed
+            // rows also conflict. Sticky semantics are not implemented
+            // yet, so a null-sticky save must never overwrite them. A
+            // later non-sticky row never clears the block.
+            if raws.iter().any(|raw| {
+                matches!(
+                    crate::intent_data::decode_intent_data(raw),
+                    Ok(data) if data.sticky_prior.is_some()
+                )
+            }) {
+                self.insert_intent_sticky_block(win);
+            }
+            if self.intent_conflicts.contains(win) {
+                continue;
+            }
+            if raws.len() > 1 {
+                self.pending_intent.remove(win);
+                self.drop_saved_as_conflicting(win);
+                if self.intent_ledger_used() < crate::world_report::MAX_INTENT_RECORDS {
+                    self.intent_conflicts.insert(win.clone());
+                }
+                continue;
+            }
+            let raw = raws.iter().next().expect("grouped raw");
+            let decoded = match crate::intent_data::decode_intent_data(raw) {
+                Ok(data) => data,
+                Err(_) => continue,
+            };
+            // First-admission coherence across the null/null boundary:
+            // null/null carries no restore authority but its exact shape is
+            // still saved knowledge, so a cached shape differing from this
+            // import on either null/null side is a conflicting preimage.
+            // Drop the bogus saved prior and latch fail-closed; pending
+            // semantics below run unchanged so composed admission keeps its
+            // old behavior and only native exact knowledge fails closed.
+            // Valid-vs-valid differences keep the existing pending/conflict
+            // path. Already admitted lifetimes returned above, so late rows
+            // never latch.
+            let decoded_null = decoded.float.is_none() && decoded.sticky_prior.is_none();
+            let saved_boundary_conflict =
+                self.sticky_saved.get(win).copied().is_some_and(|cached| {
+                    cached != decoded
+                        && (decoded_null
+                            || (cached.float.is_none() && cached.sticky_prior.is_none()))
+                });
+            if saved_boundary_conflict {
+                self.drop_saved_as_conflicting(win);
+            }
+            // Whole sticky-bearing records restore as a whole: sticky
+            // dominates the float lane and the prior stays the exact bool,
+            // so every `float` lane (`None`/`false`/`true`) with a non-null
+            // prior is a usable pending restore, never partly reconstructed.
+            // A null/null record carries no restore authority but its exact
+            // shape is still first-accepted saved knowledge for rollback.
+            if decoded_null {
+                if !saved_boundary_conflict {
+                    self.remember_first_sticky_saved(win, decoded);
+                }
+                continue;
+            }
+            match self.pending_intent.get(win).copied() {
+                Some(existing) if existing == decoded => {
+                    // First-accepted import establishes exact saved knowledge
+                    // when no newer runtime save exists; repeats never
+                    // clobber.
+                    if !saved_boundary_conflict {
+                        self.remember_first_sticky_saved(win, decoded);
+                    }
+                }
+                Some(_) => {
+                    self.pending_intent.remove(win);
+                    self.drop_saved_as_conflicting(win);
+                    if self.intent_ledger_used() < crate::world_report::MAX_INTENT_RECORDS {
+                        self.intent_conflicts.insert(win.clone());
+                    }
+                }
+                None => {
+                    if self.intent_ledger_used() < crate::world_report::MAX_INTENT_RECORDS {
+                        self.pending_intent.insert(win.clone(), decoded);
+                        if !saved_boundary_conflict {
+                            self.remember_first_sticky_saved(win, decoded);
+                        }
+                    } else {
+                        // Joint-ledger drop loses the exact prior even when
+                        // the saved map still has room; fail closed.
+                        self.sticky_saved_incomplete = true;
+                        self.remember_first_sticky_saved(win, decoded);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn engine_knows_window_any(&self, window: &WindowId) -> bool {
+        if self.members.contains_key(window) {
+            return true;
+        }
+        for key in self.engine.domain_keys() {
+            let Some(session) = self.engine.session(&key) else {
+                continue;
+            };
+            if session
+                .snapshot()
+                .windows
+                .iter()
+                .any(|link| link.window == *window)
+            {
+                return true;
+            }
+            if session.is_exception(window) {
+                return true;
+            }
+            if session.minimized_slot(window).is_some() {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn is_tiled_window_any(&self, window: &WindowId) -> bool {
+        self.engine.domain_keys().iter().any(|key| {
+            self.engine.session(key).is_some_and(|session| {
+                session
+                    .snapshot()
+                    .windows
+                    .iter()
+                    .any(|link| link.window == *window)
+            })
+        })
+    }
+
+    pub(crate) fn is_exception_window_any(&self, window: &WindowId) -> bool {
+        self.engine.domain_keys().iter().any(|key| {
+            self.engine
+                .session(key)
+                .is_some_and(|session| session.is_exception(window))
+        })
+    }
+
+    /// Conservative pre-mutation count of retained lifetimes that can
+    /// publish a target-lane row without a live fact in this report: every
+    /// retained session's tiled links plus exceptions plus minimize slots
+    /// (surviving a gapped previous report that left staged small), plus
+    /// retained mover rows (one per outstanding window transfer plus every
+    /// migration member). A union upper bound via the sum: deduped
+    /// lifetimes counted twice still fit.
+    pub(crate) fn retained_publish_footprint(&self) -> usize {
+        let mut total = 0usize;
+        for key in self.engine.domain_keys() {
+            let Some(session) = self.engine.session(&key) else {
+                continue;
+            };
+            total = total
+                .saturating_add(session.snapshot().windows.len())
+                .saturating_add(session.exception_count())
+                .saturating_add(session.minimized_count());
+        }
+        for retained in &self.retained {
+            match &retained.target.kind {
+                TransferKind::Window(_) => total = total.saturating_add(1),
+                TransferKind::Migration => {
+                    total = total.saturating_add(retained.members.len());
+                }
+                TransferKind::View => {}
+            }
+        }
+        total
+    }
+
+    /// Pre-mutation count of potentially generated native sticky rollback
+    /// writes: every sticky binding with metadata and `!followup_done` (any
+    /// disposition can still settle into a queued rollback on a healthy
+    /// commandless proof or record-free recovery), plus already-queued
+    /// rollback writes. The sum is conservative on overlap (dedup optional):
+    /// a window present in both still fits. Never derived from the report's
+    /// own `stateAttempts` length, so record-free priors reserve alike.
+    pub(crate) fn rollback_reserve_count(&self) -> usize {
+        let pending = self
+            .retained_states
+            .values()
+            .filter(|binding| {
+                binding
+                    .sticky_meta
+                    .as_ref()
+                    .is_some_and(|meta| !meta.followup_done)
+            })
+            .count();
+        pending.saturating_add(self.sticky_rollback_saves.len())
+    }
+
+    /// Latch first successful admissions, commit durable intent, and keep
+    /// the exclusion ledger truthful to proven session state. Called after
+    /// each sweep (and resweep). Pending drops only on real success
+    /// (tiled for `float:false`, non-automatic exception for
+    /// `float:true`); minimized placeholders and holds retain pending.
+    /// Sessionless floating-route admissions latch separately after
+    /// membership converges (see `latch_floating_admissions`): settle
+    /// runs before reconcile creates those members.
+    /// The exclusion ledger syncs to current session truth for live
+    /// sessions only, so a successful runtime float clears a stale tile
+    /// win while exclusion gaps preserve continuity.
+    pub(crate) fn settle_intent_admissions(&mut self) {
+        // Own-process facts staged this report prove no import authority:
+        // drop pending/conflict/restored for proven-own subjects.
+        // Safety-held windows never match here and stay recoverable.
+        let own_excluded: Vec<WindowId> = self
+            .staged
+            .derived
+            .iter()
+            .filter_map(|(id, classified)| {
+                if classified.own_excluded {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for id in own_excluded {
+            self.pending_intent.remove(&id);
+            self.intent_conflicts.remove(&id);
+            self.restored_floats.remove(&id);
+            self.restored_sticky.remove(&id);
+            self.intent_sticky_blocks.remove(&id);
+            self.sticky_saved.remove(&id);
+            self.sticky_visible_rev.remove(&id);
+        }
+        // Latch first successful admissions: late rows for already
+        // admitted lifetimes are ignored forever, even through
+        // exclusion/holds/minimize. Session tiled links and
+        // floating-base session exceptions are real success;
+        // overlay-only placeholders (non-floating fullscreen/maximized
+        // births) and minimized slots alone never latch. Membership
+        // alone never proves admission either: reconcile homes rows
+        // even when held, so members latch only on staged health.
+        // Pending-only latching would miss record-free first admissions.
+        let mut known: Vec<WindowId> = Vec::new();
+        for key in self.engine.domain_keys() {
+            let Some(session) = self.engine.session(&key) else {
+                continue;
+            };
+            for link in &session.snapshot().windows {
+                known.push(link.window.clone());
+            }
+            for observed in session.exception_observed() {
+                if !observed.floating && (observed.fullscreen || observed.maximized) {
+                    continue;
+                }
+                known.push(observed.window.clone());
+            }
+        }
+        let member_windows: Vec<WindowId> = self.members.keys().cloned().collect();
+        for window in member_windows {
+            if self.staged.excluded.contains(&window) {
+                continue;
+            }
+            if self
+                .staged
+                .held_windows
+                .iter()
+                .any(|held| held.window == window)
+            {
+                continue;
+            }
+            if !self.staged.facts.contains_key(&window) {
+                continue;
+            }
+            let derived = self.derived_for(&window);
+            if derived.hold || derived.excluded || derived.own_excluded || derived.hidden {
+                continue;
+            }
+            if !derived.floating && (derived.overlay_fullscreen || derived.overlay_maximized) {
+                continue;
+            }
+            known.push(window);
+        }
+        for win in &known {
+            self.intent_admitted.insert(win.clone());
+        }
+        // Conflicts confer no winner: drop them once the lifetime admits
+        // instead of consuming the joint bound forever.
+        for win in &known {
+            self.intent_conflicts.remove(win);
+        }
+        let pending: Vec<(WindowId, crate::intent_data::IntentData)> = self
+            .pending_intent
+            .iter()
+            .map(|(id, data)| (id.clone(), *data))
+            .collect();
+        for (win, data) in pending {
+            // Sticky-bearing restores commit only the exact prior into
+            // sticky provenance, never a tile override or ordinary float:
+            // sticky dominates the float lane. Real float success is a
+            // healthy staged non-automatic exception (never a merely homed
+            // held/hidden/minimized/overlay placeholder); pending survives
+            // otherwise, exactly like the float lane below.
+            if let Some(prior) = data.sticky_prior {
+                let healthy = self.staged.facts.contains_key(&win)
+                    && !self.staged.excluded.contains(&win)
+                    && !self
+                        .staged
+                        .held_windows
+                        .iter()
+                        .any(|held| held.window == win)
+                    && {
+                        let derived = self.derived_for(&win);
+                        !derived.hold
+                            && !derived.excluded
+                            && !derived.own_excluded
+                            && !derived.hidden
+                            && (derived.floating
+                                || !(derived.overlay_fullscreen || derived.overlay_maximized))
+                    };
+                if !healthy {
+                    continue;
+                }
+                if !self.is_exception_window_any(&win)
+                    || self.engine.is_automatic_fixed_float_any(&win)
+                {
+                    continue;
+                }
+                // Pending leaves first so the retained commit holds the
+                // joint ledger count steady.
+                self.pending_intent.remove(&win);
+                self.restored_sticky.insert(win.clone(), prior);
+                // Composed restore initializes the stable visibility
+                // revision absent-only: first safe admission authorizes,
+                // ordinary observations never renew.
+                if self.sticky_route() == crate::world_sticky::StickyRoute::Composed
+                    && !self.sticky_visible_rev.contains_key(&win)
+                {
+                    self.sticky_visible_rev.insert(win, self.state_revision + 1);
+                }
+            } else if data.float == Some(false) {
+                // Real tile success is a tiled link, not a minimized
+                // placeholder or an exception: retain pending otherwise.
+                if !self.is_tiled_window_any(&win) {
+                    continue;
+                }
+                self.engine.commit_fixed_tile_override(&win);
+                self.pending_intent.remove(&win);
+            } else if data.float == Some(true) {
+                // Real float success is a non-automatic exception: retain
+                // pending through minimized placeholders, and never
+                // promote automatic floats to explicit.
+                if !self.is_exception_window_any(&win)
+                    || self.engine.is_automatic_fixed_float_any(&win)
+                {
+                    continue;
+                }
+                self.restored_floats.insert(win.clone());
+                self.pending_intent.remove(&win);
+            }
+        }
+        // Exclusion-ledger truth sync for live sessions only: current
+        // session marks win over stale mirrors (e.g. a successful runtime
+        // float clears a restored tile win), while exclusion gaps with no
+        // live session preserve continuity untouched.
+        let mut live: Vec<WindowId> = Vec::new();
+        for key in self.engine.domain_keys() {
+            let Some(session) = self.engine.session(&key) else {
+                continue;
+            };
+            for link in &session.snapshot().windows {
+                live.push(link.window.clone());
+            }
+            for observed in session.exception_observed() {
+                live.push(observed.window.clone());
+            }
+            for (window, _, _) in session.minimized_entries() {
+                live.push(window.clone());
+            }
+        }
+        live.sort();
+        live.dedup();
+        for win in live {
+            let tile = self.engine.has_fixed_tile_override_any(&win);
+            let automatic = self.engine.is_automatic_fixed_float_any(&win);
+            if tile || automatic {
+                self.excluded_intent.insert(
+                    win,
+                    ExcludedIntent {
+                        tile_override: tile,
+                        automatic_fixed: automatic,
+                    },
+                );
+            } else {
+                self.excluded_intent.remove(&win);
+            }
+        }
+        // Runtime unfloat wins over restored float provenance: a lifetime
+        // the session now proves tiled leaves the explicit-float set.
+        // Unknown/excluded lifetimes keep the mark for recovery.
+        let floated_marked: Vec<WindowId> = self.restored_floats.iter().cloned().collect();
+        for win in floated_marked {
+            if self.is_tiled_window_any(&win) {
+                self.restored_floats.remove(&win);
+            }
+        }
+    }
+
+    /// Latch healthy floating-route first admissions after membership
+    /// converges. Floating workspaces release their sessions, so a
+    /// floating newcomer never appears in session links at settle time
+    /// and only gains membership at reconcile (after settle). Health is
+    /// staged truth, never membership alone: held, hidden, excluded,
+    /// or overlay-only placeholders never latch. A pending true
+    /// consumes into explicit-float provenance at the observed frame
+    /// (no geometry op); a pending sticky-bearing record consumes only
+    /// its exact prior into sticky provenance (never ordinary float, never
+    /// a tile win); a pending false stays pending as the explicit
+    /// tile base for a later tiling enable (never forced tiled now).
+    pub(crate) fn latch_floating_admissions(&mut self) {
+        let candidates: Vec<(WindowId, bool)> = self
+            .members
+            .iter()
+            .filter(|(_, state)| self.floating_scopes.contains(&state.home))
+            .filter(|(id, _)| !self.intent_admitted.contains(*id))
+            .map(|(id, _)| {
+                let healthy = self.staged.facts.contains_key(id)
+                    && !self.staged.excluded.contains(id)
+                    && !self
+                        .staged
+                        .held_windows
+                        .iter()
+                        .any(|held| &held.window == id)
+                    && {
+                        let derived = self.derived_for(id);
+                        !derived.hold
+                            && !derived.excluded
+                            && !derived.own_excluded
+                            && !derived.hidden
+                            && (derived.floating
+                                || !(derived.overlay_fullscreen || derived.overlay_maximized))
+                    };
+                (id.clone(), healthy)
+            })
+            .collect();
+        for (win, healthy) in candidates {
+            if !healthy {
+                continue;
+            }
+            self.intent_admitted.insert(win.clone());
+            self.intent_conflicts.remove(&win);
+            if let Some(prior) = self
+                .pending_intent
+                .get(&win)
+                .copied()
+                .and_then(|data| data.sticky_prior)
+            {
+                // Pending leaves first so the retained commit holds the
+                // joint ledger count steady.
+                self.pending_intent.remove(&win);
+                self.restored_sticky.insert(win.clone(), prior);
+                // Composed floating restore initializes the stable
+                // visibility revision absent-only, same as the session
+                // route above.
+                if self.sticky_route() == crate::world_sticky::StickyRoute::Composed
+                    && !self.sticky_visible_rev.contains_key(&win)
+                {
+                    self.sticky_visible_rev.insert(win, self.state_revision + 1);
+                }
+            } else if self
+                .pending_intent
+                .get(&win)
+                .is_some_and(|data| data.float == Some(true))
+            {
+                self.restored_floats.insert(win.clone());
+                self.pending_intent.remove(&win);
+            }
+        }
+    }
+
+    /// Synchronize explicit-float provenance with a successful runtime
+    /// float toggle: a toggled-to-float non-automatic exception gains the
+    /// durable mark, a toggled-to-tile lifetime loses it. Unknown or held
+    /// subjects keep their mark. Only explicit command wins enter; generic
+    /// automatic/capacity floats never do.
+    pub(crate) fn sync_toggle_float_command(&mut self, command: &WorldCommand) {
+        let window = match command {
+            WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
+                window, ..
+            }) => WindowId(window.clone()),
+            _ => return,
+        };
+        if self.is_tiled_window_any(&window) {
+            self.restored_floats.remove(&window);
+        } else if self.is_exception_window_any(&window)
+            && !self.engine.is_automatic_fixed_float_any(&window)
+        {
+            self.restored_floats.insert(window);
+        }
+    }
+
     pub(crate) fn capture_excluded_intent(&mut self) {
         // Snapshot lifetime intent before the sweep retires excluded
         // slots: an exclusion is never a native close, so the approved
@@ -1934,6 +2726,11 @@ impl WorldEngine {
         }
     }
 
+    /// Run one accepted report on the staged candidate: converge logical
+    /// rings/views, stage the observation, settle retained state, sweep
+    /// every readable logical workspace, execute at most one command, and
+    /// publish one globally monotonic revision. Called only on the clone;
+    /// the caller adopts the candidate after the exact-encoding gate.
     fn run_accepted(
         &mut self,
         report: &WorldReport,
@@ -1979,6 +2776,9 @@ impl WorldEngine {
         };
         // Logical rings/views converge first (bootstrap, hotplug, tiling
         // seeds) so staging assigns facts against this report's ownership.
+        // Intent restores ingest before staging so the classifier sees
+        // pending first-admission wins this same report.
+        self.ingest_intent_records(report);
         self.stage_facts(report);
         self.converge_logical_pre(report);
         // View flights settle against raw echoes before staging: confirms
@@ -2002,6 +2802,11 @@ impl WorldEngine {
         // domains, never the pre-rollback ones.
         self.settle_rest(report, consumed);
         self.build_staged_domains(report);
+        // State bindings settle against post-rollback staged domains: the
+        // readability join must see the committed homing, and the raw capture
+        // runs before sweep holds. Once per accepted report, including
+        // consumed-command reports (no early return above).
+        self.settle_states(report);
         // Core-owned frame policy: fold mechanical write/readback facts into
         // retained clamp/transient memory (scoped by exact staged lifetime)
         // so this same reply publishes suppression.
@@ -2147,6 +2952,14 @@ impl WorldEngine {
         // removal only, never a native close). Same-lifetime lift below
         // restores from this ledger through the stage-time fallback.
         self.capture_excluded_intent();
+        // One-time native sticky dependent followup: exact-tuple Applied
+        // off/clear proof lands the dependent tile/float membership, ON
+        // marks done, and exact-tuple RefusedProven proof rolls back the
+        // exact pre-command runtime plus saved record (one queued write),
+        // now that floating scopes are fresh and held scopes are staged,
+        // before the ordinary sweep converges. Ambiguous proof never
+        // retries.
+        self.run_native_sticky_followups(report, &held_scopes);
         // Clone the staged domains for iteration: sweeps borrow `self`
         // mutably while reading staged homing.
         let domains = self.staged.domains.clone();
@@ -2189,6 +3002,10 @@ impl WorldEngine {
             }
             self.sweep_domain(domain, owner, correlation, &mut held_scopes);
         }
+        // First-admission latch plus durable explicit-tile commit, before
+        // focus/commands: restored intent must be committed so a
+        // same-report float command can supersede it transactionally.
+        self.settle_intent_admissions();
         // Changed native focus observation under the same fail-closed
         // gates as command recording: a changed `focused_global` naming a
         // live lifetime records the canonical slot through
@@ -2246,6 +3063,7 @@ impl WorldEngine {
                         &was_floating,
                     );
                     self.build_staged_domains(report);
+                    self.settle_intent_admissions();
                 }
                 self.command_result = result.map(|boxed| *boxed);
             }
@@ -2289,6 +3107,8 @@ impl WorldEngine {
                     // Homing stays truthful: echoes still gate views, and
                     // in-flight members home by raw screen.
                     self.build_staged_domains(report);
+                    self.settle_intent_admissions();
+                    self.sync_toggle_float_command(command);
                     // Admission intent first: an explicit command
                     // focuses after it, so user intent wins when they
                     // coincide. A same-target admission duplicate is
@@ -2320,6 +3140,8 @@ impl WorldEngine {
                     );
                     // See above: restage against committed ownership.
                     self.build_staged_domains(report);
+                    self.settle_intent_admissions();
+                    self.sync_toggle_float_command(command);
                     let result = self.command_result.take();
                     crate::world_cursor::maybe_push_focus_follows(
                         self,
@@ -2356,6 +3178,11 @@ impl WorldEngine {
                     .iter()
                     .map(|fact| fact.window.clone())
                     .collect();
+                let held: BTreeSet<WindowId> = report
+                    .held_windows
+                    .iter()
+                    .map(|held| held.window.clone())
+                    .collect();
                 self.last_active_window
                     .retain(|_, window| live.contains(window));
                 // Same lifetime bound for the exclusion ledger: a complete
@@ -2365,12 +3192,89 @@ impl WorldEngine {
                 let excluded = self.staged.excluded.clone();
                 self.excluded_intent
                     .retain(|id, _| live.contains(id) || excluded.contains(id));
+                // Pending/conflict ledgers share the proven-departure
+                // fence: a complete inventory carrying neither a usable
+                // fact, a held row, nor an exclusion proves the subject
+                // departed before first success, so drop it. A carried
+                // slot row alone is not live proof: it never retains.
+                // Engine-known (admitted, minimized, exception, member)
+                // subjects stay: complete absence after admission is
+                // handled through the admitted latch and close path, never
+                // by resurrecting pending. Closed subjects were already
+                // dropped on ingest.
+                let known: BTreeSet<WindowId> = self
+                    .pending_intent
+                    .keys()
+                    .chain(self.intent_conflicts.iter())
+                    .chain(self.intent_admitted.iter())
+                    .chain(self.restored_floats.iter())
+                    .chain(self.restored_sticky.keys())
+                    .chain(self.sticky_saved.keys())
+                    .filter(|id| self.engine_knows_window_any(id) || self.members.contains_key(*id))
+                    .cloned()
+                    .collect();
+                self.pending_intent.retain(|id, _| {
+                    live.contains(id)
+                        || held.contains(id)
+                        || excluded.contains(id)
+                        || known.contains(id)
+                });
+                self.intent_conflicts.retain(|id| {
+                    live.contains(id)
+                        || held.contains(id)
+                        || excluded.contains(id)
+                        || known.contains(id)
+                });
+                self.restored_floats.retain(|id| {
+                    live.contains(id)
+                        || held.contains(id)
+                        || excluded.contains(id)
+                        || known.contains(id)
+                });
+                self.restored_sticky.retain(|id, _| {
+                    live.contains(id)
+                        || held.contains(id)
+                        || excluded.contains(id)
+                        || known.contains(id)
+                });
+                // Admitted lifetimes end on proven complete departure
+                // (neither live, held, excluded, nor engine/member-known).
+                // Temporary exclusion/holds keep the latch so late rows
+                // stay ignored.
+                self.intent_admitted.retain(|id| {
+                    live.contains(id)
+                        || held.contains(id)
+                        || excluded.contains(id)
+                        || known.contains(id)
+                });
+                self.intent_sticky_blocks.retain(|id| {
+                    live.contains(id)
+                        || held.contains(id)
+                        || excluded.contains(id)
+                        || known.contains(id)
+                });
+                self.sticky_saved.retain(|id, _| {
+                    live.contains(id)
+                        || held.contains(id)
+                        || excluded.contains(id)
+                        || known.contains(id)
+                });
+                self.sticky_rollback_saves.retain(|id, _| {
+                    live.contains(id) || held.contains(id) || excluded.contains(id)
+                });
+                self.sticky_visible_rev.retain(|id, _| {
+                    live.contains(id)
+                        || held.contains(id)
+                        || excluded.contains(id)
+                        || known.contains(id)
+                });
             } else if !report.closed.is_empty() {
                 self.last_active_window
                     .retain(|_, window| !report.closed.contains(window));
                 let closed: BTreeSet<WindowId> = report.closed.iter().cloned().collect();
                 self.excluded_intent.retain(|id, _| !closed.contains(id));
             }
+            self.prune_state_bindings(report);
         }
         // Retain the last-known focused output before membership converges,
         // so the latch reflects strictly prior retention: a stealing
@@ -2396,6 +3300,10 @@ impl WorldEngine {
         self.members.retain(|_, state| {
             ringed.contains(&state.home) || self.displaced.contains_key(&state.home.output.0)
         });
+        // Sessionless floating-route admissions latch here: settle runs
+        // before reconcile creates those members, so no earlier pass can
+        // see them. Health-gated on staged truth, never membership alone.
+        self.latch_floating_admissions();
         // Uniform presentation retains last (stage 5): pager frames, order,
         // and focus settle against converged membership, then the reply
         // carries the computed border/underlay/pager presentation. The

@@ -26,11 +26,61 @@
   inner record first; then wire outer report/reply records and consume them in
   lifetime-fenced engine restore/save/clear. Inner-data tests alone do not prove
   engine restoration, host storage, or complete message codecs.
+- Import consumption is a bounded restore-only increment for non-sticky explicit
+  float/tile records before save/clear and state integration. User 2026-11-03
+  approved first-successful-admission import: preserve pending records through
+  held/unreadable observations, then ignore late records without overwriting
+  newer runtime intent. Adapters must return storage in or before the first
+  admissible report; native ordering remains a port acceptance check.
+- Nonempty publication follows as a save-only increment: successful explicit
+  float/unfloat commands save the selected float/tile override in the same reply,
+  with a pre-mutation size reservation. Deferred sticky records must not be erased;
+  sticky semantics and surviving-lifetime no-intent clears remain separate work.
+- Sticky restoration first needs capability-aware native fact authority: composed
+  sticky carries raw null rather than a fabricated native bool. This prerequisite
+  precedes semantic sticky restore/save, visibility and native-state actuation.
+- Semantic sticky restore is a separate core-membership increment: accept every
+  sticky-bearing record whole, retain its exact prior mode, and restore sticky
+  float classification without native targets or import re-saves. Sticky commands,
+  visibility/state targets and canonical sticky save production follow later.
+- Outbound visibility/native-state plumbing adds the exact WindowDesire target
+  shapes and canonical byte accounting before target-producing policy. Existing
+  frame/clear command targets gain typed command correlation; commandless born
+  clears keep null. Initial visibility remains null/untouched and state remains
+  empty, so this slice grants no new actuation. State-attempt ingress/settlement,
+  visibility policy, actual sticky transitions and composed maximize follow in
+  dependent increments; no tolerant compatibility shapes are introduced.
+- StateAttempt consumption follows as a required, bounded raw lane with exact
+  target/revision correlation, capability-conflict diagnostics and spent evidence
+  retained before readability holds. Internal bound-target fixtures establish
+  confirmation/refusal/ambiguity handling before command producers are added;
+  unmatched evidence grants no authority. This slice must not emit new targets,
+  fabricate native facts or claim sticky/state command completion.
 - State increment includes the approved [core-composed maximize route](v4-migration.md#core-composed-maximize-amendment)
   after lifetime-fenced intent consumption: maximize=true native unchanged;
   maximize=false uses existing frame authority and a runtime-owned overlay bit,
   with no adapter policy or opaque-intent extension. State implementation and
   composed-route regression coverage remain pending.
+- Sticky commands are split into composed and native increments. The composed
+  increment adds neutral set/toggle WorldCommand variants, same-output visibility
+  and canonical saves, replacing the ToggleFloat fence only on that route.
+  The native increment adds target production and settlement, replacing its
+  remaining command fence; sticky-off must not tile before proven clear.
+  The selected
+  [saved intent after proven native refusal](../spec/reference-outcomes.md#native-sticky-refusal-and-saved-intent):
+  rule preserves the required crash-safe pre-write save, then restores the prior
+  saved record (or null-clears if none existed) on proven refusal. Ambiguous or
+  unproven outcomes retain the requested record for later fact-authority
+  reconciliation. Neither path retries automatically. This follows the existing
+  failed-transition policy; native outcomes remain TBD. Persistent above and
+  remaining state, including core-composed maximize, remain dependent work.
+- Next bounded state slice: native fullscreen set/toggle commands, strict codecs,
+  per-property target publication and existing correlated settlement. Native
+  maximize and persistent above follow; core-composed maximize remains a separate
+  capability-routed increment. The [maximize-to-fullscreen discriminator](../spec/reference-outcomes.md#native-fullscreen-entry-from-maximized)
+  leaves entry from maximized and exit restoration unselected: Tier 1 enters
+  immediately but differs on restoring maximize. Resolve that product behavior
+  before implementing the coupled route; R-MAX-11 selects only the inverse path.
 
 ## Evidence
 
@@ -336,6 +386,335 @@
   and `git diff --check` is clean. Exactly seven documentation files change; source,
   adapters and immutable v4 fixtures are unchanged. No code tests or live checks
   were run for this documentation amendment; the refusal edge is resolved above.
+- Restore-only intent consumption now runs in the real engine for explicit
+  float/tile records with stickyPrior=null. A jointly bounded pending/conflict
+  ledger carries verified data through incomplete inventories, held rows and
+  unreadable facts. Conflicting subjects grant no import authority; malformed,
+  unsupported, null-only and sticky-bearing records do not partly restore state.
+  Complete inventory absence or explicit close prunes pending data; a carried
+  opaque row is not live-window proof. Handshake resets all import state.
+- The first-successful-admission fence includes healthy sessionless floating
+  workspaces, not just tiled sessions; merely homed held/hidden/overlay-only
+  newcomers do not seal it. Late records cannot overwrite runtime choice.
+  Restored intentional floats use the observed frame without minting a placement,
+  clear or focus operation. Explicit tiles commit the real override even when
+  initially non-fixed, preserving it across hint changes and exclusion/recovery.
+  Floating-workspace tile intent retains its base until tiling is enabled.
+  Successful newer float/unfloat commands supersede restored provenance and
+  refresh the exclusion ledger, avoiding stale tile resurrection.
+- Independent review exposed orphan retention, float durability, stale tile
+  mirrors and minimized/own-process/conflict cleanup gaps; these are corrected
+  with regressions. A failing-first floating-newcomer test additionally proved
+  that post-sweep membership was too late for the initial latch; post-membership
+  floating admission and staged-health gates now close that boundary without
+  sealing two consecutive unreadable-hint observations prematurely.
+- Restore verification: all 26 focused real-engine regressions and the full
+  core/protocol suite pass (1185 core unit tests, every integration target,
+  protocol suites 49/4/15/52/4), with only the previously documented unrelated
+  `workspace_unsafe_posture` filtered. Build and scoped all-target clippy with
+  warnings denied pass. The initial formatting check found three layout-only
+  differences; after correction, formatting, diff whitespace, added ASCII and
+  added local-link/anchor checks pass. No adapters, immutable fixtures, wire
+  shapes or versions change.
+- Engine intentWrites remains empty: save/clear publication and its nonempty
+  pre-mutation size bound, sticky semantics, host storage survival and native
+  ordering acceptance remain pending. The existing whole-candidate rejection on
+  a rejected command also remains staged migration work; successful command
+  supersession is tested here, not the full v4 accepted-report/rejected-command
+  contract. No native identity/recovery or complete intent-restart scenario
+  acceptance is claimed, and all eight existing OPEN/TBD gates remain unchanged.
+- Save-only publication now emits at most one canonical intent record for a
+  successful, non-consumed ToggleFloat: float=true for an intentional float and
+  float=false for a genuine tile win, including unfloat from automatic fixed
+  origin. The tile override already commits with lifecycle admission; this records
+  it rather than clearing the slot. Publication accompanies the command result
+  before dependent adapter writes; it proves logical intent, not native execution
+  or successful host storage. No-space retries, refusals, bootstrap, mere automatic
+  floats, restore-only reports and closes emit no new saves or null clears.
+  Duplicate requests repeat the cached save; consumed commands do not save again.
+- Pre-admission sticky-bearing records now retain only a lifetime-scoped save
+  block, not partially restored sticky semantics. Any valid sticky-bearing row in
+  conflicting duplicates also blocks a null-sticky overwrite. Blocks survive
+  admission and held/excluded/minimized gaps; later non-sticky rows do not erase
+  them, while late post-admission rows remain ignored. Every pending, conflict
+  and block allocation counts the same 10000-entry bound. If a required block
+  cannot fit, all intent saves are suppressed until handshake reset; runtime
+  commands still apply without erasing the deferred record.
+  Existing close, own-process and proven-complete-departure cleanup still applies;
+  retained session membership remains live proof, not an inferred close.
+- The pre-mutation reply bound reserves the single possible save row only for a
+  ToggleFloat report: 16 punctuation bytes, the quoted subject and at most 48
+  bytes for the escaped canonical data string (194 bytes with a maximum id).
+  The existing exact-encoding staged-commit gate remains the backstop. A boundary
+  regression keeps the request and saveless bound in range, then proves the save
+  reservation alone rejects before state, intent ledgers or command consumption
+  change; a smaller same-sequence retry still saves successfully.
+- Save verification: 32 new save regressions plus the 26 restore regressions pass;
+  four prior command-success assertions now expect the actual canonical save.
+  Coverage includes float/tile restart round-trips without re-saving, no-space,
+  duplicate/consumed/refused commands, sticky preservation and joint-cap fencing.
+  Independent source review found no remaining defect. Full core/protocol tests
+  pass (1217 core unit tests, every integration target, protocol suites
+  49/4/15/52/4), with exactly the unrelated `workspace_unsafe_posture` filtered.
+  Build, scoped all-target clippy with warnings denied, formatting and diff checks
+  pass. No adapter, immutable fixture, wire shape or version changes are included.
+  Sticky/state integration, actual no-intent clear transitions, host storage and
+  native ordering proof, accepted-report/rejected-command conversion and complete
+  v4 codec/scenario acceptance remain pending; all eight OPEN/TBD gates remain.
+- Sticky fact authority now consumes nativeSticky: without native support, a raw
+  sticky=null permits ordinary admission, while either non-null bool becomes a
+  narrow conflicting-fact row hold with its raw fields and ordinal retained.
+  Native support retains known-bool behavior and supported-null holds. The pure
+  classifier also fails closed on unsupported bools if grading is bypassed;
+  no native fact is projected from retained intent or rewritten to false.
+- A failing-first engine test reproduced the reversed boundary: composed null
+  held while unsupported true admitted. Seven focused regressions now cover both
+  capability routes, mixed-output authority, retained raw bools/ordinals,
+  structural-error and invalid-metadata precedence, pending-intent recovery,
+  first-admission and duplicate/reused-request fences, and a composed-null
+  ToggleFloat save. Existing synthetic fixtures that carry native sticky bools
+  now explicitly declare native support; supplied capabilities and production
+  defaults are not rewritten. Composed tests use explicit nativeSticky=false.
+- Independent review found no blocking defect. Full core/protocol tests pass
+  (1224 core unit tests, every integration target, protocol suites 49/4/15/52/4),
+  with exactly the unrelated `workspace_unsafe_posture` filtered. Build, scoped
+  all-target clippy with warnings denied, formatting and diff checks pass.
+  No adapter, immutable fixture, wire shape/version or intent-data shape changes
+  are included. This is a prerequisite, not sticky restore/save completion:
+  deferred sticky save blocks remain, no new clear transition exists here,
+  and sticky commands, visibility/state targets and native settlement remain
+  pending. Downstream swap/migration raw-sticky gates still treat null as unknown
+  until their composed-semantic migration; ordinary admission and the tested
+  float save do not establish those action routes. All eight OPEN/TBD gates remain.
+- Semantic sticky restoration now accepts all six float=null/false/true and
+  stickyPrior=false/true combinations as whole records before first admission.
+  Every non-null prior restores sticky-float membership, not an ordinary float or
+  tile override, and commits the exact prior only after healthy admission. The
+  retained prior participates in the joint 10000-entry ledger bound; pending-to-
+  retained transfer does not increase occupancy. Record-free observations, holds,
+  minimize, temporary exclusions and floating-workspace handoff retain provenance;
+  explicit close, own-process proof, proven departure and handshake clean it up.
+- The current-mode encoding rule is recorded beside the IntentData table: future
+  sticky-on saves float=true with stickyPrior=previous mode; sticky-off saves
+  float=prior with stickyPrior=null. This technical encoding does not narrow the
+  six accepted inputs or change the selected sticky-off destination behavior.
+  Native support still requires readable sticky facts; unsupported non-null facts
+  still hold narrowly. Semantic intent never rewrites raw native observations.
+- Restore-only reports emit no intent writes, frame/clear operations or focus
+  effects for the restored subject. ToggleFloat temporarily refuses for usable
+  pending or retained sticky intent through the existing operation gate, preserving
+  state and command highwater rather than partly tiling and resurrecting sticky.
+  Conflict-only/save-block-only rows confer no such authority; ordinary unrelated
+  commands still execute and save. This fence is not the final sticky transition.
+- Thirteen focused sticky-restore tests cover all six admissions, both capability
+  routes, supported-null and unsupported-bool recovery, unhealthy newcomers,
+  hints-null float membership, record-free retention, orphan/lifetime cleanup,
+  floating-workspace first appearance/re-enable, late records, joint bounds and
+  the narrow refusal fence. Six earlier save expectations now reflect semantic
+  restoration; a new save regression checks refusal and an ordinary-window retry.
+  Independent review found no blocking defect. Initial clippy checks found
+  equivalent classifier branches and get-then-check assertions; equivalent
+  condition/assertion cleanup resolved them without changing behavior.
+- Final sticky-restore verification: the full core/protocol suite passes (1238
+  core unit tests, every integration target, protocol suites 49/4/15/52/4), with
+  exactly the previously documented unrelated workspace_unsafe_posture filtered.
+  Build, scoped all-target clippy with warnings denied, formatting, diff whitespace,
+  added ASCII and added local-link checks pass. No adapter, immutable fixture,
+  protocol, wire shape/version or intent-data shape changes are included.
+  Sticky commands/publication, visibility/state targets, native settlement,
+  downstream composed-sticky swap/migration gates and accepted-report/rejected-
+  command conversion remain pending. Same-report sticky import plus a refused
+  command still follows whole-candidate rejection; no complete restart scenario,
+  host storage survival or native ordering acceptance is claimed. All eight
+  OPEN/TBD gates remain unchanged.
+- Outbound target plumbing now exposes VisibilityTarget, the four-property
+  StateTarget vocabulary and the WindowDesire cmdSeq/visibility/visibility_auth/
+  visibility_hold/state lanes. Both canonical reply writers emit the frozen key
+  order and quoted counters. Every engine publication branch still emits null
+  visibility, untouched visibility authority and an empty state array; this is
+  representational plumbing, not visibility/native-state policy or actuation.
+- Existing explicit float-placement and directional-clear bindings now retain
+  typed originating command sequences. Published tokens carry that sequence
+  across observation-only replies and clear-to-float continuation; withheld or
+  spent tokens carry null, as do commandless born clears. Tiled continuation no
+  longer recovers command correlation by parsing an operation id.
+- A failing-first regression exposed an existing shared-row collision: an old
+  placement could remain outstanding when a newer directional intent minted a
+  maximize-clear for the same window. The clear mint now supersedes that old
+  placement, applying the inherited newer-intent rule without changing unrelated
+  command behavior or the wire shape. The regression verifies only the new clear
+  token and its original sequence survive.
+- Target-lane sizing is exact for null/object visibility, all four state
+  properties and authorities, multiple state rows and counter boundaries. The
+  current engine's null/untouched/empty suffix costs 94 bytes, or at most 112
+  with a quoted command sequence. The pre-mutation bound explicitly reserves
+  112 per possible published window, conservatively counting current/held,
+  staged, retained-session and mover footprints. It does not borrow other
+  operation reserves or reserve speculative future targets. A boundary regression
+  proves this added reservation alone refuses before mutation and a smaller
+  same-sequence retry succeeds; the exact staged encoding gate remains intact.
+- Independent review found no production defect but required a stronger fixture
+  oracle. Eight immutable reply witnesses now compare actual encoded target
+  suffixes directly against raw fixture bytes, including the full state-authority
+  matrix, shows, staged/fallback hides and default lanes. Real-engine tests assert
+  frozen wire suffixes for explicit clear, observation retention, float continuation
+  and commandless birth; shared-writer equality alone is not the fixture oracle.
+- Final target-plumbing verification: all core/protocol tests pass (1249 core
+  unit tests, every integration target, protocol suites 49/4/15/2/52/4), with only
+  the previously documented unrelated workspace_unsafe_posture filtered. Build,
+  scoped all-target clippy with warnings denied, formatting, diff whitespace and
+  added ASCII checks pass. No adapter, immutable fixture, version or request
+  decoder changes are included. StateAttempt ingress/settlement, target-producing
+  visibility/state policy, sticky commands/saves replacing the temporary fence,
+  remaining state and core-composed maximize remain pending. Future target
+  producers must extend the current-default pre-mutation reservation. No native,
+  complete message-codec or whole-scenario acceptance is claimed; all eight
+  OPEN/TBD gates remain unchanged.
+- StateAttempt ingress now requires stateAttempts, even when empty, with exactly
+  eight keys per row, the four closed properties, canonical quoted counters and
+  required nullable pre/post bools. Core validation bounds the lane at 1024 rows
+  and rejects repeated window/property pairs across revisions. Every raw field,
+  nullable presence, row order and original stamp participates in the digest and
+  request estimate. Immutable nested rows pass through the staged decoder; missing
+  lanes, bad shapes/counters, duplicate decoded keys and trailing input refuse.
+- Supported attempts match an internal retained window/property/target/revision
+  binding and become spent before inventory, gesture or staged-readability holds.
+  Accepted calls require both immediate post and readable staged state to equal
+  the target; explicit refusal requires unchanged readable pre/post and staged
+  preimage. Throws, nulls and mismatches remain possibly executed, never blind
+  retries. Retained proof can settle on a later attempt-free report; redelivery
+  cannot replace the original evidence. The contract now identifies rev as the
+  authorizing reply revision, matching the immutable window-state sequence.
+- Unsupported property attempts preserve their raw rows and add only a narrow
+  conflicting-fact attempt diagnostic where a reported or retained output is
+  known. No output is invented for an unknown subject, and unrelated authority
+  remains intact. Diagnostics are rederived during staging; the pre-mutation
+  reply bound independently reserves 512 bytes per raw attempt. A boundary test
+  isolates that reservation, verifies no mutation on rejection and permits a
+  smaller same-sequence retry.
+- Internal bindings use one map entry per window/property, with a 40000-entry
+  ceiling. Exact-cap coverage confirms Applied settlement at 40000; a distinct
+  40001-entry corruption probe fails closed. Close, own-process proof, proven
+  complete departure and handshake clean up bindings; incomplete inventory alone
+  does not. Settlement reads the final post-migration staged domains and never
+  treats a binding alone as live membership proof.
+- StateAttempt verification: 18 new core settlement regressions and eight new
+  protocol ingress tests pass. Independent source review found no blocking
+  findings. Clippy initially found duplicate prune branches and test-helper
+  lints; equivalent exactly-once cleanup and test-only lint fixes resolved them.
+  Final core/protocol tests pass (1267 core unit tests, every integration target,
+  protocol suites 49/4/15/8/2/52/4), with only the previously documented unrelated
+  workspace_unsafe_posture filtered. Build, scoped all-target clippy with warnings
+  denied, formatting, diff whitespace, added ASCII and local-link checks pass.
+- This slice adds no target producer, sticky command/save transition, native
+  actuation, visibility policy or new intent write. Production state bindings
+  remain empty until target producers arrive; settlement proofs use internal
+  bound-target fixtures without a production fixture-seeding API. Future producers
+  must enforce binding allocation bounds and reserve their nonempty target lanes.
+  Adapter constructors, immutable fixtures and the staged wire version are
+  unchanged. No complete message-codec, whole-scenario or native acceptance is
+  claimed; all eight OPEN/TBD gates remain unchanged.
+- Composed sticky commands now execute SetSticky/ToggleSticky and sticky-clearing
+  ToggleFloat through transactional candidate restaging and affected-domain
+  convergence. Sticky-on floats and saves the previous mode; sticky-off restores
+  that mode, while ToggleFloat always selects a tile base. Both clear routes land
+  on the owning output's current workspace, sweeping the source without retaining
+  stale minimized slots. Floating destinations do not force a session or acquire
+  explicit-float provenance over a tile base; re-enabling tiling restores that base.
+- Canonical command saves publish once in the issuing reply, before dependent
+  writes. Duplicate requests repeat cached saves; consumed and commandless reports
+  do not emit them. Same-state SetSticky consumes without re-saving. All six
+  imported sticky shapes preserve their prior mode. Successful transitions
+  supersede deferred save blocks, enforce the joint 10000-entry intent bound and
+  refuse atomically if required saved-record knowledge cannot fit. Genuine
+  no-space clear refusal retains sticky, saved intent and command highwater;
+  a smaller same-command retry can tile without a false earlier tile save.
+- Composed sticky publishes a same-output shown=true visibility target with a
+  retained authorizing reply revision, no native sticky fact or StateTarget.
+  Observation-only view changes and suppression recovery keep that revision.
+  Held, excluded, minimized, incomplete and gesture-barrier rows grant no visibility
+  write authority. Capability-absent maximize and declared-unavailable ownership
+  inputs do not create false unreadability holds; supported-null inputs still hold.
+- Strict set-sticky/toggle-sticky codec arms and the closed Rejected command-result
+  catalog are present without a version or compatibility-shape change. Both
+  sticky routes absent yields an accepted StateUnsupported result after existing
+  safety gates. Other rejected commands still use staged envelope refusal; this
+  increment does not establish the full accepted-report/rejected-command contract.
+- Pre-mutation sizing now reserves 183 bytes per possible published target suffix
+  (controlled show 169), including the longest retained revision/correlation and
+  hold reason. Every possible sticky/float command save reserves its escaped
+  canonical record, at most 48 data bytes or 194 bytes with a maximum subject id.
+  Exact row estimates and a boundary rejection/smaller same-sequence retry are
+  tested; native state rows remain empty and need their own producer reservation.
+- Composed verification: 41 new sticky command/publication regressions plus sizing,
+  intent-save and codec witnesses pass. Independent review and targeted correction
+  review found no remaining blocking findings. Review refinements fixed visibility
+  overholds, superseded-block accounting and floating-destination tile-base
+  retention. Initial clippy found duplicate insertion branches and an argument-count
+  lint; equivalent guards and the existing narrow lint convention resolved them.
+  Final core/protocol tests pass (1313 core unit tests, every integration target,
+  protocol suites 49/4/15/8/2/53/4), with only the previously documented unrelated
+  workspace_unsafe_posture filtered. Build, scoped all-target clippy with warnings
+  denied, formatting, diff whitespace, added ASCII and local-link checks pass.
+- At the composed boundary, native SetSticky/ToggleSticky and native sticky
+  ToggleFloat remain explicitly operation-refused/fenced. Native target production,
+  pre-write save settlement, exact-prior rollback on proven refusal and
+  ambiguous-outcome reconciliation are
+  not implemented by this increment. Persistent above, remaining state including
+  composed maximize, downstream composed-sticky swap/migration gates, host storage,
+  complete message codecs and whole-scenario/native acceptance remain pending.
+  Adapters and immutable fixtures are unchanged; all eight OPEN/TBD gates remain.
+- Native sticky commands now mint retained Sticky StateTargets with typed
+  originating command sequences and exact authorizing reply revisions. Native-on
+  floats before publication; native-off and sticky ToggleFloat pre-save their
+  requested record but retain sticky-float membership until correlated Applied
+  clear proof. Off honors prior mode; ToggleFloat selects a tile base, including
+  adopted sticky. Fresh admission lands on the command's owning-output current
+  workspace; floating destinations retain tile base without forcing a session.
+- Generic attempt capture remains spent-before-holds and exact-tuple correlated.
+  Dependent followups consume proof once, including record-free recovery. A
+  deferred Applied clear additionally requires a fresh raw sticky=false before
+  landing: an intervening external restick or unreadable fact cannot reuse stale
+  proof to tile. No raw fact is rewritten, and spent targets never regain native
+  write authority from observation-only reports. A fresh explicit retry re-saves
+  the requested record with its retained prior before authorizing a new write.
+- Proven refusal restores exact pre-command runtime provenance/home and publishes
+  the exact prior saved record, or a null clear when none existed. Nullable
+  float/stickyPrior shapes are preserved, not inferred from current membership.
+  A bounded per-window rollback queue drains on commandless and consumed replies;
+  a newer same-window command save wins, while unrelated commands do not suppress
+  rollback. Ambiguous/unproven attempts retain requested intent without a native
+  retry or inferred Applied result. Lifetime close, own-process proof, departure
+  and handshake retain the existing cleanup boundaries.
+- Saved-record knowledge now includes inert null/null input without granting
+  restore authority. Conflicting or dropped preimages latch native saved knowledge
+  incomplete until generation reset, so later pruning cannot turn unknown prior
+  storage into a guessed null clear. Late post-admission inputs remain ignored;
+  nullable preimage conflict fencing preserves existing composed admission rules.
+- Pre-mutation reservation covers native sticky target suffixes (296-byte
+  conservative per-window maximum) plus every pending or queued possible rollback,
+  including record-free proof recovery. All nine prior shapes fit 49 escaped data
+  bytes; each rollback row reserves 196 bytes including maximum id and comma.
+  Queue and intent ledger allocation fail closed before followup adoption. Exact
+  40000-binding replacement succeeds; a distinct new binding at the cap refuses
+  atomically. Smaller same-sequence retries pass after reply-bound refusal.
+- Native verification: 43 producer/followup regressions plus saved-knowledge and
+  sizing tests pass. Independent review and correction review found no remaining
+  blocking findings after reproducing and fixing the deferred-clear freshness
+  defect. Clippy guard/style and test-assertion findings are resolved. Final direct
+  core/protocol tests pass (1363 core unit tests, every integration target,
+  protocol suites 49/4/15/8/2/53/4), with only the previously documented unrelated
+  workspace_unsafe_posture filtered. Build, scoped all-target clippy with warnings
+  denied, formatting, diff whitespace, added ASCII and local-link checks pass.
+  An earlier unfiltered core run was reported to hit the known unsafe-posture
+  failure and is not acceptance evidence; that guardrail remains unchanged and
+  unresolved.
+- Protocol, adapters and immutable fixtures are unchanged by the native increment.
+  This is offline command/settlement evidence, not host storage survival, physical
+  native execution, complete message-codec conformance or whole-scenario acceptance.
+  Persistent above, remaining state including composed maximize, downstream
+  composed-sticky swap/migration gates and general no-intent clear policy remain
+  dependent work; all eight OPEN/TBD gates remain unchanged.
 
 ## Adapter compile-failure inventory
 
@@ -375,8 +754,18 @@
    TBD. The workspace unsafe guardrail failure above remains unresolved outside
    these changed sources.
   The bounded opaque intent-data codec and outer intent ingress/publication lanes
-  are implemented and fixture-tested; lifetime-fenced engine restore/save/clear
-  and host storage remain pending. Engine storage-write authority is still empty.
+  are implemented and fixture-tested; lifetime-fenced non-sticky explicit-float/
+   tile restoration and save publication are implemented and engine-tested.
+   Semantic sticky restoration and capability-aware sticky fact authority are
+    implemented and engine-tested. Outbound visibility/native-state target types,
+    encoding, sizing and existing frame/clear command correlation are implemented;
+    required StateAttempt ingress and internally bound native-state settlement are
+     implemented and offline-tested. Composed sticky commands, canonical saves and
+      same-output show targets are implemented and offline-tested; native sticky
+      target production, proof-gated clear admission and exact-prior refusal
+      rollback are implemented and offline-tested.
+     General no-intent clears, remaining visibility/state policy and host storage
+     acceptance remain pending.
   The core-composed maximize contract is approved and recorded; implementation
   belongs to the dependent state increment, with native outcomes still TBD.
   The remaining world report/reply paths and version are still staged; no v4

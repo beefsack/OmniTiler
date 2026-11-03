@@ -111,6 +111,7 @@ fn test_report() -> WorldReport {
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -702,6 +703,56 @@ fn command_validation_keeps_closed_vocabularies() {
     assert!(!valid_command(&C::MigrateDirectional {
         direction: "sideways".to_owned(),
     }));
+}
+
+#[test]
+fn sticky_commands_validate_typed_subjects_and_reject_catalog_is_closed() {
+    use crate::world_report::CommandRejectKind as K;
+    use WorldCommand as C;
+    let win = WindowId("win-a".to_owned());
+    assert!(valid_command(&C::SetSticky {
+        window: win.clone(),
+        value: true,
+    }));
+    assert!(valid_command(&C::SetSticky {
+        window: win.clone(),
+        value: false,
+    }));
+    assert!(valid_command(&C::ToggleSticky {
+        window: win.clone(),
+    }));
+    assert!(!valid_command(&C::SetSticky {
+        window: WindowId(String::new()),
+        value: true,
+    }));
+    assert!(!valid_command(&C::ToggleSticky {
+        window: WindowId(" ".to_owned()),
+    }));
+    // Closed catalog: every wire token round-trips, nothing else parses.
+    for (kind, token) in [
+        (K::FocusUnknown, "focus-unknown"),
+        (K::SendTargetUnknown, "send-target-unknown"),
+        (K::SendWindowUnknown, "send-window-unknown"),
+        (K::SendRefused, "send-refused"),
+        (K::ViewOutputUnknown, "view-output-unknown"),
+        (K::ViewTargetUnknown, "view-target-unknown"),
+        (K::TransferInFlight, "transfer-in-flight"),
+        (K::DirectionInvalid, "direction-invalid"),
+        (K::ScopeHeld, "scope-held"),
+        (K::SelectionUnknown, "selection-unknown"),
+        (K::MigrationRefused, "migration-refused"),
+        (K::OperationRefused, "operation-refused"),
+        (K::TilingTargetUnknown, "tiling-target-unknown"),
+        (K::StateUnsupported, "state-unsupported"),
+        (K::StateUnknown, "state-unknown"),
+        (K::FullscreenNotExitable, "fullscreen-not-exitable"),
+        (K::StaleRenderTarget, "stale-render-target"),
+    ] {
+        assert_eq!(kind.as_str(), token);
+        assert_eq!(K::parse(token), Some(kind));
+    }
+    assert_eq!(K::parse("frobnicate"), None);
+    assert_eq!(K::parse(""), None);
 }
 
 #[test]

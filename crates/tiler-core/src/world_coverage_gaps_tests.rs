@@ -137,6 +137,7 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -154,7 +155,12 @@ fn engine_with_zero_outer_gap() -> WorldEngine {
     WorldEngine::new_test_bound_with_initial_settings(
         "gen-1",
         "adapter-1",
-        crate::connection::HostCapabilities::default(),
+        crate::connection::HostCapabilities {
+            // Fixtures carry native sticky facts; the lane under test is
+            // the native route.
+            native_sticky: true,
+            ..Default::default()
+        },
         vec![(
             "outer".to_owned(),
             crate::connection::RawSettingValue::Number(0.0),
@@ -1186,7 +1192,12 @@ fn windows_profile_automatic_fixed_withholds_while_ordinary_mints() {
         let mut engine = WorldEngine::new_test_bound_with_config_and_initial_settings(
             "gen-1",
             "adapter-1",
-            crate::connection::HostCapabilities::default(),
+            crate::connection::HostCapabilities {
+                // Fixtures carry native sticky facts; the lane under test is
+                // the native route.
+                native_sticky: true,
+                ..Default::default()
+            },
             config,
             Vec::new(),
         )
@@ -1979,7 +1990,12 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
         let mut engine = WorldEngine::new_test_bound_with_initial_settings(
             "gen-1",
             "adapter-1",
-            crate::connection::HostCapabilities::default(),
+            crate::connection::HostCapabilities {
+                // Fixtures carry native sticky facts; the lane under test is
+                // the native route.
+                native_sticky: true,
+                ..Default::default()
+            },
             vec![(
                 "outer".to_owned(),
                 crate::connection::RawSettingValue::Number(50.0),
@@ -3743,7 +3759,12 @@ fn toggle_maximize_command_decides_and_reports() {
         let mut held_engine = WorldEngine::new_test_bound_with_initial_settings(
             "gen-1",
             "adapter-1",
-            crate::connection::HostCapabilities::default(),
+            crate::connection::HostCapabilities {
+                // Fixtures carry native sticky facts; the lane under test is
+                // the native route.
+                native_sticky: true,
+                ..Default::default()
+            },
             vec![(
                 "outer".to_owned(),
                 crate::connection::RawSettingValue::Number(50.0),
@@ -3864,7 +3885,12 @@ fn engine_with_gaps(inner: f64, outer: f64) -> WorldEngine {
     WorldEngine::new_test_bound_with_initial_settings(
         "gen-1",
         "adapter-1",
-        crate::connection::HostCapabilities::default(),
+        crate::connection::HostCapabilities {
+            // Fixtures carry native sticky facts; the lane under test is
+            // the native route.
+            native_sticky: true,
+            ..Default::default()
+        },
         vec![
             (
                 "gap".to_owned(),

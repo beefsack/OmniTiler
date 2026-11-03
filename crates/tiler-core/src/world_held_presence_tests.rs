@@ -22,6 +22,9 @@ fn born_engine() -> WorldEngine {
         "adapter-1",
         crate::connection::HostCapabilities {
             birth_clear: true,
+            // Fixtures carry native sticky facts; the held lane under test
+            // is the native route.
+            native_sticky: true,
             ..Default::default()
         },
     )
@@ -34,6 +37,9 @@ fn title_unavailable_engine() -> WorldEngine {
         "adapter-1",
         crate::connection::HostCapabilities {
             unavailable_facts: vec![FactName::Title],
+            // Fixtures carry native sticky facts; the held lane under test
+            // is the native route.
+            native_sticky: true,
             ..Default::default()
         },
     )

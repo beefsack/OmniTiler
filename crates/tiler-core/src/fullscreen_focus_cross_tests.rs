@@ -668,6 +668,7 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -774,6 +775,9 @@ fn world_non_fullscreen_control_plans_local_sibling() {
         "gen-1",
         "adapter-1",
         HostCapabilities {
+            // Fixtures carry native sticky facts; the lane under test is
+            // the native route.
+            native_sticky: true,
             ..HostCapabilities::default()
         },
         vec![

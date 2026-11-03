@@ -891,6 +891,17 @@ impl super::Session {
         self.fixed_tile_override.insert(window.clone());
     }
 
+    /// Production commit for a restored explicit tile (`float:false`)
+    /// that just admitted tiled: records the durable override in the
+    /// owning session so later hint changes and safety
+    /// exclusion/recovery keep the explicit win. No-op for unknown
+    /// windows; never clears.
+    pub(crate) fn insert_fixed_tile_override(&mut self, window: &WindowId) {
+        if self.windows.contains_key(window) {
+            self.fixed_tile_override.insert(window.clone());
+        }
+    }
+
     /// Drop fixed-size bookkeeping for windows no longer in membership.
     /// A removed/replaced native reference with a reused id classifies
     /// again on next admission (D3); overrides never cross restart

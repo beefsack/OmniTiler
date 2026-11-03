@@ -163,6 +163,7 @@ fn report_on(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -185,7 +186,12 @@ fn rebind(engine: &mut WorldEngine, adapter: &str) {
             executable: None,
             process_id: None,
         },
-        capabilities: crate::connection::HostCapabilities::without_native_identity(),
+        capabilities: crate::connection::HostCapabilities {
+            // Fixtures carry native sticky facts; only native identity is
+            // unavailable on this rebind lane.
+            native_sticky: true,
+            ..crate::connection::HostCapabilities::without_native_identity()
+        },
     });
     let generation = handshake.generation.expect("rebound generation");
     let settings = engine

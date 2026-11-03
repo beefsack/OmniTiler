@@ -206,6 +206,7 @@ fn report(
         view_attempts,
         clear_attempts: vec![],
         creation_attempts,
+        state_attempts: Vec::new(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),

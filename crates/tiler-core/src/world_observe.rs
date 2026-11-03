@@ -237,6 +237,22 @@ impl WorldEngine {
                 held
             })
             .collect();
+        let state_offroute: Vec<RowDiagnostic> = report
+            .state_attempts
+            .iter()
+            .filter(|attempt| {
+                !crate::world_state::state_property_supported(self.capabilities(), attempt.property)
+            })
+            .filter_map(|attempt| {
+                self.state_offroute_output(report, &attempt.window)
+                    .map(|output| RowDiagnostic {
+                        scope: AuthorityScope::Output(output),
+                        row: RowDiagnosticLane::Attempt,
+                        id: Some(attempt.window.0.clone()),
+                        kind: RowDiagnosticKind::ConflictingFact,
+                    })
+            })
+            .collect();
         let staged_diagnostics: Vec<RowDiagnostic> = report
             .held_screens
             .iter()
@@ -246,6 +262,7 @@ impl WorldEngine {
                     .iter()
                     .filter_map(|held| held.diagnostic.clone()),
             )
+            .chain(state_offroute)
             .collect();
         let mut staged = StagedReport {
             screens: report.screens.clone(),
@@ -277,6 +294,10 @@ impl WorldEngine {
         let maximize_supported = self
             .capabilities()
             .map(|caps| caps.maximize)
+            .unwrap_or(true);
+        let native_sticky_supported = self
+            .capabilities()
+            .map(|caps| caps.native_sticky)
             .unwrap_or(true);
         for fact in &report.windows {
             // Core-derived classification per staged fact: retained tile
@@ -314,21 +335,44 @@ impl WorldEngine {
                 || self
                     .excluded_intent
                     .get(&fact.window)
-                    .is_some_and(|intent| intent.tile_override);
+                    .is_some_and(|intent| intent.tile_override)
+                || self.pending_intent.get(&fact.window).is_some_and(|data| {
+                    data.float == Some(false)
+                        && data.sticky_prior.is_none()
+                        && !self.intent_conflicts.contains(&fact.window)
+                });
             let explicit_float = self
                 .retained_floats
                 .iter()
-                .any(|retained| retained.window == fact.window);
+                .any(|retained| retained.window == fact.window)
+                || self.restored_floats.contains(&fact.window)
+                || self.pending_intent.get(&fact.window).is_some_and(|data| {
+                    data.float == Some(true)
+                        && data.sticky_prior.is_none()
+                        && !self.intent_conflicts.contains(&fact.window)
+                });
+            // Restored semantic sticky intent: a pending whole
+            // sticky-bearing record (any float lane, exact prior kept) or
+            // committed sticky-prior provenance. Conflicted subjects confer
+            // no authority. Never an adapter fact projection: raw facts
+            // stay the sole public input and this carrier only proves the
+            // sticky float, never a native write.
+            let semantic_sticky = self.restored_sticky.contains_key(&fact.window)
+                || self.pending_intent.get(&fact.window).is_some_and(|data| {
+                    data.sticky_prior.is_some() && !self.intent_conflicts.contains(&fact.window)
+                });
             let classified =
                 crate::window_classify::classify_window(crate::window_classify::ClassifyInput {
                     fact,
                     unavailable,
                     fixed_predicate,
                     maximize_supported,
+                    native_sticky_supported,
                     retained_tiled,
                     automatic_fixed,
                     tile_override,
                     explicit_float,
+                    semantic_sticky,
                     own_process_id,
                 });
             // Own-process exclusion drops the facts before closes: the

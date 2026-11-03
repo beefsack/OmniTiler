@@ -71,6 +71,9 @@ fn envelope(intent_records: serde_json::Value) -> String {
     )
     .expect("valid envelope");
     value["intentRecords"] = intent_records;
+    // Required native-state lane under test elsewhere; the opaque-lane
+    // envelope carries it empty.
+    value["stateAttempts"] = serde_json::json!([]);
     value.to_string()
 }
 
@@ -616,7 +619,7 @@ fn published_replies_originate_valid_under_the_commit_gate() {
     // The pre-mutation bound covers the published bytes, including the
     // empty 18-byte `intentWrites` section inside the envelope slack.
     assert!(
-        tiler_core::world_report::reply_upper_bound(&report, 0, 0, report.screens.len())
+        tiler_core::world_report::reply_upper_bound(&report, 0, 0, report.screens.len(), 0, 0)
             >= wire.len(),
         "pre-mutation bound covers the published reply"
     );

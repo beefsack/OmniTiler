@@ -12,7 +12,9 @@ use crate::world_directional::tests::{
     accepted, fact, float_fact, outcome_str, rect, report, report_full, screen,
 };
 use crate::world_engine::WorldEngine;
-use crate::world_report::{CommandResult, ScreenReport, WindowFact, WorldCommand, WorldReport};
+use crate::world_report::{
+    CommandResult, ScopeAuthority, ScreenReport, WindowFact, WorldCommand, WorldReport,
+};
 
 fn clear_attempt(
     operation_id: &str,
@@ -63,6 +65,31 @@ pub(crate) fn desire<'a>(
         .iter()
         .find(|row| row.lifetime.0 == window)
         .expect("window keeps a row")
+}
+
+/// Row-scoped frozen target suffix straight off the canonical wire bytes:
+/// from the row's `,"cmdSeq":` (the first `cmdSeq` after the row's `win`
+/// key belongs to that row) through the state-array close (the first `]}`
+/// after it; no earlier array sits inside the suffix). Asserts the
+/// slicing assumption instead of trusting it.
+fn row_suffix<'a>(wire: &'a str, window: &str) -> &'a str {
+    let row = wire
+        .find(&format!("\"win\":\"{window}\""))
+        .expect("row on the wire");
+    let after_row = &wire[row..];
+    let start = after_row
+        .find(",\"cmdSeq\":")
+        .expect("cmdSeq lane after the row key");
+    let after_start = &after_row[start..];
+    let end = after_start
+        .find("]}")
+        .expect("state close plus window close");
+    assert_eq!(
+        after_start[..end].matches('[').count(),
+        1,
+        "no earlier array inside the suffix"
+    );
+    &after_start[..end + 1]
 }
 
 #[test]
@@ -2393,5 +2420,588 @@ fn float_settled_events_are_one_shot_and_replay_cached() {
         reply.operation_settled.is_empty(),
         "one-shot events never leak, got {:?}",
         reply.operation_settled
+    );
+}
+
+#[test]
+fn desire_cmdseq_explicit_clear_retained_across_observation_only_replies() {
+    // Typed correlation: the published explicit clear token carries the
+    // originating command sequence, retained across observation-only
+    // replies. Never a parsed id, never the latest report sequence:
+    // no published token means no sequence.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let maximized = || WindowFact {
+        maximized: Some(true),
+        ..fact("win-max", "out-a", 0)
+    };
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0), screen("out-b", 800)],
+            vec![maximized(), fact("win-b", "out-b", 900)],
+            None,
+            None,
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0), screen("out-b", 800)],
+            vec![maximized(), fact("win-b", "out-b", 900)],
+            Vec::new(),
+            "win-max",
+            Some(13),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-max".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    let row = desire(&reply, "win-max");
+    assert_eq!(row.clear_operation.as_deref(), Some("op-13"));
+    assert_eq!(row.command_seq, Some(13), "explicit token carries origin");
+    // Wire bytes: the frozen target suffix rides directly after the
+    // clear token with the quoted original sequence.
+    let wire = crate::world_sizing::encode_reply_canonical(&reply);
+    assert!(wire.contains(
+        "\"clear_op\":\"op-13\",\"cmdSeq\":\"13\",\"visibility\":null,\
+         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
+         \"state\":[]"
+    ));
+    assert_eq!(
+        row_suffix(&wire, "win-max"),
+        ",\"cmdSeq\":\"13\",\"visibility\":null,\
+         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
+         \"state\":[]"
+    );
+    // No new visibility or state authority on any branch.
+    for row in &reply.windows {
+        assert_eq!(
+            row.visibility, None,
+            "no visibility target: {}",
+            row.lifetime.0
+        );
+        assert_eq!(
+            row.visibility_authority,
+            ScopeAuthority::Untouched,
+            "no visibility authority: {}",
+            row.lifetime.0
+        );
+        assert!(row.state.is_empty(), "no state targets: {}", row.lifetime.0);
+    }
+    // Observation-only reply: same facts, no command. The token and its
+    // typed sequence persist; nothing re-mints from the report sequence.
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen("out-a", 0), screen("out-b", 800)],
+            vec![maximized(), fact("win-b", "out-b", 900)],
+            None,
+            None,
+        ),
+    );
+    let row = desire(&reply, "win-max");
+    assert_eq!(row.clear_operation.as_deref(), Some("op-13"));
+    assert_eq!(
+        row.command_seq,
+        Some(13),
+        "retained across observation-only"
+    );
+    let wire = crate::world_sizing::encode_reply_canonical(&reply);
+    assert!(wire.contains(
+        "\"clear_op\":\"op-13\",\"cmdSeq\":\"13\",\"visibility\":null,\
+         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
+         \"state\":[]"
+    ));
+    assert_eq!(
+        row_suffix(&wire, "win-max"),
+        ",\"cmdSeq\":\"13\",\"visibility\":null,\
+         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
+         \"state\":[]"
+    );
+}
+
+#[test]
+fn desire_cmdseq_cleared_with_withheld_or_spent_token() {
+    // Withheld (gap, gesture) and spent (dispatched, proof pending)
+    // tokens publish no sequence while the binding survives.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let maximized = || WindowFact {
+        maximized: Some(true),
+        transient: Some(true),
+        ..fact("win-max", "out-a", 100)
+    };
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
+            None,
+            None,
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
+            Vec::new(),
+            "win-max",
+            Some(13),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-max".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    assert_eq!(desire(&reply, "win-max").command_seq, Some(13));
+    // Gapped inventory stages the dispatched attempt as pending before
+    // any hold and withholds the spent desire with identities preserved.
+    let mut gapped = report_clears(
+        3,
+        3,
+        vec![screen("out-a", 0)],
+        vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
+        "win-max",
+        vec![clear_attempt(
+            "op-13",
+            "win-max",
+            crate::world_report::FrameSetter::Accepted,
+            Some(true),
+            Some(false),
+        )],
+    );
+    gapped.inventory_complete = false;
+    let reply = accepted(&mut engine, &gapped);
+    assert_eq!(engine.retained_clears.len(), 1, "gap keeps the binding");
+    let row = desire(&reply, "win-max");
+    assert_eq!(row.clear_operation, None);
+    assert_eq!(row.command_seq, None, "withheld token carries no sequence");
+    // Gesture barrier withholds the same way.
+    let mut gestured = report_clears(
+        4,
+        4,
+        vec![screen("out-a", 0)],
+        vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
+        "win-max",
+        Vec::new(),
+    );
+    gestured.gesture_barrier = true;
+    let reply = accepted(&mut engine, &gestured);
+    assert_eq!(engine.retained_clears.len(), 1);
+    let row = desire(&reply, "win-max");
+    assert_eq!(row.clear_operation, None);
+    assert_eq!(row.command_seq, None, "withheld token carries no sequence");
+    // Dispatched attempt, still maximized (no proof): the token is spent
+    // while the binding holds ambiguous, so no sequence publishes.
+    let reply = accepted(
+        &mut engine,
+        &report_clears(
+            5,
+            5,
+            vec![screen("out-a", 0)],
+            vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
+            "win-max",
+            vec![clear_attempt(
+                "op-13",
+                "win-max",
+                crate::world_report::FrameSetter::Accepted,
+                Some(true),
+                Some(true),
+            )],
+        ),
+    );
+    assert_eq!(
+        engine.retained_clears.len(),
+        1,
+        "unproven holds, never retires"
+    );
+    let row = desire(&reply, "win-max");
+    assert_eq!(row.clear_operation, None, "spent token never re-actuates");
+    assert_eq!(row.command_seq, None, "spent token carries no sequence");
+}
+
+#[test]
+fn desire_cmdseq_float_continuation_preserves_original_seq() {
+    // Float-route continuation resumes under the ORIGINAL operation id
+    // and its original command sequence: no second command, no re-mint.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let maximized = || WindowFact {
+        maximized: Some(true),
+        transient: Some(true),
+        ..fact("win-max", "out-a", 100)
+    };
+    let cleared = || WindowFact {
+        maximized: Some(false),
+        ..maximized()
+    };
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
+            None,
+            None,
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
+            Vec::new(),
+            "win-max",
+            Some(13),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-max".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    assert_eq!(desire(&reply, "win-max").command_seq, Some(13));
+    // Commandless proof resumes the half-snap: the spent clear withdraws
+    // while the continued float keeps the original sequence.
+    let reply = accepted(
+        &mut engine,
+        &report_clears(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
+            "win-max",
+            vec![clear_attempt(
+                "op-13",
+                "win-max",
+                crate::world_report::FrameSetter::Accepted,
+                Some(true),
+                Some(false),
+            )],
+        ),
+    );
+    let row = desire(&reply, "win-max");
+    assert_eq!(row.frame_operation.as_deref(), Some("op-13"));
+    assert_eq!(row.command_seq, Some(13), "continuation keeps original seq");
+    assert_eq!(row.clear_operation, None, "spent clear never re-actuates");
+    // Wire bytes: the spent clear publishes nothing while the continued
+    // float keeps the original quoted sequence after the frame token.
+    let wire = crate::world_sizing::encode_reply_canonical(&reply);
+    assert!(wire.contains(
+        "\"frame_op\":\"op-13\",\"floating\":true,\"float_origin\":\"\",\
+         \"clear_op\":\"\",\"cmdSeq\":\"13\",\"visibility\":null,\
+         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
+         \"state\":[]"
+    ));
+    assert_eq!(
+        row_suffix(&wire, "win-max"),
+        ",\"cmdSeq\":\"13\",\"visibility\":null,\
+         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
+         \"state\":[]"
+    );
+    // Frame arrival confirms the float: both tokens withdraw, no sequence.
+    let arrived = || WindowFact {
+        rect: Some(rect(404, 8, 388, 544)),
+        maximized: Some(false),
+        ..maximized()
+    };
+    let reply = accepted(
+        &mut engine,
+        &report_clears(
+            4,
+            4,
+            vec![screen("out-a", 0)],
+            vec![arrived(), float_fact("win-target", "out-a", 300, 100)],
+            "win-max",
+            Vec::new(),
+        ),
+    );
+    let row = desire(&reply, "win-max");
+    assert_eq!(row.frame_operation, None);
+    assert_eq!(row.command_seq, None, "confirmed desire withdraws sequence");
+    // Wire bytes: both tokens spent means a null correlation suffix.
+    let wire = crate::world_sizing::encode_reply_canonical(&reply);
+    assert!(wire.contains(
+        "\"frame_op\":\"\",\"floating\":true,\"float_origin\":\"\",\
+         \"clear_op\":\"\",\"cmdSeq\":null,\"visibility\":null,\
+         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
+         \"state\":[]"
+    ));
+    assert_eq!(
+        row_suffix(&wire, "win-max"),
+        ",\"cmdSeq\":null,\"visibility\":null,\
+         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
+         \"state\":[]"
+    );
+}
+
+#[test]
+fn desire_cmdseq_explicit_float_retained_then_withdrawn() {
+    // Explicit float placement publishes its command sequence until the
+    // placement settles; ordinary floats and withdrawals carry none.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let tiled = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+    accepted(
+        &mut engine,
+        &report(1, 1, vec![screen("out-a", 0)], tiled(), None, None),
+    );
+    let target = rect(10, 10, 200, 150);
+    let reply = accepted(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            tiled(),
+            Vec::new(),
+            "",
+            Some(9),
+            Some(WorldCommand::Operation(
+                crate::boundary::CoreCommand::ToggleFloat {
+                    window: "win-a".to_owned(),
+                    float_rect: Some(target),
+                },
+            )),
+        ),
+    );
+    let row = desire(&reply, "win-a");
+    assert!(row.floating, "placement floats: {row:?}");
+    assert_eq!(row.frame_operation.as_deref(), Some("op-9"));
+    assert_eq!(row.command_seq, Some(9), "explicit token carries origin");
+    assert_eq!(row.visibility, None);
+    assert_eq!(row.visibility_authority, ScopeAuthority::Untouched);
+    assert!(row.state.is_empty());
+    // Observation-only reply retains the token and its sequence.
+    let reply = accepted(
+        &mut engine,
+        &report(3, 3, vec![screen("out-a", 0)], tiled(), None, None),
+    );
+    let row = desire(&reply, "win-a");
+    assert_eq!(row.frame_operation.as_deref(), Some("op-9"));
+    assert_eq!(row.command_seq, Some(9), "retained across observation-only");
+    // Unfloat withdraws the placement: no token, no sequence.
+    let reply = accepted(
+        &mut engine,
+        &report_full(
+            4,
+            4,
+            vec![screen("out-a", 0)],
+            tiled(),
+            Vec::new(),
+            "",
+            Some(10),
+            Some(WorldCommand::Operation(
+                crate::boundary::CoreCommand::ToggleFloat {
+                    window: "win-a".to_owned(),
+                    float_rect: None,
+                },
+            )),
+        ),
+    );
+    let row = desire(&reply, "win-a");
+    assert_eq!(row.frame_operation, None, "withdrawn: {row:?}");
+    assert_eq!(row.command_seq, None, "withdrawn carries no sequence");
+}
+
+#[test]
+fn desire_cmdseq_born_clear_is_commandless() {
+    // Born commandless clears ride the token lane with no command
+    // correlation: the binding id comes from the core born serial.
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities {
+            birth_clear: true,
+            native_sticky: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation");
+    let reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![WindowFact {
+                maximized: Some(true),
+                ..fact("win-born", "out-a", 100)
+            }],
+            None,
+            None,
+        ),
+    );
+    let row = desire(&reply, "win-born");
+    let op = row
+        .clear_operation
+        .clone()
+        .expect("born binds a clear token");
+    assert!(op.starts_with("op-born-"), "commandless id, got {op}");
+    assert_eq!(row.command_seq, None, "born clear carries no sequence");
+    // Wire bytes: commandless born token rides with a null correlation.
+    let wire = crate::world_sizing::encode_reply_canonical(&reply);
+    assert!(wire.contains(&format!(
+        "\"clear_op\":\"{op}\",\"cmdSeq\":null,\"visibility\":null,\
+         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
+         \"state\":[]"
+    )));
+    assert_eq!(
+        row_suffix(&wire, "win-born"),
+        ",\"cmdSeq\":null,\"visibility\":null,\
+         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
+         \"state\":[]"
+    );
+    assert_eq!(row.visibility, None);
+    assert_eq!(row.visibility_authority, ScopeAuthority::Untouched);
+    assert!(row.state.is_empty());
+    // Observation-only reply retains the token, still commandless.
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![WindowFact {
+                maximized: Some(true),
+                ..fact("win-born", "out-a", 100)
+            }],
+            None,
+            None,
+        ),
+    );
+    let row = desire(&reply, "win-born");
+    assert_eq!(row.clear_operation.as_deref(), Some(op.as_str()));
+    assert_eq!(row.command_seq, None, "retained born stays commandless");
+}
+
+#[test]
+fn state_property_wire_tokens_are_closed() {
+    // Closed typed vocabulary for the outbound state lane, consistent
+    // with the existing as_str conventions.
+    use crate::world_report::StateProperty;
+    assert_eq!(StateProperty::Fullscreen.as_str(), "fullscreen");
+    assert_eq!(StateProperty::Maximized.as_str(), "maximized");
+    assert_eq!(StateProperty::Sticky.as_str(), "sticky");
+    assert_eq!(StateProperty::Above.as_str(), "above");
+}
+
+#[test]
+fn newer_clear_intent_supersedes_retained_float_placement() {
+    // Normative newer-intent supersession: both tokens clear on newer
+    // intent, so a NeedClear for a window with an outstanding float
+    // placement drops the stale placement at mint. The reply publishes
+    // only the clear token under the new sequence, never a stale
+    // placement alongside it.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let tiled = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+    // R1: admit tiles.
+    accepted(
+        &mut engine,
+        &report(1, 1, vec![screen("out-a", 0)], tiled(), None, None),
+    );
+    // R2: cmd9 floats win-a with an explicit placement.
+    let target = rect(10, 10, 200, 150);
+    let reply = accepted(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            tiled(),
+            Vec::new(),
+            "",
+            Some(9),
+            Some(WorldCommand::Operation(
+                crate::boundary::CoreCommand::ToggleFloat {
+                    window: "win-a".to_owned(),
+                    float_rect: Some(target),
+                },
+            )),
+        ),
+    );
+    assert_eq!(
+        desire(&reply, "win-a").frame_operation.as_deref(),
+        Some("op-9")
+    );
+    assert_eq!(engine.retained_floats.len(), 1);
+    // R3: observation-only maximized report; the placement is still
+    // outstanding with its frame unchanged.
+    let maximized_a = || WindowFact {
+        maximized: Some(true),
+        ..fact("win-a", "out-a", 0)
+    };
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![maximized_a(), fact("win-b", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        desire(&reply, "win-a").frame_operation.as_deref(),
+        Some("op-9"),
+        "placement survives observation-only"
+    );
+    // R4: cmd13 directional move needs a clear; the newer intent
+    // supersedes the stale placement.
+    let reply = accepted(
+        &mut engine,
+        &report_full(
+            4,
+            4,
+            vec![screen("out-a", 0)],
+            vec![maximized_a(), fact("win-b", "out-a", 100)],
+            Vec::new(),
+            "win-a",
+            Some(13),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    assert_eq!(
+        outcome_str(&reply.command_result),
+        Some("move-maximize-clear")
+    );
+    assert!(
+        engine.retained_floats.is_empty(),
+        "newer clear intent drops the stale placement"
+    );
+    assert_eq!(engine.retained_clears.len(), 1);
+    let row = desire(&reply, "win-a");
+    assert_eq!(
+        row.frame_operation, None,
+        "no stale placement alongside the new clear: {row:?}"
+    );
+    assert_eq!(
+        row.clear_operation.as_deref(),
+        Some("op-13"),
+        "only the new clear token publishes"
+    );
+    assert_eq!(
+        row.command_seq,
+        Some(13),
+        "slot carries the surviving token, got {row:?}"
     );
 }

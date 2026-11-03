@@ -164,6 +164,7 @@ fn command_report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -188,7 +189,12 @@ fn rig_with_focus_follows(enabled: bool) -> WorldEngine {
     let mut engine = WorldEngine::new_test_bound_with_initial_settings(
         "gen-1",
         "adapter-1",
-        crate::connection::HostCapabilities::default(),
+        crate::connection::HostCapabilities {
+            // Fixtures carry native sticky facts; the cursor lane under test
+            // is the native route.
+            native_sticky: true,
+            ..Default::default()
+        },
         vec![(
             "focusFollowsCursor".to_owned(),
             crate::connection::RawSettingValue::Bool(enabled),
@@ -386,6 +392,9 @@ fn cross_rig() -> WorldEngine {
 fn cross_rig_with_warp(enabled: bool) -> WorldEngine {
     let capabilities = crate::connection::HostCapabilities {
         warp: enabled,
+        // Fixtures carry native sticky facts; the warp lane under test is
+        // the native route.
+        native_sticky: true,
         ..Default::default()
     };
     let mut engine = WorldEngine::new_test_bound_with_initial_settings(
@@ -580,7 +589,12 @@ fn overlap_rig() -> WorldEngine {
     let mut engine = WorldEngine::new_test_bound_with_initial_settings(
         "gen-1",
         "adapter-1",
-        crate::connection::HostCapabilities::default(),
+        crate::connection::HostCapabilities {
+            // Fixtures carry native sticky facts; the cursor lane under test
+            // is the native route.
+            native_sticky: true,
+            ..Default::default()
+        },
         vec![(
             "focusFollowsCursor".to_owned(),
             crate::connection::RawSettingValue::Bool(true),

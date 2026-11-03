@@ -72,7 +72,12 @@ fn engine_without_gaps() -> WorldEngine {
     WorldEngine::new_test_bound_with_initial_settings(
         "gen-1",
         "adapter-1",
-        crate::connection::HostCapabilities::default(),
+        crate::connection::HostCapabilities {
+            // Fixtures carry native sticky facts; the gesture lane under
+            // test is the native route.
+            native_sticky: true,
+            ..Default::default()
+        },
         vec![
             (
                 "gap".to_owned(),

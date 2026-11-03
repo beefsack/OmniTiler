@@ -63,7 +63,16 @@ fn initial_values(
 }
 
 fn engine_for(switch_target: SwitchTarget, fresh_placement: FreshPlacement) -> WorldEngine {
-    engine_for_with_capabilities(switch_target, fresh_placement, HostCapabilities::default())
+    engine_for_with_capabilities(
+        switch_target,
+        fresh_placement,
+        HostCapabilities {
+            // Fixtures carry native sticky facts; the lane under test is
+            // the native route.
+            native_sticky: true,
+            ..HostCapabilities::default()
+        },
+    )
 }
 
 fn engine_for_with_capabilities(
@@ -99,7 +108,12 @@ fn rebind(
                 executable: None,
                 process_id: None,
             },
-            capabilities: HostCapabilities::without_native_identity(),
+            capabilities: HostCapabilities {
+                // Fixtures carry native sticky facts; only native identity
+                // is unavailable on this rebind lane.
+                native_sticky: true,
+                ..HostCapabilities::without_native_identity()
+            },
         })
         .generation
         .expect("rebound generation");
@@ -217,6 +231,7 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -1057,6 +1072,9 @@ fn retained_settings_are_observable() {
         FreshPlacement::CursorOutputMru,
         HostCapabilities {
             warp: true,
+            // Fixtures carry native sticky facts; the lane under test is
+            // the native route.
+            native_sticky: true,
             ..HostCapabilities::default()
         },
     );

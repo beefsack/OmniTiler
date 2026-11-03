@@ -259,6 +259,7 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -283,7 +284,12 @@ fn engine_for_case(case: &Case) -> WorldEngine {
     WorldEngine::new_test_bound_with_initial_settings(
         "gen-1",
         "adapter-1",
-        tiler_core::connection::HostCapabilities::default(),
+        tiler_core::connection::HostCapabilities {
+            // Fixtures carry native sticky facts; the lane under test is
+            // the native route.
+            native_sticky: true,
+            ..Default::default()
+        },
         vec![
             (
                 "mode".to_owned(),
@@ -318,7 +324,12 @@ fn reboot(engine: &mut WorldEngine, case: &Case, adapter: &str) {
                 executable: None,
                 process_id: None,
             },
-            capabilities: tiler_core::connection::HostCapabilities::without_native_identity(),
+            capabilities: tiler_core::connection::HostCapabilities {
+                // Fixtures carry native sticky facts; only native identity
+                // is unavailable on this reboot lane.
+                native_sticky: true,
+                ..tiler_core::connection::HostCapabilities::without_native_identity()
+            },
         })
         .generation
         .expect("rebound generation");

@@ -17,9 +17,10 @@
 //! readable, or explicit unknown; strict coverage of each ordered id).
 
 pub use crate::world_sizing::{
-    NonFiniteNumber, encode_finite_json_number, encode_held_screen_canonical,
-    encode_held_window_canonical, encode_reply_canonical, encode_screen_canonical,
-    encode_window_canonical, int_len, json_number_len, json_string_len, push_json_number,
+    MAX_INTENT_ROLLBACK_DATA_JSON, MAX_INTENT_ROLLBACK_ROW_BYTES, NonFiniteNumber,
+    encode_finite_json_number, encode_held_screen_canonical, encode_held_window_canonical,
+    encode_reply_canonical, encode_screen_canonical, encode_window_canonical, int_len,
+    json_number_len, json_string_len, max_intent_rollback_bound, push_json_number,
     push_raw_setting_value, push_row_diagnostic, raw_setting_value_len, reply_estimate,
     reply_exact_bytes, reply_upper_bound, report_estimate, u64_len, usize_len,
 };
@@ -109,6 +110,9 @@ pub const MAX_WORLD_CLEAR_ATTEMPTS: usize = 1024;
 /// Bound on mechanical native creation attempts per report (one latest-wins
 /// row per outstanding creation operation at most).
 pub const MAX_WORLD_CREATION_ATTEMPTS: usize = 256;
+/// Bound on mechanical native-state attempts per report (one latest-wins
+/// row per window property at most).
+pub const MAX_WORLD_STATE_ATTEMPTS: usize = 1024;
 /// Bound on the presentation native order per report (same lifetime
 /// alphabet as windows): the adapter's top-to-bottom stacking snapshot.
 pub const MAX_PRESENTATION_ORDER: usize = 1024;
@@ -352,6 +356,68 @@ pub struct TransferTarget {
     pub held: bool,
 }
 
+/// Composed visibility target (outbound only): the desired shown state,
+/// never a native unminimize command. `revision` is the world revision at
+/// target authorization, retained across observation-only replies.
+/// `fallback` is core permission for hide-only fallback after failed or
+/// unproven focus; never set for shows. `None` on the row carries no
+/// visibility target: no derived policy, no new authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisibilityTarget {
+    pub shown: bool,
+    pub revision: u64,
+    pub fallback: bool,
+}
+
+/// Independent native property for [`StateTarget`]: one target per
+/// property. `above` is the persistent project stacking ownership; the
+/// one-shot stack effect stays a distinct action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum StateProperty {
+    Fullscreen,
+    Maximized,
+    Sticky,
+    Above,
+}
+
+impl StateProperty {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fullscreen => "fullscreen",
+            Self::Maximized => "maximized",
+            Self::Sticky => "sticky",
+            Self::Above => "above",
+        }
+    }
+
+    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "fullscreen" => Self::Fullscreen,
+            "maximized" => Self::Maximized,
+            "sticky" => Self::Sticky,
+            "above" => Self::Above,
+            _ => return None,
+        })
+    }
+}
+
+/// Independent native-state target (outbound only): the core-resolved
+/// target for one property. `authority` carries this property's write
+/// authority only; `command_seq` names the originating explicit command,
+/// never parsed operation text. Empty on every row until the state lane
+/// migrates: no derived policy, no new authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateTarget {
+    pub property: StateProperty,
+    pub value: bool,
+    pub authority: ScopeAuthority,
+    pub command_seq: Option<u64>,
+}
+
 /// Per-property window authority: floats/excluded/game rows may authorize
 /// membership without authorizing frame changes, so one blanket boolean is
 /// insufficient.
@@ -392,6 +458,21 @@ pub struct WindowDesire {
     /// (spent before the write), proven refusal, external supersession,
     /// close, newer intent, or generation reset. Never re-actuated.
     pub clear_operation: Option<String>,
+    /// Explicit command correlation for the published frame/clear target:
+    /// `Some` only with a published explicit retained operation token from
+    /// the originating command, never a parsed id and never the latest
+    /// report sequence. `None` with no published token; born commandless
+    /// clears publish no sequence.
+    pub command_seq: Option<u64>,
+    /// Composed visibility target, if any. `None` on every row until the
+    /// visibility lane migrates.
+    pub visibility: Option<VisibilityTarget>,
+    /// Independent visibility write authority. Untouched on every row
+    /// until the visibility lane migrates.
+    pub visibility_authority: ScopeAuthority,
+    /// Independent native-state targets. Empty on every row until the
+    /// state lane migrates.
+    pub state: Vec<StateTarget>,
 }
 
 /// Desired workspace row. `id` is the stable core logical workspace id;
@@ -629,6 +710,36 @@ pub struct ClearAttempt {
     pub setter: FrameSetter,
     pub pre_maximized: Option<bool>,
     pub post_maximized: Option<bool>,
+    pub attempt_ms: u64,
+}
+
+/// One normalized raw native-state attempt: the mechanical facts behind a
+/// single native fullscreen/maximize/sticky/above write, reported on the
+/// next report. The adapter writes, re-reads the property, and reports;
+/// the core owns every verdict. Never a policy conclusion: no outcome
+/// verdict rides here.
+///
+/// - `window`/`property`/`target` echo the exact core native-state target
+///   as correlation so the core matches the attempt to its desire.
+/// - `revision` is the world revision at target authorization, retained
+///   across observation-only replies (wire `rev`, quoted decimal).
+/// - `setter` is the mechanical disposition (`Accepted` never proves
+///   completion by itself, `Refused` is an explicit native refusal,
+///   `Threw` is a throwing/ambiguous call).
+/// - `pre`/`post` are the live property states immediately before/after
+///   the write (`None` = unreadable). Only an explicit refusal with an
+///   unchanged readable preimage proves refusal; anything else latches
+///   ambiguity.
+/// - `attempt_ms` matches [`FrameAttempt::attempt_ms`] idempotency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateAttempt {
+    pub window: WindowId,
+    pub property: StateProperty,
+    pub target: bool,
+    pub revision: u64,
+    pub setter: FrameSetter,
+    pub pre: Option<bool>,
+    pub post: Option<bool>,
     pub attempt_ms: u64,
 }
 
@@ -1562,6 +1673,14 @@ pub enum WorldCommand {
     /// maximized preimage. Never retains or mutates topology: the snapshot
     /// retains base membership; the result authorizes the native transition.
     ToggleMaximize { window: WindowId },
+    /// Neutral sticky set: the explicit on/off sticky intent for one
+    /// window. Core resolves and retains the target; the adapter never
+    /// decides.
+    SetSticky { window: WindowId, value: bool },
+    /// Neutral sticky toggle: flip the retained sticky state for one
+    /// window at command-execution time. Queued toggles compose (each
+    /// execution re-reads the retained state).
+    ToggleSticky { window: WindowId },
     /// Existing operation route: one [`CoreCommand`] executed against the
     /// homing (or first readable) domain through the full [`CoreEvent`].
     /// `SendToWorkspace`/`SendToOutput` retain a window transfer exactly
@@ -1721,6 +1840,13 @@ pub struct WorldReport {
     /// only; the core owns binding and settlement over them plus the fresh
     /// `native[]` readback. Capability-gated like `native[]`.
     pub creation_attempts: Vec<NativeCreationAttempt>,
+    /// Mechanical native-state attempts since the previous report (at most
+    /// one latest-wins entry per window property, bounded by
+    /// [`MAX_WORLD_STATE_ATTEMPTS`]). Raw setter/pre/post property facts
+    /// only; the core owns every verdict over them plus the staged
+    /// observation. Required on the wire (`stateAttempts`, possibly
+    /// empty); raw rows ride verbatim, including original stamps.
+    pub state_attempts: Vec<StateAttempt>,
     /// Normalized presentation ingress (stage 5): the genuinely observed
     /// foreground lifetime plus host-scaled style and movement facts. The
     /// core publishes uniform border/underlay/pager presentation in the
@@ -1882,6 +2008,82 @@ pub struct WorldReply {
     pub intent_writes: Vec<IntentWrite>,
 }
 
+/// Closed command-rejection catalog for an accepted report whose command
+/// is refused without mutation. Wire token is the kebab-case spelling in
+/// [`CommandRejectKind::as_str`]; adapters never fall back to another
+/// shape. Envelope failures are not command outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CommandRejectKind {
+    FocusUnknown,
+    SendTargetUnknown,
+    SendWindowUnknown,
+    SendRefused,
+    ViewOutputUnknown,
+    ViewTargetUnknown,
+    TransferInFlight,
+    DirectionInvalid,
+    ScopeHeld,
+    SelectionUnknown,
+    MigrationRefused,
+    OperationRefused,
+    TilingTargetUnknown,
+    StateUnsupported,
+    StateUnknown,
+    FullscreenNotExitable,
+    StaleRenderTarget,
+}
+
+impl CommandRejectKind {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FocusUnknown => "focus-unknown",
+            Self::SendTargetUnknown => "send-target-unknown",
+            Self::SendWindowUnknown => "send-window-unknown",
+            Self::SendRefused => "send-refused",
+            Self::ViewOutputUnknown => "view-output-unknown",
+            Self::ViewTargetUnknown => "view-target-unknown",
+            Self::TransferInFlight => "transfer-in-flight",
+            Self::DirectionInvalid => "direction-invalid",
+            Self::ScopeHeld => "scope-held",
+            Self::SelectionUnknown => "selection-unknown",
+            Self::MigrationRefused => "migration-refused",
+            Self::OperationRefused => "operation-refused",
+            Self::TilingTargetUnknown => "tiling-target-unknown",
+            Self::StateUnsupported => "state-unsupported",
+            Self::StateUnknown => "state-unknown",
+            Self::FullscreenNotExitable => "fullscreen-not-exitable",
+            Self::StaleRenderTarget => "stale-render-target",
+        }
+    }
+
+    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "focus-unknown" => Self::FocusUnknown,
+            "send-target-unknown" => Self::SendTargetUnknown,
+            "send-window-unknown" => Self::SendWindowUnknown,
+            "send-refused" => Self::SendRefused,
+            "view-output-unknown" => Self::ViewOutputUnknown,
+            "view-target-unknown" => Self::ViewTargetUnknown,
+            "transfer-in-flight" => Self::TransferInFlight,
+            "direction-invalid" => Self::DirectionInvalid,
+            "scope-held" => Self::ScopeHeld,
+            "selection-unknown" => Self::SelectionUnknown,
+            "migration-refused" => Self::MigrationRefused,
+            "operation-refused" => Self::OperationRefused,
+            "tiling-target-unknown" => Self::TilingTargetUnknown,
+            "state-unsupported" => Self::StateUnsupported,
+            "state-unknown" => Self::StateUnknown,
+            "fullscreen-not-exitable" => Self::FullscreenNotExitable,
+            "stale-render-target" => Self::StaleRenderTarget,
+            _ => return None,
+        })
+    }
+}
+
 /// Correlated per-command outcome that the snapshot alone cannot express.
 /// Wire shape is `{"op", ...}` with canonical key order frozen in
 /// [`encode_reply_canonical`](crate::world_report::encode_reply_canonical);
@@ -1963,6 +2165,10 @@ pub enum CommandResult {
         clear_fullscreen: bool,
         was_maximized: bool,
     },
+    /// Accepted-report command rejection: the observations incorporated
+    /// but the command refused without mutation. `kind` is the closed
+    /// [`CommandRejectKind`] reason, never an adapter fallback.
+    Rejected { kind: CommandRejectKind },
 }
 
 /// Request freshness verdict over `request_seq` alone. Command consumption
@@ -2737,6 +2943,33 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         feed(&mut hash, &attempt.attempt_ms.to_string());
         sep(&mut hash);
     }
+    // Raw native-state attempts: every carried field, presence bit, row
+    // order, and original stamp separates the digest (duplicate detection
+    // compares full typed input equality; changed reuse still fences the
+    // hold).
+    for attempt in &report.state_attempts {
+        feed(&mut hash, &attempt.window.0);
+        sep(&mut hash);
+        feed(&mut hash, attempt.property.as_str());
+        sep(&mut hash);
+        flag(&mut hash, attempt.target);
+        feed(&mut hash, &attempt.revision.to_string());
+        sep(&mut hash);
+        feed(&mut hash, attempt.setter.as_str());
+        sep(&mut hash);
+        for value in [attempt.pre, attempt.post] {
+            feed(
+                &mut hash,
+                &value
+                    .map(|set| if set { "1" } else { "0" }.to_owned())
+                    .unwrap_or_default(),
+            );
+            sep(&mut hash);
+            flag(&mut hash, value.is_some());
+        }
+        feed(&mut hash, &attempt.attempt_ms.to_string());
+        sep(&mut hash);
+    }
     // Stage-5 presentation ingress: every normalized fact separates the
     // digest (duplicate detection still compares full typed input).
     let ingress = &report.presentation;
@@ -3500,8 +3733,16 @@ pub fn grade_invalid_windows(report: &WorldReport) -> Option<WorldReport> {
 /// identity/geometry/visibility inputs (win, out, rect, hints, visibility,
 /// lastWrite, fullscreen/maximized/sticky/minimized state, nativeWs,
 /// fullscreen/layer ownership and suppression support) are never waived by
-/// this list and never conflict.
-fn conflicting_window(fact: &WindowFact, unavailable: &[crate::connection::FactName]) -> bool {
+/// this list and never conflict. Sticky contradicts separately: without
+/// `nativeSticky` support any non-null sticky (false or true) conflicts.
+fn conflicting_window(
+    fact: &WindowFact,
+    unavailable: &[crate::connection::FactName],
+    native_sticky_supported: bool,
+) -> bool {
+    if !native_sticky_supported && fact.sticky.is_some() {
+        return true;
+    }
     use crate::connection::FactName;
     unavailable.iter().any(|name| match name {
         FactName::Privileged => fact.privileged.is_some(),
@@ -3536,6 +3777,10 @@ fn conflicting_window(fact: &WindowFact, unavailable: &[crate::connection::FactN
 /// any id/duplicate/rect violation refuses the whole report instead of
 /// grading around it.
 ///
+/// Capability-aware for sticky: without `nativeSticky` support any non-null
+/// sticky (false or true) grades to the same narrow hold. A composed-route
+/// `sticky: null` never grades.
+///
 /// Normalization mirrors [`grade_invalid_windows`]: conflicting rows move to
 /// `held_windows` with their fields retained and a `ConflictingFact`
 /// window diagnostic.
@@ -3543,8 +3788,9 @@ fn conflicting_window(fact: &WindowFact, unavailable: &[crate::connection::FactN
 pub fn grade_conflicting_windows(
     report: &WorldReport,
     unavailable: &[crate::connection::FactName],
+    native_sticky_supported: bool,
 ) -> Option<WorldReport> {
-    if unavailable.is_empty() {
+    if unavailable.is_empty() && native_sticky_supported {
         return None;
     }
     {
@@ -3581,7 +3827,8 @@ pub fn grade_conflicting_windows(
         let slot = free.next()?;
         // Invalid-gradable rows belong to the invalid grader; conflicting
         // grading never double-holds them.
-        if !gradable_window(fact) && conflicting_window(fact, unavailable) {
+        if !gradable_window(fact) && conflicting_window(fact, unavailable, native_sticky_supported)
+        {
             graded.push(HeldWindowRow {
                 window: fact.window.clone(),
                 ordinal: slot,
@@ -3645,6 +3892,7 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         || report.view_attempts.len() > MAX_WORLD_VIEW_ATTEMPTS
         || report.clear_attempts.len() > MAX_WORLD_CLEAR_ATTEMPTS
         || report.creation_attempts.len() > MAX_WORLD_CREATION_ATTEMPTS
+        || report.state_attempts.len() > MAX_WORLD_STATE_ATTEMPTS
         || report.intent_records.len() > MAX_INTENT_RECORDS
     {
         return Some("section-over-cap");
@@ -4048,6 +4296,20 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         }
     }
     {
+        // One latest-wins row per window property: the same window naming
+        // two different revisions for one property is still a duplicate
+        // entry for that property, never two settled facts.
+        let mut seen_states = BTreeSet::new();
+        for attempt in &report.state_attempts {
+            if !is_opaque_id(&attempt.window.0) {
+                return Some("state-window-invalid");
+            }
+            if !seen_states.insert((attempt.window.0.clone(), attempt.property)) {
+                return Some("duplicate-state-attempt");
+            }
+        }
+    }
+    {
         // Capability-named note: one execution authorization per op; exact
         // op-plus-logical-plus-output match, strict order bounds, replay
         // idempotent by op id. One op naming two triples is contradictory
@@ -4325,6 +4587,9 @@ pub fn valid_command(command: &WorldCommand) -> bool {
         } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
         WorldCommand::MigrateDirectional { direction } => DIRECTIONS.contains(&direction.as_str()),
         WorldCommand::ToggleMaximize { window } => is_opaque_id(&window.0),
+        WorldCommand::SetSticky { window, .. } | WorldCommand::ToggleSticky { window } => {
+            is_opaque_id(&window.0)
+        }
         WorldCommand::Operation(command) => valid_operation(command),
     }
 }

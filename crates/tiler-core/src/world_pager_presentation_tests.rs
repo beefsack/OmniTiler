@@ -151,6 +151,7 @@ fn pager_report_ordered(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: PresentationIngress {
             pager_order: order
                 .iter()

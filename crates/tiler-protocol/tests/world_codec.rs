@@ -33,7 +33,7 @@ fn request_json(
           \"views\":[{{\"out\":\"out\",\"view\":\"\"}}],\"closed\":[],\"native\":[],\
          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"out\"],\
-          \"focused\":\"\",\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}},\"intentRecords\":[]}}"
+          \"focused\":\"\",\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}},\"intentRecords\":[],\"stateAttempts\":[]}}"
     )
 }
 
@@ -967,7 +967,15 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
     value["command"] = serde_json::json!({"op": "move-directional", "win": "win-a", "direction": "right", "sameAxis": "group-with-neighbor"});
     value["cmdSeq"] = serde_json::Value::String("13".to_owned());
     let report = decode_request(&value.to_string()).expect("maximized command decodes");
-    let mut engine = connected_engine("gen-1", HostCapabilities::default());
+    let mut engine = connected_engine(
+        "gen-1",
+        HostCapabilities {
+            // Fixtures carry native sticky facts; the lane under test is
+            // the native route.
+            native_sticky: true,
+            ..Default::default()
+        },
+    );
     let reply = match engine.handle_report(&report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -1451,7 +1459,15 @@ fn native_ws_field_decodes_and_gates() {
     window["nativeWs"] = serde_json::Value::String("d1".to_owned());
     value["windows"] = serde_json::json!([window]);
     let report = decode_request(&value.to_string()).expect("native fact decodes");
-    let mut engine = connected_engine("gen-1", HostCapabilities::default());
+    let mut engine = connected_engine(
+        "gen-1",
+        HostCapabilities {
+            // Fixture carries a native sticky fact; only host-owned domains
+            // stay off so the native gate still refuses.
+            native_sticky: true,
+            ..Default::default()
+        },
+    );
     assert!(
         matches!(engine.handle_report(&report), WorldOutcome::Rejected { message, .. } if message == "native-without-capability")
     );
@@ -1628,7 +1644,15 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
         }
         value.to_string()
     }
-    let mut engine = connected_engine("gen-1", HostCapabilities::default());
+    let mut engine = connected_engine(
+        "gen-1",
+        HostCapabilities {
+            // Fixtures carry native sticky facts; the lane under test is
+            // the native route.
+            native_sticky: true,
+            ..Default::default()
+        },
+    );
     let seed = decode_request(&two_output_envelope("1", "req-1", None)).expect("seed decodes");
     match engine.handle_report(&seed) {
         WorldOutcome::Accepted(_) => {}
@@ -1679,7 +1703,15 @@ fn toggle_maximize_decodes_and_result_encodes() {
         matches!(report.command, Some(C::ToggleMaximize { ref window }) if window.0 == "win-a")
     );
     assert_eq!(report.command_seq, Some(7));
-    let mut engine = connected_engine("gen-1", HostCapabilities::default());
+    let mut engine = connected_engine(
+        "gen-1",
+        HostCapabilities {
+            // Fixtures carry native sticky facts; the lane under test is
+            // the native route.
+            native_sticky: true,
+            ..Default::default()
+        },
+    );
     let reply = match engine.handle_report(&report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -1729,6 +1761,108 @@ fn toggle_maximize_decodes_and_result_encodes() {
         serde_json::json!({"op": "toggle-maximize", "win": " "}),
     ] {
         assert!(decode_request(&with_command(&bad, "7")).is_err());
+    }
+}
+
+#[test]
+fn sticky_commands_decode_typed_and_rejected_result_encodes_exact() {
+    // Neutral sticky wire ops decode to the typed world commands through
+    // the staged envelope: exact required keys, unknown keys refuse, wrong
+    // types refuse, non-bool values refuse. The typed validation and digest
+    // distinguish the rows, and the rejected result keeps the frozen shape
+    // through both canonical writers with exact sizing.
+    use tiler_core::world_report::CommandRejectKind as K;
+    use tiler_core::world_report::CommandResult as R;
+    use tiler_core::world_report::WorldCommand as C;
+    let set = serde_json::json!({"op": "set-sticky", "win": "win-a", "value": true});
+    let report = decode_request(&with_command(&set, "7")).expect("set-sticky decodes");
+    assert!(matches!(
+        report.command,
+        Some(C::SetSticky { ref window, value: true }) if window.0 == "win-a"
+    ));
+    assert_eq!(report.command_seq, Some(7));
+    assert!(tiler_core::world_report::valid_command(
+        report.command.as_ref().expect("command")
+    ));
+    let toggle = serde_json::json!({"op": "toggle-sticky", "win": "win-a"});
+    let toggled = decode_request(&with_command(&toggle, "7")).expect("toggle-sticky decodes");
+    assert!(matches!(
+        toggled.command,
+        Some(C::ToggleSticky { ref window }) if window.0 == "win-a"
+    ));
+    // Required keys stay required; unknown keys refuse.
+    for bad in [
+        serde_json::json!({"op": "set-sticky", "win": "win-a"}),
+        serde_json::json!({"op": "set-sticky", "value": true}),
+        serde_json::json!({"op": "toggle-sticky"}),
+        serde_json::json!({"op": "set-sticky", "win": "win-a", "value": true, "extra": 1}),
+        serde_json::json!({"op": "toggle-sticky", "win": "win-a", "value": true}),
+    ] {
+        assert!(decode_request(&with_command(&bad, "7")).is_err());
+    }
+    // Wrong types refuse: null/number/empty wins, non-bool values.
+    for bad in [
+        serde_json::json!({"op": "set-sticky", "win": null, "value": true}),
+        serde_json::json!({"op": "set-sticky", "win": 7, "value": true}),
+        serde_json::json!({"op": "set-sticky", "win": "", "value": true}),
+        serde_json::json!({"op": "set-sticky", "win": " ", "value": true}),
+        serde_json::json!({"op": "set-sticky", "win": "win-a", "value": null}),
+        serde_json::json!({"op": "set-sticky", "win": "win-a", "value": 1}),
+        serde_json::json!({"op": "set-sticky", "win": "win-a", "value": "true"}),
+        serde_json::json!({"op": "toggle-sticky", "win": null}),
+        serde_json::json!({"op": "toggle-sticky", "win": 7}),
+        serde_json::json!({"op": "toggle-sticky", "win": ""}),
+    ] {
+        assert!(decode_request(&with_command(&bad, "7")).is_err());
+    }
+    // Typed rows digest distinctly: value and op both separate.
+    let set_false = serde_json::json!({"op": "set-sticky", "win": "win-a", "value": false});
+    let off = decode_request(&with_command(&set_false, "7")).expect("set-sticky false decodes");
+    let digest_on = tiler_core::world_report::report_digest(&report);
+    let digest_off = tiler_core::world_report::report_digest(&off);
+    let digest_toggle = tiler_core::world_report::report_digest(&toggled);
+    assert_ne!(digest_on, digest_off);
+    assert_ne!(digest_on, digest_toggle);
+    assert_ne!(digest_off, digest_toggle);
+    // Frozen rejection shape through both canonical writers, exact sizing.
+    for kind in [
+        K::OperationRefused,
+        K::StateUnsupported,
+        K::StaleRenderTarget,
+    ] {
+        let result = Some(R::Rejected { kind });
+        let mut encoded = String::new();
+        tiler_core::world_sizing::encode_command_result(&mut encoded, &result);
+        assert_eq!(
+            encoded,
+            format!("{{\"op\":\"rejected\",\"kind\":\"{}\"}}", kind.as_str())
+        );
+        assert_eq!(
+            tiler_core::world_sizing::command_result_estimate(&result),
+            encoded.len() + 10,
+            "result estimate is exact: {encoded}"
+        );
+        let mut reply = WorldEngine::new("gen-1")
+            .expect("generation")
+            .bootstrap_reply("adapter-1", "req-1");
+        reply.command_result = result;
+        let wire = encode_reply(&reply);
+        let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
+        assert_eq!(wire, canonical, "transport mirrors the core writer");
+        assert!(
+            wire.contains(&format!(
+                "\"op\":\"rejected\",\"kind\":\"{}\"",
+                kind.as_str()
+            )),
+            "rejected result round-trips, got {wire}"
+        );
+        let estimate = tiler_core::world_report::reply_estimate(&reply);
+        assert!(
+            estimate >= wire.len(),
+            "estimate {estimate} bounds wire {}",
+            wire.len()
+        );
+        assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
     }
 }
 

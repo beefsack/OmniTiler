@@ -979,6 +979,7 @@ fn build_report(
         view_attempts: vec![],
         clear_attempts: vec![],
         creation_attempts: vec![],
+        state_attempts: Vec::new(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -1058,7 +1059,12 @@ fn bind_engine(
             executable: None,
             process_id: None,
         },
-        capabilities: HostCapabilities::without_native_identity(),
+        capabilities: HostCapabilities {
+            // Stress facts carry native sticky facts; only native identity
+            // is unavailable on this lane.
+            native_sticky: true,
+            ..HostCapabilities::without_native_identity()
+        },
     });
     let generation = handshake.generation.ok_or("stress handshake failed")?;
     let mode = match mode {

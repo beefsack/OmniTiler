@@ -147,6 +147,7 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
 
         intent_records: Vec::new(),
@@ -427,6 +428,7 @@ fn report_screens(
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
+        state_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
 
@@ -820,10 +822,12 @@ fn classifier_known_float_survives_unreadable_hints_ordinary_holds() {
         unavailable,
         fixed_predicate: FixedSizePredicate::BothAxes,
         maximize_supported: true,
+        native_sticky_supported: true,
         retained_tiled: false,
         automatic_fixed: false,
         tile_override: false,
         explicit_float: false,
+        semantic_sticky: false,
         own_process_id: Some("test-own-pid"),
     });
     assert!(
@@ -844,10 +848,12 @@ fn classifier_known_float_survives_unreadable_hints_ordinary_holds() {
         unavailable,
         fixed_predicate: FixedSizePredicate::BothAxes,
         maximize_supported: true,
+        native_sticky_supported: true,
         retained_tiled: false,
         automatic_fixed: false,
         tile_override: false,
         explicit_float: false,
+        semantic_sticky: false,
         own_process_id: Some("test-own-pid"),
     });
     assert!(!classified.hold, "{classified:?}");
@@ -872,10 +878,12 @@ fn classifier_known_float_survives_unreadable_hints_ordinary_holds() {
             unavailable,
             fixed_predicate: FixedSizePredicate::BothAxes,
             maximize_supported: true,
+            native_sticky_supported: true,
             retained_tiled: false,
             automatic_fixed: false,
             tile_override: false,
             explicit_float: false,
+            semantic_sticky: false,
             own_process_id: Some("test-own-pid"),
         });
         assert!(!classified.hold, "{name}: {classified:?}");
@@ -886,10 +894,12 @@ fn classifier_known_float_survives_unreadable_hints_ordinary_holds() {
         unavailable,
         fixed_predicate: FixedSizePredicate::BothAxes,
         maximize_supported: true,
+        native_sticky_supported: true,
         retained_tiled: true,
         automatic_fixed: false,
         tile_override: false,
         explicit_float: false,
+        semantic_sticky: false,
         own_process_id: Some("test-own-pid"),
     });
     assert!(!classified.hold, "retained-tile dialog: {classified:?}");
@@ -902,10 +912,12 @@ fn classifier_known_float_survives_unreadable_hints_ordinary_holds() {
         unavailable,
         fixed_predicate: FixedSizePredicate::BothAxes,
         maximize_supported: true,
+        native_sticky_supported: true,
         retained_tiled: false,
         automatic_fixed: false,
         tile_override: false,
         explicit_float: true,
+        semantic_sticky: false,
         own_process_id: Some("test-own-pid"),
     });
     assert!(!classified.hold, "{classified:?}");
@@ -917,10 +929,12 @@ fn classifier_known_float_survives_unreadable_hints_ordinary_holds() {
         unavailable,
         fixed_predicate: FixedSizePredicate::BothAxes,
         maximize_supported: true,
+        native_sticky_supported: true,
         retained_tiled: false,
         automatic_fixed: true,
         tile_override: false,
         explicit_float: false,
+        semantic_sticky: false,
         own_process_id: Some("test-own-pid"),
     });
     assert!(!classified.hold, "{classified:?}");
@@ -932,10 +946,12 @@ fn classifier_known_float_survives_unreadable_hints_ordinary_holds() {
         unavailable,
         fixed_predicate: FixedSizePredicate::BothAxes,
         maximize_supported: true,
+        native_sticky_supported: true,
         retained_tiled: false,
         automatic_fixed: false,
         tile_override: false,
         explicit_float: false,
+        semantic_sticky: false,
         own_process_id: Some("test-own-pid"),
     });
     assert!(
@@ -950,10 +966,12 @@ fn classifier_known_float_survives_unreadable_hints_ordinary_holds() {
         unavailable,
         fixed_predicate: FixedSizePredicate::BothAxes,
         maximize_supported: true,
+        native_sticky_supported: true,
         retained_tiled: false,
         automatic_fixed: false,
         tile_override: true,
         explicit_float: false,
+        semantic_sticky: false,
         own_process_id: Some("test-own-pid"),
     });
     assert!(classified.hold, "{classified:?}");

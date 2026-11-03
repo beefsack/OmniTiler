@@ -70,6 +70,7 @@
 
 ### Intent ownership and persistence
 - Decision: core alone owns user intent, defines/validates persisted intent and decides save/restore. Platforms keep the opaque record in host storage (Windows window, KDE session runtime file, macOS where possible) and return unchanged. Facts contain observable state only, absent if unknown; remove adapter intent echoes and retained-frame readback; core keeps last known frame.
+- Import boundary: import before first successful admission, preserving pending records through held/unreadable observations; ignore late records after admission and never overwrite newer runtime intent. Adapters return stored intent in or before the first admissible report, whether using native slots or a pre-loaded atomic store. This is ordering, not a new storage capability (User 2026-11-03).
 - Why: one implementation and consistent restart behavior; Windows keeps window-lifetime storage without restart identity matching.
 - Rejected: core file store keyed by platform identity, losing intent on restart, KDE-only adapter store.
 - Assumes / revisit if: each host has a slot surviving tiler restart while window lives; cross-login memory remains a limitation.
