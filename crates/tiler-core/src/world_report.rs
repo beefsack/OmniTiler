@@ -289,6 +289,40 @@ impl EffectKind {
     }
 }
 
+/// Typed one-shot effect cause. Closed: explicit command correlation,
+/// automatic admission intent, and focus-follows-cursor hover only. The
+/// typed cause replaces effect-id spelling interpretation (`fx-`/`af-`/
+/// `ffc-`): ids stay opaque to correlation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EffectCause {
+    ExplicitCommand,
+    AutomaticAdmission,
+    FocusFollowsCursor,
+}
+
+impl EffectCause {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExplicitCommand => "explicit-command",
+            Self::AutomaticAdmission => "automatic-admission",
+            Self::FocusFollowsCursor => "focus-follows-cursor",
+        }
+    }
+
+    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "explicit-command" => Self::ExplicitCommand,
+            "automatic-admission" => Self::AutomaticAdmission,
+            "focus-follows-cursor" => Self::FocusFollowsCursor,
+            _ => return None,
+        })
+    }
+}
+
 /// One-shot effect: the adapter marks it spent BEFORE first native dispatch;
 /// duplicates and repeated diffs never reapply. Lost/stale effects drop
 /// (at-most-once), never steal focus on a later unrelated report.
@@ -300,14 +334,25 @@ pub struct OneShotEffect {
     /// Validity bound to the issuing `state_revision`; newer user input
     /// invalidates.
     pub issued_revision: u64,
+    /// Typed correlation cause. `ExplicitCommand` carries the dispatching
+    /// command in `command_seq`; the other causes carry `None` and must
+    /// never actuate focus on adapters keeping observed-focus authority.
+    pub cause: EffectCause,
+    /// Original command sequence for explicit-command effects, `None`
+    /// otherwise. Quoted decimal on the wire, `null` when absent.
+    pub command_seq: Option<u64>,
+    /// Arrival-ready grant. Only an explicit selection may grant this;
+    /// every current engine producer publishes `false`.
+    pub await_shown: bool,
 }
 
 impl OneShotEffect {
     /// Mint the explicit-focus outcome of executed focus command `seq`.
-    /// The `fx-<seq>` identity correlates the effect with its dispatching
-    /// command; automatic admission intents mint `af-<window>` instead and
-    /// must never actuate focus on adapters keeping observed-focus
-    /// authority (see [`OneShotEffect::is_explicit_focus_for`]).
+    /// The `fx-<seq>` identity remains unchanged but carries
+    /// no correlation meaning; [`OneShotEffect::is_explicit_focus_for`]
+    /// reads the typed cause and command sequence only. Automatic
+    /// admission intents mint `af-<window>` instead and must never actuate
+    /// focus on adapters keeping observed-focus authority.
     #[must_use]
     pub fn explicit_focus(command_seq: u64, target: WindowId, issued_revision: u64) -> Self {
         Self {
@@ -315,16 +360,25 @@ impl OneShotEffect {
             kind: EffectKind::Focus,
             target,
             issued_revision,
+            cause: EffectCause::ExplicitCommand,
+            command_seq: Some(command_seq),
+            await_shown: false,
         }
     }
 
     /// True when this effect is the explicit-focus outcome of command `seq`
-    /// (exact identity correlation, never a prefix heuristic): every other
-    /// focus effect is an automatic admission intent and must not dispatch
-    /// native focus where observations keep observed-focus authority.
+    /// (typed cause plus command-sequence correlation, never id spelling):
+    /// every other focus effect is an automatic admission or hover intent
+    /// and must not dispatch native focus where observations keep
+    /// observed-focus authority. Effect ids stay opaque; an `fx-<seq>` id
+    /// with any other cause (or a non-focus kind, or a different sequence)
+    /// never matches, and a non-`fx-` id with the explicit cause and the
+    /// command sequence does match.
     #[must_use]
     pub fn is_explicit_focus_for(&self, command_seq: u64) -> bool {
-        self.kind == EffectKind::Focus && self.id == format!("fx-{command_seq}")
+        self.kind == EffectKind::Focus
+            && self.cause == EffectCause::ExplicitCommand
+            && self.command_seq == Some(command_seq)
     }
 }
 

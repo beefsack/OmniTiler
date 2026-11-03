@@ -359,9 +359,9 @@ fn no_focus_crosses_occupied_origin_to_existing_selection() {
     assert_eq!(focus.len(), 1, "one focus effect: {:?}", reply.effects);
     assert_eq!(focus[0].target.0, "win-b2", "entry-edge selection");
     assert!(
-        focus[0].id.starts_with("fx-"),
-        "one-shot id: {}",
-        focus[0].id
+        focus[0].is_explicit_focus_for(11),
+        "one-shot explicit correlation: {:?}",
+        focus[0]
     );
     assert!(
         reply.command_result.is_none(),

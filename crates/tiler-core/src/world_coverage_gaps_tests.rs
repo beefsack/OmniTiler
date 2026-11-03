@@ -12,9 +12,10 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, FrameSetter, HoldReason, MemberAttempt, RowDiagnosticKind,
-    RowDiagnosticLane, ScopeAuthority, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION,
-    WindowFact, WorkspaceRef, WorldCommand, WorldReport, validate_report_reason,
+    CommandRejectKind, CommandResult, EffectCause, FrameSetter, HoldReason, MemberAttempt,
+    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScreenReport, TransferKind,
+    WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
+    validate_report_reason,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -1266,6 +1267,14 @@ fn windows_profile_automatic_fixed_withholds_while_ordinary_mints() {
                 "admission intent id: {:?}",
                 arrival.effects[0].id
             );
+            assert_eq!(
+                arrival.effects[0].cause,
+                crate::world_report::EffectCause::AutomaticAdmission,
+                "admission cause: {:?}",
+                arrival.effects[0]
+            );
+            assert_eq!(arrival.effects[0].command_seq, None);
+            assert!(!arrival.effects[0].await_shown);
         }
     }
 }
@@ -1340,8 +1349,11 @@ fn explicit_focus_command_after_withhold_succeeds_without_admission_token() {
     );
     assert_eq!(commanded.effects[0].target.0, "wf");
     assert!(
-        commanded.effects.iter().all(|e| !e.id.starts_with("af-")),
-        "no admission token: {:?}",
+        commanded
+            .effects
+            .iter()
+            .all(|e| e.cause != EffectCause::AutomaticAdmission),
+        "no admission cause: {:?}",
         commanded.effects
     );
 }

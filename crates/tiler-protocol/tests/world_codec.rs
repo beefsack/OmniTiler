@@ -1738,10 +1738,7 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
     let focus: Vec<&tiler_core::world_report::OneShotEffect> = reply
         .effects
         .iter()
-        .filter(|effect| {
-            effect.kind == tiler_core::world_report::EffectKind::Focus
-                && effect.id.starts_with("fx-")
-        })
+        .filter(|effect| effect.is_explicit_focus_for(11))
         .collect();
     assert_eq!(focus.len(), 1, "one crossing effect: {:?}", reply.effects);
     assert_eq!(focus[0].target.0, "win-b");
@@ -1751,6 +1748,105 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
         wire,
         tiler_core::world_report::encode_reply_canonical(&reply),
         "transport mirrors the core writer"
+    );
+}
+
+#[test]
+fn explicit_focus_effect_wire_carries_cause_metadata() {
+    // Typed effect vocabulary slice (baseline a2aa3197): the contract
+    // requires cause/cmdSeq/awaitShown on every OneShotEffect row. The
+    // explicit crossing focus must ride the wire as cause
+    // explicit-command with the quoted command seq and awaitShown false.
+    fn two_output_envelope(seq: &str, req: &str, command: Option<serde_json::Value>) -> String {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["screens"] = serde_json::json!([
+            {"out": "out-a", "full": [0, 0, 800, 600], "work": [0, 0, 800, 560],
+             "complete": true, "scale": 1.0,
+             "identity": {"manufacturer": null, "model": null, "serial": null, "connector": null}},
+            {"out": "out-b", "full": [800, 0, 800, 600], "work": [800, 0, 800, 560],
+             "complete": true, "scale": 1.0,
+             "identity": {"manufacturer": null, "model": null, "serial": null, "connector": null}},
+        ]);
+        value["windows"] = serde_json::json!([
+            v4_window("win-a", "out-a", [10, 0, 200, 200]),
+            v4_window("win-b", "out-b", [810, 0, 200, 200]),
+        ]);
+        value["actionForeground"] = serde_json::json!("out-a");
+        value["actionOutputs"] = serde_json::json!(["out-a", "out-b"]);
+        value["views"] = serde_json::json!([]);
+        value["focused"] = serde_json::json!("");
+        value["obs"] = serde_json::Value::String(seq.to_owned());
+        value["reqSeq"] = serde_json::Value::String(seq.to_owned());
+        value["req"] = serde_json::Value::String(req.to_owned());
+        match command {
+            Some(command) => {
+                value["command"] = command;
+                value["cmdSeq"] = serde_json::Value::String("11".to_owned());
+            }
+            None => {
+                value["command"] = serde_json::Value::Null;
+                value["cmdSeq"] = serde_json::Value::Null;
+            }
+        }
+        value.to_string()
+    }
+    let mut engine = connected_engine(
+        "gen-1",
+        HostCapabilities {
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
+    );
+    let seed = decode_request(&two_output_envelope("1", "req-1", None)).expect("seed decodes");
+    match engine.handle_report(&seed) {
+        WorldOutcome::Accepted(_) => {}
+        other => panic!("expected accepted seed, got {other:?}"),
+    }
+    let report = decode_request(&two_output_envelope(
+        "2",
+        "req-2",
+        Some(serde_json::json!({"op": "focus-directional", "win": "", "direction": "right"})),
+    ))
+    .expect("no-focus command decodes");
+    let reply = match engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let focus: Vec<&tiler_core::world_report::OneShotEffect> = reply
+        .effects
+        .iter()
+        .filter(|effect| effect.is_explicit_focus_for(11))
+        .collect();
+    assert_eq!(focus.len(), 1, "one crossing effect: {:?}", reply.effects);
+    assert_eq!(focus[0].target.0, "win-b");
+    assert_eq!(
+        focus[0].cause,
+        tiler_core::world_report::EffectCause::ExplicitCommand,
+        "typed cause: {:?}",
+        focus[0]
+    );
+    assert_eq!(focus[0].command_seq, Some(11));
+    assert!(!focus[0].await_shown);
+    let wire = encode_reply(&reply);
+    assert_eq!(
+        wire,
+        tiler_core::world_report::encode_reply_canonical(&reply),
+        "transport mirrors the core writer"
+    );
+    let wire_value: serde_json::Value = serde_json::from_str(&wire).expect("wire is JSON");
+    let row = &wire_value["effects"][0];
+    assert_eq!(
+        row["cause"],
+        serde_json::json!("explicit-command"),
+        "wire cause: {row}"
+    );
+    assert_eq!(row["cmdSeq"], serde_json::json!("11"), "wire cmdSeq: {row}");
+    assert_eq!(
+        row["awaitShown"],
+        serde_json::json!(false),
+        "wire awaitShown: {row}"
     );
 }
 
@@ -3686,4 +3782,327 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
     let staged = stage_fixture_window_rows(&[&healthy]);
     let report = decode_request(&staged).expect("healthy decodes");
     assert!(encode_window_canonical(&report.windows[0]).is_ok());
+}
+
+fn fixture_text(name: &str) -> String {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4/messages")
+        .join(format!("{name}.json"));
+    std::fs::read_to_string(&path).expect("fixture bytes")
+}
+
+fn fixture_effects_slice(wire: &str) -> &str {
+    // Effect rows carry no arrays, so the first `]` after the array open
+    // closes the effects array.
+    let key = "\"effects\":[";
+    let open = wire.find(key).expect("effects array") + key.len() - 1;
+    let close = wire[open..].find(']').expect("effects close") + open;
+    &wire[open..=close]
+}
+
+fn test_only_typed_effect(
+    row: &serde_json::Value,
+    name: &str,
+) -> tiler_core::world_report::OneShotEffect {
+    use tiler_core::directional::WindowId;
+    use tiler_core::world_report::{EffectCause, EffectKind};
+    let kind = match row.get("kind").and_then(serde_json::Value::as_str) {
+        Some("focus") => EffectKind::Focus,
+        Some("raise") => EffectKind::Raise,
+        Some("stack") => EffectKind::Stack,
+        other => panic!("{name} closed kind: {other:?}"),
+    };
+    let cause = match row.get("cause").and_then(serde_json::Value::as_str) {
+        Some("explicit-command") => EffectCause::ExplicitCommand,
+        Some("automatic-admission") => EffectCause::AutomaticAdmission,
+        Some("focus-follows-cursor") => EffectCause::FocusFollowsCursor,
+        other => panic!("{name} closed cause: {other:?}"),
+    };
+    let command_seq = match row.get("cmdSeq") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => Some(
+            text.parse::<u64>()
+                .unwrap_or_else(|_| panic!("{name} cmdSeq parses")),
+        ),
+        other => panic!("{name} cmdSeq shape: {other:?}"),
+    };
+    // Closed-shape cross-checks (contract 818-821): explicit commands
+    // always correlate, other causes never do, and only an explicit
+    // selection may grant arrival-ready focus.
+    match cause {
+        EffectCause::ExplicitCommand => assert!(
+            command_seq.is_some(),
+            "{name} explicit cause carries its sequence"
+        ),
+        _ => assert!(
+            command_seq.is_none(),
+            "{name} non-explicit cause carries no sequence"
+        ),
+    }
+    tiler_core::world_report::OneShotEffect {
+        id: row
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("{name} id"))
+            .to_owned(),
+        kind,
+        target: WindowId(
+            row.get("target")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| panic!("{name} target"))
+                .to_owned(),
+        ),
+        issued_revision: row
+            .get("rev")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("{name} rev"))
+            .parse::<u64>()
+            .unwrap_or_else(|_| panic!("{name} rev parses")),
+        cause,
+        command_seq,
+        await_shown: row
+            .get("awaitShown")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or_else(|| panic!("{name} awaitShown")),
+    }
+}
+
+#[test]
+fn immutable_effect_rows_match_fixture_bytes() {
+    // Independent conformance: raw immutable fixture bytes on one side,
+    // actual code encoding on the other. For each manifest effect row,
+    // map ONLY the effect fields into a typed row (test-only token
+    // mapping, never a production decoder), publish it through a
+    // bootstrap reply, and compare the encoded effects array against the
+    // raw bytes sliced from the fixture. The focus `awaitShown: true`
+    // witness is a manually constructed typed row only: every engine
+    // producer publishes false until explicit-selection readiness is
+    // implemented.
+    for (name, expected) in [
+        (
+            "reply-effect-focus",
+            "{\"id\":\"effect-a\",\"kind\":\"focus\",\"target\":\"win-a\",\
+             \"rev\":\"1\",\"cause\":\"explicit-command\",\"cmdSeq\":\"1\",\
+             \"awaitShown\":true}",
+        ),
+        (
+            "reply-effect-raise",
+            "{\"id\":\"effect-a\",\"kind\":\"raise\",\"target\":\"win-a\",\
+             \"rev\":\"1\",\"cause\":\"explicit-command\",\"cmdSeq\":\"1\",\
+             \"awaitShown\":false}",
+        ),
+        (
+            "reply-effect-stack",
+            "{\"id\":\"effect-a\",\"kind\":\"stack\",\"target\":\"win-a\",\
+             \"rev\":\"1\",\"cause\":\"explicit-command\",\"cmdSeq\":\"1\",\
+             \"awaitShown\":false}",
+        ),
+        (
+            "reply-effect-automatic-admission",
+            "{\"id\":\"effect-a\",\"kind\":\"focus\",\"target\":\"win-a\",\
+             \"rev\":\"1\",\"cause\":\"automatic-admission\",\
+             \"cmdSeq\":null,\"awaitShown\":false}",
+        ),
+        (
+            "reply-effect-focus-follows-cursor",
+            "{\"id\":\"effect-a\",\"kind\":\"focus\",\"target\":\"win-a\",\
+             \"rev\":\"1\",\"cause\":\"focus-follows-cursor\",\
+             \"cmdSeq\":null,\"awaitShown\":false}",
+        ),
+    ] {
+        let wire = fixture_text(name);
+        let fixture_slice = fixture_effects_slice(&wire).to_owned();
+        assert_eq!(
+            fixture_slice,
+            format!("[{expected}]"),
+            "{name} fixture bytes stay immutable"
+        );
+        let value: serde_json::Value = serde_json::from_str(&wire).expect("fixture parses");
+        let row = value
+            .get("effects")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|effects| effects.first())
+            .unwrap_or_else(|| panic!("{name} carries one effect row"));
+        let mut reply = tiler_core::world_engine::WorldEngine::new("gen-1")
+            .expect("generation")
+            .bootstrap_reply("adapter-1", "req-1");
+        reply.effects = vec![test_only_typed_effect(row, name)];
+        let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
+        assert_eq!(
+            encode_reply(&reply),
+            canonical,
+            "transport mirrors the core writer over {name}"
+        );
+        let encoded_slice = fixture_effects_slice(&canonical).to_owned();
+        assert_eq!(
+            encoded_slice, fixture_slice,
+            "code encoding matches immutable {name} bytes"
+        );
+        assert!(
+            tiler_core::world_report::reply_estimate(&reply) >= canonical.len(),
+            "estimate covers {name}"
+        );
+    }
+}
+
+#[test]
+fn admission_focus_effect_carries_causal_metadata() {
+    // A newcomer with no command mints the automatic-admission intent:
+    // typed cause, no sequence, no arrival grant, on the wire and in
+    // both canonical writers.
+    fn envelope_with_windows(windows: serde_json::Value, seq: &str, req: &str) -> String {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["windows"] = windows;
+        value["views"] = serde_json::json!([]);
+        value["obs"] = serde_json::Value::String(seq.to_owned());
+        value["reqSeq"] = serde_json::Value::String(seq.to_owned());
+        value["req"] = serde_json::Value::String(req.to_owned());
+        value["command"] = serde_json::Value::Null;
+        value["cmdSeq"] = serde_json::Value::Null;
+        value.to_string()
+    }
+    fn envelope_with_newcomer(seq: &str, req: &str) -> String {
+        envelope_with_windows(
+            serde_json::json!([
+                v4_window("win-a", "out", [0, 0, 200, 200]),
+                v4_window("win-b", "out", [210, 0, 200, 200]),
+            ]),
+            seq,
+            req,
+        )
+    }
+    let mut engine = connected_engine(
+        "gen-1",
+        HostCapabilities {
+            // Fixtures carry native sticky and maximize facts; windows
+            // home only under the matching capabilities.
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
+    );
+    let seed = decode_request(&envelope_with_windows(
+        serde_json::json!([v4_window("win-a", "out", [0, 0, 200, 200])]),
+        "1",
+        "req-1",
+    ))
+    .expect("seed decodes");
+    match engine.handle_report(&seed) {
+        WorldOutcome::Accepted(_) => {}
+        other => panic!("expected accepted seed, got {other:?}"),
+    }
+    let report = decode_request(&envelope_with_newcomer("2", "req-2")).expect("decodes");
+    let reply = match engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    assert_eq!(reply.effects.len(), 1, "one admission: {:?}", reply.effects);
+    let effect = &reply.effects[0];
+    assert_eq!(effect.kind, tiler_core::world_report::EffectKind::Focus);
+    assert_eq!(
+        effect.cause,
+        tiler_core::world_report::EffectCause::AutomaticAdmission
+    );
+    assert_eq!(effect.command_seq, None);
+    assert!(!effect.await_shown);
+    assert!(!effect.is_explicit_focus_for(2));
+    let wire = encode_reply(&reply);
+    assert_eq!(
+        wire,
+        tiler_core::world_report::encode_reply_canonical(&reply),
+        "transport mirrors the core writer"
+    );
+    let wire_value: serde_json::Value = serde_json::from_str(&wire).expect("wire is JSON");
+    let row = &wire_value["effects"][0];
+    assert_eq!(
+        row["cause"],
+        serde_json::json!("automatic-admission"),
+        "wire cause: {row}"
+    );
+    assert_eq!(row["cmdSeq"], serde_json::Value::Null, "wire cmdSeq: {row}");
+    assert_eq!(
+        row["awaitShown"],
+        serde_json::json!(false),
+        "wire grant: {row}"
+    );
+}
+
+#[test]
+fn consumed_command_replays_no_explicit_effect_with_metadata() {
+    // Duplicate/consumed replies keep their behavior under the new
+    // metadata: a repeated command sequence consumes without
+    // re-executing, so no explicit effect re-emits and the observation
+    // effects keep their causal shape.
+    let mut engine = connected_engine(
+        "gen-1",
+        HostCapabilities {
+            // Fixtures carry native sticky and maximize facts; windows
+            // home only under the matching capabilities.
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
+    );
+    let seed = decode_request(&one_window_request()).expect("seed decodes");
+    match engine.handle_report(&seed) {
+        WorldOutcome::Accepted(_) => {}
+        other => panic!("expected accepted seed, got {other:?}"),
+    }
+    let command = serde_json::json!({"op": "focus", "win": "win-a", "direction": "right"});
+    let first_value: serde_json::Value = {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["command"] = command.clone();
+        value["cmdSeq"] = serde_json::Value::String("5".to_owned());
+        value["obs"] = serde_json::Value::String("2".to_owned());
+        value["reqSeq"] = serde_json::Value::String("2".to_owned());
+        value["req"] = serde_json::Value::String("req-2".to_owned());
+        value
+    };
+    let first = decode_request(&first_value.to_string()).expect("decodes");
+    let before = match engine.handle_report(&first) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    assert!(
+        before
+            .effects
+            .iter()
+            .any(|effect| effect.is_explicit_focus_for(5)),
+        "first execution emits the explicit focus: {:?}",
+        before.effects
+    );
+    let retry_value: serde_json::Value = {
+        let mut value = first_value;
+        value["obs"] = serde_json::Value::String("3".to_owned());
+        value["reqSeq"] = serde_json::Value::String("3".to_owned());
+        value["req"] = serde_json::Value::String("req-3".to_owned());
+        value
+    };
+    let retry = decode_request(&retry_value.to_string()).expect("decodes");
+    let reply = match engine.handle_report(&retry) {
+        WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    assert!(reply.command_consumed, "repeat consumes: {reply:?}");
+    assert!(
+        !reply
+            .effects
+            .iter()
+            .any(|effect| effect.is_explicit_focus_for(5)),
+        "no explicit re-emission on the consumed path: {:?}",
+        reply.effects
+    );
+    assert!(
+        reply.command_result.is_none(),
+        "consumed command carries no result: {:?}",
+        reply.command_result
+    );
+    let wire = encode_reply(&reply);
+    assert_eq!(
+        wire,
+        tiler_core::world_report::encode_reply_canonical(&reply),
+        "transport mirrors the core writer"
+    );
 }

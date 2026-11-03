@@ -265,6 +265,14 @@ fn focus_follows_on_mints_hover_effect() {
     assert_eq!(reply.effects.len(), 1);
     assert_eq!(reply.effects[0].id, "ffc-win-b");
     assert_eq!(reply.effects[0].target.0, "win-b");
+    assert_eq!(
+        reply.effects[0].cause,
+        crate::world_report::EffectCause::FocusFollowsCursor,
+        "hover cause: {:?}",
+        reply.effects[0]
+    );
+    assert_eq!(reply.effects[0].command_seq, None);
+    assert!(!reply.effects[0].await_shown);
     // Hover coupling is same-output here: no warp.
     assert_eq!(reply.cursor_warp, None);
 }

@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use crate::directional::WindowId;
 use crate::session::DomainKey;
 use crate::world_engine::WorldEngine;
-use crate::world_report::{EffectKind, OneShotEffect, WorldReport};
+use crate::world_report::{EffectCause, EffectKind, OneShotEffect, WorldReport};
 
 /// Whether one report runs under a focused fullscreen game pause: the
 /// adapter-observed focused lifetime names a staged fact that is fullscreen.
@@ -191,6 +191,9 @@ impl WorldEngine {
             kind: EffectKind::Focus,
             target: hovered,
             issued_revision: self.state_revision + 1,
+            cause: EffectCause::FocusFollowsCursor,
+            command_seq: None,
+            await_shown: false,
         })
     }
 

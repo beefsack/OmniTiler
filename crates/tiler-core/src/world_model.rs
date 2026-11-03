@@ -15,7 +15,7 @@ use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::world_engine::{RetainedTransfer, StagedDomain, WorldEngine, inset_world_domain};
 use crate::world_report::{
-    EffectKind, HoldReason, OneShotEffect, ScopeAuthority, TilingMode, TransferKind,
+    EffectCause, EffectKind, HoldReason, OneShotEffect, ScopeAuthority, TilingMode, TransferKind,
     TransferTarget, WorldReport,
 };
 
@@ -1171,6 +1171,9 @@ impl WorldEngine {
             kind: EffectKind::Focus,
             target,
             issued_revision: self.state_revision + 1,
+            cause: EffectCause::AutomaticAdmission,
+            command_seq: None,
+            await_shown: false,
         }]
     }
 

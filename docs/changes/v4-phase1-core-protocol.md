@@ -39,6 +39,12 @@
   switchSettled output, general visibility targets and native-free selection
   completion follow separately. This first slice emits no new authority, removes
   no legacy envelope keys and leaves renderer input and version cutover untouched.
+- Next add the existing OneShotEffect correlation vocabulary to both reply writers
+  and request-time sizing reserves: cause, nullable command sequence and
+  awaitShown. Correlation uses typed cause/sequence, not effect-id spelling.
+  Existing producers retain their identities and focus behavior, publishing
+  awaitShown=false until explicit-selection readiness/settlement is implemented.
+  Immutable true/false shape witnesses establish encoding only, not a new grant.
 
 - Intent dependency order: validate/canonically encode the core-owned opaque
   inner record first; then wire outer report/reply records and consume them in
@@ -989,6 +995,50 @@
   and native-free selection remain dependent work; all eight OPEN/TBD gates stay
   unchanged.
 
+- Typed effect correlation is implemented: OneShotEffect now carries the closed
+  cause catalog, nullable quoted command sequence and awaitShown. Explicit focus
+  construction, admission and cursor-follow producers populate those fields;
+  correlation checks kind/cause/sequence rather than id spelling. Existing effect
+  identities and focus behavior remain unchanged. Every engine producer emits
+  awaitShown=false; a manually constructed true fixture witness proves encoding
+  only, not an arrival-ready selection grant.
+- A failing-first real cross-output focus regression reproduced absent cause
+  metadata after confirming the effect and both writers' equality. Both writers
+  now match all five immutable focus/raise/stack/admission/cursor-follow effect
+  row bytes in frozen key order. Producer checks, opaque-id correlation and
+  misleading-prefix rejection, consumed-command behavior and exact lane-size
+  deltas pass. Full-reply equality was an incorrect test oracle because other
+  existing lanes retain conservative slack; effect-lane marginal accounting is
+  exact and the full estimate remains a bound. An initially unhomed admission
+  test setup was corrected before accepting its producer evidence.
+- Pre-mutation sizing now reserves 779 bytes for at most two focus effects.
+  Encoder witnesses establish the actual row maxima: cursor follow 389,
+  admission 387 and explicit command 294. Only admission plus explicit command
+  coexist (682 including their comma); two maximum rows plus a comma conservatively
+  cover that pair, and cursor follow never becomes a third effect. Review corrected
+  a synthetic correlation-invalid maximum and the cursor prefix/token widths;
+  the final witnesses use real producer field combinations. Boundary coverage
+  isolates the effect reserve, verifies rejection before revision/highwater
+  mutation and permits a smaller same-sequence retry. Fresh independent review
+  and its sizing follow-up have no outstanding finding in this slice.
+- Final effect-vocabulary verification passes the exact filtered core/protocol
+  gate (1510 core unit tests, every selected integration target and protocol suites
+  49/11/4/15/8/2/58/4), core/protocol build, scoped all-target clippy with warnings
+  denied and formatting. Diff whitespace, added ASCII and 274 local link-path
+  checks pass. Only workspace_unsafe_posture remains filtered. No
+  adapter, immutable fixture, version or approved-policy changes are included.
+  Focus settlement, general visibility targets, explicit-selection readiness,
+  native-free selection completion and full reply decoding remain pending; all
+  eight OPEN/TBD gates are unchanged.
+- Existing cutover gap found while deriving widths: admission/cursor-follow ids
+  in world_model.rs/world_cursor.rs prepend af-/ffc- to the full WindowId. At the
+  supported 128-byte window-id limit they become 131/132 bytes, beyond the effect-id
+  bound. Baseline source and an isolated width/grammar probe establish that this
+  predates typed correlation; identity generation is unchanged here. A bounded
+  identity mapping preserving the spent-effect fence is still required before
+  v4 cutover. This is not full wire conformance or a new failure of the metadata
+  slice, and the probe is not retained as a passing conformance test.
+
 ## Tentative decisions pending user review
 
 - Case: a composed-maximized float receives directional move after its screen or
@@ -1077,6 +1127,9 @@
    Required focusFeedback/arrival ingress is implemented and offline-tested with
    bounds, digest/size accounting and authoritative host-arm fencing; it grants
    no focus authority and does not complete visibility or selection settlement.
+   Typed effect cause/command correlation and awaitShown encoding are implemented
+   and offline-tested, with current grants false and coexisting-effect reservation
+   enforced before mutation. Existing long effect identities remain a cutover gap.
   The remaining world report/reply paths and version are still staged; no v4
   cutover or full scenario acceptance is claimed. Full adapter build-failure
   inventory remains pending.

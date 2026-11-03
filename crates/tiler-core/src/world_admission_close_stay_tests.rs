@@ -232,6 +232,14 @@ fn bootstrap_seed_is_quiet_then_first_newcomer_focuses_once() {
     assert_eq!(third.effects.len(), 1, "{:?}", third.effects);
     assert_eq!(third.effects[0].target.0, "win-c");
     assert!(third.effects[0].id.starts_with("af-"));
+    assert_eq!(
+        third.effects[0].cause,
+        crate::world_report::EffectCause::AutomaticAdmission,
+        "admission cause: {:?}",
+        third.effects[0]
+    );
+    assert_eq!(third.effects[0].command_seq, None);
+    assert!(!third.effects[0].await_shown);
     // Never replayed.
     let fourth = accepted(
         &mut engine,

@@ -3263,7 +3263,20 @@ pub fn encode_reply(reply: &WorldReply) -> String {
         push_json_string(&mut out, &effect.target.0);
         out.push_str(",\"rev\":\"");
         out.push_str(&effect.issued_revision.to_string());
-        out.push_str("\"}");
+        out.push_str("\",\"cause\":");
+        push_json_string(&mut out, effect.cause.as_str());
+        out.push_str(",\"cmdSeq\":");
+        match effect.command_seq {
+            Some(seq) => {
+                out.push('"');
+                out.push_str(&seq.to_string());
+                out.push('"');
+            }
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"awaitShown\":");
+        out.push_str(if effect.await_shown { "true" } else { "false" });
+        out.push('}');
     }
     out.push_str("],\"result\":");
     tiler_core::world_sizing::encode_command_result(&mut out, &reply.command_result);

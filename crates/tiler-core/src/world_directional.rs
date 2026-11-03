@@ -898,6 +898,19 @@ pub(crate) mod tests {
                 .any(|effect| effect.target.0 == "win-target" && effect.is_explicit_focus_for(12)),
             "explicit focus effect for the core-selected target"
         );
+        for effect in reply
+            .effects
+            .iter()
+            .filter(|effect| effect.is_explicit_focus_for(12))
+        {
+            assert_eq!(
+                effect.cause,
+                crate::world_report::EffectCause::ExplicitCommand,
+                "explicit cause: {effect:?}"
+            );
+            assert_eq!(effect.command_seq, Some(12));
+            assert!(!effect.await_shown);
+        }
     }
 
     #[test]
@@ -1270,10 +1283,11 @@ pub(crate) mod tests {
             .collect();
         // The directional decision spends exactly one effect (a newcomer
         // admission effect may coincide on the same target through the
-        // shared lane; both name the core-selected window).
+        // shared lane; both name the core-selected window). Correlation
+        // is typed (cause plus command sequence), never id spelling.
         let directional: Vec<_> = focus_effects
             .iter()
-            .filter(|effect| effect.id.starts_with("fx-"))
+            .filter(|effect| effect.is_explicit_focus_for(12))
             .collect();
         assert_eq!(
             directional.len(),

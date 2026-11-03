@@ -559,13 +559,19 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     }
     bytes += reply.transfers.len().saturating_sub(1);
     for effect in &reply.effects {
-        // {"id":,"kind":,"target":,"rev":""} = 36 punctuation (two string
-        // quotes around the u64 revision).
-        bytes += 36
+        // {"id":,"kind":,"target":,"rev":"","cause":,"cmdSeq":null|"N",
+        // "awaitShown":B} = 67 fixed (braces, quoted keys, colons, commas,
+        // quotes around the decimal revision) plus the id/kind/target/cause
+        // widths, the revision digits, the nullable quoted command sequence
+        // (`null` counts 4, otherwise 2 quotes plus digits), and the bool.
+        bytes += 67
             + json_string_len(&effect.id)
             + json_string_len(effect.kind.as_str())
             + json_string_len(&effect.target.0)
-            + u64_len(effect.issued_revision);
+            + u64_len(effect.issued_revision)
+            + json_string_len(effect.cause.as_str())
+            + effect.command_seq.map_or(4, |seq| 2 + u64_len(seq))
+            + bool_len(effect.await_shown);
     }
     bytes += reply.effects.len().saturating_sub(1);
     bytes += command_result_estimate(&reply.command_result);
@@ -2298,7 +2304,20 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
         push_json_string(&mut out, &effect.target.0);
         out.push_str(",\"rev\":\"");
         out.push_str(&effect.issued_revision.to_string());
-        out.push_str("\"}");
+        out.push_str("\",\"cause\":");
+        push_json_string(&mut out, effect.cause.as_str());
+        out.push_str(",\"cmdSeq\":");
+        match effect.command_seq {
+            Some(seq) => {
+                out.push('"');
+                out.push_str(&seq.to_string());
+                out.push('"');
+            }
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"awaitShown\":");
+        out.push_str(if effect.await_shown { "true" } else { "false" });
+        out.push('}');
     }
     out.push_str("],\"result\":");
     encode_command_result(&mut out, &reply.command_result);
@@ -2809,6 +2828,40 @@ pub const MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES: usize = 512;
 /// backstop.
 pub const MAX_TARGET_LANES_PER_WINDOW: usize = 626;
 
+/// Maximum canonical bytes of one emitted effect row with typed cause
+/// correlation (`{"id":,"kind":,"target":,"rev":"","cause":,"cmdSeq":null|
+/// `"N","awaitShown":B}`): 67 fixed punctuation plus the widest values
+/// the actual engine producers emit. The joint widest row is the hover
+/// intent over a maximum-length opaque window (`ffc-` is four bytes, so
+/// `ffc-` + 128 = 132 raw, 134 quoted; `af-` + 128 = 131 raw, 133
+/// quoted; `fx-<u64>` tops out at 25). Kind tops out at 7
+/// (`"focus"`/`"raise"`/`"stack"` quoted), target at 130 (128 opaque
+/// quoted), revision at 20 (`u64::MAX` digits), cause at 22
+/// (`focus-follows-cursor`, 20 bytes / 22 quoted; `automatic-admission` is
+/// 19 bytes / 21 quoted and stays covered), command sequence at 22 for rows that
+/// carry one (quoted `u64::MAX`) or 4 for the correlation-valid
+/// commandless rows (`null`; the hover row never carries a sequence), and
+/// the bool at 5 (`false`). Opaque ids never escape
+/// ([`crate::bounds::is_opaque_id`]), so quoted widths are exact:
+/// 67 + 134 + 7 + 130 + 20 + 22 + 4 + 5 = 389. The widest admission row
+/// is 387 and the widest explicit row is 294 by the same accounting.
+pub const MAX_EFFECT_ROW_BYTES: usize = 389;
+
+/// Pre-mutation reserve for coexisting one-shot effects: at most one
+/// fresh-admission focus plus at most one explicit-command focus per
+/// report, conservatively two joint-widest rows plus one array comma
+/// (2 * 389 + 1 = 779). The admission pass mints at most one intent;
+/// command execution mints at most one explicit focus; a same-target
+/// admission duplicate drops in favor of the explicit winner, so
+/// different targets are the only two-row case, and a focus-follows-cursor
+/// hover never mints when any focus effect is already present, so two
+/// hovers never coexist: the actual widest coexistence is the admission
+/// maximum (387) plus the explicit maximum (294) plus one comma (682),
+/// asserted as a witness below. No raise/stack producer exists in the
+/// engine; the closed kinds stay encodable without a reserve of their
+/// own.
+pub const MAX_EFFECT_RESERVE_BYTES: usize = MAX_EFFECT_ROW_BYTES * 2 + 1;
+
 /// Conservative pre-mutation reply upper bound for one report: the request
 /// estimate plus worst-case generated state. Any publishable reply for this
 /// input fits within this bound, so exceeding it rejects before any
@@ -2823,8 +2876,10 @@ pub const MAX_TARGET_LANES_PER_WINDOW: usize = 626;
 ///   hold (23) = 509, rounded to 512;
 /// - retained-missing held scope row: 28 punctuation + `output/workspace`
 ///   (259) + authority (12) + reason (23) = 322, rounded to 336;
-/// - one emitted effect row (at most one per command): 32 + id (25) +
-///   kind (9) + target (130) + revision (20) = 216, rounded to 256.
+/// - coexisting one-shot effects (at most one fresh-admission focus plus
+///   at most one explicit-command focus; same-target dedup keeps one, and
+///   a hover follow never mints beside any focus): [`MAX_EFFECT_RESERVE_BYTES`]
+///   (two [`MAX_EFFECT_ROW_BYTES`] rows plus one comma).
 /// - correlated command result (at most one per command): the drag-preview
 ///   / float shapes fit in 2048; a migration member list scales with the
 ///   report's live window count (one max-length id + comma per window, 131
@@ -2905,7 +2960,7 @@ pub fn reply_upper_bound(
         .saturating_add(created_workspaces.saturating_mul(512))
         .saturating_add(logical_workspaces.saturating_mul(336))
         .saturating_add(4096)
-        .saturating_add(256)
+        .saturating_add(MAX_EFFECT_RESERVE_BYTES)
         .saturating_add(2048)
         .saturating_add(512)
         .saturating_add(256)
@@ -3757,5 +3812,419 @@ mod target_lane_sizing_tests {
             "\"state\":[{\"property\":\"above\",\"value\":true,\
              \"auth\":\"controlled\",\"reason\":\"\",\"cmdSeq\":null}]"
         ));
+    }
+}
+
+#[cfg(test)]
+mod effect_vocabulary_sizing_tests {
+    use super::*;
+    use crate::directional::WindowId;
+    use crate::world_directional::tests::{accepted, fact, report_full, screen};
+    use crate::world_engine::WorldOutcome;
+    use crate::world_report::{
+        EffectCause, EffectKind, OneShotEffect, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
+    };
+
+    fn reply_with_effects(effects: Vec<OneShotEffect>) -> crate::world_report::WorldReply {
+        let mut engine =
+            crate::world_engine::WorldEngine::new_test_bound("gen-1", "adapter-1").expect("engine");
+        let seed = accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0)],
+                vec![],
+                "",
+                None,
+                None,
+            ),
+        );
+        let mut reply = seed;
+        reply.effects = effects;
+        reply
+    }
+
+    fn worst_effect() -> OneShotEffect {
+        // Joint-widest shape the actual engine producers emit: the hover
+        // intent over a maximum-length opaque window (`ffc-` is four
+        // bytes), the longest cause token that rides a commandless row,
+        // the largest revision, no command sequence (hover rows never
+        // correlate), and the costlier bool. Correlation-valid by
+        // construction: cause and sequence agree.
+        OneShotEffect {
+            id: format!("ffc-{}", "w".repeat(128)),
+            kind: EffectKind::Focus,
+            target: WindowId("w".repeat(128)),
+            issued_revision: u64::MAX,
+            cause: EffectCause::FocusFollowsCursor,
+            command_seq: None,
+            await_shown: false,
+        }
+    }
+
+    fn widest_admission() -> OneShotEffect {
+        OneShotEffect {
+            id: format!("af-{}", "w".repeat(128)),
+            kind: EffectKind::Focus,
+            target: WindowId("w".repeat(128)),
+            issued_revision: u64::MAX,
+            cause: EffectCause::AutomaticAdmission,
+            command_seq: None,
+            await_shown: false,
+        }
+    }
+
+    fn widest_explicit() -> OneShotEffect {
+        OneShotEffect {
+            id: format!("fx-{}", u64::MAX),
+            kind: EffectKind::Focus,
+            target: WindowId("w".repeat(128)),
+            issued_revision: u64::MAX,
+            cause: EffectCause::ExplicitCommand,
+            command_seq: Some(u64::MAX),
+            await_shown: false,
+        }
+    }
+
+    #[test]
+    fn effect_estimate_is_exact_over_causal_widths() {
+        // Marginal accounting: `null` vs quoted-`u64` command sequences
+        // and both bools are exact through the shared estimator, over
+        // every cause and the closed kinds.
+        let rows = vec![
+            OneShotEffect {
+                id: "fx-11".to_owned(),
+                kind: EffectKind::Focus,
+                target: WindowId("win-a".to_owned()),
+                issued_revision: 7,
+                cause: EffectCause::ExplicitCommand,
+                command_seq: Some(11),
+                await_shown: false,
+            },
+            OneShotEffect {
+                id: "af-win-b".to_owned(),
+                kind: EffectKind::Focus,
+                target: WindowId("win-b".to_owned()),
+                issued_revision: u64::MAX,
+                cause: EffectCause::AutomaticAdmission,
+                command_seq: None,
+                await_shown: false,
+            },
+            OneShotEffect {
+                id: "ffc-win-c".to_owned(),
+                kind: EffectKind::Focus,
+                target: WindowId("win-c".to_owned()),
+                issued_revision: 1,
+                cause: EffectCause::FocusFollowsCursor,
+                command_seq: None,
+                await_shown: false,
+            },
+            OneShotEffect {
+                id: "effect-a".to_owned(),
+                kind: EffectKind::Raise,
+                target: WindowId("win-a".to_owned()),
+                issued_revision: 1,
+                cause: EffectCause::ExplicitCommand,
+                command_seq: Some(u64::MAX),
+                await_shown: true,
+            },
+            OneShotEffect {
+                id: "effect-a".to_owned(),
+                kind: EffectKind::Stack,
+                target: WindowId("win-a".to_owned()),
+                issued_revision: 1,
+                cause: EffectCause::ExplicitCommand,
+                command_seq: Some(1),
+                await_shown: true,
+            },
+        ];
+        let reply = reply_with_effects(rows);
+        let wire = encode_reply_canonical(&reply);
+        let empty = reply_with_effects(Vec::new());
+        let base_wire = encode_reply_canonical(&empty);
+        // Marginal accounting is exact: the estimate delta over the same
+        // reply with empty effects equals the encoded bytes (rows plus
+        // one comma per extra row), for null and quoted-`u64` sequences
+        // and both bools alike. (The full-reply estimate keeps its
+        // pre-existing conservative slack elsewhere; only the effect lane
+        // is asserted exact here.)
+        let row_bytes: usize = reply
+            .effects
+            .iter()
+            .map(|row| {
+                let one = reply_with_effects(vec![row.clone()]);
+                encode_reply_canonical(&one).len() - base_wire.len()
+            })
+            .sum();
+        assert_eq!(
+            wire.len() - base_wire.len(),
+            row_bytes + reply.effects.len().saturating_sub(1)
+        );
+        assert_eq!(
+            reply_estimate(&reply) - reply_estimate(&empty),
+            wire.len() - base_wire.len(),
+            "effect estimate stays exact over null/quoted sequences and both bools"
+        );
+        assert!(
+            reply_estimate(&reply) >= wire.len(),
+            "estimate covers the reply"
+        );
+        // Key order is frozen: id, kind, target, rev, cause, cmdSeq,
+        // awaitShown.
+        assert!(wire.contains(
+            "{\"id\":\"fx-11\",\"kind\":\"focus\",\"target\":\"win-a\",\
+             \"rev\":\"7\",\"cause\":\"explicit-command\",\"cmdSeq\":\"11\",\
+             \"awaitShown\":false}"
+        ));
+        assert!(wire.contains(
+            "{\"id\":\"af-win-b\",\"kind\":\"focus\",\"target\":\"win-b\",\
+             \"rev\":\"18446744073709551615\",\"cause\":\"automatic-admission\",\
+             \"cmdSeq\":null,\"awaitShown\":false}"
+        ));
+    }
+
+    #[test]
+    fn max_effect_widths_derive_the_coexistence_reserve() {
+        // Encoder witnesses: the joint-widest producer row (hover intent)
+        // spells exactly MAX_EFFECT_ROW_BYTES. The only coexistence the
+        // engine produces is admission plus explicit, so the pair witness
+        // is correlation-valid by construction: the widest admission row
+        // plus the widest explicit row plus one comma spell 682, held
+        // under the conservative two-widest reserve.
+        let worst = worst_effect();
+        let one = reply_with_effects(vec![worst.clone()]);
+        let empty = reply_with_effects(Vec::new());
+        let row_len = encode_reply_canonical(&one).len() - encode_reply_canonical(&empty).len();
+        assert_eq!(row_len, MAX_EFFECT_ROW_BYTES, "worst row: {row_len}");
+        assert_eq!(
+            MAX_EFFECT_ROW_BYTES, 389,
+            "67 fixed + 134 id + 7 kind + 130 target + 20 rev + 22 cause + 4 seq + 5 bool"
+        );
+        let admission = widest_admission();
+        let admission_one = reply_with_effects(vec![admission.clone()]);
+        let admission_len =
+            encode_reply_canonical(&admission_one).len() - encode_reply_canonical(&empty).len();
+        assert_eq!(admission_len, 387, "widest admission row: {admission_len}");
+        let explicit = widest_explicit();
+        let explicit_one = reply_with_effects(vec![explicit.clone()]);
+        let explicit_len =
+            encode_reply_canonical(&explicit_one).len() - encode_reply_canonical(&empty).len();
+        assert_eq!(explicit_len, 294, "widest explicit row: {explicit_len}");
+        let pair = reply_with_effects(vec![admission, explicit]);
+        let pair_len = encode_reply_canonical(&pair).len() - encode_reply_canonical(&empty).len();
+        assert_eq!(
+            pair_len, 682,
+            "actual widest coexistence (admission + explicit + comma): {pair_len}"
+        );
+        assert!(
+            pair_len <= MAX_EFFECT_RESERVE_BYTES,
+            "coexistence fits the conservative reserve"
+        );
+        assert_eq!(MAX_EFFECT_RESERVE_BYTES, 779);
+        assert_eq!(MAX_EFFECT_RESERVE_BYTES, 2 * MAX_EFFECT_ROW_BYTES + 1);
+    }
+
+    #[test]
+    fn admission_and_explicit_coexist_within_the_reserve() {
+        // Actual engine coexistence: a newcomer arrives (automatic
+        // admission on win-b) while an explicit Focus command selects
+        // win-a. Same-target dedup keeps one row; different targets keep
+        // two, and the pre-mutation bound covers both.
+        use crate::world_report::WorldCommand;
+        let mut engine =
+            crate::world_engine::WorldEngine::new_test_bound("gen-1", "adapter-1").expect("engine");
+        accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0)],
+                vec![],
+                "",
+                None,
+                None,
+            ),
+        );
+        let input = report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            "",
+            Some(2),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-a".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        );
+        let pre_bound = reply_upper_bound(
+            &input,
+            engine.retained.len() + engine.retained_floats.len(),
+            engine.engine.domain_keys().len(),
+            input.screens.len(),
+            engine.staged.facts.len() + engine.staged.held_windows.len(),
+            engine.retained_publish_footprint(),
+        )
+        .saturating_add(max_intent_rollback_bound(engine.rollback_reserve_count()));
+        let reply = accepted(&mut engine, &input);
+        assert_eq!(
+            reply.effects.len(),
+            2,
+            "coexisting pair: {:?}",
+            reply.effects
+        );
+        let admission = reply
+            .effects
+            .iter()
+            .find(|effect| effect.cause == EffectCause::AutomaticAdmission)
+            .expect("admission row");
+        assert_eq!(admission.target.0, "win-b");
+        assert_eq!(admission.command_seq, None);
+        assert!(!admission.await_shown);
+        let explicit = reply
+            .effects
+            .iter()
+            .find(|effect| effect.is_explicit_focus_for(2))
+            .expect("explicit row");
+        assert_eq!(explicit.target.0, "win-a");
+        assert!(!explicit.await_shown);
+        let actual = encode_reply_canonical(&reply);
+        assert!(
+            reply_estimate(&reply) >= actual.len(),
+            "estimate covers coexistence"
+        );
+        assert!(
+            actual.len() <= pre_bound,
+            "coexistence fits the pre-mutation bound"
+        );
+    }
+
+    #[test]
+    fn effect_reserve_boundary_rejects_before_mutation() {
+        // The added coexistence reserve is the discriminator: the bound
+        // without it fits while the bound with it exceeds, so the gate
+        // rejects before any revision or command-highwater mutation. The
+        // same command sequence still works once the report fits.
+        use crate::world_report::WorldCommand;
+        let mut engine =
+            crate::world_engine::WorldEngine::new_test_bound("gen-1", "adapter-1").expect("engine");
+        accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+                vec![],
+                "",
+                None,
+                None,
+            ),
+        );
+        let logical = engine.engine.domain_keys().len();
+        let focus = || WorldCommand::Focus {
+            window: WindowId("win-a".to_owned()),
+            direction: "right".to_owned(),
+        };
+        let bound_of = |windows: &[crate::world_report::WindowFact]| {
+            let report = report_full(
+                2,
+                2,
+                vec![screen("out-a", 0)],
+                windows.to_vec(),
+                vec![],
+                "",
+                Some(2),
+                Some(focus()),
+            );
+            reply_upper_bound(
+                &report,
+                0,
+                logical,
+                1,
+                0,
+                engine.retained_publish_footprint(),
+            )
+        };
+        let mut windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
+        for i in 0..2200 {
+            windows.push(fact(&format!("win-pad-{i:05}"), "out-a", 0));
+        }
+        while bound_of(&windows) - MAX_EFFECT_RESERVE_BYTES > WORLD_MAX_REPLY_BYTES {
+            windows.pop();
+        }
+        // Fine-tune one title so the reserve-free bound lands just under
+        // the cap: each title byte adds exactly one, plus the 2-byte
+        // null-to-string swap.
+        let shortfall = WORLD_MAX_REPLY_BYTES
+            .saturating_sub(bound_of(&windows) - MAX_EFFECT_RESERVE_BYTES)
+            .saturating_sub(10);
+        windows[2].title = Some("t".repeat(shortfall + 2));
+        let report = report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            windows,
+            vec![],
+            "",
+            Some(2),
+            Some(focus()),
+        );
+        let without_reserve = reply_upper_bound(
+            &report,
+            0,
+            logical,
+            1,
+            0,
+            engine.retained_publish_footprint(),
+        ) - MAX_EFFECT_RESERVE_BYTES;
+        assert!(
+            report_estimate(&report) <= WORLD_MAX_REQUEST_BYTES,
+            "request itself fits; only the reply bound trips"
+        );
+        assert!(
+            without_reserve <= WORLD_MAX_REPLY_BYTES,
+            "reserve-free bound fits: {without_reserve}"
+        );
+        assert!(
+            without_reserve + MAX_EFFECT_RESERVE_BYTES > WORLD_MAX_REPLY_BYTES,
+            "added reserve is the discriminator"
+        );
+        let revision = engine.state_revision;
+        match engine.handle_report(&report) {
+            WorldOutcome::Rejected { kind, .. } => {
+                assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
+            }
+            other => panic!("expected reply-oversize, got {other:?}"),
+        }
+        assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
+        assert!(
+            engine.command_highwater.is_none(),
+            "command unconsumed by the refused report"
+        );
+        // The same sequence works once the report fits.
+        let retry = report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+            vec![],
+            "",
+            Some(2),
+            Some(focus()),
+        );
+        let reply = accepted(&mut engine, &retry);
+        assert!(
+            reply
+                .effects
+                .iter()
+                .any(|effect| effect.is_explicit_focus_for(2)),
+            "retry emits the explicit focus: {:?}",
+            reply.effects
+        );
     }
 }

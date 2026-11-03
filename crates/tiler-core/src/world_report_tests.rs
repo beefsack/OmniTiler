@@ -1111,3 +1111,107 @@ fn estimator_does_not_collapse_structure_around_nonfinite_held_scalars() {
     let expected_delta = 2 + (json_string_len("extra") + 1 + nested_estimate);
     assert_eq!(report_estimate(&report) - before, expected_delta);
 }
+
+#[test]
+fn effect_cause_wire_tokens_round_trip_closed() {
+    // Closed vocabulary: every cause spells its wire token and parses it
+    // back; unknown tokens refuse (the codec never invents a cause).
+    for (cause, token) in [
+        (EffectCause::ExplicitCommand, "explicit-command"),
+        (EffectCause::AutomaticAdmission, "automatic-admission"),
+        (EffectCause::FocusFollowsCursor, "focus-follows-cursor"),
+    ] {
+        assert_eq!(cause.as_str(), token);
+        assert_eq!(EffectCause::parse(token), Some(cause));
+    }
+    assert_eq!(EffectCause::parse("fx-11"), None);
+    assert_eq!(EffectCause::parse("workspace-return"), None);
+    assert_eq!(EffectCause::parse(""), None);
+}
+
+#[test]
+fn explicit_focus_correlation_is_typed_never_id_spelling() {
+    // Opaque ids stay unconstrained: an explicit effect with a non-`fx-`
+    // id still matches its command sequence, while a misleading `fx-`
+    // id with any other cause (or no sequence, or the wrong sequence)
+    // never matches. The immutable `effect-a` fixture id proves the
+    // unconstrained shape: typed rows ride it for every cause.
+    let explicit_opaque = OneShotEffect {
+        id: "effect-a".to_owned(),
+        kind: EffectKind::Focus,
+        target: WindowId("win-a".to_owned()),
+        issued_revision: 1,
+        cause: EffectCause::ExplicitCommand,
+        command_seq: Some(11),
+        await_shown: false,
+    };
+    assert!(explicit_opaque.is_explicit_focus_for(11));
+    assert!(!explicit_opaque.is_explicit_focus_for(12));
+    for cause in [
+        EffectCause::AutomaticAdmission,
+        EffectCause::FocusFollowsCursor,
+    ] {
+        let misleading = OneShotEffect {
+            id: "fx-11".to_owned(),
+            kind: EffectKind::Focus,
+            target: WindowId("win-a".to_owned()),
+            issued_revision: 1,
+            cause,
+            command_seq: None,
+            await_shown: false,
+        };
+        assert!(
+            !misleading.is_explicit_focus_for(11),
+            "misleading fx- id with {cause:?} must not match"
+        );
+    }
+    let null_seq = OneShotEffect {
+        id: "fx-11".to_owned(),
+        kind: EffectKind::Focus,
+        target: WindowId("win-a".to_owned()),
+        issued_revision: 1,
+        cause: EffectCause::ExplicitCommand,
+        command_seq: None,
+        await_shown: false,
+    };
+    assert!(!null_seq.is_explicit_focus_for(11));
+    let wrong_seq = OneShotEffect {
+        id: "fx-12".to_owned(),
+        kind: EffectKind::Focus,
+        target: WindowId("win-a".to_owned()),
+        issued_revision: 1,
+        cause: EffectCause::ExplicitCommand,
+        command_seq: Some(12),
+        await_shown: false,
+    };
+    assert!(!wrong_seq.is_explicit_focus_for(11));
+    // Awaiting arrival never changes correlation: the future-true witness
+    // is a manually constructed typed row only, never producer policy.
+    let granted = OneShotEffect {
+        await_shown: true,
+        ..explicit_opaque.clone()
+    };
+    assert!(granted.is_explicit_focus_for(11));
+}
+
+#[test]
+fn non_focus_kinds_never_correlate_as_explicit_focus() {
+    // Raise/Stack have no core producers; their closed kinds stay
+    // encodable, and even an explicit cause plus sequence on a non-focus
+    // kind never reads as explicit focus.
+    for kind in [EffectKind::Raise, EffectKind::Stack] {
+        let row = OneShotEffect {
+            id: "effect-a".to_owned(),
+            kind,
+            target: WindowId("win-a".to_owned()),
+            issued_revision: 1,
+            cause: EffectCause::ExplicitCommand,
+            command_seq: Some(11),
+            await_shown: false,
+        };
+        assert!(
+            !row.is_explicit_focus_for(11),
+            "{kind:?} must not correlate as explicit focus"
+        );
+    }
+}
