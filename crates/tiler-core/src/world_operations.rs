@@ -1919,7 +1919,9 @@ pub(crate) fn command_window(command: &WorldCommand) -> Option<WindowId> {
         | WorldCommand::SendNumbered { window, .. }
         | WorldCommand::ToggleMaximize { window }
         | WorldCommand::SetSticky { window, .. }
-        | WorldCommand::ToggleSticky { window } => Some(window.clone()),
+        | WorldCommand::ToggleSticky { window }
+        | WorldCommand::SetFullscreen { window, .. }
+        | WorldCommand::ToggleFullscreen { window } => Some(window.clone()),
         WorldCommand::Operation(command) => match command {
             CoreCommand::Move { window, .. }
             | CoreCommand::Focus { window, .. }

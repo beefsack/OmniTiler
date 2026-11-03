@@ -64,6 +64,7 @@ fn insert(engine: &mut WorldEngine, window: &str, property: StateProperty, value
             spent: false,
             disposition: AttemptOutcome::Unattempted,
             sticky_meta: None,
+            fullscreen_meta: None,
         },
     );
 }
@@ -1182,6 +1183,7 @@ fn bounds_upsert_and_lifecycle_cleanup() {
                 spent: false,
                 disposition: AttemptOutcome::Unattempted,
                 sticky_meta: None,
+                fullscreen_meta: None,
             },
         );
     }
@@ -1252,6 +1254,7 @@ fn bounds_upsert_and_lifecycle_cleanup() {
                 spent: false,
                 disposition: AttemptOutcome::Unattempted,
                 sticky_meta: None,
+                fullscreen_meta: None,
             });
     }
     engine.retained_states.insert(
@@ -1267,6 +1270,7 @@ fn bounds_upsert_and_lifecycle_cleanup() {
             spent: false,
             disposition: AttemptOutcome::Unattempted,
             sticky_meta: None,
+            fullscreen_meta: None,
         },
     );
     assert_eq!(
@@ -1466,7 +1470,7 @@ fn reply_bound_state_term_rejected_without_mutation() {
     let without_state = reply_upper_bound(&report, 0, logical, 1, staged, retained) - state_term;
     assert!(without_state <= WORLD_MAX_REPLY_BYTES, "{without_state}");
     assert!(without_state + state_term > WORLD_MAX_REPLY_BYTES);
-    assert_eq!(crate::world_sizing::MAX_TARGET_LANES_PER_WINDOW, 296);
+    assert_eq!(crate::world_sizing::MAX_TARGET_LANES_PER_WINDOW, 414);
     let revision = engine.state_revision;
     match engine.handle_report(&report) {
         crate::world_engine::WorldOutcome::Rejected { kind, .. } => {

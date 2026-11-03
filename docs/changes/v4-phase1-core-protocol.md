@@ -78,9 +78,13 @@
   per-property target publication and existing correlated settlement. Native
   maximize and persistent above follow; core-composed maximize remains a separate
   capability-routed increment. The [maximize-to-fullscreen discriminator](../spec/reference-outcomes.md#native-fullscreen-entry-from-maximized)
-  leaves entry from maximized and exit restoration unselected: Tier 1 enters
-  immediately but differs on restoring maximize. Resolve that product behavior
-  before implementing the coupled route; R-MAX-11 selects only the inverse path.
+  records the 2026-11-03 selection: enter immediately from maximized, preserving
+  maximize as an independent overlay underneath; ordinary exit returns to
+  maximized (COSMIC, not Hyprland project exit-to-base). Native route writes only
+  fullscreen, with no unmaximize on entry or extra maximize on exit; host flag
+  retention and KWin/Windows outcomes remain TBD. The composed bit survives
+  fullscreen and its work-area frame is recomputed on exit. R-MAX-11 remains
+  the separate explicit fullscreen-to-maximize replacement.
 
 ## Evidence
 
@@ -715,6 +719,41 @@
   Persistent above, remaining state including composed maximize, downstream
   composed-sticky swap/migration gates and general no-intent clear policy remain
   dependent work; all eight OPEN/TBD gates remain unchanged.
+- Native fullscreen set/toggle commands now decode strictly and produce retained
+  Fullscreen StateTargets with typed command correlation and the existing exact
+  authorizing-reply-revision settlement. Fullscreen-on from maximized authorizes
+  immediately without a maximize write; ordinary exit authorizes only fullscreen
+  clear, preserving independent maximize state. Host flag retention is not proven.
+  No raw fact, opaque intent or base membership is fabricated by this producer.
+- Fullscreen capability absence consumes StateUnsupported, including raw null;
+  supported unreadable state consumes StateUnknown. Active exit requires known
+  exitability. Same-state sets consume without a new setter, canceling obsolete
+  opposite targets; spent same-value targets are never renewed. Toggles resolve
+  from current raw facts, not an unconfirmed target. Fresh commands can authorize
+  a new attempt only when the requested native transition is still needed.
+- Publication revalidates readability, exitability, safety and same-window pending
+  transfers. Healthy recovery resumes the exact unspent tuple; spent proof grants
+  no automatic retry. A real send/arrival regression proves transfer Hold and
+  same-tuple recovery. Held scopes, two-output isolation, generation reset,
+  close cleanup and exact 40000-binding replacement/new-key refusal are covered.
+  Sticky and fullscreen rows coexist; the per-window target reserve is now 414
+  bytes, backed by exact two-row maximum encoding and command-size witnesses.
+- Fullscreen verification: 26 producer regressions, strict command-codec tests,
+  digest/validation and sizing tests pass. Failing-first regressions reproduced
+  unsupported/null precedence, stale opposite authority, lost exitability,
+  pending-transfer authority and spent same-state renewal before correction.
+  Independent review closed the fullscreen findings. Final direct core/protocol
+  tests pass (1392 core unit tests, every integration target, protocol suites
+  49/4/15/8/2/54/4), with only workspace_unsafe_posture filtered as above.
+  Build, scoped all-target clippy with warnings denied, formatting, diff whitespace,
+  added ASCII and local-link checks pass. Adapters and immutable fixtures remain
+  unchanged; no native execution, host storage or whole-scenario acceptance claimed.
+- Adjacent native-sticky follow-ups remain outside the fullscreen slice: its
+  publisher lacks the corresponding dynamic same-window transfer gate, and the
+  toggle-sticky command estimate undercounts its fixed spelling by one byte.
+  Fullscreen publication and its new command estimates do not rely on those paths.
+  Native maximize, persistent above and core-composed maximize remain dependent
+  work; all eight OPEN/TBD evidence gates remain unchanged.
 
 ## Adapter compile-failure inventory
 
@@ -762,8 +801,11 @@
     required StateAttempt ingress and internally bound native-state settlement are
      implemented and offline-tested. Composed sticky commands, canonical saves and
       same-output show targets are implemented and offline-tested; native sticky
-      target production, proof-gated clear admission and exact-prior refusal
-      rollback are implemented and offline-tested.
+       target production, proof-gated clear admission and exact-prior refusal
+       rollback are implemented and offline-tested.
+       Native fullscreen set/toggle target production, proof settlement and
+       dynamic publication gates are implemented and offline-tested; native host
+       flag retention remains TBD.
      General no-intent clears, remaining visibility/state policy and host storage
      acceptance remain pending.
   The core-composed maximize contract is approved and recorded; implementation

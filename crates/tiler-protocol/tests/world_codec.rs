@@ -450,6 +450,70 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
 }
 
 #[test]
+fn fullscreen_commands_decode_strictly() {
+    use tiler_core::world_report::WorldCommand as C;
+    // Valid set/toggle spellings decode typed.
+    let set = serde_json::json!({"op": "set-fullscreen", "win": "win-a", "value": true});
+    match decode_request(&with_command(&set, "7"))
+        .expect("set decodes")
+        .command
+    {
+        Some(C::SetFullscreen { window, value }) => {
+            assert_eq!(window.0, "win-a");
+            assert!(value);
+        }
+        other => panic!("set-fullscreen decoded {other:?}"),
+    }
+    let set_false = serde_json::json!({"op": "set-fullscreen", "win": "win-a", "value": false});
+    match decode_request(&with_command(&set_false, "8"))
+        .expect("set false decodes")
+        .command
+    {
+        Some(C::SetFullscreen { window, value }) => {
+            assert_eq!(window.0, "win-a");
+            assert!(!value);
+        }
+        other => panic!("set-fullscreen decoded {other:?}"),
+    }
+    let toggle = serde_json::json!({"op": "toggle-fullscreen", "win": "win-a"});
+    match decode_request(&with_command(&toggle, "9"))
+        .expect("toggle decodes")
+        .command
+    {
+        Some(C::ToggleFullscreen { window }) => assert_eq!(window.0, "win-a"),
+        other => panic!("toggle-fullscreen decoded {other:?}"),
+    }
+    // Closed keys: extra keys refuse.
+    for bad in [
+        serde_json::json!({"op": "set-fullscreen", "win": "w", "value": true, "extra": 1}),
+        serde_json::json!({"op": "toggle-fullscreen", "win": "w", "extra": 1}),
+    ] {
+        assert!(decode_request(&with_command(&bad, "7")).is_err(), "{bad}");
+    }
+    // Missing keys refuse.
+    for bad in [
+        serde_json::json!({"op": "set-fullscreen", "win": "w"}),
+        serde_json::json!({"op": "set-fullscreen", "value": true}),
+        serde_json::json!({"op": "toggle-fullscreen"}),
+    ] {
+        assert!(decode_request(&with_command(&bad, "7")).is_err(), "{bad}");
+    }
+    // Wrong types refuse (value must be bool, win must be an id string).
+    for bad in [
+        serde_json::json!({"op": "set-fullscreen", "win": "w", "value": "true"}),
+        serde_json::json!({"op": "set-fullscreen", "win": "w", "value": 1}),
+        serde_json::json!({"op": "set-fullscreen", "win": "w", "value": null}),
+        serde_json::json!({"op": "set-fullscreen", "win": "", "value": true}),
+        serde_json::json!({"op": "set-fullscreen", "win": 1, "value": true}),
+        serde_json::json!({"op": "toggle-fullscreen", "win": ""}),
+        serde_json::json!({"op": "toggle-fullscreen", "win": 1}),
+        serde_json::json!({"op": "toggle-fullscreen", "win": "w", "value": true}),
+    ] {
+        assert!(decode_request(&with_command(&bad, "7")).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn action_context_facts_decode_strictly() {
     // The envelope carries the required neutral facts: null legs read as
     // unknown, the ordered registry rides in adapter order.

@@ -40,6 +40,19 @@ pub(crate) struct RetainedStateBinding {
     pub(crate) spent: bool,
     pub(crate) disposition: AttemptOutcome,
     pub(crate) sticky_meta: Option<NativeStickyMeta>,
+    pub(crate) fullscreen_meta: Option<NativeFullscreenMeta>,
+}
+
+/// Typed native fullscreen command-sequence carrier. Separate from
+/// [`NativeStickyMeta`]: fullscreen production mints no intent saves and
+/// performs no composed landing, so only the originating typed command
+/// sequence (for publication) and the issuing home scope (for lifetime
+/// isolation) are retained. The authorizing revision stays internal to
+/// the retained target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeFullscreenMeta {
+    pub(crate) command_seq: u64,
+    pub(crate) home: DomainKey,
 }
 
 #[must_use]

@@ -656,6 +656,12 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   is accepted. Bindings do not change; Alt+Enter stays app-owned. macOS sticky
   native-Spaces behavior remains unsupported until its route is proven.
   [R14](../decisions/contract.md#window-state-commands-r14).
+- Fullscreen-on from maximized enters immediately: maximize and fullscreen are
+  independent overlays, with fullscreen taking precedence only while active.
+  Ordinary fullscreen exit returns to retained maximize. The native route issues
+  no unmaximize on entry or extra maximize on exit; host flag retention remains
+  a native acceptance gate. The composed route keeps its owned maximize bit and
+  recomputes the work-area frame on exit. Explicit R-MAX-11 replacement is separate.
 - Sticky command support is semantic: nativeSticky permits native sticky
   StateTarget/StateAttempt actuation. Without nativeSticky, windowSuppression
   permits core to compose visibility across its managed workspaces from retained

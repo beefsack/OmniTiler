@@ -756,6 +756,55 @@ fn sticky_commands_validate_typed_subjects_and_reject_catalog_is_closed() {
 }
 
 #[test]
+fn fullscreen_commands_validate_typed_subjects_and_digest_distinct() {
+    use WorldCommand as C;
+    let win = WindowId("win-a".to_owned());
+    assert!(valid_command(&C::SetFullscreen {
+        window: win.clone(),
+        value: true,
+    }));
+    assert!(valid_command(&C::SetFullscreen {
+        window: win.clone(),
+        value: false,
+    }));
+    assert!(valid_command(&C::ToggleFullscreen {
+        window: win.clone(),
+    }));
+    assert!(!valid_command(&C::SetFullscreen {
+        window: WindowId(String::new()),
+        value: true,
+    }));
+    assert!(!valid_command(&C::ToggleFullscreen {
+        window: WindowId(" ".to_owned()),
+    }));
+    // Digest separates the fullscreen spellings: Debug covers the new
+    // variants, so distinct commands never alias.
+    let mut base = test_report();
+    base.command = Some(C::SetFullscreen {
+        window: win.clone(),
+        value: true,
+    });
+    let set_digest = report_digest(&base);
+    let mut toggled = base.clone();
+    toggled.command = Some(C::ToggleFullscreen {
+        window: win.clone(),
+    });
+    assert_ne!(report_digest(&toggled), set_digest);
+    let mut unset = base.clone();
+    unset.command = Some(C::SetFullscreen {
+        window: win.clone(),
+        value: false,
+    });
+    assert_ne!(report_digest(&unset), set_digest);
+    let mut sticky = base.clone();
+    sticky.command = Some(C::SetSticky {
+        window: win.clone(),
+        value: true,
+    });
+    assert_ne!(report_digest(&sticky), set_digest);
+}
+
+#[test]
 fn estimator_stays_total_on_nonfinite_typed_facts_before_validation() {
     // Finding A: the request estimator runs before validation, so a
     // malicious typed carrier (non-finite scale, non-finite held number)

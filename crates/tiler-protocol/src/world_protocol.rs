@@ -173,7 +173,8 @@
 //!   select-relative|select-previous|select-trailing|send-relative|
 //!   send-numbered|set-workspace-tiling|toggle-workspace-tiling|
 //!   migrate-workspace|focus-directional|move-directional|send-directional|
-//!   migrate-directional|set-sticky|toggle-sticky|operation
+//!   migrate-directional|set-sticky|toggle-sticky|set-fullscreen|
+//!   toggle-fullscreen|operation
 //!   (fields per variant, see decode; every
 //!   `ws` field names a stable core logical workspace id; the four
 //!   selection commands carry `"out":null` for core-resolved output or an
@@ -2535,6 +2536,19 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
         "toggle-sticky" => {
             check_keys(map, &["op", "win"])?;
             Ok(WorldCommand::ToggleSticky {
+                window: WindowId(req_id(map, "win")?),
+            })
+        }
+        "set-fullscreen" => {
+            check_keys(map, &["op", "win", "value"])?;
+            Ok(WorldCommand::SetFullscreen {
+                window: WindowId(req_id(map, "win")?),
+                value: req_bool(map, "value")?,
+            })
+        }
+        "toggle-fullscreen" => {
+            check_keys(map, &["op", "win"])?;
+            Ok(WorldCommand::ToggleFullscreen {
                 window: WindowId(req_id(map, "win")?),
             })
         }

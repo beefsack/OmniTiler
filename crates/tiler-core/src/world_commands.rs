@@ -865,6 +865,12 @@ impl WorldEngine {
             WorldCommand::ToggleSticky { window } => {
                 self.execute_sticky_command(report, command_seq, window, None, held_scopes)
             }
+            WorldCommand::SetFullscreen { window, value } => {
+                self.execute_fullscreen_command(command_seq, window, Some(*value), held_scopes)
+            }
+            WorldCommand::ToggleFullscreen { window } => {
+                self.execute_fullscreen_command(command_seq, window, None, held_scopes)
+            }
             WorldCommand::Operation(command) => {
                 self.execute_operation(report, command_seq, command, &by_id, held_scopes)
             }

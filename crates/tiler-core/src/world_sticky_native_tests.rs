@@ -2720,6 +2720,7 @@ fn insert_generic_binding(
             spent: false,
             disposition: AttemptOutcome::Unattempted,
             sticky_meta: None,
+            fullscreen_meta: None,
         },
     );
 }

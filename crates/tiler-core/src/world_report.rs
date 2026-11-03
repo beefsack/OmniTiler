@@ -1681,6 +1681,13 @@ pub enum WorldCommand {
     /// window at command-execution time. Queued toggles compose (each
     /// execution re-reads the retained state).
     ToggleSticky { window: WindowId },
+    /// Native fullscreen set: the explicit on/off fullscreen intent for one
+    /// window. Core resolves and retains the target; the adapter never
+    /// decides.
+    SetFullscreen { window: WindowId, value: bool },
+    /// Native fullscreen toggle: flip the readable native fullscreen fact
+    /// at command-execution time. An unconfirmed target is not a native fact.
+    ToggleFullscreen { window: WindowId },
     /// Existing operation route: one [`CoreCommand`] executed against the
     /// homing (or first readable) domain through the full [`CoreEvent`].
     /// `SendToWorkspace`/`SendToOutput` retain a window transfer exactly
@@ -4588,6 +4595,9 @@ pub fn valid_command(command: &WorldCommand) -> bool {
         WorldCommand::MigrateDirectional { direction } => DIRECTIONS.contains(&direction.as_str()),
         WorldCommand::ToggleMaximize { window } => is_opaque_id(&window.0),
         WorldCommand::SetSticky { window, .. } | WorldCommand::ToggleSticky { window } => {
+            is_opaque_id(&window.0)
+        }
+        WorldCommand::SetFullscreen { window, .. } | WorldCommand::ToggleFullscreen { window } => {
             is_opaque_id(&window.0)
         }
         WorldCommand::Operation(command) => valid_operation(command),
