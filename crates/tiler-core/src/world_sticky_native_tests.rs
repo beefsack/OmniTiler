@@ -3144,3 +3144,236 @@ fn native_unmatched_proof_never_lands_or_rewrites() {
         assert_eq!(authority, ScopeAuthority::Controlled);
     }
 }
+
+#[test]
+fn pending_window_transfer_holds_sticky_publication() {
+    // Mint through SetSticky, then stage a same-window pending flight:
+    // the real Send route refuses this sticky window. Hold and recovery
+    // must retain the unspent tuple; another window's flight must not gate it.
+    let mut engine = native_engine();
+    let boot = accepted(
+        &mut engine,
+        &bootstrap(vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)]),
+    );
+    let mut ring: Vec<String> = boot
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    ring.sort();
+    assert!(ring.len() >= 2, "single screen still rings: {ring:?}");
+    let minted = accepted(
+        &mut engine,
+        &cmd(
+            2,
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+            set_sticky("win-a", true),
+        ),
+    );
+    let (_, minted_authority, _) = target_row(&minted, "win-a").expect("entry target");
+    assert_eq!(minted_authority, ScopeAuthority::Controlled);
+    let rev = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
+        .expect("binding")
+        .target
+        .revision;
+    engine.retained.push(crate::world_engine::RetainedTransfer {
+        target: crate::world_report::TransferTarget {
+            operation_id: "op-2".to_owned(),
+            kind: crate::world_report::TransferKind::Window(WindowId("win-a".to_owned())),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: ring[1].clone(),
+            follow: false,
+            held: false,
+        },
+        policy: false,
+        source_output: OutputId("out-a".to_owned()),
+        source_workspace: ring[0].clone(),
+        members: Vec::new(),
+        migration_refill: None,
+        migration_initial_empty: false,
+        migration_source_index: None,
+        migration_source_view: None,
+        migration_target_view: None,
+        migration_terminal: None,
+        pending_member: None,
+        pending_members: std::collections::BTreeMap::new(),
+        pending_view: None,
+    });
+    let sent = accepted(
+        &mut engine,
+        &report_full(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+            vec![("out-a", ring[1].as_str())],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.retained.iter().any(|transfer| matches!(
+            &transfer.target.kind,
+            crate::world_report::TransferKind::Window(w) if w.0 == "win-a"
+        )),
+        "harness must retain the same-window flight"
+    );
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
+        .expect("binding survives the send");
+    assert!(!binding.spent);
+    assert_eq!(binding.target.revision, rev);
+    let (value, authority, seq) = target_row(&sent, "win-a").expect("entry target");
+    assert!(value);
+    assert!(
+        !matches!(authority, ScopeAuthority::Controlled),
+        "pending same-window transfer must never publish Controlled, got {authority:?}"
+    );
+    assert_eq!(seq, Some(1));
+    // Settle the staged flight with the standard raw transfer evidence: the
+    // adapter echoes the destination view and carries the accepted member
+    // attempt for `op-2`. The same unspent target resumes Controlled.
+    let mut arrived = report_full(
+        4,
+        4,
+        vec![screen("out-a", 0)],
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+        vec![("out-a", ring[1].as_str())],
+        "win-a",
+        None,
+        None,
+    );
+    arrived
+        .member_attempts
+        .push(crate::world_report::MemberAttempt {
+            operation_id: "op-2".to_owned(),
+            window: WindowId("win-a".to_owned()),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: ring[1].clone(),
+            setter: crate::world_report::FrameSetter::Accepted,
+            pre: None,
+            post: Some(crate::world_report::WorkspaceRef::Logical {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::directional::WorkspaceId(ring[1].clone()),
+            }),
+            attempt_ms: 2,
+        });
+    let settled = accepted(&mut engine, &arrived);
+    assert!(
+        !engine.retained.iter().any(|transfer| matches!(
+            &transfer.target.kind,
+            crate::world_report::TransferKind::Window(w) if w.0 == "win-a"
+        )),
+        "arrival evidence settles the same-window flight"
+    );
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
+        .expect("binding survives arrival");
+    assert!(!binding.spent);
+    assert_eq!(binding.target.revision, rev);
+    let (value, authority, seq) = target_row(&settled, "win-a").expect("entry target");
+    assert!(value);
+    assert_eq!(authority, ScopeAuthority::Controlled);
+    assert_eq!(seq, Some(1));
+    // An other-window flight never fences this target.
+    let other_sent = accepted(
+        &mut engine,
+        &report_full(
+            5,
+            5,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+            vec![("out-a", ring[1].as_str())],
+            "win-b",
+            Some(3),
+            Some(WorldCommand::Send {
+                window: WindowId("win-b".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: ring[1].clone(),
+                follow: false,
+            }),
+        ),
+    );
+    assert!(
+        engine.retained.iter().any(|transfer| matches!(
+            &transfer.target.kind,
+            crate::world_report::TransferKind::Window(w) if w.0 == "win-b"
+        )),
+        "send must retain the other-window flight"
+    );
+    let (value, authority, seq) = target_row(&other_sent, "win-a").expect("entry target");
+    assert!(value);
+    assert_eq!(authority, ScopeAuthority::Controlled);
+    assert_eq!(seq, Some(1));
+    let mut other_arrived = report_full(
+        6,
+        6,
+        vec![screen("out-a", 0)],
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+        vec![("out-a", ring[1].as_str())],
+        "win-b",
+        None,
+        None,
+    );
+    other_arrived
+        .member_attempts
+        .push(crate::world_report::MemberAttempt {
+            operation_id: "op-3".to_owned(),
+            window: WindowId("win-b".to_owned()),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: ring[1].clone(),
+            setter: crate::world_report::FrameSetter::Accepted,
+            pre: None,
+            post: Some(crate::world_report::WorkspaceRef::Logical {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::directional::WorkspaceId(ring[1].clone()),
+            }),
+            attempt_ms: 2,
+        });
+    accepted(&mut engine, &other_arrived);
+    assert!(
+        !engine.retained.iter().any(|transfer| matches!(
+            &transfer.target.kind,
+            crate::world_report::TransferKind::Window(w) if w.0 == "win-b"
+        )),
+        "arrival evidence settles the other-window flight"
+    );
+    // A spent target never reauthorizes: drive the binding spent through
+    // the real settlement producer (a threw attempt with the exact target
+    // revision), then observation keeps the exact sequence un-Controlled.
+    let key = (WindowId("win-a".to_owned()), StateProperty::Sticky);
+    let mut failed = observe(
+        7,
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+    );
+    failed.state_attempts = vec![crate::world_report::StateAttempt {
+        window: WindowId("win-a".to_owned()),
+        property: StateProperty::Sticky,
+        target: true,
+        revision: rev,
+        setter: crate::world_report::FrameSetter::Threw,
+        pre: None,
+        post: None,
+        attempt_ms: 7,
+    }];
+    accepted(&mut engine, &failed);
+    let spent = engine.retained_states.get(&key).expect("binding");
+    assert!(spent.spent, "producer marks spent");
+    let reply = accepted(
+        &mut engine,
+        &observe(
+            8,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+        ),
+    );
+    let (_, authority, seq) = target_row(&reply, "win-a").expect("target retained");
+    assert_eq!(seq, Some(1));
+    assert_ne!(authority, ScopeAuthority::Controlled);
+}

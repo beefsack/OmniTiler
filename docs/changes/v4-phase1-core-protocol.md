@@ -85,6 +85,10 @@
   retention and KWin/Windows outcomes remain TBD. The composed bit survives
   fullscreen and its work-area frame is recomputed on exit. R-MAX-11 remains
   the separate explicit fullscreen-to-maximize replacement.
+- Before native maximize/above production, harden the adjacent native-sticky
+  publication and command-sizing paths: pending same-window transfers must hold
+  native write authority, and command estimates must match encoded spelling.
+  Keep these corrections separate from new state policy and composed maximize.
 
 ## Evidence
 
@@ -748,12 +752,26 @@
   Build, scoped all-target clippy with warnings denied, formatting, diff whitespace,
   added ASCII and local-link checks pass. Adapters and immutable fixtures remain
   unchanged; no native execution, host storage or whole-scenario acceptance claimed.
-- Adjacent native-sticky follow-ups remain outside the fullscreen slice: its
-  publisher lacks the corresponding dynamic same-window transfer gate, and the
-  toggle-sticky command estimate undercounts its fixed spelling by one byte.
-  Fullscreen publication and its new command estimates do not rely on those paths.
-  Native maximize, persistent above and core-composed maximize remain dependent
-  work; all eight OPEN/TBD evidence gates remain unchanged.
+- Adjacent native-sticky corrections now hold native Sticky StateTarget authority
+  during a pending same-window transfer, retaining the exact unspent tuple and
+  resuming after raw arrival proof. Other-window transfers do not gate the target;
+  spent attempts remain spent. Membership, saved intent and rollback are unchanged.
+  The toggle-sticky fixed command estimate is corrected from 28 to 29 bytes, with
+  exact literal, shared string-codec and maximum-id byte witnesses; the 414-byte
+  per-window target reserve is unchanged.
+- Failing-first regressions reproduced Controlled authority under a pending
+  same-window flight and a 31-versus-32 command estimate. The sticky subject is
+  minted through the real SetSticky producer; the pending same-window flight uses
+  the existing internal harness because the real Send route refuses that sticky
+  subject. Standard raw member-attempt evidence proves recovery, and a real send
+  of another window proves isolation. This is not sticky-send or native acceptance.
+  Independent review found no blocking findings. Final direct tests pass (1394
+  core unit tests, every integration target, protocol suites 49/4/15/8/2/54/4),
+  with only workspace_unsafe_posture filtered as above. Build, scoped all-target
+  clippy with warnings denied, formatting, diff whitespace and added ASCII checks
+  pass. Protocol, adapters and immutable fixtures are unchanged. Native maximize,
+  persistent above and core-composed maximize remain dependent work; all eight
+  OPEN/TBD evidence gates remain unchanged.
 
 ## Adapter compile-failure inventory
 

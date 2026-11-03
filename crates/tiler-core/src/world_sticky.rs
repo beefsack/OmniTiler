@@ -1692,9 +1692,10 @@ impl WorldEngine {
     /// changes. Targets retain across observations; observation-only
     /// replies never renew. `Controlled` only for unspent readable
     /// no-held/no-excluded/no-min/no-overlay/no-safety-barrier complete
-    /// windows; spent bindings never reauthorize automatically and stay
-    /// `Untouched`/`Hold`. Property authority is independent of the row
-    /// frame; the row `command_seq` lane is untouched.
+    /// windows with no pending same-window transfer; spent bindings never
+    /// reauthorize automatically and stay `Untouched`/`Hold`. Property
+    /// authority is independent of the row frame; the row `command_seq`
+    /// lane is untouched.
     pub(crate) fn decorate_native_sticky_state(
         &self,
         report: &WorldReport,
@@ -1741,6 +1742,9 @@ impl WorldEngine {
                 && !self.is_held_window(&window)
                 && !excluded_lane
                 && domain_readable
+                && !self.retained.iter().any(
+                    |transfer| matches!(&transfer.target.kind, TransferKind::Window(w) if *w == window),
+                )
                 && (self.engine_knows_window_any(&window) || self.members.contains_key(&window));
             match self.staged.facts.get(&window) {
                 Some(fact) => {

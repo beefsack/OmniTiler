@@ -1439,8 +1439,8 @@ fn command_estimate_owned(command: &WorldCommand) -> usize {
             35 + json_string_len(&window.0) + bool_len(*value)
         }
         WorldCommand::ToggleSticky { window } => {
-            // {"op":"toggle-sticky","win":S} = 28 fixed.
-            28 + json_string_len(&window.0)
+            // {"op":"toggle-sticky","win":S} = 29 fixed.
+            29 + json_string_len(&window.0)
         }
         WorldCommand::SetFullscreen { window, value } => {
             // {"op":"set-fullscreen","win":S,"value":B} = 39 fixed.
@@ -3010,7 +3010,7 @@ mod canonical_scalar_tests {
         );
         assert_eq!(encoded_string(""), "\"\"");
         for text in [
-            "Müller-µ-日本語-🎛",
+            "M\u{fc}ller-\u{b5}-\u{65e5}\u{672c}\u{8a9e}-\u{1f39b}",
             "quote\"back\\slash\0\u{1f}\n",
             "",
             "plain",
@@ -3340,6 +3340,81 @@ mod target_lane_sizing_tests {
         assert_eq!(
             command_estimate_owned(&toggle),
             33 + json_string_len("win-a")
+        );
+    }
+
+    #[test]
+    fn sticky_commands_estimate_matches_exact_bytes() {
+        use crate::directional::WindowId;
+        use crate::world_report::WorldCommand;
+        // {"op":"set-sticky","win":S,"value":B} = 35 fixed.
+        let set = WorldCommand::SetSticky {
+            window: WindowId("win-a".to_owned()),
+            value: true,
+        };
+        let set_wire = "{\"op\":\"set-sticky\",\"win\":\"win-a\",\"value\":true}";
+        assert_eq!(command_estimate_owned(&set), set_wire.len());
+        assert_eq!(
+            command_estimate_owned(&set),
+            35 + json_string_len("win-a") + bool_len(true)
+        );
+        // {"op":"toggle-sticky","win":S} = 29 fixed.
+        let toggle = WorldCommand::ToggleSticky {
+            window: WindowId("w".to_owned()),
+        };
+        let toggle_wire = "{\"op\":\"toggle-sticky\",\"win\":\"w\"}";
+        assert_eq!(toggle_wire.len(), 32);
+        assert_eq!(command_estimate_owned(&toggle), toggle_wire.len());
+        assert_eq!(command_estimate_owned(&toggle), 29 + json_string_len("w"));
+        // Ordinary id spells the exact literal through the real encoder.
+        let ordinary = "win-a";
+        let ordinary_wire = format!("{{\"op\":\"toggle-sticky\",\"win\":{}}}", {
+            let mut encoded = String::new();
+            push_json_string(&mut encoded, ordinary);
+            encoded
+        });
+        assert_eq!(
+            ordinary_wire,
+            "{\"op\":\"toggle-sticky\",\"win\":\"win-a\"}"
+        );
+        let ordinary_cmd = WorldCommand::ToggleSticky {
+            window: WindowId(ordinary.to_owned()),
+        };
+        assert_eq!(command_estimate_owned(&ordinary_cmd), ordinary_wire.len());
+        assert_eq!(
+            command_estimate_owned(&ordinary_cmd),
+            29 + json_string_len(ordinary)
+        );
+        // Escaping, C0 controls, and multibyte UTF-8 ride the shared
+        // string codec exactly (not valid opaque window ids, so the
+        // string layer is the exactness witness here).
+        let multibyte =
+            String::from_utf8(vec![0xc3, 0xbc, 0xe6, 0x97, 0xa5, 0xf0, 0x9f, 0x8e, 0x9b])
+                .expect("valid UTF-8 witness");
+        for text in [
+            "quote\"back\\slash",
+            "control\0\u{1}\u{1f}newline\n",
+            multibyte.as_str(),
+        ] {
+            let mut encoded = String::new();
+            push_json_string(&mut encoded, text);
+            assert_eq!(json_string_len(text), encoded.len(), "{text:?}");
+        }
+        // Max valid opaque id (128) spells exactly through both layers.
+        let max_id = "w".repeat(crate::bounds::MAX_OPAQUE_ID_LEN);
+        assert!(crate::bounds::is_opaque_id(&max_id));
+        let max_wire = format!("{{\"op\":\"toggle-sticky\",\"win\":{}}}", {
+            let mut encoded = String::new();
+            push_json_string(&mut encoded, &max_id);
+            encoded
+        });
+        let max_cmd = WorldCommand::ToggleSticky {
+            window: WindowId(max_id.clone()),
+        };
+        assert_eq!(command_estimate_owned(&max_cmd), max_wire.len());
+        assert_eq!(
+            command_estimate_owned(&max_cmd),
+            29 + json_string_len(&max_id)
         );
     }
 
