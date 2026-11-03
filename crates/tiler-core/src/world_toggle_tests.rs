@@ -8,8 +8,8 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    ScreenReport, ScreenView, TilingMode, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand,
-    WorldReport,
+    CommandRejectKind, CommandResult, ScreenReport, ScreenView, TilingMode, WORLD_CONTRACT_VERSION,
+    WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -249,10 +249,13 @@ fn toggle_unknown_workspace_refuses_like_set() {
     let (mut engine, _ws) = bootstrap_workspace();
     let windows = vec![fact("win-a", "out-a", 0)];
     match engine.handle_report(&report(2, windows, Some(11), Some(toggle("ws-nope")))) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, crate::world_engine::KIND_TILING_TARGET);
-            assert_eq!(message, crate::world_engine::MSG_TILING_TARGET);
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::TilingTargetUnknown
+            }),
+            "expected tiling-target refusal"
+        ),
         other => panic!("expected tiling-target refusal, got {other:?}"),
     }
 }

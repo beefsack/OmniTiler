@@ -894,9 +894,13 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
         direction: "right".to_owned(),
     });
     match eng.handle_report(&report) {
-        WorldOutcome::Rejected { kind, .. } => {
-            assert_eq!(kind, "migration-refused");
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(crate::world_report::CommandResult::Rejected {
+                kind: crate::world_report::CommandRejectKind::MigrationRefused
+            }),
+            "unknown sticky must refuse"
+        ),
         other => panic!("unknown sticky must refuse, got {other:?}"),
     }
     assert_eq!(eng.mapping, mapping_before);

@@ -22,6 +22,16 @@
 5. Consolidate inherited contract rules, remove the v3 guide and code paths,
    and run build/test/clippy gates plus adapter build-failure inventory.
 
+- Remaining dependency order after composed maximize: accepted-report/rejected-
+  command handling; visibility/focus/selection completion; presentation and other
+  scaled metrics; physical reconnect/rehome; full bidirectional message codecs;
+  generic ordered-scenario execution with the OPEN gates; v3 removal/version
+  cutover; final adapter compile-failure inventory. Observation incorporation must
+  survive command refusal before later reconciliation and scenario acceptance can
+  rely on it. Command-local rejection is now converted without weakening envelope
+  validation or retaining partial command mutations; visibility/focus/selection
+  completion is the next dependent increment.
+
 - Intent dependency order: validate/canonically encode the core-owned opaque
   inner record first; then wire outer report/reply records and consume them in
   lifetime-fenced engine restore/save/clear. Inner-data tests alone do not prove
@@ -905,6 +915,31 @@
   workspace unsafe-posture guardrail is filtered. No adapter or immutable fixture
   changes, native delivery, full scenario execution or baseline float-geometry
   repair are included. The tentative choice below still awaits user review.
+- Accepted-report command rejection is implemented and offline-verified.
+  The command boundary restores a post-observation pre-command image on refusal,
+  publishes the existing typed rejected result and consumes the command sequence.
+  Known command kinds retain their catalog spelling; legacy command-local details
+  normalize to operation-refused without extending the catalog. Creation-counter
+  exhaustion remains a protocol-envelope failure with no candidate adoption.
+  Six focused regressions cover new admissions and actual closure, issuing-only
+  results, consumed/duplicate replay, frame-attempt incorporation, real post-create
+  send refusal rollback against a commandless control, and exhaustion watermarks.
+  Existing command-refusal tests now expect accepted typed results and use fresh
+  sequences for genuine later presses; envelope validation oracles stay unchanged.
+  Failing-first tests reproduced the prior whole-report rejection for unknown
+  focus and a legacy local-operation refusal. Independent review found no
+  production defect; its native-sticky cap-oracle weakening was corrected with
+  an equal-observation commandless control, matching the maximize/composed-sticky
+  cap tests. Stale envelope-test prose and unused imports were also corrected.
+  The exact filtered core/protocol gate passes (1495 core unit tests, every
+  selected integration target and protocol suites 49/4/15/8/2/54/4), with only
+  workspace_unsafe_posture filtered. Core/protocol build and scoped all-target
+  clippy with warnings denied pass. Initial formatting checks found layout-only
+  drift in migrated tests; narrow reconciliation resolves it. Final formatting,
+  diff whitespace, added/new-file ASCII and 274 local link-path checks pass.
+  No adapter, immutable fixture, protocol source, wire shape/version or approved policy
+  changes are included. Full codec/scenario and native acceptance remain pending;
+  all eight OPEN/TBD gates remain unchanged.
 
 ## Tentative decisions pending user review
 
@@ -988,6 +1023,9 @@
    The core-composed maximize increment is implemented and offline-verified,
    including ordinary empty-output float-drag parity; the directional preflight
    choice above remains tentative, and native outcomes remain TBD.
+   Accepted-report command rejection now retains trustworthy observations while
+   rolling back partial command mutations, consuming the sequence and publishing
+   the existing typed rejected result. Envelope failures still adopt nothing.
   The remaining world report/reply paths and version are still staged; no v4
   cutover or full scenario acceptance is claimed. Full adapter build-failure
   inventory remains pending.

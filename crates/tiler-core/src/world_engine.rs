@@ -56,9 +56,9 @@ use crate::workspace_scope::ScopeHistory;
 use crate::world_commands::CommandApplied;
 use crate::world_gesture::{GestureOutcome, RetainedGesture};
 use crate::world_report::{
-    CommandResult, FrameAttempt, HoldReason, TilingMode, TransferKind, TransferTarget,
-    WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldCommand,
-    WorldReply, WorldReport, encode_reply_canonical, grade_conflicting_windows,
+    CommandRejectKind, CommandResult, FrameAttempt, HoldReason, TilingMode, TransferKind,
+    TransferTarget, WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
+    WorldCommand, WorldReply, WorldReport, encode_reply_canonical, grade_conflicting_windows,
     grade_invalid_screens, grade_invalid_windows, max_intent_rollback_bound, reply_estimate,
     reply_upper_bound, report_digest, report_estimate, validate_intent_writes_reason,
     validate_report_reason,
@@ -3109,6 +3109,12 @@ impl WorldEngine {
         if let Some(command) = report.command.as_ref() {
             let command_seq = report.command_seq.expect("validated pair");
             let was_floating = self.floating_scopes.clone();
+            // Observation-only pre-command image: settlement, sweep,
+            // gesture, admission focus, and intent effects above are
+            // trusted observations. A command refusal restores exactly
+            // this image so no partial command mutation survives, while
+            // pre-command observation effects stay published.
+            let precommand = self.clone();
             match self.execute_command(
                 report,
                 command_seq,
@@ -3177,7 +3183,31 @@ impl WorldEngine {
                     return self.finish(report, digest, reply);
                 }
                 CommandApplied::Rejected { kind, message } => {
-                    return WorldOutcome::Rejected { kind, message };
+                    // Creation exhaustion is a protocol envelope failure:
+                    // it discards the staged candidate with no adoption,
+                    // exactly like every pre-acceptance gate.
+                    if kind == KIND_CREATION_EXHAUSTED {
+                        return WorldOutcome::Rejected { kind, message };
+                    }
+                    // Restore the observation-only pre-command image so
+                    // no partial command mutation (e.g. a trailing create
+                    // before a view refusal) survives. Pre-command
+                    // attempts, frames, transfers, and admission effects
+                    // stay; the command sequence still consumes.
+                    *self = precommand;
+                    self.note_command(command_seq);
+                    let typed = CommandRejectKind::parse(kind)
+                        .unwrap_or(CommandRejectKind::OperationRefused);
+                    self.command_result = Some(CommandResult::Rejected { kind: typed });
+                    crate::world_cursor::maybe_push_focus_follows(
+                        self,
+                        report,
+                        &held_scopes,
+                        &mut effects,
+                    );
+                    let result = self.command_result.take();
+                    let reply = self.publish(report, false, effects, result, &held_scopes);
+                    return self.finish(report, digest, reply);
                 }
             }
         }

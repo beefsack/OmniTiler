@@ -14,7 +14,8 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    EffectKind, ScreenReport, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, EffectKind, ScreenReport, WORLD_CONTRACT_VERSION, WindowFact,
+    WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -1181,13 +1182,20 @@ fn no_focus_unreadable_source_refuses() {
         None,
     );
     match engine.handle_report(&report) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, "operation-refused");
-            assert_eq!(message, "operation route refused without mutation");
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected operation refusal"
+        ),
         other => panic!("expected operation refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision(), revision_before, "no mutation");
+    assert_eq!(
+        engine.state_revision(),
+        revision_before + 1,
+        "refusal issues"
+    );
     assert!(engine.retained_transfers().is_empty());
 }
 

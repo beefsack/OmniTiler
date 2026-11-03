@@ -2807,8 +2807,9 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
     assert_eq!(binding.sticky_meta.as_ref().expect("meta").command_seq, 2);
     assert_eq!(reply.intent_writes.len(), 1);
 
-    // Distinct new binding at the cap refuses before mutation: atomic,
-    // no save, highwater unchanged.
+    // Distinct new binding at the cap refuses with a typed result: the
+    // observation still issues (revision +1, sequence consumed), no save
+    // staged, no binding minted for the refused subject.
     let mut capped = native_engine();
     accepted(
         &mut capped,
@@ -2835,26 +2836,49 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
     }
     assert_eq!(capped.retained_states.len(), MAX_RETAINED_STATE_BINDINGS);
     let revision = capped.state_revision;
-    let highwater = capped.command_highwater;
     let saved = capped.sticky_saved.clone();
     let restored = capped.restored_sticky.clone();
-    let report = cmd(
+    let refused_obs = cmd(
         3,
         2,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
         set_sticky("win-b", true),
     );
-    match capped.handle_report(&report) {
-        WorldOutcome::Rejected { kind, .. } => {
-            assert_eq!(kind, crate::world_engine::KIND_OPERATION)
-        }
+    // Commandless control with the same observation: the refusal must
+    // converge identically apart from the consumed sequence and typed
+    // result. Synthetic filler bindings are not observation-live, so the
+    // adoption path legitimately prunes them on either path.
+    let mut control = capped.clone();
+    let mut control_obs = refused_obs.clone();
+    control_obs.command = None;
+    control_obs.command_seq = None;
+    let _ = control.handle_report(&control_obs);
+    match capped.handle_report(&refused_obs) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(crate::world_report::CommandResult::Rejected {
+                kind: crate::world_report::CommandRejectKind::OperationRefused
+            }),
+            "expected cap refusal"
+        ),
         other => panic!("expected cap refusal, got {other:?}"),
     }
-    assert_eq!(capped.state_revision, revision, "refusal mutates nothing");
-    assert_eq!(capped.command_highwater, highwater);
+    assert_eq!(capped.state_revision, revision + 1, "refusal issues");
+    assert_eq!(capped.command_highwater, Some(2), "command consumed");
     assert_eq!(capped.sticky_saved, saved);
     assert_eq!(capped.restored_sticky, restored);
-    assert_eq!(capped.retained_states.len(), MAX_RETAINED_STATE_BINDINGS);
+    // Synthetic filler bindings are not observation-live, so the adoption
+    // path legitimately prunes them; the refusal must converge with the
+    // commandless control, minting no binding past the cap for the
+    // refused subject.
+    assert_eq!(
+        capped.retained_states, control.retained_states,
+        "refusal converges with the commandless control"
+    );
+    assert!(
+        capped.retained_states.len() <= MAX_RETAINED_STATE_BINDINGS,
+        "no insertion past the cap"
+    );
     assert!(
         !capped
             .retained_states

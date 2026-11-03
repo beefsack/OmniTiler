@@ -10,8 +10,9 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    FrameSetter, HoldReason, MemberAttempt, ScopeAuthority, ScreenReport, ScreenView, SendSource,
-    TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, FrameSetter, HoldReason, MemberAttempt, ScopeAuthority,
+    ScreenReport, ScreenView, SendSource, TransferKind, WORLD_CONTRACT_VERSION, WindowFact,
+    WorkspaceRef, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -779,7 +780,13 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
         true,
         false,
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected cross-domain-mismatch"
+        ),
         other => panic!("expected cross-domain-mismatch, got {other:?}"),
     }
     // Directional move resolves the strict neighbor locally.
@@ -1036,7 +1043,13 @@ fn selection_commands_resolve_over_logical_rings() {
         true,
         false,
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "view-target-unknown"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::ViewTargetUnknown
+            }),
+            "expected view-target-unknown"
+        ),
         other => panic!("expected view-target-unknown, got {other:?}"),
     }
     let _ = seq;
@@ -1175,30 +1188,37 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
     // mint, staging, or view move. Both the trailing path (index 0, which
     // would mint into the foreign mapping) and the positional path refuse
     // alike.
-    for (seq, index) in [(2u64, 0u8), (3u64, 1u8)] {
+    for (i, (seq, index)) in [(2u64, 0u8), (3u64, 1u8)].iter().enumerate() {
+        let command_seq = 11 + i as u64;
         match engine.handle_report(&report(
-            seq,
-            seq,
+            *seq,
+            *seq,
             two_screens(),
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
             vec![],
             vec![],
             "win-a",
-            Some(11),
+            Some(command_seq),
             Some(WorldCommand::SendNumbered {
                 window: WindowId("win-a".to_owned()),
                 source: SendSource::Explicit(OutputId("out-b".to_owned())),
-                index,
+                index: *index,
                 follow: true,
             }),
             false,
             false,
         )) {
-            WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+            WorldOutcome::Accepted(reply) => assert_eq!(
+                reply.command_result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected cross-domain-mismatch"
+            ),
             other => panic!("expected cross-domain-mismatch, got {other:?}"),
         }
     }
-    // The refused commands mutated nothing: rings, views, and creation
+    // The refused commands minted nothing: rings, views, and creation
     // state read exactly as at bootstrap plus the ordinary admissions.
     let calm = accepted(
         &mut engine,
@@ -1347,7 +1367,13 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "rehomed mover must refuse mismatch"
+        ),
         other => panic!("rehomed mover must refuse mismatch, got {other:?}"),
     }
     // Unhomed newcomer with a live cached output the staged affinity
@@ -1383,7 +1409,13 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "newcomer cache disagreement must refuse"
+        ),
         other => panic!("newcomer cache disagreement must refuse, got {other:?}"),
     }
     // Live cached output resolves for the keyboard variant (and the
@@ -1421,7 +1453,13 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "live cached mismatch must refuse"
+        ),
         other => panic!("live cached mismatch must refuse, got {other:?}"),
     }
     // Keyboard versus CLI fallbacks disagree exactly where the old
@@ -1459,7 +1497,13 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "stale cache must refuse the CLI send"
+        ),
         other => panic!("stale cache must refuse the CLI send, got {other:?}"),
     }
     let mut keyboard = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
@@ -1493,7 +1537,13 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "send-target-unknown"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::SendTargetUnknown
+            }),
+            "unavailable action-context target must refuse"
+        ),
         other => panic!("unavailable action-context target must refuse, got {other:?}"),
     }
 }

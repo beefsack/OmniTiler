@@ -17,8 +17,8 @@ use crate::size_hints::WindowSizeHints;
 use crate::world_directional::tests::{accepted, fact, float_fact, report, report_full, screen};
 use crate::world_engine::{RetainedFloat, RetainedTransfer, WorldEngine, WorldOutcome};
 use crate::world_report::{
-    ClearAttempt, FrameSetter, HoldReason, ScopeAuthority, ScreenReport, TransferKind,
-    TransferTarget, WindowFact, WorldCommand, WorldReport,
+    ClearAttempt, CommandRejectKind, CommandResult, FrameSetter, HoldReason, ScopeAuthority,
+    ScreenReport, TransferKind, TransferTarget, WindowFact, WorldCommand, WorldReport,
 };
 
 fn clear_attempt(
@@ -2153,7 +2153,13 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
             float_rect: Some(target),
         })),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "not-tiled"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected ToggleFloat refusal"
+        ),
         other => panic!("expected ToggleFloat refusal, got {other:?}"),
     }
     assert_eq!(engine.born_retained_len(), 1, "refusal keeps the binding");

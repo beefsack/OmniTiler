@@ -11,7 +11,7 @@ use crate::connection::HostCapabilities;
 use crate::directional::{OutputId, WindowId};
 use crate::intent_data::{IntentData, decode_intent_data, encode_intent_data};
 use crate::world_directional::tests::{accepted, fact, float_fact, report_full, screen};
-use crate::world_engine::{KIND_OPERATION, KIND_SCOPE_HELD, WorldEngine, WorldOutcome};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     CommandRejectKind, CommandResult, IntentRecord, ScopeAuthority, StateProperty,
     VisibilityTarget, WindowDesire, WindowFact, WorldCommand, WorldReport, encode_reply_canonical,
@@ -941,7 +941,13 @@ fn held_scope_refuses_without_mutation() {
         vec![cfact("win-a", "out-a", 0), held_fact],
         set_sticky("win-a", true),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_SCOPE_HELD),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::ScopeHeld
+            }),
+            "expected held refusal"
+        ),
         other => panic!("expected held refusal, got {other:?}"),
     }
     assert!(engine.restored_sticky.is_empty());
@@ -956,13 +962,25 @@ fn minimized_and_excluded_subjects_refuse_without_mutation() {
     let mut minimized = cfact("win-a", "out-a", 0);
     minimized.minimized = Some(true);
     match engine.handle_report(&cmd(2, 1, vec![minimized], set_sticky("win-a", true))) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected refusal"
+        ),
         other => panic!("expected refusal, got {other:?}"),
     }
     let mut excluded = cfact("win-a", "out-a", 0);
     excluded.privileged = Some(true);
-    match engine.handle_report(&cmd(3, 1, vec![excluded], set_sticky("win-a", true))) {
-        WorldOutcome::Rejected { .. } => {}
+    match engine.handle_report(&cmd(3, 2, vec![excluded], set_sticky("win-a", true))) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected refusal"
+        ),
         other => panic!("expected refusal, got {other:?}"),
     }
     assert!(engine.restored_sticky.is_empty());
@@ -979,7 +997,13 @@ fn unknown_window_refuses_without_mutation() {
         vec![cfact("win-a", "out-a", 0)],
         set_sticky("win-ghost", true),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected refusal"
+        ),
         other => panic!("expected refusal, got {other:?}"),
     }
     assert!(engine.restored_sticky.is_empty());
@@ -2059,11 +2083,17 @@ fn sticky_on_refuses_when_the_joint_ledger_is_full_without_mutation() {
         vec![cfact("win-a", "out-a", 0)],
         set_sticky("win-a", true),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected joint-cap refusal"
+        ),
         other => panic!("expected joint-cap refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
-    assert!(engine.command_highwater.is_none(), "command unconsumed");
+    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
+    assert_eq!(engine.command_highwater, Some(1), "command consumed");
     assert_eq!(engine.restored_sticky, sticky, "no provenance leaks");
     assert_eq!(engine.sticky_saved, saved, "no save leaks");
     assert!(engine.sticky_command_save.is_none(), "no staged save leaks");
@@ -2081,20 +2111,38 @@ fn sticky_on_refuses_when_saved_knowledge_is_full_without_mutation() {
     }
     let revision = engine.state_revision;
     let sticky = engine.restored_sticky.clone();
-    let saved = engine.sticky_saved.clone();
-    match engine.handle_report(&cmd(
+    let refused_obs = cmd(
         2,
         1,
         vec![cfact("win-a", "out-a", 0)],
         set_sticky("win-a", true),
-    )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+    );
+    // Commandless control with the same observation: the refusal must
+    // converge identically apart from the consumed sequence and typed
+    // result. Synthetic ledger fillers are not observation-live, so the
+    // adoption path legitimately prunes them on either path.
+    let mut control = engine.clone();
+    let mut control_obs = refused_obs.clone();
+    control_obs.command = None;
+    control_obs.command_seq = None;
+    let _ = control.handle_report(&control_obs);
+    match engine.handle_report(&refused_obs) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected saved-cap refusal"
+        ),
         other => panic!("expected saved-cap refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
-    assert!(engine.command_highwater.is_none(), "command unconsumed");
+    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
+    assert_eq!(engine.command_highwater, Some(1), "command consumed");
     assert_eq!(engine.restored_sticky, sticky, "no provenance leaks");
-    assert_eq!(engine.sticky_saved, saved, "saved knowledge intact");
+    assert_eq!(
+        engine.sticky_saved, control.sticky_saved,
+        "saved knowledge converges with the commandless control"
+    );
     assert!(engine.sticky_command_save.is_none(), "no staged save leaks");
 }
 
@@ -2403,14 +2451,22 @@ fn sticky_clear_refuses_whole_candidate_when_no_space_and_smaller_retry_wins() {
     let sticky = engine.restored_sticky.clone();
     let saved = engine.sticky_saved.clone();
     match engine.handle_report(&tiny_cmd(3, 2, echo.clone(), toggle_float(&victim))) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected no-space refusal"
+        ),
         other => panic!("expected no-space refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
+    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
     assert_eq!(
-        engine.command_highwater, highwater,
-        "refused sequence never marks"
+        engine.command_highwater,
+        Some(2),
+        "refused sequence still consumes"
     );
+    assert_eq!(highwater, Some(1), "sticky-on consumed its own sequence");
     assert_eq!(engine.restored_sticky, sticky, "sticky retained");
     assert_eq!(engine.sticky_saved, saved, "no false save staged");
     assert!(engine.sticky_command_save.is_none(), "no staged save leaks");
@@ -2424,7 +2480,7 @@ fn sticky_clear_refuses_whole_candidate_when_no_space_and_smaller_retry_wins() {
         .find(|name| *name != victim)
         .expect("a filler to close");
     let smaller: Vec<WindowFact> = echo.into_iter().filter(|w| w.window.0 != dropped).collect();
-    let retry = accepted(&mut engine, &tiny_cmd(4, 2, smaller, toggle_float(&victim)));
+    let retry = accepted(&mut engine, &tiny_cmd(4, 3, smaller, toggle_float(&victim)));
     match retry.command_result {
         Some(CommandResult::Float {
             rect: None,
@@ -2580,7 +2636,13 @@ fn saved_full_import_latches_and_native_still_refuses_after_prune() {
         vec![fact("win-a", "out-a", 0), fact("win-new", "out-a", 100)],
         set_sticky("win-new", false),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected knowledge-gate refusal"
+        ),
         other => panic!("expected knowledge-gate refusal, got {other:?}"),
     }
     assert!(engine.sticky_command_save.is_none());
@@ -2723,7 +2785,13 @@ fn null_null_first_then_valid_differs_latches_native_refuses() {
     // NoEffect-accept before the fence; OFF reaches the exact-knowledge
     // gate while raw stays known false (never a StateUnknown mask).
     match engine.handle_report(&cmd(4, 1, facts(), set_sticky("win-a", false))) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected fail-closed native refusal"
+        ),
         other => panic!("expected fail-closed native refusal, got {other:?}"),
     }
     assert!(engine.sticky_command_save.is_none(), "no save staged");
@@ -2810,7 +2878,13 @@ fn valid_first_then_null_null_differs_latches_native_refuses() {
     // NoEffect-accept before the fence; OFF reaches the exact-knowledge
     // gate while raw stays known false (never a StateUnknown mask).
     match engine.handle_report(&cmd(4, 1, facts(), set_sticky("win-a", false))) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected fail-closed native refusal"
+        ),
         other => panic!("expected fail-closed native refusal, got {other:?}"),
     }
     assert!(engine.sticky_command_save.is_none(), "no save staged");

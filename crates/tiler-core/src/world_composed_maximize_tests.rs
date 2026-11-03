@@ -14,7 +14,7 @@ use crate::geometry::Rect;
 use crate::gesture::{GestureIngress, GestureKind, GesturePhase};
 use crate::world_commands::CommandApplied;
 use crate::world_directional::tests::{accepted, fact, report_full, screen};
-use crate::world_engine::{KIND_FOCUS, KIND_OPERATION, WorldEngine, WorldOutcome};
+use crate::world_engine::{KIND_OPERATION, WorldEngine, WorldOutcome};
 use crate::world_report::{
     CommandRejectKind, CommandResult, EffectKind, FrameAttempt, FrameSetter, HoldReason,
     RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, StateAttempt, StateProperty,
@@ -320,7 +320,12 @@ fn composed_unavailable_frame_authority_refuses_without_recovery() {
     );
     barrier.gesture_barrier = true;
     match engine.handle_report(&barrier) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            })
+        ),
         other => panic!("expected refusal, got {other:?}"),
     }
 
@@ -380,12 +385,17 @@ fn composed_null_maximized_admits_ordinarily_and_true_conflicts_fail_closed() {
     let mut conflict = cfact("win-a", "out-a", 0);
     conflict.maximized = Some(true);
     match engine.handle_report(&cmd(3, 2, vec![conflict], "win-a", toggle("win-a"))) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_FOCUS),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown
+            })
+        ),
         other => panic!("expected refusal, got {other:?}"),
     }
     let quiet = accepted(
         &mut engine,
-        &bootstrap(3, vec![cfact("win-a", "out-a", 0)], "win-a"),
+        &bootstrap(4, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
     assert!(quiet.command_result.is_none());
     assert_eq!(
@@ -408,7 +418,12 @@ fn composed_some_false_conflicts_fail_closed() {
     let mut conflict = cfact("win-a", "out-a", 0);
     conflict.maximized = Some(false);
     match engine.handle_report(&cmd(3, 2, vec![conflict], "win-a", toggle("win-a"))) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_FOCUS),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown
+            })
+        ),
         other => panic!("expected refusal, got {other:?}"),
     }
     assert!(
@@ -493,7 +508,13 @@ fn unsupported_nonnull_maximized_grades_conflicting_and_recovers_on_null() {
     let mut conflict = cfact("win-a", "out-a", 0);
     conflict.maximized = Some(false);
     match engine.handle_report(&cmd(5, 2, vec![conflict], "win-a", toggle("win-a"))) {
-        WorldOutcome::Rejected { .. } => {}
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown
+            }),
+            "expected refusal against the graded row"
+        ),
         other => panic!("expected refusal against the graded row, got {other:?}"),
     }
 
@@ -1092,9 +1113,12 @@ fn composed_float_full_entry_pending_withholds_restore_token_until_exit() {
         "win-a",
         toggle("win-a"),
     )) {
-        crate::world_engine::WorldOutcome::Rejected { kind, .. } => {
-            assert_eq!(kind, KIND_OPERATION)
-        }
+        crate::world_engine::WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            })
+        ),
         other => panic!("expected refusal while the entry pends, got {other:?}"),
     }
     assert!(
@@ -1164,9 +1188,12 @@ fn composed_tiled_max_off_while_full_entry_pending_refuses_without_intent_change
         "win-a",
         toggle("win-a"),
     )) {
-        crate::world_engine::WorldOutcome::Rejected { kind, .. } => {
-            assert_eq!(kind, KIND_OPERATION)
-        }
+        crate::world_engine::WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            })
+        ),
         other => panic!("expected refusal while the entry pends, got {other:?}"),
     }
     assert!(
@@ -2783,7 +2810,12 @@ fn composed_tiled_focus_vertical_and_single_output_refuse_unchanged() {
     toggle_on(&mut engine, &mut _alloc);
     let windows = || vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)];
     match engine.handle_report(&cmd(3, 2, windows(), "win-a", focus_dir("win-a", "up"))) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "unchanged"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            })
+        ),
         other => panic!("vertical composed focus refuses unchanged, got {other:?}"),
     }
     assert!(
@@ -2792,7 +2824,12 @@ fn composed_tiled_focus_vertical_and_single_output_refuse_unchanged() {
             .contains(&WindowId("win-a".to_owned()))
     );
     match engine.handle_report(&cmd(4, 3, windows(), "win-a", focus_dir("win-a", "right"))) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "unchanged"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            })
+        ),
         other => panic!("single-output composed focus refuses unchanged, got {other:?}"),
     }
     assert!(
@@ -2951,7 +2988,12 @@ fn composed_move_in_flight_restores_bit() {
         "win-a",
         move_dir("win-a", "right"),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "transfer-in-flight"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::TransferInFlight
+            })
+        ),
         other => panic!("move under a flight refuses, got {other:?}"),
     }
     assert!(
@@ -3000,7 +3042,12 @@ fn b9_unreadable_hints_refuses_with_bit_retained() {
     unreadable.rect = Some(work_area());
     unreadable.hints = None;
     match engine.handle_report(&cmd(5, 3, vec![unreadable], "win-a", toggle_float("win-a"))) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            })
+        ),
         other => panic!("unreadable hints refuses, got {other:?}"),
     }
     assert!(
@@ -3402,7 +3449,12 @@ fn composed_incomplete_inventory_refuses_without_recovery() {
     );
     gapped.inventory_complete = false;
     match engine.handle_report(&gapped) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            })
+        ),
         other => panic!("expected refusal, got {other:?}"),
     }
     assert!(
@@ -3463,7 +3515,12 @@ fn composed_float_unreadable_hints_refuses_toggle_without_intent_change() {
     hintless.rect = Some(float_base);
     hintless.hints = None;
     match engine.handle_report(&cmd(3, 2, vec![hintless.clone()], "win-a", toggle("win-a"))) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            })
+        ),
         other => panic!("hintless float max-on refuses, got {other:?}"),
     }
     assert!(
@@ -3492,7 +3549,12 @@ fn composed_float_unreadable_hints_refuses_toggle_without_intent_change() {
     hintless_off.rect = Some(work_area());
     hintless_off.hints = None;
     match engine.handle_report(&cmd(7, 4, vec![hintless_off], "win-a", toggle("win-a"))) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            })
+        ),
         other => panic!("hintless float max-off refuses, got {other:?}"),
     }
     assert!(
@@ -3526,7 +3588,12 @@ fn composed_tiled_unreadable_hints_holds_admission() {
         "win-a",
         toggle("win-a"),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            })
+        ),
         other => panic!("hintless tile refuses, got {other:?}"),
     }
     assert!(
@@ -3557,7 +3624,12 @@ fn tile_with_bit_toggle_float_refuses_not_tiled() {
         "win-a",
         toggle_float("win-a"),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "not-tiled"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            })
+        ),
         other => panic!("tiled subject with the bit refuses not-tiled, got {other:?}"),
     }
     assert!(

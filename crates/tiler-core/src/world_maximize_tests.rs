@@ -398,12 +398,16 @@ fn unknown_maximized_home_unreadable_refuses_without_mutation() {
     row.maximized = None;
     let revision = engine.state_revision;
     match engine.handle_report(&cmd(2, 1, vec![row], toggle("win-a"))) {
-        WorldOutcome::Rejected { kind, .. } => {
-            assert_eq!(kind, crate::world_engine::KIND_OPERATION)
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected readability refusal"
+        ),
         other => panic!("expected readability refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
+    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
     assert!(engine.retained_states.is_empty());
 }
 
@@ -447,12 +451,16 @@ fn dual_pair_cap_refusal_mints_neither_leg() {
         vec![max_fact("win-a", Some(true), true, false)],
         toggle("win-a"),
     )) {
-        WorldOutcome::Rejected { kind, .. } => {
-            assert_eq!(kind, crate::world_engine::KIND_OPERATION)
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected cap refusal"
+        ),
         other => panic!("expected cap refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
+    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
     assert!(
         !engine
             .retained_states
@@ -507,21 +515,39 @@ fn both_true_at_cap_refuses_without_mutation() {
         "exact bound before both-true attempt"
     );
     let revision = engine.state_revision;
-    match engine.handle_report(&cmd(
+    let refused_obs = cmd(
         3,
         2,
         vec![max_fact("win-a", Some(true), true, true)],
         toggle("win-a"),
-    )) {
-        WorldOutcome::Rejected { kind, .. } => {
-            assert_eq!(kind, crate::world_engine::KIND_OPERATION)
-        }
+    );
+    // Commandless control with the same observation: the refusal must
+    // converge identically apart from the consumed sequence and typed
+    // result. Synthetic filler windows are not observation-live, so the
+    // adoption path legitimately prunes them on either path.
+    let mut control = engine.clone();
+    let mut control_obs = refused_obs.clone();
+    control_obs.command = None;
+    control_obs.command_seq = None;
+    let _ = control.handle_report(&control_obs);
+    match engine.handle_report(&refused_obs) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected cap refusal"
+        ),
         other => panic!("expected cap refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
+    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
+    assert_eq!(
+        engine.retained_states, control.retained_states,
+        "refusal converges with the commandless control"
+    );
     assert_eq!(
         engine.retained_states.len(),
-        MAX_RETAINED_STATE_BINDINGS,
+        control.retained_states.len(),
         "no insertion past the cap"
     );
     assert!(
@@ -555,12 +581,16 @@ fn dual_pair_one_vacant_slot_refuses_with_no_partial_pair() {
         vec![max_fact("win-a", Some(true), true, false)],
         toggle("win-a"),
     )) {
-        WorldOutcome::Rejected { kind, .. } => {
-            assert_eq!(kind, crate::world_engine::KIND_OPERATION)
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected cap refusal"
+        ),
         other => panic!("expected cap refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
+    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
     assert!(
         !engine
             .retained_states

@@ -17,8 +17,9 @@ use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandResult, FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport, ScreenView,
-    TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport,
+    ScreenView, TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand,
+    WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -543,8 +544,8 @@ fn world_migration_selects_largest_edge_despite_window_centre() {
 fn flight_fences_second_move_pre_engine_without_rerank() {
     // After an exhausted move retains its identity-pinned flight, a second
     // move for the same window refuses as transfer-in-flight pre-engine
-    // (no re-rank, no second transfer, no sequence consumption, no
-    // mutation). Covers both the lagging cross path and the gap-topology
+    // (no re-rank, no second transfer, no mutation; the refused sequence
+    // still consumes). Covers both the lagging cross path and the gap-topology
     // local fallback path, which shares the same fence.
     let mover = fact_rect("win-a", "src", rect(860, 1150, 200, 200));
     let (mut engine, _) = bootstrap_stacked(mover);
@@ -578,13 +579,19 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
         Some(move_up("win-a")),
     );
     match engine.handle_report(&again) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "transfer-in-flight"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::TransferInFlight
+            }),
+            "second move while flight outstanding refuses"
+        ),
         other => panic!("second move while flight outstanding refuses, got {other:?}"),
     }
     assert_eq!(
         engine.state_revision(),
-        settled_revision,
-        "pre-engine refusal mutates nothing"
+        settled_revision + 1,
+        "pre-engine refusal issues"
     );
     // Gap topology forcing the no-candidate local fallback under the same
     // lagging window: the same fence fires before any local mutation.
@@ -603,13 +610,19 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
         Some(move_up("win-a")),
     );
     match engine.handle_report(&again) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "transfer-in-flight"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::TransferInFlight
+            }),
+            "gap-path move while flight outstanding refuses"
+        ),
         other => panic!("gap-path move while flight outstanding refuses, got {other:?}"),
     }
     assert_eq!(
         engine.state_revision(),
-        settled_revision,
-        "gap-path refusal mutates nothing"
+        settled_revision + 2,
+        "gap-path refusal issues"
     );
     // The retained flight survives both refusals with its stable identity:
     // an observation-only lag report keeps the single pinned transfer.
@@ -1259,7 +1272,13 @@ fn operation_send_retains_and_foreign_routes_refuse() {
         })),
     );
     match solo.handle_report(&refused) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "operation-refused"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected operation refusal"
+        ),
         other => panic!("expected operation refusal, got {other:?}"),
     }
 }
@@ -1299,7 +1318,7 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
     // probes run with no outstanding flight, so the refusal vocabulary
     // is exact and nothing is retained.
     let mut seq = 3;
-    for window in ["win-g", "win-s"] {
+    for (i, window) in ["win-g", "win-s"].into_iter().enumerate() {
         let send = report(
             seq,
             3,
@@ -1312,7 +1331,7 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
                 pin.clone(),
             ],
             window,
-            Some(42),
+            Some(42 + i as u64),
             Some(WorldCommand::Send {
                 window: WindowId(window.to_owned()),
                 target_output: OutputId("out-a".to_owned()),
@@ -1322,7 +1341,13 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
         );
         seq += 1;
         match engine.handle_report(&send) {
-            WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "send-refused"),
+            WorldOutcome::Accepted(reply) => assert_eq!(
+                reply.command_result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::SendRefused
+                }),
+                "{window}: expected send-refused"
+            ),
             other => panic!("{window}: expected send-refused, got {other:?}"),
         }
     }
@@ -1344,7 +1369,7 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
             pin.clone(),
         ],
         "win-f",
-        Some(41),
+        Some(44),
         Some(WorldCommand::Send {
             window: WindowId("win-f".to_owned()),
             target_output: OutputId("out-a".to_owned()),
@@ -1359,7 +1384,7 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
     assert_eq!(reply.transfers.len(), 2);
     assert!(matches!(&reply.transfers[0].kind, TransferKind::View));
     assert!(matches!(&reply.transfers[1].kind, TransferKind::Window(_)));
-    assert_eq!(reply.transfers[0].operation_id, "op-41-follow");
+    assert_eq!(reply.transfers[0].operation_id, "op-44-follow");
     let row = row_of(&reply, "win-f");
     assert_eq!(row.workspace, ring[1]);
     assert_eq!(row.membership_authority, ScopeAuthority::Controlled);
@@ -1369,9 +1394,9 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
     assert!(
         matches!(
             flight.as_slice(),
-            [v, t] if v.operation_id == "op-41-follow"
+            [v, t] if v.operation_id == "op-44-follow"
                 && matches!(&v.kind, TransferKind::View)
-                && t.operation_id == "op-41"
+                && t.operation_id == "op-44"
                 && matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-f")
         ),
         "window plus follow-view flights retained under their identities: {flight:?}"
@@ -1401,7 +1426,7 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
         view: ring[1].clone(),
     });
     settle_report.member_attempts.push(MemberAttempt {
-        operation_id: "op-41".to_owned(),
+        operation_id: "op-44".to_owned(),
         window: WindowId("win-f".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: ring[1].clone(),
@@ -1432,7 +1457,7 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
             pin,
         ],
         "win-a",
-        Some(43),
+        Some(45),
         Some(WorldCommand::Send {
             window: WindowId("win-a".to_owned()),
             target_output: OutputId("out-a".to_owned()),
@@ -1708,7 +1733,13 @@ fn hotplug_incomplete_survivor_holds_unit_and_full_report_recovers() {
         Some(move_up("win-a")),
     );
     match engine.handle_report(&fenced) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "operation-refused"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "crossing without topology refuses"
+        ),
         other => panic!("crossing without topology refuses, got {other:?}"),
     }
     // The next FULL complete report recovers controlled rows with no
@@ -1908,7 +1939,13 @@ fn unknown_outputs_and_views_hold_fail_closed() {
         }),
     );
     match engine.handle_report(&focus_ghost) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "focus-unknown"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown
+            }),
+            "unknown focus refuses fail-closed"
+        ),
         other => panic!("unknown focus refuses fail-closed, got {other:?}"),
     }
     // Unknown view echoes never authorize homing or views.
@@ -2566,9 +2603,13 @@ fn explicit_output_send_fences_match_output_route() {
             })),
         );
         match engine.handle_report(&refused) {
-            WorldOutcome::Rejected { kind, .. } => {
-                assert_eq!(kind, "send-refused", "follow={follow}: sticky")
-            }
+            WorldOutcome::Accepted(reply) => assert_eq!(
+                reply.command_result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::SendRefused
+                }),
+                "follow={follow}: sticky must refuse"
+            ),
             other => panic!("follow={follow}: sticky must refuse, got {other:?}"),
         }
         let (mut engine, screens, _view_a, view_b, _) = bootstrap_gapped_pair();
@@ -2598,9 +2639,13 @@ fn explicit_output_send_fences_match_output_route() {
             })),
         );
         match engine.handle_report(&refused) {
-            WorldOutcome::Rejected { kind, .. } => {
-                assert_eq!(kind, "send-refused", "follow={follow}: fit-excluded")
-            }
+            WorldOutcome::Accepted(reply) => assert_eq!(
+                reply.command_result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::SendRefused
+                }),
+                "follow={follow}: fit-excluded must refuse"
+            ),
             other => panic!("follow={follow}: fit-excluded must refuse, got {other:?}"),
         }
     }
@@ -2657,9 +2702,13 @@ fn explicit_output_send_fences_match_output_route() {
             })),
         );
         match engine.handle_report(&again) {
-            WorldOutcome::Rejected { kind, .. } => {
-                assert_eq!(kind, "transfer-in-flight", "follow={follow}")
-            }
+            WorldOutcome::Accepted(reply) => assert_eq!(
+                reply.command_result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::TransferInFlight
+                }),
+                "follow={follow}: second send must fence"
+            ),
             other => panic!("follow={follow}: second send must fence, got {other:?}"),
         }
     }
@@ -2723,13 +2772,16 @@ fn explicit_output_send_fences_match_output_route() {
             })),
         );
         match engine.handle_report(&probe) {
-            WorldOutcome::Rejected { kind, .. } => {
+            WorldOutcome::Accepted(reply) => {
                 // KIND_SEND_TARGET is "send-target-unknown"; the
                 // migration-destination fence runs before the
                 // mapping/staged checks, so with the matching cell
                 // retained this refusal is necessarily that fence.
                 assert_eq!(
-                    kind, "send-target-unknown",
+                    reply.command_result,
+                    Some(CommandResult::Rejected {
+                        kind: CommandRejectKind::SendTargetUnknown
+                    }),
                     "follow={follow}: migration cell"
                 )
             }

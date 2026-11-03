@@ -583,12 +583,16 @@ fn minimized_window_refuses_without_mutation() {
     accepted(&mut engine, &bootstrap(vec![minimized.clone()]));
     let rev_before = engine.state_revision;
     match engine.handle_report(&cmd(2, 1, vec![minimized], set_fullscreen("win-a", true))) {
-        WorldOutcome::Rejected { kind, .. } => {
-            assert_eq!(kind, crate::world_engine::KIND_OPERATION)
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected minimized refusal"
+        ),
         other => panic!("expected minimized refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, rev_before);
+    assert_eq!(engine.state_revision, rev_before + 1, "refusal issues");
     assert!(engine.retained_states.is_empty());
 }
 
@@ -675,12 +679,16 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
         vec![fs_fact("win-a", None, false)],
         set_fullscreen("win-a", true),
     )) {
-        WorldOutcome::Rejected { kind, .. } => {
-            assert_eq!(kind, crate::world_engine::KIND_OPERATION)
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "expected cap refusal"
+        ),
         other => panic!("expected cap refusal, got {other:?}"),
     }
-    assert_eq!(capped.state_revision, revision, "refusal mutates nothing");
+    assert_eq!(capped.state_revision, revision + 1, "refusal issues");
     assert!(
         !capped
             .retained_states

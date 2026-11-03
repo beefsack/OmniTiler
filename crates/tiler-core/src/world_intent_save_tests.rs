@@ -492,18 +492,25 @@ fn refused_unknown_window_preserves_state_for_retry() {
         Some(toggle("win-nope")),
     );
     match engine.handle_report(&bad) {
-        WorldOutcome::Rejected { kind, .. } => {
+        WorldOutcome::Accepted(reply) => {
             // Unknown toggle subject never reaches the engine: the staged
             // observation cannot prove it.
-            assert_eq!(kind, "partial-observation");
+            assert_eq!(
+                reply.command_result,
+                Some(crate::world_report::CommandResult::Rejected {
+                    kind: crate::world_report::CommandRejectKind::OperationRefused
+                }),
+                "expected refusal"
+            );
         }
         other => panic!("expected refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
-    assert!(engine.command_highwater.is_none());
-    // The unconsumed sequence still works once the window exists.
+    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
+    assert_eq!(engine.command_highwater, Some(2));
+    // The consumed sequence stays consumed; a fresh user press works once
+    // the window exists.
     let retry = toggle_report(
-        2,
+        3,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
     );
     let reply = accepted(&mut engine, &retry);
@@ -540,16 +547,19 @@ fn held_scope_toggle_refuses_without_mutation() {
         Some(toggle("win-a")),
     );
     match engine.handle_report(&held) {
-        WorldOutcome::Rejected { .. } => {}
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(crate::world_report::CommandResult::Rejected {
+                kind: crate::world_report::CommandRejectKind::OperationRefused
+            }),
+            "expected held refusal"
+        ),
         other => panic!("expected held refusal, got {other:?}"),
     }
-    assert_eq!(
-        engine.state_revision, revision,
-        "held refusal mutates nothing"
-    );
-    assert!(engine.command_highwater.is_none());
+    assert_eq!(engine.state_revision, revision + 1, "held refusal issues");
+    assert_eq!(engine.command_highwater, Some(2));
     let retry = toggle_report(
-        2,
+        3,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
     );
     let reply = accepted(&mut engine, &retry);
@@ -586,15 +596,19 @@ fn hints_null_toggle_refuses_without_mutation() {
         Some(toggle("win-a")),
     );
     match engine.handle_report(&refused) {
-        WorldOutcome::Rejected { kind, .. } => {
-            assert_eq!(kind, crate::world_engine::KIND_OPERATION);
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(crate::world_report::CommandResult::Rejected {
+                kind: crate::world_report::CommandRejectKind::OperationRefused
+            }),
+            "expected refusal"
+        ),
         other => panic!("expected refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
-    assert!(engine.command_highwater.is_none());
+    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
+    assert_eq!(engine.command_highwater, Some(2));
     let retry = toggle_report(
-        2,
+        3,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
     );
     let reply = accepted(&mut engine, &retry);

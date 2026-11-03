@@ -9,8 +9,8 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    ScopeAuthority, ScreenReport, ScreenView, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand,
-    WorldReport,
+    CommandRejectKind, CommandResult, ScopeAuthority, ScreenReport, ScreenView,
+    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -1135,7 +1135,13 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
             },
         )),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "operation-refused"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "hints-null toggle must refuse"
+        ),
         other => panic!("hints-null toggle must refuse, got {other:?}"),
     }
     assert!(

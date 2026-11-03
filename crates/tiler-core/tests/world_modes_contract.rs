@@ -364,7 +364,13 @@ fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
         }),
         vec![],
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "view-target-unknown"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(tiler_core::world_report::CommandResult::Rejected {
+                kind: tiler_core::world_report::CommandRejectKind::ViewTargetUnknown
+            }),
+            "view-target-unknown"
+        ),
         other => panic!("expected view-target-unknown, got {other:?}"),
     }
 }
@@ -478,7 +484,13 @@ fn shared_mode_refuses_whole_workspace_migration() {
         }),
         vec![],
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "migration-refused"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(tiler_core::world_report::CommandResult::Rejected {
+                kind: tiler_core::world_report::CommandRejectKind::MigrationRefused
+            }),
+            "migration-refused"
+        ),
         other => panic!("expected migration-refused, got {other:?}"),
     }
 }

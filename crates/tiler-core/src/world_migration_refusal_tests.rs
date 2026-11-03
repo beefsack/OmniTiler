@@ -8,8 +8,9 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport, TransferKind, ViewAttempt,
-    WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport,
+    TransferKind, ViewAttempt, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand,
+    WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -1956,10 +1957,6 @@ fn possibly_executed_never_rolls_back() {
 
 #[test]
 fn directional_fences_carry_distinct_fixed_reasons() {
-    use crate::world_engine::{
-        MSG_MIGRATION_INVENTORY, MSG_MIGRATION_SOURCE, MSG_MIGRATION_SOURCE_UNREADABLE,
-        MSG_MIGRATION_TARGET_INCOMPLETE, MSG_MIGRATION_TOPOLOGY, MSG_MIGRATION_TOPOLOGY_UNREADABLE,
-    };
     use crate::world_report::{ScreenReport, WindowFact};
 
     fn screens_two() -> Vec<ScreenReport> {
@@ -2018,10 +2015,13 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
     match engine.handle_report(&east) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, "migration-refused");
-            assert_eq!(message, MSG_MIGRATION_TOPOLOGY);
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::MigrationRefused
+            }),
+            "eastmost right must refuse no-target"
+        ),
         other => panic!("eastmost right must refuse no-target, got {other:?}"),
     }
 
@@ -2038,10 +2038,13 @@ fn directional_fences_carry_distinct_fixed_reasons() {
     );
     inv.inventory_complete = false;
     match engine.handle_report(&inv) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, "migration-refused");
-            assert_eq!(message, MSG_MIGRATION_INVENTORY);
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::MigrationRefused
+            }),
+            "incomplete inventory must refuse"
+        ),
         other => panic!("incomplete inventory must refuse, got {other:?}"),
     }
 
@@ -2062,10 +2065,13 @@ fn directional_fences_carry_distinct_fixed_reasons() {
     ghost.action_outputs.push(OutputId("out-z".to_owned()));
     ghost.action_cached = Some(OutputId("out-z".to_owned()));
     match engine.handle_report(&ghost) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, "migration-refused");
-            assert_eq!(message, MSG_MIGRATION_SOURCE);
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::MigrationRefused
+            }),
+            "ghost source must refuse"
+        ),
         other => panic!("ghost source must refuse, got {other:?}"),
     }
 
@@ -2085,10 +2091,13 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     match engine.handle_report(&bad_src) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, "migration-refused");
-            assert_eq!(message, MSG_MIGRATION_SOURCE_UNREADABLE);
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::MigrationRefused
+            }),
+            "unreadable source must refuse"
+        ),
         other => panic!("unreadable source must refuse, got {other:?}"),
     }
 
@@ -2112,10 +2121,13 @@ fn directional_fences_carry_distinct_fixed_reasons() {
     );
     tgt.screens = inc_screens.clone();
     match engine.handle_report(&tgt) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, "migration-refused");
-            assert_eq!(message, MSG_MIGRATION_TARGET_INCOMPLETE);
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::MigrationRefused
+            }),
+            "incomplete target must refuse"
+        ),
         other => panic!("incomplete target must refuse, got {other:?}"),
     }
 
@@ -2133,10 +2145,13 @@ fn directional_fences_carry_distinct_fixed_reasons() {
     );
     topo.screens = inc_screens;
     match engine.handle_report(&topo) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, "migration-refused");
-            assert_eq!(message, MSG_MIGRATION_TOPOLOGY_UNREADABLE);
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::MigrationRefused
+            }),
+            "unreadable topology must refuse"
+        ),
         other => panic!("unreadable topology must refuse, got {other:?}"),
     }
 
@@ -2811,7 +2826,6 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_retained() {
 
 #[test]
 fn migrate_directional_resolves_action_context_without_adapter_preselect() {
-    use crate::world_engine::MSG_MIGRATION_SOURCE;
     // Seed one window per output; views name the live workspace per wire.
     fn seeded() -> (WorldEngine, String, String) {
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
@@ -2956,10 +2970,13 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
         Some("out-z"),
         "right",
     )) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, "migration-refused");
-            assert_eq!(message, MSG_MIGRATION_SOURCE);
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::MigrationRefused
+            }),
+            "stale cache must refuse the source"
+        ),
         other => panic!("stale cache must refuse the source, got {other:?}"),
     }
     // No known registry at all refuses without inventing focus. The
@@ -2983,17 +3000,19 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
     match engine.handle_report(&empty) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, "migration-refused");
-            assert_eq!(message, MSG_MIGRATION_SOURCE);
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::MigrationRefused
+            }),
+            "empty registry must refuse the source"
+        ),
         other => panic!("empty registry must refuse the source, got {other:?}"),
     }
 }
 
 #[test]
 fn migrate_directional_freezes_source_view_pre_observation() {
-    use crate::world_engine::MSG_MIGRATION_SOURCE;
     // The direction-only source (output plus its current view) freezes at
     // run_accepted entry, before staging can converge views or settle
     // rehoming: first-tick unbootstrapped migration refuses like the old
@@ -3013,10 +3032,13 @@ fn migrate_directional_freezes_source_view_pre_observation() {
         ..report(1, 1, vec![], "", None, None, vec![], vec![])
     };
     match fresh.handle_report(&unbootstrapped) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, "migration-refused");
-            assert_eq!(message, MSG_MIGRATION_SOURCE);
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::MigrationRefused
+            }),
+            "unbootstrapped migration must refuse"
+        ),
         other => panic!("unbootstrapped migration must refuse, got {other:?}"),
     }
     // The same command after a prior observation applies: the retained
@@ -3069,7 +3091,6 @@ fn migrate_directional_freezes_source_view_pre_observation() {
 
 #[test]
 fn migrate_directional_ignores_same_report_view_creation() {
-    use crate::world_engine::MSG_MIGRATION_SOURCE;
     // A newly appearing screen must not supply the migration source view:
     // the frozen source predates staging, so the unknown pre-observation
     // view refuses instead of migrating the newly converged workspace.
@@ -3117,10 +3138,13 @@ fn migrate_directional_ignores_same_report_view_creation() {
         )
     };
     match engine.handle_report(&hotplug) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, "migration-refused");
-            assert_eq!(message, MSG_MIGRATION_SOURCE);
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::MigrationRefused
+            }),
+            "hotplug source must refuse without a pre-observation view"
+        ),
         other => panic!("hotplug source must refuse without a pre-observation view, got {other:?}"),
     }
     // The observation-only catch-up retains the new screen's view, so the

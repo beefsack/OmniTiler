@@ -12,9 +12,9 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use crate::world_report::{
-    CommandResult, FrameSetter, HoldReason, MemberAttempt, RowDiagnosticKind, RowDiagnosticLane,
-    ScopeAuthority, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef,
-    WorldCommand, WorldReport, validate_report_reason,
+    CommandRejectKind, CommandResult, FrameSetter, HoldReason, MemberAttempt, RowDiagnosticKind,
+    RowDiagnosticLane, ScopeAuthority, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION,
+    WindowFact, WorkspaceRef, WorldCommand, WorldReport, validate_report_reason,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -1925,7 +1925,13 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             }),
         );
         match engine.handle_report(&send) {
-            WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "send-refused", "{tag}"),
+            WorldOutcome::Accepted(reply) => assert_eq!(
+                reply.command_result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::SendRefused
+                }),
+                "{tag}: expected send-refused"
+            ),
             other => panic!("{tag}: expected send-refused, got {other:?}"),
         }
         assert!(
@@ -1976,12 +1982,20 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
         );
         let revision_before = engine.state_revision();
         match engine.handle_report(&send) {
-            WorldOutcome::Rejected { kind, .. } => {
-                assert_eq!(kind, "send-target-unknown", "blind target")
-            }
+            WorldOutcome::Accepted(reply) => assert_eq!(
+                reply.command_result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::SendTargetUnknown
+                }),
+                "blind target"
+            ),
             other => panic!("expected send-target-unknown, got {other:?}"),
         }
-        assert_eq!(engine.state_revision(), revision_before, "no mutation");
+        assert_eq!(
+            engine.state_revision(),
+            revision_before + 1,
+            "refusal issues"
+        );
         assert!(engine.retained_transfers().is_empty(), "retains nothing");
     }
     // Held source (inset exhaustion via an outer gap exhausting the work
@@ -2054,10 +2068,20 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
         );
         let revision_before = engine.state_revision();
         match engine.handle_report(&send) {
-            WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "scope-held", "clamped source"),
+            WorldOutcome::Accepted(reply) => assert_eq!(
+                reply.command_result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::ScopeHeld
+                }),
+                "clamped source"
+            ),
             other => panic!("expected scope-held, got {other:?}"),
         }
-        assert_eq!(engine.state_revision(), revision_before, "no mutation");
+        assert_eq!(
+            engine.state_revision(),
+            revision_before + 1,
+            "refusal issues"
+        );
         assert!(engine.retained_transfers().is_empty(), "retains nothing");
     }
 }
@@ -2129,20 +2153,24 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
     retry_explicit.action_outputs =
         vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
     match engine.handle_report(&retry_explicit) {
-        WorldOutcome::Rejected { kind, .. } => {
-            assert_eq!(kind, "migration-refused", "explicit retry")
-        }
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::MigrationRefused
+            }),
+            "explicit retry"
+        ),
         other => panic!("explicit retry: expected migration-refused, got {other:?}"),
     }
     assert_eq!(
         engine.state_revision(),
-        revision_before + 1,
-        "explicit refusal mutates nothing"
+        revision_before + 2,
+        "explicit refusal issues"
     );
     // The direction-only retry resolves the current source view with the
     // same staged context and retains its own flight.
     let mut retry_directional = report(
-        3,
+        4,
         screens.clone(),
         vec![fact("w0", "out-a", 0)],
         "w0",
@@ -2170,7 +2198,7 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
     assert_eq!(flight.output.0, "out-a", "directional resolves live source");
     assert_eq!(
         engine.state_revision(),
-        revision_before + 2,
+        revision_before + 3,
         "directional retry commits its own flight"
     );
     // Both migration flights survive with stable identity: the original
@@ -3406,7 +3434,13 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             float_rect: None,
         })),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "not-tiled"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "maximized toggle must refuse"
+        ),
         other => panic!("maximized toggle must refuse, got {other:?}"),
     }
 
@@ -3453,7 +3487,13 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             float_rect: None,
         })),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "partial-observation"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "maximized unfloat must refuse"
+        ),
         other => panic!("maximized unfloat must refuse, got {other:?}"),
     }
 }
@@ -3779,7 +3819,13 @@ fn toggle_maximize_command_decides_and_reports() {
         Some(8),
         Some(toggle("w1")),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "focus-unknown"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown
+            }),
+            "unfocused toggle refuses"
+        ),
         other => panic!("unfocused toggle refuses, got {other:?}"),
     }
 
@@ -3844,7 +3890,13 @@ fn toggle_maximize_command_decides_and_reports() {
             Some(11),
             Some(toggle("w0")),
         )) {
-            WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "scope-held"),
+            WorldOutcome::Accepted(reply) => assert_eq!(
+                reply.command_result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::ScopeHeld
+                }),
+                "held toggle refuses"
+            ),
             other => panic!("held toggle refuses, got {other:?}"),
         }
     }
@@ -3905,7 +3957,13 @@ fn toggle_maximize_command_decides_and_reports() {
             Some(3),
             Some(toggle("w0")),
         )) {
-            WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "transfer-in-flight"),
+            WorldOutcome::Accepted(reply) => assert_eq!(
+                reply.command_result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::TransferInFlight
+                }),
+                "in-flight toggle refuses"
+            ),
             other => panic!("in-flight toggle refuses, got {other:?}"),
         }
     }

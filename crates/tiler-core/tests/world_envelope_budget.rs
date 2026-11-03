@@ -1,9 +1,13 @@
 //! Report envelope guarantees at the world boundary: every cheap gate
 //! (generation, budget, shape, identity, freshness, validation) and every
-//! late refusal (unknown targets, malformed commands) is transactional -
+//! envelope failure (oversized, exhausted counters) is transactional -
 //! rejected reports leave revision, retained flights, ordering, and mapping
 //! exactly as before. Duplicates return the cache with no revision.
-//! Logical-first: screens plus window facts only.
+//! Command-local refusals (such as unknown targets) are instead
+//! accepted reports with a typed `Rejected` result: the observation still
+//! incorporates and the issuing revision advances by exactly one with the
+//! command sequence consumed, but partial command transfers and mapping
+//! changes do not survive. Logical-first: screens plus window facts only.
 
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
@@ -310,25 +314,29 @@ fn late_command_refusal_rolls_back_without_mutation() {
         .state_revision
     };
     // Same-output send to an unknown workspace refuses after staging:
-    // no transfer retained, no ring/view churn, no revision.
-    assert_eq!(
-        rejected_kind(
-            &mut engine,
-            &report(
-                4,
-                vec![fact("win-a", "out-a", 0)],
-                Some(11),
-                Some(WorldCommand::Send {
-                    window: WindowId("win-a".to_owned()),
-                    target_output: OutputId("out-a".to_owned()),
-                    target_workspace: "ws-999".to_owned(),
-                    follow: false,
-                }),
-            )
+    // no transfer retained, no ring/view churn; the refused sequence still
+    // consumes and the issuing revision advances by exactly one.
+    match engine.handle_report(&report(
+        4,
+        vec![fact("win-a", "out-a", 0)],
+        Some(11),
+        Some(WorldCommand::Send {
+            window: WindowId("win-a".to_owned()),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: "ws-999".to_owned(),
+            follow: false,
+        }),
+    )) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(tiler_core::world_report::CommandResult::Rejected {
+                kind: tiler_core::world_report::CommandRejectKind::SendTargetUnknown
+            }),
+            "unknown workspace refuses with a typed result"
         ),
-        "send-target-unknown"
-    );
-    assert_eq!(engine.state_revision(), revision);
+        other => panic!("unknown workspace must refuse, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision(), revision + 1);
     assert!(engine.retained_transfers().is_empty());
     let after = ring_ids(&mut engine, 5);
     assert_eq!(before, after, "mapping untouched by the refused command");

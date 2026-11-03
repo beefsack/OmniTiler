@@ -535,13 +535,19 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
     );
     send_report.focused_global = "win-a".to_owned();
     match engine.handle_report(&send_report) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "send-window-unknown"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(tiler_core::world_report::CommandResult::Rejected {
+                kind: tiler_core::world_report::CommandRejectKind::SendWindowUnknown
+            }),
+            "minimized send must refuse"
+        ),
         other => panic!("minimized send must refuse, got {other:?}"),
     }
     // Explicit focus-by-id on the minimized lifetime refuses without an effect.
     let mut focus_report = report(
-        3,
-        3,
+        4,
+        4,
         one_screen(),
         vec![
             fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(N1)),
@@ -556,15 +562,21 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
     );
     focus_report.focused_global = "win-a".to_owned();
     match engine.handle_report(&focus_report) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "focus-unknown"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(tiler_core::world_report::CommandResult::Rejected {
+                kind: tiler_core::world_report::CommandRejectKind::FocusUnknown
+            }),
+            "minimized focus must refuse"
+        ),
         other => panic!("minimized focus must refuse, got {other:?}"),
     }
     // Directional focus naming the minimized lifetime reports stale.
     let reply = accepted(
         &mut engine,
         &report(
-            4,
-            4,
+            5,
+            5,
             one_screen(),
             vec![
                 fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(N1)),
@@ -1104,19 +1116,25 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
     );
     click_minimized.focused_global = "win-a".to_owned();
     match engine.handle_report(&click_minimized) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "focus-unknown"),
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(tiler_core::world_report::CommandResult::Rejected {
+                kind: tiler_core::world_report::CommandRejectKind::FocusUnknown
+            }),
+            "pager click on minimized must refuse"
+        ),
         other => panic!("pager click on minimized must refuse, got {other:?}"),
     }
     let mut click_tiled = report(
-        2,
-        2,
+        3,
+        3,
         one_screen(),
         vec![
             fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(N1)),
             minimized_native("win-b", "out-a", Some(N2)),
         ],
         vec![native_obs("out-a", &[N1, N2], Some(N1))],
-        Some(11),
+        Some(12),
         Some(WorldCommand::Focus {
             window: WindowId("win-a".to_owned()),
             direction: "left".to_owned(),
@@ -1128,8 +1146,8 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
         reply
             .effects
             .iter()
-            .any(|effect| effect.target.0 == "win-a" && effect.is_explicit_focus_for(11)),
-        "pager click on tiled mints fx-11: {:?}",
+            .any(|effect| effect.target.0 == "win-a" && effect.is_explicit_focus_for(12)),
+        "pager click on tiled mints fx-12: {:?}",
         reply.effects
     );
 }

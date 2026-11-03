@@ -13,7 +13,8 @@ use crate::size_hints::WindowSizeHints;
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    EffectKind, ScreenReport, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, EffectKind, ScreenReport, WORLD_CONTRACT_VERSION, WindowFact,
+    WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -553,10 +554,16 @@ fn rejected_unknown_focus_records_nothing() {
             direction: "right".to_owned(),
         }),
     ));
-    assert!(
-        matches!(outcome, WorldOutcome::Rejected { .. }),
-        "unknown window rejects: {outcome:?}"
-    );
+    match outcome {
+        WorldOutcome::Accepted(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown
+            }),
+            "unknown window rejects: {reply:?}"
+        ),
+        other => panic!("unknown window rejects: {other:?}"),
+    }
     assert_eq!(
         remembered_window(&engine, &key),
         before,
