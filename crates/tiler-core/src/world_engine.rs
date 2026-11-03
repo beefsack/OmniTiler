@@ -744,6 +744,28 @@ pub struct WorldEngine {
     /// lifetime ledgers; reset on handshake by fresh construction.
     /// Never a row, slot, or wire value.
     pub(crate) retained_focus: Vec<crate::world_focus::RetainedFocusGrant>,
+    /// Pending native-free selection grant between the real selection
+    /// command and publish only (see [`crate::world_selection`]): the
+    /// dispatching command plus the selected/departing homes, issuing
+    /// revision, and observation watermark. Never a row, slot, or wire
+    /// value.
+    pub(crate) pending_selection: Option<crate::world_selection::PendingSelection>,
+    /// Retained per-window native-free selection visibility authorizations
+    /// by live lifetime (see [`crate::world_selection`]): the logical home
+    /// at grant, desired shown state, and issuing revision. Never a row,
+    /// slot, or wire value.
+    pub(crate) selection_targets: BTreeMap<WindowId, crate::world_selection::SelectionTarget>,
+    /// Retained `awaitShown` selection bindings, latest per focus output
+    /// (see [`crate::world_selection`]): the emitted effect, frozen arrival
+    /// snapshot, first correlated feedback, and distinct foreground/arrival
+    /// facts. Never a row, slot, or wire value.
+    pub(crate) retained_selection: BTreeMap<OutputId, crate::world_selection::RetainedSelection>,
+    /// Retained active native-free selection scopes, latest per affected
+    /// output (see [`crate::world_selection`]): the selected/departing
+    /// homes plus the issuing revision. Survives the finite grant; cleared
+    /// only by superseding selections, the central view reconcile, or true
+    /// output loss. Never a row, slot, or wire value.
+    pub(crate) selection_scopes: BTreeMap<OutputId, crate::world_selection::SelectionScope>,
     /// Cursor-first behavior settings retained from the latest accepted
     /// report (2026-10-20): switch target, fresh placement, and the
     /// stage-4b focus-follows-cursor/cursor-warp flags. Refreshed per
@@ -1181,6 +1203,10 @@ impl WorldEngine {
             admission_focus_spent: BTreeSet::new(),
             automatic_focus_tokens: BTreeMap::new(),
             retained_focus: Vec::new(),
+            pending_selection: None,
+            selection_targets: BTreeMap::new(),
+            retained_selection: BTreeMap::new(),
+            selection_scopes: BTreeMap::new(),
             switch_target: crate::cursor_targeting::SwitchTarget::default(),
             fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
             focus_follows_cursor: false,
@@ -2878,6 +2904,10 @@ impl WorldEngine {
         // current-authority or readability gated, so consumed and
         // observation-only reports settle exactly like command reports.
         self.settle_focus_feedback(report);
+        // Selection arrival bindings settle the same way: first exact
+        // opaque-tuple correlation latches raw evidence with no authority
+        // upgrade, so consumed and observation-only reports settle alike.
+        self.settle_selection_feedback(report);
         // Core-owned frame policy: fold mechanical write/readback facts into
         // retained clamp/transient memory (scoped by exact staged lifetime)
         // so this same reply publishes suppression.
@@ -3377,6 +3407,9 @@ impl WorldEngine {
             }
             self.prune_state_bindings(report);
             self.prune_focus_grants(report);
+            self.prune_selection_grants(report);
+            self.prune_selection_scopes(report);
+            self.prune_selection_targets(report);
             self.prune_automatic_focus_tokens(report);
             // Lifetime-local composed maximize follows the live inventory:
             // a complete report drops dead identities (engine/member-known

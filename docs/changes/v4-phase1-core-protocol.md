@@ -74,6 +74,34 @@
   and feedback correlation. Visibility targets and their frozen arrival set
   must precede an awaitShown grant; a show-only selection that still focuses
   without awaiting arrival is not an ordering implementation.
+- Next integrate native-free, suppression-capable explicit selections that
+  actually resolve a focus target: publish same-output selected-home shows and
+  departing-home hides together with an awaitShown focus grant, never an ordinary
+  focus alongside newly authorized shows. Preserve per-lifetime visibility
+  authorization revisions across observations; new intent, not disagreeing facts,
+  changes authorization. Composed sticky remains shown and native-owned paths
+  remain unchanged. Freeze arrival members and their final published target
+  frames after command restaging/layout, not from pre-layout command inputs.
+  Correlate first feedback by the full effect tuple and prove every frozen
+  arrival from live lifetime, sample watermark, shown/non-minimized/non-hidden,
+  observed output/frame and retained logical home facts. A foreground equality
+  flag without the full required arrival set never establishes departure
+  readiness. Keep ordinary-focus settlement separate, accepted-choice memory
+  unchanged, fallback disabled and raw feedback intact. No SwitchEvent, selector
+  flight completion, empty/no-focus selection completion or native-owned arrival
+  migration is included in this first integrated route. Existing adapter staging
+  rules, not independent hide authority, enforce show-arrive-focus-depart and the
+  cross-output awaitShown barrier.
+- Selection visibility keeps its active per-output selected/departing scope
+  separate from the finite frozen focus grant. A frozen member ending its
+  lifetime invalidates that grant without deleting surviving output policy or
+  letting a reused lifetime inherit its authorization. Shared-mode fanout keeps
+  a scope for every affected output. Reconcile those scopes against the current
+  core view before publication, including view changes outside selection commands;
+  neither a stale show nor a hide of the newly selected home retains write
+  authority. Held screens/windows and incomplete inventories are not output or
+  lifetime loss. All controlled desired-shown members on the focus output,
+  including composed sticky, belong to its issuing arrival snapshot.
 
 - Intent dependency order: validate/canonically encode the core-owned opaque
   inner record first; then wire outer report/reply records and consume them in
@@ -161,6 +189,47 @@
   mandatory persist-before-write obligation, not a new core fact or wire field.
   Extend target reservations from exact encoder witnesses for actual coexistence;
   composed maximize remains a separate dependent increment.
+
+## Selection integration evidence
+
+- A temporary held-screen recovery probe establishes a genuinely changed target,
+  not an observation-only renewal: `w3` changes from `(out-b,ws-2,shown:false,rev:5)`
+  to `(out-b,ws-4,shown:true,rev:7)` with changed layout geometry. The other
+  output's targets, `w4` authorization and the original frozen arrival set retain
+  their revisions/snapshot. The held report itself preserves selection scopes,
+  targets and the grant without controlled writes on the held output.
+  Source comparison at `e059d15c` shows the member-pruning, logical-homing and
+  ring-convergence paths unchanged: held screens are omitted from the legacy
+  member sweep's live outputs, and recovery re-admits at the effective view.
+  This is source-identity evidence plus the current probe, not baseline execution.
+  The selection lane reacts to that pre-existing home/polarity change with fresh
+  target authorization. Its corrected held-recovery oracle asserts the exact
+  changed home/polarity/revision and unchanged survivor/frozen authorization;
+  held-output membership/rehome policy remains in the reconnect/rehome increment,
+  not a selection-lane policy change. Probe edits have been removed.
+- Review corrections for stale hides after non-selection view changes and active
+  output scope separation are present with focused regression evidence. Shared
+  fanout and member-close scope survival have focused coverage. Twenty-three
+  focused core regressions also cover composed-sticky arrival inclusion, complete
+  and partial brackets, freshness/lifetime/frame/home mismatches, late admission,
+  first-feedback retention, transaction/replay fences and historical readiness
+  without fresh write authority. The real producer reply matches both canonical
+  writers in a protocol regression and remains within existing lane reserves.
+  Initial failures were a refused-Send fixture setup, not a behavioral red;
+  the later stale-hide regression reproduced Controlled authority after a follow
+  view change before its central-reconcile correction. A fresh final review has
+  no outstanding in-scope finding.
+- Final verification passes the exact filtered core/protocol gate (1565 core unit
+  tests, all selected integration targets and protocol suites
+  49/12/4/15/1/8/2/59/4), core/protocol build, scoped all-target clippy with warnings
+  denied, formatting, whitespace, ASCII and local link-path checks. Only
+  workspace_unsafe_posture is filtered. Focus-bearing native-free suppression-
+  capable selection now publishes stable visibility targets, an awaitShown grant
+  and a frozen post-layout arrival set with correlated readiness evidence.
+  This does not establish SwitchEvent/selector-flight completion, empty/no-focus
+  selection completion, native-owned arrival migration, native adapter ordering
+  or full v4 codec/scenario conformance. No adapter, immutable fixture, version
+  or approved-policy files change; all eight OPEN/TBD gates remain unchanged.
 
 ## Evidence
 
@@ -1219,12 +1288,16 @@
    bounds, digest/size accounting and authoritative host-arm fencing; it grants
    no focus authority and does not complete visibility or selection settlement.
    Typed effect cause/command correlation and awaitShown encoding are implemented
-   and offline-tested, with current grants false and coexisting-effect reservation
-   enforced before mutation. Compact lifetime-interned automatic-effect identities
+   and offline-tested, with coexisting-effect reservation enforced before
+   mutation. Compact lifetime-interned automatic-effect identities
    now satisfy the supported opaque-id bound without renewing hover spent identity.
    Latest-batch ordinary-focus feedback correlation and one-shot historical
-   verdict settlement are implemented and offline-tested; visibility targets,
-   arrival-ready selection and switch completion remain dependent work.
+   verdict settlement are implemented and offline-tested.
+   Focus-bearing native-free suppression-capable selections now integrate stable
+   visibility targets, frozen arrival sets and awaitShown feedback readiness.
+   Switch completion, empty/no-focus and native-owned arrival paths remain
+   dependent work; the pre-existing held-output recovery rehome remains in the
+   reconnect/rehome increment.
   The remaining world report/reply paths and version are still staged; no v4
   cutover or full scenario acceptance is claimed. Full adapter build-failure
   inventory remains pending.

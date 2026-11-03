@@ -188,6 +188,30 @@ impl WorldEngine {
         // focus.
         let current = self.effective_view(output);
         let changed = current.as_deref() != Some(workspace);
+        // Affected outputs for selection authorization: shared mode fans
+        // out to every live output, otherwise just the target output.
+        // Departing views are captured before retention moves them.
+        let affected: Vec<OutputId> =
+            if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
+                let mut live: Vec<String> = report
+                    .screens
+                    .iter()
+                    .map(|screen| screen.output.0.clone())
+                    .collect();
+                live.sort();
+                live.into_iter().map(OutputId).collect()
+            } else {
+                vec![output.clone()]
+            };
+        let departing: Vec<DomainKey> = affected
+            .iter()
+            .filter_map(|out| {
+                self.effective_view(out).map(|view| DomainKey {
+                    output: out.clone(),
+                    workspace: crate::directional::WorkspaceId(view),
+                })
+            })
+            .collect();
         self.note_command(command_seq);
         // Latest view command wins per output. Core views move immediately
         // (logical authority); the retained flight proves actuation.
@@ -212,6 +236,10 @@ impl WorldEngine {
         if !changed {
             return CommandApplied::NoEffect;
         }
+        // Changed selections supersede retained selection authorization on
+        // every affected output, whether or not they resolve focus: latest
+        // intent wins and stale controlled targets must not survive.
+        self.prune_selection_for_outputs(&affected);
         let target_key = DomainKey {
             output: output.clone(),
             workspace: crate::directional::WorkspaceId(workspace.to_owned()),
@@ -219,6 +247,35 @@ impl WorldEngine {
         let Some(window) = self.remembered_view_focus(&target_key, held_scopes, by_id) else {
             return CommandApplied::NoEffect;
         };
+        // Native-free suppression-capable route: an actual resolved focus
+        // effect carries the arrival grant with shows and hides authorized
+        // under its issuing revision. Ordinary direct focus, admission,
+        // and every out-of-scope route keep the legacy effect below.
+        if self.selection_route_eligible(&window, &target_key, held_scopes) {
+            let rev = self.state_revision + 1;
+            let selected: Vec<DomainKey> = affected
+                .iter()
+                .map(|out| DomainKey {
+                    output: out.clone(),
+                    workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+                })
+                .collect();
+            self.pending_selection = Some(crate::world_selection::PendingSelection {
+                command_seq,
+                focus: window.clone(),
+                focus_home: target_key,
+                selected,
+                departing,
+                affected_outputs: affected,
+                rev,
+                obs: report.observation_seq,
+            });
+            // Best-effort memory (same contract as the direct focus lane).
+            let _ = self.record_command_focus(&window, held_scopes);
+            let mut effect = OneShotEffect::explicit_focus(command_seq, window, rev);
+            effect.await_shown = true;
+            return CommandApplied::Effect(effect);
+        }
         // Best-effort memory (same contract as the direct focus lane).
         let _ = self.record_command_focus(&window, held_scopes);
         CommandApplied::Effect(OneShotEffect::explicit_focus(

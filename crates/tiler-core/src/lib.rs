@@ -52,6 +52,7 @@ pub mod world_operations;
 pub mod world_presentation;
 pub mod world_publish;
 pub mod world_report;
+pub(crate) mod world_selection;
 pub mod world_sends;
 pub mod world_settle;
 pub mod world_sizing;
@@ -154,6 +155,8 @@ mod world_pager_presentation_tests;
 mod world_rejected_accepted_tests;
 #[cfg(test)]
 mod world_restored_routing_tests;
+#[cfg(test)]
+mod world_selection_await_tests;
 #[cfg(test)]
 mod world_sessionless_migration_tests;
 #[cfg(test)]

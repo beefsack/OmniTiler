@@ -1344,6 +1344,18 @@ impl WorldEngine {
         // assembled rows (sticky-only, owner-output rows). Independent of
         // the frame/member lanes above; touches visibility fields only.
         self.decorate_sticky_visibility(report, held_scopes, &mut windows);
+        // Native-free selection visibility: view changes outside the
+        // selection command path supersede stale scopes first (no new
+        // authority), then the pending grant (if any) lands in the
+        // retained per-window map from post-command homing, the map
+        // decorates the assembled rows (sticky rows keep precedence), and
+        // the final arrival snapshot plus per-output scopes freeze from
+        // the published frames.
+        self.reconcile_selection_scopes(report, held_scopes);
+        self.apply_pending_selection();
+        self.admit_selection_late_members();
+        self.decorate_selection_visibility(report, held_scopes, &mut windows);
+        self.freeze_selection_arrival(&effects, &windows);
         // Native sticky state: central decoration over the assembled rows
         // beside the composed call. Touches state lanes only.
         self.decorate_native_sticky_state(report, held_scopes, &mut windows);
