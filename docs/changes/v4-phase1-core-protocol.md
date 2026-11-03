@@ -58,7 +58,22 @@
   Accepted focus memory remains unchanged. This bounded internal prerequisite
   emits no SwitchEvent or visibility authority: frozen switch membership,
   arrival-ready selection grants and visibility accounting remain dependent work.
-  The separately recorded overlong automatic-effect identity gap remains open.
+  The automatic-effect identity bound is handled by the prerequisite below.
+- Before arrival-ready grants, close the existing automatic-effect identity
+  bound gap: intern each automatically focused live lifetime to its first
+  automatic-focus candidate's issuing revision and emit compact af-/ffc-
+  identities from that token. Reuse it across hover transitions and observations,
+  retain it through holds/exclusions/incomplete gaps, and retire it only with
+  lifetime evidence. An admission candidate can be dropped by same-target explicit-focus
+  deduplication after its token is allocated; the token is not a first-publication
+  receipt. At most one automatic candidate is minted per accepted report, so the
+  globally increasing issuing revision gives exact distinct tokens without
+  hashing, truncation or another counter. Existing admission-spent and hover
+  guards remain unchanged. Update canonical size witnesses to the compact
+  producer bounds and verify maximum-length subjects through real producers
+  and feedback correlation. Visibility targets and their frozen arrival set
+  must precede an awaitShown grant; a show-only selection that still focuses
+  without awaiting arrival is not an ordering implementation.
 
 - Intent dependency order: validate/canonically encode the core-owned opaque
   inner record first; then wire outer report/reply records and consume them in
@@ -1082,6 +1097,38 @@
   general visibility targets, native-free selection completion or full v4 codec
   conformance. The overlong automatic-effect identity gap and all eight OPEN/TBD
   fixture gates remain unchanged.
+- The automatic-effect identity bound gap is now closed. Admission and hover
+  producers use compact af-/ffc- tokens interned per live lifetime from the first
+  automatic candidate's issuing revision; explicit fx- identities are unchanged.
+  Tokens persist across observations, hover transitions, holds, exclusions and
+  incomplete gaps without renewing same-lifetime adapter spent identity. Close
+  or proven departure retires the mapping; reused lifetime ids get fresh tokens.
+  One automatic candidate per report and increasing world revisions provide exact
+  distinct tokens, without hashing, truncation or an additional counter. A
+  candidate suppressed by same-target explicit focus can allocate a token without
+  publishing an automatic effect; a later hover reuses that token safely.
+- Both 128-byte-subject admission and hover regressions failed with the former
+  131/132-byte effect ids before correction. Twelve real-producer regressions now
+  cover valid compact ids, maximum-subject feedback correlation, distinct subjects
+  sharing a long prefix, repeated hover identity, held/incomplete/known-lifetime
+  retention, close/reuse and stale evidence, deduplication, request replay,
+  command-only rollback, envelope non-adoption and revision exhaustion. Exclusion
+  pruning has a separate direct fence probe; it is not native lifetime evidence.
+  Added protocol tests establish maximum-width compact feedback decoding and
+  matching reply-writer bytes. Review corrected candidate/publication wording and
+  made synthetic coexistence witnesses use distinct maximum-length subjects,
+  matching the real same-target dedup rule; no review finding remains open.
+- Compact encoder witnesses establish explicit/admission/hover maxima of
+  294/279/281 bytes. The widest admission-plus-explicit pair is 574 including
+  its comma, covered by the conservative 589-byte pre-mutation effect reserve.
+  Marginal lane sizes remain exact; whole-reply sizing remains a bound. Final
+  verification passes the exact filtered core/protocol gate (1542 core unit tests,
+  all selected integration targets and protocol suites 49/12/4/15/8/2/59/4), build,
+  scoped all-target clippy with warnings denied, formatting, whitespace, ASCII and
+  local link-path checks. Only workspace_unsafe_posture is filtered. No adapter,
+  immutable fixture or version changes are included. Visibility targets, frozen
+  arrival-ready selection and switch completion remain pending; all eight
+  OPEN/TBD fixture gates are unchanged.
 
 ## Tentative decisions pending user review
 
@@ -1173,7 +1220,8 @@
    no focus authority and does not complete visibility or selection settlement.
    Typed effect cause/command correlation and awaitShown encoding are implemented
    and offline-tested, with current grants false and coexisting-effect reservation
-   enforced before mutation. Existing long effect identities remain a cutover gap.
+   enforced before mutation. Compact lifetime-interned automatic-effect identities
+   now satisfy the supported opaque-id bound without renewing hover spent identity.
    Latest-batch ordinary-focus feedback correlation and one-shot historical
    verdict settlement are implemented and offline-tested; visibility targets,
    arrival-ready selection and switch completion remain dependent work.

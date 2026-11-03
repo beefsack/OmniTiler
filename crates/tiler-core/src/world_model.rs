@@ -1004,9 +1004,13 @@ impl WorldEngine {
     /// Windows under an outstanding transfer never count (cross-domain
     /// arrivals settle through the transfer, never a focus steal). Spent
     /// intents prune on close, so a reused id focuses again as a fresh
-    /// newcomer. The `af-<window>` id marks admission intent so the adapter
-    /// applies its float-tolerant guard only there; diagnostic float
-    /// origin is never consulted.
+    /// newcomer. The typed [`EffectCause::AutomaticAdmission`] marks
+    /// admission policy while the `af-<token>` id spelling stays opaque
+    /// (never prefix-based authority); the token is the first
+    /// automatic-focus candidate's issuing revision interned per live
+    /// lifetime (see [`crate::world_focus`]), never the window spelling,
+    /// so maximum-length subjects stay within the opaque bound. Diagnostic
+    /// float origin is never consulted.
     pub(crate) fn take_admission_focus(
         &mut self,
         report: &WorldReport,
@@ -1166,8 +1170,9 @@ impl WorldEngine {
         if !self.admission_focus_spent.insert(target.0.clone()) {
             return Vec::new();
         }
+        let token = self.automatic_focus_token(&target);
         vec![OneShotEffect {
-            id: format!("af-{}", target.0),
+            id: format!("af-{token}"),
             kind: EffectKind::Focus,
             target,
             issued_revision: self.state_revision + 1,

@@ -722,6 +722,20 @@ pub struct WorldEngine {
     /// generation (retained sessions persist there too); a new generation
     /// constructs a new [`WorldEngine`].
     pub(crate) admission_focus_spent: BTreeSet<String>,
+    /// Compact automatic-focus identity tokens by live lifetime: the first
+    /// automatic-focus candidate's issuing revision for that lifetime
+    /// (`self.state_revision + 1` at first allocation), not necessarily
+    /// the first emitted effect revision. Admission (`af-`) and
+    /// hover (`ffc-`) effects spell `prefix-token` from this map, so ids stay
+    /// within the opaque bound for maximum-length subjects. The map entry is
+    /// reused across hover transitions and observations, so a repeated hover
+    /// for the same lifetime retains its identical effect id (the adapter's
+    /// at-most-once spent fence stays authoritative). Explicit `fx-`
+    /// identities are disjoint. Entries are retained through
+    /// holds/exclusions/incomplete gaps and engine/member-known absence, and
+    /// pruned only on explicit close or proven lifetime departure like
+    /// [`Self::retained_focus`]. Never a row, slot, or wire value.
+    pub(crate) automatic_focus_tokens: BTreeMap<WindowId, u64>,
     /// Retained ordinary focus settlement for the latest emitted focus
     /// batch (see [`crate::world_focus`]): at most two grants (admission
     /// plus explicit command), each with its emitted effect, first
@@ -1165,6 +1179,7 @@ impl WorldEngine {
             operation_settled: Vec::new(),
             placement_bootstrapped: false,
             admission_focus_spent: BTreeSet::new(),
+            automatic_focus_tokens: BTreeMap::new(),
             retained_focus: Vec::new(),
             switch_target: crate::cursor_targeting::SwitchTarget::default(),
             fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
@@ -3362,6 +3377,7 @@ impl WorldEngine {
             }
             self.prune_state_bindings(report);
             self.prune_focus_grants(report);
+            self.prune_automatic_focus_tokens(report);
             // Lifetime-local composed maximize follows the live inventory:
             // a complete report drops dead identities (engine/member-known
             // lifetimes stay like the state bindings above), explicit closes

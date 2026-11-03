@@ -152,9 +152,13 @@ impl WorldEngine {
     /// target transitioned, and the hover target is not the one already
     /// coupled. Records the hover target either way, so a static cursor
     /// never re-steals focus after a keyboard command moves focus
-    /// elsewhere. The `ffc-<window>` id scopes at-most-once per hover
+    /// elsewhere. The `ffc-<token>` id scopes at-most-once per hover
     /// target: the adapter spent fence drops repeats, and arrival (focus
-    /// catching up to hover) stops minting.
+    /// catching up to hover) stops minting. The token is the first
+    /// automatic-focus candidate's issuing revision interned per live
+    /// lifetime (see [`crate::world_focus`]), not necessarily the first
+    /// emitted effect revision, reused across hover transitions and
+    /// observations, never the window spelling.
     pub(crate) fn take_focus_follows(
         &mut self,
         report: &WorldReport,
@@ -186,8 +190,9 @@ impl WorldEngine {
         if !moved && !transitioned {
             return None;
         }
+        let token = self.automatic_focus_token(&hovered);
         Some(OneShotEffect {
-            id: format!("ffc-{}", hovered.0),
+            id: format!("ffc-{token}"),
             kind: EffectKind::Focus,
             target: hovered,
             issued_revision: self.state_revision + 1,

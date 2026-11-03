@@ -66,6 +66,64 @@ pub(crate) fn classify_focus_feedback(effect: &OneShotEffect, row: &FocusFeedbac
 }
 
 impl WorldEngine {
+    /// Intern one compact automatic-focus token per live lifetime: the
+    /// first automatic-focus candidate's issuing revision for that
+    /// lifetime, not necessarily the first emitted effect revision
+    /// (admission allocates its token before a same-target explicit dedup
+    /// drops the admission row in favor of the explicit winner). The map
+    /// entry is reused across hover transitions and observations, so a
+    /// repeated hover for the same lifetime retains its identical effect id
+    /// (the adapter's at-most-once spent fence stays authoritative).
+    /// Callers run after the revision-exhaustion gate, so
+    /// `state_revision + 1` never wraps; accepted issuing revisions only
+    /// increase, giving exact distinct tokens without hashing, truncation,
+    /// or another counter. Explicit `fx-` identities are disjoint.
+    pub(crate) fn automatic_focus_token(&mut self, target: &WindowId) -> u64 {
+        if let Some(token) = self.automatic_focus_tokens.get(target) {
+            return *token;
+        }
+        let token = self.state_revision + 1;
+        self.automatic_focus_tokens.insert(target.clone(), token);
+        token
+    }
+
+    /// Prune automatic-focus tokens on explicit close or proven complete
+    /// departure (same liveness fence as [`Self::prune_focus_grants`]:
+    /// live, held, excluded, or engine/member-known lifetimes stay). A
+    /// same-lifetime temporary slot exclusion never drops the mapping, so
+    /// the spent fence is never renewed for the same lifetime.
+    pub(crate) fn prune_automatic_focus_tokens(&mut self, report: &WorldReport) {
+        if !report.closed.is_empty() {
+            let closed: BTreeSet<WindowId> = report.closed.iter().cloned().collect();
+            self.automatic_focus_tokens
+                .retain(|target, _| !closed.contains(target));
+        }
+        if !report.inventory_complete {
+            return;
+        }
+        let live: BTreeSet<&WindowId> = report.windows.iter().map(|fact| &fact.window).collect();
+        let held: BTreeSet<&WindowId> = report
+            .held_windows
+            .iter()
+            .map(|held| &held.window)
+            .collect();
+        let excluded = self.staged.excluded.clone();
+        let known: BTreeSet<WindowId> = self
+            .automatic_focus_tokens
+            .keys()
+            .filter(|target| {
+                self.members.contains_key(target) || self.engine_knows_window_any(target)
+            })
+            .cloned()
+            .collect();
+        self.automatic_focus_tokens.retain(|target, _| {
+            live.contains(target)
+                || held.contains(target)
+                || excluded.contains(target)
+                || known.contains(target)
+        });
+    }
+
     /// Consume accepted-report focus feedback against the retained latest
     /// batch. Runs once per accepted report (including consumed-command
     /// reports) before the command-only rollback boundary and independent

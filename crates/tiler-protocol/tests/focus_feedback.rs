@@ -728,3 +728,49 @@ fn estimate_covers_focus_rows_exactly_at_the_margin() {
         );
     }
 }
+
+#[test]
+fn compact_automatic_ids_decode_and_overlong_spellings_refuse() {
+    // A compact producer identity at the widest correlation-valid shape
+    // (token and revision at u64::MAX, 128-byte subject) decodes, while
+    // the retired window-spelling identities overrun the opaque bound and
+    // refuse as unknown values.
+    fn row(id: &str, target: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "target": target, "rev": "18446744073709551615",
+            "setter": "accepted", "reason": "",
+            "pre": "win-a", "post": target, "foregroundProven": true,
+            "arrival": [], "attemptMs": "20",
+        })
+    }
+    let target = "w".repeat(128);
+    let compact = decode_request(&envelope(&serde_json::json!([row(
+        &format!("af-{}", u64::MAX),
+        &target
+    ),])))
+    .expect("compact admission feedback decodes");
+    assert_eq!(compact.focus_feedback.len(), 1);
+    assert_eq!(compact.focus_feedback[0].id, format!("af-{}", u64::MAX));
+    assert_eq!(compact.focus_feedback[0].target.0, target);
+    assert_eq!(compact.focus_feedback[0].revision, u64::MAX);
+    let hover = decode_request(&envelope(&serde_json::json!([row(
+        &format!("ffc-{}", u64::MAX),
+        &target
+    ),])))
+    .expect("compact hover feedback decodes");
+    assert_eq!(hover.focus_feedback[0].id, format!("ffc-{}", u64::MAX));
+    for old in [format!("af-{target}"), format!("ffc-{target}")] {
+        assert!(
+            old.len() > 128,
+            "retired spelling overruns the bound: {}",
+            old.len()
+        );
+        assert_eq!(
+            decode_request(&envelope(&serde_json::json!([row(&old, &target)])))
+                .expect_err("overlong identity refuses")
+                .kind,
+            "unknown-value",
+            "retired spelling refuses: {old}"
+        );
+    }
+}

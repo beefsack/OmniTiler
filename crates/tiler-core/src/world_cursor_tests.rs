@@ -263,7 +263,11 @@ fn focus_follows_on_mints_hover_effect() {
         ),
     );
     assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].id, "ffc-win-b");
+    assert_eq!(
+        reply.effects[0].id,
+        format!("ffc-{}", reply.effects[0].issued_revision),
+        "compact hover identity"
+    );
     assert_eq!(reply.effects[0].target.0, "win-b");
     assert_eq!(
         reply.effects[0].cause,
@@ -660,7 +664,11 @@ fn focus_follows_overlap_uses_topmost_hit() {
         ),
     );
     assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].id, "ffc-win-c");
+    assert_eq!(
+        reply.effects[0].id,
+        format!("ffc-{}", reply.effects[0].issued_revision),
+        "compact hover identity"
+    );
     assert_eq!(reply.effects[0].target.0, "win-c");
 }
 

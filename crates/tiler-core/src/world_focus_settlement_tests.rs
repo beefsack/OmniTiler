@@ -1052,7 +1052,11 @@ fn focus_follows_cursor_grant_settles_alone() {
     hover.cursor_hit = Some(WindowId("win-b".to_owned()));
     let reply = accepted(&mut engine, &hover);
     assert_eq!(reply.effects.len(), 1, "hover mints alone: {reply:?}");
-    assert_eq!(reply.effects[0].id, "ffc-win-b");
+    assert_eq!(
+        reply.effects[0].id,
+        format!("ffc-{}", reply.effects[0].issued_revision),
+        "compact hover identity"
+    );
     assert_eq!(engine.retained_focus.len(), 1);
     let grant = &engine.retained_focus[0];
     assert_eq!(grant.effect.target.0, "win-b");

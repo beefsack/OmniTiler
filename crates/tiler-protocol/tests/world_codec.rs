@@ -1154,6 +1154,62 @@ struct WorldReplyWire {
 }
 
 #[test]
+fn compact_automatic_effects_encode_identically_through_both_reply_writers() {
+    // Correlation-valid compact producer shapes at maximum widths (token
+    // and revision at u64::MAX, distinct 128-byte subjects, longest
+    // explicit sequence): synthetic encoder witnesses only, never a real
+    // coexisting pair (same-target admission dedups in favor of the
+    // explicit winner). Both reply writers must spell them
+    // byte-identically, and the row widths must match the core reserve
+    // (explicit 294, compact admission 279, pair plus comma 574).
+    use tiler_core::directional::WindowId;
+    use tiler_core::world_report::{EffectCause, EffectKind, OneShotEffect};
+    let report = decode_request(&one_window_request()).expect("decodes");
+    let mut engine = connected_engine("gen-1", HostCapabilities::default());
+    let mut reply = match engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let admission_target = WindowId("a".repeat(128));
+    let explicit_target = WindowId("b".repeat(128));
+    assert_ne!(admission_target, explicit_target);
+    reply.effects = vec![
+        OneShotEffect {
+            id: format!("af-{}", u64::MAX),
+            kind: EffectKind::Focus,
+            target: admission_target,
+            issued_revision: u64::MAX,
+            cause: EffectCause::AutomaticAdmission,
+            command_seq: None,
+            await_shown: false,
+        },
+        OneShotEffect {
+            id: format!("fx-{}", u64::MAX),
+            kind: EffectKind::Focus,
+            target: explicit_target,
+            issued_revision: u64::MAX,
+            cause: EffectCause::ExplicitCommand,
+            command_seq: Some(u64::MAX),
+            await_shown: false,
+        },
+    ];
+    let wire = encode_reply(&reply);
+    let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
+    assert_eq!(wire, canonical, "transport mirrors the core writer");
+    let empty_wire = encode_reply(&{
+        let mut empty = reply.clone();
+        empty.effects = Vec::new();
+        empty
+    });
+    assert_eq!(
+        wire.len() - empty_wire.len(),
+        279 + 294 + 1,
+        "compact coexistence spells the reserved widths"
+    );
+    assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
+}
+
+#[test]
 fn reply_gesture_settled_matches_core_sizing() {
     // A reply carrying a gesture terminal encodes identically on both
     // writers, and the structural estimate bounds the exact bytes.

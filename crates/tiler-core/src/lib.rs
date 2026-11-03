@@ -101,6 +101,8 @@ mod size_hints_tests;
 #[cfg(test)]
 mod world_admission_close_stay_tests;
 #[cfg(test)]
+mod world_automatic_focus_identity_tests;
+#[cfg(test)]
 mod world_born_tests;
 #[cfg(test)]
 mod world_capacity_diagnostic_tests;

@@ -2831,34 +2831,39 @@ pub const MAX_TARGET_LANES_PER_WINDOW: usize = 626;
 /// Maximum canonical bytes of one emitted effect row with typed cause
 /// correlation (`{"id":,"kind":,"target":,"rev":"","cause":,"cmdSeq":null|
 /// `"N","awaitShown":B}`): 67 fixed punctuation plus the widest values
-/// the actual engine producers emit. The joint widest row is the hover
-/// intent over a maximum-length opaque window (`ffc-` is four bytes, so
-/// `ffc-` + 128 = 132 raw, 134 quoted; `af-` + 128 = 131 raw, 133
-/// quoted; `fx-<u64>` tops out at 25). Kind tops out at 7
-/// (`"focus"`/`"raise"`/`"stack"` quoted), target at 130 (128 opaque
-/// quoted), revision at 20 (`u64::MAX` digits), cause at 22
-/// (`focus-follows-cursor`, 20 bytes / 22 quoted; `automatic-admission` is
-/// 19 bytes / 21 quoted and stays covered), command sequence at 22 for rows that
-/// carry one (quoted `u64::MAX`) or 4 for the correlation-valid
-/// commandless rows (`null`; the hover row never carries a sequence), and
-/// the bool at 5 (`false`). Opaque ids never escape
-/// ([`crate::bounds::is_opaque_id`]), so quoted widths are exact:
-/// 67 + 134 + 7 + 130 + 20 + 22 + 4 + 5 = 389. The widest admission row
-/// is 387 and the widest explicit row is 294 by the same accounting.
-pub const MAX_EFFECT_ROW_BYTES: usize = 389;
+/// the actual engine producers emit. The joint widest row is the explicit
+/// command focus over a maximum-length opaque window (`fx-<u64::MAX>` is
+/// 23 raw, 25 quoted; compact `af-<token>` tops out at the same 23 raw /
+/// 25 quoted and `ffc-<token>` at 24 raw / 26 quoted, with at most 20
+/// token digits). Kind tops out at 7 (`"focus"`/`"raise"`/`"stack"`
+/// quoted), target at 130 (128 opaque quoted), revision at 20
+/// (`u64::MAX` digits), cause at 18 quoted on the explicit-command row
+/// (`explicit-command`, 16 bytes), which carries a command sequence;
+/// `focus-follows-cursor` (20 bytes / 22 quoted) rides the compact hover
+/// id and `automatic-admission` (19 bytes / 21 quoted) rides the compact
+/// admission id, both on commandless rows, command sequence at 22 for
+/// rows that carry one (quoted `u64::MAX`) or 4 for the
+/// correlation-valid commandless rows (`null`; automatic rows never carry
+/// a sequence), and the bool at 5 (`false`).
+/// Opaque ids never escape ([`crate::bounds::is_opaque_id`]), so quoted
+/// widths are exact: 67 + 25 + 7 + 130 + 20 + 18 + 22 + 5 = 294. The
+/// widest compact admission row is 279 (67 + 25 + 7 + 130 + 20 + 21 + 4
+/// + 5) and the widest compact hover row is 281 (67 + 26 + 7 + 130 + 20
+/// + 22 + 4 + 5) by the same accounting.
+pub const MAX_EFFECT_ROW_BYTES: usize = 294;
 
 /// Pre-mutation reserve for coexisting one-shot effects: at most one
 /// fresh-admission focus plus at most one explicit-command focus per
 /// report, conservatively two joint-widest rows plus one array comma
-/// (2 * 389 + 1 = 779). The admission pass mints at most one intent;
+/// (2 * 294 + 1 = 589). The admission pass mints at most one intent;
 /// command execution mints at most one explicit focus; a same-target
 /// admission duplicate drops in favor of the explicit winner, so
 /// different targets are the only two-row case, and a focus-follows-cursor
 /// hover never mints when any focus effect is already present, so two
-/// hovers never coexist: the actual widest coexistence is the admission
-/// maximum (387) plus the explicit maximum (294) plus one comma (682),
-/// asserted as a witness below. No raise/stack producer exists in the
-/// engine; the closed kinds stay encodable without a reserve of their
+/// hovers never coexist: the actual widest coexistence is the compact
+/// admission maximum (279) plus the explicit maximum (294) plus one comma
+/// (574), asserted as a witness below. No raise/stack producer exists in
+/// the engine; the closed kinds stay encodable without a reserve of their
 /// own.
 pub const MAX_EFFECT_RESERVE_BYTES: usize = MAX_EFFECT_ROW_BYTES * 2 + 1;
 
@@ -3846,15 +3851,14 @@ mod effect_vocabulary_sizing_tests {
         reply
     }
 
-    fn worst_effect() -> OneShotEffect {
-        // Joint-widest shape the actual engine producers emit: the hover
-        // intent over a maximum-length opaque window (`ffc-` is four
-        // bytes), the longest cause token that rides a commandless row,
-        // the largest revision, no command sequence (hover rows never
-        // correlate), and the costlier bool. Correlation-valid by
-        // construction: cause and sequence agree.
+    fn widest_hover() -> OneShotEffect {
+        // Correlation-valid by construction: the compact hover identity
+        // over a maximum-length opaque window (`ffc-` plus the longest
+        // interned token), the longest cause that rides a commandless
+        // row, the largest revision, no command sequence (hover rows never
+        // correlate), and the costlier bool.
         OneShotEffect {
-            id: format!("ffc-{}", "w".repeat(128)),
+            id: format!("ffc-{}", u64::MAX),
             kind: EffectKind::Focus,
             target: WindowId("w".repeat(128)),
             issued_revision: u64::MAX,
@@ -3866,9 +3870,9 @@ mod effect_vocabulary_sizing_tests {
 
     fn widest_admission() -> OneShotEffect {
         OneShotEffect {
-            id: format!("af-{}", "w".repeat(128)),
+            id: format!("af-{}", u64::MAX),
             kind: EffectKind::Focus,
-            target: WindowId("w".repeat(128)),
+            target: WindowId("a".repeat(128)),
             issued_revision: u64::MAX,
             cause: EffectCause::AutomaticAdmission,
             command_seq: None,
@@ -3880,7 +3884,7 @@ mod effect_vocabulary_sizing_tests {
         OneShotEffect {
             id: format!("fx-{}", u64::MAX),
             kind: EffectKind::Focus,
-            target: WindowId("w".repeat(128)),
+            target: WindowId("b".repeat(128)),
             issued_revision: u64::MAX,
             cause: EffectCause::ExplicitCommand,
             command_seq: Some(u64::MAX),
@@ -3987,42 +3991,56 @@ mod effect_vocabulary_sizing_tests {
 
     #[test]
     fn max_effect_widths_derive_the_coexistence_reserve() {
-        // Encoder witnesses: the joint-widest producer row (hover intent)
-        // spells exactly MAX_EFFECT_ROW_BYTES. The only coexistence the
-        // engine produces is admission plus explicit, so the pair witness
-        // is correlation-valid by construction: the widest admission row
-        // plus the widest explicit row plus one comma spell 682, held
-        // under the conservative two-widest reserve.
-        let worst = worst_effect();
-        let one = reply_with_effects(vec![worst.clone()]);
+        // Encoder witnesses: the compact producer rows spell their maxima
+        // exactly. The joint-widest single row is the explicit command
+        // focus; the only coexistence the engine produces is admission
+        // plus explicit on distinct targets (same-target admission dedups
+        // in favor of the explicit winner), so the pair witness uses
+        // distinct 128-byte subjects and stays correlation-valid by
+        // construction: the widest compact admission row plus the widest
+        // explicit row plus one comma spell 574, held under the
+        // conservative two-widest reserve.
+        let hover = widest_hover();
+        let one = reply_with_effects(vec![hover.clone()]);
         let empty = reply_with_effects(Vec::new());
-        let row_len = encode_reply_canonical(&one).len() - encode_reply_canonical(&empty).len();
-        assert_eq!(row_len, MAX_EFFECT_ROW_BYTES, "worst row: {row_len}");
+        let hover_len = encode_reply_canonical(&one).len() - encode_reply_canonical(&empty).len();
+        assert_eq!(hover_len, 281, "widest hover row: {hover_len}");
+        let explicit = widest_explicit();
+        let explicit_one = reply_with_effects(vec![explicit.clone()]);
+        let explicit_len =
+            encode_reply_canonical(&explicit_one).len() - encode_reply_canonical(&empty).len();
         assert_eq!(
-            MAX_EFFECT_ROW_BYTES, 389,
-            "67 fixed + 134 id + 7 kind + 130 target + 20 rev + 22 cause + 4 seq + 5 bool"
+            explicit_len, MAX_EFFECT_ROW_BYTES,
+            "worst row: {explicit_len}"
+        );
+        assert_eq!(
+            MAX_EFFECT_ROW_BYTES, 294,
+            "67 fixed + 25 id + 7 kind + 130 target + 20 rev + 18 cause + 22 seq + 5 bool"
         );
         let admission = widest_admission();
         let admission_one = reply_with_effects(vec![admission.clone()]);
         let admission_len =
             encode_reply_canonical(&admission_one).len() - encode_reply_canonical(&empty).len();
-        assert_eq!(admission_len, 387, "widest admission row: {admission_len}");
-        let explicit = widest_explicit();
-        let explicit_one = reply_with_effects(vec![explicit.clone()]);
-        let explicit_len =
-            encode_reply_canonical(&explicit_one).len() - encode_reply_canonical(&empty).len();
-        assert_eq!(explicit_len, 294, "widest explicit row: {explicit_len}");
-        let pair = reply_with_effects(vec![admission, explicit]);
+        assert_eq!(admission_len, 279, "widest admission row: {admission_len}");
+        let pair = reply_with_effects(vec![admission.clone(), explicit.clone()]);
+        assert_ne!(
+            admission.target, explicit.target,
+            "coexisting rows name distinct subjects"
+        );
+        assert_ne!(
+            admission.id, explicit.id,
+            "coexisting rows carry distinct identities"
+        );
         let pair_len = encode_reply_canonical(&pair).len() - encode_reply_canonical(&empty).len();
         assert_eq!(
-            pair_len, 682,
+            pair_len, 574,
             "actual widest coexistence (admission + explicit + comma): {pair_len}"
         );
         assert!(
             pair_len <= MAX_EFFECT_RESERVE_BYTES,
             "coexistence fits the conservative reserve"
         );
-        assert_eq!(MAX_EFFECT_RESERVE_BYTES, 779);
+        assert_eq!(MAX_EFFECT_RESERVE_BYTES, 589);
         assert_eq!(MAX_EFFECT_RESERVE_BYTES, 2 * MAX_EFFECT_ROW_BYTES + 1);
     }
 

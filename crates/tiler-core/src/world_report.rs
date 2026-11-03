@@ -351,8 +351,9 @@ impl OneShotEffect {
     /// The `fx-<seq>` identity remains unchanged but carries
     /// no correlation meaning; [`OneShotEffect::is_explicit_focus_for`]
     /// reads the typed cause and command sequence only. Automatic
-    /// admission intents mint `af-<window>` instead and must never actuate
-    /// focus on adapters keeping observed-focus authority.
+    /// admission intents mint compact `af-<token>` identities instead and
+    /// must never actuate focus on adapters keeping observed-focus
+    /// authority.
     #[must_use]
     pub fn explicit_focus(command_seq: u64, target: WindowId, issued_revision: u64) -> Self {
         Self {

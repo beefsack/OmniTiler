@@ -238,7 +238,11 @@ fn burst_batch_pins_last_eligible_newcomer_once() {
         arrival.effects
     );
     assert_eq!(arrival.effects[0].target.0, "w3", "last newcomer");
-    assert_eq!(arrival.effects[0].id, "af-w3");
+    assert_eq!(
+        arrival.effects[0].id,
+        format!("af-{}", arrival.effects[0].issued_revision),
+        "compact admission identity"
+    );
     let echo = accepted(
         &mut engine,
         &report(
@@ -458,7 +462,11 @@ fn normalized_ordinary_float_newcomer_focuses_once() {
         arrival.effects
     );
     assert_eq!(arrival.effects[0].target.0, "w2");
-    assert_eq!(arrival.effects[0].id, "af-w2");
+    assert_eq!(
+        arrival.effects[0].id,
+        format!("af-{}", arrival.effects[0].issued_revision),
+        "compact admission identity"
+    );
     assert!(row_of(&arrival, "w2").floating, "newcomer floats");
     let echo = accepted(
         &mut engine,
@@ -660,7 +668,11 @@ fn fixed_tile_override_newcomer_still_mints_once() {
         arrival.effects
     );
     assert_eq!(arrival.effects[0].target.0, "wt");
-    assert_eq!(arrival.effects[0].id, "af-wt");
+    assert_eq!(
+        arrival.effects[0].id,
+        format!("af-{}", arrival.effects[0].issued_revision),
+        "compact admission identity"
+    );
     assert!(
         !row_of(&arrival, "wt").floating,
         "override tiles: {:?}",
@@ -885,7 +897,11 @@ fn closed_automatic_lifetime_reused_as_ordinary_mints_again() {
         readmit.effects
     );
     assert_eq!(readmit.effects[0].target.0, "wf");
-    assert_eq!(readmit.effects[0].id, "af-wf");
+    assert_eq!(
+        readmit.effects[0].id,
+        format!("af-{}", readmit.effects[0].issued_revision),
+        "compact admission identity"
+    );
 }
 
 #[test]
@@ -924,7 +940,11 @@ fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
         seq_ordinary.effects
     );
     assert_eq!(seq_ordinary.effects[0].target.0, "wa");
-    assert_eq!(seq_ordinary.effects[0].id, "af-wa");
+    assert_eq!(
+        seq_ordinary.effects[0].id,
+        format!("af-{}", seq_ordinary.effects[0].issued_revision),
+        "compact admission identity"
+    );
     // Sequential fixed arrival is tiled-first (the classifier path);
     // the batched echo below observes the already-floated result.
     let seq_fixed = accepted(
@@ -1083,7 +1103,11 @@ fn mixed_batch_fixed_first_mints_ordinary() {
         arrival.effects
     );
     assert_eq!(arrival.effects[0].target.0, "wo");
-    assert_eq!(arrival.effects[0].id, "af-wo");
+    assert_eq!(
+        arrival.effects[0].id,
+        format!("af-{}", arrival.effects[0].issued_revision),
+        "compact admission identity"
+    );
     assert!(
         row_of(&arrival, "wf").floating,
         "fixed still floats automatic"
