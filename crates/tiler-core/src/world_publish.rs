@@ -248,6 +248,9 @@ impl WorldEngine {
         // order (latest wins) lands on the one canonical slot under the
         // publish held scopes before any native write is built below.
         self.record_published_focus(&effects, held_scopes);
+        // Freeze the actually emitted ordinary focus batch: a newer batch
+        // supersedes the older one, an effect-free reply retains it.
+        self.retain_published_focus(&effects);
         // Command-created logicals land after convergence: mint their
         // explicit creation desires here (idempotent with the pre-command
         // ensure) so the same reply authorizes them. Same-reply desires

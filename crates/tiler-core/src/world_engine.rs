@@ -722,6 +722,14 @@ pub struct WorldEngine {
     /// generation (retained sessions persist there too); a new generation
     /// constructs a new [`WorldEngine`].
     pub(crate) admission_focus_spent: BTreeSet<String>,
+    /// Retained ordinary focus settlement for the latest emitted focus
+    /// batch (see [`crate::world_focus`]): at most two grants (admission
+    /// plus explicit command), each with its emitted effect, first
+    /// exact-tuple correlated feedback row, and historical verdict. Pruned
+    /// on explicit close and proven complete departure like the other
+    /// lifetime ledgers; reset on handshake by fresh construction.
+    /// Never a row, slot, or wire value.
+    pub(crate) retained_focus: Vec<crate::world_focus::RetainedFocusGrant>,
     /// Cursor-first behavior settings retained from the latest accepted
     /// report (2026-10-20): switch target, fresh placement, and the
     /// stage-4b focus-follows-cursor/cursor-warp flags. Refreshed per
@@ -1157,6 +1165,7 @@ impl WorldEngine {
             operation_settled: Vec::new(),
             placement_bootstrapped: false,
             admission_focus_spent: BTreeSet::new(),
+            retained_focus: Vec::new(),
             switch_target: crate::cursor_targeting::SwitchTarget::default(),
             fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
             focus_follows_cursor: false,
@@ -2849,6 +2858,11 @@ impl WorldEngine {
         // runs before sweep holds. Once per accepted report, including
         // consumed-command reports (no early return above).
         self.settle_states(report);
+        // Ordinary focus feedback settles against the retained latest
+        // batch before the sweep: historical correlation only, never
+        // current-authority or readability gated, so consumed and
+        // observation-only reports settle exactly like command reports.
+        self.settle_focus_feedback(report);
         // Core-owned frame policy: fold mechanical write/readback facts into
         // retained clamp/transient memory (scoped by exact staged lifetime)
         // so this same reply publishes suppression.
@@ -3347,6 +3361,7 @@ impl WorldEngine {
                 self.excluded_intent.retain(|id, _| !closed.contains(id));
             }
             self.prune_state_bindings(report);
+            self.prune_focus_grants(report);
             // Lifetime-local composed maximize follows the live inventory:
             // a complete report drops dead identities (engine/member-known
             // lifetimes stay like the state bindings above), explicit closes

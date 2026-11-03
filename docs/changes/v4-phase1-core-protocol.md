@@ -45,6 +45,20 @@
   Existing producers retain their identities and focus behavior, publishing
   awaitShown=false until explicit-selection readiness/settlement is implemented.
   Immutable true/false shape witnesses establish encoding only, not a new grant.
+- Focus settlement next consumes ordinary (`awaitShown=false`) grants actually
+  published by the engine. Retain only the latest focus batch (currently at most
+  admission plus explicit command), across observation-only revisions, and bind
+  feedback by the entire opaque id/target/issuing-revision tuple. Preserve the
+  first correlated call/no-call facts and original stamp; later contradictory,
+  superseded or ended-lifetime evidence cannot replace them. Foreground proof
+  requires the reported equality proof and matching post target, not setter
+  success. A refused setter with a readable unchanged non-target foreground is
+  refusal evidence; unknown, blocked and other unproven facts remain unproven.
+  These are historical ordinary-focus verdicts, not current foreground authority.
+  Accepted focus memory remains unchanged. This bounded internal prerequisite
+  emits no SwitchEvent or visibility authority: frozen switch membership,
+  arrival-ready selection grants and visibility accounting remain dependent work.
+  The separately recorded overlong automatic-effect identity gap remains open.
 
 - Intent dependency order: validate/canonically encode the core-owned opaque
   inner record first; then wire outer report/reply records and consume them in
@@ -1038,6 +1052,36 @@
   identity mapping preserving the spent-effect fence is still required before
   v4 cutover. This is not full wire conformance or a new failure of the metadata
   slice, and the probe is not retained as a passing conformance test.
+- Ordinary focus settlement now retains the actual latest published focus batch,
+  preserving the original opaque effect tuple across observation-only revisions.
+  The first matching feedback row latches its complete facts and original stamp;
+  later contradictory rows cannot upgrade or replace the historical verdict.
+  Proven foreground requires foregroundProven plus post equality, independent of
+  setter success. Refused requires a refused setter and equal readable non-target
+  pre/post foreground; all other attempts remain unproven. Arrival brackets and
+  current foreground observations confer no historical ordinary-focus verdict.
+  No verdict changes accepted-choice memory or emits effects, retries, hides,
+  transfer events or switch completion.
+- Twenty focused regressions cover real explicit, admission and cursor-follow
+  producers, the full two-effect batch, opaque tuple mismatches, delayed feedback,
+  original-stamp/first-row retention, proof/refusal/unknown combinations, held
+  presence, close/reuse, supersession, consumed commands, command-only rollback,
+  envelope non-adoption and duplicate replay. The initial missing-ledger test
+  expressed a compile-time gap, not a behavioral red. Review found a positional
+  prune iterator that short-circuit liveness checks could desynchronize. A
+  mixed-live/departed direct ledger probe failed before the keyed-set correction
+  and passes after it; the seeded departure probes do not establish a native
+  lifetime outcome. The production two-effect bound is asserted without silently
+  truncating emitted grants. Review findings are resolved.
+- Final ordinary-focus verification passes the exact filtered core/protocol gate
+  (1530 core unit tests, all selected integration targets and protocol suites
+  49/11/4/15/8/2/58/4), core/protocol build, scoped all-target clippy with warnings
+  denied and formatting. Whitespace, added/new-file ASCII and local link-path
+  checks pass. Only workspace_unsafe_posture is filtered. This is an internal
+  ordinary-focus prerequisite, not awaitShown readiness, frozen switch accounting,
+  general visibility targets, native-free selection completion or full v4 codec
+  conformance. The overlong automatic-effect identity gap and all eight OPEN/TBD
+  fixture gates remain unchanged.
 
 ## Tentative decisions pending user review
 
@@ -1130,6 +1174,9 @@
    Typed effect cause/command correlation and awaitShown encoding are implemented
    and offline-tested, with current grants false and coexisting-effect reservation
    enforced before mutation. Existing long effect identities remain a cutover gap.
+   Latest-batch ordinary-focus feedback correlation and one-shot historical
+   verdict settlement are implemented and offline-tested; visibility targets,
+   arrival-ready selection and switch completion remain dependent work.
   The remaining world report/reply paths and version are still staged; no v4
   cutover or full scenario acceptance is claimed. Full adapter build-failure
   inventory remains pending.

@@ -39,6 +39,7 @@ pub mod world_commands;
 pub mod world_cursor;
 pub mod world_directional;
 pub mod world_engine;
+pub(crate) mod world_focus;
 mod world_frames;
 pub(crate) mod world_fullscreen;
 mod world_gesture;
@@ -117,6 +118,8 @@ mod world_float_boundary_tests;
 mod world_float_membership_tests;
 #[cfg(test)]
 mod world_focus_feedback_tests;
+#[cfg(test)]
+mod world_focus_settlement_tests;
 #[cfg(test)]
 mod world_frame_fixture_tests;
 #[cfg(test)]
