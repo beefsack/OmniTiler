@@ -770,14 +770,17 @@ pub fn native_creations_estimate(creations: &[crate::world_report::NativeCreatio
 
 /// Structural reply size estimate for the uniform presentation section,
 /// field-by-field from [`encode_presentation`] below. `,"presentation":`
-/// (16) plus the object: foreground id, border shape, underlay shape, and
-/// pager content.
+/// (16) plus the object: foreground id, required revision label, border
+/// shape, underlay shape, and pager content.
 #[must_use]
 pub fn presentation_estimate(presentation: &crate::world_presentation::WorldPresentation) -> usize {
     use crate::world_presentation::PresentationUnderlay;
-    // `,"presentation":{"foreground":,"border":,"underlay":,"pager":[]}`
-    // = 67 punctuation plus the foreground id.
-    let mut bytes = 67 + json_string_len(&presentation.foreground);
+    // `,"presentation":{"foreground":,"rev":"","border":,"underlay":,
+    // "pager":[]}` = 76 punctuation plus the foreground id plus the
+    // revision digits. The revision rides every publication, quoted
+    // decimal immediately after the foreground (`,"rev":""` = 9 plus
+    // digits); the suspended-output verdict below stays optional.
+    let mut bytes = 76 + json_string_len(&presentation.foreground) + u64_len(presentation.rev);
     // `,"suspendedOutput":S` = 19 punctuation plus the output id, only when
     // the verdict is present (omitted otherwise, so default bytes stay exact).
     if let Some(output) = presentation.suspended_output.as_ref() {
@@ -2542,10 +2545,11 @@ pub fn encode_operation_settled(out: &mut String, settled: &[crate::world_report
 }
 
 /// Exact canonical encoding for the uniform presentation section: the
-/// tick-time foreground token plus the border shape, the underlay shape,
-/// and the pager content, with frozen key order (mirrored by
-/// [`presentation_estimate`] and the protocol codec). Public so the
-/// protocol transport gate reuses the identical bytes.
+/// tick-time foreground token, the required issuing revision label
+/// (quoted decimal immediately after the foreground), plus the border
+/// shape, the underlay shape, and the pager content, with frozen key
+/// order (mirrored by [`presentation_estimate`] and the protocol codec).
+/// Public so the protocol transport gate reuses the identical bytes.
 pub fn encode_presentation(
     out: &mut String,
     presentation: &crate::world_presentation::WorldPresentation,
@@ -2553,6 +2557,9 @@ pub fn encode_presentation(
     use crate::world_presentation::PresentationUnderlay;
     out.push_str("{\"foreground\":");
     push_json_string(out, &presentation.foreground);
+    out.push_str(",\"rev\":\"");
+    out.push_str(&presentation.rev.to_string());
+    out.push('"');
     // Neutral focused-fullscreen suspension verdict: omitted entirely when
     // absent so default publication bytes stay exact.
     if let Some(output) = presentation.suspended_output.as_ref() {
@@ -2983,7 +2990,9 @@ pub const MAX_EFFECT_RESERVE_BYTES: usize = MAX_EFFECT_ROW_BYTES * 2 + 1;
 ///   / float shapes fit in 2048; a migration member list scales with the
 ///   report's live window count (one max-length id + comma per window, 131
 ///   each) plus 512 base.
-/// - uniform presentation: the border shape fits in 256; the underlay
+/// - uniform presentation: the required revision label reserves its
+///   worst case explicitly (9 punctuation plus 20 digits = 29, never
+///   envelope slack); the border shape fits in 256; the underlay
 ///   members scale with the report's live window count (one max-length
 ///   leaf/window pair plus rect and comma per window, 300 each) plus 1024
 ///   base; pager workspaces scale with the logical workspace count (one
@@ -3070,6 +3079,9 @@ pub fn reply_upper_bound(
         .saturating_add(2048)
         .saturating_add(512)
         .saturating_add(256)
+        // Required presentation revision label worst case: `,"rev":""`
+        // (9) plus the longest quoted `u64` (20).
+        .saturating_add(29)
         .saturating_add(report_windows.saturating_mul(300))
         .saturating_add(1024)
         .saturating_add(logical_workspaces.saturating_mul(320))
@@ -4088,6 +4100,108 @@ mod effect_vocabulary_sizing_tests {
              \"rev\":\"18446744073709551615\",\"cause\":\"automatic-admission\",\
              \"cmdSeq\":null,\"awaitShown\":false}"
         ));
+    }
+
+    #[test]
+    fn presentation_rev_marginal_is_exact_and_reserved() {
+        // Required revision label: quoted decimal immediately after the
+        // foreground and before the optional suspended output. The
+        // assertions below pin the marginal width only (exactly 9 +
+        // digits at every causal width: 0, 9, 10, u64::MAX); the
+        // surrounding estimates keep their pre-existing conservative
+        // slack. The pre-mutation bound carries the 29-byte worst case
+        // as an explicit term, pinned by an exact headroom equality.
+        let mut zero = reply_with_effects(Vec::new());
+        zero.presentation.foreground = "win-a".to_owned();
+        zero.presentation.rev = 0;
+        let zero_wire = encode_reply_canonical(&zero);
+        let mut zero_section = String::new();
+        encode_presentation(&mut zero_section, &zero.presentation);
+        let zero_stripped = zero_section.replacen(",\"rev\":\"0\"", "", 1);
+        assert_ne!(
+            zero_stripped.len(),
+            zero_section.len(),
+            "baseline label strips exactly once"
+        );
+        for rev in [0u64, 9, 10, u64::MAX] {
+            let mut reply = zero.clone();
+            reply.presentation.rev = rev;
+            let mut section = String::new();
+            encode_presentation(&mut section, &reply.presentation);
+            assert!(
+                section.starts_with(&format!("{{\"foreground\":\"win-a\",\"rev\":\"{rev}\"")),
+                "rev rides quoted immediately after the foreground: {section}"
+            );
+            // Absolute accounting against the wire with the label
+            // removed locally in the test: the field costs 9 + digits.
+            let needle = format!(",\"rev\":\"{rev}\"");
+            let stripped = section.replacen(&needle, "", 1);
+            assert_eq!(
+                section.len() - stripped.len(),
+                9 + u64_len(rev),
+                "absolute label width is 9 + digits at rev {rev}"
+            );
+            assert_eq!(
+                stripped, zero_stripped,
+                "only the label digits vary at rev {rev}"
+            );
+            let wire = encode_reply_canonical(&reply);
+            assert_eq!(
+                wire.len() - zero_wire.len(),
+                u64_len(rev) - u64_len(0),
+                "marginal presentation width is exact at rev {rev}"
+            );
+            assert_eq!(
+                presentation_estimate(&reply.presentation)
+                    - presentation_estimate(&zero.presentation),
+                wire.len() - zero_wire.len(),
+                "presentation estimate marginal stays exact at rev {rev}"
+            );
+            assert_eq!(
+                reply_estimate(&reply) - reply_estimate(&zero),
+                wire.len() - zero_wire.len(),
+                "reply estimate marginal stays exact at rev {rev}"
+            );
+            assert!(
+                reply_estimate(&reply) >= wire.len(),
+                "estimate covers the reply at rev {rev}"
+            );
+        }
+        // Optional suspended output still trails the required label.
+        let mut suspended = zero.clone();
+        suspended.presentation.rev = 7;
+        suspended.presentation.suspended_output =
+            Some(crate::directional::OutputId("out-b".to_owned()));
+        let mut section = String::new();
+        encode_presentation(&mut section, &suspended.presentation);
+        assert!(
+            section.starts_with(
+                "{\"foreground\":\"win-a\",\"rev\":\"7\",\"suspendedOutput\":\"out-b\""
+            ),
+            "suspended output trails the label: {section}"
+        );
+        // Independent labels: the nested witness carries its own rev
+        // while the outer reply carries another (no equality promise).
+        let mut split = zero.clone();
+        split.state_revision = 2;
+        split.presentation.rev = 1;
+        let wire = encode_reply_canonical(&split);
+        assert!(wire.contains("\"rev\":\"2\""), "outer label: {wire}");
+        assert!(
+            wire.contains("\"foreground\":\"win-a\",\"rev\":\"1\""),
+            "nested label stays independent: {wire}"
+        );
+        // Pre-mutation bound: for an empty report every report-dependent
+        // term is zero, so the headroom over the request estimate must
+        // equal the fixed budget plus the explicit 29-byte worst-case
+        // label exactly. Dropping the reservation breaks this equality
+        // (the 4096 envelope slack alone cannot cover it).
+        let empty = report_full(1, 1, Vec::new(), Vec::new(), Vec::new(), "", None, None);
+        assert_eq!(
+            reply_upper_bound(&empty, 0, 0, 0, 0, 0).saturating_sub(report_estimate(&empty)),
+            4096 + MAX_EFFECT_RESERVE_BYTES + 2048 + 512 + 256 + 29 + 1024 + 96,
+            "explicit 29-byte label reserve is load-bearing in the headroom"
+        );
     }
 
     #[test]

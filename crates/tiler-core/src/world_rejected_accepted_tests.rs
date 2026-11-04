@@ -299,7 +299,7 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
 #[test]
 fn rejected_seq_consumed_then_duplicate_replays() {
     let mut engine = engine();
-    match engine.handle_report(&report(
+    let base = match engine.handle_report(&report(
         1,
         vec![fact("w0", "out-a", 0)],
         "w0",
@@ -307,9 +307,9 @@ fn rejected_seq_consumed_then_duplicate_replays() {
         None,
         None,
     )) {
-        WorldOutcome::Accepted(_) => {}
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("base accepted, got {other:?}"),
-    }
+    };
     let rejected_report = report(
         2,
         vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
@@ -331,11 +331,28 @@ fn rejected_seq_consumed_then_duplicate_replays() {
             kind: CommandRejectKind::FocusUnknown
         })
     );
+    // The refused command still publishes its observation: the
+    // presentation is recomputed for this publication and labeled with
+    // its own revision, advancing past the base.
+    assert_eq!(
+        rejected_reply.presentation.rev,
+        rejected_reply.state_revision
+    );
+    assert_ne!(
+        rejected_reply.presentation.rev, base.presentation.rev,
+        "rejected-but-published advances the label"
+    );
+    let mut published = String::new();
+    crate::world_sizing::encode_presentation(&mut published, &rejected_reply.presentation);
     // Exact duplicate replays the cached reply with no new revision.
     match engine.handle_report(&rejected_report) {
         WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.state_revision, rejected_reply.state_revision);
             assert_eq!(cached.command_result, rejected_reply.command_result);
+            assert_eq!(cached.presentation.rev, rejected_reply.presentation.rev);
+            let mut replayed = String::new();
+            crate::world_sizing::encode_presentation(&mut replayed, &cached.presentation);
+            assert_eq!(published, replayed, "duplicate replays identical bytes");
         }
         other => panic!("exact repeat replays duplicate, got {other:?}"),
     }
@@ -363,6 +380,9 @@ fn rejected_seq_consumed_then_duplicate_replays() {
                 "fresh obs still incorporates: {:?}",
                 row_window_ids(&reply)
             );
+            // Consumed reconciliations publish too: fresh observation,
+            // fresh label on the consumed revision.
+            assert_eq!(reply.presentation.rev, reply.state_revision);
         }
         other => panic!("consumed seq reconciles, got {other:?}"),
     }

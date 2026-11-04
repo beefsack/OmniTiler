@@ -13,24 +13,26 @@
 
 1. Exact JSON primitives, handshake and settings vocabulary/codecs, with
    fixture-backed tests for canonical bytes and strict envelope validation.
-2. Replace report/reply types and codecs, including held rows, all closed
-   catalogs and exact comparisons for every message fixture.
-3. Migrate the real world engine: lifetime/settings, raw-fact classification,
-   scaled geometry, intent, state, visibility, presentation and settlement.
-4. Execute every ordered scenario and assertion against the engine with generic
-   offline mechanics for native-model steps; preserve the eight evidence gates.
-5. Consolidate inherited contract rules, remove the v3 guide and code paths,
-   and run build/test/clippy gates plus adapter build-failure inventory.
+2. Finish two-way v4 report/reply types and codecs after presentation revision,
+   including held rows, all closed catalogs and exact message fixture comparisons;
+   remove legacy envelope keys and bump the version without compatibility shapes.
+3. Exercise a development-only KDE vertical slice: handshake, report/reply loop,
+   selection, arrival, focus feedback, then state targets.
+4. Complete scaled metrics, physical reconnect/rehome and the ordered scenario
+   runner, informed by KDE findings; preserve the eight evidence gates.
+5. Consolidate inherited contract rules and remaining v3 removal, including the
+   v3 guide at cutover, and run build/test/clippy gates plus adapter build-failure
+   inventory. Sequential platform conformance still precedes live release acceptance.
 
-- Remaining dependency order after composed maximize: accepted-report/rejected-
-  command handling; visibility/focus/selection completion; presentation and other
-  scaled metrics; physical reconnect/rehome; full bidirectional message codecs;
-  generic ordered-scenario execution with the OPEN gates; v3 removal/version
-  cutover; final adapter compile-failure inventory. Observation incorporation must
-  survive command refusal before later reconciliation and scenario acceptance can
-  rely on it. Command-local rejection is now converted without weakening envelope
-  validation or retaining partial command mutations; visibility/focus/selection
-  completion is the next dependent increment.
+- Remaining dependency order (User 2026-11-04): finish presentation revision;
+  full two-way v4 codecs, legacy envelope removal and version bump; KDE vertical
+  slice; scaled metrics, physical reconnect/rehome (including held-output member
+  loss), scenario runner and remaining v3 removal. Accepted-report/rejected-command
+  handling and offline visibility/focus/selection are complete; native acceptance
+  remains open. The KDE slice is development-only until scaled metrics and rehome
+  land. Core quality and shared-platform design discussion govern host findings;
+  no KDE-specific workaround is authorized. See the
+  [migration decision and principles](../decisions/contract.md#contract-authority-and-v4-migration).
 - Visibility/focus/selection is split at its missing evidence vocabulary. First
   add required focusFeedback ingress with exclusive native/output arrival shapes,
   nullable raw foreground facts, report-wide bounds, digest/size accounting and
@@ -403,6 +405,44 @@
   delivery, full v4 codecs/scenarios or reconnect/rehome. No adapter, immutable
   fixture, version or new wire vocabulary changes are included; all eight OPEN/TBD
   gates and unsupported native/reference outcomes remain unchanged.
+
+## Common presentation revision publication
+
+- Add the required `WorldPresentation.rev` to the real producer, both canonical
+  writers and exact size accounting, with an explicit worst-case envelope reserve.
+  Ready replies already recompute presentation at publication; label that result
+  with the issuing world revision. Empty not-ready presentations use the current
+  world revision without advancing it or granting authority. Cached duplicates
+  retain the original bytes. This is an issuance label, not a native draw receipt.
+- Preserve independent typed revision values in the writer: standalone message
+  fixtures are shape witnesses, not transitions, and may carry a presentation
+  revision different from the enclosing world revision. The ordered decoration
+  scenario advances the presentation label when recomputing on a newer report.
+- Verify real accepted, command-refused, consumed, bootstrap and replay paths;
+  quoted counter ordering in both writers; exact marginal sizing through maximum
+  counter width; and pre-mutation bounds. No new counter, revision-based input
+  refusal, retained-presentation optimization or draw receipt is introduced.
+- Anchored border, presentation ingress, renderer input, scaled styles and other
+  metric threading remain separate work, as do reconnect/rehome and held-output
+  member loss. No adapter, immutable fixture or version changes are included;
+  all eight OPEN/TBD gates remain unchanged.
+- Implemented and verified through the actual publication paths and shared
+  encoder. Three new regressions plus extended refusal/consumed/bootstrap checks
+  cover issuing labels, same-observation recomputation, cached replay, independent
+  typed revision values, maximum quoted counters and canonical optional-field
+  order. The field adds exactly 9 punctuation bytes plus counter digits; the
+  explicit 29-byte pre-mutation reservation has a regression-sensitive equality.
+  Existing conservative estimate slack remains unchanged. Independent review
+  found no blocking issue; its reserve-test weakness was corrected without a
+  production change. The bootstrap golden required one narrowly causal field
+  addition after its expected byte mismatch; no unrelated oracle was weakened.
+- Direct final verification passes the exact filtered core/protocol gate (1632
+  core unit tests, all selected integration targets and protocol suites
+  50/12/4/15/2/8/2/60/4), core/protocol build, scoped all-target clippy with warnings
+  denied, formatting, whitespace, added ASCII and local-link checks. Only
+  workspace_unsafe_posture is filtered. This is required-field publication, not
+  complete v4 codecs, renderer-input validation, native draw evidence or full
+  presentation/scaling acceptance. The phase note remains active.
 
 ## Evidence
 

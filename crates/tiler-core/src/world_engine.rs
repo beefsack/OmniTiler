@@ -1563,7 +1563,12 @@ impl WorldEngine {
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
             cursor_warp: None,
-            presentation: crate::world_presentation::WorldPresentation::default(),
+            // Empty bootstrap mirrors the current revision: no counter
+            // advance, no authority.
+            presentation: crate::world_presentation::WorldPresentation {
+                rev: self.state_revision,
+                ..Default::default()
+            },
             intent_writes: Vec::new(),
             switch_settled: Vec::new(),
         }
@@ -2184,7 +2189,12 @@ impl WorldEngine {
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
             cursor_warp: None,
-            presentation: crate::world_presentation::WorldPresentation::default(),
+            // Empty bootstrap mirrors the current revision: no counter
+            // advance, no authority.
+            presentation: crate::world_presentation::WorldPresentation {
+                rev: self.state_revision,
+                ..Default::default()
+            },
             intent_writes: Vec::new(),
             switch_settled: Vec::new(),
         }
@@ -3499,6 +3509,10 @@ impl WorldEngine {
         reply.presentation = self.presentation_for_publish(report);
         self.state_revision += 1;
         reply.state_revision = self.state_revision;
+        // Common publication token: every ready publication recomputes the
+        // presentation above, so its issuing label is this reply's own
+        // revision. No new counter, no retention, no comparison.
+        reply.presentation.rev = reply.state_revision;
         if report.observation_seq > self.last_observation_seq || !self.has_last {
             self.last_observation_seq = report.observation_seq;
         }

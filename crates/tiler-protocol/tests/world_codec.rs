@@ -1210,6 +1210,51 @@ fn compact_automatic_effects_encode_identically_through_both_reply_writers() {
 }
 
 #[test]
+fn reply_presentation_rev_encodes_quoted_exact_order() {
+    // Required revision label at maximum width: both writers spell the
+    // quoted `u64::MAX` byte-identically, the label rides immediately
+    // after the foreground and before the optional suspended output, and
+    // the nested label stays independent of the outer reply revision.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    let mut engine = connected_engine("gen-1", HostCapabilities::default());
+    let mut reply = match engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    assert_eq!(
+        reply.presentation.rev, reply.state_revision,
+        "real publication labels its own revision"
+    );
+    reply.presentation.foreground = "win-a".to_owned();
+    reply.presentation.rev = u64::MAX;
+    reply.state_revision = 7;
+    reply.presentation.suspended_output =
+        Some(tiler_core::directional::OutputId("out-b".to_owned()));
+    let wire = encode_reply(&reply);
+    let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
+    assert_eq!(wire, canonical, "transport mirrors the core writer");
+    assert!(
+        wire.contains(
+            "\"foreground\":\"win-a\",\
+             \"rev\":\"18446744073709551615\",\
+             \"suspendedOutput\":\"out-b\""
+        ),
+        "quoted max label rides between foreground and suspended output"
+    );
+    assert!(
+        wire.contains("\"rev\":\"7\""),
+        "outer reply revision stays independent"
+    );
+    let estimate = tiler_core::world_report::reply_estimate(&reply);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+    assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
+}
+
+#[test]
 fn reply_gesture_settled_matches_core_sizing() {
     // A reply carrying a gesture terminal encodes identically on both
     // writers, and the structural estimate bounds the exact bytes.
@@ -1310,7 +1355,7 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
          \"obs\":\"0\",\"rev\":\"0\",\"ready\":false,\"consumed\":false,\
          \"scopes\":[],\"workspaces\":[],\"outputs\":[],\"windows\":[],\
          \"transfers\":[],\"effects\":[],\"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"nativeCreations\":[],\"warpCursor\":null,\
-         \"presentation\":{\"foreground\":\"\",\"border\":{\"visible\":false,\"reason\":\"no-target\",\"inner\":null,\"outer\":null},\
+         \"presentation\":{\"foreground\":\"\",\"rev\":\"0\",\"border\":{\"visible\":false,\"reason\":\"no-target\",\"inner\":null,\"outer\":null},\
          \"underlay\":{\"status\":\"hidden\",\"reason\":\"no-group\",\"baseRev\":null},\"pager\":[]},\"intentWrites\":[],\"switchSettled\":[],\"diagnostics\":[]}"
     );
 }
@@ -2307,6 +2352,10 @@ fn startup_ordering_end_to_end_decode_engine_encode() {
     assert!(!bootstrap.ready);
     assert!(bootstrap.scopes.is_empty());
     assert!(bootstrap.effects.is_empty());
+    assert_eq!(
+        bootstrap.presentation.rev, bootstrap.state_revision,
+        "empty bootstrap mirrors the current revision"
+    );
     let bootstrap_wire = encode_reply(&bootstrap);
     assert!(bootstrap_wire.contains("\"ready\":false"));
     assert!(bootstrap_wire.contains("\"req\":\"req-1\""));
@@ -2330,6 +2379,10 @@ fn startup_ordering_end_to_end_decode_engine_encode() {
     };
     assert!(ready.ready);
     assert!(engine.is_ready());
+    assert_eq!(
+        ready.presentation.rev, ready.state_revision,
+        "ready publication labels its own revision"
+    );
     let ready_wire = encode_reply(&ready);
     assert!(ready_wire.contains("\"ready\":true"));
     let parsed: WorldReplyWire = serde_json::from_str(&ready_wire).expect("valid json");

@@ -212,8 +212,9 @@
 //! per op), plus
 //! `warpCursor`: null or the desired `[x,y]` cursor-warp point
 //! (cross-output focus only), plus `presentation`: the uniform
-//! border/underlay/pager presentation (`foreground` token, `border` shape,
-//! `underlay` found/hidden shape, `pager` content), plus `diagnostics`: []
+//! border/underlay/pager presentation (`foreground` token, required `rev`
+//! issuing label, `border` shape, `underlay` found/hidden shape, `pager`
+//! content), plus `diagnostics`: []
 //! or one `{"scope","row","id","kind"}` object per held identifiable row
 //! (a missing `id` encodes as JSON null, never the empty string).
 //! Bootstrap/discovery replies reuse the same shape with `ready:false` and

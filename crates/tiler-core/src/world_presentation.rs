@@ -110,11 +110,18 @@ pub enum PresentationUnderlay {
 
 /// Uniform per-reply presentation: the tick-time foreground token the shapes
 /// were computed for (the renderer revalidates the live foreground against
-/// it and never paints stale shapes), the border shape, the underlay shape,
-/// and the pager content.
+/// it and never paints stale shapes), the issuing `state_revision` label
+/// for the publication that computed them, the border shape, the underlay
+/// shape, and the pager content.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorldPresentation {
     pub foreground: String,
+    /// Issuing revision label: the `state_revision` the publishing finish
+    /// assigned to the reply carrying this presentation. A technical token
+    /// for the newly computed publication, not a retained counter, a
+    /// comparison, or draw proof (the renderer's drawn receipt is its own
+    /// `RendererInput.rev`).
+    pub rev: u64,
     /// Opt-in neutral focused-fullscreen suspension verdict (stage 5): the
     /// observed output whose border/underlay/pager shapes are suspended
     /// because the focused surface is truthfully fullscreen there. `None`
@@ -813,6 +820,9 @@ impl WorldEngine {
         let suspended = self.focused_fullscreen_suspended_output(report);
         WorldPresentation {
             foreground: ingress.foreground.clone(),
+            // The issuing label is stamped by the publishing finish after
+            // it advances the counter; the producer only computes shapes.
+            rev: 0,
             suspended_output: suspended.clone(),
             border: self.presentation_border(ingress, suspended.as_ref()),
             underlay: self.presentation_underlay(ingress, suspended.as_ref()),
@@ -1367,6 +1377,99 @@ mod tests {
             }
             other => panic!("expected duplicate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn presentation_rev_labels_each_accepted_publication() {
+        // Every accepted publication recomputes the presentation, so its
+        // issuing label is the reply's own revision: successive accepts
+        // advance the label, a fresh same-observation recompute does too,
+        // and a duplicate replay replays the cached bytes exactly. The
+        // empty bootstrap mirrors the current revision without advancing
+        // it and authorizes nothing.
+        let (mut engine, _) = admitted_pair();
+        let members = || {
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-b", 800),
+            ]
+        };
+        let first = accepted(
+            &mut engine,
+            &report(3, 3, members(), "win-a", None, None, None, ingress("win-a")),
+        );
+        assert_eq!(first.presentation.rev, first.state_revision);
+        let second = accepted(
+            &mut engine,
+            &report(4, 4, members(), "win-a", None, None, None, ingress("win-a")),
+        );
+        assert_eq!(second.presentation.rev, second.state_revision);
+        assert_ne!(
+            second.presentation.rev, first.presentation.rev,
+            "successive publications label distinct revisions"
+        );
+        // Fresh same-observation request recomputes (chord flip) with a
+        // new label, never a replay.
+        let third = accepted(
+            &mut engine,
+            &report(
+                5,
+                4,
+                members(),
+                "win-a",
+                None,
+                None,
+                None,
+                PresentationIngress {
+                    chord_held: false,
+                    ..ingress("win-a")
+                },
+            ),
+        );
+        assert_eq!(third.presentation.rev, third.state_revision);
+        assert_ne!(
+            third.presentation.rev, second.presentation.rev,
+            "same-observation recompute advances the label"
+        );
+        let mut published = String::new();
+        crate::world_sizing::encode_presentation(&mut published, &third.presentation);
+        match engine.handle_report(&report(
+            5,
+            4,
+            members(),
+            "win-a",
+            None,
+            None,
+            None,
+            PresentationIngress {
+                chord_held: false,
+                ..ingress("win-a")
+            },
+        )) {
+            WorldOutcome::Duplicate(cached) => {
+                assert_eq!(cached.presentation.rev, third.presentation.rev);
+                let mut replayed = String::new();
+                crate::world_sizing::encode_presentation(&mut replayed, &cached.presentation);
+                assert_eq!(published, replayed, "duplicate replays identical bytes");
+            }
+            other => panic!("expected duplicate, got {other:?}"),
+        }
+        // Ready-state bootstrap mirrors the current revision: same label
+        // as the last publication, still unready and unauthorized.
+        let revision = engine.state_revision();
+        let bootstrap = engine.bootstrap_reply("adapter-1", "req-bootstrap");
+        assert_eq!(bootstrap.presentation.rev, revision);
+        assert_eq!(bootstrap.state_revision, revision);
+        assert!(!bootstrap.ready);
+        assert!(bootstrap.scopes.is_empty());
+        assert!(bootstrap.windows.is_empty());
+        assert!(bootstrap.effects.is_empty());
+        assert_eq!(
+            engine.state_revision(),
+            revision,
+            "bootstrap advances nothing"
+        );
     }
 
     #[test]
