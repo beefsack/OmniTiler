@@ -745,6 +745,10 @@
         pruning to staged observations; 4b-2 moves the remaining observation
         lanes. Native/view proof and command dependencies stay with their
         existing owners rather than being pulled into the lifetime increment.
+        Split 4b-2 into 4b-2a state, ordinary-focus and frame settlement, then
+        the remaining selection/native/gesture/cursor/clear/born/topology
+        consumers. Preserve the view-proof, command-helper and run/finish
+        ownership boundaries below; this split does not change migration order.
    5. View-proof migration replacing the `views` echo legs (`view_echo_for`,
      staged echo fill, `settle_views_pre`, selection proof) with visibility and
      focus proof. The contract settles the receipt predicates (removed `views`
@@ -958,6 +962,44 @@
   fixture, manifest, adapter, feature, public ingress or version change is
   included. V4-driven pruning tests do not establish accepted-run or scenario
   execution; remaining lane consumers stay 4b-2, with command adaptation in 4c.
+- Sub-increment 4b-2a plan: move native-state attempt settlement, ordinary-focus
+  feedback settlement and mechanical frame settlement onto staged observations.
+  Keep their accepted-run positions and post-rollback staged readability joins
+  unchanged. State attempts retain first exact-tuple evidence before holds;
+  focus feedback retains its first historical verdict independently of current
+  readability. Frame counter-evidence still precedes watermark consumption and
+  learning, and burst timing uses the captured clock. Use only narrow lane/scalar
+  extraction where mutation requires ownership, never a full observation clone.
+  Verify both intakes, current versus prior capture, held/incomplete/barrier
+  behavior, unsupported state attempts, contradictory redelivery, frame replay,
+  learned-floor ordering, burst clock and explicit-close memory retirement.
+  No selection/native view proof, presentation, command helper, envelope,
+  prior-report retention or v4 accepted-run/scenario assembly is included.
+- Sub-increment 4b-2a outcome: state, ordinary-focus and frame settlement now
+  consume the staged raw attempt/feedback lanes, completeness, clock and closes,
+  with staged gesture barriers and unchanged classified-fact/domain joins.
+  Their legacy accepted-run call positions are unchanged. State/focus loops
+  borrow their captured lanes; frame mutation clones only its attempt lane once,
+  never the full observation. First evidence, frame counter-evidence ordering,
+  replay fences and the existing fact-or-member frame-memory pruning predicate
+  remain unchanged. Five new dual-intake regressions cover incomplete/barrier/
+  held state receipts and readable recovery, same-tuple contradictions, focus
+  receipts under holds, frame replay, learned-floor veto/clear/relearn, burst
+  timing and explicit-close retirement of all four frame maps. The unsupported
+  state-attempt test now drives the actual v4 intake and proves non-consumption.
+  Test-only homing/domain seeds isolate settlement; these checks establish no
+  v4 accepted-run assembly, native ordering or scenario execution. Review found
+  no blocking source issue; follow-up corrected two gate-discrimination oracles
+  and a clone-on-Copy lint without production changes. New tests were first run
+  after implementation, not established as preimplementation behavioral reds.
+  Final direct verification passes the filtered core/protocol gate (1681 core
+  unit tests and every selected integration/protocol target), build, scoped
+  all-target clippy with warnings denied, formatting, whitespace, added ASCII,
+  NUL and local-link checks. Only `workspace_unsafe_posture` is filtered.
+  No new tentative decision, contract, fixture, manifest, adapter, feature,
+  public ingress or version change is included. Remaining observation lanes
+  stay in 4b-2, command helpers in 4c and dependent proof/assembly work with
+  its existing owners. The phase note remains active.
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
 - Capability-held cursor grading repair plan: reproduce a valid v4 report whose
   native cursor hit names a newly capability-held window, then keep that window

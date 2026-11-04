@@ -869,7 +869,7 @@ fn v4_unsupported_sticky_attempt_emits_diagnostic_and_preserves_raw() {
 
 #[test]
 fn v4_unsupported_attempt_does_not_settle() {
-    use crate::world_report::{AttemptOutcome, WorldReport};
+    use crate::world_report::AttemptOutcome;
     use crate::world_state::{RetainedStateBinding, RetainedStateTarget};
     let mut engine = engine_with_caps(caps_sticky_native_free());
     engine.retained_states.insert(
@@ -890,24 +890,29 @@ fn v4_unsupported_attempt_does_not_settle() {
             above_meta: None,
         },
     );
-    let mut legacy: WorldReport = report_full(
-        1,
+    let attempt = state_attempt("win-a", StateProperty::Sticky, true, 1);
+    let mut report = report_v4(
         1,
         vec![screen("out-a", 0)],
         vec![fact("win-a", "out-a", 0)],
         Vec::new(),
-        "",
-        None,
-        None,
+        Vec::new(),
+        Vec::new(),
+        false,
     );
-    legacy.state_attempts = vec![state_attempt("win-a", StateProperty::Sticky, true, 1)];
-    engine.settle_states(&legacy);
+    report.state_attempts = vec![attempt.clone()];
+    engine.stage_facts_v4(&report);
+    // The real staged v4 attempt is present in the capture; settlement
+    // still ignores it for the unsupported property.
+    assert_eq!(engine.staged.observation.state_attempts, vec![attempt]);
+    engine.settle_states();
     let binding = engine
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
         .expect("binding retained");
     assert!(!binding.spent);
     assert!(binding.pending.is_none());
+    assert_eq!(binding.disposition, AttemptOutcome::Unattempted);
 }
 
 #[test]

@@ -8,7 +8,7 @@ use crate::session::DomainKey;
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
     AttemptOutcome, AuthorityScope, FrameSetter, HeldWindowRow, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, StateAttempt, StateProperty, WindowFact, WorldReport,
+    RowDiagnosticLane, StateAttempt, StateProperty, WindowFact,
 };
 
 pub(crate) const MAX_RETAINED_STATE_BINDINGS: usize = crate::world_report::MAX_WORLD_FACTS * 4;
@@ -146,11 +146,12 @@ impl WorldEngine {
             && self.fullscreen_entry_pending(window)
     }
 
-    pub(crate) fn settle_states(&mut self, report: &WorldReport) {
+    pub(crate) fn settle_states(&mut self) {
         if self.retained_states.len() > MAX_RETAINED_STATE_BINDINGS {
             return;
         }
-        for attempt in &report.state_attempts {
+        let attempts = &self.staged.observation.state_attempts;
+        for attempt in attempts {
             if !state_property_supported(self.capabilities(), attempt.property) {
                 continue;
             }
@@ -196,7 +197,7 @@ impl WorldEngine {
                 }
                 None => continue,
             };
-            let next = self.classify_state_attempt(report, &target, &pending);
+            let next = self.classify_state_attempt(&target, &pending);
             if let Some(binding) = self.retained_states.get_mut(&key) {
                 binding.disposition = next;
             }
@@ -205,11 +206,10 @@ impl WorldEngine {
 
     fn classify_state_attempt(
         &self,
-        report: &WorldReport,
         target: &RetainedStateTarget,
         pending: &StateAttempt,
     ) -> AttemptOutcome {
-        let current = self.state_readable_value(report, &target.window, target.property);
+        let current = self.state_readable_value(&target.window, target.property);
         match pending.setter {
             FrameSetter::Refused => match (pending.pre, pending.post, current) {
                 (Some(pre), Some(post), Some(current))
@@ -229,13 +229,8 @@ impl WorldEngine {
         }
     }
 
-    fn state_readable_value(
-        &self,
-        report: &WorldReport,
-        window: &WindowId,
-        property: StateProperty,
-    ) -> Option<bool> {
-        if !report.inventory_complete || report.gesture_barrier {
+    fn state_readable_value(&self, window: &WindowId, property: StateProperty) -> Option<bool> {
+        if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
             return None;
         }
         let fact = self.staged.facts.get(window)?;

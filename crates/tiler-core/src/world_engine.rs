@@ -2982,12 +2982,12 @@ impl WorldEngine {
         // readability join must see the committed homing, and the raw capture
         // runs before sweep holds. Once per accepted report, including
         // consumed-command reports (no early return above).
-        self.settle_states(report);
+        self.settle_states();
         // Ordinary focus feedback settles against the retained latest
         // batch before the sweep: historical correlation only, never
         // current-authority or readability gated, so consumed and
         // observation-only reports settle exactly like command reports.
-        self.settle_focus_feedback(report);
+        self.settle_focus_feedback();
         // Selection arrival bindings settle the same way: first exact
         // opaque-tuple correlation latches raw evidence with no authority
         // upgrade, so consumed and observation-only reports settle alike.
@@ -2999,7 +2999,7 @@ impl WorldEngine {
         // Core-owned frame policy: fold mechanical write/readback facts into
         // retained clamp/transient memory (scoped by exact staged lifetime)
         // so this same reply publishes suppression.
-        self.settle_frames(report);
+        self.settle_frames();
         // Cursor observations remain report facts; computational policy is
         // retained from the connection settings envelope.
         self.prev_cursor = self.last_cursor;

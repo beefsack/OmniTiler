@@ -11,7 +11,7 @@ use crate::gesture::{GestureIngress, GestureKind, GesturePhase};
 use crate::intent_data::{IntentData, encode_intent_data};
 use crate::session::DomainKey;
 use crate::world_directional::tests::{accepted, fact, rect, report_full, screen};
-use crate::world_engine::{ExcludedIntent, StagedObservation, WorldEngine};
+use crate::world_engine::{ExcludedIntent, StagedDomain, StagedObservation, WorldEngine};
 use crate::world_focus::{FocusVerdict, RetainedFocusGrant};
 use crate::world_members::MemberState;
 use crate::world_report::{
@@ -1988,4 +1988,661 @@ fn lifetime_prune_v4_graded_hold_keeps_presence_without_eligibility() {
             .any(|held| held.0 == "win-a"),
         "canonical memory follows preserved raw presence"
     );
+}
+
+// 4b-2: state, ordinary-focus and frame settlement consume the staged
+// capture on both intakes. The v4 accepted-run domain assembly is unbuilt,
+// so tests seed the post-rollback staged join directly (homed window plus
+// one readable domain; no conversion, no runtime change) and drive settle_*().
+fn engine_settle() -> WorldEngine {
+    WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            fullscreen: true,
+            maximize: true,
+            native_sticky: true,
+            above: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation")
+}
+
+fn seed_readable_domain(engine: &mut WorldEngine, window: &str) {
+    let key = home_key("out-a");
+    engine
+        .staged
+        .homing
+        .insert(WindowId(window.to_owned()), key.clone());
+    engine.staged.domains.push(StagedDomain {
+        key,
+        bounds: rect(0, 0, 800, 560),
+        gap: 0,
+        outer_gap: 0,
+        windows: Vec::new(),
+        focused: WindowId(String::new()),
+        minimized: Vec::new(),
+        unreadable: Vec::new(),
+        closed: Vec::new(),
+        readable: true,
+        hold: None,
+    });
+}
+
+/// Independently constructed same-content pair per intake (no conversion).
+/// Tests set lane fields on each member; `stage_either` only picks intake.
+fn pair_reports(
+    seq: u64,
+    windows: Vec<WindowFact>,
+    closed: Vec<WindowId>,
+) -> (WorldReport, WorldReportV4) {
+    let mut legacy = report_full(
+        seq,
+        seq,
+        vec![screen("out-a", 0)],
+        windows.clone(),
+        Vec::new(),
+        "",
+        None,
+        None,
+    );
+    legacy.closed = closed.clone();
+    let v4 = report_v4_simple(
+        seq,
+        vec![screen("out-a", 0)],
+        Vec::new(),
+        windows,
+        Vec::new(),
+        closed,
+    );
+    (legacy, v4)
+}
+
+fn stage_either(
+    engine: &mut WorldEngine,
+    v4: bool,
+    legacy: &WorldReport,
+    v4report: &WorldReportV4,
+) {
+    if v4 {
+        stage_v4_ingested(engine, v4report);
+    } else {
+        stage_ingested(engine, legacy);
+    }
+}
+
+fn sticky_fact(window: &str, value: Option<bool>) -> WindowFact {
+    let mut row = fact(window, "out-a", 0);
+    row.sticky = value;
+    row
+}
+
+fn state_attempt(
+    target: bool,
+    revision: u64,
+    setter: FrameSetter,
+    pre: Option<bool>,
+    post: Option<bool>,
+) -> StateAttempt {
+    StateAttempt {
+        window: WindowId("win-a".to_owned()),
+        property: StateProperty::Sticky,
+        target,
+        revision,
+        setter,
+        pre,
+        post,
+        attempt_ms: 16,
+    }
+}
+
+fn assert_state(
+    engine: &WorldEngine,
+    v4: bool,
+    spent: bool,
+    pending: Option<StateAttempt>,
+    disposition: AttemptOutcome,
+    what: &str,
+) {
+    let got = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
+        .expect("binding retained");
+    assert_eq!(
+        (got.spent, got.pending.clone(), got.disposition),
+        (spent, pending, disposition),
+        "{what} (v4={v4})"
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_state(
+    engine: &mut WorldEngine,
+    v4: bool,
+    seq: u64,
+    windows: Vec<WindowFact>,
+    attempts: Vec<StateAttempt>,
+    complete: bool,
+    barrier: bool,
+    held: Vec<HeldWindowRow>,
+) {
+    let (mut legacy, mut v4report) = pair_reports(seq, windows, Vec::new());
+    legacy.inventory_complete = complete;
+    v4report.inventory_complete = complete;
+    legacy.gesture_barrier = barrier;
+    v4report.gesture_barrier = barrier;
+    legacy.held_windows = held.clone();
+    v4report.held_windows = held;
+    legacy.state_attempts = attempts.clone();
+    v4report.state_attempts = attempts;
+    stage_either(engine, v4, &legacy, &v4report);
+    seed_readable_domain(engine, "win-a");
+}
+
+#[test]
+fn settle_state_gates_latch_first_evidence_then_recovers() {
+    for v4 in [false, true] {
+        let refused = state_attempt(true, 1, FrameSetter::Refused, Some(false), Some(false));
+        let mut engine = engine_settle();
+        insert_state_binding(&mut engine, "win-a");
+        // Superseded empty stage: settle must read the current capture.
+        let (old_leg, old_v4) = pair_reports(0, Vec::new(), Vec::new());
+        stage_either(&mut engine, v4, &old_leg, &old_v4);
+        // An unmatched tuple never spends.
+        let stray = state_attempt(true, 2, FrameSetter::Accepted, Some(false), Some(true));
+        stage_state(
+            &mut engine,
+            v4,
+            1,
+            vec![sticky_fact("win-a", Some(true))],
+            vec![stray],
+            true,
+            false,
+            Vec::new(),
+        );
+        engine.settle_states();
+        assert_state(
+            &engine,
+            v4,
+            false,
+            None,
+            AttemptOutcome::Unattempted,
+            "mismatch",
+        );
+        // First exact refused receipt DURING incomplete inventory latches
+        // spent with PossiblyExecuted: raw evidence records first, the
+        // incomplete gate alone denies readability.
+        stage_state(
+            &mut engine,
+            v4,
+            2,
+            vec![sticky_fact("win-a", Some(false))],
+            vec![refused.clone()],
+            false,
+            false,
+            Vec::new(),
+        );
+        engine.settle_states();
+        assert_state(
+            &engine,
+            v4,
+            true,
+            Some(refused.clone()),
+            AttemptOutcome::PossiblyExecuted,
+            "incomplete latch",
+        );
+        // Barrier and held-only receipts latch the same way on isolated
+        // engines: each gate alone denies readability.
+        for (what, complete, barrier, windows, held) in [
+            (
+                "barrier latch",
+                true,
+                true,
+                vec![sticky_fact("win-a", Some(false))],
+                Vec::new(),
+            ),
+            (
+                "hold latch",
+                true,
+                false,
+                Vec::new(),
+                vec![held_window_row("win-a", "out-a", 0)],
+            ),
+        ] {
+            let mut gated = engine_settle();
+            insert_state_binding(&mut gated, "win-a");
+            stage_state(
+                &mut gated,
+                v4,
+                2,
+                windows,
+                vec![refused.clone()],
+                complete,
+                barrier,
+                held,
+            );
+            gated.settle_states();
+            assert_state(
+                &gated,
+                v4,
+                true,
+                Some(refused.clone()),
+                AttemptOutcome::PossiblyExecuted,
+                what,
+            );
+        }
+        // A contradictory SAME-tuple accepted row cannot replace the latch.
+        let contra = state_attempt(true, 1, FrameSetter::Accepted, Some(false), Some(true));
+        stage_state(
+            &mut engine,
+            v4,
+            3,
+            vec![sticky_fact("win-a", Some(true))],
+            vec![contra],
+            true,
+            false,
+            Vec::new(),
+        );
+        engine.settle_states();
+        assert_state(
+            &engine,
+            v4,
+            true,
+            Some(refused.clone()),
+            AttemptOutcome::PossiblyExecuted,
+            "same tuple kept",
+        );
+        // Recovery: readable sticky=false proves the ORIGINAL refusal with
+        // no new attempt row.
+        stage_state(
+            &mut engine,
+            v4,
+            4,
+            vec![sticky_fact("win-a", Some(false))],
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+        );
+        engine.settle_states();
+        assert_state(
+            &engine,
+            v4,
+            true,
+            Some(refused.clone()),
+            AttemptOutcome::RefusedProven,
+            "recovery proves",
+        );
+    }
+}
+
+fn focus_grant(engine: &mut WorldEngine) {
+    engine.retained_focus.push(RetainedFocusGrant {
+        effect: OneShotEffect::explicit_focus(3, WindowId("win-a".to_owned()), 1),
+        feedback: None,
+        verdict: FocusVerdict::Pending,
+    });
+}
+
+fn focus_row(id: &str, revision: u64) -> FocusFeedback {
+    FocusFeedback {
+        id: id.to_owned(),
+        target: WindowId("win-a".to_owned()),
+        revision,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: None,
+        post: Some(WindowId("win-a".to_owned())),
+        foreground_proven: true,
+        arrival: Vec::new(),
+        attempt_ms: 17,
+    }
+}
+
+fn assert_grant(
+    engine: &WorldEngine,
+    v4: bool,
+    verdict: FocusVerdict,
+    feedback: Option<FocusFeedback>,
+    what: &str,
+) {
+    let got = engine.retained_focus.first().expect("grant retained");
+    assert_eq!(
+        (got.verdict, got.feedback.clone()),
+        (verdict, feedback),
+        "{what} (v4={v4})"
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_focus(
+    engine: &mut WorldEngine,
+    v4: bool,
+    seq: u64,
+    windows: Vec<WindowFact>,
+    feedback: Vec<FocusFeedback>,
+    complete: bool,
+    barrier: bool,
+    held: Vec<HeldWindowRow>,
+) {
+    let (mut legacy, mut v4report) = pair_reports(seq, windows, Vec::new());
+    legacy.inventory_complete = complete;
+    v4report.inventory_complete = complete;
+    legacy.gesture_barrier = barrier;
+    v4report.gesture_barrier = barrier;
+    legacy.held_windows = held.clone();
+    v4report.held_windows = held;
+    legacy.focus_feedback = feedback.clone();
+    v4report.focus_feedback = feedback;
+    stage_either(engine, v4, &legacy, &v4report);
+}
+
+#[test]
+fn settle_focus_first_match_under_hold_beats_same_tuple() {
+    for v4 in [false, true] {
+        let mut engine = engine_settle();
+        focus_grant(&mut engine);
+        // Mismatched tuples precede the match and mint nothing.
+        stage_focus(
+            &mut engine,
+            v4,
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![focus_row("fx-9", 1), focus_row("fx-3", 2)],
+            true,
+            false,
+            Vec::new(),
+        );
+        engine.settle_focus_feedback();
+        assert_grant(&engine, v4, FocusVerdict::Pending, None, "mismatch");
+        // The first exact match arrives under held/incomplete/barrier and
+        // still latches history: no readability gate.
+        let matched = focus_row("fx-3", 1);
+        stage_focus(
+            &mut engine,
+            v4,
+            2,
+            Vec::new(),
+            vec![matched.clone()],
+            false,
+            true,
+            vec![held_window_row("win-a", "out-a", 0)],
+        );
+        engine.settle_focus_feedback();
+        assert_grant(
+            &engine,
+            v4,
+            FocusVerdict::Proven,
+            Some(matched.clone()),
+            "hold latch",
+        );
+        // A contradictory SAME-tuple row (refused shape, same opaque
+        // identity) cannot overwrite the latched history.
+        let same_contra = FocusFeedback {
+            setter: VisibilitySetter::Refused,
+            pre: Some(WindowId("win-a".to_owned())),
+            post: Some(WindowId("win-a".to_owned())),
+            foreground_proven: false,
+            ..matched.clone()
+        };
+        stage_focus(
+            &mut engine,
+            v4,
+            3,
+            vec![fact("win-a", "out-a", 0)],
+            vec![same_contra],
+            true,
+            false,
+            Vec::new(),
+        );
+        engine.settle_focus_feedback();
+        assert_grant(
+            &engine,
+            v4,
+            FocusVerdict::Proven,
+            Some(matched.clone()),
+            "same tuple kept",
+        );
+        // Negative control: mismatches alone on a fresh grant mint nothing.
+        let mut fresh = engine_settle();
+        focus_grant(&mut fresh);
+        stage_focus(
+            &mut fresh,
+            v4,
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![focus_row("fx-9", 1)],
+            true,
+            false,
+            Vec::new(),
+        );
+        fresh.settle_focus_feedback();
+        assert_grant(&fresh, v4, FocusVerdict::Pending, None, "control");
+    }
+}
+
+fn frame_attempt(
+    target: crate::geometry::Rect,
+    readback: Option<crate::geometry::Rect>,
+    setter: FrameSetter,
+    ms: u64,
+) -> FrameAttempt {
+    FrameAttempt {
+        window: WindowId("win-a".to_owned()),
+        target,
+        setter,
+        readback,
+        dpi_before: None,
+        dpi_after: None,
+        attempt_ms: ms,
+        operation_id: None,
+        prewrite: None,
+    }
+}
+
+fn stage_frames(
+    engine: &mut WorldEngine,
+    v4: bool,
+    seq: u64,
+    staged: crate::geometry::Rect,
+    attempts: Vec<FrameAttempt>,
+    ms: u64,
+) {
+    let mut staged_fact = fact("win-a", "out-a", 0);
+    staged_fact.rect = Some(staged);
+    let (mut legacy, mut v4report) = pair_reports(seq, vec![staged_fact], Vec::new());
+    legacy.frames = attempts.clone();
+    v4report.frames = attempts;
+    legacy.monotonic_ms = ms;
+    v4report.monotonic_ms = ms;
+    stage_either(engine, v4, &legacy, &v4report);
+    seed_readable_domain(engine, "win-a");
+}
+
+fn burst_of(engine: &WorldEngine) -> (u32, u64) {
+    let burst = engine
+        .frame_bursts
+        .get(&WindowId("win-a".to_owned()))
+        .expect("burst spent");
+    (burst.attempts, burst.last_change_ms)
+}
+
+fn learned_of(engine: &WorldEngine) -> Option<(Option<i32>, Option<i32>)> {
+    engine
+        .learned_mins
+        .get(&WindowId("win-a".to_owned()))
+        .map(|learned| (learned.min_w, learned.min_h))
+}
+
+#[test]
+fn settle_frames_replay_never_renews_suppression_or_budget() {
+    for v4 in [false, true] {
+        let mut engine = engine_settle();
+        let target = rect(0, 0, 200, 90);
+        let observed = rect(0, 0, 40, 90);
+        let attempt = frame_attempt(target, Some(observed), FrameSetter::Accepted, 1000);
+        stage_frames(&mut engine, v4, 1, observed, vec![attempt.clone()], 1000);
+        engine.settle_frames();
+        assert_eq!(
+            engine.staged.observation.frames,
+            vec![attempt.clone()],
+            "current capture (v4={v4})"
+        );
+        let memory = engine
+            .frames
+            .get(&WindowId("win-a".to_owned()))
+            .expect("clamp recorded")
+            .clone();
+        assert_eq!(
+            (
+                memory.desired,
+                memory.observed,
+                memory.clamped,
+                memory.last_ms
+            ),
+            (target, observed, true, 1000),
+            "v4={v4}"
+        );
+        assert_eq!(burst_of(&engine), (1, 1000), "captured clock (v4={v4})");
+        // Identical restage is a lost-ack redelivery: nothing renews.
+        stage_frames(&mut engine, v4, 2, observed, vec![attempt.clone()], 1000);
+        engine.settle_frames();
+        assert_eq!(
+            engine.frames.get(&WindowId("win-a".to_owned())),
+            Some(&memory),
+            "exact replay (v4={v4})"
+        );
+        assert_eq!(burst_of(&engine).0, 1, "no re-spend (v4={v4})");
+        // An older stamp for the same pair is stale, not fresh proof.
+        let older = frame_attempt(target, Some(observed), FrameSetter::Accepted, 500);
+        stage_frames(&mut engine, v4, 3, observed, vec![older], 1500);
+        engine.settle_frames();
+        assert_eq!(
+            engine.frames.get(&WindowId("win-a".to_owned())),
+            Some(&memory),
+            "older replay (v4={v4})"
+        );
+        // Fresh engine control consumes from the current capture alone.
+        let mut fresh = engine_settle();
+        stage_frames(&mut fresh, v4, 2, observed, vec![attempt.clone()], 1000);
+        fresh.settle_frames();
+        assert_eq!(
+            fresh.frames.get(&WindowId("win-a".to_owned())),
+            Some(&memory),
+            "no-history consumption (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn settle_frames_learned_counterevidence_vetoes_and_relearns() {
+    for v4 in [false, true] {
+        let mut engine = engine_settle();
+        let grown = rect(0, 0, 120, 90);
+        let target = rect(0, 0, 40, 90);
+        let small = rect(0, 0, 40, 90);
+        // Async clamp shape: readback proves dispatch at target, the later
+        // staged fact holds the larger stable size.
+        let learn = frame_attempt(target, Some(target), FrameSetter::Accepted, 1000);
+        stage_frames(&mut engine, v4, 1, grown, vec![learn], 1000);
+        engine.settle_frames();
+        assert_eq!(
+            learned_of(&engine),
+            Some((Some(120), None)),
+            "learn (v4={v4})"
+        );
+        // A smaller observation with a fresh refused attempt is transient
+        // preimage: the floor survives while the attempt still spends.
+        let refused = frame_attempt(target, Some(small), FrameSetter::Refused, 2000);
+        stage_frames(&mut engine, v4, 2, small, vec![refused], 2000);
+        engine.settle_frames();
+        assert_eq!(
+            learned_of(&engine),
+            Some((Some(120), None)),
+            "veto (v4={v4})"
+        );
+        assert_eq!(burst_of(&engine).0, 2, "vetoed spends (v4={v4})");
+        // A stable eligible smaller observation with only a clockless
+        // attempt (no ordering claim) clears the floor.
+        let clockless = frame_attempt(target, None, FrameSetter::Accepted, 0);
+        stage_frames(&mut engine, v4, 3, small, vec![clockless], 3000);
+        engine.settle_frames();
+        assert_eq!(learned_of(&engine), None, "cleared (v4={v4})");
+        // The same growth evidence re-establishes the floor.
+        let relearn = frame_attempt(target, Some(target), FrameSetter::Accepted, 4000);
+        stage_frames(&mut engine, v4, 4, grown, vec![relearn], 4000);
+        engine.settle_frames();
+        assert_eq!(
+            learned_of(&engine),
+            Some((Some(120), None)),
+            "relearn (v4={v4})"
+        );
+        // Explicit close retires all four maps even though retained
+        // membership would otherwise keep the lifetime.
+        let id = WindowId("win-a".to_owned());
+        engine.members.insert(
+            id.clone(),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        assert!(
+            engine.frames.contains_key(&id)
+                && engine.consumed_frames.contains_key(&id)
+                && engine.learned_mins.contains_key(&id)
+                && engine.frame_bursts.contains_key(&id),
+            "populated before close (v4={v4})"
+        );
+        let (close_leg, close_v4) = pair_reports(5, Vec::new(), vec![id.clone()]);
+        stage_either(&mut engine, v4, &close_leg, &close_v4);
+        engine.settle_frames();
+        assert!(
+            !engine.frames.contains_key(&id)
+                && !engine.consumed_frames.contains_key(&id)
+                && !engine.learned_mins.contains_key(&id)
+                && !engine.frame_bursts.contains_key(&id),
+            "close retires all four (v4={v4})"
+        );
+        assert!(
+            engine.members.contains_key(&id),
+            "close loop retired, not prune (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn settle_frames_burst_quiet_gap_rearms_from_captured_clock() {
+    for v4 in [false, true] {
+        let mut engine = engine_settle();
+        let target = rect(0, 0, 200, 90);
+        let first = rect(0, 0, 40, 90);
+        let drifted = rect(0, 0, 60, 90);
+        let one = frame_attempt(target, Some(first), FrameSetter::Accepted, 1000);
+        stage_frames(&mut engine, v4, 1, first, vec![one], 1000);
+        engine.settle_frames();
+        assert_eq!(burst_of(&engine), (1, 1000), "v4={v4}");
+        // Drift after a proven >=500ms quiet gap re-arms then spends once.
+        let two = frame_attempt(target, Some(drifted), FrameSetter::Accepted, 1800);
+        stage_frames(&mut engine, v4, 2, drifted, vec![two], 1800);
+        engine.settle_frames();
+        let rearmed = *engine
+            .frame_bursts
+            .get(&WindowId("win-a".to_owned()))
+            .expect("burst retained");
+        assert_eq!(
+            (rearmed.attempts, rearmed.last_change_ms),
+            (1, 1800),
+            "v4={v4}"
+        );
+        assert_eq!(rearmed.observed, drifted, "v4={v4}");
+        // Inside the burst the count accumulates with no quiet gap.
+        let three = frame_attempt(target, Some(drifted), FrameSetter::Accepted, 1900);
+        stage_frames(&mut engine, v4, 3, drifted, vec![three], 1900);
+        engine.settle_frames();
+        assert_eq!(burst_of(&engine).0, 2, "accumulates (v4={v4})");
+    }
 }

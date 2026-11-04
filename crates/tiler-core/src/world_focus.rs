@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 
 use crate::directional::WindowId;
 use crate::world_engine::WorldEngine;
-use crate::world_report::{FocusFeedback, OneShotEffect, VisibilitySetter, WorldReport};
+use crate::world_report::{FocusFeedback, OneShotEffect, VisibilitySetter};
 
 /// Historical verdict for one retained ordinary focus grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,12 +137,12 @@ impl WorldEngine {
     /// `(id, target, issuing revision)` match wins per grant, both within
     /// one report's rows and across later reports; unmatched tuples change
     /// nothing.
-    pub(crate) fn settle_focus_feedback(&mut self, report: &WorldReport) {
+    pub(crate) fn settle_focus_feedback(&mut self) {
         for grant in &mut self.retained_focus {
             if grant.feedback.is_some() {
                 continue;
             }
-            for row in &report.focus_feedback {
+            for row in &self.staged.observation.focus_feedback {
                 if row.id == grant.effect.id
                     && row.target == grant.effect.target
                     && row.revision == grant.effect.issued_revision

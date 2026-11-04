@@ -49,7 +49,7 @@ use crate::directional::WindowId;
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::WorldEngine;
-use crate::world_report::{FrameAttempt, FrameSetter, WorldReport};
+use crate::world_report::{FrameAttempt, FrameSetter};
 
 /// Backoff base for transient setter failures.
 pub(crate) const FRAME_TRANSIENT_BASE_MS: u64 = 500;
@@ -347,8 +347,8 @@ impl WorldEngine {
     /// maximized, fit-excluded, sticky and fixed-auto/suppress flags, plus
     /// missing/unreadable facts, unknown homing, unreadable domains and
     /// floating tiling modes. Neither growth nor DPI is judged here.
-    fn eligible_fact(&self, report: &WorldReport, window: &WindowId) -> Option<Rect> {
-        if !report.inventory_complete || self.staged.gesture_barrier {
+    fn eligible_fact(&self, window: &WindowId) -> Option<Rect> {
+        if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
             return None;
         }
         let fact = self.staged.facts.get(window)?;
@@ -398,7 +398,6 @@ impl WorldEngine {
     /// maximum over it.
     fn learnable_attempt(
         &self,
-        report: &WorldReport,
         attempt: &FrameAttempt,
         readback: &Rect,
     ) -> Option<(Option<i32>, Option<i32>)> {
@@ -408,7 +407,7 @@ impl WorldEngine {
         if dpi_basis_changed(attempt.dpi_before, attempt.dpi_after) {
             return None;
         }
-        let rect = self.eligible_fact(report, &attempt.window)?;
+        let rect = self.eligible_fact(&attempt.window)?;
         // Stable corroboration: the staged fact matches the readback
         // (synchronous clamp), or the readback proves the write landed at
         // target and the later staged fact is the stable size (async clamp
@@ -475,7 +474,7 @@ impl WorldEngine {
     /// it (impossible-fit request) or a declared maximum contradicts it
     /// (the max explains smallness). Suppression memory never vetoes: an
     /// old clamp cannot defeat fresh smaller evidence.
-    fn invalidate_learned(&mut self, report: &WorldReport) {
+    fn invalidate_learned(&mut self) {
         let snapshot: Vec<(WindowId, LearnedMin)> = self
             .learned_mins
             .iter()
@@ -488,7 +487,9 @@ impl WorldEngine {
             let mut undercut_w = false;
             let mut undercut_h = false;
             let mut tainted = false;
-            for attempt in report
+            for attempt in self
+                .staged
+                .observation
                 .frames
                 .iter()
                 .filter(|attempt| attempt.window == window)
@@ -520,7 +521,7 @@ impl WorldEngine {
             if tainted {
                 continue;
             }
-            let Some(rect) = self.eligible_fact(report, &window) else {
+            let Some(rect) = self.eligible_fact(&window) else {
                 continue;
             };
             let hints = self.staged.facts.get(&window).and_then(|fact| fact.hints);
@@ -558,11 +559,11 @@ impl WorldEngine {
     /// changes). Unreadable, minimized, or missing facts break continuity
     /// (the timestamp clears) without spending budget, so a resume from an
     /// observation gap can never time-reset the count.
-    fn update_burst_observations(&mut self, report: &WorldReport) {
-        let now_ms = report.monotonic_ms;
+    fn update_burst_observations(&mut self) {
+        let now_ms = self.staged.observation.monotonic_ms;
         let windows: Vec<WindowId> = self.frame_bursts.keys().cloned().collect();
         for window in windows {
-            let Some(current) = self.eligible_fact(report, &window) else {
+            let Some(current) = self.eligible_fact(&window) else {
                 if let Some(entry) = self.frame_bursts.get_mut(&window) {
                     entry.last_change_ms = 0;
                 }
@@ -643,16 +644,18 @@ impl WorldEngine {
     /// watermark, which survives exact-match clears: a replay never
     /// resurrects stale suppression nor clobbers newer authority. All three
     /// maps prune under one predicate (staged fact or retained member).
-    pub(crate) fn settle_frames(&mut self, report: &WorldReport) {
+    pub(crate) fn settle_frames(&mut self) {
         // Counter-evidence first, against the prior watermark only: still
         // narrower than the post-loop maps, so newly consumed current
         // attempts can never masquerade as redeliveries here. Fresh growth
         // in the loop below may then establish a new floor in the same
         // reply. Filtering here must stay a subset decision (stale or
         // clockless); never consult post-loop state.
-        self.invalidate_learned(report);
-        self.update_burst_observations(report);
-        for attempt in &report.frames {
+        self.invalidate_learned();
+        self.update_burst_observations();
+        let attempts = self.staged.observation.frames.clone();
+        let now_ms = self.staged.observation.monotonic_ms;
+        for attempt in &attempts {
             let (fact_rect, minimized) = match self.staged.facts.get(&attempt.window) {
                 Some(fact) => (fact.rect, fact.minimized == Some(true)),
                 None => continue,
@@ -672,7 +675,7 @@ impl WorldEngine {
             // target, whatever the setter or DPI basis. An unchanged target
             // accumulates; a changed target opens a fresh budget. Ineligible
             // rows (floats, overlays, unreadable facts, ...) never spend.
-            if let Some(current) = self.eligible_fact(report, &attempt.window) {
+            if let Some(current) = self.eligible_fact(&attempt.window) {
                 match self.frame_bursts.get_mut(&attempt.window) {
                     Some(entry) if entry.desired == attempt.target => {
                         entry.attempts = entry.attempts.saturating_add(1);
@@ -684,7 +687,7 @@ impl WorldEngine {
                                 desired: attempt.target,
                                 attempts: 1,
                                 observed: current,
-                                last_change_ms: report.monotonic_ms,
+                                last_change_ms: now_ms,
                             },
                         );
                     }
@@ -698,7 +701,7 @@ impl WorldEngine {
             // floor and watermark.
             if let Some(readback) = attempt.readback
                 && fact_rect.is_some()
-                && let Some(growth) = self.learnable_attempt(report, attempt, &readback)
+                && let Some(growth) = self.learnable_attempt(attempt, &readback)
             {
                 self.retain_learned(&attempt.window, growth);
             }
@@ -716,7 +719,8 @@ impl WorldEngine {
                     .insert(attempt.window.clone(), attempt.clone());
             }
         }
-        for id in &report.closed {
+        let closed = &self.staged.observation.closed;
+        for id in closed {
             self.frames.remove(id);
             self.consumed_frames.remove(id);
             self.learned_mins.remove(id);
