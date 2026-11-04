@@ -588,6 +588,47 @@
   genuine engine presentation/input integration remain separate. The phase note
   stays active.
 
+### v4 report codec sub-increments
+
+- Split the complete report codec into lossless typed decoding, then canonical
+  writing. The decoder increment covers all 126 valid, 81 accepted-held and 82
+  rejected report fixtures; the writer increment must round-trip all 207
+  accepted envelopes byte-exactly. Neither increment changes the runtime's
+  accepted version or bypasses the later genuine engine bridge and cutover.
+- Stage an independent typed v4 report using existing row vocabulary, with no
+  logical view echo, legacy presentation defaults or conversion to engine input.
+  Preserve malformed identifiable rows as held raw fields, with truthful narrow
+  identity/diagnostics where available. Required held presentation is not a
+  fabricated empty/default ingress. Retain original row ordering for the writer.
+- Keep capability-dependent conflicts separate from shape validation: four held
+  fixtures depend on handshake context (unavailable managed/executable facts and
+  native-free sticky facts/attempts). The context-free decoder must preserve
+  their typed facts, not infer capabilities or manufacture a conflict verdict.
+  Contextual grading remains an engine integration obligation.
+- Prove each rejected fixture's intended cause with its fixed rejection kind/
+  message. The untouched fixture is rejected first; only afterwards a minimal
+  in-memory repair at the manifest's invalid pointer must decode, as a positive
+  counterfactual rather than a way to reach the failure. This avoids extending
+  production errors with fixture metadata or counting incidental earlier
+  envelope failures as conformance. Immutable fixtures, public v3 paths,
+  adapters and version declarations remain unchanged.
+- Decoder outcome (increment 4a): the context-free whole-report decoder
+  rejects 80 of the 82 negatives from the untouched fixture with the intended
+  kind/message. The other two are byte-identical to valid sources with the
+  opposite manifest host-ownership context; the explicit host-context wrapper
+  rejects them as snapshot-invalid/arrival-host-mismatch under their declared
+  context and accepts the valid twins under theirs, per the existing
+  wrong-host rule. Of the 81 accepted-held fixtures, 77 hold structurally and 4
+  preserve typed capability-dependent facts. Structural gates (attempt section
+  totals including held rows, native order/duplicate/occupancy/known-output
+  coverage and global budget across held rows, cursor-hit and action-output
+  cross-checks, creation id/receipt/aggregate invariants over held rows,
+  presentation key/identity/geometry preflight before any hold) run before a
+  narrow hold can mask them. The nested creation receipt spelling (omitted/
+  null/empty/id) is preserved as protocol-owned wire metadata aligned to valid
+  creation rows. The canonical writer and byte-exact round-trip of all 207
+  accepted envelopes remain increment 4b.
+
 ## Evidence
 
 - Initial fixture inventory: 518 messages (275 valid, 3 settings-diagnostic,

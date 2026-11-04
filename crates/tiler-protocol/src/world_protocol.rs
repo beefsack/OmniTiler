@@ -231,15 +231,17 @@ use tiler_core::ids::{
     MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_NATIVE_WORKSPACE_ID_LEN, NativeWorkspaceId,
 };
 use tiler_core::world_report::{
-    ActivationPolicy, ArrivalBracket, ArrivalLocation, AuthorityScope, BorderHideReasonV4,
-    BorderPresentationV4, FocusFeedback, FrameWitness, FullscreenOwner, HeldScreenRow,
-    HeldWindowRow, HoldReason, IntentRecord, LastWrite, LastWritePath, LastWriteProperty,
-    MAX_INTENT_RECORDS, NativeObservation, NativeWorkspaceFact, OutputIdentity,
-    PresentationIngress, PresentationIngressV4, PresentationPagerFrameV4, RenderTarget,
+    ActivationPolicy, ArrivalBracket, ArrivalLocation, AttemptLaneV4, AuthorityScope,
+    BorderHideReasonV4, BorderPresentationV4, FocusFeedback, FrameWitness, FullscreenOwner,
+    HeldAttemptRow, HeldNativeRow, HeldPresentationRow, HeldScreenRow, HeldWindowRow, HoldReason,
+    IntentRecord, LastWrite, LastWritePath, LastWriteProperty, MAX_INTENT_RECORDS,
+    NativeObservation, NativeWorkspaceFact, OutputIdentity, PresentationIngress,
+    PresentationIngressV4, PresentationPagerFrameV4, PresentationRowV4, RenderTarget,
     RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport, ScreenView,
     TransferKind, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
     WORLD_CONTRACT_VERSION, WindowFact, WindowType, WorkspaceRef, WorldCommand, WorldReply,
-    WorldReport, check_screen_structure, check_window_structure, validate_report_reason,
+    WorldReport, WorldReportV4, check_screen_structure, check_window_structure,
+    validate_report_reason,
 };
 
 /// World protocol contract version (equals the core world contract version).
@@ -673,6 +675,30 @@ fn opt_text_or_null(
         Some(serde_json::Value::Null) => Ok(None),
         Some(serde_json::Value::String(text)) => {
             if !valid_identity_text(text) {
+                return Err(unknown_value());
+            }
+            Ok(Some(text.clone()))
+        }
+        Some(_) => Err(malformed()),
+    }
+}
+
+/// v4-only nullable bounded text (`role`, `appId`, `class`, `title`):
+/// normative bounded-text type accepts arbitrary UTF-8 including empty,
+/// NUL, and C0 controls within the metadata bound (general wire rules
+/// allow C0 including NUL JSON-escaped). Only wrong types refuse here
+/// (`malformed`); overbound refuses (`unknown-value`, held by the caller).
+/// v3 `opt_text_or_null` above stays exact (nonempty NUL-free identity
+/// grammar).
+fn opt_bounded_text_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<String>> {
+    match map.get(key) {
+        None => Err(malformed()),
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) => {
+            if text.len() > tiler_core::world_report::MAX_METADATA_TEXT_BYTES {
                 return Err(unknown_value());
             }
             Ok(Some(text.clone()))
@@ -3714,6 +3740,2087 @@ pub fn decode_request_with_wire(
 /// discarded.
 pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProtocolError> {
     decode_request_with_wire(json).map(|decoded| decoded.report)
+}
+
+// -- Staged v4 whole-report decoder --
+// Shape-only staging codec for the v4 contract (`rendererInput` carried,
+// `views` removed, identifiable bad rows held narrowly instead of refusing
+// the envelope). The v3 entrypoints above are untouched; the staged engine
+// use (unit 6) owns every verdict below. Snapshot refusal vocabulary is
+// reused verbatim from the core gate: no new error metadata is minted
+// here.
+
+/// Staged v4 world protocol version: `rendererInput` carried, `views`
+/// removed, identifiable bad rows held narrowly. The v3
+/// [`WORLD_PROTOCOL_VERSION`] constant stays untouched.
+pub const WORLD_PROTOCOL_VERSION_V4: u32 = 4;
+
+/// Per-valid-row creation-receipt wire spelling (lane-level
+/// `creationAttempts[].created`): the normalized
+/// [`tiler_core::world_report::NativeCreationAttempt::created_native`] value
+/// stays in the typed row; this records which tolerant spelling carried it.
+/// `Absent` means the key was omitted, `Null` an explicit `null`, `Empty`
+/// an explicit `""`, and `Id` a validated opaque lifetime.
+/// `Absent`/`Null`/`Empty` normalize to `None`; `Id` normalizes to `Some`.
+/// The id itself stays in the row. Held rows keep their raw fields plus
+/// ordinal instead, so this vector aligns to the valid creation rows only,
+/// in order. Never influences report equality, the digest, or engine input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreationReceiptWire {
+    Absent,
+    Null,
+    Empty,
+    Id,
+}
+
+/// Decoded v4 request plus its optional wire metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedReportV4 {
+    pub report: WorldReportV4,
+    pub wire: ReportWireOptionals,
+    /// Creation-receipt spellings aligned to [`WorldReportV4::creation_attempts`]
+    /// in order (one entry per valid row).
+    pub creation_receipts: Vec<CreationReceiptWire>,
+}
+
+/// Staged v4 attempt-row outcome: either a usable row or an identifiable
+/// row held narrowly with its carried fields retained.
+enum AttemptRowOutcome<T> {
+    Valid(T),
+    Held(HeldAttemptRow),
+}
+
+/// Staged v4 native-row outcome: either a usable row or an identifiable
+/// row held narrowly with its carried fields retained.
+enum NativeRowOutcome {
+    Valid(NativeObservation),
+    Held(HeldNativeRow),
+}
+
+/// Retain one identifiable-but-bad v4 attempt row: every carried key in
+/// the lane's canonical schema order, then any other carried keys
+/// lexicographically, as JSON-agnostic retained facts.
+fn held_attempt_row(
+    lane: AttemptLaneV4,
+    ordinal: usize,
+    map: &serde_json::Map<String, serde_json::Value>,
+    schema: &[&str],
+    identity: Vec<String>,
+    diagnostic: Option<RowDiagnostic>,
+) -> HeldAttemptRow {
+    let mut fields = Vec::with_capacity(map.len());
+    for key in schema {
+        if let Some(value) = map.get(*key) {
+            fields.push((key.to_string(), raw_setting_value(value)));
+        }
+    }
+    let mut extra: Vec<&String> = map
+        .keys()
+        .filter(|key| !schema.contains(&key.as_str()))
+        .collect();
+    extra.sort();
+    for key in extra {
+        fields.push((key.clone(), raw_setting_value(&map[key])));
+    }
+    HeldAttemptRow {
+        lane,
+        ordinal,
+        identity,
+        fields,
+        diagnostic,
+        kind: RowDiagnosticKind::InvalidFact,
+    }
+}
+
+/// Attempt-hold scope: the row's actual reported target output, when the
+/// carried `out` is a valid opaque id. Rows without an output (frame
+/// attempts name none) carry no scope authority (`None`).
+fn attempt_hold_scope(map: &serde_json::Map<String, serde_json::Value>) -> Option<RowDiagnostic> {
+    match map.get("out") {
+        Some(serde_json::Value::String(text)) if is_opaque_id(text) => Some(RowDiagnostic {
+            scope: AuthorityScope::Output(OutputId(text.clone())),
+            row: RowDiagnosticLane::Attempt,
+            id: Some(text.clone()),
+            kind: RowDiagnosticKind::InvalidFact,
+        }),
+        _ => None,
+    }
+}
+
+/// Retain one identifiable-but-bad v4 native row: every carried key in
+/// canonical schema key order (`out`, `order`, `current`, `occupancy`),
+/// then any other carried keys lexicographically, with an `InvalidFact`
+/// diagnostic over the output scope naming the output.
+fn held_native_row(
+    output: &OutputId,
+    ordinal: usize,
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> HeldNativeRow {
+    const SCHEMA_ORDER: &[&str] = &["out", "order", "current", "occupancy"];
+    let mut fields = Vec::with_capacity(map.len());
+    for key in SCHEMA_ORDER {
+        if let Some(value) = map.get(*key) {
+            fields.push((key.to_string(), raw_setting_value(value)));
+        }
+    }
+    let mut extra: Vec<&String> = map
+        .keys()
+        .filter(|key| !SCHEMA_ORDER.contains(&key.as_str()))
+        .collect();
+    extra.sort();
+    for key in extra {
+        fields.push((key.clone(), raw_setting_value(&map[key])));
+    }
+    HeldNativeRow {
+        output: output.clone(),
+        ordinal,
+        fields,
+        diagnostic: RowDiagnostic {
+            scope: AuthorityScope::Output(output.clone()),
+            row: RowDiagnosticLane::Native,
+            id: Some(output.0.clone()),
+            kind: RowDiagnosticKind::InvalidFact,
+        },
+    }
+}
+
+/// Retain one held v4 presentation ingress: every carried key in canonical
+/// contract table order, then any other carried keys lexicographically.
+/// The diagnostic is `Some` only when the carried `foregroundOut` names a
+/// truthful output scope, otherwise `None` (no scope is fabricated).
+fn held_presentation_row(map: &serde_json::Map<String, serde_json::Value>) -> HeldPresentationRow {
+    const SCHEMA_ORDER: &[&str] = &[
+        "foreground",
+        "minimized",
+        "maximized",
+        "fullscreen",
+        "hostHidden",
+        "hiddenWorkspace",
+        "frame",
+        "chordHeld",
+        "moveWindow",
+        "pagerOrder",
+        "pagerFrames",
+        "witness",
+        "foregroundOut",
+    ];
+    let mut fields = Vec::with_capacity(map.len());
+    for key in SCHEMA_ORDER {
+        if let Some(value) = map.get(*key) {
+            fields.push((key.to_string(), raw_setting_value(value)));
+        }
+    }
+    let mut extra: Vec<&String> = map
+        .keys()
+        .filter(|key| !SCHEMA_ORDER.contains(&key.as_str()))
+        .collect();
+    extra.sort();
+    for key in extra {
+        fields.push((key.clone(), raw_setting_value(&map[key])));
+    }
+    let diagnostic = match map.get("foregroundOut") {
+        Some(serde_json::Value::String(text)) if is_opaque_id(text) => Some(RowDiagnostic {
+            scope: AuthorityScope::Output(OutputId(text.clone())),
+            row: RowDiagnosticLane::Presentation,
+            id: Some(text.clone()),
+            kind: RowDiagnosticKind::InvalidFact,
+        }),
+        _ => None,
+    };
+    HeldPresentationRow {
+        fields,
+        kind: RowDiagnosticKind::InvalidFact,
+        diagnostic,
+    }
+}
+
+/// Staged v4 window-row decode: same carried keys as v3, but identifiable
+/// value failures hold the row narrowly instead of refusing the envelope.
+/// - Missing `win` refuses (`malformed`); a bad `win` id refuses
+///   (`unknown-value`); duplicates refuse via the shared seen set.
+/// - Missing `executable` refuses (`malformed`): process identity stays
+///   required. Every other missing required-nullable value key holds.
+/// - Missing/wrong-typed `out` refuses (`malformed`); a bad `out` id and
+///   bad `owner`/`parent` grammar refuse (`unknown-value`) even with a hold
+///   cause (existing rule).
+/// - Unknown non-retired keys refuse (`unknown-field`); retired membership
+///   keys hold; every other value failure (wrong types, unknown tokens,
+///   out-of-range layers, empty/NUL text, bad rects, bad nested
+///   `hints`/`visibility`/`lastWrite`) holds the identifiable row.
+/// - Structural id/duplicate/rect violations refuse before any narrow hold
+///   (shared policy with the core structural check).
+fn decode_fact_v4(
+    value: &serde_json::Value,
+    ordinal: usize,
+    seen_windows: &mut std::collections::BTreeSet<String>,
+) -> Result<WindowRowOutcome> {
+    const REQUIRED: &[&str] = &[
+        "win",
+        "out",
+        "rect",
+        "fullscreen",
+        "maximized",
+        "sticky",
+        "minimized",
+        "hints",
+        "hostHidden",
+        "privileged",
+        "managed",
+        "acceptsInput",
+        "activationInhibited",
+        "toolWindow",
+        "owned",
+        "transient",
+        "modal",
+        "resizable",
+        "above",
+        "below",
+        "owner",
+        "parent",
+        "role",
+        "appId",
+        "executable",
+        "processId",
+        "class",
+        "title",
+        "type",
+        "activationPolicy",
+        "layer",
+        "fullscreenOwner",
+        "fullscreenExitable",
+        "suppressionAvailable",
+        "visibility",
+        "lastWrite",
+    ];
+    let map = as_object(value)?;
+    // v4 tolerant envelope: unknown non-retired keys refuse, but missing
+    // required-nullable keys hold (except identity/process keys which stay
+    // strict: missing `win`/`out`/`executable` is `malformed`).
+    const OPTIONAL_V4: &[&str] = &[
+        "nativeWs",
+        "floating",
+        "fitExcluded",
+        "fixedAuto",
+        "fixedSuppress",
+        "observedWs",
+        "shell",
+        "tool",
+        "ownedDialog",
+        "dialog",
+        "noActivate",
+        "cannotControl",
+    ];
+    if map
+        .keys()
+        .any(|k| !REQUIRED.contains(&k.as_str()) && !OPTIONAL_V4.contains(&k.as_str()))
+    {
+        return Err(unknown_field());
+    }
+    for key in ["win", "out", "executable"] {
+        if !map.contains_key(key) {
+            return Err(malformed());
+        }
+    }
+    let window = match map.get("win") {
+        Some(serde_json::Value::String(text)) if is_opaque_id(text) => WindowId(text.clone()),
+        Some(serde_json::Value::String(_)) => return Err(unknown_value()),
+        _ => return Err(malformed()),
+    };
+    // Lenient rect: a missing or bad frame holds the identifiable row
+    // (never a guessed frame, never a refusal).
+    let (rect, mut held) = match map.get("rect") {
+        None => (None, true),
+        Some(serde_json::Value::Null) => (None, false),
+        Some(value) => match req_rect_value(value) {
+            Ok(rect) => (Some(rect), false),
+            Err(_) => (None, true),
+        },
+    };
+    let output = match map.get("out") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            Some(OutputId(text.clone()))
+        }
+        Some(_) => return Err(malformed()),
+    };
+    // Lenient hints: a missing or bad hint set holds the identifiable row.
+    let (hints, hints_held) = match map.get("hints") {
+        None => (None, true),
+        Some(serde_json::Value::Null) => (None, false),
+        Some(value) => match decode_hints(value) {
+            Ok(hints) => (Some(hints), false),
+            Err(_) => (None, true),
+        },
+    };
+    held |= hints_held;
+    // Lenient native workspace: a bad shape holds the identifiable row.
+    let (native_workspace, native_ws_held) = match map.get("nativeWs") {
+        None => (NativeWorkspaceFact::Omitted, false),
+        Some(serde_json::Value::Null) => (NativeWorkspaceFact::Null, false),
+        Some(serde_json::Value::String(text)) if text.is_empty() => {
+            (NativeWorkspaceFact::Value(String::new()), false)
+        }
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                (NativeWorkspaceFact::Omitted, true)
+            } else {
+                (NativeWorkspaceFact::Value(text.clone()), false)
+            }
+        }
+        Some(_) => (NativeWorkspaceFact::Omitted, true),
+    };
+    held |= native_ws_held;
+    // Retired membership verdicts hold the identifiable row (fail closed).
+    held |= RETIRED_WINDOW_KEYS.iter().any(|key| map.contains_key(*key));
+    // Wrong-typed value fields hold the identifiable row (same pre-scan
+    // vocabulary as v3).
+    fn is_wrong_bool(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+        matches!(map.get(key), Some(v) if !v.is_null() && !v.is_boolean())
+    }
+    for key in [
+        "fullscreen",
+        "maximized",
+        "sticky",
+        "minimized",
+        "hostHidden",
+        "privileged",
+        "managed",
+        "acceptsInput",
+        "activationInhibited",
+        "toolWindow",
+        "owned",
+        "transient",
+        "modal",
+        "resizable",
+        "above",
+        "below",
+        "fullscreenExitable",
+        "suppressionAvailable",
+    ] {
+        if is_wrong_bool(map, key) {
+            held = true;
+        }
+    }
+    for key in [
+        "owner",
+        "parent",
+        "role",
+        "appId",
+        "executable",
+        "processId",
+        "class",
+        "title",
+        "type",
+        "activationPolicy",
+        "fullscreenOwner",
+    ] {
+        match map.get(key) {
+            None | Some(serde_json::Value::Null) => {}
+            Some(serde_json::Value::String(_)) => {}
+            Some(_) => {
+                held = true;
+            }
+        }
+    }
+    if matches!(map.get("layer"), Some(v) if !v.is_null() && !v.is_number()) {
+        held = true;
+    }
+    if matches!(map.get("visibility"), Some(v) if !v.is_object()) {
+        held = true;
+    }
+    if matches!(map.get("lastWrite"), Some(v) if !v.is_null() && !v.is_object()) {
+        held = true;
+    }
+    for key in ["role", "appId", "executable", "class", "title"] {
+        if let Some(serde_json::Value::String(text)) = map.get(key)
+            && text.len() > tiler_core::world_report::MAX_METADATA_TEXT_BYTES
+        {
+            held = true;
+        }
+    }
+    if let Some(serde_json::Value::String(text)) = map.get("processId")
+        && !tiler_core::connection::valid_process_identity_text(text)
+    {
+        held = true;
+    }
+    // v4 deltas: unknown closed tokens, out-of-range layers, and
+    // empty/NUL text hold the identifiable row instead of refusing it.
+    for key in ["type"] {
+        if let Some(serde_json::Value::String(text)) = map.get(key)
+            && WindowType::parse(text).is_none()
+        {
+            held = true;
+        }
+    }
+    if let Some(serde_json::Value::String(text)) = map.get("activationPolicy")
+        && ActivationPolicy::parse(text).is_none()
+    {
+        held = true;
+    }
+    if let Some(serde_json::Value::String(text)) = map.get("fullscreenOwner")
+        && FullscreenOwner::parse(text).is_none()
+    {
+        held = true;
+    }
+    if let Some(value) = map.get("layer")
+        && !value.is_null()
+        && value.as_i64().and_then(|n| i32::try_from(n).ok()).is_none()
+    {
+        held = true;
+    }
+    // v4 normative text split: `role`/`appId`/`class`/`title` are bounded
+    // text and accept arbitrary UTF-8 including empty/NUL/controls within
+    // the bound (no hold here); `executable` keeps the nonempty NUL-free
+    // identity grammar and `processId` keeps the opaque-Id grammar (held
+    // below when bad).
+    for key in ["executable"] {
+        if let Some(serde_json::Value::String(text)) = map.get(key)
+            && !valid_identity_text(text)
+            && text.len() <= tiler_core::world_report::MAX_METADATA_TEXT_BYTES
+        {
+            held = true;
+        }
+    }
+    // Bad nested `visibility`/`lastWrite` shapes hold the row.
+    if let Some(value) = map.get("visibility")
+        && value.is_object()
+        && decode_visibility(value).is_err()
+    {
+        held = true;
+    }
+    if let Some(value) = map.get("lastWrite")
+        && value.is_object()
+        && decode_last_write(value).is_err()
+    {
+        held = true;
+    }
+    // v4 delta: missing required-nullable value keys hold the identifiable
+    // row, except process identity (`executable`) which stays required.
+    for key in REQUIRED {
+        if *key == "win" || *key == "out" || *key == "executable" {
+            continue;
+        }
+        if !map.contains_key(*key) {
+            held = true;
+        }
+    }
+    // Minimal identifiable candidate for the structural gate: win, out,
+    // rect, and the duplicate check.
+    let candidate = WindowFact {
+        window: window.clone(),
+        output: output.clone(),
+        rect,
+        fullscreen: None,
+        maximized: None,
+        sticky: None,
+        minimized: None,
+        hints,
+        native_workspace,
+        host_hidden: None,
+        privileged: None,
+        managed: None,
+        accepts_input: None,
+        activation_inhibited: None,
+        tool_window: None,
+        owned: None,
+        transient: None,
+        modal: None,
+        resizable: None,
+        above: None,
+        below: None,
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: None,
+        process_id: None,
+        class: None,
+        title: None,
+        window_type: None,
+        activation_policy: None,
+        layer: None,
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: VisibilityFact {
+            visible: None,
+            suppression_owned: None,
+        },
+        last_write: None,
+    };
+    if held {
+        // Bad `owner`/`parent` grammar refuses even with a hold cause
+        // (existing rule, kept): a hold must not mask it.
+        for key in ["owner", "parent"] {
+            if let Some(serde_json::Value::String(text)) = map.get(key)
+                && !is_opaque_id(text)
+            {
+                return Err(unknown_value());
+            }
+        }
+        if let Some(reason) = check_window_structure(&candidate, seen_windows) {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: reason,
+            });
+        }
+        return Ok(WindowRowOutcome::Held(held_window_row(
+            &candidate, ordinal, map,
+        )));
+    }
+    let fact = WindowFact {
+        window: candidate.window.clone(),
+        output: candidate.output.clone(),
+        rect: candidate.rect,
+        fullscreen: opt_bool_or_null(map, "fullscreen")?,
+        maximized: opt_bool_or_null(map, "maximized")?,
+        sticky: opt_bool_or_null(map, "sticky")?,
+        minimized: opt_bool_or_null(map, "minimized")?,
+        hints: candidate.hints,
+        native_workspace: candidate.native_workspace.clone(),
+        host_hidden: opt_bool_or_null(map, "hostHidden")?,
+        privileged: opt_bool_or_null(map, "privileged")?,
+        managed: opt_bool_or_null(map, "managed")?,
+        accepts_input: opt_bool_or_null(map, "acceptsInput")?,
+        activation_inhibited: opt_bool_or_null(map, "activationInhibited")?,
+        tool_window: opt_bool_or_null(map, "toolWindow")?,
+        owned: opt_bool_or_null(map, "owned")?,
+        transient: opt_bool_or_null(map, "transient")?,
+        modal: opt_bool_or_null(map, "modal")?,
+        resizable: opt_bool_or_null(map, "resizable")?,
+        above: opt_bool_or_null(map, "above")?,
+        below: opt_bool_or_null(map, "below")?,
+        owner: opt_window_or_null(map, "owner")?,
+        parent: opt_window_or_null(map, "parent")?,
+        role: opt_bounded_text_or_null(map, "role")?,
+        app_id: opt_bounded_text_or_null(map, "appId")?,
+        executable: opt_text_or_null(map, "executable")?,
+        process_id: opt_process_or_null(map, "processId")?,
+        class: opt_bounded_text_or_null(map, "class")?,
+        title: opt_bounded_text_or_null(map, "title")?,
+        window_type: opt_token_or_null(map, "type", WindowType::parse)?,
+        activation_policy: opt_token_or_null(map, "activationPolicy", ActivationPolicy::parse)?,
+        layer: opt_layer_or_null(map, "layer")?,
+        fullscreen_owner: opt_token_or_null(map, "fullscreenOwner", FullscreenOwner::parse)?,
+        fullscreen_exitable: opt_bool_or_null(map, "fullscreenExitable")?,
+        suppression_available: opt_bool_or_null(map, "suppressionAvailable")?,
+        visibility: decode_visibility(map.get("visibility").ok_or_else(malformed)?)?,
+        last_write: match map.get("lastWrite") {
+            None => return Err(malformed()),
+            Some(serde_json::Value::Null) => None,
+            Some(value) => Some(decode_last_write(value)?),
+        },
+    };
+    if let Some(reason) = check_window_structure(&fact, seen_windows) {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: reason,
+        });
+    }
+    Ok(WindowRowOutcome::Valid(Box::new(fact)))
+}
+
+/// Staged v4 native-row decode: same carried keys as v3, but a missing,
+/// empty, or bad-grammar `current` and any carried extra key hold the
+/// identifiable row instead of refusing the envelope. A missing or
+/// bad-grammar `out` refuses (unidentifiable); row-local order and
+/// occupancy coverage refuse before any narrow hold (structural binding
+/// evidence, never masked by the hold).
+fn decode_native_v4(
+    value: &serde_json::Value,
+    ordinal: usize,
+    seen_native_outputs: &mut std::collections::BTreeSet<String>,
+) -> Result<NativeRowOutcome> {
+    const REQUIRED: &[&str] = &["out", "order", "current", "occupancy"];
+    let map = as_object(value)?;
+    for key in REQUIRED {
+        if !map.contains_key(*key) && *key != "current" {
+            // Only `current` may be absent (held); every other missing key
+            // is malformed.
+            return Err(malformed());
+        }
+    }
+    let output = match map.get("out") {
+        Some(serde_json::Value::String(text)) if is_opaque_id(text) => OutputId(text.clone()),
+        Some(serde_json::Value::String(_)) => return Err(unknown_value()),
+        _ => return Err(malformed()),
+    };
+    let order_value = map.get("order").ok_or_else(malformed)?;
+    let order_items = order_value.as_array().ok_or_else(malformed)?;
+    let mut order = Vec::with_capacity(order_items.len());
+    for item in order_items {
+        let id = item.as_str().ok_or_else(malformed)?;
+        if !is_opaque_id(id) {
+            return Err(unknown_value());
+        }
+        order.push(id.to_owned());
+    }
+    // Lenient current: missing, empty, or bad-grammar holds the row.
+    let (current_native, current_held) = match map.get("current") {
+        None => (None, true),
+        Some(serde_json::Value::Null) => (None, false),
+        Some(serde_json::Value::String(text)) => {
+            if text.is_empty() || !is_opaque_id(text) {
+                (None, true)
+            } else {
+                (Some(text.clone()), false)
+            }
+        }
+        Some(_) => (None, true),
+    };
+    let extra_held = map.keys().any(|key| !REQUIRED.contains(&key.as_str()));
+    let held = current_held || extra_held;
+    // Strict occupancy shape (structural binding evidence): wrong shapes
+    // refuse even on the hold path.
+    let occupancy_value = map.get("occupancy").ok_or_else(malformed)?;
+    let occupancy_items = occupancy_value.as_array().ok_or_else(malformed)?;
+    let mut occupancy = Vec::with_capacity(occupancy_items.len());
+    for item in occupancy_items {
+        let row = as_object(item)?;
+        check_keys(row, &["native", "count"])?;
+        let native_id = match row.get("native") {
+            Some(serde_json::Value::String(text)) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                text.clone()
+            }
+            _ => return Err(malformed()),
+        };
+        let count = match row.get("count") {
+            None => return Err(malformed()),
+            Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Number(number)) => {
+                let count = number.as_u64().ok_or_else(unknown_value)?;
+                let count = u32::try_from(count).map_err(|_| unknown_value())?;
+                if count > tiler_core::world_report::MAX_NATIVE_OCCUPANTS_PER_DESKTOP {
+                    return Err(unknown_value());
+                }
+                Some(count)
+            }
+            Some(_) => return Err(unknown_value()),
+        };
+        occupancy.push(tiler_core::world_report::NativeOccupancy {
+            native: native_id,
+            count,
+        });
+    }
+    if !seen_native_outputs.insert(output.0.clone()) {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "duplicate-native",
+        });
+    }
+    // Row-local structural coverage refuses before any narrow hold
+    // (mirrors the core gate): per-output order bound, order uniqueness,
+    // exact occupancy coverage.
+    if order.len() > tiler_core::world_report::MAX_NATIVE_PER_OUTPUT {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "native-invalid",
+        });
+    }
+    {
+        let mut seen_ids = std::collections::BTreeSet::new();
+        for id in &order {
+            if !seen_ids.insert(id.clone()) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "duplicate-native",
+                });
+            }
+        }
+    }
+    if occupancy.len() != order.len() {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "native-occupancy-incomplete",
+        });
+    }
+    {
+        let mut seen_occupancy = std::collections::BTreeSet::new();
+        for row in &occupancy {
+            if !seen_occupancy.insert(row.native.clone()) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "duplicate-native-occupancy",
+                });
+            }
+        }
+        for id in &order {
+            if !seen_occupancy.contains(id) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "native-occupancy-incomplete",
+                });
+            }
+        }
+    }
+    if held {
+        return Ok(NativeRowOutcome::Held(held_native_row(
+            &output, ordinal, map,
+        )));
+    }
+    Ok(NativeRowOutcome::Valid(NativeObservation {
+        output,
+        native_order: order,
+        current_native,
+        occupancy,
+    }))
+}
+
+/// Staged v4 frame-attempt decode: same carried keys as v3, but a missing
+/// `op`, a missing `pre`, a `pre` without an operation, and any carried
+/// extra key hold the identifiable row instead of refusing the envelope.
+/// A missing or bad-grammar `win` refuses (unidentifiable); every other
+/// value failure stays strict.
+fn decode_frame_attempt_v4(
+    value: &serde_json::Value,
+    ordinal: usize,
+    seen_frames: &mut std::collections::BTreeSet<String>,
+) -> Result<AttemptRowOutcome<tiler_core::world_report::FrameAttempt>> {
+    const SCHEMA: &[&str] = &[
+        "win",
+        "target",
+        "setter",
+        "readback",
+        "dpiBefore",
+        "dpiAfter",
+        "attemptMs",
+        "op",
+        "pre",
+    ];
+    let map = as_object(value)?;
+    let window = match map.get("win") {
+        Some(serde_json::Value::String(text)) if is_opaque_id(text) => WindowId(text.clone()),
+        Some(serde_json::Value::String(_)) => return Err(unknown_value()),
+        _ => return Err(malformed()),
+    };
+    let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
+    // Lenient op/pre: missing keys and pre-without-operation hold.
+    let mut held = extra;
+    let operation_id = match map.get("op") {
+        None => {
+            held = true;
+            None
+        }
+        Some(serde_json::Value::String(op)) if op.is_empty() => None,
+        Some(serde_json::Value::String(op)) => Some(op.clone()),
+        Some(_) => {
+            held = true;
+            None
+        }
+    };
+    let prewrite = match map.get("pre") {
+        None => {
+            held = true;
+            None
+        }
+        Some(serde_json::Value::Null) => None,
+        Some(value) => match req_rect_value(value) {
+            Ok(rect) => Some(rect),
+            Err(_) => {
+                held = true;
+                None
+            }
+        },
+    };
+    if operation_id.as_deref().is_none_or(str::is_empty) && prewrite.is_some() {
+        held = true;
+    }
+    // Remaining lane shapes stay strict; failures refuse.
+    let target = req_rect_value(map.get("target").ok_or_else(malformed)?)?;
+    let setter = parse_frame_setter(req_str(map, "setter")?)?;
+    let readback = opt_rect_or_null(map, "readback")?;
+    let dpi_before = opt_u32_or_null(map, "dpiBefore")?;
+    let dpi_after = opt_u32_or_null(map, "dpiAfter")?;
+    let attempt_ms = req_u64_str(map, "attemptMs")?;
+    if !seen_frames.insert(window.0.clone()) {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "duplicate-frame",
+        });
+    }
+    if held {
+        let mut identity = vec![window.0.clone()];
+        if let Some(op) = operation_id.as_deref()
+            && !op.is_empty()
+        {
+            identity.push(op.to_owned());
+        }
+        return Ok(AttemptRowOutcome::Held(held_attempt_row(
+            AttemptLaneV4::Frame,
+            ordinal,
+            map,
+            SCHEMA,
+            identity,
+            None,
+        )));
+    }
+    // Valid rows keep the core structural shape: a nonempty operation id
+    // must be opaque (mirrors the core gate).
+    if let Some(op) = operation_id.as_deref()
+        && !op.is_empty()
+        && !is_opaque_id(op)
+    {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "frame-operation-invalid",
+        });
+    }
+    Ok(AttemptRowOutcome::Valid(
+        tiler_core::world_report::FrameAttempt {
+            window,
+            target,
+            setter,
+            readback,
+            dpi_before,
+            dpi_after,
+            attempt_ms,
+            operation_id,
+            prewrite,
+        },
+    ))
+}
+
+/// Lenient attempt identity: carried `op`/`win` strings when present and
+/// opaque, otherwise `None` (the strict error then refuses the envelope).
+fn attempt_identity(
+    map: &serde_json::Map<String, serde_json::Value>,
+    want_op: bool,
+    want_win: bool,
+) -> (Option<String>, Option<String>) {
+    let op = if want_op {
+        match map.get("op") {
+            Some(serde_json::Value::String(text)) if is_opaque_id(text) => Some(text.clone()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let win = if want_win {
+        match map.get("win") {
+            Some(serde_json::Value::String(text)) if is_opaque_id(text) => Some(text.clone()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    (op, win)
+}
+
+/// Staged v4 member-attempt decode: strict shapes from v3, but any carried
+/// extra key or other value failure holds the identifiable (`op` + `win`)
+/// row instead of refusing the envelope.
+fn decode_member_attempt_v4(
+    value: &serde_json::Value,
+    ordinal: usize,
+    seen_members: &mut std::collections::BTreeSet<(String, String)>,
+) -> Result<AttemptRowOutcome<tiler_core::world_report::MemberAttempt>> {
+    const SCHEMA: &[&str] = &[
+        "op",
+        "win",
+        "out",
+        "ws",
+        "setter",
+        "pre",
+        "post",
+        "attemptMs",
+    ];
+    let map = as_object(value)?;
+    let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
+    match decode_member_attempt(value) {
+        Ok(attempt) => {
+            let key = (attempt.operation_id.clone(), attempt.window.0.clone());
+            if !seen_members.insert(key) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "duplicate-member",
+                });
+            }
+            if extra {
+                let diagnostic = attempt_hold_scope(map);
+                return Ok(AttemptRowOutcome::Held(held_attempt_row(
+                    AttemptLaneV4::Member,
+                    ordinal,
+                    map,
+                    SCHEMA,
+                    vec![attempt.operation_id, attempt.window.0],
+                    diagnostic,
+                )));
+            }
+            Ok(AttemptRowOutcome::Valid(attempt))
+        }
+        Err(reason) => {
+            let (op, win) = attempt_identity(map, true, true);
+            match (op, win) {
+                (Some(op), Some(win)) => {
+                    if !seen_members.insert((op.clone(), win.clone())) {
+                        return Err(WorldProtocolError {
+                            kind: KIND_SNAPSHOT,
+                            message: "duplicate-member",
+                        });
+                    }
+                    Ok(AttemptRowOutcome::Held(held_attempt_row(
+                        AttemptLaneV4::Member,
+                        ordinal,
+                        map,
+                        SCHEMA,
+                        vec![op, win],
+                        attempt_hold_scope(map),
+                    )))
+                }
+                _ => Err(reason),
+            }
+        }
+    }
+}
+
+/// Staged v4 view-attempt decode: strict shapes from v3, but a logical
+/// (non-native-only) `pre`/`post`/`base`, any carried extra key, or any
+/// other value failure holds the identifiable (`op`) row instead of
+/// refusing the envelope.
+fn decode_view_attempt_v4(
+    value: &serde_json::Value,
+    ordinal: usize,
+    seen_views: &mut std::collections::BTreeSet<String>,
+) -> Result<AttemptRowOutcome<tiler_core::world_report::ViewAttempt>> {
+    const SCHEMA: &[&str] = &[
+        "op",
+        "out",
+        "ws",
+        "setter",
+        "pre",
+        "post",
+        "base",
+        "attemptMs",
+    ];
+    let map = as_object(value)?;
+    let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
+    match decode_view_attempt(value) {
+        Ok(attempt) => {
+            if !seen_views.insert(attempt.operation_id.clone()) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "duplicate-view-attempt",
+                });
+            }
+            if extra {
+                let diagnostic = attempt_hold_scope(map);
+                return Ok(AttemptRowOutcome::Held(held_attempt_row(
+                    AttemptLaneV4::View,
+                    ordinal,
+                    map,
+                    SCHEMA,
+                    vec![attempt.operation_id],
+                    diagnostic,
+                )));
+            }
+            Ok(AttemptRowOutcome::Valid(attempt))
+        }
+        Err(reason) => {
+            let (op, _) = attempt_identity(map, true, false);
+            match op {
+                Some(op) => {
+                    if !seen_views.insert(op.clone()) {
+                        return Err(WorldProtocolError {
+                            kind: KIND_SNAPSHOT,
+                            message: "duplicate-view-attempt",
+                        });
+                    }
+                    Ok(AttemptRowOutcome::Held(held_attempt_row(
+                        AttemptLaneV4::View,
+                        ordinal,
+                        map,
+                        SCHEMA,
+                        vec![op],
+                        attempt_hold_scope(map),
+                    )))
+                }
+                None => Err(reason),
+            }
+        }
+    }
+}
+
+/// Staged v4 clear-attempt decode: strict shapes from v3, but any carried
+/// extra key or other value failure holds the identifiable (`op` + `win`)
+/// row instead of refusing the envelope.
+fn decode_clear_attempt_v4(
+    value: &serde_json::Value,
+    ordinal: usize,
+    seen_clears: &mut std::collections::BTreeSet<(String, String)>,
+) -> Result<AttemptRowOutcome<tiler_core::world_report::ClearAttempt>> {
+    const SCHEMA: &[&str] = &["op", "win", "setter", "pre", "post", "attemptMs"];
+    let map = as_object(value)?;
+    let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
+    match decode_clear_attempt(value) {
+        Ok(attempt) => {
+            let key = (attempt.operation_id.clone(), attempt.window.0.clone());
+            if !seen_clears.insert(key) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "duplicate-clear-attempt",
+                });
+            }
+            if extra {
+                return Ok(AttemptRowOutcome::Held(held_attempt_row(
+                    AttemptLaneV4::Clear,
+                    ordinal,
+                    map,
+                    SCHEMA,
+                    vec![attempt.operation_id, attempt.window.0],
+                    attempt_hold_scope(map),
+                )));
+            }
+            Ok(AttemptRowOutcome::Valid(attempt))
+        }
+        Err(reason) => {
+            let (op, win) = attempt_identity(map, true, true);
+            match (op, win) {
+                (Some(op), Some(win)) => {
+                    if !seen_clears.insert((op.clone(), win.clone())) {
+                        return Err(WorldProtocolError {
+                            kind: KIND_SNAPSHOT,
+                            message: "duplicate-clear-attempt",
+                        });
+                    }
+                    Ok(AttemptRowOutcome::Held(held_attempt_row(
+                        AttemptLaneV4::Clear,
+                        ordinal,
+                        map,
+                        SCHEMA,
+                        vec![op, win],
+                        attempt_hold_scope(map),
+                    )))
+                }
+                _ => Err(reason),
+            }
+        }
+    }
+}
+
+/// Carried `order` length of one held native row, read off its retained
+/// fields (a held row always carries `order`: a missing one refuses before
+/// any hold). Used only for the global native-id budget.
+fn held_native_order_len(held: &HeldNativeRow) -> usize {
+    held.fields
+        .iter()
+        .find(|(key, _)| key == "order")
+        .map(|(_, value)| match value {
+            RawSettingValue::Array(items) => items.len(),
+            _ => 0,
+        })
+        .unwrap_or(0)
+}
+
+/// Staged v4 creation-attempt decode: structural preflight over the readable
+/// fields first (mirrors the core creation gate: bad ids, per-row caps and
+/// dupes, op uniqueness, receipt reuse, aggregate budget), then the strict
+/// v3 shape. A wrong-typed `created` receipt, any carried extra key, or any
+/// other identifiable value failure holds the identifiable (`op`) row
+/// instead of refusing the envelope; the preflight above still refuses
+/// before such a hold can mask it.
+fn decode_creation_attempt_v4(
+    value: &serde_json::Value,
+    ordinal: usize,
+    seen_creations: &mut std::collections::BTreeMap<String, Option<(String, String)>>,
+    seen_receipts: &mut std::collections::BTreeSet<String>,
+    total_creation_ids: &mut usize,
+) -> Result<AttemptRowOutcome<tiler_core::world_report::NativeCreationAttempt>> {
+    const SCHEMA: &[&str] = &[
+        "op",
+        "ws",
+        "out",
+        "setter",
+        "before",
+        "after",
+        "created",
+        "attemptMs",
+    ];
+    let map = as_object(value)?;
+    let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
+    // Structural preflight over the readable fields (mirrors the core
+    // creation gate): bad ids, per-row caps and dupes, op uniqueness,
+    // receipt reuse, and the aggregate budget refuse before any narrow hold
+    // can mask them. Unreadable shapes keep the legacy type vocabulary.
+    let read_ids = |key: &str| -> Result<Vec<String>> {
+        match map.get(key) {
+            None => Ok(Vec::new()),
+            Some(serde_json::Value::Array(items)) => {
+                let mut ids = Vec::with_capacity(items.len());
+                for item in items {
+                    let id = item.as_str().ok_or_else(malformed)?;
+                    if !is_opaque_id(id) {
+                        return Err(WorldProtocolError {
+                            kind: KIND_SNAPSHOT,
+                            message: "creation-id-invalid",
+                        });
+                    }
+                    ids.push(id.to_owned());
+                }
+                Ok(ids)
+            }
+            Some(_) => Err(malformed()),
+        }
+    };
+    let before = read_ids("before")?;
+    let after = read_ids("after")?;
+    // Receipt spelling: absent/null/empty normalize to none; a bad-grammar
+    // string refuses; any other JSON type is a hold cause (tolerated below,
+    // never a fabricated receipt).
+    let created: Option<String> = match map.get("created") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) if text.is_empty() => None,
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "creation-id-invalid",
+                });
+            }
+            Some(text.clone())
+        }
+        Some(_) => None,
+    };
+    if before.len() > tiler_core::world_report::MAX_NATIVE_PER_OUTPUT
+        || after.len() > tiler_core::world_report::MAX_NATIVE_PER_OUTPUT
+    {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "creation-order-over-cap",
+        });
+    }
+    {
+        let mut seen_before = std::collections::BTreeSet::new();
+        for id in &before {
+            if !seen_before.insert(id.clone()) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "duplicate-creation-attempt",
+                });
+            }
+        }
+        let mut seen_after = std::collections::BTreeSet::new();
+        for id in &after {
+            if !seen_after.insert(id.clone()) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "duplicate-creation-attempt",
+                });
+            }
+        }
+    }
+    let op = match map.get("op") {
+        Some(serde_json::Value::String(text)) if is_opaque_id(text) => Some(text.clone()),
+        _ => None,
+    };
+    let triple: Option<(String, String)> = match (map.get("ws"), map.get("out")) {
+        (Some(serde_json::Value::String(ws)), Some(serde_json::Value::String(out)))
+            if is_opaque_id(ws) && is_opaque_id(out) =>
+        {
+            Some((ws.clone(), out.clone()))
+        }
+        _ => None,
+    };
+    // Op uniqueness joins every identifiable row, even one missing ws/out:
+    // only fully-carried triples that differ keep the mismatch refusal.
+    if let Some(op) = op.as_deref() {
+        match seen_creations.insert(op.to_owned(), triple.clone()) {
+            None => {}
+            Some(prev) => match (prev, triple) {
+                (Some(first), Some(second)) if first != second => {
+                    return Err(WorldProtocolError {
+                        kind: KIND_SNAPSHOT,
+                        message: "creation-triple-mismatch",
+                    });
+                }
+                _ => {
+                    return Err(WorldProtocolError {
+                        kind: KIND_SNAPSHOT,
+                        message: "duplicate-creation-attempt",
+                    });
+                }
+            },
+        }
+    }
+    *total_creation_ids = total_creation_ids
+        .saturating_add(before.len())
+        .saturating_add(after.len());
+    if let Some(receipt) = created.as_deref() {
+        *total_creation_ids = total_creation_ids.saturating_add(1);
+        if !seen_receipts.insert(receipt.to_owned()) {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: "creation-receipt-reused",
+            });
+        }
+    }
+    if *total_creation_ids > tiler_core::world_report::MAX_WORLD_NATIVE.saturating_mul(2) {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "creation-over-cap",
+        });
+    }
+    match decode_creation_attempt(value) {
+        Ok(attempt) => {
+            if extra {
+                let diagnostic = attempt_hold_scope(map);
+                return Ok(AttemptRowOutcome::Held(held_attempt_row(
+                    AttemptLaneV4::Creation,
+                    ordinal,
+                    map,
+                    SCHEMA,
+                    vec![attempt.operation_id],
+                    diagnostic,
+                )));
+            }
+            Ok(AttemptRowOutcome::Valid(attempt))
+        }
+        Err(reason) => match op {
+            Some(op) => Ok(AttemptRowOutcome::Held(held_attempt_row(
+                AttemptLaneV4::Creation,
+                ordinal,
+                map,
+                SCHEMA,
+                vec![op],
+                attempt_hold_scope(map),
+            ))),
+            None => Err(reason),
+        },
+    }
+}
+
+/// Staged v4 presentation-ingress decode: structural preflight over the
+/// known fields first (missing keys, bad identities, bad geometry, bad
+/// witness-object internals), then the narrow hold for a removed key, a
+/// pager frame echo (`float`/`tile`), or a non-object `witness`. Only those
+/// three hold causes still hold; every other value failure stays strict.
+fn decode_presentation_v4(value: &serde_json::Value) -> Result<PresentationRowV4> {
+    use tiler_core::world_report::MAX_PRESENTATION_ORDER;
+    let map = as_object(value)?;
+    const SCHEMA: &[&str] = &[
+        "foreground",
+        "minimized",
+        "maximized",
+        "fullscreen",
+        "hostHidden",
+        "hiddenWorkspace",
+        "frame",
+        "chordHeld",
+        "moveWindow",
+        "pagerOrder",
+        "pagerFrames",
+        "witness",
+        "foregroundOut",
+    ];
+    // Section caps refuse before any narrow hold.
+    if let Some(serde_json::Value::Array(items)) = map.get("pagerOrder")
+        && items.len() > MAX_PRESENTATION_ORDER
+    {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "presentation-order-over-cap",
+        });
+    }
+    if let Some(serde_json::Value::Array(items)) = map.get("pagerFrames")
+        && items.len() > MAX_PRESENTATION_ORDER
+    {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "presentation-frames-over-cap",
+        });
+    }
+    check_presentation_structure_v4(map, SCHEMA)?;
+    let extra_key = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
+    let pager_extra = match map.get("pagerFrames") {
+        Some(serde_json::Value::Array(items)) => items.iter().any(|item| match item {
+            serde_json::Value::Object(row) => row.keys().any(|key| key != "win" && key != "live"),
+            _ => false,
+        }),
+        _ => false,
+    };
+    let witness_held = match map.get("witness") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Object(row)) => {
+            decode_frame_witness(&serde_json::Value::Object(row.clone())).is_err()
+        }
+        Some(_) => true,
+    };
+    if extra_key || pager_extra || witness_held {
+        return Ok(PresentationRowV4::Held(held_presentation_row(map)));
+    }
+    decode_presentation_ingress_v4(value).map(PresentationRowV4::Valid)
+}
+
+/// Structural preflight for one staged v4 presentation-ingress object:
+/// every schema key must be present, and every known field must carry its
+/// strict shape (identities, key presence, geometry, witness-object
+/// internals). Only the three narrow-hold causes are tolerated here: extra
+/// top-level keys, extra pager-frame keys, and a non-object `witness` (a
+/// constant string carries no inspectable fields). Dangling but well-formed
+/// ids stay accepted (shape only; causal join belongs to a later unit).
+fn check_presentation_structure_v4(
+    map: &serde_json::Map<String, serde_json::Value>,
+    schema: &[&str],
+) -> Result<()> {
+    for key in schema {
+        if !map.contains_key(*key) {
+            return Err(malformed());
+        }
+    }
+    req_empty_or_id(map, "foreground")?;
+    opt_bool_or_null(map, "minimized")?;
+    opt_bool_or_null(map, "maximized")?;
+    opt_bool_or_null(map, "fullscreen")?;
+    opt_bool_or_null(map, "hostHidden")?;
+    opt_bool_or_null(map, "hiddenWorkspace")?;
+    opt_rect_or_null(map, "frame")?;
+    req_bool(map, "chordHeld")?;
+    req_empty_or_id(map, "moveWindow")?;
+    let order_items = map
+        .get("pagerOrder")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(malformed)?;
+    for item in order_items {
+        let id = item.as_str().ok_or_else(malformed)?;
+        if !is_opaque_id(id) {
+            return Err(unknown_value());
+        }
+    }
+    let frame_items = map
+        .get("pagerFrames")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(malformed)?;
+    for item in frame_items {
+        let row = as_object(item)?;
+        req_id(row, "win")?;
+        opt_rect_or_null(row, "live")?;
+    }
+    match map.get("witness") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Object(row)) => {
+            decode_frame_witness(&serde_json::Value::Object(row.clone()))?;
+        }
+        Some(_) => {}
+    }
+    match map.get("foregroundOut") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+        }
+        Some(_) => return Err(malformed()),
+    }
+    Ok(())
+}
+
+/// Staged v4 command decode: every v3 direct world-command arm except the
+/// removed `switch-view` alias (which refuses as an unknown value).
+/// The removed `operation` wrapper refuses as well; its three promoted
+/// payloads (`toggle-float`, `toggle-orientation`, `resize`) decode
+/// directly into the equivalent [`CoreCommand`] operation instead.
+fn decode_command_v4(value: &serde_json::Value) -> Result<WorldCommand> {
+    let map = as_object(value)?;
+    let op = req_str(map, "op")?;
+    match op {
+        "switch-view" | "operation" => Err(unknown_value()),
+        // v4 by-id focus (R6): the ignored direction is removed from the
+        // wire. The staged record spells the absent direction as the empty
+        // string (absence, never a guessed direction); interpretation
+        // belongs to the staged engine use. An extra `direction` key
+        // refuses as an unknown field.
+        "focus" => {
+            check_keys(map, &["op", "win"])?;
+            Ok(WorldCommand::Focus {
+                window: WindowId(req_id(map, "win")?),
+                direction: String::new(),
+            })
+        }
+        "toggle-float" => {
+            check_keys(map, &["op", "win", "rect"])?;
+            Ok(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                window: req_id(map, "win")?,
+                float_rect: opt_rect_or_null(map, "rect")?,
+            }))
+        }
+        "toggle-orientation" => {
+            check_keys(map, &["op", "win"])?;
+            Ok(WorldCommand::Operation(CoreCommand::ToggleOrientation {
+                window: req_id(map, "win")?,
+            }))
+        }
+        "resize" => {
+            check_keys(map, &["op", "win", "direction", "mode", "press"])?;
+            let mode = match req_str(map, "mode")? {
+                "inwards" | "outwards" | "horizontal" | "vertical" => {
+                    req_str(map, "mode")?.to_owned()
+                }
+                _ => return Err(unknown_value()),
+            };
+            let press = map
+                .get("press")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(malformed)?;
+            Ok(WorldCommand::Operation(CoreCommand::Resize {
+                window: req_id(map, "win")?,
+                direction: parse_direction_token(req_str(map, "direction")?)?,
+                mode,
+                press_index: press,
+            }))
+        }
+        _ => decode_command(value),
+    }
+}
+
+/// Decode one JSON v4 world request into the staged core report plus its
+/// optional wire metadata. Enforces byte length first (4 MiB), the v4
+/// envelope keys (`rendererInput` required, `views` refused), the v4
+/// contract version, per-lane row decodes with narrow holds, and the
+/// structural decoder gate (section caps, id/duplicate/rect shape,
+/// closed/live overlap, native binding coverage, attempt identity dupes,
+/// renderer/command pairing). Never logs or echoes payload bytes. The
+/// staged report is shape-only: capability-context verdicts (sticky,
+/// unavailable facts, host-owned arm selection) stay valid typed rows for
+/// the staged engine use.
+pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, WorldProtocolError> {
+    if json.len() > WORLD_MAX_REQUEST_BYTES {
+        return Err(WorldProtocolError {
+            kind: KIND_OVERSIZED,
+            message: MSG_OVERSIZED,
+        });
+    }
+    let value: serde_json::Value =
+        crate::connection_protocol::parse_strict_json(json).map_err(|e| {
+            if e.0 == "oversized" {
+                WorldProtocolError {
+                    kind: KIND_OVERSIZED,
+                    message: MSG_OVERSIZED,
+                }
+            } else {
+                malformed()
+            }
+        })?;
+    let map = as_object(&value)?;
+    check_keys_with_optional(
+        map,
+        &[
+            "v",
+            "adapter",
+            "gen",
+            "obs",
+            "reqSeq",
+            "req",
+            "cmdSeq",
+            "command",
+            "screens",
+            "windows",
+            "closed",
+            "native",
+            "focused",
+            "complete",
+            "gesture",
+            "cursor",
+            "actionForeground",
+            "actionCached",
+            "actionOutputs",
+            "presentation",
+            "intentRecords",
+            "stateAttempts",
+            "focusFeedback",
+            "rendererInput",
+        ],
+        &[
+            "cursorHit",
+            "monotonicMs",
+            "primary",
+            "frameAttempts",
+            "memberAttempts",
+            "viewAttempts",
+            "clearAttempts",
+            "creationAttempts",
+            "gestureIngress",
+        ],
+    )?;
+    let version = map
+        .get("v")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(malformed)?;
+    if version != u64::from(WORLD_PROTOCOL_VERSION_V4) {
+        return Err(WorldProtocolError {
+            kind: KIND_VERSION,
+            message: MSG_VERSION,
+        });
+    }
+    let command_seq = opt_u64_or_null(map, "cmdSeq")?;
+    let command = match map.get("command") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => Some(decode_command_v4(value)?),
+    };
+    if command_seq.is_none() != command.is_none() {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "command-pair-invalid",
+        });
+    }
+    // No `valid_command` verdict gate here: every typed command shape is
+    // enforced at decode above (unknown ops/tokens, ranges, id grammar),
+    // and command verdicts belong to the staged engine use. In particular
+    // the v4 direction-less focus spells absence as the empty direction,
+    // which the legacy direction vocabulary would misread as invalid.
+    let screens_value = map.get("screens").ok_or_else(malformed)?;
+    let mut screens = Vec::new();
+    let mut held_screens = Vec::new();
+    for (ordinal, item) in screens_value
+        .as_array()
+        .ok_or_else(malformed)?
+        .iter()
+        .enumerate()
+    {
+        match decode_screen(item, ordinal)? {
+            ScreenRowOutcome::Valid(screen) => screens.push(screen),
+            ScreenRowOutcome::Held(held) => held_screens.push(held),
+        }
+    }
+    if screens.len().saturating_add(held_screens.len())
+        > tiler_core::world_report::MAX_WORLD_SCREENS
+    {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "section-over-cap",
+        });
+    }
+    // Shared cross-row screen gate: duplicate outputs refuse across valid
+    // and held rows (rect-pair/complete shapes already gated per row).
+    {
+        let mut seen_outputs = std::collections::BTreeSet::new();
+        for screen in &screens {
+            if let Some(reason) = check_screen_structure(screen, &mut seen_outputs) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: reason,
+                });
+            }
+        }
+        for held in &held_screens {
+            if !seen_outputs.insert(held.output.0.clone()) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "duplicate-screen",
+                });
+            }
+        }
+    }
+    let windows_value = map.get("windows").ok_or_else(malformed)?;
+    let mut windows = Vec::new();
+    let mut held_windows = Vec::new();
+    let mut seen_windows = std::collections::BTreeSet::new();
+    for (ordinal, item) in windows_value
+        .as_array()
+        .ok_or_else(malformed)?
+        .iter()
+        .enumerate()
+    {
+        match decode_fact_v4(item, ordinal, &mut seen_windows)? {
+            WindowRowOutcome::Valid(fact) => windows.push(*fact),
+            WindowRowOutcome::Held(held) => held_windows.push(held),
+        }
+    }
+    if windows.len().saturating_add(held_windows.len()) > tiler_core::world_report::MAX_WORLD_FACTS
+    {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "section-over-cap",
+        });
+    }
+    let closed_value = map.get("closed").ok_or_else(malformed)?;
+    let closed = decode_closed_ids(closed_value)?;
+    if closed.len() > tiler_core::world_report::MAX_WORLD_CLOSED {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "section-over-cap",
+        });
+    }
+    {
+        let mut seen_closed = std::collections::BTreeSet::new();
+        for id in &closed {
+            if !seen_closed.insert(id.0.clone()) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "duplicate-closed",
+                });
+            }
+            // Closed ids must not also be live: one id cannot be both
+            // observed (valid or held) and reported closed.
+            if seen_windows.contains(&id.0) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "closed-overlaps-live",
+                });
+            }
+        }
+    }
+    let native_value = map.get("native").ok_or_else(malformed)?;
+    let mut native = Vec::new();
+    let mut held_native = Vec::new();
+    let mut seen_native_outputs = std::collections::BTreeSet::new();
+    for (ordinal, item) in native_value
+        .as_array()
+        .ok_or_else(malformed)?
+        .iter()
+        .enumerate()
+    {
+        match decode_native_v4(item, ordinal, &mut seen_native_outputs)? {
+            NativeRowOutcome::Valid(row) => native.push(row),
+            NativeRowOutcome::Held(held) => held_native.push(held),
+        }
+    }
+    if native.len().saturating_add(held_native.len()) > tiler_core::world_report::MAX_WORLD_SCREENS
+    {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "section-over-cap",
+        });
+    }
+    // Native binding gate over valid and held rows (mirrors the core
+    // gate): known screen outputs (valid or held) only, exact occupancy
+    // coverage, native id budget across both row kinds.
+    {
+        let mut known_outputs: std::collections::BTreeSet<&str> =
+            screens.iter().map(|row| row.output.0.as_str()).collect();
+        for held in &held_screens {
+            known_outputs.insert(held.output.0.as_str());
+        }
+        let mut total_native = 0usize;
+        for row in &native {
+            if !known_outputs.contains(row.output.0.as_str()) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "native-output-unknown",
+                });
+            }
+            if row.native_order.len() != row.occupancy.len() {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "native-occupancy-incomplete",
+                });
+            }
+            total_native += row.native_order.len();
+        }
+        for held in &held_native {
+            if !known_outputs.contains(held.output.0.as_str()) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "native-output-unknown",
+                });
+            }
+            total_native = total_native.saturating_add(held_native_order_len(held));
+        }
+        if total_native > tiler_core::world_report::MAX_WORLD_NATIVE {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: "native-over-cap",
+            });
+        }
+    }
+    // Tolerant monotonic clock: missing backfills 0 (unreported). A
+    // present value must be a canonical decimal string; JSON numbers
+    // refuse.
+    let monotonic_ms = match map.get("monotonicMs") {
+        None => 0,
+        Some(serde_json::Value::String(text)) => {
+            parse_u64_decimal(text).ok_or_else(unknown_value)?
+        }
+        Some(_) => return Err(unknown_value()),
+    };
+    let mut frames = Vec::new();
+    let mut held_attempts: Vec<HeldAttemptRow> = Vec::new();
+    let mut seen_frames = std::collections::BTreeSet::new();
+    if let Some(frames_value) = map.get("frameAttempts") {
+        let items = frames_value.as_array().ok_or_else(malformed)?;
+        // Total carried rows (valid plus held) share the lane bound: the
+        // gate runs before per-row decode so held rows cannot escape it.
+        if items.len() > tiler_core::world_report::MAX_WORLD_FRAMES {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: "section-over-cap",
+            });
+        }
+        for (ordinal, item) in items.iter().enumerate() {
+            match decode_frame_attempt_v4(item, ordinal, &mut seen_frames)? {
+                AttemptRowOutcome::Valid(attempt) => frames.push(attempt),
+                AttemptRowOutcome::Held(held) => held_attempts.push(held),
+            }
+        }
+    }
+    let mut member_attempts = Vec::new();
+    let mut seen_members = std::collections::BTreeSet::new();
+    if let Some(value) = map.get("memberAttempts") {
+        let items = value.as_array().ok_or_else(malformed)?;
+        if items.len() > tiler_core::world_report::MAX_WORLD_MEMBER_ATTEMPTS {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: "section-over-cap",
+            });
+        }
+        for (ordinal, item) in items.iter().enumerate() {
+            match decode_member_attempt_v4(item, ordinal, &mut seen_members)? {
+                AttemptRowOutcome::Valid(attempt) => member_attempts.push(attempt),
+                AttemptRowOutcome::Held(held) => held_attempts.push(held),
+            }
+        }
+    }
+    let mut view_attempts = Vec::new();
+    let mut seen_views = std::collections::BTreeSet::new();
+    if let Some(value) = map.get("viewAttempts") {
+        let items = value.as_array().ok_or_else(malformed)?;
+        if items.len() > tiler_core::world_report::MAX_WORLD_VIEW_ATTEMPTS {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: "section-over-cap",
+            });
+        }
+        for (ordinal, item) in items.iter().enumerate() {
+            match decode_view_attempt_v4(item, ordinal, &mut seen_views)? {
+                AttemptRowOutcome::Valid(attempt) => view_attempts.push(attempt),
+                AttemptRowOutcome::Held(held) => held_attempts.push(held),
+            }
+        }
+    }
+    let mut clear_attempts = Vec::new();
+    let mut seen_clears = std::collections::BTreeSet::new();
+    if let Some(value) = map.get("clearAttempts") {
+        let items = value.as_array().ok_or_else(malformed)?;
+        if items.len() > tiler_core::world_report::MAX_WORLD_CLEAR_ATTEMPTS {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: "section-over-cap",
+            });
+        }
+        for (ordinal, item) in items.iter().enumerate() {
+            match decode_clear_attempt_v4(item, ordinal, &mut seen_clears)? {
+                AttemptRowOutcome::Valid(attempt) => clear_attempts.push(attempt),
+                AttemptRowOutcome::Held(held) => held_attempts.push(held),
+            }
+        }
+    }
+    let mut creation_attempts = Vec::new();
+    let mut creation_receipts = Vec::new();
+    let mut seen_creations: std::collections::BTreeMap<String, Option<(String, String)>> =
+        std::collections::BTreeMap::new();
+    let mut seen_receipts = std::collections::BTreeSet::new();
+    let mut total_creation_ids = 0usize;
+    if let Some(value) = map.get("creationAttempts") {
+        let items = value.as_array().ok_or_else(malformed)?;
+        if items.len() > tiler_core::world_report::MAX_WORLD_CREATION_ATTEMPTS {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: "section-over-cap",
+            });
+        }
+        for (ordinal, item) in items.iter().enumerate() {
+            let spelling = match item.get("created") {
+                None => CreationReceiptWire::Absent,
+                Some(serde_json::Value::Null) => CreationReceiptWire::Null,
+                Some(serde_json::Value::String(text)) if text.is_empty() => {
+                    CreationReceiptWire::Empty
+                }
+                Some(_) => CreationReceiptWire::Id,
+            };
+            match decode_creation_attempt_v4(
+                item,
+                ordinal,
+                &mut seen_creations,
+                &mut seen_receipts,
+                &mut total_creation_ids,
+            )? {
+                AttemptRowOutcome::Valid(attempt) => {
+                    creation_attempts.push(attempt);
+                    creation_receipts.push(spelling);
+                }
+                AttemptRowOutcome::Held(held) => held_attempts.push(held),
+            }
+        }
+    }
+    // Required native-state attempts: closed mechanical rows, no missing
+    // tolerance. Unknown fields/values refuse; per-property duplicates
+    // refuse below.
+    let state_attempts_value = map.get("stateAttempts").ok_or_else(malformed)?;
+    let mut state_attempts = Vec::new();
+    let mut seen_states = std::collections::BTreeSet::new();
+    for item in state_attempts_value.as_array().ok_or_else(malformed)? {
+        let attempt = decode_state_attempt(item)?;
+        if !seen_states.insert((attempt.window.0.clone(), attempt.property)) {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: "duplicate-state-attempt",
+            });
+        }
+        state_attempts.push(attempt);
+    }
+    if state_attempts.len() > tiler_core::world_report::MAX_WORLD_STATE_ATTEMPTS {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "section-over-cap",
+        });
+    }
+    // Required correlated focus evidence: closed mechanical rows, no
+    // missing tolerance. Both arms decode context-free here; the engine
+    // host gate owns the native/output check.
+    let focus_feedback_value = map.get("focusFeedback").ok_or_else(malformed)?;
+    let mut focus_feedback = Vec::new();
+    for item in focus_feedback_value.as_array().ok_or_else(malformed)? {
+        focus_feedback.push(decode_focus_feedback(item)?);
+    }
+    if focus_feedback.len() > tiler_core::world_report::MAX_WORLD_FOCUS_FEEDBACK
+        || focus_feedback
+            .iter()
+            .map(|row| row.arrival.len())
+            .sum::<usize>()
+            > tiler_core::world_report::MAX_ARRIVAL_BRACKETS_TOTAL
+    {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "section-over-cap",
+        });
+    }
+    // Tolerant gesture ingress: missing backfills observation-only
+    // (`None`); a present value carries the normalized shape.
+    let gesture = match map.get("gestureIngress") {
+        None => None,
+        Some(serde_json::Value::Null) => None,
+        Some(value) => Some(decode_gesture_ingress(value)?),
+    };
+    // Required opaque host storage return: closed `{"win","data"}` rows.
+    let intent_records_value = map.get("intentRecords").ok_or_else(malformed)?;
+    let intent_records_items = intent_records_value.as_array().ok_or_else(malformed)?;
+    if intent_records_items.len() > MAX_INTENT_RECORDS {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "section-over-cap",
+        });
+    }
+    let mut intent_records = Vec::with_capacity(intent_records_items.len());
+    for item in intent_records_items {
+        let row = as_object(item)?;
+        check_keys(row, &["win", "data"])?;
+        let win = WindowId(req_id(row, "win")?);
+        let data = match row.get("data") {
+            Some(serde_json::Value::String(data)) => data.clone(),
+            _ => return Err(malformed()),
+        };
+        if data.len() > tiler_core::intent_data::MAX_INTENT_DATA_BYTES {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: "intent-data-invalid",
+            });
+        }
+        intent_records.push(IntentRecord { win, data });
+    }
+    let presentation = decode_presentation_v4(map.get("presentation").ok_or_else(malformed)?)?;
+    let renderer_input = match map.get("rendererInput") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => Some(decode_renderer_input(value)?),
+    };
+    // Renderer/command pairing: a carried renderer input requires a carried
+    // command (one direction only; observation-only commands without a
+    // renderer stay valid).
+    if renderer_input.is_some() && command.is_none() {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "command-pair-invalid",
+        });
+    }
+    let report = WorldReportV4 {
+        contract_version: WORLD_PROTOCOL_VERSION_V4,
+        adapter_incarnation: req_id(map, "adapter")?,
+        core_generation: req_bounded(map, "gen", MAX_GENERATION_LEN, is_generation_text)?,
+        observation_seq: req_u64_str(map, "obs")?,
+        request_seq: req_u64_str(map, "reqSeq")?,
+        request_id: req_bounded(map, "req", MAX_CORRELATION_LEN, is_correlation_text)?,
+        command_seq,
+        command,
+        screens,
+        held_screens,
+        windows,
+        held_windows,
+        closed,
+        native,
+        held_native,
+        cursor: opt_point_or_null(map, "cursor")?,
+        cursor_hit: match map.get("cursorHit") {
+            None => None,
+            Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(text)) if text.is_empty() => None,
+            Some(serde_json::Value::String(text)) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                Some(WindowId(text.clone()))
+            }
+            Some(_) => return Err(unknown_value()),
+        },
+        action_foreground: match map.get("actionForeground") {
+            Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(text)) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                Some(OutputId(text.clone()))
+            }
+            _ => return Err(malformed()),
+        },
+        action_cached: match map.get("actionCached") {
+            Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(text)) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                Some(OutputId(text.clone()))
+            }
+            _ => return Err(malformed()),
+        },
+        action_outputs: match map.get("actionOutputs") {
+            Some(serde_json::Value::Array(items)) => {
+                let mut outputs = Vec::with_capacity(items.len());
+                for item in items {
+                    match item {
+                        serde_json::Value::String(text) => {
+                            if !is_opaque_id(text) {
+                                return Err(unknown_value());
+                            }
+                            outputs.push(OutputId(text.clone()));
+                        }
+                        _ => return Err(malformed()),
+                    }
+                }
+                outputs
+            }
+            _ => return Err(malformed()),
+        },
+        focused_global: {
+            let text = req_str(map, "focused")?;
+            if !text.is_empty() && !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            text.to_owned()
+        },
+        inventory_complete: req_bool(map, "complete")?,
+        gesture_barrier: req_bool(map, "gesture")?,
+        gesture,
+        monotonic_ms,
+        frames,
+        member_attempts,
+        view_attempts,
+        clear_attempts,
+        creation_attempts,
+        held_attempts,
+        presentation,
+        intent_records,
+        state_attempts,
+        focus_feedback,
+        primary_output: match map.get("primary") {
+            None => None,
+            Some(serde_json::Value::Null) => return Err(malformed()),
+            Some(serde_json::Value::String(text)) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                Some(OutputId(text.clone()))
+            }
+            Some(_) => return Err(malformed()),
+        },
+        renderer_input,
+    };
+    // Common cross-checks (mirror the core gate): the cursor hit needs the
+    // cursor position and a reported valid window (held rows are not
+    // reported facts), and action outputs stay unique.
+    if let Some(hit) = report.cursor_hit.as_ref() {
+        if report.cursor.is_none() {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: "cursor-hit-without-cursor",
+            });
+        }
+        if !report.windows.iter().any(|fact| fact.window == *hit) {
+            return Err(WorldProtocolError {
+                kind: KIND_SNAPSHOT,
+                message: "cursor-hit-unknown",
+            });
+        }
+    }
+    {
+        let mut seen_action_outputs = std::collections::BTreeSet::new();
+        for output in &report.action_outputs {
+            if !seen_action_outputs.insert(output.0.clone()) {
+                return Err(WorldProtocolError {
+                    kind: KIND_SNAPSHOT,
+                    message: "duplicate-action-output",
+                });
+            }
+        }
+    }
+    let wire = ReportWireOptionals {
+        cursor_hit: match map.get("cursorHit") {
+            None => CursorHitWire::Absent,
+            Some(serde_json::Value::Null) => CursorHitWire::Null,
+            Some(serde_json::Value::String(text)) if text.is_empty() => CursorHitWire::Empty,
+            Some(serde_json::Value::String(_)) => CursorHitWire::Id,
+            Some(_) => return Err(unknown_value()),
+        },
+        monotonic_ms_present: map.contains_key("monotonicMs"),
+        frame_attempts_present: map.contains_key("frameAttempts"),
+        member_attempts_present: map.contains_key("memberAttempts"),
+        view_attempts_present: map.contains_key("viewAttempts"),
+        clear_attempts_present: map.contains_key("clearAttempts"),
+        creation_attempts_present: map.contains_key("creationAttempts"),
+        gesture_ingress: match map.get("gestureIngress") {
+            None => GestureIngressWire::Absent,
+            Some(serde_json::Value::Null) => GestureIngressWire::Null,
+            Some(_) => GestureIngressWire::Present,
+        },
+    };
+    Ok(DecodedReportV4 {
+        report,
+        wire,
+        creation_receipts,
+    })
+}
+
+/// Staged v4 connection-context gate for decoder composition: calls the
+/// context-free [`decode_report_v4`] shape decoder, then applies the same
+/// arrival-arm rule the runtime owns (native arm only on host-owned hosts,
+/// observed-output arm only elsewhere). The caller passes the bound
+/// handshake capability; the context is never inferred from the report.
+/// Both arms stay shape-valid in [`decode_report_v4`]; a wrong-host arm
+/// here refuses as `snapshot-invalid`/`arrival-host-mismatch` with no new
+/// error catalog or API metadata.
+pub fn decode_report_v4_for_host(
+    json: &str,
+    host_owned: bool,
+) -> std::result::Result<DecodedReportV4, WorldProtocolError> {
+    let decoded = decode_report_v4(json)?;
+    let mismatch = decoded.report.focus_feedback.iter().any(|row| {
+        row.arrival
+            .iter()
+            .any(|bracket| bracket.location.is_native() != host_owned)
+    });
+    if mismatch {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "arrival-host-mismatch",
+        });
+    }
+    Ok(decoded)
 }
 
 /// Canonical JSON string writer for replies and errors: `"` and `\` escape,

@@ -1259,6 +1259,198 @@ pub struct HeldWindowRow {
     pub kind: RowDiagnosticKind,
 }
 
+/// One identifiable native row that failed v4 shape checks, held narrowly
+/// instead of refusing the whole report. `output` is the valid live output
+/// handle; `ordinal` is the row's original index in the carried `native`
+/// array so a future exact request encoder can reconstruct the original
+/// order (valid rows keep relative order in `native`); `fields` retains
+/// every carried native key in canonical schema key order (`out`, `order`,
+/// `current`, `occupancy`, then any other carried keys in lexicographic
+/// order) as JSON-agnostic
+/// [`RawSettingValue`](crate::connection::RawSettingValue) facts so the
+/// canonical writer round-trips the row losslessly; `diagnostic` is the
+/// emitted typed diagnostic for the held scope.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldNativeRow {
+    pub output: OutputId,
+    pub ordinal: usize,
+    pub fields: Vec<(String, crate::connection::RawSettingValue)>,
+    pub diagnostic: RowDiagnostic,
+}
+
+/// Staged v4 attempt lane for one narrowly held attempt row: which
+/// carried attempt array the row came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AttemptLaneV4 {
+    Frame,
+    Member,
+    View,
+    Clear,
+    Creation,
+}
+
+impl AttemptLaneV4 {
+    /// Wire token for this lane, matching the carried report key stem.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Frame => "frame",
+            Self::Member => "member",
+            Self::View => "view",
+            Self::Clear => "clear",
+            Self::Creation => "creation",
+        }
+    }
+}
+
+/// One identifiable attempt row that failed v4 shape checks, held narrowly
+/// instead of refusing the whole report. `lane` names the carried attempt
+/// array; `ordinal` is the row's original index in that array so a future
+/// exact request encoder can reconstruct the original order (valid rows
+/// keep relative order); `identity` carries the row's carried `win`/`op`
+/// strings when present (empty when the row carried neither); `fields`
+/// retains every carried attempt key in the lane's canonical schema key
+/// order, then any other carried keys in lexicographic order, as
+/// JSON-agnostic [`RawSettingValue`](crate::connection::RawSettingValue)
+/// facts so the canonical writer round-trips the row losslessly;
+/// `diagnostic` is `Some` typed diagnostic for the row's actual reported
+/// target output, and `None` when the row carried no output (frame attempts
+/// name no output: such a row has no output authority); `kind` is the
+/// mandatory narrow-hold reason, independent of the scoped `diagnostic`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldAttemptRow {
+    pub lane: AttemptLaneV4,
+    pub ordinal: usize,
+    pub identity: Vec<String>,
+    pub fields: Vec<(String, crate::connection::RawSettingValue)>,
+    pub diagnostic: Option<RowDiagnostic>,
+    pub kind: RowDiagnosticKind,
+}
+
+/// One v4 presentation ingress that failed shape checks, held narrowly
+/// instead of refusing the whole report. The presentation ingress is a
+/// singleton object (no array ordinal, no lifetime identity): `fields`
+/// retains every carried presentation key in canonical contract table order
+/// (`foreground`, `minimized`, `maximized`, `fullscreen`, `hostHidden`,
+/// `hiddenWorkspace`, `frame`, `chordHeld`, `moveWindow`, `pagerOrder`,
+/// `pagerFrames`, `witness`, `foregroundOut`, then any other carried keys
+/// in lexicographic order) as JSON-agnostic
+/// [`RawSettingValue`](crate::connection::RawSettingValue) facts so the
+/// canonical writer round-trips the object losslessly; `kind` is the
+/// mandatory narrow-hold reason (`InvalidFact`); `diagnostic` is `Some`
+/// typed diagnostic only when the carried `foregroundOut` names a truthful
+/// output scope, and `None` otherwise (no scope is ever fabricated).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldPresentationRow {
+    pub fields: Vec<(String, crate::connection::RawSettingValue)>,
+    pub kind: RowDiagnosticKind,
+    pub diagnostic: Option<RowDiagnostic>,
+}
+
+/// Staged v4 presentation outcome: either the usable ingress or the
+/// singleton ingress held narrowly with its carried fields retained.
+/// Never a default ingress: a held presentation keeps the exact carried
+/// row, never fabricated foreground facts.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PresentationRowV4 {
+    Valid(PresentationIngressV4),
+    Held(HeldPresentationRow),
+}
+
+/// Staged v4 world report: the v4 contract shape (`rendererInput` carried,
+/// `views` removed, presentation held narrowly instead of defaulted).
+/// Standalone staging record only: the current engine keeps using
+/// [`WorldReport`]. No existing field, generic parameter, or validation
+/// behavior changes meaning.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorldReportV4 {
+    pub contract_version: u32,
+    pub adapter_incarnation: String,
+    pub core_generation: String,
+    /// Adapter-advanced on any invalidating native input, INCLUDING during
+    /// an outstanding request.
+    pub observation_seq: u64,
+    /// Monotonic per (incarnation, generation) request counter.
+    pub request_seq: u64,
+    pub request_id: String,
+    pub command_seq: Option<u64>,
+    pub command: Option<WorldCommand>,
+    /// Screen observations: FULL rectangles plus work areas, per-output
+    /// scale, and neutral reconnect identity.
+    pub screens: Vec<ScreenReport>,
+    /// Identifiable screen rows that failed v4 shape checks, held narrowly
+    /// with their raw fields retained (see [`HeldScreenRow`]).
+    pub held_screens: Vec<HeldScreenRow>,
+    /// Truthful window facts: observed screen affinity, frames, flags, and
+    /// minimized state.
+    pub windows: Vec<WindowFact>,
+    /// Identifiable window rows that failed v4 shape checks, held narrowly
+    /// with their raw fields retained (see [`HeldWindowRow`]).
+    pub held_windows: Vec<HeldWindowRow>,
+    /// Explicit closes. Always honored, even when the surrounding
+    /// inventory is incomplete.
+    pub closed: Vec<WindowId>,
+    /// Host-owned native domain observations.
+    pub native: Vec<NativeObservation>,
+    /// Identifiable native rows that failed v4 shape checks, held narrowly
+    /// with their raw fields retained (see [`HeldNativeRow`]).
+    pub held_native: Vec<HeldNativeRow>,
+    /// Normalized cursor position in adapter units, `None` when unreadable.
+    pub cursor: Option<(i32, i32)>,
+    /// Normalized cursor-hit managed lifetime, `None` when unreadable.
+    pub cursor_hit: Option<WindowId>,
+    /// Global active window id ("" when none).
+    pub focused_global: String,
+    /// Neutral migration/control action foreground (`None` unknown).
+    pub action_foreground: Option<OutputId>,
+    /// Neutral migration/control action cache (`None` empty/unmapped).
+    pub action_cached: Option<OutputId>,
+    /// Neutral ordered known-output registry for the action context.
+    pub action_outputs: Vec<OutputId>,
+    /// Host-designated primary output (`None` unknown/absent).
+    pub primary_output: Option<OutputId>,
+    pub inventory_complete: bool,
+    pub gesture_barrier: bool,
+    /// Normalized gesture lifecycle ingress (`None` on observation-only
+    /// reports).
+    pub gesture: Option<GestureIngress>,
+    /// Neutral adapter monotonic clock in milliseconds (`0` unreported).
+    pub monotonic_ms: u64,
+    /// Mechanical frame attempts (at most one latest-wins entry per
+    /// window).
+    pub frames: Vec<FrameAttempt>,
+    /// Mechanical membership attempts (at most one latest-wins entry per
+    /// operation window).
+    pub member_attempts: Vec<MemberAttempt>,
+    /// Mechanical view attempts (at most one latest-wins entry per owning
+    /// view phase).
+    pub view_attempts: Vec<ViewAttempt>,
+    /// Mechanical maximize-clear attempts (at most one latest-wins entry
+    /// per retained clear operation).
+    pub clear_attempts: Vec<ClearAttempt>,
+    /// Mechanical native creation attempts (at most one latest-wins entry
+    /// per outstanding creation operation).
+    pub creation_attempts: Vec<NativeCreationAttempt>,
+    /// Identifiable attempt rows that failed v4 shape checks, held narrowly
+    /// with their raw fields retained (see [`HeldAttemptRow`]).
+    pub held_attempts: Vec<HeldAttemptRow>,
+    /// Mechanical native-state attempts (at most one latest-wins entry per
+    /// window property).
+    pub state_attempts: Vec<StateAttempt>,
+    /// Correlated one-shot native focus evidence.
+    pub focus_feedback: Vec<FocusFeedback>,
+    /// Normalized presentation ingress: the valid ingress or the held
+    /// singleton row, never a default.
+    pub presentation: PresentationRowV4,
+    /// Opaque host storage return rows.
+    pub intent_records: Vec<IntentRecord>,
+    /// Staged v4 renderer input: the actually drawn revision plus its exact
+    /// target. `Some` requires a carried command (renderer present implies
+    /// command present); `None` means no renderer input (observation-only
+    /// reports and commands without a renderer both carry `None`).
+    pub renderer_input: Option<RendererInput>,
+}
+
 /// One screen observation: the stable output id, the FULL native output
 /// rectangle in one coherent adapter coordinate space, the distinct work
 /// area the core tiles into, the target output scale (adapter units per
