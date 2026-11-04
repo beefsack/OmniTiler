@@ -2666,10 +2666,62 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
     }
 }
 
-/// Decode one JSON world request into the typed core report. Enforces byte
-/// length first (4 MiB), then exact shape/types/vocabularies, then the core
-/// [`validate_report`] gate. Never logs or echoes payload bytes.
-pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProtocolError> {
+/// Optional cursor-hit wire spelling (report-level `cursorHit`): the
+/// normalized [`WorldReport::cursor_hit`] value stays in the typed report;
+/// this records which tolerant spelling carried it. `Absent` means the key
+/// was omitted, `Null` an explicit `null`, `Empty` an explicit `""`, and
+/// `Id` a validated opaque lifetime. `Absent`/`Null`/`Empty` normalize to
+/// `None`; `Id` normalizes to `Some`. The id itself stays in the report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorHitWire {
+    Absent,
+    Null,
+    Empty,
+    Id,
+}
+
+/// Optional gesture-ingress wire presence (report-level `gestureIngress`):
+/// `Absent` means the key was omitted, `Null` an explicit `null` (both
+/// normalize to `None`), and `Present` a validated object (normalizes to
+/// `Some`). The normalized value stays in the typed report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GestureIngressWire {
+    Absent,
+    Null,
+    Present,
+}
+
+/// Report-level optional wire metadata: which tolerant spellings the
+/// request carried. Normalized values stay in [`WorldReport`]; this only
+/// records presence/spelling so callers can reconstruct the exact carried
+/// optional groups. Never influences [`WorldReport`] equality, the report
+/// digest, or engine input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportWireOptionals {
+    pub cursor_hit: CursorHitWire,
+    pub monotonic_ms_present: bool,
+    pub frame_attempts_present: bool,
+    pub member_attempts_present: bool,
+    pub view_attempts_present: bool,
+    pub clear_attempts_present: bool,
+    pub creation_attempts_present: bool,
+    pub gesture_ingress: GestureIngressWire,
+}
+
+/// Decoded request plus its optional wire metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedRequest {
+    pub report: WorldReport,
+    pub wire: ReportWireOptionals,
+}
+
+/// Decode one JSON world request into the typed core report plus its
+/// optional wire metadata. Enforces byte length first (4 MiB), then exact
+/// shape/types/vocabularies, then the core [`validate_report`] gate. Never
+/// logs or echoes payload bytes.
+pub fn decode_request_with_wire(
+    json: &str,
+) -> std::result::Result<DecodedRequest, WorldProtocolError> {
     if json.len() > WORLD_MAX_REQUEST_BYTES {
         return Err(WorldProtocolError {
             kind: KIND_OVERSIZED,
@@ -3017,7 +3069,34 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     // above (fixed check vocabulary, never payload bytes): every carried
     // string is already length-gated by its alphabet, and section counts
     // are core-capped, so the estimator bound holds.
-    Ok(report)
+    let wire = ReportWireOptionals {
+        cursor_hit: match map.get("cursorHit") {
+            None => CursorHitWire::Absent,
+            Some(serde_json::Value::Null) => CursorHitWire::Null,
+            Some(serde_json::Value::String(text)) if text.is_empty() => CursorHitWire::Empty,
+            Some(serde_json::Value::String(_)) => CursorHitWire::Id,
+            Some(_) => return Err(unknown_value()),
+        },
+        monotonic_ms_present: map.contains_key("monotonicMs"),
+        frame_attempts_present: map.contains_key("frameAttempts"),
+        member_attempts_present: map.contains_key("memberAttempts"),
+        view_attempts_present: map.contains_key("viewAttempts"),
+        clear_attempts_present: map.contains_key("clearAttempts"),
+        creation_attempts_present: map.contains_key("creationAttempts"),
+        gesture_ingress: match map.get("gestureIngress") {
+            None => GestureIngressWire::Absent,
+            Some(serde_json::Value::Null) => GestureIngressWire::Null,
+            Some(_) => GestureIngressWire::Present,
+        },
+    };
+    Ok(DecodedRequest { report, wire })
+}
+
+/// Decode one JSON world request into the typed core report. Same gated
+/// parsing as [`decode_request_with_wire`]; optional wire metadata is
+/// discarded.
+pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProtocolError> {
+    decode_request_with_wire(json).map(|decoded| decoded.report)
 }
 
 /// Canonical JSON string writer for replies and errors: `"` and `\` escape,

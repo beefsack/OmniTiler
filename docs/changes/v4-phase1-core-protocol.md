@@ -444,6 +444,65 @@
   complete v4 codecs, renderer-input validation, native draw evidence or full
   presentation/scaling acceptance. The phase note remains active.
 
+## Two-way v4 codec sequence
+
+1. `lossless-report-wire-optionals`: retain optional wire spellings separately
+   from normalized engine input.
+2. `v4-presentation-input-rows`: strict nullable ingress, FrameWitness and
+   RendererInput row vocabulary/codecs.
+3. `v4-anchored-border-rows`: descriptor vocabulary, row codec, hide reasons and
+   exact sizing.
+4. `v4-report-two-way-codec`: complete report decode/encode and exact positive,
+   held-row and rejection fixture coverage.
+5. `v4-reply-two-way-codec`: complete reply decode/encode and exact positive and
+   rejection fixture coverage.
+6. Required engine bridge: genuine presentation production and RendererInput
+   validation before real-engine v4 conformance; no fabricated witness, synthetic
+   authority or forced-hidden border substitutes.
+7. Public cutover integration: version bump, legacy-envelope removal and affected
+   broker/service/tool integration. Verification must cover those paths as well as
+   core/protocol; a core/protocol-only result does not establish their acceptance.
+
+- Keyboard-step, resize-minimum and drop-zone scaling, physical reconnect/rehome
+  and native proof gates remain deferred. Staged row codecs grant no new engine
+  authority and introduce no parallel accepted envelope/version shapes.
+
+### Lossless report wire optionals
+
+- Preserve omitted/null/empty/id cursor-hit spellings; omitted/present clock;
+  omitted/present attempt arrays; and omitted/null/object gesture ingress. Keep
+  wire metadata in protocol-owned decoding output, not WorldReport equality,
+  hashing, command policy or retained engine state. Existing decode_request callers
+  continue to receive the same normalized report and errors.
+- Verify real decoder capture, immutable optional-row witnesses and test-only
+  reconstruction of their exact spellings, including nonempty lanes, maximum
+  counters and held-row retention. Equal normalized reports must still hash alike
+  and replay as duplicates despite differing wire spellings; changed values remain
+  fenced. No complete request writer, v4 whole-envelope decode, version bump,
+  legacy-key removal, presentation migration or adapter work belongs to this unit.
+- Implemented protocol-owned `DecodedRequest`/`ReportWireOptionals` through
+  `decode_request_with_wire`; existing `decode_request` delegates to the same
+  strict gates and returns only the unchanged normalized report. Cursor spelling
+  retains no duplicate lifetime string. Core input, digest and equality are
+  untouched. Production encoding remains deferred to the complete report codec.
+- Eight new protocol regressions cover spelling capture, metadata-driven exact
+  reconstruction of immutable optional fragments, nonempty lanes, gesture
+  objects, maximum counters, malformed-value parity, held-row field order and
+  native-workspace/primary preservation. Real-engine duplicate replies retain
+  identical bytes across normalized-equivalent spellings; changed values retain
+  request-reuse rejection. Initial equality setup changed the cursor as well as
+  its hit spelling; correcting that setup established the intended equivalence,
+  not a behavioral red. Independent review found no behavioral blocker; a comment
+  correction and explicit reconstruction branches closed its two minor findings.
+- Direct final verification passes the exact filtered core/protocol test gate
+  (1632 core unit tests, every selected integration/protocol target, including the
+  eight new optional tests), core/protocol build, scoped all-target clippy with
+  warnings denied, formatting, whitespace, added ASCII and local-link checks.
+  Only workspace_unsafe_posture is filtered. Immutable v4 envelopes still fail
+  their existing whole-message gates: these are isolated fragment witnesses, not
+  complete v4 report roundtrips. No fixture, adapter or version changes are
+  included, and all eight OPEN/TBD gates remain unchanged.
+
 ## Evidence
 
 - Initial fixture inventory: 518 messages (275 valid, 3 settings-diagnostic,
