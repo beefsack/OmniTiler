@@ -918,6 +918,36 @@
   changes are included. A separately discovered grading risk is parked below;
   these checks do not establish its acceptance or full v4 engine acceptance.
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
+- Capability-held cursor grading repair plan: reproduce a valid v4 report whose
+  native cursor hit names a newly capability-held window, then keep that window
+  held instead of discarding the grading. Preserve the original hit and fact in
+  raw observation capture; the effective classified report must give that held
+  subject no cursor-target eligibility. Keep wire admission and its existing
+  cursor cross-checks unchanged, including unrelated invalid-input refusal.
+  Verify direct grading and staging, supported/unrelated-hit controls, retained
+  raw facts and existing holds/ordinals/diagnostics. This repair precedes 4b and
+  does not alter the migration order or add v4 runtime assembly.
+- Capability-held cursor grading repair outcome: the focused staging regression
+  first failed because a valid native hit on the conflicting sticky subject
+  caused grading to return no normalized report, leaving that typed fact staged.
+  Grading now clears only an effective hit naming a newly graded hold, with an
+  original cursor present, before the unchanged final structural recheck. Raw
+  observation capture and the original report retain the cursor, hit and facts;
+  no replacement target is selected. Unknown hits, hits without cursor and an
+  unrelated malformed command pair still yield no graded report, preserving the
+  existing invalid-typed-input handling without deciding public ingress policy.
+  The reproducer now passes. Four additional focused regressions cover direct
+  normalization, supported and unaffected-hit controls, malformed originals and
+  existing held-row/ordinal conservation. Independent review found no blocking
+  issue. Final direct verification passes the filtered core/protocol gate (1664
+  core unit tests and every selected integration/protocol target), build, scoped
+  all-target clippy with warnings denied, formatting, whitespace, added ASCII,
+  NUL and local-link checks. Only `workspace_unsafe_posture` is filtered. The
+  effective-hit normalization choice remains tentative below; the earlier
+  grading risk is repaired, not an outstanding blocker. No contract, fixture,
+  manifest, adapter, feature, version or public-ingress change is included, and
+  4b remains unstarted.
+- Presentation-local style scaling only; keyboard-step, resize-minimum and
   drop-zone scaling stay deferred.
 - Lands with unit 7, not before: contract version 3 to 4 and protocol version,
   broker and service decode and encode switch, handshake and version
@@ -1894,18 +1924,20 @@
 
 ## Tentative decisions pending user review
 
-- Parked v4 grading risk, not a selected behavior: the existing
-  `grade_conflicting_windows_v4` revalidates its normalized report and returns
-  no grading when that check fails. `validate_report_v4_reason` requires
-  `cursor_hit` to name a typed window, not a held row; moving the hit subject to
-  a capability-conflict hold can therefore discard the grading and leave the
-  conflicting typed fact available to staging. This is source-derived evidence,
-  not a reproduced producer failure. The new capture regression isolates grading
-  with cursor/feedback references to an ungraded survivor; it does not resolve
-  this risk. Raw capture preserves the original facts without changing these
-  pre-existing validators. Disposition and any repair remain open before relying
-  on v4 grading for the accepted-run assembly; no contract or fixture change is
-  selected here.
+- Case: a native cursor hit names a window moved to a capability-conflict hold
+  during v4 grading. Chosen internal behavior: preserve the original hit in the
+  staged raw observation, but clear that newly ineligible hit in the effective
+  classified report before its structural recheck. A held subject grants no
+  hover authority; no geometric fallback or replacement target is selected.
+  Evidence: the contract's raw native-hit and narrow conflicting-row hold rules,
+  the existing hover consumer's requirement for a classified fact, and the
+  focused staging regression, which reproduces the conflicting fact surviving
+  when normalized cursor validation discards grading. The wire validator remains
+  unchanged; malformed original cursor/reference combinations must not become
+  acceptable through normalization. Alternative: retain the hit in the effective
+  report and bypass its cursor validation. Not selected because that would give
+  the normalized report a second structural-validity convention. This internal
+  normalization choice is tentative, not an approved contract change.
 - Case: a composed-maximized float receives directional move after its screen or
   work area becomes unavailable, or half-snap geometry cannot be computed.
   Chosen behavior: retain the bit, emit the existing directional refusal, mint no

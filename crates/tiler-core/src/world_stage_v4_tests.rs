@@ -611,6 +611,213 @@ fn v4_grades_sticky_projected_fact_to_held() {
 }
 
 #[test]
+fn v4_cursor_hit_on_capability_held_fact_keeps_hold() {
+    use crate::world_report_v4_checks::validate_report_v4_reason;
+    let mut engine = engine_with_caps(caps_sticky_native_free());
+    let mut sticky = fact("win-a", "out-a", 0);
+    sticky.sticky = Some(true);
+    // Isolate the sticky conflict: maximized null never grades.
+    sticky.maximized = None;
+    let mut report = report_v4(
+        1,
+        vec![screen("out-a", 0)],
+        vec![sticky],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        false,
+    );
+    report.cursor = Some((10, 20));
+    report.cursor_hit = Some(WindowId("win-a".to_owned()));
+    // The initial report is valid: the hit names a typed window.
+    assert_eq!(validate_report_v4_reason(&report), None);
+    let original_windows = report.windows.clone();
+    engine.stage_facts_v4(&report);
+    // Raw capture preserves the original facts verbatim, with the native
+    // cursor lanes intact; the held-target clearing applies to the
+    // effective copy only, with no surrogate target.
+    assert_eq!(engine.staged.observation.raw_windows, original_windows);
+    assert_eq!(engine.staged.observation.cursor, Some((10, 20)));
+    assert_eq!(
+        engine.staged.observation.cursor_hit,
+        Some(WindowId("win-a".to_owned()))
+    );
+    // The conflicting typed fact must not survive to staging: classified
+    // fact absence is the holding invariant (no full v4 hover path is
+    // wired yet).
+    assert!(engine.staged.facts.is_empty());
+    assert_eq!(engine.staged.held_windows.len(), 1);
+    assert_eq!(
+        engine.staged.diagnostics,
+        vec![conflicting_diagnostic(
+            "out-a",
+            RowDiagnosticLane::Window,
+            "win-a"
+        )]
+    );
+}
+
+#[test]
+fn v4_grade_clears_cursor_hit_naming_newly_held_window() {
+    use crate::world_report_v4_checks::{grade_conflicting_windows_v4, validate_report_v4_reason};
+    let mut sticky = fact("win-a", "out-a", 0);
+    sticky.sticky = Some(true);
+    // Isolate the sticky conflict: maximized null never grades.
+    sticky.maximized = None;
+    let mut report = report_v4(
+        1,
+        vec![screen("out-a", 0)],
+        vec![sticky],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        false,
+    );
+    report.cursor = Some((10, 20));
+    report.cursor_hit = Some(WindowId("win-a".to_owned()));
+    assert_eq!(validate_report_v4_reason(&report), None);
+    let graded =
+        grade_conflicting_windows_v4(&report, &[], false, false).expect("grades with cursor clear");
+    // Input report intact: cursor, hit and typed row untouched.
+    assert_eq!(report.cursor, Some((10, 20)));
+    assert_eq!(report.cursor_hit, Some(WindowId("win-a".to_owned())));
+    assert_eq!(report.windows.len(), 1);
+    // Effective rows: cursor kept, dangling hit cleared, hold retained.
+    assert_eq!(graded.cursor, Some((10, 20)));
+    assert_eq!(graded.cursor_hit, None);
+    assert!(graded.windows.is_empty());
+    assert_eq!(graded.held_windows.len(), 1);
+    assert_eq!(graded.held_windows[0].window.0, "win-a");
+    assert_eq!(graded.held_windows[0].ordinal, 0);
+    assert_eq!(
+        graded.held_windows[0].kind,
+        RowDiagnosticKind::ConflictingFact
+    );
+    assert_eq!(validate_report_v4_reason(&graded), None);
+}
+
+#[test]
+fn v4_grade_keeps_hit_on_unaffected_survivor() {
+    use crate::world_report_v4_checks::{grade_conflicting_windows_v4, validate_report_v4_reason};
+    let mut sticky = fact("win-a", "out-a", 0);
+    sticky.sticky = Some(true);
+    sticky.maximized = None;
+    let mut plain = fact("win-b", "out-a", 40);
+    plain.sticky = None;
+    plain.maximized = None;
+    let mut report = report_v4(
+        1,
+        vec![screen("out-a", 0)],
+        vec![sticky, plain],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        false,
+    );
+    report.cursor = Some((10, 20));
+    report.cursor_hit = Some(WindowId("win-b".to_owned()));
+    assert_eq!(validate_report_v4_reason(&report), None);
+    let graded =
+        grade_conflicting_windows_v4(&report, &[], false, false).expect("grades survivor report");
+    // The survivor hit is not dangling: it stays verbatim.
+    assert_eq!(graded.cursor_hit, Some(WindowId("win-b".to_owned())));
+    assert_eq!(graded.windows.len(), 1);
+    assert_eq!(graded.windows[0].window.0, "win-b");
+    assert_eq!(graded.held_windows.len(), 1);
+    assert_eq!(graded.held_windows[0].window.0, "win-a");
+    assert_eq!(validate_report_v4_reason(&graded), None);
+    // Supported control: no conflict, no grading, input untouched.
+    let ungraded = grade_conflicting_windows_v4(&report, &[], true, true);
+    assert!(ungraded.is_none());
+    assert_eq!(report.cursor_hit, Some(WindowId("win-b".to_owned())));
+}
+
+#[test]
+fn v4_grade_refuses_malformed_cursor_hit_originals() {
+    use crate::world_report_v4_checks::{grade_conflicting_windows_v4, validate_report_v4_reason};
+    fn conflicting_report() -> WorldReportV4 {
+        let mut sticky = fact("win-a", "out-a", 0);
+        sticky.sticky = Some(true);
+        sticky.maximized = None;
+        report_v4(
+            1,
+            vec![screen("out-a", 0)],
+            vec![sticky],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+    }
+    // Unknown hit: clearing must not mask the invalid original.
+    let mut unknown = conflicting_report();
+    unknown.cursor = Some((10, 20));
+    unknown.cursor_hit = Some(WindowId("win-ghost".to_owned()));
+    assert_eq!(
+        validate_report_v4_reason(&unknown),
+        Some("cursor-hit-unknown")
+    );
+    assert!(grade_conflicting_windows_v4(&unknown, &[], false, false).is_none());
+    // Hit without cursor: clearing must not mask the invalid original.
+    let mut cursorless = conflicting_report();
+    cursorless.cursor_hit = Some(WindowId("win-a".to_owned()));
+    assert_eq!(
+        validate_report_v4_reason(&cursorless),
+        Some("cursor-hit-without-cursor")
+    );
+    assert!(grade_conflicting_windows_v4(&cursorless, &[], false, false).is_none());
+    // Unrelated invalid original: a dangling hit cleared on the effective
+    // copy must not rescue grading when another lane still refuses.
+    let mut unpaired = conflicting_report();
+    unpaired.cursor = Some((10, 20));
+    unpaired.cursor_hit = Some(WindowId("win-a".to_owned()));
+    unpaired.command_seq = Some(1);
+    assert_eq!(
+        validate_report_v4_reason(&unpaired),
+        Some("command-pair-invalid")
+    );
+    assert!(grade_conflicting_windows_v4(&unpaired, &[], false, false).is_none());
+}
+
+#[test]
+fn v4_grade_conserves_existing_held_rows_and_ordinals() {
+    use crate::world_report_v4_checks::{grade_conflicting_windows_v4, validate_report_v4_reason};
+    let mut sticky = fact("win-a", "out-a", 0);
+    sticky.sticky = Some(true);
+    sticky.maximized = None;
+    let mut scoped = held_window("win-h", Some("out-a"));
+    scoped.ordinal = 1;
+    let mut report = report_v4(
+        1,
+        vec![screen("out-a", 0)],
+        vec![sticky],
+        Vec::new(),
+        Vec::new(),
+        vec![scoped],
+        false,
+    );
+    report.cursor = Some((10, 20));
+    report.cursor_hit = Some(WindowId("win-a".to_owned()));
+    assert_eq!(validate_report_v4_reason(&report), None);
+    let graded =
+        grade_conflicting_windows_v4(&report, &[], false, false).expect("grades with prior hold");
+    // Pre-existing held row conserved verbatim; the new hold takes the
+    // free slot and rows stay ordinal-ordered.
+    assert_eq!(graded.held_windows.len(), 2);
+    assert_eq!(
+        graded
+            .held_windows
+            .iter()
+            .map(|held| (held.window.0.clone(), held.ordinal))
+            .collect::<Vec<_>>(),
+        vec![("win-a".to_owned(), 0), ("win-h".to_owned(), 1)]
+    );
+    assert_eq!(graded.held_windows[1], report.held_windows[0]);
+    assert_eq!(graded.cursor_hit, None);
+    assert_eq!(validate_report_v4_reason(&graded), None);
+}
+
+#[test]
 fn v4_unsupported_sticky_attempt_emits_diagnostic_and_preserves_raw() {
     let mut engine = engine_with_caps(caps_sticky_native_free());
     let mut live = fact("win-a", "out-a", 0);

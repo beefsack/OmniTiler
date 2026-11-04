@@ -741,7 +741,10 @@ fn valid_attempt_workspace_ref(reference: &WorkspaceRef) -> bool {
 /// Staged v4 twin of
 /// [`grade_conflicting_windows`](crate::world_report::grade_conflicting_windows):
 /// unavailable-fact contradictions move to `held_windows` with a
-/// `ConflictingFact` diagnostic. No twins of the invalid-screen/window
+/// `ConflictingFact` diagnostic. A `cursor_hit` naming a newly graded window
+/// is cleared on the effective (normalized) rows; the input report is never
+/// mutated and every other normalized invalidity still refuses grading.
+/// No twins of the invalid-screen/window
 /// graders: the v4 decoder already holds invalid rows, and the unlikely
 /// typed-value path is reported, not built.
 #[must_use]
@@ -817,6 +820,19 @@ pub fn grade_conflicting_windows_v4(
     }
     let mut normalized = report.clone();
     normalized.windows = windows;
+    // The raw capture keeps the native hit verbatim; the effective copy
+    // clears a hit naming a newly graded hold so the dangling reference
+    // does not discard grading. `graded` holds only original typed rows,
+    // so unknown or pre-existing-held hits cannot match, and a missing
+    // cursor leaves the malformed original to the final recheck below.
+    let hit_newly_held = report.cursor.is_some()
+        && normalized
+            .cursor_hit
+            .as_ref()
+            .is_some_and(|hit| graded.iter().any(|held| held.window == *hit));
+    if hit_newly_held {
+        normalized.cursor_hit = None;
+    }
     normalized.held_windows.extend(graded);
     normalized.held_windows.sort_by_key(|held| held.ordinal);
     if validate_report_v4_reason(&normalized).is_some() {

@@ -685,9 +685,9 @@ fn v4_capture_conserves_raw_lanes_in_order() {
     let mut subject = engine();
     let lanes = rich_lanes();
     let report = rich_v4(5, lanes);
-    // The rich report must stay genuinely valid: grading re-validates
-    // the normalized rows and silently skips on any violation, which
-    // would hide a lane regression behind an unchanged staging.
+    // The rich report must stay genuinely valid: unrelated report
+    // invalidity refuses grading, which would hide a lane regression
+    // behind an unchanged staging.
     assert!(
         crate::world_report_v4_checks::validate_report_v4_reason(&report).is_none(),
         "rich v4 report must validate"
@@ -1134,11 +1134,10 @@ fn intent_pending_survives_hold_cleared_by_close_and_late_fenced() {
 #[test]
 fn v4_capture_keeps_original_rows_through_capability_grading() {
     // Default capabilities bind no native state support, so the sticky
-    // fact grades to a narrow conflicting hold while the raw capture
-    // retains the true original typed rows. Every other lane references
-    // the ungraded lifetime only: grading re-validates the normalized
-    // rows and silently skips on dangling references, so a reference to
-    // the graded row would hide the hold behind unchanged staging.
+    // fact grades to a narrow conflicting hold. Unrelated report
+    // invalidity refuses grading; grading keeps the native hit in the raw
+    // capture but clears a held target on the effective copy, so every
+    // lane here references the ungraded survivor lifetime only.
     let mut subject = WorldEngine::new_test_bound_with_capabilities(
         "gen-1",
         "adapter-1",
