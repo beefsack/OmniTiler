@@ -3,12 +3,13 @@
 //! classification, intent ingestion consumes the staged capture before the
 //! classifier runs, and capture never mutates retained routing state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::connection::HostCapabilities;
+use crate::connection::{HostCapabilities, RawSettingValue};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::gesture::{GestureIngress, GestureKind, GesturePhase};
 use crate::intent_data::{IntentData, encode_intent_data};
+use crate::seed::EngineWindow;
 use crate::session::DomainKey;
 use crate::world_directional::tests::{accepted, fact, rect, report_full, screen};
 use crate::world_engine::{ExcludedIntent, StagedDomain, StagedObservation, WorldEngine};
@@ -16,13 +17,13 @@ use crate::world_focus::{FocusVerdict, RetainedFocusGrant};
 use crate::world_members::MemberState;
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, AttemptLaneV4, AttemptOutcome, AuthorityScope, ClearAttempt,
-    FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow, HeldNativeRow, HeldScreenRow,
-    HeldWindowRow, IntentRecord, IntentWrite, MemberAttempt, NativeCreationAttempt,
+    EffectCause, FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow, HeldNativeRow,
+    HeldScreenRow, HeldWindowRow, IntentRecord, IntentWrite, MemberAttempt, NativeCreationAttempt,
     NativeObservation, NativeOccupancy, OneShotEffect, PresentationIngressV4, PresentationRowV4,
-    RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport,
-    StateAttempt, StateProperty, ViewAttempt, VisibilityFact, VisibilityReason, VisibilitySample,
-    VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldReport,
-    WorldReportV4,
+    RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
+    ScopeAuthority, ScreenReport, StateAttempt, StateProperty, ViewAttempt, VisibilityFact,
+    VisibilityReason, VisibilitySample, VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowDesire,
+    WindowFact, WorkspaceRef, WorldReport, WorldReportV4,
 };
 use crate::world_selection::{
     FrozenArrivalMember, RetainedSelection, SelectionScope, SelectionTarget, SwitchMember,
@@ -3186,6 +3187,700 @@ fn settle_selection_feedback_view_receipts_independent_focusless_and_host_owned(
             true,
             false,
             "native unmapped holds",
+        );
+    }
+}
+
+// 4b-2c: cursor focus/warp observation family on the staged capture, both
+// intakes. Tests drive the real `stage_facts`/`stage_facts_v4` lanes, then
+// seed the post-rollback staged join directly (TEST-ONLY retained
+// view/domain/membership seeds: the v4 accepted-run domain assembly is
+// unbuilt, so homing, views, and domains below are seeds, never runtime
+// proof), then call the shared staged helpers. No conversion, no runtime
+// change, no new files.
+fn cursor_engine() -> WorldEngine {
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            warp: true,
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
+        vec![
+            ("focusFollowsCursor".to_owned(), RawSettingValue::Bool(true)),
+            ("cursorWarp".to_owned(), RawSettingValue::Bool(true)),
+        ],
+    )
+    .expect("generation")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_cursor(
+    engine: &mut WorldEngine,
+    v4: bool,
+    seq: u64,
+    windows: Vec<WindowFact>,
+    focused: &str,
+    cursor: Option<(i32, i32)>,
+    hit: Option<&str>,
+    complete: bool,
+    barrier: bool,
+) {
+    let mut legacy = report_full(
+        seq,
+        seq,
+        vec![screen("out-a", 0), screen("out-b", 800)],
+        windows.clone(),
+        Vec::new(),
+        focused,
+        None,
+        None,
+    );
+    legacy.cursor = cursor;
+    legacy.cursor_hit = hit.map(|hit| WindowId(hit.to_owned()));
+    legacy.focused_global = focused.to_owned();
+    legacy.inventory_complete = complete;
+    legacy.gesture_barrier = barrier;
+    let mut v4report = report_v4_simple(
+        seq,
+        vec![screen("out-a", 0), screen("out-b", 800)],
+        Vec::new(),
+        windows,
+        Vec::new(),
+        Vec::new(),
+    );
+    v4report.cursor = cursor;
+    v4report.cursor_hit = hit.map(|hit| WindowId(hit.to_owned()));
+    v4report.focused_global = focused.to_owned();
+    v4report.inventory_complete = complete;
+    v4report.gesture_barrier = barrier;
+    stage_either(engine, v4, &legacy, &v4report);
+    seed_cursor_join(engine);
+}
+
+/// TEST-ONLY staged join seed: homes every staged fact with a reported
+/// screen to that screen's current-view domain and plants one readable
+/// domain per output. Stands in for the unbuilt v4 accepted-run domain
+/// assembly; the classification under test still comes from the real
+/// staged lanes above.
+fn seed_cursor_join(engine: &mut WorldEngine) {
+    engine
+        .mapping
+        .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+    engine
+        .mapping
+        .insert("out-b".to_owned(), vec!["ws-2".to_owned()]);
+    engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+    engine.views.insert("out-b".to_owned(), "ws-2".to_owned());
+    let home = |output: &str| DomainKey {
+        output: OutputId(output.to_owned()),
+        workspace: WorkspaceId(if output == "out-a" { "ws-1" } else { "ws-2" }.to_owned()),
+    };
+    let mut ids: Vec<WindowId> = engine.staged.facts.keys().cloned().collect();
+    ids.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut homing = BTreeMap::new();
+    let mut carriers_a = Vec::new();
+    let mut carriers_b = Vec::new();
+    for id in &ids {
+        let Some(fact) = engine.staged.facts.get(id) else {
+            continue;
+        };
+        let output = fact
+            .output
+            .as_ref()
+            .map(|output| output.0.clone())
+            .unwrap_or_else(|| "out-a".to_owned());
+        if output != "out-a" && output != "out-b" {
+            continue;
+        }
+        let key = home(&output);
+        homing.insert(id.clone(), key.clone());
+        if let Some(rect) = fact.rect {
+            let carrier = EngineWindow {
+                window: id.clone(),
+                output: key.output.clone(),
+                workspace: key.workspace.clone(),
+                rect,
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: fact
+                    .hints
+                    .unwrap_or(crate::size_hints::WindowSizeHints::none()),
+            };
+            if output == "out-a" {
+                carriers_a.push(carrier);
+            } else {
+                carriers_b.push(carrier);
+            }
+        }
+    }
+    engine.staged.homing = homing;
+    engine.staged.domains = vec![
+        StagedDomain {
+            key: home("out-a"),
+            bounds: rect(0, 0, 800, 560),
+            gap: 0,
+            outer_gap: 0,
+            windows: carriers_a,
+            focused: WindowId(String::new()),
+            minimized: Vec::new(),
+            unreadable: Vec::new(),
+            closed: Vec::new(),
+            readable: true,
+            hold: None,
+        },
+        StagedDomain {
+            key: home("out-b"),
+            bounds: rect(800, 0, 800, 560),
+            gap: 0,
+            outer_gap: 0,
+            windows: carriers_b,
+            focused: WindowId(String::new()),
+            minimized: Vec::new(),
+            unreadable: Vec::new(),
+            closed: Vec::new(),
+            readable: true,
+            hold: None,
+        },
+    ];
+}
+
+#[test]
+fn cursor_staged_pause_and_hover_parity() {
+    for v4 in [false, true] {
+        let mut engine = cursor_engine();
+        let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+        // Baseline: complete, unbarred, focus on win-a, cursor moved onto
+        // the win-b hit. Both intakes stage the same facts first.
+        engine.prev_cursor = Some((10, 10));
+        stage_cursor(
+            &mut engine,
+            v4,
+            1,
+            windows(),
+            "win-a",
+            Some((110, 10)),
+            Some("win-b"),
+            true,
+            false,
+        );
+        for window in ["win-a", "win-b"] {
+            assert!(
+                engine
+                    .staged
+                    .facts
+                    .contains_key(&WindowId(window.to_owned())),
+                "both intakes stage {window} (v4={v4})"
+            );
+        }
+        assert!(
+            !crate::world_cursor::cursor_game_paused(&engine),
+            "no pause without fullscreen (v4={v4})"
+        );
+        let effect = engine
+            .take_focus_follows(&BTreeSet::new())
+            .expect("moved cursor over an eligible hit couples");
+        assert_eq!(effect.target.0, "win-b", "hover target (v4={v4})");
+        assert_eq!(
+            effect.cause,
+            EffectCause::FocusFollowsCursor,
+            "hover cause (v4={v4})"
+        );
+        // Arrival: focus catches up to the hover; the same cursor and hit
+        // mint nothing more.
+        engine.prev_cursor = Some((110, 10));
+        stage_cursor(
+            &mut engine,
+            v4,
+            2,
+            windows(),
+            "win-b",
+            Some((110, 10)),
+            Some("win-b"),
+            true,
+            false,
+        );
+        assert!(
+            engine.take_focus_follows(&BTreeSet::new()).is_none(),
+            "arrival stops minting (v4={v4})"
+        );
+        // Static cursor over an unchanged hover never re-steals after a
+        // keyboard move of focus elsewhere.
+        engine.prev_cursor = Some((110, 10));
+        stage_cursor(
+            &mut engine,
+            v4,
+            3,
+            windows(),
+            "win-a",
+            Some((110, 10)),
+            Some("win-b"),
+            true,
+            false,
+        );
+        assert!(
+            engine.take_focus_follows(&BTreeSet::new()).is_none(),
+            "static hover never re-steals (v4={v4})"
+        );
+        // Movement alone couples: the real seq-1/seq-3 calls recorded the
+        // win-b hover, so the same hover with a moved cursor mints even
+        // with no hover transition.
+        engine.prev_cursor = Some((110, 10));
+        stage_cursor(
+            &mut engine,
+            v4,
+            4,
+            windows(),
+            "win-a",
+            Some((120, 10)),
+            Some("win-b"),
+            true,
+            false,
+        );
+        let effect = engine
+            .take_focus_follows(&BTreeSet::new())
+            .expect("moved cursor over the same hit couples");
+        assert_eq!(effect.target.0, "win-b", "movement-only target (v4={v4})");
+        // Transition alone couples: the real seq-4 call recorded the win-b
+        // hover, so a new hit with a static cursor mints even with no
+        // cursor movement.
+        engine.prev_cursor = Some((120, 10));
+        stage_cursor(
+            &mut engine,
+            v4,
+            5,
+            windows(),
+            "win-b",
+            Some((120, 10)),
+            Some("win-a"),
+            true,
+            false,
+        );
+        let effect = engine
+            .take_focus_follows(&BTreeSet::new())
+            .expect("new hit under a static cursor couples");
+        assert_eq!(effect.target.0, "win-a", "transition-only target (v4={v4})");
+        // Static counterpart: the same cursor over the same recorded hover
+        // mints nothing.
+        engine.prev_cursor = Some((120, 10));
+        stage_cursor(
+            &mut engine,
+            v4,
+            6,
+            windows(),
+            "win-b",
+            Some((120, 10)),
+            Some("win-a"),
+            true,
+            false,
+        );
+        assert!(
+            engine.take_focus_follows(&BTreeSet::new()).is_none(),
+            "static cursor over the recorded hover mints nothing (v4={v4})"
+        );
+        // Incomplete inventory, gesture barrier, and a held home scope all
+        // gate, with the cursor still moved onto an eligible hit.
+        engine.prev_cursor = Some((10, 10));
+        stage_cursor(
+            &mut engine,
+            v4,
+            7,
+            windows(),
+            "win-a",
+            Some((110, 10)),
+            Some("win-b"),
+            false,
+            false,
+        );
+        assert!(
+            engine.take_focus_follows(&BTreeSet::new()).is_none(),
+            "incomplete inventory gates (v4={v4})"
+        );
+        stage_cursor(
+            &mut engine,
+            v4,
+            8,
+            windows(),
+            "win-a",
+            Some((110, 10)),
+            Some("win-b"),
+            true,
+            true,
+        );
+        assert!(
+            engine.take_focus_follows(&BTreeSet::new()).is_none(),
+            "gesture barrier gates (v4={v4})"
+        );
+        stage_cursor(
+            &mut engine,
+            v4,
+            9,
+            windows(),
+            "win-a",
+            Some((110, 10)),
+            Some("win-b"),
+            true,
+            false,
+        );
+        let mut held = BTreeSet::new();
+        held.insert(home_key("out-a"));
+        assert!(
+            engine.take_focus_follows(&held).is_none(),
+            "held home scope gates (v4={v4})"
+        );
+        // Game pause reads the CURRENT staged capture: a focused
+        // fullscreen game pauses hover despite the moved cursor and hit.
+        let mut game_windows = windows();
+        let mut game = fact("game", "out-a", 200);
+        game.fullscreen = Some(true);
+        game_windows.push(game);
+        engine.prev_cursor = Some((10, 10));
+        stage_cursor(
+            &mut engine,
+            v4,
+            10,
+            game_windows,
+            "game",
+            Some((110, 10)),
+            Some("win-b"),
+            true,
+            false,
+        );
+        assert!(
+            crate::world_cursor::cursor_game_paused(&engine),
+            "focused fullscreen pauses (v4={v4})"
+        );
+        assert!(
+            engine.take_focus_follows(&BTreeSet::new()).is_none(),
+            "game pause gates hover (v4={v4})"
+        );
+        // Prior capture does not leak: refocusing away clears the pause on
+        // the next staged observation.
+        engine.prev_cursor = Some((110, 10));
+        stage_cursor(
+            &mut engine,
+            v4,
+            11,
+            windows(),
+            "win-a",
+            Some((120, 10)),
+            Some("win-b"),
+            true,
+            false,
+        );
+        assert!(
+            !crate::world_cursor::cursor_game_paused(&engine),
+            "pause clears on refocus (v4={v4})"
+        );
+        // No gates hold and the cursor moved: hover couples again on the
+        // current staged observation. The hovered win-b differs from both
+        // the cached win-a hover and the win-a focus, so this is no stale
+        // cached hover.
+        let effect = engine
+            .take_focus_follows(&BTreeSet::new())
+            .expect("refocus with a moved cursor couples");
+        assert_eq!(effect.target.0, "win-b", "refocus target (v4={v4})");
+    }
+}
+
+#[test]
+fn cursor_v4_capability_hold_kills_hover() {
+    // v4-only: a capability-held cursor-hit subject has no classified
+    // eligibility, isolated to the sticky conflict. Both engines bind
+    // maximize support and stage the identical v4 report; only the held
+    // engine withholds native_sticky support, so only its sticky hit
+    // grades. The same TEST-ONLY join seeds both engines and the seeded
+    // rings/views match, so the mint/no-mint split comes from
+    // classification, never seed drift.
+    let caps = |native_sticky: bool| HostCapabilities {
+        native_sticky,
+        maximize: true,
+        ..Default::default()
+    };
+    let settings = || vec![("focusFollowsCursor".to_owned(), RawSettingValue::Bool(true))];
+    let mut supported = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        caps(true),
+        settings(),
+    )
+    .expect("generation");
+    let mut held = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        caps(false),
+        settings(),
+    )
+    .expect("generation");
+    let mut sticky = fact("win-a", "out-a", 0);
+    sticky.sticky = Some(true);
+    let mut report = report_v4_simple(
+        1,
+        vec![screen("out-a", 0)],
+        Vec::new(),
+        vec![sticky],
+        Vec::new(),
+        Vec::new(),
+    );
+    report.cursor = Some((10, 10));
+    report.cursor_hit = Some(WindowId("win-a".to_owned()));
+    report.focused_global = "win-b".to_owned();
+    stage_v4_ingested(&mut supported, &report);
+    stage_v4_ingested(&mut held, &report);
+    // Raw lanes retain the original rows on both engines.
+    for engine in [&supported, &held] {
+        assert_eq!(
+            engine.staged.observation.cursor_hit,
+            Some(WindowId("win-a".to_owned())),
+            "raw capture keeps the original hit"
+        );
+        assert!(
+            engine
+                .staged
+                .observation
+                .raw_windows
+                .iter()
+                .any(|fact| fact.window.0 == "win-a"),
+            "raw capture keeps the original fact"
+        );
+    }
+    // The held engine grades the sticky conflict to a ConflictingFact row
+    // with no classified fact; the supported engine classifies the same
+    // fact.
+    let held_row = held
+        .staged
+        .held_windows
+        .iter()
+        .find(|held| held.window.0 == "win-a")
+        .expect("sticky conflict grades to a held row");
+    assert_eq!(
+        held_row.kind,
+        RowDiagnosticKind::ConflictingFact,
+        "graded hold carries the conflicting-fact kind"
+    );
+    assert!(
+        !held
+            .staged
+            .facts
+            .contains_key(&WindowId("win-a".to_owned())),
+        "graded hold leaves no classified fact"
+    );
+    assert!(
+        supported
+            .staged
+            .facts
+            .contains_key(&WindowId("win-a".to_owned())),
+        "supported intake classifies the same fact"
+    );
+    // Same TEST-ONLY join on both engines; the seeded rings/views match.
+    seed_cursor_join(&mut supported);
+    seed_cursor_join(&mut held);
+    assert_eq!(supported.views, held.views, "seeded views match");
+    assert_eq!(supported.mapping, held.mapping, "seeded rings match");
+    assert_eq!(
+        supported
+            .staged
+            .domains
+            .iter()
+            .map(|domain| domain.key.clone())
+            .collect::<Vec<_>>(),
+        held.staged
+            .domains
+            .iter()
+            .map(|domain| domain.key.clone())
+            .collect::<Vec<_>>(),
+        "seeded domain keys match"
+    );
+    supported.prev_cursor = Some((0, 0));
+    held.prev_cursor = Some((0, 0));
+    let effect = supported
+        .take_focus_follows(&BTreeSet::new())
+        .expect("supported hit couples over the eligible join");
+    assert_eq!(effect.target.0, "win-a");
+    assert_eq!(effect.cause, EffectCause::FocusFollowsCursor);
+    assert!(
+        held.take_focus_follows(&BTreeSet::new()).is_none(),
+        "capability-held hit mints nothing"
+    );
+}
+
+fn warp_row(
+    window: &str,
+    output: &str,
+    workspace: &str,
+    frame: Option<crate::geometry::Rect>,
+) -> WindowDesire {
+    WindowDesire {
+        lifetime: WindowId(window.to_owned()),
+        output: OutputId(output.to_owned()),
+        workspace: workspace.to_owned(),
+        allocation: frame,
+        effective_frame: frame,
+        frame_authority: ScopeAuthority::Controlled,
+        membership_authority: ScopeAuthority::Controlled,
+        floating: false,
+        float_origin: None,
+        frame_operation: None,
+        clear_operation: None,
+        command_seq: None,
+        visibility: None,
+        visibility_authority: ScopeAuthority::Untouched,
+        state: Vec::new(),
+    }
+}
+
+#[test]
+fn warp_staged_clamp_and_last_effect_parity() {
+    for v4 in [false, true] {
+        let mut engine = cursor_engine();
+        let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)];
+        // Cursor on out-a; win-b's effective-frame centre (860, 570) falls
+        // below out-b's staged work area, so the staged work area clamps it
+        // to (860, 559). out-a's staged full rect proves the cursor output.
+        stage_cursor(
+            &mut engine,
+            v4,
+            1,
+            windows(),
+            "win-a",
+            Some((10, 10)),
+            None,
+            true,
+            false,
+        );
+        let rows = vec![
+            warp_row("win-a", "out-a", "ws-1", Some(rect(0, 0, 40, 90))),
+            warp_row("win-b", "out-b", "ws-2", Some(rect(810, 520, 100, 100))),
+        ];
+        let cross = vec![OneShotEffect::explicit_focus(
+            11,
+            WindowId("win-b".to_owned()),
+            3,
+        )];
+        assert_eq!(
+            engine.warp_for_publish(&cross, &rows, &BTreeSet::new()),
+            Some((860, 559)),
+            "cross-output centre clamps into staged work area (v4={v4})"
+        );
+        // The LAST focus effect in order decides: an earlier cross-output
+        // effect followed by a same-output one warps nothing.
+        let vetoed = vec![
+            OneShotEffect::explicit_focus(11, WindowId("win-b".to_owned()), 3),
+            OneShotEffect::explicit_focus(11, WindowId("win-a".to_owned()), 4),
+        ];
+        assert_eq!(
+            engine.warp_for_publish(&vetoed, &rows, &BTreeSet::new()),
+            None,
+            "same-output last effect vetoes (v4={v4})"
+        );
+        // Held destination scope withholds the point.
+        let mut held = BTreeSet::new();
+        held.insert(DomainKey {
+            output: OutputId("out-b".to_owned()),
+            workspace: WorkspaceId("ws-2".to_owned()),
+        });
+        assert_eq!(
+            engine.warp_for_publish(&cross, &rows, &held),
+            None,
+            "held destination withholds warp (v4={v4})"
+        );
+        // Incomplete inventory, gesture barrier, and a focused fullscreen
+        // game each pause the point on the current staged capture.
+        stage_cursor(
+            &mut engine,
+            v4,
+            2,
+            windows(),
+            "win-a",
+            Some((10, 10)),
+            None,
+            false,
+            false,
+        );
+        assert_eq!(
+            engine.warp_for_publish(&cross, &rows, &BTreeSet::new()),
+            None,
+            "incomplete inventory pauses warp (v4={v4})"
+        );
+        stage_cursor(
+            &mut engine,
+            v4,
+            3,
+            windows(),
+            "win-a",
+            Some((10, 10)),
+            None,
+            true,
+            true,
+        );
+        assert_eq!(
+            engine.warp_for_publish(&cross, &rows, &BTreeSet::new()),
+            None,
+            "gesture barrier pauses warp (v4={v4})"
+        );
+        let mut game_windows = windows();
+        let mut game = fact("game", "out-a", 200);
+        game.fullscreen = Some(true);
+        game_windows.push(game);
+        stage_cursor(
+            &mut engine,
+            v4,
+            4,
+            game_windows,
+            "game",
+            Some((10, 10)),
+            None,
+            true,
+            false,
+        );
+        assert!(
+            crate::world_cursor::cursor_game_paused(&engine),
+            "warp report runs under the game pause (v4={v4})"
+        );
+        assert_eq!(
+            engine.warp_for_publish(&cross, &rows, &BTreeSet::new()),
+            None,
+            "game pause withholds warp (v4={v4})"
+        );
+        // Unknown and off-screen cursors warp nothing.
+        stage_cursor(
+            &mut engine,
+            v4,
+            5,
+            windows(),
+            "win-a",
+            None,
+            None,
+            true,
+            false,
+        );
+        assert_eq!(
+            engine.warp_for_publish(&cross, &rows, &BTreeSet::new()),
+            None,
+            "cursorless report warps nothing (v4={v4})"
+        );
+        stage_cursor(
+            &mut engine,
+            v4,
+            6,
+            windows(),
+            "win-a",
+            Some((5000, 5000)),
+            None,
+            true,
+            false,
+        );
+        assert_eq!(
+            engine.warp_for_publish(&cross, &rows, &BTreeSet::new()),
+            None,
+            "off-screen cursor warps nothing (v4={v4})"
         );
     }
 }

@@ -474,16 +474,19 @@ impl WorldEngine {
             .and_then(|fact| fact.rect)
     }
 
-    /// Whether one report runs under a focused fullscreen game pause:
-    /// the adapter-observed focused lifetime names a different window
-    /// whose staged fact is fullscreen. Normalized report facts only,
-    /// never platform reads. Under the pause no overlay publishes and
-    /// no release commits; the session holds for the terminal phase.
-    fn gesture_game_paused(&self, report: &WorldReport, retained: &RetainedGesture) -> bool {
-        if report.focused_global.is_empty() || report.focused_global == retained.window.0 {
+    /// Whether the staged observation runs under a focused fullscreen game
+    /// pause: the staged focused lifetime names a different window whose
+    /// staged fact is fullscreen. Normalized staged facts only, never
+    /// platform reads. Under the pause no overlay publishes and no release
+    /// commits; the session holds for the terminal phase. The gesture
+    /// subject itself is exempt: a focused fullscreen subject still acts.
+    fn gesture_game_paused(&self, retained: &RetainedGesture) -> bool {
+        if self.staged.observation.focused_global.is_empty()
+            || self.staged.observation.focused_global == retained.window.0
+        {
             return false;
         }
-        let focused = WindowId(report.focused_global.clone());
+        let focused = WindowId(self.staged.observation.focused_global.clone());
         self.staged
             .facts
             .get(&focused)
@@ -520,7 +523,7 @@ impl WorldEngine {
         if !self.gesture_continue_fences(report, &retained, held_scopes) {
             return GestureOutcome::Held;
         }
-        if self.gesture_game_paused(report, &retained) {
+        if self.gesture_game_paused(&retained) {
             return GestureOutcome::Held;
         }
         if self.is_owned_composed_float(&retained.window) {
@@ -636,7 +639,7 @@ impl WorldEngine {
             .clone()
             .expect("released runs with a retained session");
         self.gesture = None;
-        if self.gesture_game_paused(report, &retained) {
+        if self.gesture_game_paused(&retained) {
             self.record_gesture_terminal(retained.id, false);
             return GestureOutcome::Settled {
                 committed: false,
@@ -1434,4 +1437,83 @@ fn inset_bounds_of(
         adjacent: BTreeMap::new(),
     };
     crate::world_engine::inset_world_domain(&staged, domain.outer_gap).map(|inset| inset.bounds)
+}
+
+#[cfg(test)]
+mod staged_pause_tests {
+    //! Staged-observation game-pause pin: the gesture predicate exempts its
+    //! own subject while the cursor predicate does not. Nested
+    //! private-predicate tests; they drive the real `stage_facts` lane,
+    //! never a production test seam.
+
+    use crate::directional::{OutputId, WindowId, WorkspaceId};
+    use crate::gesture::GestureKind;
+    use crate::session::DomainKey;
+    use crate::world_directional::tests::{fact, report_full, screen};
+    use crate::world_engine::WorldEngine;
+
+    use super::RetainedGesture;
+
+    fn retained(window: &str) -> RetainedGesture {
+        RetainedGesture {
+            window: WindowId(window.to_owned()),
+            id: 7,
+            kind: GestureKind::Move,
+            start_seq: 1,
+            start_frame: crate::geometry::Rect {
+                x: 0,
+                y: 0,
+                w: 40,
+                h: 90,
+            },
+            start_cursor: Some((10, 20)),
+            start_exact: true,
+            modal_move: false,
+            hover: None,
+            home: DomainKey {
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+            },
+        }
+    }
+
+    #[test]
+    fn game_pause_exempts_gesture_subject_only() {
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        let mut game = fact("game", "out-a", 0);
+        game.fullscreen = Some(true);
+        let report = report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![game],
+            Vec::new(),
+            "game",
+            None,
+            None,
+        );
+        engine.stage_facts(&report);
+        // The cursor lane pauses on a focused fullscreen game with no
+        // subject exemption; the gesture lane pauses for other subjects
+        // but exempts its own.
+        assert!(crate::world_cursor::cursor_game_paused(&engine));
+        assert!(engine.gesture_game_paused(&retained("win-a")));
+        assert!(!engine.gesture_game_paused(&retained("game")));
+        // No-pause control: refocusing onto a plain window on the next
+        // staged observation clears both predicates.
+        let clear = report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0)],
+            Vec::new(),
+            "win-a",
+            None,
+            None,
+        );
+        engine.stage_facts(&clear);
+        assert!(!crate::world_cursor::cursor_game_paused(&engine));
+        assert!(!engine.gesture_game_paused(&retained("win-a")));
+        assert!(!engine.gesture_game_paused(&retained("game")));
+    }
 }

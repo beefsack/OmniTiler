@@ -14,17 +14,17 @@ use std::collections::BTreeSet;
 use crate::directional::WindowId;
 use crate::session::DomainKey;
 use crate::world_engine::WorldEngine;
-use crate::world_report::{EffectCause, EffectKind, OneShotEffect, WorldReport};
+use crate::world_report::{EffectCause, EffectKind, OneShotEffect};
 
-/// Whether one report runs under a focused fullscreen game pause: the
-/// adapter-observed focused lifetime names a staged fact that is fullscreen.
-/// Normalized report facts only. Under the pause no focus-follows effect
-/// mints and no warp point publishes.
-pub(crate) fn cursor_game_paused(engine: &WorldEngine, report: &WorldReport) -> bool {
-    if report.focused_global.is_empty() {
+/// Whether the staged observation runs under a focused fullscreen game
+/// pause: the staged focused lifetime names a staged fact that is
+/// fullscreen. Normalized staged facts only. Under the pause no
+/// focus-follows effect mints and no warp point publishes.
+pub(crate) fn cursor_game_paused(engine: &WorldEngine) -> bool {
+    if engine.staged.observation.focused_global.is_empty() {
         return false;
     }
-    let focused = WindowId(report.focused_global.clone());
+    let focused = WindowId(engine.staged.observation.focused_global.clone());
     engine
         .staged
         .facts
@@ -71,20 +71,16 @@ fn hover_eligible(
     true
 }
 
-/// Pointer window for one report: the normalized cursor-hit managed
-/// lifetime, gated by the core's own eligibility and current view. The hit
-/// is adapter-observed native truth (which topmost managed window is
-/// actually under the cursor); the core never re-derives it from
-/// rectangles, so hidden snapshots, non-current views, foreign pixels,
-/// and overlapping floats cannot win by geometry or token order. An
+/// Pointer window for the staged observation: the staged normalized
+/// cursor-hit managed lifetime, gated by the core's own eligibility and
+/// current view. The hit is adapter-observed native truth (which topmost
+/// managed window is actually under the cursor); the core never re-derives
+/// it from rectangles, so hidden snapshots, non-current views, foreign
+/// pixels, and overlapping floats cannot win by geometry or token order. An
 /// absent hit, a hit outside visible staged membership of the retained
 /// view, or an ineligible hit mints nothing.
-fn hover_candidate(
-    engine: &WorldEngine,
-    report: &WorldReport,
-    held_scopes: &BTreeSet<DomainKey>,
-) -> Option<WindowId> {
-    let hit = report.cursor_hit.clone()?;
+fn hover_candidate(engine: &WorldEngine, held_scopes: &BTreeSet<DomainKey>) -> Option<WindowId> {
+    let hit = engine.staged.observation.cursor_hit.clone()?;
     let fact = engine.staged.facts.get(&hit)?;
     if fact.minimized == Some(true) {
         return None;
@@ -122,12 +118,11 @@ fn hover_candidate(
 }
 
 /// Push one focus-follows-cursor effect unless a stronger focus effect was
-/// already minted this report (fresh admission or an explicit command
-/// focus). Runs after command execution on the final staged state, so hover
-/// resolves against committed rings/views.
+/// already minted for this staged observation (fresh admission or an explicit
+/// command focus). Runs after command execution on the final staged state, so
+/// hover resolves against committed rings/views.
 pub(crate) fn maybe_push_focus_follows(
     engine: &mut WorldEngine,
-    report: &WorldReport,
     held_scopes: &BTreeSet<DomainKey>,
     effects: &mut Vec<OneShotEffect>,
 ) {
@@ -137,18 +132,18 @@ pub(crate) fn maybe_push_focus_follows(
     {
         return;
     }
-    if let Some(follow) = engine.take_focus_follows(report, held_scopes) {
+    if let Some(follow) = engine.take_focus_follows(held_scopes) {
         effects.push(follow);
     }
 }
 
 impl WorldEngine {
-    /// One focus-follows-cursor effect for this report, if any. Mints only
-    /// when the setting is on, the inventory is complete, the normalized
+    /// One focus-follows-cursor effect for this staged observation, if any.
+    /// Mints only when the setting is on, the inventory is complete, the normalized
     /// cursor hit names an eligible hover target, no game/gesture pause
-    /// holds, no stronger focus effect was minted this report (the caller
-    /// gates on that), the hovered window differs from the observed focus,
-    /// the cursor moved since the previous accepted report or the hover
+    /// holds, no stronger focus effect was minted for this observation (the
+    /// caller gates on that), the hovered window differs from the observed
+    /// focus, the cursor moved since the previous accepted observation or the hover
     /// target transitioned, and the hover target is not the one already
     /// coupled. Records the hover target either way, so a static cursor
     /// never re-steals focus after a keyboard command moves focus
@@ -161,31 +156,30 @@ impl WorldEngine {
     /// observations, never the window spelling.
     pub(crate) fn take_focus_follows(
         &mut self,
-        report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Option<OneShotEffect> {
         if !self.focus_follows_cursor_setting() {
             return None;
         }
-        if !report.inventory_complete {
+        if !self.staged.observation.inventory_complete {
             return None;
         }
-        if cursor_game_paused(self, report) {
+        if cursor_game_paused(self) {
             return None;
         }
-        if report.gesture_barrier || self.gesture.is_some() {
+        if self.staged.gesture_barrier || self.gesture.is_some() {
             return None;
         }
-        let hovered = hover_candidate(self, report, held_scopes)?;
+        let hovered = hover_candidate(self, held_scopes)?;
         let previous = self.ffc_last_hover.clone();
         self.ffc_last_hover = Some(hovered.clone());
-        if hovered.0 == report.focused_global {
+        if hovered.0 == self.staged.observation.focused_global {
             return None;
         }
         // Genuine movement or hover transition only: a static cursor over
         // an unchanged hover never re-steals focus after a keyboard
         // command moves focus elsewhere.
-        let moved = report.cursor != self.prev_cursor;
+        let moved = self.staged.observation.cursor != self.prev_cursor;
         let transitioned = previous.as_ref() != Some(&hovered);
         if !moved && !transitioned {
             return None;
@@ -215,7 +209,6 @@ impl WorldEngine {
     /// observed foreground.
     pub(crate) fn warp_for_publish(
         &self,
-        report: &WorldReport,
         effects: &[OneShotEffect],
         windows: &[crate::world_report::WindowDesire],
         held_scopes: &BTreeSet<DomainKey>,
@@ -223,17 +216,18 @@ impl WorldEngine {
         if !self.cursor_warp_setting() {
             return None;
         }
-        if !report.inventory_complete {
+        if !self.staged.observation.inventory_complete {
             return None;
         }
-        if cursor_game_paused(self, report) {
+        if cursor_game_paused(self) {
             return None;
         }
-        if report.gesture_barrier || self.gesture.is_some() {
+        if self.staged.gesture_barrier || self.gesture.is_some() {
             return None;
         }
-        let cursor = report.cursor?;
-        let screens: Vec<(crate::directional::OutputId, crate::geometry::Rect)> = report
+        let cursor = self.staged.observation.cursor?;
+        let screens: Vec<(crate::directional::OutputId, crate::geometry::Rect)> = self
+            .staged
             .screens
             .iter()
             .filter_map(|screen| screen.full_rect.map(|rect| (screen.output.clone(), rect)))
@@ -260,7 +254,8 @@ impl WorldEngine {
             frame.x.saturating_add(frame.w / 2),
             frame.y.saturating_add(frame.h / 2),
         );
-        let clamped = report
+        let clamped = self
+            .staged
             .screens
             .iter()
             .find(|screen| screen.output == row.output)

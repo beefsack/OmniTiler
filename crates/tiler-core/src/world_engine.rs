@@ -3003,8 +3003,8 @@ impl WorldEngine {
         // Cursor observations remain report facts; computational policy is
         // retained from the connection settings envelope.
         self.prev_cursor = self.last_cursor;
-        self.last_cursor = report.cursor;
-        self.engine.set_fresh_cursor(report.cursor);
+        self.last_cursor = self.staged.observation.cursor;
+        self.engine.set_fresh_cursor(self.staged.observation.cursor);
         // Floating workspaces skip convergence entirely: no session is
         // created or converged there, and no frame writes publish for them.
         self.floating_scopes = self
@@ -3266,7 +3266,7 @@ impl WorldEngine {
         // re-emits either; a gesture result is the gesture's own, never
         // the command's, so consumed replies may still carry it.
         if consumed {
-            crate::world_cursor::maybe_push_focus_follows(self, report, &held_scopes, &mut effects);
+            crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
             let result = self.command_result.take();
             let reply = self.publish(report, true, effects, result, &held_scopes);
             return self.finish(report, digest, reply);
@@ -3316,12 +3316,7 @@ impl WorldEngine {
                         });
                     }
                     effects.push(effect);
-                    crate::world_cursor::maybe_push_focus_follows(
-                        self,
-                        report,
-                        &held_scopes,
-                        &mut effects,
-                    );
+                    crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
                     let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
                 }
@@ -3338,12 +3333,7 @@ impl WorldEngine {
                     self.settle_intent_admissions();
                     self.sync_toggle_float_command(command);
                     let result = self.command_result.take();
-                    crate::world_cursor::maybe_push_focus_follows(
-                        self,
-                        report,
-                        &held_scopes,
-                        &mut effects,
-                    );
+                    crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
                     let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
                 }
@@ -3364,12 +3354,7 @@ impl WorldEngine {
                     let typed = CommandRejectKind::parse(kind)
                         .unwrap_or(CommandRejectKind::OperationRefused);
                     self.command_result = Some(CommandResult::Rejected { kind: typed });
-                    crate::world_cursor::maybe_push_focus_follows(
-                        self,
-                        report,
-                        &held_scopes,
-                        &mut effects,
-                    );
+                    crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
                     let result = self.command_result.take();
                     let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
@@ -3377,7 +3362,7 @@ impl WorldEngine {
             }
         }
         let result = self.command_result.take();
-        crate::world_cursor::maybe_push_focus_follows(self, report, &held_scopes, &mut effects);
+        crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
         let reply = self.publish(report, false, effects, result, &held_scopes);
         self.finish(report, digest, reply)
     }

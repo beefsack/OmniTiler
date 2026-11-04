@@ -752,6 +752,10 @@
         Next, 4b-2b migrates selection feedback/native-selector receipt capture
         and its arrival receipt watermark. Switch completion stays coupled to
         native/view proof; the other remaining lanes follow separately.
+        Then 4b-2c migrates the complete cursor focus/warp family, cursor
+        history sampling and the gesture fullscreen-pause observation gate.
+        Gesture actuation/correlation and pre-observation fresh-focus routing
+        remain with their existing command and assembly dependencies.
    5. View-proof migration replacing the `views` echo legs (`view_echo_for`,
      staged echo fill, `settle_views_pre`, selection proof) with visibility and
      focus proof. The contract settles the receipt predicates (removed `views`
@@ -1037,6 +1041,46 @@
   ingress or version change is included. Switch completion/native proof and
   the remaining observation lanes retain their existing owners; the phase note
   remains active.
+- Sub-increment 4b-2c plan: move focus-follows-cursor eligibility/effect
+  production, cursor warp and their fullscreen-game pause gate onto staged
+  cursor, hit, focus, completeness, barrier and screen inputs. Sample retained
+  cursor history from the same staged cursor at the existing accepted-run
+  position. Move the gesture pause gate's focused-window lookup to the same
+  boundary, preserving its distinct self-exclusion (a fullscreen gesture
+  subject does not pause itself). Keep effect ordering/identity, static-hover
+  suppression, retained-view membership, final-effect warp selection and
+  work-area clamping unchanged. Verify both intakes, fresh capture, raw held
+  hits without classified eligibility, incomplete/barrier/game/held gates,
+  static-cursor and hover transitions, cross-output final-focus warp and
+  destination clamping. Existing command/rejected/consumed and gesture update/
+  release regressions remain parity evidence. No gesture command/correlation
+  migration, fresh-focus routing, native/view proof, presentation descriptor,
+  prior-report retention or v4 accepted-run/scenario assembly is included.
+- Sub-increment 4b-2c outcome: the complete cursor focus/warp family now consumes
+  staged cursor, hit, focus, completeness, barrier and ordered screens; accepted-
+  run cursor history samples the same capture at its unchanged position. The
+  gesture pause predicate reads staged focus while retaining its distinct
+  same-subject exemption. Five hover callers and the warp publication caller
+  adapt in place; eligibility, effect ordering/identity and warp geometry remain
+  unchanged, with no new observation clones. Two dual-intake regressions cover
+  movement-only versus transition-only coupling, static/arrived hover, holds,
+  pause recovery, final-effect warp selection, work-area clamping and missing/
+  off-screen cursors. A v4 capability-hold test compares an eligible supported
+  control with the identical sticky hit under unsupported capability; raw facts
+  remain preserved without classified eligibility. A nested legacy-intake test
+  pins the cursor/gesture self-exemption difference. Test-only retained-view/
+  domain seeds isolate helper behavior, not v4 accepted-run or scenario assembly.
+  Review found no source blocker; follow-up corrected initially vacuous hold
+  coverage and separated movement from hover-transition controls. New tests
+  were first run after implementation, not established as preimplementation
+  behavioral reds. Final direct verification passes the filtered core/protocol
+  gate (1687 core unit tests and every selected integration/protocol target),
+  build, scoped all-target clippy with warnings denied, formatting, whitespace,
+  added ASCII, NUL and local-link checks. Only `workspace_unsafe_posture` is
+  filtered. No new tentative decision, contract, fixture, manifest, adapter,
+  feature, public ingress or version change is included. Remaining gesture,
+  clear/born, topology/native and switch-proof dependencies keep their existing
+  owners; the phase note remains active.
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
 - Capability-held cursor grading repair plan: reproduce a valid v4 report whose
   native cursor hit names a newly capability-held window, then keep that window

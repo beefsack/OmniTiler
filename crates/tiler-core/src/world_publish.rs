@@ -1399,7 +1399,7 @@ impl WorldEngine {
         // Per-report warp desire (stage 4b, cross-output only): computed
         // over the final focus effects plus the published window rows, so
         // explicit, admission, and hover-coupling focus share one rule.
-        let cursor_warp = self.warp_for_publish(report, &effects, &windows, held_scopes);
+        let cursor_warp = self.warp_for_publish(&effects, &windows, held_scopes);
         // Per-report gesture terminal: taken here so the next unrelated
         // report publishes `None`. Duplicates repeat the cached reply.
         let gesture_settled = self.gesture_terminal.take();
