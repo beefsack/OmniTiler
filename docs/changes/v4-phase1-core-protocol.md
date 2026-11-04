@@ -593,7 +593,8 @@
 - Split the complete report codec into lossless typed decoding, then canonical
   writing. The decoder increment covers all 126 valid, 81 accepted-held and 82
   rejected report fixtures; the writer increment must round-trip all 207
-  accepted envelopes byte-exactly. Neither increment changes the runtime's
+  accepted envelopes (205 byte-exact, plus two manifest-designated decoder-input
+  fixtures compared by decoded value; see the writer outcome below). Neither increment changes the runtime's
   accepted version or bypasses the later genuine engine bridge and cutover.
 - Stage an independent typed v4 report using existing row vocabulary, with no
   logical view echo, legacy presentation defaults or conversion to engine input.
@@ -626,8 +627,28 @@
   presentation key/identity/geometry preflight before any hold) run before a
   narrow hold can mask them. The nested creation receipt spelling (omitted/
   null/empty/id) is preserved as protocol-owned wire metadata aligned to valid
-  creation rows. The canonical writer and byte-exact round-trip of all 207
-  accepted envelopes remain increment 4b.
+  creation rows. The canonical writer and the round trip of all 207 accepted
+  envelopes were increment 4b.
+- Writer outcome (increment 4b): the staged checked canonical writer emits
+  top-level keys in the contract report-table order (`primary` follows
+  `gestureIngress`, before `intentRecords`), reconstructs optional-field and
+  creation-receipt spellings from the decoded wire metadata, interleaves valid
+  and held rows by retained ordinal, and refuses inconsistent metadata with
+  fixed snapshot-invalid messages. Held native occupancy items, pager-frame
+  items and the witness object are now retained in wire key order so held rows
+  re-encode exactly. 205 accepted fixtures re-encode byte-exact; the decoded
+  value of every one of the 207 is stable across encode and decode.
+- Two accepted fixtures are marked non-canonical in the fixture manifest and
+  compared by decoded value only. `report-text-escaping-relationships` is
+  decoder input for the short C0 escapes (`\t \n \r \b \f`); the writer spells
+  them as lowercase `\u00xx` per the contract, and a byte-level writer test
+  keeps that rule witnessed. The KDE adapter builds reports with
+  `JSON.stringify`, whose short-escape output has not been tested inside KWin,
+  so it is not claimed as proven. `invalid-window-rect-object` carries an
+  object-valued window rect in a held row; the contract sets no key order for
+  nested objects in held rows, so no required byte form exists for this value,
+  and the writer has no byte-level check for malformed nested objects. No
+  ordering rule, parser feature or contract text changes.
 
 ## Evidence
 

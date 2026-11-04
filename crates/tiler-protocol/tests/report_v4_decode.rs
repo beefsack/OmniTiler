@@ -21,7 +21,7 @@ use tiler_core::world_report::{
 };
 use tiler_protocol::world_protocol::{
     CreationReceiptWire, DecodedReportV4, decode_report_v4, decode_report_v4_for_host,
-    decode_request,
+    decode_request, encode_report_v4,
 };
 
 fn fixture_root() -> std::path::PathBuf {
@@ -41,7 +41,13 @@ struct ManifestFixture {
     expectation: String,
     #[serde(default)]
     context: serde_json::Value,
+    #[serde(default = "default_canonical")]
+    canonical: bool,
     invalid: Option<InvalidRef>,
+}
+
+fn default_canonical() -> bool {
+    true
 }
 
 #[derive(serde::Deserialize, Clone)]
@@ -1903,6 +1909,348 @@ fn v4_presentation_structural_preflight_before_hold() {
         matches!(decoded.report.presentation, PresentationRowV4::Valid(_)),
         "dangling witness is valid"
     );
+}
+
+// ---- Unit 4b: staged canonical v4 report writer ----
+
+/// Canonical round trip over every accepted fixture (126 valid-wire plus
+/// 81 held accepted): decode, re-encode, re-decode, and the value must
+/// equal the first decode and stay accepted. The 205 canonical fixtures
+/// are byte-exact; the two non-canonical decoder-input fixtures (short
+/// escape spellings, and an object-valued window rect whose nested key order
+/// no contract rule fixes) assert decoded-value equality only.
+#[test]
+fn v4_writer_round_trips_all_accepted_fixtures() {
+    let fixtures = world_fixtures();
+    let accepted: Vec<&ManifestFixture> = fixtures
+        .iter()
+        .filter(|fixture| {
+            fixture.expectation == "valid-wire" || fixture.expectation == "accepted-held-row"
+        })
+        .collect();
+    assert_eq!(accepted.len(), 207, "accepted fixture count");
+    for fixture in accepted {
+        let text = fixture_text(&fixture.file);
+        let decoded = decode_report_v4(&text).expect("accepted fixture decodes");
+        let encoded = encode_report_v4(&decoded).unwrap_or_else(|error| {
+            panic!(
+                "{} encodes, got {}:{}",
+                fixture.id, error.kind, error.message
+            )
+        });
+        let back = decode_report_v4(&encoded).expect("encoding stays accepted");
+        assert_eq!(back, decoded, "{} decode stable", fixture.id);
+        if fixture.canonical {
+            assert_eq!(encoded, text, "{} byte-exact", fixture.id);
+        }
+    }
+}
+
+/// Exactly two accepted fixtures are decoder input rather than canonical
+/// bytes: the text-escaping relationships row, whose short escapes decode
+/// to the exact C0 controls the canonical writer spells as lowercase
+/// `\u00XX`, and the object-valued window rect row, whose nested key order
+/// the contract does not fix.
+#[test]
+fn v4_writer_non_canonical_fixture_is_the_escaping_input() {
+    let fixtures = world_fixtures();
+    let accepted: Vec<&ManifestFixture> = fixtures
+        .iter()
+        .filter(|fixture| {
+            fixture.expectation == "valid-wire" || fixture.expectation == "accepted-held-row"
+        })
+        .collect();
+    assert_eq!(accepted.len(), 207, "accepted fixture count");
+    let non_canonical: Vec<&ManifestFixture> = accepted
+        .iter()
+        .filter(|fixture| !fixture.canonical)
+        .copied()
+        .collect();
+    let mut ids: Vec<&str> = non_canonical
+        .iter()
+        .map(|fixture| fixture.id.as_str())
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        [
+            "invalid-window-rect-object",
+            "report-text-escaping-relationships"
+        ],
+        "non-canonical accepted fixtures"
+    );
+    let escaping = non_canonical
+        .iter()
+        .find(|fixture| fixture.id == "report-text-escaping-relationships")
+        .expect("escaping fixture");
+    let decoded = decode_ok(&escaping.file);
+    assert_eq!(
+        decoded.report.windows[0].title.as_deref(),
+        Some("Quote \" backslash \\ tab\t newline\n return\r backspace\u{8} formfeed\u{c} nul\0"),
+        "title decodes to exact controls",
+    );
+}
+
+/// The writer refuses inconsistent metadata instead of emitting non-wire
+/// bytes: every refusal is `snapshot-invalid` with a fixed message and
+/// never echoes payload bytes.
+#[test]
+fn v4_writer_refuses_inconsistent_metadata() {
+    // Creation receipts align to the valid creation rows in order.
+    let mut decoded = decode_ok("messages/report-attempt-creation-id.json");
+    decoded.creation_receipts.pop();
+    let error = encode_report_v4(&decoded).expect_err("receipt count refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "creation-receipt-mismatch");
+    // An `Id` receipt with no correlated id refuses.
+    let mut decoded = decode_ok("messages/report-attempt-creation-id.json");
+    decoded.report.creation_attempts[0].created_native = None;
+    let error = encode_report_v4(&decoded).expect_err("id without value refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "creation-receipt-inconsistent");
+    // An absent receipt with a correlated id refuses.
+    let mut decoded = decode_ok("messages/report-attempt-creation-omitted.json");
+    decoded.report.creation_attempts[0].created_native = Some("native-b".to_owned());
+    let error = encode_report_v4(&decoded).expect_err("value without id refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "creation-receipt-inconsistent");
+    // Held ordinals must be unique and inside the merged lane.
+    let mut decoded = decode_ok("messages/invalid-frame-missing-op.json");
+    decoded.report.held_attempts[0].ordinal = 999;
+    let error = encode_report_v4(&decoded).expect_err("held ordinal refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "held-ordinal-invalid");
+    // A cursor hit needs the `Id` spelling; a missing hit needs none.
+    let mut decoded = decode_ok("messages/report-optionals-id.json");
+    decoded.wire.cursor_hit = tiler_protocol::world_protocol::CursorHitWire::Null;
+    let error = encode_report_v4(&decoded).expect_err("hit without id refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "cursor-hit-inconsistent");
+    let mut decoded = decode_ok("messages/report-observe.json");
+    decoded.wire.cursor_hit = tiler_protocol::world_protocol::CursorHitWire::Id;
+    let error = encode_report_v4(&decoded).expect_err("id without hit refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "cursor-hit-inconsistent");
+    // Gesture ingress presence must match the carried value.
+    let mut decoded = decode_ok("messages/report-gesture-started.json");
+    decoded.wire.gesture_ingress = tiler_protocol::world_protocol::GestureIngressWire::Absent;
+    let error = encode_report_v4(&decoded).expect_err("ingress without presence refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "gesture-ingress-inconsistent");
+    let mut decoded = decode_ok("messages/report-observe.json");
+    decoded.wire.gesture_ingress = tiler_protocol::world_protocol::GestureIngressWire::Present;
+    let error = encode_report_v4(&decoded).expect_err("presence without ingress refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "gesture-ingress-inconsistent");
+    // Carried attempt rows need their lane; a nonzero clock needs its key.
+    let mut decoded = decode_ok("messages/report-attempt-frame-ordinary.json");
+    decoded.wire.frame_attempts_present = false;
+    let error = encode_report_v4(&decoded).expect_err("lane without key refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "attempt-lane-inconsistent");
+    let mut decoded = decode_ok("messages/report-empty.json");
+    decoded.report.monotonic_ms = 42;
+    let error = encode_report_v4(&decoded).expect_err("clock without key refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "monotonic-inconsistent");
+    // The v4 focus shape spells absence as the empty direction; a nonempty
+    // direction, the removed switch-view, and unpromoted core operations
+    // refuse instead of emitting unknown wire shapes.
+    let mut decoded = decode_ok("messages/report-command-focus.json");
+    decoded.report.command = Some(tiler_core::world_report::WorldCommand::Focus {
+        window: tiler_core::directional::WindowId("win-a".to_owned()),
+        direction: "left".to_owned(),
+    });
+    let error = encode_report_v4(&decoded).expect_err("focus direction refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "command-invalid");
+    let mut decoded = decode_ok("messages/report-empty.json");
+    decoded.report.command_seq = Some(1);
+    decoded.report.command = Some(tiler_core::world_report::WorldCommand::SwitchView {
+        output: tiler_core::directional::OutputId("out-a".to_owned()),
+        workspace: "ws-a".to_owned(),
+    });
+    let error = encode_report_v4(&decoded).expect_err("switch-view refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "command-invalid");
+    let mut decoded = decode_ok("messages/report-empty.json");
+    decoded.report.command_seq = Some(1);
+    decoded.report.command = Some(tiler_core::world_report::WorldCommand::Operation(
+        tiler_core::boundary::CoreCommand::Reconcile,
+    ));
+    let error = encode_report_v4(&decoded).expect_err("unpromoted operation refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "command-invalid");
+    // Command/sequence pairing and renderer/command pairing refuse.
+    let mut decoded = decode_ok("messages/report-command-focus.json");
+    decoded.report.command_seq = None;
+    let error = encode_report_v4(&decoded).expect_err("unpaired command refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "command-pair-invalid");
+    let mut decoded = decode_ok("messages/report-renderer-window.json");
+    decoded.report.command = None;
+    decoded.report.command_seq = None;
+    let error = encode_report_v4(&decoded).expect_err("renderer without command refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "command-pair-invalid");
+    // A non-finite scale never normalizes to null on the wire.
+    let mut decoded = decode_ok("messages/report-observe.json");
+    decoded.report.screens[0].scale = f64::INFINITY;
+    let error = encode_report_v4(&decoded).expect_err("nonfinite refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "nonfinite");
+    // An ungrammatical id fails the self-check instead of emitting.
+    let mut decoded = decode_ok("messages/report-command-focus.json");
+    decoded.report.command = Some(tiler_core::world_report::WorldCommand::Focus {
+        window: tiler_core::directional::WindowId("!!!".to_owned()),
+        direction: String::new(),
+    });
+    let error = encode_report_v4(&decoded).expect_err("bad id refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "encode-mismatch");
+}
+
+/// The writer spells the decoded value, never the original bytes: edited
+/// documents that still decode must re-encode to the edited bytes.
+#[test]
+fn v4_writer_spells_the_value_not_the_bytes() {
+    let empty = fixture_text("messages/report-empty.json");
+    let edited = empty.replacen("\"req\":\"request-a\"", "\"req\":\"request-b\"", 1);
+    assert_ne!(edited, empty);
+    let decoded = decode_report_v4(&edited).expect("edited decodes");
+    assert_eq!(encode_report_v4(&decoded).expect("edits encode"), edited);
+    let optionals = fixture_text("messages/report-optionals-id.json");
+    let edited = optionals.replacen(
+        "\"monotonicMs\":\"18446744073709551615\"",
+        "\"monotonicMs\":\"42\"",
+        1,
+    );
+    assert_ne!(edited, optionals);
+    let decoded = decode_report_v4(&edited).expect("edited clock decodes");
+    assert_eq!(
+        encode_report_v4(&decoded).expect("edited clock encodes"),
+        edited
+    );
+}
+
+/// Order-preserving scan of the compact writer output: top-level `"key":`
+/// names in emission order (`serde_json::Map` sorts, so it cannot observe
+/// order).
+fn top_level_keys(json: &str) -> Vec<String> {
+    let bytes = json.as_bytes();
+    let mut keys = Vec::new();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'"' {
+            let mut key = String::new();
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'"' {
+                if bytes[j] == b'\\' {
+                    key.push(bytes[j + 1] as char);
+                    j += 2;
+                } else {
+                    key.push(bytes[j] as char);
+                    j += 1;
+                }
+            }
+            let mut k = j + 1;
+            while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                k += 1;
+            }
+            if depth == 1 && k < bytes.len() && bytes[k] == b':' {
+                keys.push(key);
+            }
+            i = j + 1;
+            continue;
+        }
+        match byte {
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    keys
+}
+
+/// Contract key order wins over emission convenience: `primary` sits after
+/// the attempt lanes and `gestureIngress`, before `intentRecords`
+/// (docs/porting/world-contract.md message field order is table order).
+#[test]
+fn v4_writer_primary_key_order_follows_contract() {
+    let mut decoded = decode_ok("messages/report-optionals-id.json");
+    assert!(
+        decoded.report.primary_output.is_none(),
+        "base carries no primary"
+    );
+    decoded.report.primary_output = Some(tiler_core::directional::OutputId("out-a".to_owned()));
+    let encoded = encode_report_v4(&decoded).expect("primary with lanes encodes");
+    let keys = top_level_keys(&encoded);
+    let expected: Vec<String> = [
+        "v",
+        "adapter",
+        "gen",
+        "obs",
+        "reqSeq",
+        "req",
+        "cmdSeq",
+        "command",
+        "screens",
+        "windows",
+        "closed",
+        "native",
+        "focused",
+        "complete",
+        "gesture",
+        "cursor",
+        "actionForeground",
+        "actionCached",
+        "actionOutputs",
+        "presentation",
+        "cursorHit",
+        "monotonicMs",
+        "frameAttempts",
+        "memberAttempts",
+        "viewAttempts",
+        "clearAttempts",
+        "creationAttempts",
+        "gestureIngress",
+        "primary",
+        "intentRecords",
+        "stateAttempts",
+        "focusFeedback",
+        "rendererInput",
+    ]
+    .iter()
+    .map(|key| key.to_string())
+    .collect();
+    assert_eq!(keys, expected, "contract key order");
+    let back = decode_report_v4(&encoded).expect("encoding decodes");
+    assert_eq!(back, decoded, "decode stable");
+}
+
+/// Byte-level C0 witness: the escaping title re-encodes with lowercase
+/// `\u00XX` escapes and no short `\t \n \r \b \f` spellings. The title
+/// also carries a literal backslash (escaped `\\` plus a space), so the
+/// assertion pins the exact encoded title substring instead of a loose
+/// search.
+#[test]
+fn v4_writer_spells_c0_controls_as_lowercase_unicode_escapes() {
+    let text = fixture_text("messages/report-text-escaping-relationships.json");
+    let decoded = decode_report_v4(&text).expect("escaping fixture decodes");
+    let encoded = encode_report_v4(&decoded).expect("escaping value encodes");
+    let expected_title = "\"title\":\"Quote \\\" backslash \\\\ tab\\u0009 newline\\u000a return\\u000d backspace\\u0008 formfeed\\u000c nul\\u0000\"";
+    let start = encoded.find("\"title\":\"Quote").expect("title present");
+    let region = &encoded[start..start + expected_title.len()];
+    assert_eq!(region, expected_title, "canonical C0 escapes");
+    for short in ["\\t", "\\n", "\\r", "\\b", "\\f"] {
+        assert!(
+            !region.contains(short),
+            "no short escape {short:?} in canonical title"
+        );
+    }
 }
 
 // ---- Unit 4a: creation-receipt wire spellings stay lossless ----

@@ -241,7 +241,7 @@ use tiler_core::world_report::{
     TransferKind, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
     WORLD_CONTRACT_VERSION, WindowFact, WindowType, WorkspaceRef, WorldCommand, WorldReply,
     WorldReport, WorldReportV4, check_screen_structure, check_window_structure,
-    validate_report_reason,
+    push_raw_setting_value, validate_report_reason,
 };
 
 /// World protocol contract version (equals the core world contract version).
@@ -3847,10 +3847,49 @@ fn attempt_hold_scope(map: &serde_json::Map<String, serde_json::Value>) -> Optio
     }
 }
 
+/// Reorder one retained raw object value into canonical wire order: the
+/// ordered keys first, then any other carried keys lexicographically.
+/// Non-object values pass through untouched.
+fn order_raw_fields(
+    entries: Vec<(String, RawSettingValue)>,
+    order: &[&str],
+) -> Vec<(String, RawSettingValue)> {
+    let mut rest: std::collections::BTreeMap<String, RawSettingValue> =
+        entries.into_iter().collect();
+    let mut ordered = Vec::with_capacity(rest.len());
+    for key in order {
+        if let Some(value) = rest.remove(*key) {
+            ordered.push((key.to_string(), value));
+        }
+    }
+    for (key, value) in rest {
+        ordered.push((key, value));
+    }
+    ordered
+}
+
+/// Reorder every object item of a retained raw array value into canonical
+/// wire order (see [`order_raw_fields`]). Non-array values and non-object
+/// items pass through untouched.
+fn reorder_retained_items(value: &mut RawSettingValue, order: &[&str]) {
+    let RawSettingValue::Array(items) = value else {
+        return;
+    };
+    for item in items.iter_mut() {
+        if let RawSettingValue::Object(entries) = item {
+            let taken = std::mem::take(entries);
+            *entries = order_raw_fields(taken, order);
+        }
+    }
+}
+
 /// Retain one identifiable-but-bad v4 native row: every carried key in
 /// canonical schema key order (`out`, `order`, `current`, `occupancy`),
 /// then any other carried keys lexicographically, with an `InvalidFact`
-/// diagnostic over the output scope naming the output.
+/// diagnostic over the output scope naming the output. The nested
+/// `occupancy` items are retained in wire order (`native`, `count`, then
+/// unknown sub-keys lexicographically) so the canonical writer spells the
+/// exact carried row.
 fn held_native_row(
     output: &OutputId,
     ordinal: usize,
@@ -3871,6 +3910,11 @@ fn held_native_row(
     for key in extra {
         fields.push((key.clone(), raw_setting_value(&map[key])));
     }
+    for (key, value) in fields.iter_mut() {
+        if key == "occupancy" {
+            reorder_retained_items(value, &["native", "count"]);
+        }
+    }
     HeldNativeRow {
         output: output.clone(),
         ordinal,
@@ -3886,6 +3930,11 @@ fn held_native_row(
 
 /// Retain one held v4 presentation ingress: every carried key in canonical
 /// contract table order, then any other carried keys lexicographically.
+/// The nested `pagerFrames` items are retained in wire order (`win`,
+/// `live`, then unknown sub-keys lexicographically) and the `witness`
+/// object in wire order (`win`, `obs`, `frame`, `foreground`, then unknown
+/// sub-keys lexicographically) so the canonical writer spells the exact
+/// carried row.
 /// The diagnostic is `Some` only when the carried `foregroundOut` names a
 /// truthful output scope, otherwise `None` (no scope is fabricated).
 fn held_presentation_row(map: &serde_json::Map<String, serde_json::Value>) -> HeldPresentationRow {
@@ -3917,6 +3966,16 @@ fn held_presentation_row(map: &serde_json::Map<String, serde_json::Value>) -> He
     extra.sort();
     for key in extra {
         fields.push((key.clone(), raw_setting_value(&map[key])));
+    }
+    for (key, value) in fields.iter_mut() {
+        if key == "pagerFrames" {
+            reorder_retained_items(value, &["win", "live"]);
+        } else if key == "witness"
+            && let RawSettingValue::Object(entries) = value
+        {
+            let taken = std::mem::take(entries);
+            *entries = order_raw_fields(taken, &["win", "obs", "frame", "foreground"]);
+        }
     }
     let diagnostic = match map.get("foregroundOut") {
         Some(serde_json::Value::String(text)) if is_opaque_id(text) => Some(RowDiagnostic {
@@ -5821,6 +5880,1082 @@ pub fn decode_report_v4_for_host(
         });
     }
     Ok(decoded)
+}
+
+// -- Staged canonical v4 report writer --
+// Checked canonical encode of one decoded v4 report: compact JSON in
+// contract table key order with the codec/table key order for rows,
+// shortest binary64 spelling, C0 escapes as lowercase `\u00xx`, and no
+// final LF. Reuses the row encoders (`encode_screen_canonical`,
+// `encode_window_canonical`, `encode_held_screen_canonical`,
+// `encode_held_window_canonical`, `encode_presentation_ingress_v4`,
+// `encode_pager_frame_v4`, `encode_frame_witness`, `encode_render_target`,
+// `encode_renderer_input`) and the shared canonical scalar writers, so no
+// number/string spelling is duplicated here. Checked: inconsistent wire
+// metadata or unrepresentable values refuse as `snapshot-invalid` with a
+// fixed message (never a silent `null`, never a payload echo) instead of
+// emitting non-wire bytes. The built bytes re-decode through
+// [`decode_report_v4`] and must equal the input, so a writer bug surfaces
+// as `snapshot-invalid`/`encode-mismatch` instead of corrupt bytes.
+
+/// Fixed-message refusal for the staged v4 report writer: every writer
+/// refusal is `snapshot-invalid` with a fixed message, never a payload
+/// echo.
+fn snapshot_invalid(message: &'static str) -> WorldProtocolError {
+    WorldProtocolError {
+        kind: KIND_SNAPSHOT,
+        message,
+    }
+}
+
+/// Merge one report lane from its valid rows (kept in relative order) and
+/// its held rows (pinned to their carried ordinals) into wire order.
+/// Held ordinals must be unique and inside the merged lane.
+fn merge_lane(valid: Vec<String>, held: Vec<(usize, String)>) -> Result<Vec<String>> {
+    let total = valid.len() + held.len();
+    let mut seen = std::collections::BTreeSet::new();
+    for (ordinal, _) in &held {
+        if *ordinal >= total || !seen.insert(*ordinal) {
+            return Err(snapshot_invalid("held-ordinal-invalid"));
+        }
+    }
+    let mut slots: Vec<Option<String>> = (0..total).map(|_| None).collect();
+    for (ordinal, bytes) in held {
+        slots[ordinal] = Some(bytes);
+    }
+    let mut valid = valid.into_iter();
+    for slot in slots.iter_mut() {
+        if slot.is_none() {
+            slot.replace(valid.next().expect("slots match valid count"));
+        }
+    }
+    Ok(slots
+        .into_iter()
+        .map(|slot| slot.expect("slot filled"))
+        .collect())
+}
+
+/// Encode one retained held row field map in stored order (canonical schema
+/// order at decode, then extras lexicographically). A non-finite retained
+/// number anywhere inside refuses instead of normalizing to `null`.
+fn encode_held_fields(fields: &[(String, RawSettingValue)]) -> Result<String> {
+    let mut out = String::new();
+    out.push('{');
+    for (i, (key, value)) in fields.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_json_string(&mut out, key);
+        out.push(':');
+        push_raw_setting_value(&mut out, value).map_err(|_| snapshot_invalid("nonfinite"))?;
+    }
+    out.push('}');
+    Ok(out)
+}
+
+/// Checked canonical encode of one valid v4 native row
+/// (`{"out":S,"order":[S...],"current":S|null,"occupancy":[{native,count}]}`).
+fn encode_native_observation_v4(row: &NativeObservation) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"out\":");
+    push_json_string(&mut out, &row.output.0);
+    out.push_str(",\"order\":[");
+    for (i, id) in row.native_order.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_json_string(&mut out, id);
+    }
+    out.push_str("],\"current\":");
+    match &row.current_native {
+        None => out.push_str("null"),
+        Some(id) => push_json_string(&mut out, id),
+    }
+    out.push_str(",\"occupancy\":[");
+    for (i, item) in row.occupancy.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"native\":");
+        push_json_string(&mut out, &item.native);
+        out.push_str(",\"count\":");
+        match item.count {
+            None => out.push_str("null"),
+            Some(count) => out.push_str(&count.to_string()),
+        }
+        out.push('}');
+    }
+    out.push_str("]}");
+    Ok(out)
+}
+
+/// Checked canonical encode of one valid v4 frame row.
+fn encode_frame_attempt_v4(row: &tiler_core::world_report::FrameAttempt) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"win\":");
+    push_json_string(&mut out, &row.window.0);
+    out.push_str(",\"target\":");
+    push_rect(&mut out, &row.target);
+    out.push_str(",\"setter\":");
+    push_json_string(&mut out, row.setter.as_str());
+    out.push_str(",\"readback\":");
+    push_opt_rect(&mut out, &row.readback);
+    out.push_str(",\"dpiBefore\":");
+    push_opt_u32(&mut out, &row.dpi_before);
+    out.push_str(",\"dpiAfter\":");
+    push_opt_u32(&mut out, &row.dpi_after);
+    out.push_str(",\"attemptMs\":\"");
+    out.push_str(&row.attempt_ms.to_string());
+    out.push_str("\",\"op\":");
+    push_json_string(&mut out, row.operation_id.as_deref().unwrap_or(""));
+    out.push_str(",\"pre\":");
+    push_opt_rect(&mut out, &row.prewrite);
+    out.push('}');
+    Ok(out)
+}
+
+/// Canonical encode of one nullable bare `u32` lane scalar.
+fn push_opt_u32(out: &mut String, value: &Option<u32>) {
+    match value {
+        None => out.push_str("null"),
+        Some(value) => out.push_str(&value.to_string()),
+    }
+}
+
+/// Canonical encode of one workspace reference (`{"kind","out","ws"}` on
+/// the logical arm, `{"kind","out","ws"}` with the native id on the
+/// native arm).
+fn push_workspace_ref(out: &mut String, reference: &WorkspaceRef) {
+    match reference {
+        WorkspaceRef::Logical { output, workspace } => {
+            out.push_str("{\"kind\":\"logical\",\"out\":");
+            push_json_string(out, &output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(out, &workspace.0);
+        }
+        WorkspaceRef::Native { output, workspace } => {
+            out.push_str("{\"kind\":\"native\",\"out\":");
+            push_json_string(out, &output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(out, workspace.as_str());
+        }
+    }
+    out.push('}');
+}
+
+/// Canonical encode of one nullable workspace reference.
+fn push_opt_workspace_ref(out: &mut String, value: &Option<WorkspaceRef>) {
+    match value {
+        None => out.push_str("null"),
+        Some(reference) => push_workspace_ref(out, reference),
+    }
+}
+
+/// Checked canonical encode of one valid v4 member row.
+fn encode_member_attempt_v4(row: &tiler_core::world_report::MemberAttempt) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"op\":");
+    push_json_string(&mut out, &row.operation_id);
+    out.push_str(",\"win\":");
+    push_json_string(&mut out, &row.window.0);
+    out.push_str(",\"out\":");
+    push_json_string(&mut out, &row.target_output.0);
+    out.push_str(",\"ws\":");
+    push_json_string(&mut out, &row.target_workspace);
+    out.push_str(",\"setter\":");
+    push_json_string(&mut out, row.setter.as_str());
+    out.push_str(",\"pre\":");
+    push_opt_workspace_ref(&mut out, &row.pre);
+    out.push_str(",\"post\":");
+    push_opt_workspace_ref(&mut out, &row.post);
+    out.push_str(",\"attemptMs\":\"");
+    out.push_str(&row.attempt_ms.to_string());
+    out.push_str("\"}");
+    Ok(out)
+}
+
+/// Checked canonical encode of one valid v4 view row.
+fn encode_view_attempt_v4(row: &tiler_core::world_report::ViewAttempt) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"op\":");
+    push_json_string(&mut out, &row.operation_id);
+    out.push_str(",\"out\":");
+    push_json_string(&mut out, &row.target_output.0);
+    out.push_str(",\"ws\":");
+    push_json_string(&mut out, &row.target_workspace);
+    out.push_str(",\"setter\":");
+    push_json_string(&mut out, row.setter.as_str());
+    out.push_str(",\"pre\":");
+    push_opt_workspace_ref(&mut out, &row.pre);
+    out.push_str(",\"post\":");
+    push_opt_workspace_ref(&mut out, &row.post);
+    out.push_str(",\"base\":");
+    push_opt_workspace_ref(&mut out, &row.baseline);
+    out.push_str(",\"attemptMs\":\"");
+    out.push_str(&row.attempt_ms.to_string());
+    out.push_str("\"}");
+    Ok(out)
+}
+
+/// Checked canonical encode of one valid v4 clear row.
+fn encode_clear_attempt_v4(row: &tiler_core::world_report::ClearAttempt) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"op\":");
+    push_json_string(&mut out, &row.operation_id);
+    out.push_str(",\"win\":");
+    push_json_string(&mut out, &row.window.0);
+    out.push_str(",\"setter\":");
+    push_json_string(&mut out, row.setter.as_str());
+    out.push_str(",\"pre\":");
+    push_opt_bool(&mut out, &row.pre_maximized);
+    out.push_str(",\"post\":");
+    push_opt_bool(&mut out, &row.post_maximized);
+    out.push_str(",\"attemptMs\":\"");
+    out.push_str(&row.attempt_ms.to_string());
+    out.push_str("\"}");
+    Ok(out)
+}
+
+/// Checked canonical encode of one valid v4 creation row. The receipt key
+/// spelling rides `receipt`: `Absent` omits the key, every other spelling
+/// carries it, and the carried id always comes from the row. A receipt
+/// spelling inconsistent with the carried value refuses.
+fn encode_creation_attempt_v4(
+    row: &tiler_core::world_report::NativeCreationAttempt,
+    receipt: CreationReceiptWire,
+) -> Result<String> {
+    match (receipt, &row.created_native) {
+        (
+            CreationReceiptWire::Absent | CreationReceiptWire::Null | CreationReceiptWire::Empty,
+            None,
+        ) => {}
+        (CreationReceiptWire::Id, Some(_)) => {}
+        _ => return Err(snapshot_invalid("creation-receipt-inconsistent")),
+    }
+    let mut out = String::new();
+    out.push_str("{\"op\":");
+    push_json_string(&mut out, &row.operation_id);
+    out.push_str(",\"ws\":");
+    push_json_string(&mut out, &row.logical_workspace);
+    out.push_str(",\"out\":");
+    push_json_string(&mut out, &row.target_output.0);
+    out.push_str(",\"setter\":");
+    push_json_string(&mut out, row.setter.as_str());
+    out.push_str(",\"before\":[");
+    for (i, id) in row.order_before.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_json_string(&mut out, id);
+    }
+    out.push_str("],\"after\":[");
+    for (i, id) in row.order_after.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_json_string(&mut out, id);
+    }
+    out.push(']');
+    match receipt {
+        CreationReceiptWire::Absent => {}
+        CreationReceiptWire::Null => out.push_str(",\"created\":null"),
+        CreationReceiptWire::Empty => out.push_str(",\"created\":\"\""),
+        CreationReceiptWire::Id => {
+            out.push_str(",\"created\":");
+            push_json_string(
+                &mut out,
+                row.created_native.as_deref().expect("id receipt carries"),
+            );
+        }
+    }
+    out.push_str(",\"attemptMs\":\"");
+    out.push_str(&row.attempt_ms.to_string());
+    out.push_str("\"}");
+    Ok(out)
+}
+
+/// Canonical encode of one visibility sample.
+fn push_visibility_sample(out: &mut String, sample: &VisibilitySample) {
+    out.push_str("{\"obs\":\"");
+    out.push_str(&sample.obs.to_string());
+    out.push_str("\",\"lifetimeMatched\":");
+    push_opt_bool(out, &sample.lifetime_matched);
+    out.push_str(",\"visibility\":{\"visible\":");
+    push_opt_bool(out, &sample.visibility.visible);
+    out.push_str(",\"suppressionOwned\":");
+    push_opt_bool(out, &sample.visibility.suppression_owned);
+    out.push_str("},\"minimized\":");
+    push_opt_bool(out, &sample.minimized);
+    out.push_str(",\"hostHidden\":");
+    push_opt_bool(out, &sample.host_hidden);
+    out.push('}');
+}
+
+/// Canonical encode of one arrival bracket: the location key rides the
+/// carried arm only (`home` for native, `out` for output).
+fn push_arrival_bracket(out: &mut String, bracket: &ArrivalBracket) {
+    out.push_str("{\"win\":");
+    push_json_string(out, &bracket.window.0);
+    out.push_str(",\"obs\":\"");
+    out.push_str(&bracket.obs.to_string());
+    out.push_str("\",\"before\":");
+    push_visibility_sample(out, &bracket.before);
+    out.push_str(",\"kind\":\"");
+    out.push_str(bracket.location.kind_str());
+    out.push('"');
+    match &bracket.location {
+        ArrivalLocation::Native { home } => {
+            out.push_str(",\"home\":");
+            push_opt_workspace_ref(out, home);
+        }
+        ArrivalLocation::Output { out: output } => {
+            out.push_str(",\"out\":");
+            match output {
+                None => out.push_str("null"),
+                Some(output) => push_json_string(out, &output.0),
+            }
+        }
+    }
+    out.push_str(",\"frame\":");
+    push_opt_rect(out, &bracket.frame);
+    out.push_str(",\"after\":");
+    push_visibility_sample(out, &bracket.after);
+    out.push('}');
+}
+
+/// Checked canonical encode of one state row.
+fn encode_state_attempt(row: &tiler_core::world_report::StateAttempt) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"win\":");
+    push_json_string(&mut out, &row.window.0);
+    out.push_str(",\"property\":");
+    push_json_string(&mut out, row.property.as_str());
+    out.push_str(",\"target\":");
+    out.push_str(if row.target { "true" } else { "false" });
+    out.push_str(",\"rev\":\"");
+    out.push_str(&row.revision.to_string());
+    out.push_str("\",\"setter\":");
+    push_json_string(&mut out, row.setter.as_str());
+    out.push_str(",\"pre\":");
+    push_opt_bool(&mut out, &row.pre);
+    out.push_str(",\"post\":");
+    push_opt_bool(&mut out, &row.post);
+    out.push_str(",\"attemptMs\":\"");
+    out.push_str(&row.attempt_ms.to_string());
+    out.push_str("\"}");
+    Ok(out)
+}
+
+/// Checked canonical encode of one focus-feedback row.
+fn encode_focus_feedback(row: &FocusFeedback) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"id\":");
+    push_json_string(&mut out, &row.id);
+    out.push_str(",\"target\":");
+    push_json_string(&mut out, &row.target.0);
+    out.push_str(",\"rev\":\"");
+    out.push_str(&row.revision.to_string());
+    out.push_str("\",\"setter\":");
+    push_json_string(&mut out, row.setter.as_str());
+    out.push_str(",\"reason\":");
+    push_json_string(&mut out, row.reason.as_str());
+    out.push_str(",\"pre\":");
+    push_opt_window(&mut out, &row.pre);
+    out.push_str(",\"post\":");
+    push_opt_window(&mut out, &row.post);
+    out.push_str(",\"foregroundProven\":");
+    out.push_str(if row.foreground_proven {
+        "true"
+    } else {
+        "false"
+    });
+    out.push_str(",\"arrival\":[");
+    for (i, bracket) in row.arrival.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_arrival_bracket(&mut out, bracket);
+    }
+    out.push_str("],\"attemptMs\":\"");
+    out.push_str(&row.attempt_ms.to_string());
+    out.push_str("\"}");
+    Ok(out)
+}
+
+/// Canonical encode of one nullable window lifetime.
+fn push_opt_window(out: &mut String, value: &Option<WindowId>) {
+    match value {
+        None => out.push_str("null"),
+        Some(window) => push_json_string(out, &window.0),
+    }
+}
+
+/// Canonical encode of one nullable output id.
+fn push_opt_output(out: &mut String, value: &Option<OutputId>) {
+    match value {
+        None => out.push_str("null"),
+        Some(output) => push_json_string(out, &output.0),
+    }
+}
+
+/// Checked canonical encode of one gesture-ingress object.
+fn encode_gesture_ingress_v4(row: &tiler_core::gesture::GestureIngress) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"win\":");
+    push_json_string(&mut out, &row.window.0);
+    out.push_str(",\"kind\":");
+    push_json_string(&mut out, row.kind.as_str());
+    out.push_str(",\"phase\":");
+    push_json_string(&mut out, row.phase.as_str());
+    out.push_str(",\"id\":\"");
+    out.push_str(&row.id.to_string());
+    out.push_str("\",\"cursor\":");
+    push_opt_point(&mut out, &row.cursor);
+    out.push_str(",\"startCursor\":");
+    push_opt_point(&mut out, &row.start_cursor);
+    out.push_str(",\"esc\":");
+    out.push_str(if row.esc { "true" } else { "false" });
+    out.push_str(",\"modal\":");
+    out.push_str(if row.modal_move { "true" } else { "false" });
+    out.push_str(",\"start\":");
+    push_rect(&mut out, &row.start_frame);
+    out.push('}');
+    Ok(out)
+}
+
+/// Canonical encode of one nullable cursor point.
+fn push_opt_point(out: &mut String, value: &Option<(i32, i32)>) {
+    match value {
+        None => out.push_str("null"),
+        Some((x, y)) => {
+            out.push('[');
+            out.push_str(&x.to_string());
+            out.push(',');
+            out.push_str(&y.to_string());
+            out.push(']');
+        }
+    }
+}
+
+/// Canonical encode of one send source (`{"explicit":S}` or
+/// `{"implicit":"home-then-action"}`).
+fn push_send_source(out: &mut String, source: &tiler_core::world_report::SendSource) {
+    match source {
+        tiler_core::world_report::SendSource::Explicit(output) => {
+            out.push_str("{\"explicit\":");
+            push_json_string(out, &output.0);
+            out.push('}');
+        }
+        tiler_core::world_report::SendSource::HomeThenAction => {
+            out.push_str("{\"implicit\":\"home-then-action\"}");
+        }
+    }
+}
+
+/// Checked canonical encode of one v4 command. Only the v4-decodable
+/// shapes encode: the removed `switch-view`, a nonempty v4 focus
+/// direction, and unpromoted core operations refuse as `command-invalid`
+/// instead of emitting unknown wire shapes.
+fn encode_command_v4(command: &WorldCommand) -> Result<String> {
+    let mut out = String::new();
+    match command {
+        WorldCommand::Focus { window, direction } => {
+            if !direction.is_empty() {
+                return Err(snapshot_invalid("command-invalid"));
+            }
+            out.push_str("{\"op\":\"focus\",\"win\":");
+            push_json_string(&mut out, &window.0);
+            out.push('}');
+        }
+        WorldCommand::Send {
+            window,
+            target_output,
+            target_workspace,
+            follow,
+        } => {
+            out.push_str("{\"op\":\"send\",\"win\":");
+            push_json_string(&mut out, &window.0);
+            out.push_str(",\"out\":");
+            push_json_string(&mut out, &target_output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(&mut out, target_workspace);
+            out.push_str(",\"follow\":");
+            out.push_str(if *follow { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::SwitchView { .. } => return Err(snapshot_invalid("command-invalid")),
+        WorldCommand::SelectWorkspace { output, workspace } => {
+            out.push_str("{\"op\":\"select-workspace\",\"out\":");
+            push_json_string(&mut out, &output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(&mut out, workspace);
+            out.push('}');
+        }
+        WorldCommand::SelectNumbered { output, index } => {
+            out.push_str("{\"op\":\"select-numbered\",\"out\":");
+            push_opt_output(&mut out, output);
+            out.push_str(",\"index\":");
+            out.push_str(&index.to_string());
+            out.push('}');
+        }
+        WorldCommand::SelectRelative { output, delta } => {
+            out.push_str("{\"op\":\"select-relative\",\"out\":");
+            push_opt_output(&mut out, output);
+            out.push_str(",\"delta\":");
+            out.push_str(&delta.to_string());
+            out.push('}');
+        }
+        WorldCommand::SelectPrevious { output } => {
+            out.push_str("{\"op\":\"select-previous\",\"out\":");
+            push_opt_output(&mut out, output);
+            out.push('}');
+        }
+        WorldCommand::SelectTrailing { output } => {
+            out.push_str("{\"op\":\"select-trailing\",\"out\":");
+            push_opt_output(&mut out, output);
+            out.push('}');
+        }
+        WorldCommand::SendRelative {
+            window,
+            source,
+            delta,
+            follow,
+        } => {
+            out.push_str("{\"op\":\"send-relative\",\"win\":");
+            push_json_string(&mut out, &window.0);
+            out.push_str(",\"source\":");
+            push_send_source(&mut out, source);
+            out.push_str(",\"delta\":");
+            out.push_str(&delta.to_string());
+            out.push_str(",\"follow\":");
+            out.push_str(if *follow { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::SendNumbered {
+            window,
+            source,
+            index,
+            follow,
+        } => {
+            out.push_str("{\"op\":\"send-numbered\",\"win\":");
+            push_json_string(&mut out, &window.0);
+            out.push_str(",\"source\":");
+            push_send_source(&mut out, source);
+            out.push_str(",\"index\":");
+            out.push_str(&index.to_string());
+            out.push_str(",\"follow\":");
+            out.push_str(if *follow { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::SetWorkspaceTiling {
+            output,
+            workspace,
+            tiled,
+        } => {
+            out.push_str("{\"op\":\"set-workspace-tiling\",\"out\":");
+            push_json_string(&mut out, &output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(&mut out, workspace);
+            out.push_str(",\"tiled\":");
+            out.push_str(if *tiled { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::ToggleWorkspaceTiling { output, workspace } => {
+            out.push_str("{\"op\":\"toggle-workspace-tiling\",\"out\":");
+            push_json_string(&mut out, &output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(&mut out, workspace);
+            out.push('}');
+        }
+        WorldCommand::MigrateWorkspace {
+            source_output,
+            target_output,
+            workspace,
+        } => {
+            out.push_str("{\"op\":\"migrate-workspace\",\"from\":");
+            push_json_string(&mut out, &source_output.0);
+            out.push_str(",\"to\":");
+            push_json_string(&mut out, &target_output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(&mut out, workspace);
+            out.push('}');
+        }
+        WorldCommand::FocusDirectional { window, direction } => {
+            out.push_str("{\"op\":\"focus-directional\",\"win\":");
+            push_json_string(&mut out, &window.0);
+            out.push_str(",\"direction\":");
+            push_json_string(&mut out, direction);
+            out.push('}');
+        }
+        WorldCommand::MoveDirectional {
+            window,
+            direction,
+            same_axis,
+        } => {
+            out.push_str("{\"op\":\"move-directional\",\"win\":");
+            push_json_string(&mut out, &window.0);
+            out.push_str(",\"direction\":");
+            push_json_string(&mut out, direction);
+            out.push_str(",\"sameAxis\":");
+            push_json_string(&mut out, same_axis.as_wire_str());
+            out.push('}');
+        }
+        WorldCommand::SendDirectional {
+            window,
+            direction,
+            follow,
+        } => {
+            out.push_str("{\"op\":\"send-directional\",\"win\":");
+            push_json_string(&mut out, &window.0);
+            out.push_str(",\"direction\":");
+            push_json_string(&mut out, direction);
+            out.push_str(",\"follow\":");
+            out.push_str(if *follow { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::MigrateDirectional { direction } => {
+            out.push_str("{\"op\":\"migrate-directional\",\"direction\":");
+            push_json_string(&mut out, direction);
+            out.push('}');
+        }
+        WorldCommand::ToggleMaximize { window } => {
+            out.push_str("{\"op\":\"toggle-maximize\",\"win\":");
+            push_json_string(&mut out, &window.0);
+            out.push('}');
+        }
+        WorldCommand::SetSticky { window, value } => {
+            out.push_str("{\"op\":\"set-sticky\",\"win\":");
+            push_json_string(&mut out, &window.0);
+            out.push_str(",\"value\":");
+            out.push_str(if *value { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::ToggleSticky { window } => {
+            out.push_str("{\"op\":\"toggle-sticky\",\"win\":");
+            push_json_string(&mut out, &window.0);
+            out.push('}');
+        }
+        WorldCommand::SetFullscreen { window, value } => {
+            out.push_str("{\"op\":\"set-fullscreen\",\"win\":");
+            push_json_string(&mut out, &window.0);
+            out.push_str(",\"value\":");
+            out.push_str(if *value { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::ToggleFullscreen { window } => {
+            out.push_str("{\"op\":\"toggle-fullscreen\",\"win\":");
+            push_json_string(&mut out, &window.0);
+            out.push('}');
+        }
+        WorldCommand::Operation(core) => match core {
+            CoreCommand::ToggleFloat { window, float_rect } => {
+                out.push_str("{\"op\":\"toggle-float\",\"win\":");
+                push_json_string(&mut out, window);
+                out.push_str(",\"rect\":");
+                push_opt_rect(&mut out, float_rect);
+                out.push('}');
+            }
+            CoreCommand::ToggleOrientation { window } => {
+                out.push_str("{\"op\":\"toggle-orientation\",\"win\":");
+                push_json_string(&mut out, window);
+                out.push('}');
+            }
+            CoreCommand::Resize {
+                window,
+                direction,
+                mode,
+                press_index,
+            } => {
+                out.push_str("{\"op\":\"resize\",\"win\":");
+                push_json_string(&mut out, window);
+                out.push_str(",\"direction\":");
+                push_json_string(&mut out, direction);
+                out.push_str(",\"mode\":");
+                push_json_string(&mut out, mode);
+                out.push_str(",\"press\":");
+                out.push_str(&press_index.to_string());
+                out.push('}');
+            }
+            _ => return Err(snapshot_invalid("command-invalid")),
+        },
+    }
+    Ok(out)
+}
+
+/// Checked canonical encode of one decoded v4 report: compact JSON in
+/// contract table key order that re-decodes to the input. Optional groups
+/// ride their carried spellings from the wire metadata; carried attempt
+/// rows without their lane, a nonzero clock without its key, a cursor hit
+/// or gesture ingress inconsistent with its spelling, mismatched creation
+/// receipts, unmergeable held ordinals, and unencodable commands refuse
+/// instead of emitting non-wire bytes.
+pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
+    let report = &decoded.report;
+    let wire = &decoded.wire;
+    if report.command_seq.is_none() != report.command.is_none() {
+        return Err(snapshot_invalid("command-pair-invalid"));
+    }
+    if report.renderer_input.is_some() && report.command.is_none() {
+        return Err(snapshot_invalid("command-pair-invalid"));
+    }
+    match (&report.cursor_hit, wire.cursor_hit) {
+        (None, CursorHitWire::Absent | CursorHitWire::Null | CursorHitWire::Empty) => {}
+        (Some(_), CursorHitWire::Id) => {}
+        _ => return Err(snapshot_invalid("cursor-hit-inconsistent")),
+    }
+    if report.monotonic_ms != 0 && !wire.monotonic_ms_present {
+        return Err(snapshot_invalid("monotonic-inconsistent"));
+    }
+    match (&report.gesture, wire.gesture_ingress) {
+        (None, GestureIngressWire::Absent | GestureIngressWire::Null) => {}
+        (Some(_), GestureIngressWire::Present) => {}
+        _ => return Err(snapshot_invalid("gesture-ingress-inconsistent")),
+    }
+    let held_in_lane = |lane: AttemptLaneV4| {
+        decoded
+            .report
+            .held_attempts
+            .iter()
+            .filter(move |held| held.lane == lane)
+            .count()
+    };
+    for (valid, lane, present) in [
+        (
+            report.frames.len(),
+            AttemptLaneV4::Frame,
+            wire.frame_attempts_present,
+        ),
+        (
+            report.member_attempts.len(),
+            AttemptLaneV4::Member,
+            wire.member_attempts_present,
+        ),
+        (
+            report.view_attempts.len(),
+            AttemptLaneV4::View,
+            wire.view_attempts_present,
+        ),
+        (
+            report.clear_attempts.len(),
+            AttemptLaneV4::Clear,
+            wire.clear_attempts_present,
+        ),
+        (
+            report.creation_attempts.len(),
+            AttemptLaneV4::Creation,
+            wire.creation_attempts_present,
+        ),
+    ] {
+        if (valid > 0 || held_in_lane(lane) > 0) && !present {
+            return Err(snapshot_invalid("attempt-lane-inconsistent"));
+        }
+    }
+    if decoded.creation_receipts.len() != report.creation_attempts.len() {
+        return Err(snapshot_invalid("creation-receipt-mismatch"));
+    }
+    let mut out = String::new();
+    out.push_str("{\"v\":");
+    out.push_str(&report.contract_version.to_string());
+    out.push_str(",\"adapter\":");
+    push_json_string(&mut out, &report.adapter_incarnation);
+    out.push_str(",\"gen\":");
+    push_json_string(&mut out, &report.core_generation);
+    out.push_str(",\"obs\":\"");
+    out.push_str(&report.observation_seq.to_string());
+    out.push_str("\",\"reqSeq\":\"");
+    out.push_str(&report.request_seq.to_string());
+    out.push_str("\",\"req\":");
+    push_json_string(&mut out, &report.request_id);
+    out.push_str(",\"cmdSeq\":");
+    match report.command_seq {
+        None => out.push_str("null"),
+        Some(seq) => {
+            out.push('"');
+            out.push_str(&seq.to_string());
+            out.push('"');
+        }
+    }
+    out.push_str(",\"command\":");
+    match &report.command {
+        None => out.push_str("null"),
+        Some(command) => out.push_str(&encode_command_v4(command)?),
+    }
+    out.push_str(",\"screens\":[");
+    let mut screens = Vec::with_capacity(report.screens.len());
+    for screen in &report.screens {
+        screens.push(
+            tiler_core::world_report::encode_screen_canonical(screen)
+                .map_err(|_| snapshot_invalid("nonfinite"))?,
+        );
+    }
+    let mut held_screens = Vec::with_capacity(report.held_screens.len());
+    for held in &report.held_screens {
+        held_screens.push((
+            held.ordinal,
+            tiler_core::world_report::encode_held_screen_canonical(held)
+                .map_err(|_| snapshot_invalid("nonfinite"))?,
+        ));
+    }
+    for (i, row) in merge_lane(screens, held_screens)?.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(row);
+    }
+    out.push_str("],\"windows\":[");
+    let mut windows = Vec::with_capacity(report.windows.len());
+    for fact in &report.windows {
+        windows.push(
+            tiler_core::world_report::encode_window_canonical(fact)
+                .map_err(|_| snapshot_invalid("nonfinite"))?,
+        );
+    }
+    let mut held_windows = Vec::with_capacity(report.held_windows.len());
+    for held in &report.held_windows {
+        held_windows.push((
+            held.ordinal,
+            tiler_core::world_report::encode_held_window_canonical(held)
+                .map_err(|_| snapshot_invalid("nonfinite"))?,
+        ));
+    }
+    for (i, row) in merge_lane(windows, held_windows)?.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(row);
+    }
+    out.push_str("],\"closed\":[");
+    for (i, id) in report.closed.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_json_string(&mut out, &id.0);
+    }
+    out.push_str("],\"native\":[");
+    let mut native = Vec::with_capacity(report.native.len());
+    for row in &report.native {
+        native.push(encode_native_observation_v4(row)?);
+    }
+    let mut held_native = Vec::with_capacity(report.held_native.len());
+    for held in &report.held_native {
+        held_native.push((held.ordinal, encode_held_fields(&held.fields)?));
+    }
+    for (i, row) in merge_lane(native, held_native)?.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(row);
+    }
+    out.push_str("],\"focused\":");
+    push_json_string(&mut out, &report.focused_global);
+    out.push_str(",\"complete\":");
+    out.push_str(if report.inventory_complete {
+        "true"
+    } else {
+        "false"
+    });
+    out.push_str(",\"gesture\":");
+    out.push_str(if report.gesture_barrier {
+        "true"
+    } else {
+        "false"
+    });
+    out.push_str(",\"cursor\":");
+    push_opt_point(&mut out, &report.cursor);
+    out.push_str(",\"actionForeground\":");
+    push_opt_output(&mut out, &report.action_foreground);
+    out.push_str(",\"actionCached\":");
+    push_opt_output(&mut out, &report.action_cached);
+    out.push_str(",\"actionOutputs\":[");
+    for (i, output) in report.action_outputs.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_json_string(&mut out, &output.0);
+    }
+    out.push_str("],\"presentation\":");
+    match &report.presentation {
+        PresentationRowV4::Valid(ingress) => {
+            out.push_str(&encode_presentation_ingress_v4(ingress)?);
+        }
+        PresentationRowV4::Held(held) => out.push_str(&encode_held_fields(&held.fields)?),
+    }
+    match (&report.cursor_hit, wire.cursor_hit) {
+        (None, CursorHitWire::Absent) => {}
+        (None, CursorHitWire::Null) => out.push_str(",\"cursorHit\":null"),
+        (None, CursorHitWire::Empty) => out.push_str(",\"cursorHit\":\"\""),
+        (Some(hit), CursorHitWire::Id) => {
+            out.push_str(",\"cursorHit\":");
+            push_json_string(&mut out, &hit.0);
+        }
+        _ => return Err(snapshot_invalid("cursor-hit-inconsistent")),
+    }
+    if wire.monotonic_ms_present {
+        out.push_str(",\"monotonicMs\":\"");
+        out.push_str(&report.monotonic_ms.to_string());
+        out.push('"');
+    }
+    emit_attempt_lane(
+        &mut out,
+        "frameAttempts",
+        wire.frame_attempts_present,
+        merge_lane(
+            report
+                .frames
+                .iter()
+                .map(encode_frame_attempt_v4)
+                .collect::<Result<Vec<_>>>()?,
+            report
+                .held_attempts
+                .iter()
+                .filter(|held| held.lane == AttemptLaneV4::Frame)
+                .map(|held| encode_held_fields(&held.fields).map(|bytes| (held.ordinal, bytes)))
+                .collect::<Result<Vec<_>>>()?,
+        )?,
+    );
+    emit_attempt_lane(
+        &mut out,
+        "memberAttempts",
+        wire.member_attempts_present,
+        merge_lane(
+            report
+                .member_attempts
+                .iter()
+                .map(encode_member_attempt_v4)
+                .collect::<Result<Vec<_>>>()?,
+            report
+                .held_attempts
+                .iter()
+                .filter(|held| held.lane == AttemptLaneV4::Member)
+                .map(|held| encode_held_fields(&held.fields).map(|bytes| (held.ordinal, bytes)))
+                .collect::<Result<Vec<_>>>()?,
+        )?,
+    );
+    emit_attempt_lane(
+        &mut out,
+        "viewAttempts",
+        wire.view_attempts_present,
+        merge_lane(
+            report
+                .view_attempts
+                .iter()
+                .map(encode_view_attempt_v4)
+                .collect::<Result<Vec<_>>>()?,
+            report
+                .held_attempts
+                .iter()
+                .filter(|held| held.lane == AttemptLaneV4::View)
+                .map(|held| encode_held_fields(&held.fields).map(|bytes| (held.ordinal, bytes)))
+                .collect::<Result<Vec<_>>>()?,
+        )?,
+    );
+    emit_attempt_lane(
+        &mut out,
+        "clearAttempts",
+        wire.clear_attempts_present,
+        merge_lane(
+            report
+                .clear_attempts
+                .iter()
+                .map(encode_clear_attempt_v4)
+                .collect::<Result<Vec<_>>>()?,
+            report
+                .held_attempts
+                .iter()
+                .filter(|held| held.lane == AttemptLaneV4::Clear)
+                .map(|held| encode_held_fields(&held.fields).map(|bytes| (held.ordinal, bytes)))
+                .collect::<Result<Vec<_>>>()?,
+        )?,
+    );
+    emit_attempt_lane(
+        &mut out,
+        "creationAttempts",
+        wire.creation_attempts_present,
+        merge_lane(
+            report
+                .creation_attempts
+                .iter()
+                .zip(decoded.creation_receipts.iter())
+                .map(|(row, receipt)| encode_creation_attempt_v4(row, *receipt))
+                .collect::<Result<Vec<_>>>()?,
+            report
+                .held_attempts
+                .iter()
+                .filter(|held| held.lane == AttemptLaneV4::Creation)
+                .map(|held| encode_held_fields(&held.fields).map(|bytes| (held.ordinal, bytes)))
+                .collect::<Result<Vec<_>>>()?,
+        )?,
+    );
+    match (&report.gesture, wire.gesture_ingress) {
+        (None, GestureIngressWire::Absent) => {}
+        (None, GestureIngressWire::Null) => out.push_str(",\"gestureIngress\":null"),
+        (Some(ingress), GestureIngressWire::Present) => {
+            out.push_str(",\"gestureIngress\":");
+            out.push_str(&encode_gesture_ingress_v4(ingress)?);
+        }
+        _ => return Err(snapshot_invalid("gesture-ingress-inconsistent")),
+    }
+    if let Some(primary) = &report.primary_output {
+        out.push_str(",\"primary\":");
+        push_json_string(&mut out, &primary.0);
+    }
+    out.push_str(",\"intentRecords\":[");
+    for (i, record) in report.intent_records.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"win\":");
+        push_json_string(&mut out, &record.win.0);
+        out.push_str(",\"data\":");
+        push_json_string(&mut out, &record.data);
+        out.push('}');
+    }
+    out.push_str("],\"stateAttempts\":[");
+    for (i, row) in report.state_attempts.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&encode_state_attempt(row)?);
+    }
+    out.push_str("],\"focusFeedback\":[");
+    for (i, row) in report.focus_feedback.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&encode_focus_feedback(row)?);
+    }
+    out.push_str("],\"rendererInput\":");
+    match &report.renderer_input {
+        None => out.push_str("null"),
+        Some(input) => out.push_str(&encode_renderer_input(input)?),
+    }
+    out.push('}');
+    let back = match decode_report_v4(&out) {
+        Ok(back) => back,
+        Err(_) => return Err(snapshot_invalid("encode-mismatch")),
+    };
+    if back != *decoded {
+        return Err(snapshot_invalid("encode-mismatch"));
+    }
+    Ok(out)
+}
+
+/// Emit one optional attempt lane (`,"lane":[...]`) when the lane was
+/// carried, including the empty-array spelling.
+fn emit_attempt_lane(out: &mut String, lane: &str, present: bool, rows: Vec<String>) {
+    if !present {
+        return;
+    }
+    out.push_str(",\"");
+    out.push_str(lane);
+    out.push_str("\":[");
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(row);
+    }
+    out.push(']');
 }
 
 /// Canonical JSON string writer for replies and errors: `"` and `\` escape,

@@ -619,7 +619,7 @@
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
       "json": true,
-      "canonical": true
+      "canonical": false
     },
     {
       "id": "report-fullscreen-tiler",
@@ -3377,7 +3377,7 @@
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
       "json": true,
-      "canonical": true,
+      "canonical": false,
       "context": {
         "hostOwned": false
       },
