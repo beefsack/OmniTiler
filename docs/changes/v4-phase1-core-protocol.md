@@ -749,6 +749,9 @@
         the remaining selection/native/gesture/cursor/clear/born/topology
         consumers. Preserve the view-proof, command-helper and run/finish
         ownership boundaries below; this split does not change migration order.
+        Next, 4b-2b migrates selection feedback/native-selector receipt capture
+        and its arrival receipt watermark. Switch completion stays coupled to
+        native/view proof; the other remaining lanes follow separately.
    5. View-proof migration replacing the `views` echo legs (`view_echo_for`,
      staged echo fill, `settle_views_pre`, selection proof) with visibility and
      focus proof. The contract settles the receipt predicates (removed `views`
@@ -1000,6 +1003,40 @@
   public ingress or version change is included. Remaining observation lanes
   stay in 4b-2, command helpers in 4c and dependent proof/assembly work with
   its existing owners. The phase note remains active.
+- Sub-increment 4b-2b plan: make `settle_selection_feedback` consume staged
+  selector attempts, focus feedback and the observation receipt watermark.
+  Preserve its pre-command-rollback position, first-exact-tuple latching per
+  obligated output, optional-focus behavior and frozen-arrival proof inputs.
+  Keep native/home translation, current staged homing and arrival predicates
+  unchanged; no new native selector or visibility authority follows from receipt
+  capture. Verify both intakes, current capture, wrong tuples, contradictory
+  redelivery, held/incomplete/barrier receipt retention, focusless native receipts
+  and arrival watermark bounds. `settle_selection_switch`, its fresh-report
+  native proof fallback and LastWrite accounting remain unchanged with their
+  proof owner; no presentation, command helper, prior-report retention, v4
+  accepted-run/scenario assembly, fixture or public ingress change is included.
+- Sub-increment 4b-2b outcome: selection feedback settlement now borrows staged
+  selector attempts and focus feedback, using the captured observation watermark
+  for the unchanged frozen-arrival proof. The legacy caller keeps its position;
+  tuple predicates, first-receipt guards, homing/native-map joins and optional
+  focus behavior are unchanged, with no new observation clones. Two dual-intake
+  regressions cover wrong tuples, receipts under held/incomplete/barrier inputs,
+  same-lane focus ordering, contradictory redelivery, focusless per-output view
+  capture, native-map translation and future-dated arrival bounds. A later
+  covering watermark never re-grades the historical receipt; receipt capture
+  alone emits no switch terminal. Direct binding/homing seeds establish helper
+  behavior, not v4 accepted-run, codec-shape or scenario acceptance. Review found
+  no source blocker; test follow-up corrected selector duplicate-operation shapes
+  and strengthened watermark and tuple controls. New tests were first run after
+  implementation, not established as preimplementation behavioral reds.
+  Final direct verification passes the filtered core/protocol gate (1683 core
+  unit tests and every selected integration/protocol target), build, scoped
+  all-target clippy with warnings denied, formatting, whitespace, added ASCII,
+  NUL and local-link checks. Only `workspace_unsafe_posture` is filtered. No new
+  tentative decision, contract, fixture, manifest, adapter, feature, public
+  ingress or version change is included. Switch completion/native proof and
+  the remaining observation lanes retain their existing owners; the phase note
+  remains active.
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
 - Capability-held cursor grading repair plan: reproduce a valid v4 report whose
   native cursor hit names a newly capability-held window, then keep that window

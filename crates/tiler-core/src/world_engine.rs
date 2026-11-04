@@ -2991,7 +2991,7 @@ impl WorldEngine {
         // Selection arrival bindings settle the same way: first exact
         // opaque-tuple correlation latches raw evidence with no authority
         // upgrade, so consumed and observation-only reports settle alike.
-        self.settle_selection_feedback(report);
+        self.settle_selection_feedback();
         // Selection switch terminals settle next from the latched feedback
         // plus first-correlated LastWrite evidence, still before the
         // command-only rollback boundary.

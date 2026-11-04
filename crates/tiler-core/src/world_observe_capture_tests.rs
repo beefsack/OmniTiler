@@ -15,13 +15,14 @@ use crate::world_engine::{ExcludedIntent, StagedDomain, StagedObservation, World
 use crate::world_focus::{FocusVerdict, RetainedFocusGrant};
 use crate::world_members::MemberState;
 use crate::world_report::{
-    ArrivalBracket, AttemptLaneV4, AttemptOutcome, AuthorityScope, ClearAttempt, FocusFeedback,
-    FrameAttempt, FrameSetter, HeldAttemptRow, HeldNativeRow, HeldScreenRow, HeldWindowRow,
-    IntentRecord, IntentWrite, MemberAttempt, NativeCreationAttempt, NativeObservation,
-    NativeOccupancy, OneShotEffect, PresentationIngressV4, PresentationRowV4, RenderTarget,
-    RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport, StateAttempt,
-    StateProperty, ViewAttempt, VisibilityReason, VisibilitySetter, WORLD_CONTRACT_VERSION_V4,
-    WindowFact, WorkspaceRef, WorldReport, WorldReportV4,
+    ArrivalBracket, ArrivalLocation, AttemptLaneV4, AttemptOutcome, AuthorityScope, ClearAttempt,
+    FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow, HeldNativeRow, HeldScreenRow,
+    HeldWindowRow, IntentRecord, IntentWrite, MemberAttempt, NativeCreationAttempt,
+    NativeObservation, NativeOccupancy, OneShotEffect, PresentationIngressV4, PresentationRowV4,
+    RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport,
+    StateAttempt, StateProperty, ViewAttempt, VisibilityFact, VisibilityReason, VisibilitySample,
+    VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldReport,
+    WorldReportV4,
 };
 use crate::world_selection::{
     FrozenArrivalMember, RetainedSelection, SelectionScope, SelectionTarget, SwitchMember,
@@ -2644,5 +2645,547 @@ fn settle_frames_burst_quiet_gap_rearms_from_captured_clock() {
         stage_frames(&mut engine, v4, 3, drifted, vec![three], 1900);
         engine.settle_frames();
         assert_eq!(burst_of(&engine).0, 2, "accumulates (v4={v4})");
+    }
+}
+
+// --- Unit 4b-2b: `settle_selection_feedback` reads the staged capture ---
+//
+// The seeds below are test-only retained bindings and homing marks (NOT v4
+// runtime or scenario execution): each intake stages real legacy/v4 lanes
+// and the no-arg settle consumes only the current staged observation.
+
+fn sel_feedback(id: &str, revision: u64, arrival: Vec<ArrivalBracket>) -> FocusFeedback {
+    FocusFeedback {
+        id: id.to_owned(),
+        target: WindowId("win-a".to_owned()),
+        revision,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: None,
+        post: Some(WindowId("win-a".to_owned())),
+        foreground_proven: true,
+        arrival,
+        attempt_ms: 17,
+    }
+}
+
+fn sel_sample(obs: u64) -> VisibilitySample {
+    VisibilitySample {
+        obs,
+        lifetime_matched: Some(true),
+        visibility: VisibilityFact {
+            visible: Some(true),
+            suppression_owned: Some(false),
+        },
+        minimized: Some(false),
+        host_hidden: Some(false),
+    }
+}
+
+fn sel_bracket_output(obs: u64) -> ArrivalBracket {
+    ArrivalBracket {
+        window: WindowId("win-a".to_owned()),
+        obs,
+        before: sel_sample(obs),
+        location: ArrivalLocation::Output {
+            out: Some(OutputId("out-a".to_owned())),
+        },
+        frame: Some(rect(0, 0, 40, 90)),
+        after: sel_sample(obs),
+    }
+}
+
+fn sel_bracket_native(native: &str, obs: u64) -> ArrivalBracket {
+    let mut bracket = sel_bracket_output(obs);
+    bracket.location = ArrivalLocation::Native {
+        home: Some(WorkspaceRef::Native {
+            output: OutputId("out-a".to_owned()),
+            workspace: crate::ids::NativeWorkspaceId::parse(native).expect("native id"),
+        }),
+    };
+    bracket
+}
+
+/// Test-only retained binding seed (NOT runtime scenario execution).
+/// Focus-bearing seeds freeze one shown member and mint the producer's
+/// `fx-3` arrival grant (`await_shown`, see `resolve_selection_focus`);
+/// focusless seeds mint no effect and freeze no members.
+fn seed_selection_binding(
+    engine: &mut WorldEngine,
+    parent_op: &str,
+    effect: bool,
+    outputs: &[&str],
+) {
+    let id = WindowId("win-a".to_owned());
+    let mut view_targets = BTreeMap::new();
+    for output in outputs {
+        view_targets.insert(OutputId((*output).to_owned()), home_key(output));
+    }
+    engine.retained_selection.insert(
+        OutputId("out-a".to_owned()),
+        RetainedSelection {
+            effect: effect.then(|| {
+                let mut effect = OneShotEffect::explicit_focus(3, id.clone(), 1);
+                effect.await_shown = true;
+                effect
+            }),
+            parent_op: parent_op.to_owned(),
+            home: home_key("out-a"),
+            rev: 1,
+            obs: 1,
+            members: if effect {
+                vec![FrozenArrivalMember {
+                    window: id.clone(),
+                    home: home_key("out-a"),
+                    frame: None,
+                }]
+            } else {
+                Vec::new()
+            },
+            switch_members: Vec::new(),
+            switch_evidence: BTreeMap::new(),
+            feedback: None,
+            foreground_proven: false,
+            arrival_ready: false,
+            view_targets,
+            view_raw: BTreeMap::new(),
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_selection(
+    engine: &mut WorldEngine,
+    v4: bool,
+    seq: u64,
+    views: Vec<ViewAttempt>,
+    feedback: Vec<FocusFeedback>,
+    complete: bool,
+    barrier: bool,
+    held: Vec<HeldWindowRow>,
+) {
+    let (mut legacy, mut v4report) = pair_reports(seq, Vec::new(), Vec::new());
+    // Both obligated outputs are known carried screens on each intake, so
+    // wrong-output tuples are genuine mismatches, not unknown outputs.
+    legacy.screens.push(screen("out-b", 800));
+    v4report.screens.push(screen("out-b", 800));
+    legacy.inventory_complete = complete;
+    v4report.inventory_complete = complete;
+    legacy.gesture_barrier = barrier;
+    v4report.gesture_barrier = barrier;
+    legacy.held_windows = held.clone();
+    v4report.held_windows = held;
+    legacy.view_attempts = views.clone();
+    v4report.view_attempts = views;
+    legacy.focus_feedback = feedback.clone();
+    v4report.focus_feedback = feedback;
+    stage_either(engine, v4, &legacy, &v4report);
+    // Test-only homing seed (NOT runtime execution): marks win-a homed so
+    // the arrival join evaluates against the staged capture.
+    engine
+        .staged
+        .homing
+        .insert(WindowId("win-a".to_owned()), home_key("out-a"));
+}
+
+fn assert_selection(
+    engine: &WorldEngine,
+    v4: bool,
+    views: usize,
+    feedback: Option<FocusFeedback>,
+    proven: bool,
+    ready: bool,
+    what: &str,
+) {
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding retained");
+    assert_eq!(binding.view_raw.len(), views, "{what} views (v4={v4})");
+    assert_eq!(binding.feedback, feedback, "{what} feedback (v4={v4})");
+    assert_eq!(
+        (binding.foreground_proven, binding.arrival_ready),
+        (proven, ready),
+        "{what} flags (v4={v4})"
+    );
+    // The receipt latch alone mints no terminal: the switch settle owns
+    // proof assembly, and the binding stays retained.
+    assert!(
+        engine.switch_settled.is_empty(),
+        "{what} no terminal (v4={v4})"
+    );
+}
+
+#[test]
+fn settle_selection_feedback_first_exact_tuples_latch_from_staged_capture() {
+    for v4 in [false, true] {
+        let mut engine = engine_settle();
+        seed_selection_binding(&mut engine, "op-3", true, &["out-a"]);
+        // Wrong tuples correlate with nothing and latch nothing. The
+        // decoder rejects duplicate view operation ids even across
+        // outputs, so each wrong tuple stages alone on an advancing
+        // sequence.
+        let wrong_views = vec![
+            ViewAttempt {
+                operation_id: "op-9".to_owned(),
+                ..view_row("op-3")
+            },
+            ViewAttempt {
+                target_workspace: "ws-9".to_owned(),
+                ..view_row("op-3")
+            },
+            ViewAttempt {
+                target_output: OutputId("out-b".to_owned()),
+                ..view_row("op-3")
+            },
+        ];
+        let wrong_feedback = vec![
+            focus_row("fx-9", 1),
+            focus_row("fx-3", 2),
+            FocusFeedback {
+                target: WindowId("win-b".to_owned()),
+                ..focus_row("fx-3", 1)
+            },
+        ];
+        for (index, wrong) in wrong_views.into_iter().enumerate() {
+            let seq = index as u64 + 1;
+            stage_selection(
+                &mut engine,
+                v4,
+                seq,
+                vec![wrong],
+                wrong_feedback.clone(),
+                true,
+                false,
+                Vec::new(),
+            );
+            engine.settle_selection_feedback();
+            assert_selection(&engine, v4, 0, None, false, false, "mismatch");
+        }
+        // The first exact tuples latch under held/incomplete/barrier: no
+        // readability gate, no sweep authority.
+        let matched = sel_feedback("fx-3", 1, vec![sel_bracket_output(4)]);
+        stage_selection(
+            &mut engine,
+            v4,
+            4,
+            vec![view_row("op-3")],
+            vec![matched.clone()],
+            false,
+            true,
+            vec![held_window_row("win-a", "out-a", 0)],
+        );
+        engine.settle_selection_feedback();
+        assert_eq!(
+            engine
+                .retained_selection
+                .get(&OutputId("out-a".to_owned()))
+                .expect("binding")
+                .view_raw
+                .get(&OutputId("out-a".to_owned())),
+            Some(&view_row("op-3")),
+            "exact view tuple (v4={v4})"
+        );
+        assert_selection(
+            &engine,
+            v4,
+            1,
+            Some(matched.clone()),
+            true,
+            true,
+            "hold latch",
+        );
+        // A contradictory same-tuple row cannot replace the original.
+        stage_selection(
+            &mut engine,
+            v4,
+            5,
+            vec![ViewAttempt {
+                setter: FrameSetter::Refused,
+                ..view_row("op-3")
+            }],
+            vec![FocusFeedback {
+                setter: VisibilitySetter::Refused,
+                foreground_proven: false,
+                arrival: Vec::new(),
+                ..matched.clone()
+            }],
+            true,
+            false,
+            Vec::new(),
+        );
+        engine.settle_selection_feedback();
+        assert_selection(
+            &engine,
+            v4,
+            1,
+            Some(matched.clone()),
+            true,
+            true,
+            "same tuple kept",
+        );
+        assert_eq!(
+            engine
+                .retained_selection
+                .get(&OutputId("out-a".to_owned()))
+                .expect("binding")
+                .view_raw
+                .get(&OutputId("out-a".to_owned())),
+            Some(&view_row("op-3")),
+            "original view row kept (v4={v4})"
+        );
+        // Same-lane focus ordering: the first exact row wins within one
+        // lane. Repeated focus rows are decoder-preserved facts (no
+        // duplicate restriction on the lane); duplicate view attempts are
+        // decoder-rejected per operation id, so views keep cross-report
+        // coverage only.
+        let mut ordered = engine_settle();
+        seed_selection_binding(&mut ordered, "op-3", true, &["out-a"]);
+        let first = sel_feedback("fx-3", 1, vec![sel_bracket_output(6)]);
+        stage_selection(
+            &mut ordered,
+            v4,
+            6,
+            vec![view_row("op-3")],
+            vec![
+                first.clone(),
+                FocusFeedback {
+                    setter: VisibilitySetter::Refused,
+                    foreground_proven: false,
+                    arrival: Vec::new(),
+                    ..first.clone()
+                },
+            ],
+            true,
+            false,
+            Vec::new(),
+        );
+        ordered.settle_selection_feedback();
+        assert_selection(&ordered, v4, 1, Some(first), true, true, "lane order");
+        // Empty later lanes never clear the latch: the current capture
+        // replaces the older staged observation, never rereads it.
+        stage_selection(
+            &mut engine,
+            v4,
+            7,
+            Vec::new(),
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+        );
+        engine.settle_selection_feedback();
+        assert_selection(
+            &engine,
+            v4,
+            1,
+            Some(matched.clone()),
+            true,
+            true,
+            "empty restage keeps",
+        );
+        // A future-dated bracket latches feedback without arrival. The
+        // bound itself is already discriminated by the first latch
+        // (in-window proves, future-dated holds); the later receipt only
+        // shows historical no-regrade: its watermark now covers the old
+        // sample, yet the latched row is never re-graded, even with a
+        // fresh in-window row in the lane.
+        let mut fresh = engine_settle();
+        seed_selection_binding(&mut fresh, "op-3", true, &["out-a"]);
+        let future = sel_feedback("fx-3", 1, vec![sel_bracket_output(9)]);
+        stage_selection(
+            &mut fresh,
+            v4,
+            2,
+            vec![view_row("op-3")],
+            vec![future.clone()],
+            true,
+            false,
+            Vec::new(),
+        );
+        fresh.settle_selection_feedback();
+        assert_selection(
+            &fresh,
+            v4,
+            1,
+            Some(future.clone()),
+            true,
+            false,
+            "future bracket holds",
+        );
+        let late = sel_feedback("fx-3", 1, vec![sel_bracket_output(10)]);
+        stage_selection(
+            &mut fresh,
+            v4,
+            10,
+            vec![view_row("op-3")],
+            vec![late],
+            true,
+            false,
+            Vec::new(),
+        );
+        fresh.settle_selection_feedback();
+        assert_selection(&fresh, v4, 1, Some(future), true, false, "no upgrade");
+    }
+}
+
+fn engine_settle_host() -> WorldEngine {
+    WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            host_owned: true,
+            fullscreen: true,
+            maximize: true,
+            native_sticky: true,
+            above: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation")
+}
+
+#[test]
+fn settle_selection_feedback_view_receipts_independent_focusless_and_host_owned() {
+    for v4 in [false, true] {
+        // Focusless native obligation on a host-owned engine, the realistic
+        // retained shape (direct seed bypasses native/domain assembly, so
+        // no codec-validity claim): the view raw latches per output while
+        // no feedback gate exists without an effect.
+        let mut engine = engine_settle_host();
+        seed_selection_binding(&mut engine, "op-4", false, &["out-a", "out-b"]);
+        let exact_b = ViewAttempt {
+            target_output: OutputId("out-b".to_owned()),
+            ..view_row("op-4")
+        };
+        stage_selection(
+            &mut engine,
+            v4,
+            1,
+            vec![view_row("op-4")],
+            vec![focus_row("fx-4", 1)],
+            true,
+            false,
+            Vec::new(),
+        );
+        engine.settle_selection_feedback();
+        assert_selection(&engine, v4, 1, None, false, false, "focusless partial");
+        {
+            let binding = engine
+                .retained_selection
+                .get(&OutputId("out-a".to_owned()))
+                .expect("binding");
+            assert_eq!(
+                binding.view_raw.get(&OutputId("out-a".to_owned())),
+                Some(&view_row("op-4")),
+                "out-a latched (v4={v4})"
+            );
+            assert!(
+                !binding.view_raw.contains_key(&OutputId("out-b".to_owned())),
+                "out-b still pending (v4={v4})"
+            );
+        }
+        // The second output latches on its own exact tuple; a later
+        // same-tuple out-a redelivery cannot replace the original (each
+        // lane carries one operation id per the decoder rule).
+        stage_selection(
+            &mut engine,
+            v4,
+            2,
+            vec![exact_b.clone()],
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+        );
+        engine.settle_selection_feedback();
+        assert_selection(&engine, v4, 2, None, false, false, "focusless complete");
+        {
+            let binding = engine
+                .retained_selection
+                .get(&OutputId("out-a".to_owned()))
+                .expect("binding");
+            assert_eq!(
+                binding.view_raw.get(&OutputId("out-a".to_owned())),
+                Some(&view_row("op-4")),
+                "original out-a kept (v4={v4})"
+            );
+            assert_eq!(
+                binding.view_raw.get(&OutputId("out-b".to_owned())),
+                Some(&exact_b),
+                "out-b latched (v4={v4})"
+            );
+        }
+        stage_selection(
+            &mut engine,
+            v4,
+            3,
+            vec![ViewAttempt {
+                setter: FrameSetter::Refused,
+                ..view_row("op-4")
+            }],
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+        );
+        engine.settle_selection_feedback();
+        assert_selection(&engine, v4, 2, None, false, false, "focusless redelivery");
+        assert_eq!(
+            engine
+                .retained_selection
+                .get(&OutputId("out-a".to_owned()))
+                .expect("binding")
+                .view_raw
+                .get(&OutputId("out-a".to_owned())),
+            Some(&view_row("op-4")),
+            "original out-a survives redelivery (v4={v4})"
+        );
+        // Host-owned native-map translation: the mapped native home proves
+        // arrival through the engine's own bindings.
+        let mut host = engine_settle_host();
+        host.native_map
+            .insert(("out-a".to_owned(), "n1".to_owned()), "ws-1".to_owned());
+        seed_selection_binding(&mut host, "op-3", true, &["out-a"]);
+        let native_ok = sel_feedback("fx-3", 1, vec![sel_bracket_native("n1", 2)]);
+        stage_selection(
+            &mut host,
+            v4,
+            2,
+            Vec::new(),
+            vec![native_ok.clone()],
+            true,
+            false,
+            Vec::new(),
+        );
+        host.settle_selection_feedback();
+        assert_selection(&host, v4, 0, Some(native_ok), true, true, "native mapped");
+        // An unmapped native home latches feedback without arrival.
+        let mut wrong = engine_settle_host();
+        wrong
+            .native_map
+            .insert(("out-a".to_owned(), "n1".to_owned()), "ws-1".to_owned());
+        seed_selection_binding(&mut wrong, "op-3", true, &["out-a"]);
+        let native_bad = sel_feedback("fx-3", 1, vec![sel_bracket_native("n0", 2)]);
+        stage_selection(
+            &mut wrong,
+            v4,
+            2,
+            Vec::new(),
+            vec![native_bad.clone()],
+            true,
+            false,
+            Vec::new(),
+        );
+        wrong.settle_selection_feedback();
+        assert_selection(
+            &wrong,
+            v4,
+            0,
+            Some(native_bad),
+            true,
+            false,
+            "native unmapped holds",
+        );
     }
 }

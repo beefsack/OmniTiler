@@ -1019,14 +1019,14 @@ impl WorldEngine {
     /// contradictory rows never upgrade the original attempt. Fresh facts
     /// never upgrade the first row. Focusless bindings mint no effect and
     /// latch no feedback.
-    pub(crate) fn settle_selection_feedback(&mut self, report: &WorldReport) {
+    pub(crate) fn settle_selection_feedback(&mut self) {
         let homing: BTreeMap<WindowId, DomainKey> = self
             .staged
             .homing
             .iter()
             .map(|(window, home)| (window.clone(), home.clone()))
             .collect();
-        let report_obs = report.observation_seq;
+        let report_obs = self.staged.observation.observation_seq;
         // Minimal native binding context for the arrival proof: the
         // host-owned flag selects the Native arm and the map translates
         // the observed native home through this engine's own bindings.
@@ -1044,11 +1044,17 @@ impl WorldEngine {
                 if binding.view_raw.contains_key(&output) {
                     continue;
                 }
-                if let Some(attempt) = report.view_attempts.iter().find(|attempt| {
-                    attempt.operation_id == binding.parent_op
-                        && attempt.target_output == output
-                        && attempt.target_workspace == home.workspace.0.as_str()
-                }) {
+                if let Some(attempt) =
+                    self.staged
+                        .observation
+                        .view_attempts
+                        .iter()
+                        .find(|attempt| {
+                            attempt.operation_id == binding.parent_op
+                                && attempt.target_output == output
+                                && attempt.target_workspace == home.workspace.0.as_str()
+                        })
+                {
                     binding.view_raw.insert(output, attempt.clone());
                 }
             }
@@ -1058,7 +1064,7 @@ impl WorldEngine {
             if binding.feedback.is_some() {
                 continue;
             }
-            for row in &report.focus_feedback {
+            for row in &self.staged.observation.focus_feedback {
                 if row.id == effect.id
                     && row.target == effect.target
                     && row.revision == effect.issued_revision
