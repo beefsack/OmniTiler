@@ -1679,6 +1679,22 @@
   restore token for later authority recovery. Neither alternative was selected;
   the former leaves the old overlay pixels, the latter adds deferred actuation.
   This is not promoted to an approved decision.
+- Case: anchored border descriptor values for the real producer. Chosen behavior:
+  `width` and `radius` are the border settings scaled once by the foreground
+  output's scale with the existing nearest, halves-upward rule; `outsets` is
+  `[g+w, g+w, g+w, g+w]` from the scaled border gap and width (the v3 outer ring
+  distance); an unknown or absent witness, or a witness whose subject or
+  foreground does not join the observed foreground, hides the border with
+  no reason, null subject, outsets, width, radius and witness (the existing
+  carried hidden geometry-veto spelling); no hide token is added. Evidence:
+  contract presentation text (core-scaled style, `unknown disables border`,
+  core-computed outsets), the approved size-scaling and anchored-border
+  decisions, the v3 border geometry (`visual.rs` `border_geometry`: frame, then
+  gap, then width) and the `anchored-border` scenario (`borderGap` 0, width 3,
+  outsets all 3). That scenario cannot tell gap-plus-width from width alone
+  because the gap is 0. Alternatives: outsets equal to the scaled width only, or
+  a new hide reason for unknown witness; neither selected. This is not promoted
+  to an approved decision.
 
 ## Adapter compile-failure inventory
 
