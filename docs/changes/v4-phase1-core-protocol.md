@@ -503,6 +503,49 @@
   complete v4 report roundtrips. No fixture, adapter or version changes are
   included, and all eight OPEN/TBD gates remain unchanged.
 
+### v4 presentation input rows
+
+- Add staged core value types and strict canonical row codecs for v4
+  PresentationIngress/pager frames, FrameWitness and RendererInput/RenderTarget.
+  Preserve nullable raw foreground facts without turning unknown into false.
+  Existing WorldReport/PresentationIngress, decoder envelope gates, engine policy,
+  report equality and digest remain unchanged until their later integration units.
+- Validate closed keys, field types, identity/geometry/counter bounds, explicit
+  nulls and canonical key order. FrameWitness `win` and `foreground` require
+  nonempty WindowIds; only ingress `foreground` and `moveWindow` permit the
+  contract's explicit empty sentinel. Shape validation grants no causal proof,
+  renderer freshness verdict or command authority.
+- Verify isolated immutable rows: 196 valid presentation rows, 11 expected
+  presentation-row refusals, 196 standalone witness objects, 195 valid pager-frame
+  rows plus two removed-key refusals, and all three renderer target arms plus
+  three malformed target witnesses. Command/input pairing and narrow report holds
+  belong to the full report codec; native witness joins and renderer validation
+  remain engine/port proof obligations. Check constructed boundary/negative rows
+  and unchanged whole-envelope rejection without altering the fixtures.
+- No anchored-border reply, settings/style application, renderer consumer, full
+  message codec, version bump, legacy-envelope removal, adapter or live work is
+  included. All eight OPEN/TBD gates and deferred scaling/rehome work remain.
+- Implemented staged core types plus canonical checked encoders and strict row
+  decoders. Byte entry points retain duplicate-key rejection and the input-size
+  gate; Value entry points consume already-parsed values. Encoders validate their
+  constructed bytes before returning them. Neither existing whole-report decoder
+  calls these codecs, and the existing v4 whole-envelope rejection is unchanged.
+- Ten protocol regressions establish the isolated-row census above, exact bytes,
+  per-slot identity boundaries, nullable facts, counters, rectangles, caps,
+  duplicate/escaped-duplicate rejection and invalid typed-output refusal.
+  Well-formed dangling witnesses remain shape-valid without causal authority.
+  Independent review found no behavioral blocker; corrections removed redundant
+  forwarding helpers, clarified documentation and tightened identity/error
+  assertions. An initial fixture-loader path error was corrected without changing
+  fixtures or acceptance oracles; no preimplementation behavioral red is claimed.
+- Direct final verification passes the exact filtered core/protocol test gate
+  (1632 core unit tests, every selected integration/protocol target, including the
+  ten new row tests), core/protocol build, scoped all-target clippy with warnings
+  denied, formatting, whitespace, added ASCII and local-link checks. Only
+  workspace_unsafe_posture is filtered. This remains row-codec evidence, not
+  whole-report conformance, native witness evidence or engine presentation/input
+  integration. The phase note stays active.
+
 ## Evidence
 
 - Initial fixture inventory: 518 messages (275 valid, 3 settings-diagnostic,

@@ -231,14 +231,14 @@ use tiler_core::ids::{
     MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_NATIVE_WORKSPACE_ID_LEN, NativeWorkspaceId,
 };
 use tiler_core::world_report::{
-    ActivationPolicy, ArrivalBracket, ArrivalLocation, AuthorityScope, FocusFeedback,
+    ActivationPolicy, ArrivalBracket, ArrivalLocation, AuthorityScope, FocusFeedback, FrameWitness,
     FullscreenOwner, HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, LastWrite,
     LastWritePath, LastWriteProperty, MAX_INTENT_RECORDS, NativeObservation, NativeWorkspaceFact,
-    OutputIdentity, PresentationIngress, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
-    ScreenReport, ScreenView, TransferKind, VisibilityFact, VisibilityReason, VisibilitySample,
-    VisibilitySetter, WORLD_CONTRACT_VERSION, WindowFact, WindowType, WorkspaceRef, WorldCommand,
-    WorldReply, WorldReport, check_screen_structure, check_window_structure,
-    validate_report_reason,
+    OutputIdentity, PresentationIngress, PresentationIngressV4, PresentationPagerFrameV4,
+    RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport,
+    ScreenView, TransferKind, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    WORLD_CONTRACT_VERSION, WindowFact, WindowType, WorkspaceRef, WorldCommand, WorldReply,
+    WorldReport, check_screen_structure, check_window_structure, validate_report_reason,
 };
 
 /// World protocol contract version (equals the core world contract version).
@@ -2272,6 +2272,417 @@ fn decode_presentation(value: &serde_json::Value) -> Result<PresentationIngress>
         pager_order,
         pager_frames,
     })
+}
+
+/// Staged v4 presentation row codecs (normative target in
+/// `docs/porting/world-contract.md`): strict
+/// shape-only decode plus checked canonical encode for the standalone
+/// [`PresentationIngressV4`], [`FrameWitness`], [`RendererInput`]/
+/// [`RenderTarget`], and [`PresentationPagerFrameV4`] rows. Staged: the
+/// existing v3 `decode_presentation` above and both whole-report entry points
+/// below are unchanged, and these functions are not called from the old
+/// route. Whole-report pairing (renderer/command, version gate) belongs to a
+/// later unit.
+///
+/// Wire rules shared with the v3 lane: required means present; unknown keys
+/// refuse as `unknown-field`; unknown enum tokens and bad id grammar refuse
+/// as `unknown-value`; wrong JSON types refuse as `malformed` (nullable
+/// slots accept `null` only where documented). Duplicate-key rejection
+/// (including escaped duplicates) applies ONLY at the `*_str` entry points,
+/// which parse bytes through `parse_strict_json`; the
+/// `serde_json::Value` decoders operate on already-parsed values and give
+/// no duplicate promise. Counters are canonical decimal strings (quoted,
+/// `u64::MAX` accepted); rects are `[x,y,w,h]` under
+/// [`valid_carried_rect`]; ids are nonempty opaque ids (ASCII
+/// `[A-Za-z0-9-_.]`, 1..128 bytes) except `foreground` and `moveWindow`,
+/// which additionally allow the explicit empty string for none. Witness
+/// `win`/`foreground` are always nonempty: no empty convention there. Pager
+/// order and frame sources each cap at `MAX_PRESENTATION_ORDER` (1024);
+/// over-cap refuses as `snapshot-invalid` with the existing fixed
+/// `presentation-order-over-cap` / `presentation-frames-over-cap` tokens.
+/// Row string entry points gate at the 4 MiB transport bound like the
+/// current route. Shape only: ids need not match one another, the ingress,
+/// or live reports; well-formed but dangling/mismatched rows are accepted
+/// (causal join and target-row validation belong to later units).
+/// Strict shape decode of one staged v4 frame-witness object value.
+pub fn decode_frame_witness(value: &serde_json::Value) -> Result<FrameWitness> {
+    let map = as_object(value)?;
+    check_keys(map, &["win", "obs", "frame", "foreground"])?;
+    Ok(FrameWitness {
+        win: WindowId(req_id(map, "win")?),
+        obs: req_u64_str(map, "obs")?,
+        frame: req_rect_value(map.get("frame").ok_or_else(malformed)?)?,
+        foreground: WindowId(req_id(map, "foreground")?),
+    })
+}
+
+/// Strict shape decode of one staged v4 frame-witness object from its exact
+/// canonical bytes (4 MiB row-input gate, duplicate-key rejection).
+pub fn decode_frame_witness_str(json: &str) -> Result<FrameWitness> {
+    decode_row_str(json, decode_frame_witness)
+}
+
+/// Checked canonical encode of one staged v4 frame-witness object
+/// (`{"win":S,"obs":"N","frame":[x,y,w,h],"foreground":S}`). The built bytes
+/// re-decode through the strict row decoder, so invalid typed ids,
+/// non-canonical counters, or invalid geometry never emit unsafe JSON.
+pub fn encode_frame_witness(witness: &FrameWitness) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"win\":");
+    push_json_string(&mut out, &witness.win.0);
+    out.push_str(",\"obs\":\"");
+    out.push_str(&witness.obs.to_string());
+    out.push_str("\",\"frame\":");
+    push_rect(&mut out, &witness.frame);
+    out.push_str(",\"foreground\":");
+    push_json_string(&mut out, &witness.foreground.0);
+    out.push('}');
+    decode_frame_witness_str(&out)?;
+    Ok(out)
+}
+
+/// Strict shape decode of one staged v4 pager frame row value
+/// (`{"win":S,"live":[x,y,w,h]|null}`; no float/tile slots).
+pub fn decode_pager_frame_v4(value: &serde_json::Value) -> Result<PresentationPagerFrameV4> {
+    let row = as_object(value)?;
+    check_keys(row, &["win", "live"])?;
+    Ok(PresentationPagerFrameV4 {
+        window: WindowId(req_id(row, "win")?),
+        live: opt_rect_or_null(row, "live")?,
+    })
+}
+
+/// Strict shape decode of one staged v4 pager frame row from its exact
+/// canonical bytes (4 MiB row-input gate, duplicate-key rejection).
+pub fn decode_pager_frame_v4_str(json: &str) -> Result<PresentationPagerFrameV4> {
+    decode_row_str(json, decode_pager_frame_v4)
+}
+
+/// Checked canonical encode of one staged v4 pager frame row. The built
+/// bytes re-decode through the strict row decoder, so invalid typed ids or
+/// geometry never emit unsafe JSON.
+pub fn encode_pager_frame_v4(row: &PresentationPagerFrameV4) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"win\":");
+    push_json_string(&mut out, &row.window.0);
+    out.push_str(",\"live\":");
+    push_opt_rect(&mut out, &row.live);
+    out.push('}');
+    decode_pager_frame_v4_str(&out)?;
+    Ok(out)
+}
+
+/// Strict shape decode of one staged v4 render-target object value.
+pub fn decode_render_target(value: &serde_json::Value) -> Result<RenderTarget> {
+    let map = as_object(value)?;
+    let kind = req_str(map, "kind")?;
+    match kind {
+        "workspace" => {
+            check_keys(map, &["kind", "out", "ws"])?;
+            Ok(RenderTarget::Workspace {
+                out: OutputId(req_id(map, "out")?),
+                ws: WorkspaceId(req_id(map, "ws")?),
+            })
+        }
+        "window" => {
+            check_keys(map, &["kind", "out", "ws", "win"])?;
+            Ok(RenderTarget::Window {
+                out: OutputId(req_id(map, "out")?),
+                ws: WorkspaceId(req_id(map, "ws")?),
+                win: WindowId(req_id(map, "win")?),
+            })
+        }
+        "group" => {
+            check_keys(map, &["kind", "out", "ws", "group"])?;
+            Ok(RenderTarget::Group {
+                out: OutputId(req_id(map, "out")?),
+                ws: WorkspaceId(req_id(map, "ws")?),
+                group: NodeId(req_id(map, "group")?),
+            })
+        }
+        _ => Err(unknown_value()),
+    }
+}
+
+/// Checked canonical encode of one staged v4 render-target object
+/// (`{"kind":K,"out":S,"ws":S}` plus `,"win":S` on the window arm or
+/// `,"group":S` on the group arm only). The built bytes re-decode through
+/// the strict row decoder, so invalid typed ids never emit unsafe JSON.
+pub fn encode_render_target(target: &RenderTarget) -> Result<String> {
+    let mut out = String::new();
+    match target {
+        RenderTarget::Workspace { out: output, ws } => {
+            out.push_str("{\"kind\":\"workspace\",\"out\":");
+            push_json_string(&mut out, &output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(&mut out, &ws.0);
+            out.push('}');
+        }
+        RenderTarget::Window {
+            out: output,
+            ws,
+            win,
+        } => {
+            out.push_str("{\"kind\":\"window\",\"out\":");
+            push_json_string(&mut out, &output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(&mut out, &ws.0);
+            out.push_str(",\"win\":");
+            push_json_string(&mut out, &win.0);
+            out.push('}');
+        }
+        RenderTarget::Group {
+            out: output,
+            ws,
+            group,
+        } => {
+            out.push_str("{\"kind\":\"group\",\"out\":");
+            push_json_string(&mut out, &output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(&mut out, &ws.0);
+            out.push_str(",\"group\":");
+            push_json_string(&mut out, &group.0);
+            out.push('}');
+        }
+    }
+    decode_row_str(&out, decode_render_target)?;
+    Ok(out)
+}
+
+/// Strict shape decode of one staged v4 renderer-input object value
+/// (`{"rev":"N","target":{...}}`). Always an object here; top-level
+/// nullability and command pairing belong to the future whole-report
+/// integration, not this shape codec.
+pub fn decode_renderer_input(value: &serde_json::Value) -> Result<RendererInput> {
+    let map = as_object(value)?;
+    check_keys(map, &["rev", "target"])?;
+    Ok(RendererInput {
+        rev: req_u64_str(map, "rev")?,
+        target: decode_render_target(map.get("target").ok_or_else(malformed)?)?,
+    })
+}
+
+/// Strict shape decode of one staged v4 renderer-input object from its exact
+/// canonical bytes (4 MiB row-input gate, duplicate-key rejection).
+pub fn decode_renderer_input_str(json: &str) -> Result<RendererInput> {
+    decode_row_str(json, decode_renderer_input)
+}
+
+/// Checked canonical encode of one staged v4 renderer-input object. The
+/// built bytes re-decode through the strict row decoder, so invalid typed
+/// rows never emit unsafe JSON.
+pub fn encode_renderer_input(input: &RendererInput) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"rev\":\"");
+    out.push_str(&input.rev.to_string());
+    out.push_str("\",\"target\":");
+    out.push_str(&encode_render_target(&input.target)?);
+    out.push('}');
+    decode_renderer_input_str(&out)?;
+    Ok(out)
+}
+
+/// Empty-or-opaque token (`foreground`/`moveWindow`): `""` means none, any
+/// other value must be a nonempty opaque id.
+fn req_empty_or_id(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<String> {
+    let text = req_str(map, key)?;
+    if !text.is_empty() && !is_opaque_id(text) {
+        return Err(unknown_value());
+    }
+    Ok(text.to_owned())
+}
+
+/// Strict shape decode of one staged v4 presentation-ingress object value.
+pub fn decode_presentation_ingress_v4(value: &serde_json::Value) -> Result<PresentationIngressV4> {
+    use tiler_core::world_report::MAX_PRESENTATION_ORDER;
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "foreground",
+            "minimized",
+            "maximized",
+            "fullscreen",
+            "hostHidden",
+            "hiddenWorkspace",
+            "frame",
+            "chordHeld",
+            "moveWindow",
+            "pagerOrder",
+            "pagerFrames",
+            "witness",
+            "foregroundOut",
+        ],
+    )?;
+    let order_value = map.get("pagerOrder").ok_or_else(malformed)?;
+    let order_items = order_value.as_array().ok_or_else(malformed)?;
+    if order_items.len() > MAX_PRESENTATION_ORDER {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "presentation-order-over-cap",
+        });
+    }
+    let mut pager_order = Vec::with_capacity(order_items.len());
+    for item in order_items {
+        let id = item.as_str().ok_or_else(malformed)?;
+        if !is_opaque_id(id) {
+            return Err(unknown_value());
+        }
+        pager_order.push(WindowId(id.to_owned()));
+    }
+    let frames_value = map.get("pagerFrames").ok_or_else(malformed)?;
+    let frame_items = frames_value.as_array().ok_or_else(malformed)?;
+    if frame_items.len() > MAX_PRESENTATION_ORDER {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "presentation-frames-over-cap",
+        });
+    }
+    let mut pager_frames = Vec::with_capacity(frame_items.len());
+    for item in frame_items {
+        pager_frames.push(decode_pager_frame_v4(item)?);
+    }
+    let witness = match map.get("witness") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => Some(decode_frame_witness(value)?),
+    };
+    let foreground_out = match map.get("foregroundOut") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            Some(OutputId(text.clone()))
+        }
+        Some(_) => return Err(malformed()),
+    };
+    Ok(PresentationIngressV4 {
+        foreground: req_empty_or_id(map, "foreground")?,
+        foreground_minimized: opt_bool_or_null(map, "minimized")?,
+        foreground_maximized: opt_bool_or_null(map, "maximized")?,
+        foreground_fullscreen: opt_bool_or_null(map, "fullscreen")?,
+        foreground_host_hidden: opt_bool_or_null(map, "hostHidden")?,
+        foreground_hidden_workspace: opt_bool_or_null(map, "hiddenWorkspace")?,
+        foreground_frame: opt_rect_or_null(map, "frame")?,
+        chord_held: req_bool(map, "chordHeld")?,
+        move_window: req_empty_or_id(map, "moveWindow")?,
+        pager_order,
+        pager_frames,
+        witness,
+        foreground_out,
+    })
+}
+
+/// Strict shape decode of one staged v4 presentation-ingress object from its
+/// exact canonical bytes (4 MiB row-input gate, duplicate-key rejection).
+pub fn decode_presentation_ingress_v4_str(json: &str) -> Result<PresentationIngressV4> {
+    decode_row_str(json, decode_presentation_ingress_v4)
+}
+
+/// Checked canonical encode of one staged v4 presentation-ingress object in
+/// contract table order. The built bytes re-decode through the strict row
+/// decoder, so invalid typed ids, nullability, geometry, or over-cap rows
+/// never emit unsafe JSON.
+pub fn encode_presentation_ingress_v4(ingress: &PresentationIngressV4) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"foreground\":");
+    push_json_string(&mut out, &ingress.foreground);
+    out.push_str(",\"minimized\":");
+    push_opt_bool(&mut out, &ingress.foreground_minimized);
+    out.push_str(",\"maximized\":");
+    push_opt_bool(&mut out, &ingress.foreground_maximized);
+    out.push_str(",\"fullscreen\":");
+    push_opt_bool(&mut out, &ingress.foreground_fullscreen);
+    out.push_str(",\"hostHidden\":");
+    push_opt_bool(&mut out, &ingress.foreground_host_hidden);
+    out.push_str(",\"hiddenWorkspace\":");
+    push_opt_bool(&mut out, &ingress.foreground_hidden_workspace);
+    out.push_str(",\"frame\":");
+    push_opt_rect(&mut out, &ingress.foreground_frame);
+    out.push_str(",\"chordHeld\":");
+    out.push_str(if ingress.chord_held { "true" } else { "false" });
+    out.push_str(",\"moveWindow\":");
+    push_json_string(&mut out, &ingress.move_window);
+    out.push_str(",\"pagerOrder\":[");
+    for (i, window) in ingress.pager_order.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_json_string(&mut out, &window.0);
+    }
+    out.push_str("],\"pagerFrames\":[");
+    for (i, row) in ingress.pager_frames.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&encode_pager_frame_v4(row)?);
+    }
+    out.push_str("],\"witness\":");
+    match &ingress.witness {
+        None => out.push_str("null"),
+        Some(witness) => out.push_str(&encode_frame_witness(witness)?),
+    }
+    out.push_str(",\"foregroundOut\":");
+    match &ingress.foreground_out {
+        None => out.push_str("null"),
+        Some(output) => push_json_string(&mut out, &output.0),
+    }
+    out.push('}');
+    decode_presentation_ingress_v4_str(&out)?;
+    Ok(out)
+}
+
+/// Row string entry point shared by the staged v4 row decoders: 4 MiB input
+/// gate (mirroring the current route) plus duplicate-key rejection at every
+/// depth (including escaped duplicates) before the shape decode.
+fn decode_row_str<T>(json: &str, decode: fn(&serde_json::Value) -> Result<T>) -> Result<T> {
+    if json.len() > WORLD_MAX_REQUEST_BYTES {
+        return Err(WorldProtocolError {
+            kind: KIND_OVERSIZED,
+            message: MSG_OVERSIZED,
+        });
+    }
+    let value: serde_json::Value =
+        crate::connection_protocol::parse_strict_json(json).map_err(|e| {
+            if e.0 == "oversized" {
+                WorldProtocolError {
+                    kind: KIND_OVERSIZED,
+                    message: MSG_OVERSIZED,
+                }
+            } else {
+                malformed()
+            }
+        })?;
+    decode(&value)
+}
+
+fn push_rect(out: &mut String, rect: &Rect) {
+    out.push('[');
+    out.push_str(&rect.x.to_string());
+    out.push(',');
+    out.push_str(&rect.y.to_string());
+    out.push(',');
+    out.push_str(&rect.w.to_string());
+    out.push(',');
+    out.push_str(&rect.h.to_string());
+    out.push(']');
+}
+
+fn push_opt_rect(out: &mut String, rect: &Option<Rect>) {
+    match rect {
+        None => out.push_str("null"),
+        Some(rect) => push_rect(out, rect),
+    }
+}
+
+fn push_opt_bool(out: &mut String, value: &Option<bool>) {
+    match value {
+        None => out.push_str("null"),
+        Some(true) => out.push_str("true"),
+        Some(false) => out.push_str("false"),
+    }
 }
 
 fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Result<CoreCommand> {

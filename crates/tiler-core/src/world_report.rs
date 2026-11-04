@@ -29,7 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::CoreCommand;
 use crate::bounds::{GEOMETRY_BOUND, is_opaque_id, valid_carried_rect};
-use crate::directional::{Direction, OutputId, WindowId};
+use crate::directional::{Direction, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::gesture::{GestureIngress, GestureSettled};
 use crate::ids::NativeWorkspaceId;
@@ -950,6 +950,95 @@ impl PresentationIngress {
     pub fn disabled() -> Self {
         Self::default()
     }
+}
+
+/// Staged v4 presentation rows (normative target in
+/// `docs/porting/world-contract.md`): NOT
+/// yet part of [`WorldReport`]. The v3 [`PresentationIngress`] above stays
+/// the only report-carried shape until the coordinated cutover; these types
+/// are shape witnesses for the staged row codecs only. No fields are added
+/// to `WorldReport` here, and no existing consumer changes meaning.
+/// Staged v4 frame witness: exactly `{win, obs, frame, foreground}`.
+/// Shape only: well-formed but dangling/mismatched ids are accepted here;
+/// causal join and target-row validation belong to later units.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameWitness {
+    pub win: WindowId,
+    pub obs: u64,
+    pub frame: Rect,
+    pub foreground: WindowId,
+}
+
+/// Staged v4 renderer target: the exact core-drawn row selected by native
+/// hit mapping. `WorkspaceId`, `WindowId`, and `NodeId` share the opaque-id
+/// alphabet but stay distinct types; only the window arm carries `win` and
+/// only the group arm carries `group`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenderTarget {
+    Workspace {
+        out: OutputId,
+        ws: WorkspaceId,
+    },
+    Window {
+        out: OutputId,
+        ws: WorkspaceId,
+        win: WindowId,
+    },
+    Group {
+        out: OutputId,
+        ws: WorkspaceId,
+        group: NodeId,
+    },
+}
+
+/// Staged v4 renderer input: the actually drawn revision plus its exact
+/// target row. Always an object here; top-level nullability and
+/// command-pairing belong to the future whole-report integration, not this
+/// shape codec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RendererInput {
+    pub rev: u64,
+    pub target: RenderTarget,
+}
+
+/// Staged v4 pager frame source row: one opaque member lifetime plus its
+/// single fresh frame source (`None` is unreadable, never a guess).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentationPagerFrameV4 {
+    pub window: WindowId,
+    pub live: Option<Rect>,
+}
+
+/// Staged v4 presentation ingress: the genuinely observed foreground facts
+/// plus the native stacking snapshot and fresh frame sources.
+///
+/// Shape notes (contract-order key order for the canonical writer):
+/// `foreground, minimized, maximized, fullscreen, hostHidden,
+/// hiddenWorkspace, frame, chordHeld, moveWindow, pagerOrder, pagerFrames,
+/// witness, foregroundOut`; the first five foreground facts plus `frame`,
+/// `witness` and `foregroundOut` are required-but-nullable (`None` is
+/// unknown, never a default); `foreground`/`moveWindow` allow the explicit
+/// empty string (none), every other id slot is a nonempty opaque id.
+/// Pager rows are exactly `{win, live}` (no retained float/tile slots).
+/// Witness ids need not match one another, the ingress, or live reports in
+/// the shape codec: well-formed but dangling/mismatched rows are accepted
+/// as shape only (causal join and target-row validation belong to later
+/// units).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PresentationIngressV4 {
+    pub foreground: String,
+    pub foreground_minimized: Option<bool>,
+    pub foreground_maximized: Option<bool>,
+    pub foreground_fullscreen: Option<bool>,
+    pub foreground_host_hidden: Option<bool>,
+    pub foreground_hidden_workspace: Option<bool>,
+    pub foreground_frame: Option<Rect>,
+    pub chord_held: bool,
+    pub move_window: String,
+    pub pager_order: Vec<WindowId>,
+    pub pager_frames: Vec<PresentationPagerFrameV4>,
+    pub witness: Option<FrameWitness>,
+    pub foreground_out: Option<OutputId>,
 }
 
 /// Native reconnect identity metadata for one output: neutral adapter-read
