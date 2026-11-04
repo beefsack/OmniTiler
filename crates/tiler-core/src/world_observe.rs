@@ -12,11 +12,11 @@ use crate::directional::{Direction, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
-use crate::world_engine::{StagedDomain, StagedReport, WorldEngine};
+use crate::world_engine::{StagedDomain, StagedObservation, StagedReport, WorldEngine};
 use crate::world_operations::parse_direction_token;
 use crate::world_report::{
     AuthorityScope, HeldScreenRow, HeldWindowRow, HoldReason, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, StateProperty, TransferKind, WindowFact, WorldReport,
+    RowDiagnosticLane, StateProperty, TransferKind, WindowFact, WorldReport, WorldReportV4,
 };
 
 impl WorldEngine {
@@ -251,6 +251,69 @@ impl WorldEngine {
             .collect()
     }
 
+    /// Capture the raw observation lanes of a legacy report verbatim, in
+    /// source order. Pure: touches no retained state, assigns no homing,
+    /// and replaces no prior staged view. Classification consumes the
+    /// capture separately.
+    pub(crate) fn capture_observation(report: &WorldReport) -> StagedObservation {
+        StagedObservation {
+            inventory_complete: report.inventory_complete,
+            observation_seq: report.observation_seq,
+            raw_windows: report.windows.clone(),
+            closed: report.closed.clone(),
+            native: report.native.clone(),
+            cursor: report.cursor,
+            cursor_hit: report.cursor_hit.clone(),
+            focused_global: report.focused_global.clone(),
+            action_foreground: report.action_foreground.clone(),
+            action_cached: report.action_cached.clone(),
+            action_outputs: report.action_outputs.clone(),
+            primary_output: report.primary_output.clone(),
+            gesture: report.gesture.clone(),
+            monotonic_ms: report.monotonic_ms,
+            frames: report.frames.clone(),
+            member_attempts: report.member_attempts.clone(),
+            view_attempts: report.view_attempts.clone(),
+            clear_attempts: report.clear_attempts.clone(),
+            creation_attempts: report.creation_attempts.clone(),
+            state_attempts: report.state_attempts.clone(),
+            focus_feedback: report.focus_feedback.clone(),
+            intent_records: report.intent_records.clone(),
+        }
+    }
+
+    /// Capture the raw observation lanes of a v4 report verbatim, in
+    /// source order. Same boundary as [`Self::capture_observation`]: the
+    /// caller passes the original typed rows, never capability-graded
+    /// effective rows, so the capture retains the true original facts.
+    /// Pure, like the legacy capture.
+    pub(crate) fn capture_observation_v4(report: &WorldReportV4) -> StagedObservation {
+        StagedObservation {
+            inventory_complete: report.inventory_complete,
+            observation_seq: report.observation_seq,
+            raw_windows: report.windows.clone(),
+            closed: report.closed.clone(),
+            native: report.native.clone(),
+            cursor: report.cursor,
+            cursor_hit: report.cursor_hit.clone(),
+            focused_global: report.focused_global.clone(),
+            action_foreground: report.action_foreground.clone(),
+            action_cached: report.action_cached.clone(),
+            action_outputs: report.action_outputs.clone(),
+            primary_output: report.primary_output.clone(),
+            gesture: report.gesture.clone(),
+            monotonic_ms: report.monotonic_ms,
+            frames: report.frames.clone(),
+            member_attempts: report.member_attempts.clone(),
+            view_attempts: report.view_attempts.clone(),
+            clear_attempts: report.clear_attempts.clone(),
+            creation_attempts: report.creation_attempts.clone(),
+            state_attempts: report.state_attempts.clone(),
+            focus_feedback: report.focus_feedback.clone(),
+            intent_records: report.intent_records.clone(),
+        }
+    }
+
     /// Stage the per-window classification loop plus explicit closes:
     /// own-process exclusion, the excluded set, fact output, facts, and
     /// derived carriers. Shared by the legacy and v4 intakes so
@@ -391,6 +454,26 @@ impl WorldEngine {
     /// native current map in [`WorldEngine::converge_native_pre`]).
     /// Tiler-owned outputs keep the logical route unchanged.
     pub(crate) fn stage_facts(&mut self, report: &WorldReport) {
+        // Classification-only restage: raw capture first, with no
+        // retained mutation (the capture only clones report lanes), then
+        // shared staging from that capture. Never ingests: initial
+        // intakes ingest exactly once before staging (see
+        // `run_accepted`), and command probes restage after mutating
+        // command intent, where re-ingesting the same import rows would
+        // resurrect cleared ledger state.
+        let observation = Self::capture_observation(report);
+        self.stage_captured(report, observation);
+    }
+
+    /// Stage classification from an already-captured observation:
+    /// held scope resolution against prior staged homing, diagnostics,
+    /// echoes, and the shared per-window classification loop. The
+    /// capture must come from the same report and moves into the new staged
+    /// view unchanged. Takes no ledger action; callers own exactly-once ingestion.
+    pub(crate) fn stage_captured(&mut self, report: &WorldReport, observation: StagedObservation) {
+        // Prior staged homing survives until the new staging below
+        // assigns: held scope resolution must read the previous homes,
+        // never the homes of this report.
         let prior_homing = self.staged.homing.clone();
         let resolved_held = self.resolve_held_window_scopes(&report.held_windows, &prior_homing);
         let state_offroute: Vec<RowDiagnostic> = report
@@ -411,6 +494,7 @@ impl WorldEngine {
             Self::staged_screen_window_diagnostics(&report.held_screens, &resolved_held);
         staged_diagnostics.extend(state_offroute);
         let mut staged = StagedReport {
+            observation,
             screens: report.screens.clone(),
             held_screens: report.held_screens.clone(),
             held_windows: resolved_held,

@@ -731,8 +731,16 @@
       before classification by separating raw capture from classification;
       preserve pre-observation routing by capturing raw facts without changing
       retained homes/views. Evidence: legacy parity and focused lane regressions
-      for ordering, holds, lifecycle, first-raw settlement and intent admission.
-      No generic-over-report engine or conversion to the legacy report shape.
+       for ordering, holds, lifecycle, first-raw settlement and intent admission.
+       No generic-over-report engine or conversion to the legacy report shape.
+       Split into 4a raw observation capture and staged intent admission, 4b
+       shared lane/lifetime consumers, then 4c observation-dependent command
+       helpers and explicit correlation arguments. The first piece separates
+       capture from classification in both intakes, carries the current raw
+       observation on `StagedReport`, and makes initial intent ingestion consume
+       that capture before classification, never during command restaging.
+       Other consumers retain their existing sources until their adaptation;
+       no settlement migration is claimed by 4a.
    5. View-proof migration replacing the `views` echo legs (`view_echo_for`,
      staged echo fill, `settle_views_pre`, selection proof) with visibility and
      focus proof. The contract settles the receipt predicates (removed `views`
@@ -868,6 +876,47 @@
   formatting, whitespace, added ASCII, NUL and local-link checks. Only
   `workspace_unsafe_posture` is filtered. No fixture, manifest, adapter, Cargo
   feature, public ingress, version or contract changes are included.
+- Sub-increment 4a plan: capture inventory completeness, raw windows (including
+  own-process and safety-excluded subjects), explicit closes, native rows,
+  ordered valid/held screens, cursor/focus/action/primary facts, gesture/clock,
+  attempt/feedback lanes, intent records and the observation watermark before
+  classification. Keep envelope admission, request/command correlation and
+  dispatch outside the observation record. Resolve held-window scopes and
+  classify only after intent ingestion, without changing retained routing state
+  during capture or replacing prior staged homing early. Both intakes populate
+  the same internal boundary directly; v4-only rows remain verbatim and v4
+  echoes remain empty. Verify raw-lane conservation and ordering, raw versus
+  classified presence, capture purity, same-report intent classification and
+  held/close/late-import lifecycle behavior. Existing settlement and routing
+  regressions remain the parity gate; full v4 run assembly remains unbuilt.
+- Sub-increment 4a outcome: `StagedReport.observation` now carries the shared
+  raw windows, closes, inventory completeness, native rows, cursor/focus/action/
+  primary facts, gesture/clock, attempt/feedback lanes, intent records and
+  observation watermark. Existing sibling fields retain ordered screens,
+  held rows, gesture barrier and v4 presentation/input; these are not duplicated
+  inside the raw capture. V4 captures original typed windows before capability
+  grading, separately from effective classification and own-process exclusions.
+  Legacy accepted-run intake captures once, ingests staged intent once, then
+  classifies; bootstrap intent also reads a capture. Classification-only
+  restaging and the v4 census never ingest. V4 initial ingest/classify ordering
+  is exercised by internal tests, not a new accepted-run entry point.
+  Nine new regressions cover lane conservation/order, held ordinals/diagnostics,
+  raw/classified separation, capture purity, prior held homes, same-report intent
+  classification and hold/close/late-import fences. Review exposed re-ingestion
+  during command restaging in the initial implementation; a regression reproduced
+  pending intent resurrection after simulated command mutation, then passed after
+  separating initial ingestion from classification-only restaging. Earlier
+  failures corrected invalid synthetic report setup and held-scope assertions,
+  not product behavior or fixture expectations. Follow-up review found no
+  blocking issue. Shared lane/lifetime readers and observation-dependent command
+  helpers remain 4b/4c; no full v4 settlement or scenario execution is claimed.
+  Direct final verification passes the filtered core/protocol gate (1659 core
+  unit tests and every selected integration/protocol target), build, scoped
+  all-target clippy with warnings denied, formatting, whitespace, added ASCII,
+  NUL and local-link checks. Only `workspace_unsafe_posture` is filtered.
+  No fixture, manifest, adapter, feature, public ingress, version or contract
+  changes are included. A separately discovered grading risk is parked below;
+  these checks do not establish its acceptance or full v4 engine acceptance.
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
   drop-zone scaling stay deferred.
 - Lands with unit 7, not before: contract version 3 to 4 and protocol version,
@@ -1845,6 +1894,18 @@
 
 ## Tentative decisions pending user review
 
+- Parked v4 grading risk, not a selected behavior: the existing
+  `grade_conflicting_windows_v4` revalidates its normalized report and returns
+  no grading when that check fails. `validate_report_v4_reason` requires
+  `cursor_hit` to name a typed window, not a held row; moving the hit subject to
+  a capability-conflict hold can therefore discard the grading and leave the
+  conflicting typed fact available to staging. This is source-derived evidence,
+  not a reproduced producer failure. The new capture regression isolates grading
+  with cursor/feedback references to an ungraded survivor; it does not resolve
+  this risk. Raw capture preserves the original facts without changing these
+  pre-existing validators. Disposition and any repair remain open before relying
+  on v4 grading for the accepted-run assembly; no contract or fixture change is
+  selected here.
 - Case: a composed-maximized float receives directional move after its screen or
   work area becomes unavailable, or half-snap geometry cannot be computed.
   Chosen behavior: retain the bit, emit the existing directional refusal, mint no

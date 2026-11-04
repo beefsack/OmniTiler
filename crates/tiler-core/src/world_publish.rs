@@ -36,7 +36,7 @@ impl WorldEngine {
     /// resulting write upserts bounded `sticky_saved` knowledge (`Some`
     /// decodes and stores, `None` clears) for future native rollback;
     /// undecodable rows are ignored. Import and late-input policy are
-    /// untouched (see `ingest_intent_records`). The rollback lane reserves
+    /// untouched (see `ingest_staged_intent`). The rollback lane reserves
     /// [`crate::world_sizing::max_intent_rollback_bound`] at the
     /// pre-mutation gate; the merged section stays under
     /// [`crate::world_report::MAX_INTENT_WRITES`] via the existing commit

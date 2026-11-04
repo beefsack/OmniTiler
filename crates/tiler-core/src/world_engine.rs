@@ -420,11 +420,49 @@ pub(crate) struct StagedDomain {
     pub(crate) hold: Option<HoldReason>,
 }
 
+/// Raw per-report observation capture: verbatim report lanes staged before
+/// any classification. Both intakes populate the same boundary directly;
+/// lane, command and lifetime consumers migrate to it in later increments.
+/// No envelope admission, request/command correlation, or dispatch state
+/// lives here: only the `observation_seq` watermark is retained for
+/// observation ordering. Later helpers take explicit correlation arguments.
+/// `raw_windows` keeps every typed row in source order, including
+/// own-process and safety-excluded subjects; the classified `facts`/
+/// `derived` carriers below stay the consume-lane view.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct StagedObservation {
+    pub(crate) inventory_complete: bool,
+    pub(crate) observation_seq: u64,
+    pub(crate) raw_windows: Vec<crate::world_report::WindowFact>,
+    pub(crate) closed: Vec<WindowId>,
+    pub(crate) native: Vec<crate::world_report::NativeObservation>,
+    pub(crate) cursor: Option<(i32, i32)>,
+    pub(crate) cursor_hit: Option<WindowId>,
+    pub(crate) focused_global: String,
+    pub(crate) action_foreground: Option<OutputId>,
+    pub(crate) action_cached: Option<OutputId>,
+    pub(crate) action_outputs: Vec<OutputId>,
+    pub(crate) primary_output: Option<OutputId>,
+    pub(crate) gesture: Option<crate::gesture::GestureIngress>,
+    pub(crate) monotonic_ms: u64,
+    pub(crate) frames: Vec<crate::world_report::FrameAttempt>,
+    pub(crate) member_attempts: Vec<crate::world_report::MemberAttempt>,
+    pub(crate) view_attempts: Vec<crate::world_report::ViewAttempt>,
+    pub(crate) clear_attempts: Vec<crate::world_report::ClearAttempt>,
+    pub(crate) creation_attempts: Vec<crate::world_report::NativeCreationAttempt>,
+    pub(crate) state_attempts: Vec<crate::world_report::StateAttempt>,
+    pub(crate) focus_feedback: Vec<crate::world_report::FocusFeedback>,
+    pub(crate) intent_records: Vec<crate::world_report::IntentRecord>,
+}
+
 /// Per-report staged observation: screens as reported, one
 /// [`StagedDomain`] per known logical workspace, adapter view echoes, and
 /// the raw fact index the settlement path proves against.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct StagedReport {
+    /// Captured raw observation for this report, staged before
+    /// classification. See [`StagedObservation`].
+    pub(crate) observation: StagedObservation,
     pub(crate) screens: Vec<crate::world_report::ScreenReport>,
     /// Identifiable bad screen rows held narrowly, in report order.
     pub(crate) held_screens: Vec<crate::world_report::HeldScreenRow>,
@@ -2095,7 +2133,7 @@ impl WorldEngine {
             // orphans and conflicts cannot exhaust the joint bound before
             // ready; retention pre-ready is bounded pending data, never
             // report or write authority.
-            self.ingest_intent_records(report);
+            self.ingest_staged_intent(&Self::capture_observation(report));
             if report.inventory_complete {
                 let live: BTreeSet<WindowId> = report
                     .windows
@@ -2269,12 +2307,18 @@ impl WorldEngine {
         self.sticky_saved_incomplete = true;
     }
 
-    pub(crate) fn ingest_intent_records(&mut self, report: &WorldReport) {
+    /// Ingest opaque intent rows from a staged observation capture, before
+    /// classification, so the classifier sees pending first-admission wins
+    /// from this same report. Reads only the capture's closed subjects,
+    /// raw window facts (for own-process pruning), and intent records.
+    /// Initial intakes call this exactly once per report before staging;
+    /// staging and command restages never ingest.
+    pub(crate) fn ingest_staged_intent(&mut self, observation: &StagedObservation) {
         use std::collections::{BTreeMap, BTreeSet};
-        let closed: BTreeSet<&WindowId> = report.closed.iter().collect();
+        let closed: BTreeSet<&WindowId> = observation.closed.iter().collect();
         // Explicit closes end the lifetime: drop every ledger entry and
         // never store a closed subject.
-        for id in &report.closed {
+        for id in &observation.closed {
             self.pending_intent.remove(id);
             self.intent_conflicts.remove(id);
             self.intent_admitted.remove(id);
@@ -2296,7 +2340,7 @@ impl WorldEngine {
             .and_then(|identity| identity.process_id.clone());
         let mut own_proven: BTreeSet<WindowId> = BTreeSet::new();
         if let Some(own) = own_pid.as_deref() {
-            for fact in &report.windows {
+            for fact in &observation.raw_windows {
                 if fact.process_id.as_deref() == Some(own) {
                     own_proven.insert(fact.window.clone());
                 }
@@ -2314,7 +2358,7 @@ impl WorldEngine {
         }
         // Group raw rows by subject; >1 distinct string is a conflict.
         let mut grouped: BTreeMap<&WindowId, BTreeSet<&str>> = BTreeMap::new();
-        for record in &report.intent_records {
+        for record in &observation.intent_records {
             if closed.contains(&record.win) {
                 continue;
             }
@@ -2904,10 +2948,14 @@ impl WorldEngine {
         };
         // Logical rings/views converge first (bootstrap, hotplug, tiling
         // seeds) so staging assigns facts against this report's ownership.
-        // Intent restores ingest before staging so the classifier sees
-        // pending first-admission wins this same report.
-        self.ingest_intent_records(report);
-        self.stage_facts(report);
+        // Exactly-once initial ingestion: capture, ingest from the
+        // capture, then stage from that same capture, so the classifier
+        // sees pending first-admission wins this same report with no
+        // second ingestion. Later command restages reuse the
+        // classification-only `stage_facts` and never reingest.
+        let observation = Self::capture_observation(report);
+        self.ingest_staged_intent(&observation);
+        self.stage_captured(report, observation);
         self.converge_logical_pre(report);
         // View flights settle against raw echoes before staging: confirms
         // and external supersessions move core views, so homing assigns

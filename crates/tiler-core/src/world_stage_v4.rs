@@ -15,7 +15,7 @@
 //! narrow `conflicting-fact` holds before staging; unsupported state attempts
 //! keep their raw rows and emit `state_offroute` attempt diagnostics.
 
-use crate::world_engine::{StagedReport, WorldEngine};
+use crate::world_engine::{StagedObservation, StagedReport, WorldEngine};
 use crate::world_report::{
     PresentationRowV4, RendererInput, RowDiagnostic, StateProperty, WorldReportV4,
 };
@@ -42,11 +42,16 @@ pub struct StagedV4Census {
 }
 
 impl WorldEngine {
-    /// Stage a v4 report into [`StagedReport`]: verbatim screens,
-    /// held screens, capability-graded windows and explicit closes via the
-    /// shared helpers, the gesture barrier, held native rows, held attempt rows, the
-    /// verbatim presentation row, and the verbatim renderer input. Echoes stay
-    /// empty (v4 carries no views). Diagnostics follow report lane order:
+    /// Stage a v4 report into [`StagedReport`]: the raw observation capture
+    /// from the original typed rows, capability-graded windows and explicit
+    /// closes via the shared helpers, the gesture barrier, held native rows,
+    /// held attempt rows, the verbatim presentation row, and the verbatim
+    /// renderer input. Echoes stay empty (v4 carries no views). The capture
+    /// precedes grading so the observation retains the true original facts
+    /// while classification consumes the effective rows. Initial intake must
+    /// ingest intent from the raw capture before classification; this method
+    /// never ingests, and v4 accepted-run assembly is not wired yet.
+    /// Diagnostics follow report lane order:
     /// held screens, resolved held windows (including newly graded capability
     /// conflicts), held native rows, held attempt rows carrying `Some`
     /// diagnostic (rows with `None` emit nothing and never get a fabricated
@@ -54,6 +59,11 @@ impl WorldEngine {
     /// in input order (raw attempts stay intact, never a held row), then the
     /// held presentation's diagnostic when it carries `Some`.
     pub(crate) fn stage_facts_v4(&mut self, report: &WorldReportV4) {
+        // Classification-only restage from the original typed rows:
+        // capability grading may move conflicting windows into held rows
+        // while the observation keeps the original facts. Like the legacy
+        // restage, this never ingests intent.
+        let observation = Self::capture_observation_v4(report);
         let unavailable: &[crate::connection::FactName] = self
             .capabilities()
             .map(|capabilities| capabilities.unavailable_facts.as_slice())
@@ -69,6 +79,16 @@ impl WorldEngine {
             maximize_supported,
         );
         let effective = graded.as_ref().unwrap_or(report);
+        self.stage_captured_v4(effective, observation);
+    }
+
+    /// Stage v4 classification from an already-captured raw observation
+    /// and the capability-graded effective rows: held scope resolution
+    /// against prior staged homing, lane-ordered diagnostics, verbatim
+    /// v4-only rows, and the shared per-window classification loop. The
+    /// raw capture moves into the new staged view unchanged. Takes no
+    /// ledger action; callers own exactly-once ingestion.
+    fn stage_captured_v4(&mut self, effective: &WorldReportV4, observation: StagedObservation) {
         let prior_homing = self.staged.homing.clone();
         let resolved_held = self.resolve_held_window_scopes(&effective.held_windows, &prior_homing);
         let mut diagnostics =
@@ -104,6 +124,7 @@ impl WorldEngine {
             diagnostics.push(diagnostic.clone());
         }
         let mut staged = StagedReport {
+            observation,
             screens: effective.screens.clone(),
             held_screens: effective.held_screens.clone(),
             held_windows: resolved_held,
