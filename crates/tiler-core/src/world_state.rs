@@ -305,9 +305,14 @@ impl WorldEngine {
             })
     }
 
-    pub(crate) fn prune_state_bindings(&mut self, report: &WorldReport) {
-        if !report.closed.is_empty() {
-            let closed: BTreeSet<WindowId> = report.closed.iter().cloned().collect();
+    pub(crate) fn prune_state_bindings(&mut self) {
+        // Lifetime presence reads the staged raw capture, never the
+        // classified facts alone: only own-process subjects are dropped
+        // from classification, while safety-excluded facts stay classified
+        // but ineligible. Both stay lifetime evidence here.
+        let observation = &self.staged.observation;
+        if !observation.closed.is_empty() {
+            let closed: BTreeSet<WindowId> = observation.closed.iter().cloned().collect();
             self.retained_states
                 .retain(|(window, _), _| !closed.contains(window));
         }
@@ -321,8 +326,8 @@ impl WorldEngine {
                     .unavailable_facts
                     .contains(&crate::connection::FactName::ProcessId) =>
             {
-                report
-                    .windows
+                observation
+                    .raw_windows
                     .iter()
                     .filter(|fact| fact.process_id.as_deref() == Some(own.as_str()))
                     .map(|fact| fact.window.clone())
@@ -334,11 +339,16 @@ impl WorldEngine {
             self.retained_states
                 .retain(|(window, _), _| !own.contains(window));
         }
-        if !report.inventory_complete {
+        if !observation.inventory_complete {
             return;
         }
-        let live: BTreeSet<&WindowId> = report.windows.iter().map(|fact| &fact.window).collect();
-        let held: BTreeSet<&WindowId> = report
+        let live: BTreeSet<&WindowId> = observation
+            .raw_windows
+            .iter()
+            .map(|fact| &fact.window)
+            .collect();
+        let held: BTreeSet<&WindowId> = self
+            .staged
             .held_windows
             .iter()
             .map(|held| &held.window)

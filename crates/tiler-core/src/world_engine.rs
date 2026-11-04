@@ -3382,157 +3382,185 @@ impl WorldEngine {
         self.finish(report, digest, reply)
     }
 
+    /// Prune every retained-authority lifetime ledger against the current
+    /// staged capture: canonical memory, exclusion/intent ledgers, the
+    /// state/focus/selection lane pruners, and lifetime-local composed
+    /// maximize. Lifetime presence reads the staged raw observation plus
+    /// the staged held rows, never the classified facts alone: only
+    /// own-process subjects are dropped from classification, while
+    /// safety-excluded facts stay classified but ineligible; both stay
+    /// lifetime evidence, and capability-held rows keep presence without
+    /// authority. A complete report drops every dead identity; an
+    /// incomplete one only drops explicit closes. Closed ids never survive
+    /// even under reuse.
+    pub(crate) fn prune_lifetime_state(&mut self) {
+        // Canonical memory prunes to the live inventory: a complete report
+        // drops every dead identity, an incomplete one only drops explicit
+        // closes. Closed ids never survive even under reuse.
+        // Owned narrow snapshots: the staged capture is re-read per region
+        // below so no observation borrow crosses the lane-pruner calls.
+        // Narrow sets stay scoped to the branch that needs them: incomplete
+        // gaps never clone the raw inventory.
+        let inventory_complete = self.staged.observation.inventory_complete;
+        if inventory_complete {
+            let live: BTreeSet<WindowId> = self
+                .staged
+                .observation
+                .raw_windows
+                .iter()
+                .map(|fact| fact.window.clone())
+                .collect();
+            let held: BTreeSet<WindowId> = self
+                .staged
+                .held_windows
+                .iter()
+                .map(|held| held.window.clone())
+                .collect();
+            self.last_active_window
+                .retain(|_, window| live.contains(window));
+            // Same lifetime bound for the exclusion ledger: a complete
+            // inventory that carries neither the fact nor the exclusion
+            // proves departure, so drop the retained intent. Explicit
+            // closes already cleared at capture time.
+            let excluded = self.staged.excluded.clone();
+            self.excluded_intent
+                .retain(|id, _| live.contains(id) || excluded.contains(id));
+            // Pending/conflict ledgers share the proven-departure
+            // fence: a complete inventory carrying neither a usable
+            // fact, a held row, nor an exclusion proves the subject
+            // departed before first success, so drop it. A carried
+            // slot row alone is not live proof: it never retains.
+            // Engine-known (admitted, minimized, exception, member)
+            // subjects stay: complete absence after admission is
+            // handled through the admitted latch and close path, never
+            // by resurrecting pending. Closed subjects were already
+            // dropped on ingest.
+            let known: BTreeSet<WindowId> = self
+                .pending_intent
+                .keys()
+                .chain(self.intent_conflicts.iter())
+                .chain(self.intent_admitted.iter())
+                .chain(self.restored_floats.iter())
+                .chain(self.restored_sticky.keys())
+                .chain(self.sticky_saved.keys())
+                .filter(|id| self.engine_knows_window_any(id) || self.members.contains_key(*id))
+                .cloned()
+                .collect();
+            self.pending_intent.retain(|id, _| {
+                live.contains(id)
+                    || held.contains(id)
+                    || excluded.contains(id)
+                    || known.contains(id)
+            });
+            self.intent_conflicts.retain(|id| {
+                live.contains(id)
+                    || held.contains(id)
+                    || excluded.contains(id)
+                    || known.contains(id)
+            });
+            self.restored_floats.retain(|id| {
+                live.contains(id)
+                    || held.contains(id)
+                    || excluded.contains(id)
+                    || known.contains(id)
+            });
+            self.restored_sticky.retain(|id, _| {
+                live.contains(id)
+                    || held.contains(id)
+                    || excluded.contains(id)
+                    || known.contains(id)
+            });
+            // Admitted lifetimes end on proven complete departure
+            // (neither live, held, excluded, nor engine/member-known).
+            // Temporary exclusion/holds keep the latch so late rows
+            // stay ignored.
+            self.intent_admitted.retain(|id| {
+                live.contains(id)
+                    || held.contains(id)
+                    || excluded.contains(id)
+                    || known.contains(id)
+            });
+            self.intent_sticky_blocks.retain(|id| {
+                live.contains(id)
+                    || held.contains(id)
+                    || excluded.contains(id)
+                    || known.contains(id)
+            });
+            self.sticky_saved.retain(|id, _| {
+                live.contains(id)
+                    || held.contains(id)
+                    || excluded.contains(id)
+                    || known.contains(id)
+            });
+            self.sticky_rollback_saves
+                .retain(|id, _| live.contains(id) || held.contains(id) || excluded.contains(id));
+            self.sticky_visible_rev.retain(|id, _| {
+                live.contains(id)
+                    || held.contains(id)
+                    || excluded.contains(id)
+                    || known.contains(id)
+            });
+        } else if !self.staged.observation.closed.is_empty() {
+            let closed: BTreeSet<WindowId> =
+                self.staged.observation.closed.iter().cloned().collect();
+            self.last_active_window
+                .retain(|_, window| !closed.contains(window));
+            self.excluded_intent.retain(|id, _| !closed.contains(id));
+        }
+        self.prune_state_bindings();
+        self.prune_focus_grants();
+        self.prune_selection_grants();
+        self.prune_selection_scopes();
+        self.prune_selection_targets();
+        self.prune_automatic_focus_tokens();
+        // Lifetime-local composed maximize follows the live inventory:
+        // a complete report drops dead identities (engine/member-known
+        // lifetimes stay like the state bindings above), explicit closes
+        // always prune, and restart drops the bit with the engine.
+        if !self.staged.observation.closed.is_empty() {
+            let closed: BTreeSet<WindowId> =
+                self.staged.observation.closed.iter().cloned().collect();
+            self.composed_maximized
+                .retain(|window| !closed.contains(window));
+        }
+        if inventory_complete {
+            let live_ref: BTreeSet<&WindowId> = self
+                .staged
+                .observation
+                .raw_windows
+                .iter()
+                .map(|fact| &fact.window)
+                .collect();
+            let held_ref: BTreeSet<&WindowId> = self
+                .staged
+                .held_windows
+                .iter()
+                .map(|held| &held.window)
+                .collect();
+            let excluded = self.staged.excluded.clone();
+            let known: BTreeSet<WindowId> = self
+                .composed_maximized
+                .iter()
+                .filter(|window| {
+                    self.engine_knows_window_any(window) || self.members.contains_key(*window)
+                })
+                .cloned()
+                .collect();
+            self.composed_maximized.retain(|window| {
+                live_ref.contains(window)
+                    || held_ref.contains(window)
+                    || excluded.contains(window)
+                    || known.contains(window)
+            });
+        }
+    }
+
     /// Publish one globally monotonic revision and record watermarks on the
     /// staged candidate. Every accepted report advances the revision, even a
     /// semantic no-op. The revision cannot wrap: exhaustion is refused
     /// before staging.
     fn finish(&mut self, report: &WorldReport, digest: u64, mut reply: WorldReply) -> WorldOutcome {
-        // Canonical memory prunes to the live inventory: a complete report
-        // drops every dead identity, an incomplete one only drops explicit
-        // closes. Closed ids never survive even under reuse.
-        {
-            if report.inventory_complete {
-                let live: BTreeSet<WindowId> = report
-                    .windows
-                    .iter()
-                    .map(|fact| fact.window.clone())
-                    .collect();
-                let held: BTreeSet<WindowId> = report
-                    .held_windows
-                    .iter()
-                    .map(|held| held.window.clone())
-                    .collect();
-                self.last_active_window
-                    .retain(|_, window| live.contains(window));
-                // Same lifetime bound for the exclusion ledger: a complete
-                // inventory that carries neither the fact nor the exclusion
-                // proves departure, so drop the retained intent. Explicit
-                // closes already cleared at capture time.
-                let excluded = self.staged.excluded.clone();
-                self.excluded_intent
-                    .retain(|id, _| live.contains(id) || excluded.contains(id));
-                // Pending/conflict ledgers share the proven-departure
-                // fence: a complete inventory carrying neither a usable
-                // fact, a held row, nor an exclusion proves the subject
-                // departed before first success, so drop it. A carried
-                // slot row alone is not live proof: it never retains.
-                // Engine-known (admitted, minimized, exception, member)
-                // subjects stay: complete absence after admission is
-                // handled through the admitted latch and close path, never
-                // by resurrecting pending. Closed subjects were already
-                // dropped on ingest.
-                let known: BTreeSet<WindowId> = self
-                    .pending_intent
-                    .keys()
-                    .chain(self.intent_conflicts.iter())
-                    .chain(self.intent_admitted.iter())
-                    .chain(self.restored_floats.iter())
-                    .chain(self.restored_sticky.keys())
-                    .chain(self.sticky_saved.keys())
-                    .filter(|id| self.engine_knows_window_any(id) || self.members.contains_key(*id))
-                    .cloned()
-                    .collect();
-                self.pending_intent.retain(|id, _| {
-                    live.contains(id)
-                        || held.contains(id)
-                        || excluded.contains(id)
-                        || known.contains(id)
-                });
-                self.intent_conflicts.retain(|id| {
-                    live.contains(id)
-                        || held.contains(id)
-                        || excluded.contains(id)
-                        || known.contains(id)
-                });
-                self.restored_floats.retain(|id| {
-                    live.contains(id)
-                        || held.contains(id)
-                        || excluded.contains(id)
-                        || known.contains(id)
-                });
-                self.restored_sticky.retain(|id, _| {
-                    live.contains(id)
-                        || held.contains(id)
-                        || excluded.contains(id)
-                        || known.contains(id)
-                });
-                // Admitted lifetimes end on proven complete departure
-                // (neither live, held, excluded, nor engine/member-known).
-                // Temporary exclusion/holds keep the latch so late rows
-                // stay ignored.
-                self.intent_admitted.retain(|id| {
-                    live.contains(id)
-                        || held.contains(id)
-                        || excluded.contains(id)
-                        || known.contains(id)
-                });
-                self.intent_sticky_blocks.retain(|id| {
-                    live.contains(id)
-                        || held.contains(id)
-                        || excluded.contains(id)
-                        || known.contains(id)
-                });
-                self.sticky_saved.retain(|id, _| {
-                    live.contains(id)
-                        || held.contains(id)
-                        || excluded.contains(id)
-                        || known.contains(id)
-                });
-                self.sticky_rollback_saves.retain(|id, _| {
-                    live.contains(id) || held.contains(id) || excluded.contains(id)
-                });
-                self.sticky_visible_rev.retain(|id, _| {
-                    live.contains(id)
-                        || held.contains(id)
-                        || excluded.contains(id)
-                        || known.contains(id)
-                });
-            } else if !report.closed.is_empty() {
-                self.last_active_window
-                    .retain(|_, window| !report.closed.contains(window));
-                let closed: BTreeSet<WindowId> = report.closed.iter().cloned().collect();
-                self.excluded_intent.retain(|id, _| !closed.contains(id));
-            }
-            self.prune_state_bindings(report);
-            self.prune_focus_grants(report);
-            self.prune_selection_grants(report);
-            self.prune_selection_scopes(report);
-            self.prune_selection_targets(report);
-            self.prune_automatic_focus_tokens(report);
-            // Lifetime-local composed maximize follows the live inventory:
-            // a complete report drops dead identities (engine/member-known
-            // lifetimes stay like the state bindings above), explicit closes
-            // always prune, and restart drops the bit with the engine.
-            if !report.closed.is_empty() {
-                let closed: BTreeSet<WindowId> = report.closed.iter().cloned().collect();
-                self.composed_maximized
-                    .retain(|window| !closed.contains(window));
-            }
-            if report.inventory_complete {
-                let live: BTreeSet<&WindowId> =
-                    report.windows.iter().map(|fact| &fact.window).collect();
-                let held: BTreeSet<&WindowId> = report
-                    .held_windows
-                    .iter()
-                    .map(|held| &held.window)
-                    .collect();
-                let excluded = self.staged.excluded.clone();
-                let known: BTreeSet<WindowId> = self
-                    .composed_maximized
-                    .iter()
-                    .filter(|window| {
-                        self.engine_knows_window_any(window) || self.members.contains_key(*window)
-                    })
-                    .cloned()
-                    .collect();
-                self.composed_maximized.retain(|window| {
-                    live.contains(window)
-                        || held.contains(window)
-                        || excluded.contains(window)
-                        || known.contains(window)
-                });
-            }
-        }
+        self.prune_lifetime_state();
         // Retain the last-known focused output before membership converges,
         // so the latch reflects strictly prior retention: a stealing
         // newcomer or an empty report never overwrites pre-admission

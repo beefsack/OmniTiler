@@ -719,14 +719,33 @@ fn temporary_slot_exclusion_never_renews_the_mapping() {
         readmit.effects[0].issued_revision, token,
         "fresh lifetime, fresh token"
     );
-    engine.staged.excluded.insert(target.clone());
-    engine.prune_automatic_focus_tokens(&probe);
+    // Isolate the exclusion-only fence on a fresh engine seeded with the
+    // actually emitted token: explicitly stage the probe (win-a only, so
+    // win-b is neither live nor held) before adding the exclusion, so
+    // retention proves the exclusion arm rather than staged presence. The
+    // fresh engine holds no member/session knowledge of win-b, isolating
+    // the engine/member-known arm as well.
+    let mut fenced = admission_engine();
+    fenced
+        .automatic_focus_tokens
+        .insert(target.clone(), readmit.effects[0].issued_revision);
+    fenced.stage_facts(&probe);
+    fenced.staged.excluded.insert(target.clone());
+    fenced.prune_automatic_focus_tokens();
     assert_eq!(
-        engine.automatic_focus_tokens.get(&target),
+        fenced.automatic_focus_tokens.get(&target),
         Some(&readmit.effects[0].issued_revision),
         "temporary slot exclusion retains the mapping"
     );
-    engine.staged.excluded.clear();
+    // Clearing the exclusion then pruning drops the token: with neither
+    // live, held, excluded, nor engine/member-known presence, the fence
+    // is exact and never renews the mapping.
+    fenced.staged.excluded.clear();
+    fenced.prune_automatic_focus_tokens();
+    assert!(
+        !fenced.automatic_focus_tokens.contains_key(&target),
+        "exclusion-only fence drops once the exclusion lifts"
+    );
 }
 
 #[test]

@@ -49,9 +49,9 @@ use crate::session::DomainKey;
 use crate::world_engine::WorldEngine;
 use crate::world_focus::{FocusVerdict, classify_focus_feedback};
 use crate::world_report::{
-    EffectKind, FocusFeedback, HoldReason, LastWrite, LastWriteProperty, OneShotEffect,
-    ScopeAuthority, SwitchEvent, SwitchFocus, SwitchOutcome, TransferKind, VisibilityTarget,
-    WindowDesire, WorldCommand, WorldReport,
+    EffectKind, FocusFeedback, HeldScreenRow, HoldReason, LastWrite, LastWriteProperty,
+    OneShotEffect, ScopeAuthority, ScreenReport, SwitchEvent, SwitchFocus, SwitchOutcome,
+    TransferKind, VisibilityTarget, WindowDesire, WorldCommand, WorldReport,
 };
 
 /// Minimal carrier between the real selection command and publish only:
@@ -176,12 +176,14 @@ pub(crate) struct RetainedSelection {
 /// with held authority until true loss or supersession. Recovery never
 /// renews an unchanged target; legacy rehoming can change its home/polarity
 /// and therefore require a fresh authorization.
-fn selection_known_outputs(report: &WorldReport) -> BTreeSet<OutputId> {
-    report
-        .screens
+fn selection_known_outputs(
+    screens: &[ScreenReport],
+    held_screens: &[HeldScreenRow],
+) -> BTreeSet<OutputId> {
+    screens
         .iter()
         .map(|screen| screen.output.clone())
-        .chain(report.held_screens.iter().map(|held| held.output.clone()))
+        .chain(held_screens.iter().map(|held| held.output.clone()))
         .collect()
 }
 
@@ -1392,9 +1394,10 @@ impl WorldEngine {
     /// drop only the finite grant: surviving output scopes and per-window
     /// targets persist independently. Pruning drops the binding without
     /// claiming readiness.
-    pub(crate) fn prune_selection_grants(&mut self, report: &WorldReport) {
-        if !report.closed.is_empty() {
-            let closed: BTreeSet<WindowId> = report.closed.iter().cloned().collect();
+    pub(crate) fn prune_selection_grants(&mut self) {
+        let observation = &self.staged.observation;
+        if !observation.closed.is_empty() {
+            let closed: BTreeSet<WindowId> = observation.closed.iter().cloned().collect();
             self.retained_selection.retain(|_, binding| {
                 if binding
                     .effect
@@ -1416,17 +1419,22 @@ impl WorldEngine {
                     .any(|member| closed.contains(&member.window))
             });
         }
-        if report.inventory_complete {
-            let live = selection_known_outputs(report);
+        if observation.inventory_complete {
+            let live = selection_known_outputs(&self.staged.screens, &self.staged.held_screens);
             self.retained_selection.retain(|output, _| {
                 live.contains(output) || self.displaced.contains_key(&output.0)
             });
         }
-        if !report.inventory_complete {
+        if !observation.inventory_complete {
             return;
         }
-        let live: BTreeSet<&WindowId> = report.windows.iter().map(|fact| &fact.window).collect();
-        let held: BTreeSet<&WindowId> = report
+        let live: BTreeSet<&WindowId> = observation
+            .raw_windows
+            .iter()
+            .map(|fact| &fact.window)
+            .collect();
+        let held: BTreeSet<&WindowId> = self
+            .staged
             .held_windows
             .iter()
             .map(|held| &held.window)
@@ -1469,11 +1477,11 @@ impl WorldEngine {
     /// inventories preserve every scope; closes and superseding views
     /// never clear scopes here (closes drop only the finite grant, views
     /// reconcile centrally before publication).
-    pub(crate) fn prune_selection_scopes(&mut self, report: &WorldReport) {
-        if !report.inventory_complete {
+    pub(crate) fn prune_selection_scopes(&mut self) {
+        if !self.staged.observation.inventory_complete {
             return;
         }
-        let live = selection_known_outputs(report);
+        let live = selection_known_outputs(&self.staged.screens, &self.staged.held_screens);
         self.selection_scopes
             .retain(|output, _| live.contains(output) || self.displaced.contains_key(&output.0));
     }
@@ -1486,18 +1494,21 @@ impl WorldEngine {
     /// neither live, held, excluded, nor engine/member-known; holds,
     /// exclusions, incomplete inventories, and unknown homings preserve
     /// the entry without granting authority.
-    pub(crate) fn prune_selection_targets(&mut self, report: &WorldReport) {
-        if !report.closed.is_empty() {
-            let closed: BTreeSet<WindowId> = report.closed.iter().cloned().collect();
+    pub(crate) fn prune_selection_targets(&mut self) {
+        let observation = &self.staged.observation;
+        if !observation.closed.is_empty() {
+            let closed: BTreeSet<WindowId> = observation.closed.iter().cloned().collect();
             self.selection_targets
                 .retain(|window, _| !closed.contains(window));
         }
-        let lost: BTreeSet<OutputId> = if report.inventory_complete {
-            let live = selection_known_outputs(report);
+        let live_outputs = selection_known_outputs(&self.staged.screens, &self.staged.held_screens);
+        let lost: BTreeSet<OutputId> = if observation.inventory_complete {
             self.selection_targets
                 .values()
                 .map(|entry| entry.home.output.clone())
-                .filter(|output| !live.contains(output) && !self.displaced.contains_key(&output.0))
+                .filter(|output| {
+                    !live_outputs.contains(output) && !self.displaced.contains_key(&output.0)
+                })
                 .collect()
         } else {
             BTreeSet::new()
@@ -1506,10 +1517,14 @@ impl WorldEngine {
             self.selection_targets
                 .retain(|_, entry| !lost.contains(&entry.home.output));
         }
-        if report.inventory_complete {
-            let live: BTreeSet<&WindowId> =
-                report.windows.iter().map(|fact| &fact.window).collect();
-            let held: BTreeSet<&WindowId> = report
+        if observation.inventory_complete {
+            let live: BTreeSet<&WindowId> = observation
+                .raw_windows
+                .iter()
+                .map(|fact| &fact.window)
+                .collect();
+            let held: BTreeSet<&WindowId> = self
+                .staged
                 .held_windows
                 .iter()
                 .map(|held| &held.window)

@@ -92,17 +92,23 @@ impl WorldEngine {
     /// live, held, excluded, or engine/member-known lifetimes stay). A
     /// same-lifetime temporary slot exclusion never drops the mapping, so
     /// the spent fence is never renewed for the same lifetime.
-    pub(crate) fn prune_automatic_focus_tokens(&mut self, report: &WorldReport) {
-        if !report.closed.is_empty() {
-            let closed: BTreeSet<WindowId> = report.closed.iter().cloned().collect();
+    pub(crate) fn prune_automatic_focus_tokens(&mut self) {
+        let observation = &self.staged.observation;
+        if !observation.closed.is_empty() {
+            let closed: BTreeSet<WindowId> = observation.closed.iter().cloned().collect();
             self.automatic_focus_tokens
                 .retain(|target, _| !closed.contains(target));
         }
-        if !report.inventory_complete {
+        if !observation.inventory_complete {
             return;
         }
-        let live: BTreeSet<&WindowId> = report.windows.iter().map(|fact| &fact.window).collect();
-        let held: BTreeSet<&WindowId> = report
+        let live: BTreeSet<&WindowId> = observation
+            .raw_windows
+            .iter()
+            .map(|fact| &fact.window)
+            .collect();
+        let held: BTreeSet<&WindowId> = self
+            .staged
             .held_windows
             .iter()
             .map(|held| &held.window)
@@ -181,17 +187,23 @@ impl WorldEngine {
     /// live, as do engine/member-known lifetimes; a close plus a reused
     /// same id can never match the pruned old grant (its issuing revision
     /// differs from any fresh batch).
-    pub(crate) fn prune_focus_grants(&mut self, report: &WorldReport) {
-        if !report.closed.is_empty() {
-            let closed: BTreeSet<WindowId> = report.closed.iter().cloned().collect();
+    pub(crate) fn prune_focus_grants(&mut self) {
+        let observation = &self.staged.observation;
+        if !observation.closed.is_empty() {
+            let closed: BTreeSet<WindowId> = observation.closed.iter().cloned().collect();
             self.retained_focus
                 .retain(|grant| !closed.contains(&grant.effect.target));
         }
-        if !report.inventory_complete {
+        if !observation.inventory_complete {
             return;
         }
-        let live: BTreeSet<&WindowId> = report.windows.iter().map(|fact| &fact.window).collect();
-        let held: BTreeSet<&WindowId> = report
+        let live: BTreeSet<&WindowId> = observation
+            .raw_windows
+            .iter()
+            .map(|fact| &fact.window)
+            .collect();
+        let held: BTreeSet<&WindowId> = self
+            .staged
             .held_windows
             .iter()
             .map(|held| &held.window)

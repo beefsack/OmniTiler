@@ -739,8 +739,12 @@
        capture from classification in both intakes, carries the current raw
        observation on `StagedReport`, and makes initial intent ingestion consume
        that capture before classification, never during command restaging.
-       Other consumers retain their existing sources until their adaptation;
-       no settlement migration is claimed by 4a.
+        Other consumers retain their existing sources until their adaptation;
+        no settlement migration is claimed by 4a.
+        Split 4b at its lifetime boundary: 4b-1 moves retained-authority lifetime
+        pruning to staged observations; 4b-2 moves the remaining observation
+        lanes. Native/view proof and command dependencies stay with their
+        existing owners rather than being pulled into the lifetime increment.
    5. View-proof migration replacing the `views` echo legs (`view_echo_for`,
      staged echo fill, `settle_views_pre`, selection proof) with visibility and
      focus proof. The contract settles the receipt predicates (removed `views`
@@ -917,6 +921,43 @@
   No fixture, manifest, adapter, feature, public ingress, version or contract
   changes are included. A separately discovered grading risk is parked below;
   these checks do not establish its acceptance or full v4 engine acceptance.
+- Sub-increment 4b-1 plan: move retained state/focus/automatic-focus/selection
+  lifetime pruning and the lifetime-ledger block currently in `finish` onto
+  staged raw inventory completeness, window presence, explicit closes and held
+  rows. Selection output-loss fences use staged valid/held screens. Extract the
+  finish pruning block into a shared internal helper without changing its
+  position relative to focus-output retention, membership reconciliation or
+  publication. Preserve each ledger's existing live/held/excluded/engine-known
+  predicate, including deliberate differences between canonical memory and
+  pending intent. Explicit closes win even with contradictory carried presence;
+  incomplete inventories and held screens/windows never imply departure.
+  Regressions exercise both intakes, raw versus classified presence, holds,
+  exclusions, closes, complete loss and incomplete gaps. No settlement, native/
+  view proof, presentation, command helper or envelope/replay retention migration
+  is included; these remain 4b-2, 4c and their existing dependent increments.
+- Sub-increment 4b-1 outcome: retained state, ordinary focus, automatic-focus
+  identity, finite selection grants, output scopes and visibility-target lifetime
+  pruners now consume staged observation/held-screen fields without a report
+  argument. `prune_lifetime_state` extracts the former finish-time ledger block
+  and runs at the same position, preserving canonical, exclusion, pending intent,
+  rollback-save and composed-maximize predicate differences and lane-pruner order.
+  Raw lifetime presence remains distinct from classified eligibility; no complete
+  observation snapshot is cloned by the pruners. Twelve new regressions cover
+  both intakes, holds, incomplete gaps, closes, current capture, own-process raw
+  facts, member-known retention, canonical/intent differences, true output loss
+  and capability-graded presence without authority. The automatic-focus exclusion
+  test now stages an absent-subject probe without member knowledge, then proves
+  exclusion retention and removal separately. Review corrected test isolation,
+  documentation and two initial test-oracle assumptions; no product-behavior
+  change or preimplementation behavioral red is claimed. Independent review found
+  no blocking finding. Final direct verification passes the filtered
+  core/protocol gate (1676 core unit tests and every selected integration/protocol
+  target), build, scoped all-target clippy with warnings denied, formatting,
+  whitespace, added ASCII, NUL and local-link checks. Only
+  `workspace_unsafe_posture` is filtered. No new tentative decision, contract,
+  fixture, manifest, adapter, feature, public ingress or version change is
+  included. V4-driven pruning tests do not establish accepted-run or scenario
+  execution; remaining lane consumers stay 4b-2, with command adaptation in 4c.
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
 - Capability-held cursor grading repair plan: reproduce a valid v4 report whose
   native cursor hit names a newly capability-held window, then keep that window

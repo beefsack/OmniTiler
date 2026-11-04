@@ -3,21 +3,30 @@
 //! classification, intent ingestion consumes the staged capture before the
 //! classifier runs, and capture never mutates retained routing state.
 
+use std::collections::BTreeMap;
+
 use crate::connection::HostCapabilities;
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::gesture::{GestureIngress, GestureKind, GesturePhase};
 use crate::intent_data::{IntentData, encode_intent_data};
+use crate::session::DomainKey;
 use crate::world_directional::tests::{accepted, fact, rect, report_full, screen};
-use crate::world_engine::{StagedObservation, WorldEngine};
+use crate::world_engine::{ExcludedIntent, StagedObservation, WorldEngine};
+use crate::world_focus::{FocusVerdict, RetainedFocusGrant};
+use crate::world_members::MemberState;
 use crate::world_report::{
-    ArrivalBracket, AttemptLaneV4, AuthorityScope, ClearAttempt, FocusFeedback, FrameAttempt,
-    FrameSetter, HeldAttemptRow, HeldNativeRow, HeldScreenRow, HeldWindowRow, IntentRecord,
-    MemberAttempt, NativeCreationAttempt, NativeObservation, NativeOccupancy,
-    PresentationIngressV4, PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic,
-    RowDiagnosticKind, RowDiagnosticLane, StateAttempt, StateProperty, ViewAttempt,
-    VisibilityReason, VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef,
-    WorldReport, WorldReportV4,
+    ArrivalBracket, AttemptLaneV4, AttemptOutcome, AuthorityScope, ClearAttempt, FocusFeedback,
+    FrameAttempt, FrameSetter, HeldAttemptRow, HeldNativeRow, HeldScreenRow, HeldWindowRow,
+    IntentRecord, IntentWrite, MemberAttempt, NativeCreationAttempt, NativeObservation,
+    NativeOccupancy, OneShotEffect, PresentationIngressV4, PresentationRowV4, RenderTarget,
+    RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport, StateAttempt,
+    StateProperty, ViewAttempt, VisibilityReason, VisibilitySetter, WORLD_CONTRACT_VERSION_V4,
+    WindowFact, WorkspaceRef, WorldReport, WorldReportV4,
 };
+use crate::world_selection::{
+    FrozenArrivalMember, RetainedSelection, SelectionScope, SelectionTarget, SwitchMember,
+};
+use crate::world_state::{RetainedStateBinding, RetainedStateTarget};
 
 fn engine() -> WorldEngine {
     WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
@@ -1242,5 +1251,741 @@ fn v4_capture_keeps_original_rows_through_capability_grading() {
         subject
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
+    );
+}
+// 4b-1: retained-authority lifetime pruning consumes the staged capture,
+// never a report object. Both intakes drive every pruner; raw own-process
+// and safety-excluded subjects stay lifetime evidence despite exclusion
+// from control, while capability-held rows keep presence without authority.
+fn insert_state_binding(engine: &mut WorldEngine, window: &str) {
+    engine.retained_states.insert(
+        (WindowId(window.to_owned()), StateProperty::Sticky),
+        RetainedStateBinding {
+            target: RetainedStateTarget {
+                window: WindowId(window.to_owned()),
+                property: StateProperty::Sticky,
+                value: true,
+                revision: 1,
+            },
+            pending: None,
+            spent: false,
+            disposition: AttemptOutcome::Unattempted,
+            sticky_meta: None,
+            fullscreen_meta: None,
+            maximize_meta: None,
+            above_meta: None,
+        },
+    );
+}
+
+fn seed_lifetime_ledgers(engine: &mut WorldEngine, window: &str, output: &str) {
+    let id = WindowId(window.to_owned());
+    let home = DomainKey {
+        output: OutputId(output.to_owned()),
+        workspace: WorkspaceId("ws-1".to_owned()),
+    };
+    insert_state_binding(engine, window);
+    engine.automatic_focus_tokens.insert(id.clone(), 7);
+    engine.retained_focus.push(RetainedFocusGrant {
+        effect: OneShotEffect::explicit_focus(3, id.clone(), 1),
+        feedback: None,
+        verdict: FocusVerdict::Pending,
+    });
+    engine.composed_maximized.insert(id.clone());
+    engine.selection_targets.insert(
+        id.clone(),
+        SelectionTarget {
+            home: home.clone(),
+            shown: true,
+            rev: 1,
+        },
+    );
+    engine.selection_scopes.insert(
+        OutputId(output.to_owned()),
+        SelectionScope {
+            selected: vec![home.clone()],
+            departing: Vec::new(),
+            rev: 1,
+        },
+    );
+    engine.retained_selection.insert(
+        OutputId(output.to_owned()),
+        RetainedSelection {
+            effect: Some(OneShotEffect::explicit_focus(3, id.clone(), 1)),
+            parent_op: "op-3".to_owned(),
+            home: home.clone(),
+            rev: 1,
+            obs: 1,
+            members: vec![FrozenArrivalMember {
+                window: id.clone(),
+                home: home.clone(),
+                frame: None,
+            }],
+            switch_members: vec![SwitchMember {
+                window: id.clone(),
+                home: home.clone(),
+                shown: true,
+                rev: 1,
+            }],
+            switch_evidence: BTreeMap::new(),
+            feedback: None,
+            foreground_proven: false,
+            arrival_ready: false,
+            view_targets: BTreeMap::new(),
+            view_raw: BTreeMap::new(),
+        },
+    );
+}
+
+fn assert_window_ledgers_hold(engine: &WorldEngine, window: &str) {
+    let id = WindowId(window.to_owned());
+    assert!(
+        engine
+            .retained_states
+            .contains_key(&(id.clone(), StateProperty::Sticky)),
+        "state binding survives"
+    );
+    assert!(
+        engine.automatic_focus_tokens.contains_key(&id),
+        "automatic-focus token survives"
+    );
+    assert!(
+        engine
+            .retained_focus
+            .iter()
+            .any(|grant| grant.effect.target == id),
+        "focus grant survives"
+    );
+    assert!(
+        engine.composed_maximized.contains(&id),
+        "composed maximize survives"
+    );
+    assert!(
+        engine.selection_targets.contains_key(&id),
+        "selection target survives"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .values()
+            .flat_map(|binding| binding
+                .effect
+                .as_ref()
+                .map(|effect| effect.target.clone())
+                .into_iter()
+                .chain(binding.members.iter().map(|member| member.window.clone())))
+            .any(|target| target == id),
+        "selection grant survives"
+    );
+}
+
+fn assert_window_ledgers_dropped(engine: &WorldEngine, window: &str) {
+    let id = WindowId(window.to_owned());
+    assert!(
+        !engine
+            .retained_states
+            .contains_key(&(id.clone(), StateProperty::Sticky)),
+        "state binding prunes on departure"
+    );
+    assert!(
+        !engine.automatic_focus_tokens.contains_key(&id),
+        "automatic-focus token prunes on departure"
+    );
+    assert!(
+        engine
+            .retained_focus
+            .iter()
+            .all(|grant| grant.effect.target != id),
+        "no stale focus grant survives departure"
+    );
+    assert!(
+        !engine.composed_maximized.contains(&id),
+        "composed maximize prunes on departure"
+    );
+    assert!(
+        !engine.selection_targets.contains_key(&id),
+        "no stale selection target survives departure"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .values()
+            .flat_map(|binding| binding
+                .effect
+                .as_ref()
+                .map(|effect| effect.target.clone())
+                .into_iter()
+                .chain(binding.members.iter().map(|member| member.window.clone())))
+            .all(|target| target != id),
+        "no stale selection grant survives departure"
+    );
+}
+
+fn report_v4_simple(
+    seq: u64,
+    screens: Vec<ScreenReport>,
+    held_screens: Vec<HeldScreenRow>,
+    windows: Vec<WindowFact>,
+    held_windows: Vec<HeldWindowRow>,
+    closed: Vec<WindowId>,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
+        adapter_incarnation: "adapter-1".to_owned(),
+        core_generation: "gen-1".to_owned(),
+        observation_seq: seq,
+        request_seq: seq,
+        request_id: format!("req-{seq}"),
+        command_seq: None,
+        command: None,
+        screens,
+        held_screens,
+        windows,
+        held_windows,
+        closed,
+        native: Vec::new(),
+        held_native: Vec::new(),
+        cursor: None,
+        cursor_hit: None,
+        focused_global: String::new(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
+        primary_output: None,
+        inventory_complete: true,
+        gesture_barrier: false,
+        gesture: None,
+        monotonic_ms: 0,
+        frames: Vec::new(),
+        member_attempts: Vec::new(),
+        view_attempts: Vec::new(),
+        clear_attempts: Vec::new(),
+        creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
+        state_attempts: Vec::new(),
+        focus_feedback: Vec::new(),
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
+        intent_records: Vec::new(),
+        renderer_input: None,
+    }
+}
+
+#[test]
+fn lifetime_prune_drops_true_loss_on_both_intakes() {
+    for v4 in [false, true] {
+        let mut engine = engine();
+        seed_lifetime_ledgers(&mut engine, "win-a", "out-a");
+        if v4 {
+            let report = report_v4_simple(
+                1,
+                vec![screen("out-a", 0)],
+                Vec::new(),
+                vec![fact("win-b", "out-a", 100)],
+                Vec::new(),
+                Vec::new(),
+            );
+            stage_v4_ingested(&mut engine, &report);
+        } else {
+            let report = report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![fact("win-b", "out-a", 100)],
+                Vec::new(),
+                "",
+                None,
+                None,
+            );
+            stage_ingested(&mut engine, &report);
+        }
+        engine.prune_lifetime_state();
+        assert_window_ledgers_dropped(&engine, "win-a");
+        // The output itself stays live, so its scope survives: only true
+        // output loss drops scopes, never member departure.
+        assert!(
+            engine
+                .selection_scopes
+                .contains_key(&OutputId("out-a".to_owned())),
+            "live output scope survives member loss (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn lifetime_prune_preserves_held_windows_and_held_screens_on_both_intakes() {
+    for v4 in [false, true] {
+        let mut engine = engine();
+        seed_lifetime_ledgers(&mut engine, "win-a", "out-a");
+        if v4 {
+            let report = report_v4_simple(
+                1,
+                Vec::new(),
+                vec![held_screen_row("out-a", 0)],
+                Vec::new(),
+                vec![held_window_row("win-a", "out-a", 0)],
+                Vec::new(),
+            );
+            stage_v4_ingested(&mut engine, &report);
+        } else {
+            let mut report = report_full(1, 1, Vec::new(), Vec::new(), Vec::new(), "", None, None);
+            report.held_screens = vec![held_screen_row("out-a", 0)];
+            report.held_windows = vec![held_window_row("win-a", "out-a", 0)];
+            stage_ingested(&mut engine, &report);
+        }
+        engine.prune_lifetime_state();
+        assert_window_ledgers_hold(&engine, "win-a");
+        assert!(
+            engine
+                .selection_scopes
+                .contains_key(&OutputId("out-a".to_owned())),
+            "held screen is never true output loss (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn lifetime_prune_explicit_close_wins_over_carried_presence_on_both_intakes() {
+    // Synthetic overlap: a carried live fact plus an explicit close for the
+    // same id exercises the pruner-direct close-wins fence only, not codec
+    // acceptance of close/live overlap.
+    for v4 in [false, true] {
+        let mut engine = engine();
+        seed_lifetime_ledgers(&mut engine, "win-a", "out-a");
+        if v4 {
+            let report = report_v4_simple(
+                1,
+                vec![screen("out-a", 0)],
+                Vec::new(),
+                vec![fact("win-a", "out-a", 0)],
+                Vec::new(),
+                vec![WindowId("win-a".to_owned())],
+            );
+            stage_v4_ingested(&mut engine, &report);
+        } else {
+            let mut report = report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0)],
+                Vec::new(),
+                "",
+                None,
+                None,
+            );
+            report.closed = vec![WindowId("win-a".to_owned())];
+            stage_ingested(&mut engine, &report);
+        }
+        engine.prune_lifetime_state();
+        assert_window_ledgers_dropped(&engine, "win-a");
+    }
+}
+
+#[test]
+fn lifetime_prune_incomplete_gap_preserves_without_close() {
+    let mut engine = engine();
+    seed_lifetime_ledgers(&mut engine, "win-a", "out-a");
+    let mut report = report_full(
+        1,
+        1,
+        vec![screen("out-a", 0)],
+        vec![fact("win-b", "out-a", 100)],
+        Vec::new(),
+        "",
+        None,
+        None,
+    );
+    report.inventory_complete = false;
+    stage_ingested(&mut engine, &report);
+    engine.prune_lifetime_state();
+    assert_window_ledgers_hold(&engine, "win-a");
+    assert!(
+        engine
+            .selection_scopes
+            .contains_key(&OutputId("out-a".to_owned())),
+        "incomplete inventory never implies output loss"
+    );
+}
+
+#[test]
+fn lifetime_prune_own_process_raw_presence_prunes_without_inventory() {
+    let mut engine = engine();
+    insert_state_binding(&mut engine, "win-own");
+    let mut own_fact = fact("win-own", "out-a", 0);
+    own_fact.process_id = Some("test-own-pid".to_owned());
+    let mut report = report_full(
+        1,
+        1,
+        vec![screen("out-a", 0)],
+        vec![own_fact],
+        Vec::new(),
+        "",
+        None,
+        None,
+    );
+    report.inventory_complete = false;
+    stage_ingested(&mut engine, &report);
+    // Classification drops the own-process subject, but the raw capture
+    // keeps it: the own-process filter must read the raw capture, where a
+    // classified-facts-only filter would find nothing on this incomplete
+    // report and wrongly retain the binding.
+    assert!(
+        !engine
+            .staged
+            .facts
+            .contains_key(&WindowId("win-own".to_owned())),
+        "own-process subject classifies out of facts"
+    );
+    assert!(
+        engine
+            .staged
+            .observation
+            .raw_windows
+            .iter()
+            .any(|fact| fact.window.0 == "win-own"),
+        "raw capture retains the own-process subject"
+    );
+    engine.prune_state_bindings();
+    assert!(
+        !engine
+            .retained_states
+            .contains_key(&(WindowId("win-own".to_owned()), StateProperty::Sticky)),
+        "own-process binding prunes from raw evidence without inventory"
+    );
+}
+
+#[test]
+fn lifetime_prune_member_known_lifetime_survives_complete_absence() {
+    let mut engine = engine();
+    insert_state_binding(&mut engine, "win-a");
+    engine.members.insert(
+        WindowId("win-a".to_owned()),
+        MemberState {
+            home: DomainKey {
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+            },
+            floating: false,
+            minimized: false,
+            geometry: None,
+        },
+    );
+    let report = report_full(
+        1,
+        1,
+        vec![screen("out-a", 0)],
+        vec![fact("win-b", "out-a", 100)],
+        Vec::new(),
+        "",
+        None,
+        None,
+    );
+    stage_ingested(&mut engine, &report);
+    engine.prune_state_bindings();
+    assert!(
+        engine
+            .retained_states
+            .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Sticky)),
+        "engine/member-known lifetime survives complete absence"
+    );
+}
+
+#[test]
+fn lifetime_prune_uses_current_staged_capture() {
+    let mut engine = engine();
+    seed_lifetime_ledgers(&mut engine, "win-a", "out-a");
+    let live = report_full(
+        1,
+        1,
+        vec![screen("out-a", 0)],
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+        Vec::new(),
+        "",
+        None,
+        None,
+    );
+    stage_ingested(&mut engine, &live);
+    engine.prune_lifetime_state();
+    assert_window_ledgers_hold(&engine, "win-a");
+    // A later stage observing departure must prune: the helper reads the
+    // current capture, never a cached older report.
+    let gone = report_full(
+        2,
+        2,
+        vec![screen("out-a", 0)],
+        vec![fact("win-b", "out-a", 100)],
+        Vec::new(),
+        "",
+        None,
+        None,
+    );
+    stage_ingested(&mut engine, &gone);
+    engine.prune_lifetime_state();
+    assert_window_ledgers_dropped(&engine, "win-a");
+}
+
+fn home_key(output: &str) -> DomainKey {
+    DomainKey {
+        output: OutputId(output.to_owned()),
+        workspace: WorkspaceId("ws-1".to_owned()),
+    }
+}
+
+fn seed_canonical_ledgers(engine: &mut WorldEngine, window: &str, output: &str) {
+    let id = WindowId(window.to_owned());
+    engine
+        .last_active_window
+        .insert(home_key(output), id.clone());
+    engine
+        .pending_intent
+        .insert(id.clone(), IntentData::new(Some(true), None));
+    engine
+        .excluded_intent
+        .insert(id.clone(), ExcludedIntent::default());
+    engine.sticky_rollback_saves.insert(
+        id.clone(),
+        IntentWrite {
+            win: id,
+            data: None,
+        },
+    );
+}
+
+#[test]
+fn lifetime_prune_canonical_and_intent_ledger_discriminators() {
+    // Deliberate predicate differences on a held-only lifetime: canonical
+    // last_active_window and excluded_intent need live (or excluded)
+    // presence, while pending intent and rollback saves keep held rows.
+    // Member knowledge saves neither canonical nor excluded ledgers.
+    let mut engine = engine();
+    seed_canonical_ledgers(&mut engine, "win-a", "out-a");
+    engine.members.insert(
+        WindowId("win-a".to_owned()),
+        MemberState {
+            home: home_key("out-a"),
+            floating: false,
+            minimized: false,
+            geometry: None,
+        },
+    );
+    let mut report = report_full(1, 1, Vec::new(), Vec::new(), Vec::new(), "", None, None);
+    report.held_screens = vec![held_screen_row("out-a", 0)];
+    report.held_windows = vec![held_window_row("win-a", "out-a", 0)];
+    stage_ingested(&mut engine, &report);
+    engine.prune_lifetime_state();
+    let id = WindowId("win-a".to_owned());
+    assert!(
+        !engine.last_active_window.values().any(|held| held == &id),
+        "canonical memory prunes held-only lifetimes"
+    );
+    assert!(
+        engine.pending_intent.contains_key(&id),
+        "pending intent retains held rows"
+    );
+    assert!(
+        !engine.excluded_intent.contains_key(&id),
+        "exclusion ledger keeps live/excluded only, never held-only"
+    );
+    assert!(
+        engine.sticky_rollback_saves.contains_key(&id),
+        "rollback saves retain held rows"
+    );
+}
+
+#[test]
+fn lifetime_prune_known_arm_saves_pending_only() {
+    // Engine/member-known presence retains pending intent but neither
+    // rollback saves nor the exclusion ledger: those two have no known
+    // arm by design.
+    let mut engine = engine();
+    seed_canonical_ledgers(&mut engine, "win-a", "out-a");
+    engine.members.insert(
+        WindowId("win-a".to_owned()),
+        MemberState {
+            home: home_key("out-a"),
+            floating: false,
+            minimized: false,
+            geometry: None,
+        },
+    );
+    let report = report_full(
+        1,
+        1,
+        vec![screen("out-a", 0)],
+        vec![fact("win-b", "out-a", 100)],
+        Vec::new(),
+        "",
+        None,
+        None,
+    );
+    stage_ingested(&mut engine, &report);
+    engine.prune_lifetime_state();
+    let id = WindowId("win-a".to_owned());
+    assert!(
+        engine.pending_intent.contains_key(&id),
+        "member-known lifetime keeps pending intent"
+    );
+    assert!(
+        !engine.sticky_rollback_saves.contains_key(&id),
+        "rollback saves have no known-only retention"
+    );
+    assert!(
+        !engine.excluded_intent.contains_key(&id),
+        "exclusion ledger has no known-only retention"
+    );
+}
+
+#[test]
+fn lifetime_prune_own_process_exclusion_keeps_intent_ledgers() {
+    // The own-process subject classifies out of facts (staged.facts lacks
+    // it) but stays raw lifetime evidence with an exclusion mark, so both
+    // intent ledgers retain it on a complete report.
+    let mut engine = engine();
+    let id = WindowId("win-b".to_owned());
+    engine
+        .pending_intent
+        .insert(id.clone(), IntentData::new(Some(true), None));
+    engine
+        .excluded_intent
+        .insert(id.clone(), ExcludedIntent::default());
+    let mut own_fact = fact("win-b", "out-a", 100);
+    own_fact.process_id = Some("test-own-pid".to_owned());
+    let report = report_full(
+        1,
+        1,
+        vec![screen("out-a", 0)],
+        vec![own_fact],
+        Vec::new(),
+        "",
+        None,
+        None,
+    );
+    // Stage without intent ingestion: ingestion owns own-process pending
+    // removal (`ingest_staged_intent` drops proven-own pending/conflict
+    // entries), so this test isolates the prune-time excluded arm only.
+    engine.stage_facts(&report);
+    assert!(
+        !engine.staged.facts.contains_key(&id),
+        "own-process subject classifies out of facts"
+    );
+    assert!(
+        engine.staged.excluded.contains(&id),
+        "own-process subject marks the exclusion set"
+    );
+    engine.prune_lifetime_state();
+    assert!(
+        engine.pending_intent.contains_key(&id),
+        "pending intent retains excluded lifetimes"
+    );
+    assert!(
+        engine.excluded_intent.contains_key(&id),
+        "exclusion ledger retains excluded lifetimes"
+    );
+}
+
+#[test]
+fn lifetime_prune_true_output_loss_drops_scopes_targets_and_grants() {
+    // Window loss alone (covered elsewhere) keeps output policy; only a
+    // complete inventory with neither a live nor a held screen for the
+    // output drops scopes, homed targets, and the finite grant.
+    let mut engine = engine();
+    seed_lifetime_ledgers(&mut engine, "win-b", "out-b");
+    let report = report_full(
+        1,
+        1,
+        vec![screen("out-a", 0)],
+        vec![fact("win-a", "out-a", 0)],
+        Vec::new(),
+        "",
+        None,
+        None,
+    );
+    stage_ingested(&mut engine, &report);
+    engine.prune_lifetime_state();
+    assert!(
+        !engine
+            .selection_scopes
+            .contains_key(&OutputId("out-b".to_owned())),
+        "missing screen with no held twin drops the scope"
+    );
+    assert!(
+        !engine
+            .selection_targets
+            .contains_key(&WindowId("win-b".to_owned())),
+        "target homed on the lost output drops"
+    );
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-b".to_owned())),
+        "finite grant on the lost output drops"
+    );
+    assert_window_ledgers_dropped(&engine, "win-b");
+}
+
+#[test]
+fn lifetime_prune_v4_graded_hold_keeps_presence_without_eligibility() {
+    // A genuinely capability-graded v4 hold (not a synthetic held row):
+    // the raw capture keeps the original fact, so raw-presence ledgers
+    // retain it, while classification withholds it from facts (presence
+    // without authority). Canonical memory follows the same raw-presence
+    // predicate the legacy lane used; no v4 accepted-run assembly is tested.
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities::default(),
+    )
+    .expect("generation");
+    let mut sticky = fact("win-a", "out-a", 0);
+    sticky.sticky = Some(true);
+    let report = report_v4_simple(
+        1,
+        vec![screen("out-a", 0)],
+        Vec::new(),
+        vec![sticky],
+        Vec::new(),
+        Vec::new(),
+    );
+    stage_v4_ingested(&mut engine, &report);
+    assert!(
+        engine
+            .staged
+            .held_windows
+            .iter()
+            .any(|held| held.window.0 == "win-a"),
+        "conflicting sticky grades to a held row"
+    );
+    assert!(
+        engine
+            .staged
+            .observation
+            .raw_windows
+            .iter()
+            .any(|fact| fact.window.0 == "win-a"),
+        "raw capture keeps the graded original"
+    );
+    insert_state_binding(&mut engine, "win-a");
+    engine
+        .last_active_window
+        .insert(home_key("out-a"), WindowId("win-a".to_owned()));
+    engine.prune_lifetime_state();
+    assert!(
+        engine
+            .retained_states
+            .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Sticky)),
+        "graded held row counts as lifetime presence"
+    );
+    assert!(
+        !engine
+            .staged
+            .facts
+            .contains_key(&WindowId("win-a".to_owned())),
+        "graded hold carries no classified authority"
+    );
+    assert!(
+        engine
+            .last_active_window
+            .values()
+            .any(|held| held.0 == "win-a"),
+        "canonical memory follows preserved raw presence"
     );
 }
