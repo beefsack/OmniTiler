@@ -758,8 +758,15 @@
          remain with their existing command and assembly dependencies.
          Next, 4b-2d migrates retained clear/born, transfer/migration and float
          settlement's raw receipt and readability inputs. Native/view proof,
-         born authority/presentation and command continuations retain their
-         existing owners; other observation consumers follow separately.
+          born authority/presentation and command continuations retain their
+          existing owners; other observation consumers follow separately.
+         Then, 4b-2e migrates gesture observation gates, born authority/lifetime
+         raw gates, live topology retention and switch receipt watermark/close
+         inputs. These remain independent raw consumers even where the same
+         function retains a report for command, proof or presentation work.
+         Logical mapping convergence and domain-staging raw inputs remain a
+         separate raw-consumer piece; 4b-2 does not close merely because its
+         other dependencies have owners.
    5. View-proof migration replacing the `views` echo legs (`view_echo_for`,
      staged echo fill, `settle_views_pre`, selection proof) with visibility and
      focus proof. The contract settles the receipt predicates (removed `views`
@@ -1125,6 +1132,51 @@
   change is included. 4b-2 is not finished: remaining gesture, born authority,
   topology/native and switch-proof dependencies retain their existing owners;
   the phase note remains active.
+- Sub-increment 4b-2e plan: use staged gesture ingress, observation watermark,
+  inventory and explicit closes for gesture binding/actuation gates; keep
+  command construction, request correlation, homing proof and domain restaging
+  unchanged. Use staged inventory/barrier for born authorization and lifetime
+  pruning while retaining presentation pause and native proof dependencies.
+  Retain live topology from current staged screens with its existing completeness
+  predicate. Switch visibility-write receipt grading and close fences use staged
+  watermark/closes; native selector proof remains unchanged. Verify both intakes
+  with contradictory passed-report controls, replay/start watermark, close versus
+  gap/hold, born publish/pruning gates, topology replacement/fencing and first
+  switch-write receipt bounds. No v4 accepted-run, proof/presentation migration,
+  command-helper correlation migration, prior-report retention or public ingress
+  change is included. Remaining logical pre/post convergence and domain-staging
+  raw inputs still belong to 4b-2; gesture command helpers belong to 4c,
+  native/view proof to 5, presentation to 6, and accepted-run/envelope/prior-report
+  assembly to 7.
+- Sub-increment 4b-2e outcome: gesture ingress, bind/start receipt watermarks,
+  inventory and explicit-close gates now consume staged observations. Born
+  authorization/lifetime pruning use staged inventory/barrier; topology retention
+  uses staged screens; switch visibility-write receipt grading and close fences
+  use staged watermark/closes. Predicates, ordering, retained identity and
+  first-receipt latching remain unchanged, with only narrow gesture ingress
+  ownership and no observation/lane clones. Command correlation/construction,
+  native/view proof, presentation pause and domain/homing restaging retain their
+  report dependencies. Eight new dual-intake tests cover contradictory passed
+  reports, bind/supersession, same-phase watermark hold versus preview, continuing
+  inventory hold versus update preview/release commit, explicit close, born
+  touching-migration and lifetime gates, first switch-write receipt bounds and
+  topology replacement/fencing. Gesture tests bootstrap Engine sessions through
+  the legacy accepted path and use the legacy twin for test-only domain joins;
+  v4 legs prove shared consumers after real intake, not v4 accepted-run/domain
+  assembly, codec-shape or scenario acceptance. Review found no source blocker;
+  follow-up replaced post-capture test mutation and conflated phase/sequence
+  controls with source-report staging and eligible paired controls. New tests
+  were first run after implementation, not established as preimplementation
+  behavioral reds. Final direct verification passes the filtered core/protocol
+  gate (1705 core unit tests and every selected integration/protocol target),
+  build, scoped all-target clippy with warnings denied, formatting, whitespace,
+  added ASCII, NUL and local-link checks. Only `workspace_unsafe_posture` is
+  filtered. No new tentative decision, contract, fixture, manifest, adapter,
+  feature, public ingress or version change is included. 4b-2 remains open:
+  `world_model` logical pre/post convergence and ordered live-output inputs,
+  plus `world_observe::build_staged_domains` raw focus/inventory reads, remain
+  raw consumers separate from their native/view proof dependencies. 4c is not
+  started; the phase note remains active.
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
 - Capability-held cursor grading repair plan: reproduce a valid v4 report whose
   native cursor hit names a newly capability-held window, then keep that window

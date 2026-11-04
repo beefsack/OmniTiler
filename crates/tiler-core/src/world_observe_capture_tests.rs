@@ -12,18 +12,23 @@ use crate::intent_data::{IntentData, encode_intent_data};
 use crate::seed::EngineWindow;
 use crate::session::DomainKey;
 use crate::world_directional::tests::{accepted, fact, rect, report_full, screen};
-use crate::world_engine::{ExcludedIntent, StagedDomain, StagedObservation, WorldEngine};
+use crate::world_engine::{
+    ExcludedIntent, RetainedBornClear, RetainedTransfer, StagedDomain, StagedObservation,
+    WorldEngine,
+};
 use crate::world_focus::{FocusVerdict, RetainedFocusGrant};
+use crate::world_gesture::GestureOutcome;
 use crate::world_members::MemberState;
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, AttemptLaneV4, AttemptOutcome, AuthorityScope, ClearAttempt,
-    EffectCause, FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow, HeldNativeRow,
-    HeldScreenRow, HeldWindowRow, IntentRecord, IntentWrite, MemberAttempt, NativeCreationAttempt,
-    NativeObservation, NativeOccupancy, OneShotEffect, PresentationIngressV4, PresentationRowV4,
-    RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
-    ScopeAuthority, ScreenReport, StateAttempt, StateProperty, ViewAttempt, VisibilityFact,
-    VisibilityReason, VisibilitySample, VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowDesire,
-    WindowFact, WorkspaceRef, WorldReport, WorldReportV4,
+    CommandResult, EffectCause, FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow,
+    HeldNativeRow, HeldScreenRow, HeldWindowRow, IntentRecord, IntentWrite, LastWrite,
+    LastWritePath, LastWriteProperty, MemberAttempt, NativeCreationAttempt, NativeObservation,
+    NativeOccupancy, OneShotEffect, PresentationIngressV4, PresentationRowV4, RenderTarget,
+    RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
+    ScreenReport, StateAttempt, StateProperty, SwitchOutcome, TransferKind, TransferTarget,
+    ViewAttempt, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    WORLD_CONTRACT_VERSION_V4, WindowDesire, WindowFact, WorkspaceRef, WorldReport, WorldReportV4,
 };
 use crate::world_selection::{
     FrozenArrivalMember, RetainedSelection, SelectionScope, SelectionTarget, SwitchMember,
@@ -6212,5 +6217,958 @@ fn settle_float_receipt_before_gap_with_empty_lane_recovery() {
                 v4 = v4,
             );
         }
+    }
+}
+
+// 4b-2e: raw observation gates consume the staged capture on both intakes.
+// Each test sets raw lanes on BOTH independently constructed legacy/v4
+// reports BEFORE either intake, stages through the actual intake, then
+// drives the real consumer with a contradictory passed report: the staged
+// capture wins. Only retained joins are seeded after capture (homing,
+// domains, retained bindings, lifetime marks), explicitly TEST-ONLY, never
+// v4 runtime. Gesture preview authority comes from an explicit legacy
+// accepted() rig (Engine sessions, mapping, views); v4 iterations reuse
+// that rig and stage only their own capture.
+
+fn born_engine() -> WorldEngine {
+    WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            birth_clear: true,
+            fullscreen: true,
+            maximize: true,
+            native_sticky: true,
+            above: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation")
+}
+
+fn staged_ingress(id: u64, phase: GesturePhase) -> GestureIngress {
+    GestureIngress {
+        id,
+        phase,
+        ..gesture_row()
+    }
+}
+
+/// Started ingress with a moved cursor: the bind-only guard holds it at the
+/// staged watermark, while a later watermark previews at (150, 50).
+fn moved_started_ingress(id: u64) -> GestureIngress {
+    GestureIngress {
+        id,
+        kind: GestureKind::Move,
+        cursor: Some((150, 50)),
+        start_cursor: None,
+        phase: GesturePhase::Started,
+        start_frame: rect(0, 0, 40, 90),
+        ..gesture_row()
+    }
+}
+
+fn contra_legacy(seq: u64, windows: Vec<WindowFact>) -> WorldReport {
+    report_full(
+        seq,
+        seq,
+        vec![screen("out-a", 0)],
+        windows,
+        Vec::new(),
+        "",
+        None,
+        None,
+    )
+}
+
+/// Explicit legacy setup (no v4 runtime claim): bootstrap two tiled windows
+/// so Engine sessions, mapping, and views exist before test staging.
+fn gesture_rig() -> WorldEngine {
+    let mut engine = engine();
+    accepted(
+        &mut engine,
+        &report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            Vec::new(),
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    engine
+}
+
+/// Stage one gesture report through the real intake: raw gesture, inventory,
+/// and closes sit on both source reports BEFORE staging. The legacy twin
+/// supplies the test-only domain join even on the v4 leg; this does not
+/// establish v4 domain assembly. Topology retention reads staged screens.
+fn stage_gesture(
+    engine: &mut WorldEngine,
+    v4: bool,
+    seq: u64,
+    windows: Vec<WindowFact>,
+    ingress: Option<GestureIngress>,
+    complete: bool,
+    closed: Vec<WindowId>,
+) {
+    let (mut legacy, mut v4report) = pair_reports(seq, windows, closed);
+    legacy.gesture = ingress.clone();
+    v4report.gesture = ingress;
+    legacy.inventory_complete = complete;
+    v4report.inventory_complete = complete;
+    stage_either(engine, v4, &legacy, &v4report);
+    engine.build_staged_domains(&legacy);
+    engine.retain_live_topology();
+}
+
+#[test]
+fn staged_gesture_bind_gates_win_over_passed_report() {
+    for v4 in [false, true] {
+        let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+        // Staged ingress binds with the staged watermark even when the
+        // passed report is seq-divergent, inventory-incomplete, and closed.
+        let mut engine = gesture_rig();
+        stage_gesture(
+            &mut engine,
+            v4,
+            5,
+            windows(),
+            Some(staged_ingress(7, GesturePhase::Started)),
+            true,
+            Vec::new(),
+        );
+        let mut contra = contra_legacy(99, windows());
+        contra.inventory_complete = false;
+        contra.closed = vec![WindowId("win-a".to_owned())];
+        assert!(
+            engine.gesture_bind(&contra, &BTreeSet::new()),
+            "staged ingress binds (v4={v4})"
+        );
+        let retained = engine.gesture.clone().expect("session retained");
+        assert_eq!(
+            (retained.id, retained.start_seq),
+            (7, 5),
+            "identity from staged (v4={v4})"
+        );
+        // Negative: staged absent never binds even when the passed report
+        // carries a live ingress on a complete inventory.
+        let mut engine = gesture_rig();
+        stage_gesture(&mut engine, v4, 5, windows(), None, true, Vec::new());
+        let mut contra = contra_legacy(5, windows());
+        contra.gesture = Some(staged_ingress(7, GesturePhase::Started));
+        assert!(
+            !engine.gesture_bind(&contra, &BTreeSet::new()),
+            "staged absent refuses (v4={v4})"
+        );
+        assert!(engine.gesture.is_none(), "no session (v4={v4})");
+        // Staged inventory gate: staged incomplete refuses despite a passed
+        // complete report carrying the same live ingress.
+        let mut engine = gesture_rig();
+        stage_gesture(
+            &mut engine,
+            v4,
+            5,
+            windows(),
+            Some(staged_ingress(7, GesturePhase::Started)),
+            false,
+            Vec::new(),
+        );
+        let mut contra = contra_legacy(5, windows());
+        contra.gesture = Some(staged_ingress(7, GesturePhase::Started));
+        assert!(
+            !engine.gesture_bind(&contra, &BTreeSet::new()),
+            "staged gap refuses (v4={v4})"
+        );
+        assert!(engine.gesture.is_none(), "no session (v4={v4})");
+        // Staged close gate: staged explicit close refuses despite passed
+        // empty closes on a complete inventory.
+        let mut engine = gesture_rig();
+        stage_gesture(
+            &mut engine,
+            v4,
+            5,
+            windows(),
+            Some(staged_ingress(7, GesturePhase::Started)),
+            true,
+            vec![WindowId("win-a".to_owned())],
+        );
+        let contra = contra_legacy(5, windows());
+        assert!(
+            !engine.gesture_bind(&contra, &BTreeSet::new()),
+            "staged close refuses (v4={v4})"
+        );
+        assert!(engine.gesture.is_none(), "no session (v4={v4})");
+        // Fresh staged id holds the old session under a staged gap (passed
+        // complete), then supersedes once the staged inventory completes
+        // (passed incomplete): the start gate, not the report, decides.
+        let mut engine = gesture_rig();
+        stage_gesture(
+            &mut engine,
+            v4,
+            5,
+            windows(),
+            Some(staged_ingress(7, GesturePhase::Started)),
+            true,
+            Vec::new(),
+        );
+        let open = contra_legacy(5, windows());
+        assert!(engine.gesture_bind(&open, &BTreeSet::new()));
+        stage_gesture(
+            &mut engine,
+            v4,
+            6,
+            windows(),
+            Some(staged_ingress(8, GesturePhase::Started)),
+            false,
+            Vec::new(),
+        );
+        assert!(
+            !engine.gesture_bind(&open, &BTreeSet::new()),
+            "staged gap holds old session (v4={v4})"
+        );
+        assert_eq!(
+            engine.gesture.clone().expect("old session held").id,
+            7,
+            "no silent replacement (v4={v4})"
+        );
+        stage_gesture(
+            &mut engine,
+            v4,
+            7,
+            windows(),
+            Some(staged_ingress(8, GesturePhase::Started)),
+            true,
+            Vec::new(),
+        );
+        let mut gapped = contra_legacy(7, windows());
+        gapped.inventory_complete = false;
+        assert!(
+            engine.gesture_bind(&gapped, &BTreeSet::new()),
+            "staged complete supersedes (v4={v4})"
+        );
+        assert_eq!(
+            engine.gesture.clone().expect("new session").id,
+            8,
+            "fresh staged id wins (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_gesture_act_watermark_guard_drives_preview() {
+    // Same Started ingress, only the staged watermark differs: seq 5 holds
+    // bind-only with no overlay, seq 6 previews. Passed reports are decoys
+    // shaped the other way, so only the staged watermark explains the pair.
+    for v4 in [false, true] {
+        let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+        let mut engine = gesture_rig();
+        stage_gesture(
+            &mut engine,
+            v4,
+            5,
+            windows(),
+            Some(moved_started_ingress(7)),
+            true,
+            Vec::new(),
+        );
+        assert!(engine.gesture_bind(&contra_legacy(2, windows()), &BTreeSet::new()));
+        // Same staged watermark: bind-only hold, no overlay, no terminal,
+        // even though the passed report is an update at seq 99.
+        let mut contra_updated = contra_legacy(99, windows());
+        contra_updated.gesture = Some(GestureIngress {
+            phase: GesturePhase::Updated,
+            ..moved_started_ingress(7)
+        });
+        match engine.gesture_act(&contra_updated, &mut BTreeSet::new()) {
+            GestureOutcome::Held => {}
+            _ => panic!("same staged watermark holds bind-only (v4={v4})"),
+        }
+        assert!(
+            engine.gesture_terminal.is_none()
+                && engine.gesture.is_some()
+                && engine.gesture.clone().expect("session").hover.is_none(),
+            "no overlay, no terminal, session kept (v4={v4})"
+        );
+        // Next staged watermark, SAME Started ingress: the update path
+        // previews despite a guard-shaped passed report at seq 5.
+        stage_gesture(
+            &mut engine,
+            v4,
+            6,
+            windows(),
+            Some(moved_started_ingress(7)),
+            true,
+            Vec::new(),
+        );
+        let mut contra_guard = contra_legacy(5, windows());
+        contra_guard.gesture = Some(moved_started_ingress(7));
+        match engine.gesture_act(&contra_guard, &mut BTreeSet::new()) {
+            GestureOutcome::Settled {
+                committed: false,
+                result: Some(boxed),
+            } if matches!(*boxed, CommandResult::DragPreview { .. }) => {}
+            _ => panic!("next staged watermark previews (v4={v4})"),
+        }
+        assert!(
+            engine.gesture.is_some() && engine.gesture_terminal.is_none(),
+            "preview retains the session with no terminal (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_gesture_continue_fences_gate_update_and_release() {
+    // Genuine continue-fence discrimination through the real consumer with
+    // Engine session authority: inventory comes from staged, never the
+    // passed report.
+    for v4 in [false, true] {
+        let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+        let updated = || GestureIngress {
+            phase: GesturePhase::Updated,
+            ..moved_started_ingress(7)
+        };
+        // Updated under a staged gap holds with no preview despite a passed
+        // complete report.
+        let mut engine = gesture_rig();
+        stage_gesture(
+            &mut engine,
+            v4,
+            5,
+            windows(),
+            Some(moved_started_ingress(7)),
+            true,
+            Vec::new(),
+        );
+        assert!(engine.gesture_bind(&contra_legacy(2, windows()), &BTreeSet::new()));
+        stage_gesture(
+            &mut engine,
+            v4,
+            6,
+            windows(),
+            Some(updated()),
+            false,
+            Vec::new(),
+        );
+        match engine.gesture_act(&contra_legacy(6, windows()), &mut BTreeSet::new()) {
+            GestureOutcome::Held => {}
+            _ => panic!("staged gap holds the update (v4={v4})"),
+        }
+        assert!(
+            engine.gesture_terminal.is_none() && engine.gesture.is_some(),
+            "no preview, no terminal, session kept (v4={v4})"
+        );
+        // Staged complete previews despite a passed gapped report.
+        stage_gesture(
+            &mut engine,
+            v4,
+            7,
+            windows(),
+            Some(updated()),
+            true,
+            Vec::new(),
+        );
+        let mut contra_gapped = contra_legacy(7, windows());
+        contra_gapped.inventory_complete = false;
+        match engine.gesture_act(&contra_gapped, &mut BTreeSet::new()) {
+            GestureOutcome::Settled {
+                committed: false,
+                result: Some(boxed),
+            } if matches!(*boxed, CommandResult::DragPreview { .. }) => {}
+            _ => panic!("staged complete previews (v4={v4})"),
+        }
+        // Released under a staged gap records uncommitted with no commit
+        // despite a passed complete report, even with a moved release frame.
+        let mut engine = gesture_rig();
+        stage_gesture(
+            &mut engine,
+            v4,
+            5,
+            windows(),
+            Some(moved_started_ingress(7)),
+            true,
+            Vec::new(),
+        );
+        assert!(engine.gesture_bind(&contra_legacy(2, windows()), &BTreeSet::new()));
+        let moved_windows = || vec![fact("win-a", "out-a", 100), fact("win-b", "out-a", 100)];
+        let released = || GestureIngress {
+            phase: GesturePhase::Released,
+            ..moved_started_ingress(7)
+        };
+        stage_gesture(
+            &mut engine,
+            v4,
+            6,
+            moved_windows(),
+            Some(released()),
+            false,
+            Vec::new(),
+        );
+        match engine.gesture_act(&contra_legacy(6, moved_windows()), &mut BTreeSet::new()) {
+            GestureOutcome::Settled {
+                committed: false, ..
+            } => {}
+            _ => panic!("staged gap release never commits (v4={v4})"),
+        }
+        assert!(
+            engine.gesture.is_none() && engine.gesture_terminal.is_some(),
+            "gap terminal clears and records uncommitted (v4={v4})"
+        );
+        // Staged complete with the same moved frame commits despite a
+        // passed gapped report.
+        let mut engine = gesture_rig();
+        stage_gesture(
+            &mut engine,
+            v4,
+            5,
+            windows(),
+            Some(moved_started_ingress(7)),
+            true,
+            Vec::new(),
+        );
+        assert!(engine.gesture_bind(&contra_legacy(2, windows()), &BTreeSet::new()));
+        stage_gesture(
+            &mut engine,
+            v4,
+            6,
+            moved_windows(),
+            Some(released()),
+            true,
+            Vec::new(),
+        );
+        let mut contra_gapped = contra_legacy(6, moved_windows());
+        contra_gapped.inventory_complete = false;
+        match engine.gesture_act(&contra_gapped, &mut BTreeSet::new()) {
+            GestureOutcome::Settled {
+                committed: true, ..
+            } => {}
+            _ => panic!("staged complete release commits (v4={v4})"),
+        }
+        assert!(
+            engine.gesture.is_none() && engine.gesture_terminal.is_some(),
+            "commit terminal clears and records (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_gesture_act_close_follows_staged() {
+    for v4 in [false, true] {
+        let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+        // Staged explicit close clears with no ingress despite passed empty
+        // closes.
+        let mut engine = gesture_rig();
+        stage_gesture(
+            &mut engine,
+            v4,
+            5,
+            windows(),
+            Some(moved_started_ingress(7)),
+            true,
+            Vec::new(),
+        );
+        let open = contra_legacy(5, windows());
+        assert!(engine.gesture_bind(&open, &BTreeSet::new()));
+        stage_gesture(
+            &mut engine,
+            v4,
+            6,
+            windows(),
+            None,
+            true,
+            vec![WindowId("win-a".to_owned())],
+        );
+        match engine.gesture_act(&open, &mut BTreeSet::new()) {
+            GestureOutcome::Settled {
+                committed: false, ..
+            } => {}
+            _ => panic!("staged close clears (v4={v4})"),
+        }
+        assert!(engine.gesture.is_none(), "closed session cleared (v4={v4})");
+        // A passed-only close preserves the session.
+        let mut engine = gesture_rig();
+        stage_gesture(
+            &mut engine,
+            v4,
+            5,
+            windows(),
+            Some(moved_started_ingress(7)),
+            true,
+            Vec::new(),
+        );
+        let open = contra_legacy(5, windows());
+        assert!(engine.gesture_bind(&open, &BTreeSet::new()));
+        stage_gesture(&mut engine, v4, 6, windows(), None, true, Vec::new());
+        let mut contra_closed = contra_legacy(6, windows());
+        contra_closed.closed = vec![WindowId("win-a".to_owned())];
+        match engine.gesture_act(&contra_closed, &mut BTreeSet::new()) {
+            GestureOutcome::Held => {}
+            _ => panic!("passed-only close preserves (v4={v4})"),
+        }
+        assert!(engine.gesture.is_some(), "session held (v4={v4})");
+    }
+}
+
+/// Stage one born report through the real intake: raw inventory and barrier
+/// sit on both source reports BEFORE staging. The retained binding below is
+/// the TEST-ONLY seeded join.
+fn stage_born(engine: &mut WorldEngine, v4: bool, complete: bool, barrier: bool) {
+    let (mut legacy, mut v4report) = pair_reports(1, vec![fact("win-a", "out-a", 0)], Vec::new());
+    legacy.inventory_complete = complete;
+    v4report.inventory_complete = complete;
+    legacy.gesture_barrier = barrier;
+    v4report.gesture_barrier = barrier;
+    stage_either(engine, v4, &legacy, &v4report);
+    seed_readable_domain(engine, "win-a");
+}
+
+fn seed_born_desire(engine: &mut WorldEngine, v4: bool, complete: bool, barrier: bool) {
+    stage_born(engine, v4, complete, barrier);
+    engine.retained_born.push(RetainedBornClear {
+        operation_id: "op-born-1".to_owned(),
+        window: WindowId("win-a".to_owned()),
+        home: home_key("out-a"),
+        pending: None,
+        ambiguous: false,
+    });
+}
+
+fn touching_migration() -> RetainedTransfer {
+    RetainedTransfer {
+        target: TransferTarget {
+            operation_id: "op-1".to_owned(),
+            kind: TransferKind::Migration,
+            target_output: OutputId("out-b".to_owned()),
+            target_workspace: "ws-1".to_owned(),
+            follow: false,
+            held: false,
+        },
+        policy: false,
+        source_output: OutputId("out-a".to_owned()),
+        source_workspace: "ws-1".to_owned(),
+        members: Vec::new(),
+        migration_refill: None,
+        migration_initial_empty: true,
+        migration_source_index: None,
+        migration_source_view: None,
+        migration_target_view: None,
+        migration_terminal: None,
+        pending_member: None,
+        pending_members: BTreeMap::new(),
+        pending_view: None,
+    }
+}
+
+#[test]
+fn staged_born_authorization_gates_win_over_passed_report() {
+    for v4 in [false, true] {
+        let id = WindowId("win-a".to_owned());
+        // Control: staged complete with no barrier desires despite a passed
+        // incomplete/barrier report (no blanket inventory gate).
+        let mut engine = born_engine();
+        seed_born_desire(&mut engine, v4, true, false);
+        let mut contra = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
+        contra.inventory_complete = false;
+        contra.gesture_barrier = true;
+        assert_eq!(
+            engine.born_desire_for(&id, &contra),
+            Some("op-born-1".to_owned()),
+            "staged complete desires (v4={v4})"
+        );
+        // Staged barrier vetoes despite a passed clean report.
+        let mut engine = born_engine();
+        seed_born_desire(&mut engine, v4, true, true);
+        let contra = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
+        assert_eq!(
+            engine.born_desire_for(&id, &contra),
+            None,
+            "staged barrier holds (v4={v4})"
+        );
+        // Touching migration: staged incomplete holds despite a passed
+        // complete report; staged complete desires despite passed incomplete.
+        let mut engine = born_engine();
+        seed_born_desire(&mut engine, v4, false, false);
+        engine.retained.push(touching_migration());
+        let contra = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
+        assert_eq!(
+            engine.born_desire_for(&id, &contra),
+            None,
+            "touching gap holds (v4={v4})"
+        );
+        // Restage staged complete through the real intake (retained binding
+        // and touching migration survive): desires despite passed incomplete.
+        stage_born(&mut engine, v4, true, false);
+        let mut contra_gapped = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
+        contra_gapped.inventory_complete = false;
+        assert_eq!(
+            engine.born_desire_for(&id, &contra_gapped),
+            Some("op-born-1".to_owned()),
+            "staged complete desires under touching migration (v4={v4})"
+        );
+        // Presentation pause stays report-based: a paused passed report
+        // vetoes even with staged rails clear.
+        let mut engine = born_engine();
+        seed_born_desire(&mut engine, v4, true, false);
+        let mut contra_paused = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
+        contra_paused.presentation.paused = true;
+        assert_eq!(
+            engine.born_desire_for(&id, &contra_paused),
+            None,
+            "report pause vetoes (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_born_mint_departure_prune_reads_staged() {
+    for v4 in [false, true] {
+        let departed = WindowId("win-x".to_owned());
+        // Staged complete with no barrier prunes the departed lifetime
+        // despite a passed gapped/barrier report.
+        let mut engine = born_engine();
+        let (legacy, v4report) = pair_reports(1, vec![fact("win-a", "out-a", 0)], Vec::new());
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        engine.born_attempted.insert(departed.clone());
+        let mut contra = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
+        contra.inventory_complete = false;
+        contra.gesture_barrier = true;
+        engine.mint_born_clears(&contra, &BTreeSet::new(), &BTreeSet::new());
+        assert!(
+            !engine.born_attempted.contains(&departed),
+            "staged complete prunes departure (v4={v4})"
+        );
+        // Staged barrier preserves despite a passed clean report.
+        let mut engine = born_engine();
+        stage_born_mint(&mut engine, v4, true, true, Vec::new());
+        engine.born_attempted.insert(departed.clone());
+        let contra = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
+        engine.mint_born_clears(&contra, &BTreeSet::new(), &BTreeSet::new());
+        assert!(
+            engine.born_attempted.contains(&departed),
+            "staged barrier preserves (v4={v4})"
+        );
+        // Staged incomplete preserves despite a passed complete report.
+        let mut engine = born_engine();
+        stage_born_mint(&mut engine, v4, false, false, Vec::new());
+        engine.born_attempted.insert(departed.clone());
+        let contra = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
+        engine.mint_born_clears(&contra, &BTreeSet::new(), &BTreeSet::new());
+        assert!(
+            engine.born_attempted.contains(&departed),
+            "staged gap preserves (v4={v4})"
+        );
+        // Held rows are live presence (facts OR held): staged complete
+        // keeps the held lifetime despite a passed report with no held rows.
+        let mut engine = born_engine();
+        let held = held_window_row("win-x", "out-a", 0);
+        stage_born_mint(&mut engine, v4, true, false, vec![held]);
+        engine.born_attempted.insert(departed.clone());
+        let contra = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
+        engine.mint_born_clears(&contra, &BTreeSet::new(), &BTreeSet::new());
+        assert!(
+            engine.born_attempted.contains(&departed),
+            "held presence preserves (v4={v4})"
+        );
+    }
+}
+
+/// Stage one born-mint report through the real intake: raw inventory,
+/// barrier, and held rows sit on both source reports BEFORE staging. The
+/// departed-lifetime marks below are the TEST-ONLY seeded join.
+fn stage_born_mint(
+    engine: &mut WorldEngine,
+    v4: bool,
+    complete: bool,
+    barrier: bool,
+    held: Vec<HeldWindowRow>,
+) {
+    let (mut legacy, mut v4report) = pair_reports(1, vec![fact("win-a", "out-a", 0)], Vec::new());
+    legacy.inventory_complete = complete;
+    v4report.inventory_complete = complete;
+    legacy.gesture_barrier = barrier;
+    v4report.gesture_barrier = barrier;
+    legacy.held_windows = held.clone();
+    v4report.held_windows = held;
+    stage_either(engine, v4, &legacy, &v4report);
+}
+
+fn confirm_last_write(target: bool, rev: u64, post_obs: u64) -> LastWrite {
+    LastWrite {
+        property: LastWriteProperty::Visibility,
+        target,
+        revision: rev,
+        path: LastWritePath::Staged,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: None,
+        post: Some(VisibilitySample {
+            obs: post_obs,
+            lifetime_matched: Some(true),
+            visibility: VisibilityFact {
+                visible: Some(target),
+                suppression_owned: Some(false),
+            },
+            minimized: Some(false),
+            host_hidden: Some(false),
+        }),
+    }
+}
+
+fn fact_with_lw(window: &str, last: LastWrite) -> WindowFact {
+    let mut row = fact(window, "out-a", 0);
+    row.last_write = Some(last);
+    row
+}
+
+fn seed_switch_binding(engine: &mut WorldEngine, members: Vec<SwitchMember>) {
+    engine.retained_selection.insert(
+        OutputId("out-a".to_owned()),
+        RetainedSelection {
+            effect: None,
+            parent_op: "op-4".to_owned(),
+            home: home_key("out-a"),
+            rev: 1,
+            obs: 1,
+            members: Vec::new(),
+            switch_members: members,
+            switch_evidence: BTreeMap::new(),
+            feedback: None,
+            foreground_proven: false,
+            arrival_ready: false,
+            view_targets: BTreeMap::new(),
+            view_raw: BTreeMap::new(),
+        },
+    );
+}
+
+fn switch_member(window: &str, shown: bool) -> SwitchMember {
+    SwitchMember {
+        window: WindowId(window.to_owned()),
+        home: home_key("out-a"),
+        shown,
+        rev: 1,
+    }
+}
+
+#[test]
+fn staged_switch_receipt_and_close_win_over_passed_report() {
+    for v4 in [false, true] {
+        // First LastWrite grades against the staged receipt watermark: a
+        // post beyond the staged seq fails even though the passed report
+        // seq would bracket it.
+        let mut engine = engine_settle();
+        seed_switch_binding(&mut engine, vec![switch_member("win-a", true)]);
+        let (legacy, v4report) = pair_reports(
+            2,
+            vec![fact_with_lw("win-a", confirm_last_write(true, 1, 5))],
+            Vec::new(),
+        );
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        let contra = contra_legacy(99, vec![fact("win-a", "out-a", 0)]);
+        engine.settle_selection_switch(&contra);
+        let binding = engine.retained_selection.get(&OutputId("out-a".to_owned()));
+        assert!(
+            engine.switch_settled.len() == 1
+                && binding.is_none()
+                && engine
+                    .switch_settled
+                    .first()
+                    .is_some_and(|event| event.outcome == SwitchOutcome::CompletedWithFailures),
+            "staged out-of-bracket verdict terminates failed (v4={v4})"
+        );
+        // Later watermarks never upgrade the latched verdict: restage with
+        // a would-confirm LastWrite plus the pending member, and the first
+        // verdict stands until the terminal below.
+        let mut engine = engine_settle();
+        seed_switch_binding(
+            &mut engine,
+            vec![switch_member("win-a", true), switch_member("win-b", false)],
+        );
+        let (legacy, v4report) = pair_reports(
+            2,
+            vec![
+                fact_with_lw("win-a", confirm_last_write(true, 1, 5)),
+                fact("win-b", "out-a", 100),
+            ],
+            Vec::new(),
+        );
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        engine.settle_selection_switch(&contra_legacy(99, Vec::new()));
+        assert!(
+            engine.switch_settled.is_empty(),
+            "pending member holds terminal (v4={v4})"
+        );
+        let (legacy, v4report) = pair_reports(
+            3,
+            vec![
+                fact_with_lw("win-a", confirm_last_write(true, 1, 2)),
+                fact("win-b", "out-a", 100),
+            ],
+            Vec::new(),
+        );
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        engine.settle_selection_switch(&contra_legacy(99, Vec::new()));
+        let latched = engine
+            .retained_selection
+            .get(&OutputId("out-a".to_owned()))
+            .and_then(|binding| {
+                binding
+                    .switch_evidence
+                    .get(&WindowId("win-a".to_owned()))
+                    .map(|evidence| (evidence.confirmed, evidence.receipt_obs))
+            });
+        assert_eq!(
+            latched,
+            Some((false, 2)),
+            "first verdict never upgrades (v4={v4})"
+        );
+        // Staged close suppresses receipt and terminal despite passed empty
+        // closes; a passed-only close changes nothing.
+        let mut engine = engine_settle();
+        seed_switch_binding(&mut engine, vec![switch_member("win-a", true)]);
+        let (legacy, v4report) = pair_reports(
+            2,
+            vec![fact_with_lw("win-a", confirm_last_write(true, 1, 2))],
+            vec![WindowId("win-a".to_owned())],
+        );
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        engine.settle_selection_switch(&contra_legacy(2, Vec::new()));
+        assert!(
+            engine.switch_settled.is_empty()
+                && engine
+                    .retained_selection
+                    .contains_key(&OutputId("out-a".to_owned())),
+            "staged close suppresses (v4={v4})"
+        );
+        let mut engine = engine_settle();
+        seed_switch_binding(&mut engine, vec![switch_member("win-a", true)]);
+        let (legacy, v4report) = pair_reports(
+            2,
+            vec![fact_with_lw("win-a", confirm_last_write(true, 1, 2))],
+            Vec::new(),
+        );
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        let mut contra_closed = contra_legacy(2, Vec::new());
+        contra_closed.closed = vec![WindowId("win-a".to_owned())];
+        engine.settle_selection_switch(&contra_closed);
+        assert_eq!(
+            engine.switch_settled.len(),
+            1,
+            "passed-only close changes nothing (v4={v4})"
+        );
+    }
+}
+
+/// Stage one topology report through the real intake: raw screens, held
+/// screens, and inventory sit on both source reports BEFORE staging.
+/// Malformed typed screen rows below are defensive staged inputs only;
+/// they are never codec-accepted.
+fn stage_topology(
+    engine: &mut WorldEngine,
+    v4: bool,
+    screens: Vec<ScreenReport>,
+    held_screens: Vec<HeldScreenRow>,
+    complete: bool,
+) {
+    let (mut legacy, mut v4report) = pair_reports(1, Vec::new(), Vec::new());
+    legacy.screens = screens.clone();
+    v4report.screens = screens;
+    legacy.held_screens = held_screens.clone();
+    v4report.held_screens = held_screens;
+    legacy.inventory_complete = complete;
+    v4report.inventory_complete = complete;
+    stage_either(engine, v4, &legacy, &v4report);
+}
+
+#[test]
+fn staged_topology_retention_reads_staged_screens() {
+    for v4 in [false, true] {
+        // Staged complete geometry retains under an incomplete staged
+        // inventory: window inventory never gates topology.
+        let mut engine = engine();
+        stage_topology(&mut engine, v4, vec![screen("out-a", 0)], Vec::new(), false);
+        engine.retain_live_topology();
+        let entries = engine.live_topology_entries();
+        assert_eq!(
+            entries.len(),
+            1,
+            "complete topology retains under gap (v4={v4})"
+        );
+        assert_eq!(entries[0].id.0, "out-a", "staged output (v4={v4})");
+        assert_eq!(
+            entries[0].rect,
+            rect(0, 0, 800, 600),
+            "staged geometry (v4={v4})"
+        );
+        // Held rows never feed topology: a held-only output retains nothing
+        // extra and never clears the staged map.
+        stage_topology(
+            &mut engine,
+            v4,
+            vec![screen("out-a", 0)],
+            vec![held_screen_row("out-b", 0)],
+            true,
+        );
+        engine.retain_live_topology();
+        assert_eq!(
+            engine.live_topology_entries().len(),
+            1,
+            "held rows ignored (v4={v4})"
+        );
+        // Each fence clears with no prior retention: incomplete, missing,
+        // duplicate, and full-rect-invalid staged screens.
+        let mut incomplete = screen("out-a", 0);
+        incomplete.complete = false;
+        stage_topology(&mut engine, v4, vec![incomplete], Vec::new(), true);
+        engine.retain_live_topology();
+        assert!(
+            engine.live_topology_entries().is_empty(),
+            "incomplete clears (v4={v4})"
+        );
+        stage_topology(&mut engine, v4, Vec::new(), Vec::new(), true);
+        engine.retain_live_topology();
+        assert!(
+            engine.live_topology_entries().is_empty(),
+            "missing clears (v4={v4})"
+        );
+        stage_topology(
+            &mut engine,
+            v4,
+            vec![screen("out-a", 0), screen("out-a", 800)],
+            Vec::new(),
+            true,
+        );
+        engine.retain_live_topology();
+        assert!(
+            engine.live_topology_entries().is_empty(),
+            "duplicate clears (v4={v4})"
+        );
+        let mut invalid = screen("out-a", 0);
+        invalid.full_rect = Some(rect(0, 0, 0, 600));
+        stage_topology(&mut engine, v4, vec![invalid], Vec::new(), true);
+        engine.retain_live_topology();
+        assert!(
+            engine.live_topology_entries().is_empty(),
+            "invalid full rect clears (v4={v4})"
+        );
+        let mut missing_rect = screen("out-a", 0);
+        missing_rect.full_rect = None;
+        stage_topology(&mut engine, v4, vec![missing_rect], Vec::new(), true);
+        engine.retain_live_topology();
+        assert!(
+            engine.live_topology_entries().is_empty(),
+            "missing full rect clears (v4={v4})"
+        );
+        // Repeated captures keep no prior map: a complete restage retains
+        // current geometry again.
+        stage_topology(&mut engine, v4, vec![screen("out-a", 0)], Vec::new(), true);
+        engine.retain_live_topology();
+        assert_eq!(
+            engine.live_topology_entries().len(),
+            1,
+            "complete restage retains (v4={v4})"
+        );
     }
 }

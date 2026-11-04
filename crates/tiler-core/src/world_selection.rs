@@ -1142,8 +1142,8 @@ impl WorldEngine {
         if self.retained_selection.is_empty() {
             return;
         }
-        let report_obs = report.observation_seq;
-        let closed: BTreeSet<WindowId> = report.closed.iter().cloned().collect();
+        let report_obs = self.staged.observation.observation_seq;
+        let closed: BTreeSet<WindowId> = self.staged.closes.iter().cloned().collect();
         let outputs: Vec<OutputId> = self.retained_selection.keys().cloned().collect();
         for output in outputs {
             let issuing_obs = match self.retained_selection.get(&output) {

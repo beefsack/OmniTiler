@@ -3022,7 +3022,7 @@ impl WorldEngine {
         // homed occupancy; core-owned topology retains so the same report's
         // commands resolve against its own geometry.
         self.converge_logical_post(report);
-        self.retain_live_topology(report);
+        self.retain_live_topology();
         // Retained membership before the sweep, per swept domain: the
         // admission-focus pass diffs this against converged state to find
         // genuinely new lifetimes. Only domains with a retained session

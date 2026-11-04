@@ -115,7 +115,9 @@ impl WorldEngine {
         report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> bool {
-        let ingress = match report.gesture.as_ref() {
+        let staged_seq = self.staged.observation.observation_seq;
+        let ingress_owned = self.staged.observation.gesture.clone();
+        let ingress = match ingress_owned.as_ref() {
             Some(ingress) if ingress.esc => {
                 // Host-owned Esc/cancel fact clears only the matching
                 // retained session, immediately, even before the sweep. A
@@ -178,7 +180,7 @@ impl WorldEngine {
             }
             return false;
         };
-        if !self.gesture_start_valid(report, ingress, &home, held_scopes) {
+        if !self.gesture_start_valid(ingress, &home, held_scopes) {
             if matches!(
                 ingress.phase,
                 GesturePhase::Released | GesturePhase::Cancelled
@@ -197,7 +199,7 @@ impl WorldEngine {
             window: ingress.window.clone(),
             id: ingress.id,
             kind: ingress.kind,
-            start_seq: report.observation_seq,
+            start_seq: staged_seq,
             start_frame: ingress.start_frame,
             start_cursor,
             start_exact: ingress.start_cursor.is_some(),
@@ -236,7 +238,7 @@ impl WorldEngine {
         report: &WorldReport,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) -> GestureOutcome {
-        let ingress = match report.gesture.as_ref() {
+        let ingress = match self.staged.observation.gesture.clone() {
             Some(ingress) if ingress.esc => {
                 // Host-owned Esc/cancel fact: clears only the matching
                 // session regardless of phase. Never commits; the native
@@ -256,7 +258,7 @@ impl WorldEngine {
                 self.record_gesture_terminal(ingress.id, false);
                 return GestureOutcome::Absent;
             }
-            Some(ingress) => Some(ingress.clone()),
+            Some(ingress) => Some(ingress),
             None => None,
         };
         match (self.gesture.clone(), ingress) {
@@ -275,7 +277,7 @@ impl WorldEngine {
                 // close clears here (a cancel phase or Esc clears above).
                 // The next ingress continues the gesture. Hidden or
                 // incomplete departures hold, never a false close.
-                if report.closed.contains(&retained.window) {
+                if self.staged.closes.contains(&retained.window) {
                     self.gesture = None;
                     self.record_gesture_terminal(retained.id, false);
                     return GestureOutcome::Settled {
@@ -310,7 +312,9 @@ impl WorldEngine {
                     // bound. An explicit start on its bind report holds
                     // (bind only, no overlay at the down point); every
                     // other sample previews through the update path.
-                    GesturePhase::Started if retained.start_seq == report.observation_seq => {
+                    GesturePhase::Started
+                        if retained.start_seq == self.staged.observation.observation_seq =>
+                    {
                         GestureOutcome::Held
                     }
                     GesturePhase::Started | GesturePhase::Updated => {
@@ -342,15 +346,14 @@ impl WorldEngine {
     /// homing for a genuinely new lifetime.
     fn gesture_start_valid(
         &self,
-        report: &WorldReport,
         ingress: &GestureIngress,
         home: &DomainKey,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> bool {
-        if !report.inventory_complete {
+        if !self.staged.observation.inventory_complete {
             return false;
         }
-        if report.closed.contains(&ingress.window) {
+        if self.staged.closes.contains(&ingress.window) {
             return false;
         }
         let Some(domain) = self.staged.domains.iter().find(|d| d.key == *home) else {
@@ -396,14 +399,13 @@ impl WorldEngine {
     /// explicit closes clear (handled by the caller).
     fn gesture_continue_fences(
         &self,
-        report: &WorldReport,
         retained: &RetainedGesture,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> bool {
-        if !report.inventory_complete {
+        if !self.staged.observation.inventory_complete {
             return false;
         }
-        if report.closed.contains(&retained.window) {
+        if self.staged.closes.contains(&retained.window) {
             return false;
         }
         let Some(home) = self.staged.homing.get(&retained.window) else {
@@ -512,7 +514,7 @@ impl WorldEngine {
             .gesture
             .clone()
             .expect("updated runs with a retained session");
-        if report.closed.contains(&retained.window) {
+        if self.staged.closes.contains(&retained.window) {
             self.gesture = None;
             self.record_gesture_terminal(retained.id, false);
             return GestureOutcome::Settled {
@@ -520,7 +522,7 @@ impl WorldEngine {
                 result: None,
             };
         }
-        if !self.gesture_continue_fences(report, &retained, held_scopes) {
+        if !self.gesture_continue_fences(&retained, held_scopes) {
             return GestureOutcome::Held;
         }
         if self.gesture_game_paused(&retained) {
@@ -646,8 +648,8 @@ impl WorldEngine {
                 result: None,
             };
         }
-        if report.closed.contains(&retained.window)
-            || !self.gesture_continue_fences(report, &retained, held_scopes)
+        if self.staged.closes.contains(&retained.window)
+            || !self.gesture_continue_fences(&retained, held_scopes)
         {
             self.record_gesture_terminal(retained.id, false);
             return GestureOutcome::Settled {

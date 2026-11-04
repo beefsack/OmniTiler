@@ -3139,7 +3139,7 @@ fn composed_tiled_move_unreadable_topology_retains_bit() {
     );
     engine.stage_facts(&probe);
     engine.build_staged_domains(&probe);
-    engine.retain_live_topology(&probe);
+    engine.retain_live_topology();
     match engine.execute_command(
         &probe,
         2,

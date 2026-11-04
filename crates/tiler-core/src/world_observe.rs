@@ -30,10 +30,10 @@ impl WorldEngine {
     /// window-read failures: `inventory_complete` (window inventory) never
     /// gates topology retention. Never infers geometry from work areas or
     /// window frames.
-    pub(crate) fn retain_live_topology(&mut self, report: &WorldReport) {
+    pub(crate) fn retain_live_topology(&mut self) {
         let mut fresh: BTreeMap<String, Rect> = BTreeMap::new();
-        let mut complete = !report.screens.is_empty();
-        for screen in &report.screens {
+        let mut complete = !self.staged.screens.is_empty();
+        for screen in &self.staged.screens {
             if !screen.complete {
                 complete = false;
                 break;

@@ -117,7 +117,7 @@ impl WorldEngine {
         window: &WindowId,
         home: &DomainKey,
     ) -> bool {
-        if report.presentation.paused || report.gesture_barrier {
+        if report.presentation.paused || self.staged.gesture_barrier {
             return false;
         }
         let Some(fact) = self.staged.facts.get(window) else {
@@ -194,7 +194,7 @@ impl WorldEngine {
         }
         // Migration-gap safety: incomplete inventory with an outstanding
         // migration touching home holds, mirroring the sweep gap fence.
-        if !report.inventory_complete
+        if !self.staged.observation.inventory_complete
             && self.retained.iter().any(|r| {
                 matches!(&r.target.kind, crate::world_report::TransferKind::Migration)
                     && (DomainKey {
@@ -291,7 +291,7 @@ impl WorldEngine {
         // never a departure; excluded windows never reset identity (only
         // an explicit native close does). A returning lifetime therefore
         // re-evaluates as first-seen. Gapped reports prune nothing.
-        if report.inventory_complete && !report.gesture_barrier {
+        if self.staged.observation.inventory_complete && !self.staged.gesture_barrier {
             let held: BTreeSet<&WindowId> = self
                 .staged
                 .held_windows
