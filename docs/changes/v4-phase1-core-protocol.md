@@ -650,6 +650,35 @@
   and the writer has no byte-level check for malformed nested objects. No
   ordering rule, parser feature or contract text changes.
 
+### v4 reply codec sub-increments
+
+- Split the reply codec into a staged typed decoder (5a), then the canonical
+  writer and byte-exact round trip (5b). Neither changes the runtime's accepted
+  version, the legacy reply type or its writers, or the engine's reply producer.
+- 5a outcome: a staged standalone `WorldReplyV4` reuses the existing reply row
+  types and carries only wire facts. The reply `presentation` is the anchored
+  border shape with an independent revision. The strict context-free decoder
+  accepts all 114 valid reply fixtures and, for the 23 context-free negatives,
+  refuses the untouched fixture with the intended fixed kind and message; only
+  afterwards does a single-pointer in-memory repair decode, as a positive
+  counterfactual. The other 3 negatives need declared handshake capabilities:
+  the context-free decoder accepts them (one is byte-identical to a valid
+  fixture with a different manifest context), and the explicit host wrapper,
+  which takes the existing declared capability facts and infers nothing,
+  refuses an above state target without `above`, a non-null `warpCursor`
+  without `warp`, and a sticky state target without native sticky, each with a
+  distinct fixed snapshot-invalid message named after the manifest rule.
+  One-shot raise/stack effects are not gated. The envelope identity fields use
+  the same bounded validators as the report decoder.
+- Typed values determine every wire spelling except suspended-output presence,
+  which is carried as protocol-owned metadata; 5b must confirm this against
+  the 114 byte-exact fixtures.
+- Engine fields a genuine reply needs that do not exist yet (unit 6): the
+  anchored border (subject, outsets, width, radius, witness) has no producer,
+  and the engine publishes the legacy absolute-rect border; staged transfer
+  rows carry a command sequence for which the engine retains no source. The
+  codec fabricates neither.
+
 ## Evidence
 
 - Initial fixture inventory: 518 messages (275 valid, 3 settings-diagnostic,

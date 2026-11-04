@@ -2738,6 +2738,87 @@ pub enum CommandResult {
     Rejected { kind: CommandRejectKind },
 }
 
+/// Staged v4 reply section caps: worst-case row bounds for the whole-reply
+/// decoder, mirroring the report-side analogues. Outputs mirror screens;
+/// window-keyed lanes mirror facts; retained-operation lanes mirror the
+/// attempt caps; native creations mirror creation attempts; intent writes
+/// reuse [`MAX_INTENT_WRITES`]. Over-cap sections refuse the whole message;
+/// replies carry no held-row concept.
+pub const MAX_REPLY_SCOPES: usize = 1024;
+pub const MAX_REPLY_WORKSPACES: usize = 1024;
+pub const MAX_REPLY_OUTPUTS: usize = 16;
+pub const MAX_REPLY_WINDOWS: usize = 10_000;
+pub const MAX_REPLY_TRANSFERS: usize = 1024;
+pub const MAX_REPLY_EFFECTS: usize = 1024;
+pub const MAX_REPLY_OPERATIONS: usize = 1024;
+pub const MAX_REPLY_NATIVE_CREATIONS: usize = 256;
+pub const MAX_REPLY_SWITCH_EVENTS: usize = 1024;
+pub const MAX_REPLY_DIAGNOSTICS: usize = 10_000;
+/// Bound on native-state targets per window row: one per [`StateProperty`].
+pub const MAX_STATE_TARGETS_PER_WINDOW: usize = 4;
+
+/// Staged v4 retained transfer/view target: the legacy [`TransferTarget`]
+/// shape plus the retained originating command correlation (`None` on
+/// commandless work, never a parsed id). `cmdSeq` spells the wire `cmdSeq`
+/// quoted decimal or null.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferTargetV4 {
+    pub operation_id: String,
+    pub kind: TransferKind,
+    pub target_output: OutputId,
+    pub target_workspace: String,
+    pub follow: bool,
+    pub held: bool,
+    pub command_seq: Option<u64>,
+}
+
+/// Staged v4 reply presentation: the tick-time foreground token, the issuing
+/// revision label, the anchored [`BorderPresentationV4`] row, and the reused
+/// [`crate::world_presentation::PresentationUnderlay`]/pager publication.
+/// The v3 [`crate::world_presentation::WorldPresentation`] stays untouched
+/// for the legacy path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorldPresentationV4 {
+    pub foreground: String,
+    pub rev: u64,
+    pub suspended_output: Option<OutputId>,
+    pub border: BorderPresentationV4,
+    pub underlay: crate::world_presentation::PresentationUnderlay,
+    pub pager: Vec<crate::world_presentation::PagerScreen>,
+}
+
+/// Staged v4 world reply: single globally ordered full desired snapshot at
+/// contract version 4. Reuses the existing v3 row types plus
+/// [`TransferTargetV4`] (retained command correlation) and
+/// [`WorldPresentationV4`] (anchored border). Carries only what the wire
+/// carries: no defaults, no witnesses, no forced-hidden borders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorldReplyV4 {
+    pub contract_version: u32,
+    pub adapter_incarnation: String,
+    pub core_generation: String,
+    pub request_id: String,
+    pub based_on_observation_seq: u64,
+    pub state_revision: u64,
+    pub ready: bool,
+    pub command_consumed: bool,
+    pub scopes: Vec<ScopeStatus>,
+    pub workspaces: Vec<WorkspaceDesire>,
+    pub outputs: Vec<OutputDesire>,
+    pub windows: Vec<WindowDesire>,
+    pub transfers: Vec<TransferTargetV4>,
+    pub effects: Vec<OneShotEffect>,
+    pub command_result: Option<CommandResult>,
+    pub gesture_settled: Option<GestureSettled>,
+    pub operation_settled: Vec<OperationEvent>,
+    pub native_creations: Vec<NativeCreationDesire>,
+    pub cursor_warp: Option<(i32, i32)>,
+    pub presentation: WorldPresentationV4,
+    pub intent_writes: Vec<IntentWrite>,
+    pub switch_settled: Vec<SwitchEvent>,
+    pub diagnostics: Vec<RowDiagnostic>,
+}
+
 /// Request freshness verdict over `request_seq` alone. Command consumption
 /// is tracked separately by command sequence, never conflated here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

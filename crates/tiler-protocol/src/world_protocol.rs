@@ -221,25 +221,42 @@
 //! empty sections. Bounded errors reuse
 //! `{v:3,outcome:"rejected",kind,message,gen}`.
 
+use tiler_core::active_group::ActiveGroupMember;
 use tiler_core::boundary::CoreCommand;
 use tiler_core::bounds::{is_opaque_id, valid_carried_rect};
 use tiler_core::connection::RawSettingValue;
-use tiler_core::connection::{valid_identity_text, valid_process_identity_text};
-use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
+use tiler_core::connection::{HostCapabilities, valid_identity_text, valid_process_identity_text};
+use tiler_core::contract::DragSide;
+use tiler_core::directional::{Direction, NodeId, OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
+use tiler_core::gesture::GestureSettled;
 use tiler_core::ids::{
     MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_NATIVE_WORKSPACE_ID_LEN, NativeWorkspaceId,
 };
+use tiler_core::intent_data::MAX_INTENT_DATA_BYTES;
+use tiler_core::policy::PriorGroupEdge;
+use tiler_core::session::{DomainKey, DragHoverPrior};
+use tiler_core::world_directional::DirectionalOutcome;
+use tiler_core::world_presentation::{
+    GroupHideReason, PagerScreen, PagerWindow, PagerWorkspace, PresentationUnderlay,
+};
 use tiler_core::world_report::{
     ActivationPolicy, ArrivalBracket, ArrivalLocation, AttemptLaneV4, AuthorityScope,
-    BorderHideReasonV4, BorderPresentationV4, FocusFeedback, FrameWitness, FullscreenOwner,
-    HeldAttemptRow, HeldNativeRow, HeldPresentationRow, HeldScreenRow, HeldWindowRow, HoldReason,
-    IntentRecord, LastWrite, LastWritePath, LastWriteProperty, MAX_INTENT_RECORDS,
-    NativeObservation, NativeWorkspaceFact, OutputIdentity, PresentationIngress,
-    PresentationIngressV4, PresentationPagerFrameV4, PresentationRowV4, RenderTarget,
-    RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport, ScreenView,
-    TransferKind, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    WORLD_CONTRACT_VERSION, WindowFact, WindowType, WorkspaceRef, WorldCommand, WorldReply,
+    BorderHideReasonV4, BorderPresentationV4, CommandRejectKind, CommandResult, EffectKind,
+    FloatOrigin, FocusFeedback, FrameWitness, FullscreenOwner, HeldAttemptRow, HeldNativeRow,
+    HeldPresentationRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, IntentWrite,
+    LastWrite, LastWritePath, LastWriteProperty, MAX_INTENT_RECORDS, MAX_INTENT_WRITES,
+    MAX_REPLY_DIAGNOSTICS, MAX_REPLY_EFFECTS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS,
+    MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS,
+    MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire,
+    NativeObservation, NativeWorkspaceFact, OneShotEffect, OperationEvent, OperationOutcome,
+    OutputDesire, OutputIdentity, PresentationIngress, PresentationIngressV4,
+    PresentationPagerFrameV4, PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic,
+    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScopeStatus, ScreenReport, ScreenView,
+    StateProperty, StateTarget, SwitchEvent, SwitchFocus, SwitchOutcome, TilingMode, TransferKind,
+    TransferTargetV4, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    VisibilityTarget, WORLD_CONTRACT_VERSION, WindowDesire, WindowFact, WindowType,
+    WorkspaceDesire, WorkspaceRef, WorldCommand, WorldPresentationV4, WorldReply, WorldReplyV4,
     WorldReport, WorldReportV4, check_screen_structure, check_window_structure,
     push_raw_setting_value, validate_report_reason,
 };
@@ -5878,6 +5895,1279 @@ pub fn decode_report_v4_for_host(
             kind: KIND_SNAPSHOT,
             message: "arrival-host-mismatch",
         });
+    }
+    Ok(decoded)
+}
+
+// -- Staged whole-reply v4 decoder --
+// Context-free strict decode of one v4 world reply plus the declared-host
+// capability gate. Reuses the existing row decoders/helpers
+// (`decode_authority_scope`, `decode_frame_witness`,
+// `decode_border_presentation_v4`, `decode_pager_frame_v4`,
+// `decode_render_target`, `check_keys`/`check_keys_with_optional`,
+// `opt_u64_or_null`, `opt_point_or_null`) where their grammar matches the
+// reply contract. Replies carry no held-row concept: any invalid row
+// refuses the whole message. Envelope and section key order follows the
+// contract table; typed fields carry only what the wire carries.
+
+fn reply_snapshot(message: &'static str) -> WorldProtocolError {
+    WorldProtocolError {
+        kind: KIND_SNAPSHOT,
+        message,
+    }
+}
+
+fn parse_hold_reason(text: &str) -> Option<HoldReason> {
+    Some(match text {
+        "unreadable" => HoldReason::Unreadable,
+        "incomplete-inventory" => HoldReason::IncompleteInventory,
+        "gesture-barrier" => HoldReason::GestureBarrier,
+        "refused-target" => HoldReason::RefusedTarget,
+        "ambiguous-creation" => HoldReason::AmbiguousCreation,
+        "occupied-removal" => HoldReason::OccupiedRemoval,
+        "constraint-clamp" => HoldReason::ConstraintClamp,
+        "minimized" => HoldReason::Minimized,
+        _ => return None,
+    })
+}
+
+fn decode_authority_pair(
+    map: &serde_json::Map<String, serde_json::Value>,
+    auth_key: &str,
+    reason_key: &str,
+) -> Result<ScopeAuthority> {
+    let auth = req_str(map, auth_key)?;
+    let reason = req_str(map, reason_key)?;
+    match auth {
+        "controlled" | "untouched" => {
+            if !reason.is_empty() {
+                return Err(reply_snapshot("nonhold-reason"));
+            }
+            Ok(if auth == "controlled" {
+                ScopeAuthority::Controlled
+            } else {
+                ScopeAuthority::Untouched
+            })
+        }
+        "hold" => match parse_hold_reason(reason) {
+            Some(hold) => Ok(ScopeAuthority::Hold(hold)),
+            None => Err(unknown_value()),
+        },
+        _ => Err(unknown_value()),
+    }
+}
+
+fn decode_hold_or_empty(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<HoldReason>> {
+    let text = req_str(map, key)?;
+    if text.is_empty() {
+        return Ok(None);
+    }
+    parse_hold_reason(text).map(Some).ok_or_else(unknown_value)
+}
+
+fn decode_tiling_mode(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<TilingMode> {
+    match req_str(map, key)? {
+        "tiled" => Ok(TilingMode::Tiled),
+        "floating" => Ok(TilingMode::Floating),
+        _ => Err(unknown_value()),
+    }
+}
+
+fn decode_scope_status(value: &serde_json::Value) -> Result<ScopeStatus> {
+    let map = as_object(value)?;
+    check_keys(map, &["scope", "auth", "reason"])?;
+    Ok(ScopeStatus {
+        scope: decode_authority_scope(map.get("scope").ok_or_else(malformed)?)?,
+        authority: decode_authority_pair(map, "auth", "reason")?,
+    })
+}
+
+fn decode_workspace_desire(value: &serde_json::Value) -> Result<WorkspaceDesire> {
+    let map = as_object(value)?;
+    check_keys_with_optional(
+        map,
+        &[
+            "id", "out", "bind", "scope", "order", "mode", "exist", "hold",
+        ],
+        &["trailing"],
+    )?;
+    if map
+        .get("trailing")
+        .is_some_and(|trailing| trailing != &serde_json::Value::Bool(true))
+    {
+        return Err(reply_snapshot("workspace-trailing-false"));
+    }
+    let order = map
+        .get("order")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|order| usize::try_from(order).ok())
+        .ok_or_else(malformed)?;
+    Ok(WorkspaceDesire {
+        id: req_id(map, "id")?,
+        output: OutputId(req_id(map, "out")?),
+        native_binding: {
+            let bind = req_str(map, "bind")?;
+            if bind.is_empty() {
+                None
+            } else if is_opaque_id(bind) {
+                Some(bind.to_owned())
+            } else {
+                return Err(unknown_value());
+            }
+        },
+        scope: decode_authority_scope(map.get("scope").ok_or_else(malformed)?)?,
+        order,
+        tiling_mode: decode_tiling_mode(map, "mode")?,
+        existence: req_bool(map, "exist")?,
+        hold: decode_hold_or_empty(map, "hold")?,
+        trailing: map.contains_key("trailing"),
+    })
+}
+
+fn decode_output_desire(value: &serde_json::Value) -> Result<OutputDesire> {
+    let map = as_object(value)?;
+    check_keys(map, &["out", "view", "mode", "hold"])?;
+    let view = req_str(map, "view")?;
+    Ok(OutputDesire {
+        output: OutputId(req_id(map, "out")?),
+        logical_view: if view.is_empty() {
+            None
+        } else if is_opaque_id(view) {
+            Some(view.to_owned())
+        } else {
+            return Err(unknown_value());
+        },
+        tiling_mode: decode_tiling_mode(map, "mode")?,
+        hold: decode_hold_or_empty(map, "hold")?,
+    })
+}
+
+fn decode_visibility_target(value: &serde_json::Value) -> Result<VisibilityTarget> {
+    let map = as_object(value)?;
+    check_keys(map, &["shown", "rev", "fallback"])?;
+    let shown = req_bool(map, "shown")?;
+    let fallback = req_bool(map, "fallback")?;
+    if shown && fallback {
+        return Err(reply_snapshot("visibility-show-fallback"));
+    }
+    Ok(VisibilityTarget {
+        shown,
+        revision: req_u64_str(map, "rev")?,
+        fallback,
+    })
+}
+
+fn decode_state_target(value: &serde_json::Value) -> Result<StateTarget> {
+    let map = as_object(value)?;
+    check_keys(map, &["property", "value", "auth", "reason", "cmdSeq"])?;
+    let property = match req_str(map, "property")? {
+        "fullscreen" => StateProperty::Fullscreen,
+        "maximized" => StateProperty::Maximized,
+        "sticky" => StateProperty::Sticky,
+        "above" => StateProperty::Above,
+        _ => return Err(unknown_value()),
+    };
+    Ok(StateTarget {
+        property,
+        value: req_bool(map, "value")?,
+        authority: decode_authority_pair(map, "auth", "reason")?,
+        command_seq: opt_u64_or_null(map, "cmdSeq")?,
+    })
+}
+
+fn decode_window_desire(value: &serde_json::Value) -> Result<WindowDesire> {
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "win",
+            "out",
+            "ws",
+            "alloc",
+            "frame",
+            "frame_auth",
+            "frame_hold",
+            "member_auth",
+            "member_hold",
+            "frame_op",
+            "floating",
+            "float_origin",
+            "clear_op",
+            "cmdSeq",
+            "visibility",
+            "visibility_auth",
+            "visibility_hold",
+            "state",
+        ],
+    )?;
+    let frame_operation = {
+        let text = req_str(map, "frame_op")?;
+        if text.is_empty() {
+            None
+        } else if is_opaque_id(text) {
+            Some(text.to_owned())
+        } else {
+            return Err(unknown_value());
+        }
+    };
+    let clear_operation = {
+        let text = req_str(map, "clear_op")?;
+        if text.is_empty() {
+            None
+        } else if is_opaque_id(text) {
+            Some(text.to_owned())
+        } else {
+            return Err(unknown_value());
+        }
+    };
+    let float_origin = match req_str(map, "float_origin")? {
+        "" => None,
+        "capacity" => Some(FloatOrigin::Capacity),
+        _ => return Err(unknown_value()),
+    };
+    let visibility = match map.get("visibility") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => Some(decode_visibility_target(value)?),
+    };
+    let state_value = map.get("state").ok_or_else(malformed)?;
+    let state_items = state_value.as_array().ok_or_else(malformed)?;
+    if state_items.len() > MAX_STATE_TARGETS_PER_WINDOW {
+        return Err(reply_snapshot("state-target-count"));
+    }
+    let mut state = Vec::with_capacity(state_items.len());
+    let mut seen = std::collections::BTreeSet::new();
+    for item in state_items {
+        let target = decode_state_target(item)?;
+        if !seen.insert(target.property) {
+            return Err(reply_snapshot("state-target-count"));
+        }
+        state.push(target);
+    }
+    Ok(WindowDesire {
+        lifetime: WindowId(req_id(map, "win")?),
+        output: OutputId(req_id(map, "out")?),
+        workspace: req_id(map, "ws")?,
+        allocation: opt_rect_or_null(map, "alloc")?,
+        effective_frame: opt_rect_or_null(map, "frame")?,
+        frame_authority: decode_authority_pair(map, "frame_auth", "frame_hold")?,
+        membership_authority: decode_authority_pair(map, "member_auth", "member_hold")?,
+        floating: req_bool(map, "floating")?,
+        float_origin,
+        frame_operation,
+        clear_operation,
+        command_seq: opt_u64_or_null(map, "cmdSeq")?,
+        visibility,
+        visibility_authority: decode_authority_pair(map, "visibility_auth", "visibility_hold")?,
+        state,
+    })
+}
+
+fn decode_transfer_v4(value: &serde_json::Value) -> Result<TransferTargetV4> {
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &["op", "kind", "win", "out", "ws", "follow", "held", "cmdSeq"],
+    )?;
+    let kind = match req_str(map, "kind")? {
+        "window" => {
+            let win = req_str(map, "win")?;
+            if !is_opaque_id(win) {
+                return Err(unknown_value());
+            }
+            TransferKind::Window(WindowId(win.to_owned()))
+        }
+        "view" => {
+            if !req_str(map, "win")?.is_empty() {
+                return Err(unknown_value());
+            }
+            TransferKind::View
+        }
+        "migration" => {
+            if !req_str(map, "win")?.is_empty() {
+                return Err(unknown_value());
+            }
+            TransferKind::Migration
+        }
+        _ => return Err(unknown_value()),
+    };
+    Ok(TransferTargetV4 {
+        operation_id: req_id(map, "op")?,
+        kind,
+        target_output: OutputId(req_id(map, "out")?),
+        target_workspace: req_id(map, "ws")?,
+        follow: req_bool(map, "follow")?,
+        held: req_bool(map, "held")?,
+        command_seq: opt_u64_or_null(map, "cmdSeq")?,
+    })
+}
+
+fn decode_effect(value: &serde_json::Value) -> Result<OneShotEffect> {
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "id",
+            "kind",
+            "target",
+            "rev",
+            "cause",
+            "cmdSeq",
+            "awaitShown",
+        ],
+    )?;
+    let kind = match req_str(map, "kind")? {
+        "focus" => EffectKind::Focus,
+        "raise" => EffectKind::Raise,
+        "stack" => EffectKind::Stack,
+        _ => return Err(unknown_value()),
+    };
+    let cause = match req_str(map, "cause")? {
+        "explicit-command" => tiler_core::world_report::EffectCause::ExplicitCommand,
+        "automatic-admission" => tiler_core::world_report::EffectCause::AutomaticAdmission,
+        "focus-follows-cursor" => tiler_core::world_report::EffectCause::FocusFollowsCursor,
+        _ => return Err(unknown_value()),
+    };
+    let command_seq = opt_u64_or_null(map, "cmdSeq")?;
+    let await_shown = req_bool(map, "awaitShown")?;
+    let explicit = cause == tiler_core::world_report::EffectCause::ExplicitCommand;
+    if explicit && command_seq.is_none() {
+        return Err(reply_snapshot("effect-explicit-null-seq"));
+    }
+    if !explicit && command_seq.is_some() {
+        return Err(reply_snapshot("effect-non-explicit-seq"));
+    }
+    if !explicit && await_shown {
+        return Err(reply_snapshot("effect-automatic-await-shown"));
+    }
+    Ok(OneShotEffect {
+        id: req_id(map, "id")?,
+        kind,
+        target: WindowId(req_id(map, "target")?),
+        issued_revision: req_u64_str(map, "rev")?,
+        cause,
+        command_seq,
+        await_shown,
+    })
+}
+
+fn decode_domain_key(
+    map: &serde_json::Map<String, serde_json::Value>,
+    out_key: &str,
+    ws_key: &str,
+) -> Result<DomainKey> {
+    Ok(DomainKey {
+        output: OutputId(req_id(map, out_key)?),
+        workspace: WorkspaceId(req_id(map, ws_key)?),
+    })
+}
+
+fn decode_drag_prior(value: &serde_json::Value) -> Result<PriorGroupEdge> {
+    let map = as_object(value)?;
+    check_keys(map, &["group", "edge"])?;
+    let edge = match req_str(map, "edge")? {
+        "left" => DragSide::Left,
+        "right" => DragSide::Right,
+        "top" => DragSide::Top,
+        "bottom" => DragSide::Bottom,
+        "center" => DragSide::Center,
+        _ => return Err(unknown_value()),
+    };
+    Ok(PriorGroupEdge {
+        group: NodeId(req_id(map, "group")?),
+        edge,
+    })
+}
+
+fn decode_drag_hover(value: &serde_json::Value) -> Result<DragHoverPrior> {
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "domainOut",
+            "domainWs",
+            "leaf",
+            "win",
+            "rev",
+            "prior",
+            "priorOut",
+            "priorWs",
+        ],
+    )?;
+    Ok(DragHoverPrior {
+        domain: decode_domain_key(map, "domainOut", "domainWs")?,
+        source_leaf: NodeId(req_id(map, "leaf")?),
+        source_window: WindowId(req_id(map, "win")?),
+        revision: req_u64_str(map, "rev")?,
+        prior: match map.get("prior") {
+            None => return Err(malformed()),
+            Some(serde_json::Value::Null) => None,
+            Some(value) => Some(decode_drag_prior(value)?),
+        },
+        prior_domain: decode_domain_key(map, "priorOut", "priorWs")?,
+    })
+}
+
+fn decode_direction_token(text: &str) -> Result<Direction> {
+    match text {
+        "left" => Ok(Direction::Left),
+        "right" => Ok(Direction::Right),
+        "up" => Ok(Direction::Up),
+        "down" => Ok(Direction::Down),
+        _ => Err(unknown_value()),
+    }
+}
+
+fn decode_directional_outcome(text: &str) -> Result<DirectionalOutcome> {
+    match text {
+        "focus-refused-floating" => Ok(DirectionalOutcome::FocusRefusedFloating),
+        "move-refused-floating" => Ok(DirectionalOutcome::MoveRefusedFloating),
+        "focus-refused-workspace-floating" => Ok(DirectionalOutcome::FocusRefusedWorkspaceFloating),
+        "move-refused-workspace-floating" => Ok(DirectionalOutcome::MoveRefusedWorkspaceFloating),
+        "move-refused-fullscreen" => Ok(DirectionalOutcome::MoveRefusedFullscreen),
+        "focus-refused-maximize" => Ok(DirectionalOutcome::FocusRefusedMaximize),
+        "focus-float-retained" => Ok(DirectionalOutcome::FocusFloatRetained),
+        "focus-unfocused-retained" => Ok(DirectionalOutcome::FocusUnfocusedRetained),
+        "focus-float-refused-stale" => Ok(DirectionalOutcome::FocusFloatRefusedStale),
+        "move-float-refused-stale" => Ok(DirectionalOutcome::MoveFloatRefusedStale),
+        "move-float-refused-invalid-geometry" => {
+            Ok(DirectionalOutcome::MoveFloatRefusedInvalidGeometry)
+        }
+        "move-float-refused-constraints" => Ok(DirectionalOutcome::MoveFloatRefusedConstraints),
+        "move-float-unknown-output" => Ok(DirectionalOutcome::MoveFloatRefusedUnknownOutput),
+        "focus-float-applied" => Ok(DirectionalOutcome::FocusFloatApplied),
+        "move-float-applied" => Ok(DirectionalOutcome::MoveFloatApplied),
+        "move-maximize-clear" => Ok(DirectionalOutcome::NeedClear),
+        _ => Err(unknown_value()),
+    }
+}
+
+fn decode_command_result(value: &serde_json::Value) -> Result<Option<CommandResult>> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let map = as_object(value)?;
+    let op = req_str(map, "op")?;
+    match op {
+        "drag-preview" => {
+            check_keys(
+                map,
+                &[
+                    "op",
+                    "rev",
+                    "domainOut",
+                    "domainWs",
+                    "sourceOut",
+                    "sourceWs",
+                    "rect",
+                    "hover",
+                    "win",
+                ],
+            )?;
+            Ok(Some(CommandResult::DragPreview {
+                rect: req_rect_value(map.get("rect").ok_or_else(malformed)?)?,
+                hover: match map.get("hover") {
+                    None => return Err(malformed()),
+                    Some(serde_json::Value::Null) => None,
+                    Some(value) => Some(decode_drag_hover(value)?),
+                },
+                domain: decode_domain_key(map, "domainOut", "domainWs")?,
+                source: decode_domain_key(map, "sourceOut", "sourceWs")?,
+                target: WindowId(req_id(map, "win")?),
+                revision: req_u64_str(map, "rev")?,
+            }))
+        }
+        "toggle-float" => {
+            check_keys_with_optional(map, &["op", "win", "rect"], &["noSpace"])?;
+            let no_space = match map.get("noSpace") {
+                None => false,
+                Some(serde_json::Value::Bool(true)) => true,
+                Some(serde_json::Value::Bool(false)) => {
+                    return Err(reply_snapshot("result-float-false-marker"));
+                }
+                Some(_) => return Err(malformed()),
+            };
+            Ok(Some(CommandResult::Float {
+                window: WindowId(req_id(map, "win")?),
+                rect: opt_rect_or_null(map, "rect")?,
+                no_space,
+            }))
+        }
+        "migrate-workspace" => {
+            check_keys(
+                map,
+                &[
+                    "op",
+                    "direction",
+                    "sourceOut",
+                    "sourceWs",
+                    "targetOut",
+                    "targetWs",
+                    "members",
+                    "floats",
+                ],
+            )?;
+            let members_value = map.get("members").ok_or_else(malformed)?;
+            let member_items = members_value.as_array().ok_or_else(malformed)?;
+            if member_items.len() > MAX_REPLY_WINDOWS {
+                return Err(reply_snapshot("section-over-cap"));
+            }
+            let mut members = Vec::with_capacity(member_items.len());
+            for item in member_items {
+                let id = item.as_str().ok_or_else(malformed)?;
+                if !is_opaque_id(id) {
+                    return Err(unknown_value());
+                }
+                members.push(WindowId(id.to_owned()));
+            }
+            let floats = map
+                .get("floats")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|floats| usize::try_from(floats).ok())
+                .ok_or_else(malformed)?;
+            Ok(Some(CommandResult::Migration {
+                direction: decode_direction_token(req_str(map, "direction")?)?,
+                source: decode_domain_key(map, "sourceOut", "sourceWs")?,
+                target: decode_domain_key(map, "targetOut", "targetWs")?,
+                members,
+                floats,
+            }))
+        }
+        "directional" => {
+            check_keys(map, &["op", "outcome", "win", "rect", "cause"])?;
+            let target = match map.get("win") {
+                None => return Err(malformed()),
+                Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(text)) => {
+                    if !is_opaque_id(text) {
+                        return Err(unknown_value());
+                    }
+                    Some(WindowId(text.clone()))
+                }
+                Some(_) => return Err(malformed()),
+            };
+            let cause = match map.get("cause") {
+                None => return Err(malformed()),
+                Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(text)) => match text.as_str() {
+                    "no-target" | "unknown-window" | "focus-present" | "no-source"
+                    | "no-adjacent-output" => Some(text.clone()),
+                    _ => return Err(unknown_value()),
+                },
+                Some(_) => return Err(malformed()),
+            };
+            Ok(Some(CommandResult::Directional {
+                outcome: decode_directional_outcome(req_str(map, "outcome")?)?,
+                target,
+                rect: opt_rect_or_null(map, "rect")?,
+                cause,
+            }))
+        }
+        "maximize" => {
+            check_keys(
+                map,
+                &["op", "win", "maximized", "clearFullscreen", "wasMaximized"],
+            )?;
+            Ok(Some(CommandResult::Maximize {
+                window: WindowId(req_id(map, "win")?),
+                maximized: req_bool(map, "maximized")?,
+                clear_fullscreen: req_bool(map, "clearFullscreen")?,
+                was_maximized: req_bool(map, "wasMaximized")?,
+            }))
+        }
+        "rejected" => {
+            check_keys(map, &["op", "kind"])?;
+            match CommandRejectKind::parse(req_str(map, "kind")?) {
+                Some(kind) => Ok(Some(CommandResult::Rejected { kind })),
+                None => Err(unknown_value()),
+            }
+        }
+        _ => Err(unknown_value()),
+    }
+}
+
+fn decode_gesture_settled(value: &serde_json::Value) -> Result<Option<GestureSettled>> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let map = as_object(value)?;
+    check_keys(map, &["id", "committed"])?;
+    Ok(Some(GestureSettled {
+        id: req_u64_str(map, "id")?,
+        committed: req_bool(map, "committed")?,
+    }))
+}
+
+fn decode_operation_outcome(text: &str) -> Result<OperationOutcome> {
+    match text {
+        "continued-tiled" => Ok(OperationOutcome::ClearContinuedTiled),
+        "continued-float" => Ok(OperationOutcome::ClearContinuedFloat),
+        "refused-proven" => Ok(OperationOutcome::ClearRefusedProven),
+        "abandoned-external-clear" => Ok(OperationOutcome::ClearAbandonedExternalClear),
+        "abandoned-focus-changed" => Ok(OperationOutcome::ClearAbandonedFocusChanged),
+        "abandoned-view-changed" => Ok(OperationOutcome::ClearAbandonedViewChanged),
+        "abandoned-homing-changed" => Ok(OperationOutcome::ClearAbandonedHomingChanged),
+        "abandoned-closed" => Ok(OperationOutcome::ClearAbandonedClosed),
+        "abandoned-fullscreen" => Ok(OperationOutcome::ClearAbandonedFullscreen),
+        "superseded" => Ok(OperationOutcome::ClearSuperseded),
+        "continuation-refused" => Ok(OperationOutcome::ClearContinuationRefused),
+        "float-frame-proven" => Ok(OperationOutcome::FloatFrameProven),
+        "float-refused-proven" => Ok(OperationOutcome::FloatRefusedProven),
+        "float-abandoned" => Ok(OperationOutcome::FloatAbandoned),
+        _ => Err(unknown_value()),
+    }
+}
+
+fn decode_operation_cause(text: &str) -> Result<Option<String>> {
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if CommandRejectKind::parse(text).is_some() {
+        return Ok(Some(text.to_owned()));
+    }
+    match text {
+        "baseline-non-subject"
+        | "closed"
+        | "constraints"
+        | "early-verdict"
+        | "external"
+        | "fixed"
+        | "floating"
+        | "homing-loss"
+        | "invalid-direction"
+        | "invalid-geometry"
+        | "non-subject-focus"
+        | "refused-with-unmaximized"
+        | "sticky"
+        | "tiling-changed"
+        | "topology-unreadable"
+        | "unknown-output"
+        | "unknown-window" => Ok(Some(text.to_owned())),
+        _ => Err(unknown_value()),
+    }
+}
+
+fn decode_operation_event(value: &serde_json::Value) -> Result<OperationEvent> {
+    let map = as_object(value)?;
+    check_keys(map, &["op", "win", "outcome", "cause"])?;
+    Ok(OperationEvent {
+        operation_id: req_id(map, "op")?,
+        window: WindowId(req_id(map, "win")?),
+        outcome: decode_operation_outcome(req_str(map, "outcome")?)?,
+        cause: decode_operation_cause(req_str(map, "cause")?)?,
+    })
+}
+
+fn decode_native_creation(value: &serde_json::Value) -> Result<NativeCreationDesire> {
+    let map = as_object(value)?;
+    check_keys(map, &["op", "ws", "out"])?;
+    Ok(NativeCreationDesire {
+        operation_id: req_id(map, "op")?,
+        logical_workspace: req_id(map, "ws")?,
+        target_output: OutputId(req_id(map, "out")?),
+    })
+}
+
+fn decode_intent_write(value: &serde_json::Value) -> Result<IntentWrite> {
+    let map = as_object(value)?;
+    check_keys(map, &["win", "data"])?;
+    let data = match map.get("data") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => {
+            if text.len() > MAX_INTENT_DATA_BYTES {
+                return Err(reply_snapshot("intent-data-invalid"));
+            }
+            Some(text.clone())
+        }
+        Some(_) => return Err(malformed()),
+    };
+    Ok(IntentWrite {
+        win: WindowId(req_id(map, "win")?),
+        data,
+    })
+}
+
+fn decode_switch_event(value: &serde_json::Value) -> Result<SwitchEvent> {
+    let map = as_object(value)?;
+    check_keys(map, &["op", "outcome", "failed", "focus", "fallback"])?;
+    let outcome = match req_str(map, "outcome")? {
+        "complete" => SwitchOutcome::Complete,
+        "completed-with-failures" => SwitchOutcome::CompletedWithFailures,
+        _ => return Err(unknown_value()),
+    };
+    let failed_value = map.get("failed").ok_or_else(malformed)?;
+    let failed_items = failed_value.as_array().ok_or_else(malformed)?;
+    if failed_items.len() > MAX_REPLY_WINDOWS {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut failed = Vec::with_capacity(failed_items.len());
+    for item in failed_items {
+        let id = item.as_str().ok_or_else(malformed)?;
+        if !is_opaque_id(id) {
+            return Err(unknown_value());
+        }
+        failed.push(WindowId(id.to_owned()));
+    }
+    let focus = match req_str(map, "focus")? {
+        "proven" => SwitchFocus::Proven,
+        "refused" => SwitchFocus::Refused,
+        "unproven" => SwitchFocus::Unproven,
+        _ => return Err(unknown_value()),
+    };
+    Ok(SwitchEvent {
+        operation_id: req_id(map, "op")?,
+        outcome,
+        failed,
+        focus,
+        fallback: req_bool(map, "fallback")?,
+    })
+}
+
+fn decode_row_diagnostic(value: &serde_json::Value) -> Result<RowDiagnostic> {
+    let map = as_object(value)?;
+    check_keys(map, &["scope", "row", "id", "kind"])?;
+    let row = match req_str(map, "row")? {
+        "screen" => RowDiagnosticLane::Screen,
+        "window" => RowDiagnosticLane::Window,
+        "native" => RowDiagnosticLane::Native,
+        "attempt" => RowDiagnosticLane::Attempt,
+        "presentation" => RowDiagnosticLane::Presentation,
+        _ => return Err(unknown_value()),
+    };
+    let id = match map.get("id") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            Some(text.clone())
+        }
+        Some(_) => return Err(malformed()),
+    };
+    let kind = match req_str(map, "kind")? {
+        "unreadable" => RowDiagnosticKind::Unreadable,
+        "invalid-fact" => RowDiagnosticKind::InvalidFact,
+        "conflicting-fact" => RowDiagnosticKind::ConflictingFact,
+        _ => return Err(unknown_value()),
+    };
+    Ok(RowDiagnostic {
+        scope: decode_authority_scope(map.get("scope").ok_or_else(malformed)?)?,
+        row,
+        id,
+        kind,
+    })
+}
+
+fn decode_group_hide_reason(text: &str) -> Result<GroupHideReason> {
+    match text {
+        "disabled" => Ok(GroupHideReason::Disabled),
+        "minimized" => Ok(GroupHideReason::Minimized),
+        "maximized" => Ok(GroupHideReason::Maximized),
+        "fullscreen" => Ok(GroupHideReason::Fullscreen),
+        "floating" => Ok(GroupHideReason::Floating),
+        "pending" => Ok(GroupHideReason::Pending),
+        "diverged" => Ok(GroupHideReason::Diverged),
+        "root-leaf" => Ok(GroupHideReason::RootLeaf),
+        "focus-changed" => Ok(GroupHideReason::FocusChanged),
+        "no-group" => Ok(GroupHideReason::NoGroup),
+        "idle" => Ok(GroupHideReason::Idle),
+        "suspended" => Ok(GroupHideReason::Suspended),
+        _ => Err(unknown_value()),
+    }
+}
+
+fn decode_underlay_member(value: &serde_json::Value) -> Result<ActiveGroupMember> {
+    let map = as_object(value)?;
+    check_keys(map, &["leaf", "win", "rect"])?;
+    Ok(ActiveGroupMember {
+        leaf: NodeId(req_id(map, "leaf")?),
+        window: WindowId(req_id(map, "win")?),
+        rect: req_rect_value(map.get("rect").ok_or_else(malformed)?)?,
+    })
+}
+
+fn decode_presentation_underlay(value: &serde_json::Value) -> Result<PresentationUnderlay> {
+    let map = as_object(value)?;
+    match req_str(map, "status")? {
+        "found" => {
+            check_keys(
+                map,
+                &[
+                    "status", "reason", "baseRev", "homeOut", "homeWs", "group", "leaf", "win",
+                    "union", "outer", "members",
+                ],
+            )?;
+            if !req_str(map, "reason")?.is_empty() {
+                return Err(unknown_value());
+            }
+            let members_value = map.get("members").ok_or_else(malformed)?;
+            let member_items = members_value.as_array().ok_or_else(malformed)?;
+            if member_items.len() > MAX_REPLY_WINDOWS {
+                return Err(reply_snapshot("section-over-cap"));
+            }
+            let mut members = Vec::with_capacity(member_items.len());
+            for item in member_items {
+                members.push(decode_underlay_member(item)?);
+            }
+            Ok(PresentationUnderlay::Found(
+                tiler_core::world_presentation::PresentationUnderlayFound {
+                    base_revision: req_u64_str(map, "baseRev")?,
+                    home: decode_domain_key(map, "homeOut", "homeWs")?,
+                    group: NodeId(req_id(map, "group")?),
+                    focused_leaf: NodeId(req_id(map, "leaf")?),
+                    focused_window: WindowId(req_id(map, "win")?),
+                    members,
+                    union_rect: req_rect_value(map.get("union").ok_or_else(malformed)?)?,
+                    outer_rect: req_rect_value(map.get("outer").ok_or_else(malformed)?)?,
+                },
+            ))
+        }
+        "hidden" => {
+            check_keys(map, &["status", "reason", "baseRev"])?;
+            let base_revision = match map.get("baseRev") {
+                None => return Err(malformed()),
+                Some(serde_json::Value::Null) => None,
+                Some(_) => Some(req_u64_str(map, "baseRev")?),
+            };
+            Ok(PresentationUnderlay::Hidden {
+                base_revision,
+                reason: decode_group_hide_reason(req_str(map, "reason")?)?,
+            })
+        }
+        _ => Err(unknown_value()),
+    }
+}
+
+fn decode_pager_window(value: &serde_json::Value) -> Result<PagerWindow> {
+    let map = as_object(value)?;
+    check_keys(map, &["win", "frame"])?;
+    Ok(PagerWindow {
+        window: WindowId(req_id(map, "win")?),
+        frame: req_rect_value(map.get("frame").ok_or_else(malformed)?)?,
+    })
+}
+
+fn decode_pager_workspace(value: &serde_json::Value) -> Result<PagerWorkspace> {
+    let map = as_object(value)?;
+    check_keys_with_optional(
+        map,
+        &[
+            "id",
+            "ordinal",
+            "label",
+            "current",
+            "occupied",
+            "containsFocused",
+            "windows",
+        ],
+        &["trailing"],
+    )?;
+    if map
+        .get("trailing")
+        .is_some_and(|trailing| trailing != &serde_json::Value::Bool(true))
+    {
+        return Err(reply_snapshot("pager-trailing-false"));
+    }
+    let ordinal = map
+        .get("ordinal")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|ordinal| u32::try_from(ordinal).ok())
+        .ok_or_else(malformed)?;
+    let windows_value = map.get("windows").ok_or_else(malformed)?;
+    let window_items = windows_value.as_array().ok_or_else(malformed)?;
+    if window_items.len() > MAX_REPLY_WINDOWS {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut windows = Vec::with_capacity(window_items.len());
+    for item in window_items {
+        windows.push(decode_pager_window(item)?);
+    }
+    Ok(PagerWorkspace {
+        id: req_id(map, "id")?,
+        ordinal,
+        label: req_str(map, "label")?.to_owned(),
+        current: req_bool(map, "current")?,
+        occupied: req_bool(map, "occupied")?,
+        contains_focused: req_bool(map, "containsFocused")?,
+        trailing: map.contains_key("trailing"),
+        windows,
+    })
+}
+
+fn decode_pager_screen(value: &serde_json::Value) -> Result<PagerScreen> {
+    let map = as_object(value)?;
+    check_keys(map, &["out", "workspaces"])?;
+    let workspaces_value = map.get("workspaces").ok_or_else(malformed)?;
+    let workspace_items = workspaces_value.as_array().ok_or_else(malformed)?;
+    if workspace_items.len() > MAX_REPLY_WORKSPACES {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut workspaces = Vec::with_capacity(workspace_items.len());
+    for item in workspace_items {
+        workspaces.push(decode_pager_workspace(item)?);
+    }
+    Ok(PagerScreen {
+        output: req_id(map, "out")?,
+        workspaces,
+    })
+}
+
+fn decode_reply_presentation_v4(value: &serde_json::Value) -> Result<WorldPresentationV4> {
+    let map = as_object(value)?;
+    check_keys_with_optional(
+        map,
+        &["foreground", "rev", "border", "underlay", "pager"],
+        &["suspendedOutput"],
+    )?;
+    let foreground = req_empty_or_id(map, "foreground")?;
+    let suspended_output = match map.get("suspendedOutput") {
+        None => None,
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            Some(OutputId(text.clone()))
+        }
+        Some(_) => return Err(malformed()),
+    };
+    let pager_value = map.get("pager").ok_or_else(malformed)?;
+    let pager_items = pager_value.as_array().ok_or_else(malformed)?;
+    if pager_items.len() > MAX_REPLY_OUTPUTS {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut pager = Vec::with_capacity(pager_items.len());
+    for item in pager_items {
+        pager.push(decode_pager_screen(item)?);
+    }
+    Ok(WorldPresentationV4 {
+        foreground,
+        rev: req_u64_str(map, "rev")?,
+        suspended_output,
+        border: decode_border_presentation_v4(map.get("border").ok_or_else(malformed)?)?,
+        underlay: decode_presentation_underlay(map.get("underlay").ok_or_else(malformed)?)?,
+        pager,
+    })
+}
+
+/// Optional wire metadata for a decoded v4 reply: the typed reply carries
+/// what the wire carries, and this records which omit-if-absent spellings
+/// the wire used. `suspended_output_present` names the wire presence of
+/// `presentation.suspendedOutput`; it never influences typed equality or
+/// engine input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplyWireOptionals {
+    pub suspended_output_present: bool,
+}
+
+/// Decoded v4 reply plus its optional wire metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedReplyV4 {
+    pub reply: WorldReplyV4,
+    pub wire: ReplyWireOptionals,
+}
+
+/// Strict shape decode of one staged v4 whole-reply object. Enforces the
+/// byte budget first, then exact envelope keys, quoted counters, closed
+/// enum/union vocabularies, per-section caps, identity uniqueness, and the
+/// row coupling rules. Never logs or echoes payload bytes.
+pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldProtocolError> {
+    if json.len() > WORLD_MAX_REPLY_BYTES {
+        return Err(WorldProtocolError {
+            kind: KIND_OVERSIZED,
+            message: MSG_OVERSIZED,
+        });
+    }
+    let value: serde_json::Value =
+        crate::connection_protocol::parse_strict_json(json).map_err(|e| {
+            if e.0 == "oversized" {
+                WorldProtocolError {
+                    kind: KIND_OVERSIZED,
+                    message: MSG_OVERSIZED,
+                }
+            } else {
+                malformed()
+            }
+        })?;
+    let map = as_object(&value)?;
+    check_keys(
+        map,
+        &[
+            "v",
+            "adapter",
+            "gen",
+            "req",
+            "obs",
+            "rev",
+            "ready",
+            "consumed",
+            "scopes",
+            "workspaces",
+            "outputs",
+            "windows",
+            "transfers",
+            "effects",
+            "result",
+            "gestureSettled",
+            "operationSettled",
+            "nativeCreations",
+            "warpCursor",
+            "presentation",
+            "intentWrites",
+            "switchSettled",
+            "diagnostics",
+        ],
+    )?;
+    let version = map
+        .get("v")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(malformed)?;
+    if version != u64::from(WORLD_PROTOCOL_VERSION_V4) {
+        return Err(WorldProtocolError {
+            kind: KIND_VERSION,
+            message: MSG_VERSION,
+        });
+    }
+    let scopes_value = map.get("scopes").ok_or_else(malformed)?;
+    let scope_items = scopes_value.as_array().ok_or_else(malformed)?;
+    if scope_items.len() > MAX_REPLY_SCOPES {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut scopes = Vec::with_capacity(scope_items.len());
+    let mut seen_scopes = std::collections::BTreeSet::new();
+    for item in scope_items {
+        let status = decode_scope_status(item)?;
+        let key = match &status.scope {
+            AuthorityScope::Output(out) => format!("out:{}", out.0),
+            AuthorityScope::Workspace { output, workspace } => {
+                format!("ws:{}:{}", output.0, workspace.0)
+            }
+        };
+        if !seen_scopes.insert(key) {
+            return Err(reply_snapshot("duplicate-scope"));
+        }
+        scopes.push(status);
+    }
+    let workspaces_value = map.get("workspaces").ok_or_else(malformed)?;
+    let workspace_items = workspaces_value.as_array().ok_or_else(malformed)?;
+    if workspace_items.len() > MAX_REPLY_WORKSPACES {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut workspaces = Vec::with_capacity(workspace_items.len());
+    let mut seen_workspaces = std::collections::BTreeSet::new();
+    for item in workspace_items {
+        let workspace = decode_workspace_desire(item)?;
+        if !seen_workspaces.insert(workspace.id.clone()) {
+            return Err(reply_snapshot("duplicate-workspace"));
+        }
+        workspaces.push(workspace);
+    }
+    let outputs_value = map.get("outputs").ok_or_else(malformed)?;
+    let output_items = outputs_value.as_array().ok_or_else(malformed)?;
+    if output_items.len() > MAX_REPLY_OUTPUTS {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut outputs = Vec::with_capacity(output_items.len());
+    let mut seen_outputs = std::collections::BTreeSet::new();
+    for item in output_items {
+        let output = decode_output_desire(item)?;
+        if !seen_outputs.insert(output.output.0.clone()) {
+            return Err(reply_snapshot("duplicate-output"));
+        }
+        outputs.push(output);
+    }
+    let windows_value = map.get("windows").ok_or_else(malformed)?;
+    let window_items = windows_value.as_array().ok_or_else(malformed)?;
+    if window_items.len() > MAX_REPLY_WINDOWS {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut windows = Vec::with_capacity(window_items.len());
+    let mut seen_windows = std::collections::BTreeSet::new();
+    for item in window_items {
+        let window = decode_window_desire(item)?;
+        if !seen_windows.insert(window.lifetime.0.clone()) {
+            return Err(reply_snapshot("duplicate-window"));
+        }
+        windows.push(window);
+    }
+    let transfers_value = map.get("transfers").ok_or_else(malformed)?;
+    let transfer_items = transfers_value.as_array().ok_or_else(malformed)?;
+    if transfer_items.len() > MAX_REPLY_TRANSFERS {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut transfers = Vec::with_capacity(transfer_items.len());
+    let mut seen_transfers = std::collections::BTreeSet::new();
+    for item in transfer_items {
+        let transfer = decode_transfer_v4(item)?;
+        if !seen_transfers.insert(transfer.operation_id.clone()) {
+            return Err(reply_snapshot("duplicate-transfer"));
+        }
+        transfers.push(transfer);
+    }
+    let effects_value = map.get("effects").ok_or_else(malformed)?;
+    let effect_items = effects_value.as_array().ok_or_else(malformed)?;
+    if effect_items.len() > MAX_REPLY_EFFECTS {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut effects = Vec::with_capacity(effect_items.len());
+    let mut seen_effects = std::collections::BTreeSet::new();
+    for item in effect_items {
+        let effect = decode_effect(item)?;
+        if !seen_effects.insert(effect.id.clone()) {
+            return Err(reply_snapshot("duplicate-effect"));
+        }
+        effects.push(effect);
+    }
+    let command_result = decode_command_result(map.get("result").ok_or_else(malformed)?)?;
+    let gesture_settled = decode_gesture_settled(map.get("gestureSettled").ok_or_else(malformed)?)?;
+    let operations_value = map.get("operationSettled").ok_or_else(malformed)?;
+    let operation_items = operations_value.as_array().ok_or_else(malformed)?;
+    if operation_items.len() > MAX_REPLY_OPERATIONS {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut operation_settled = Vec::with_capacity(operation_items.len());
+    let mut seen_operations = std::collections::BTreeSet::new();
+    for item in operation_items {
+        let event = decode_operation_event(item)?;
+        if !seen_operations.insert(event.operation_id.clone()) {
+            return Err(reply_snapshot("duplicate-operation"));
+        }
+        operation_settled.push(event);
+    }
+    let creations_value = map.get("nativeCreations").ok_or_else(malformed)?;
+    let creation_items = creations_value.as_array().ok_or_else(malformed)?;
+    if creation_items.len() > MAX_REPLY_NATIVE_CREATIONS {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut native_creations = Vec::with_capacity(creation_items.len());
+    let mut seen_creations = std::collections::BTreeSet::new();
+    for item in creation_items {
+        let creation = decode_native_creation(item)?;
+        if !seen_creations.insert(creation.operation_id.clone()) {
+            return Err(reply_snapshot("duplicate-native-creation"));
+        }
+        native_creations.push(creation);
+    }
+    let cursor_warp = opt_point_or_null(map, "warpCursor")?;
+    let presentation =
+        decode_reply_presentation_v4(map.get("presentation").ok_or_else(malformed)?)?;
+    let wire = ReplyWireOptionals {
+        suspended_output_present: map
+            .get("presentation")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|presentation| presentation.contains_key("suspendedOutput")),
+    };
+    let writes_value = map.get("intentWrites").ok_or_else(malformed)?;
+    let write_items = writes_value.as_array().ok_or_else(malformed)?;
+    if write_items.len() > MAX_INTENT_WRITES {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut intent_writes = Vec::with_capacity(write_items.len());
+    let mut seen_writes = std::collections::BTreeSet::new();
+    for item in write_items {
+        let write = decode_intent_write(item)?;
+        if !seen_writes.insert(write.win.0.clone()) {
+            return Err(reply_snapshot("duplicate-intent-write"));
+        }
+        intent_writes.push(write);
+    }
+    let switches_value = map.get("switchSettled").ok_or_else(malformed)?;
+    let switch_items = switches_value.as_array().ok_or_else(malformed)?;
+    if switch_items.len() > MAX_REPLY_SWITCH_EVENTS {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut switch_settled = Vec::with_capacity(switch_items.len());
+    let mut seen_switches = std::collections::BTreeSet::new();
+    for item in switch_items {
+        let event = decode_switch_event(item)?;
+        if !seen_switches.insert(event.operation_id.clone()) {
+            return Err(reply_snapshot("duplicate-switch"));
+        }
+        switch_settled.push(event);
+    }
+    let diagnostics_value = map.get("diagnostics").ok_or_else(malformed)?;
+    let diagnostic_items = diagnostics_value.as_array().ok_or_else(malformed)?;
+    if diagnostic_items.len() > MAX_REPLY_DIAGNOSTICS {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    let mut diagnostics = Vec::with_capacity(diagnostic_items.len());
+    for item in diagnostic_items {
+        diagnostics.push(decode_row_diagnostic(item)?);
+    }
+    let adapter = req_id(map, "adapter")?;
+    let generation = req_bounded(map, "gen", MAX_GENERATION_LEN, is_generation_text)?;
+    let request = req_bounded(map, "req", MAX_CORRELATION_LEN, is_correlation_text)?;
+    Ok(DecodedReplyV4 {
+        reply: WorldReplyV4 {
+            contract_version: WORLD_PROTOCOL_VERSION_V4,
+            adapter_incarnation: adapter,
+            core_generation: generation,
+            request_id: request,
+            based_on_observation_seq: req_u64_str(map, "obs")?,
+            state_revision: req_u64_str(map, "rev")?,
+            ready: req_bool(map, "ready")?,
+            command_consumed: req_bool(map, "consumed")?,
+            scopes,
+            workspaces,
+            outputs,
+            windows,
+            transfers,
+            effects,
+            command_result,
+            gesture_settled,
+            operation_settled,
+            native_creations,
+            cursor_warp,
+            presentation,
+            intent_writes,
+            switch_settled,
+            diagnostics,
+        },
+        wire,
+    })
+}
+
+/// Staged v4 connection-context gate for decoder composition: calls the
+/// context-free [`decode_reply_v4`] shape decoder, then applies the
+/// handshake-declared capability gates the runtime owns. The caller passes
+/// the bound [`HostCapabilities`]; the context is never inferred from the
+/// reply. All three context shapes stay shape-valid in [`decode_reply_v4`];
+/// a wrong-capability row here refuses as `snapshot-invalid` with a fixed
+/// rule-token message and no new error catalog or API metadata.
+pub fn decode_reply_v4_for_host(
+    json: &str,
+    host: &HostCapabilities,
+) -> std::result::Result<DecodedReplyV4, WorldProtocolError> {
+    let decoded = decode_reply_v4(json)?;
+    if !host.above
+        && decoded
+            .reply
+            .windows
+            .iter()
+            .flat_map(|window| window.state.iter())
+            .any(|target| target.property == StateProperty::Above)
+    {
+        return Err(reply_snapshot("above-capability-false"));
+    }
+    if !host.warp && decoded.reply.cursor_warp.is_some() {
+        return Err(reply_snapshot("warp-capability-false"));
+    }
+    if !host.native_sticky
+        && decoded
+            .reply
+            .windows
+            .iter()
+            .flat_map(|window| window.state.iter())
+            .any(|target| target.property == StateProperty::Sticky)
+    {
+        return Err(reply_snapshot("sticky-capability-false"));
     }
     Ok(decoded)
 }
