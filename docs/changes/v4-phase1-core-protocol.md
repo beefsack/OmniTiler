@@ -708,31 +708,57 @@
      `PresentationRowV4`, `renderer_input`, native and attempt held rows).
      Evidence: scenarios `row-hold-close-recovery`, `scale-identity-primary`,
      `native-domain` and held-row census tests.
-  3. Capability-conflict grading on v4 for the four capability-context fixtures
+   3. Capability-conflict grading on v4 for the four capability-context fixtures
      (`invalid-unavailable-fact-contradiction`,
      `invalid-executable-unavailable-value`, `invalid-sticky-projected-fact`,
      `invalid-sticky-native-free-attempt`): the decoder pins them as valid typed
-     rows with zero held rows and the engine holds them as `conflicting-fact`.
+      rows with zero held rows; the engine grades conflicting windows to held
+      rows and diagnoses unsupported state attempts as `conflicting-fact`,
+      without consuming the attempts as settlement.
      Evidence: engine tests per fixture; scenarios `raw-fact-availability`,
      `executable-identity`, `native-domain`, `window-state`,
      `raw-attempt-settlement`.
-  4. View-proof migration replacing the `views` echo legs (`view_echo_for`,
+   4. Shared observation boundary: move raw report facts used by lane helpers
+      onto `StagedReport`, populate them from both intakes, and make the common
+      lane helpers consume staged observation rather than `WorldReport`.
+      Includes inventory completeness, raw windows (distinct from classified
+      facts and own-process exclusions), explicit closes, native rows, ordered
+      valid/held screens, cursor/focus/action/primary facts, gesture/clock,
+      all attempt and feedback lanes, intent records and observation watermarks.
+      Owns shared observation-dependent command helpers and lifetime pruning,
+      their explicit envelope/correlation arguments and legacy caller adaptation,
+      not envelope admission or command dispatch. Preserve intent ingestion
+      before classification by separating raw capture from classification;
+      preserve pre-observation routing by capturing raw facts without changing
+      retained homes/views. Evidence: legacy parity and focused lane regressions
+      for ordering, holds, lifecycle, first-raw settlement and intent admission.
+      No generic-over-report engine or conversion to the legacy report shape.
+   5. View-proof migration replacing the `views` echo legs (`view_echo_for`,
      staged echo fill, `settle_views_pre`, selection proof) with visibility and
      focus proof. The contract settles the receipt predicates (removed `views`
      text, arrival requirements, frozen switch target sets); only the observe
      staging function is implementation detail.
-  5. Genuine presentation producer plus `rendererInput` validation. The contract
+   6. Genuine presentation producer plus `rendererInput` validation. The contract
      settles the anchored descriptor shape, core-scaled style, unknown witness
      disabling the border, and a stale target refusing the command with
      `stale-render-target` at command handling (not a publish hold). Scenarios
      `anchored-border`, `decorations-target-row`, `arrival-mismatch-*`. The
      native witness-join proof stays an adapter-port gate.
-  6. `WorldReplyV4` publish assembly (transfers with an explicit command
+   7. `WorldReplyV4` publish assembly (transfers with an explicit command
      sequence, diagnostics, switch events) plus v4 bootstrap. The contract
      settles the transfer command sequence as the original command sequence,
-     null for commandless work. Scenarios `raw-attempt-settlement`,
-     `visibility-*`, `window-state`, `persistent-above`,
-     `linked-selectors-warp`.
+      null for commandless work. Scenarios `raw-attempt-settlement`,
+      `visibility-*`, `window-state`, `persistent-above`,
+      `linked-selectors-warp`.
+      Also owns the internal v4 accepted-run/finish assembly, command dispatch,
+      pre-observation send/migration freezes, ingest-then-classify sequencing,
+      command rollback, prior-observation retention replacing lane reads of
+      `last_report`, v4 correlation context for shared command helpers, and
+      v4 reply/replay bookkeeping and bounds. Current-observation facts belong
+      to sub-increment 4; view proofs and presentation belong to 5 and 6.
+      Envelope admission and the public `handle_report` switch remain unit 7,
+      alongside broker/service/handshake cutover. Internal assembly tests do
+      not establish public cutover acceptance.
 - Sub-increment 1 outcome: staged pure-function twins in two new core modules,
   `world_report_v4_checks` (`validate_report_v4_reason`,
   `grade_conflicting_windows_v4`, `report_digest_v4`) and `world_sizing_v4`
@@ -787,18 +813,61 @@
   ASCII, NUL and local-link checks. Only `workspace_unsafe_posture` is filtered.
   No `state_offroute`, new-lane consumption, views replacement, `handle_report`
   wiring, version, adapter or immutable fixture changes are included.
-- Parked integration ownership: `run_accepted` and lane helpers still take
-  `WorldReport` and read report-only facts directly (for example
-  `inventory_complete`, `closed`, `focused_global` and native rows, plus
-  `world_model.rs`'s held-screen output ordering). Staging alone cannot run v4
-  through those helpers. The sub-increment list does not explicitly assign
-  their adaptation or the v4 accepted-run assembly. Which later sub-increment
-  owns this work remains open; no migration-order change or legacy-report
-  conversion is selected here.
+- Integration ownership is assigned above: sub-increment 4 owns the shared raw
+  observation boundary and lane adaptation; sub-increment 7 owns the v4 run and
+  finish assembly and its envelope/command context. This is internal planning,
+  not a change to unit 7 public cutover order. Source checks of `run_accepted`,
+  `finish`, state readability, selection retention and held-screen ordering show
+  that staged facts alone are insufficient: raw lifetime presence and observation
+  watermarks must survive alongside classification, and intent ingestion and
+  pre-observation routing must keep their existing order.
 - Parked typed-ingress question: the invalid-screen/window grader twins omitted
   from sub-increment 1 still need an explicit refuse-versus-hold wiring decision
-  for in-process typed values that bypass the codec. This intake only stages;
-  it does not decide that validation boundary.
+  for in-process typed values that bypass the codec. Unit 7 public cutover,
+  which wires `handle_report`, owns that decision; staging and internal accepted-
+  run assembly do not decide that validation boundary.
+- Sub-increment 3 plan: apply the existing v4 conflicting-window grader using
+  the engine's bound capabilities before v4 staging; append unsupported state
+  attempts' `conflicting-fact` diagnostics in the attempt lane, resolving scope
+  through carried windows/held rows and retained homes exactly as the legacy
+  `state_offroute` path does. Preserve raw attempts, never treat unsupported
+  attempts as settlement. Use `state_property_supported` for both attempt
+  support and sticky/maximize grading/classification defaults: absent capability
+  binding means no native state support, matching `HostCapabilities::default`.
+  Bound behavior is unchanged. Evidence: the four immutable capability-context
+  fixtures with their declared handshakes, supported controls, scoped/unscoped
+  and retained-home cases, unbound-default regressions and staging coverage of
+  `raw-fact-availability`, `executable-identity`, `native-domain`, `window-state`
+  and `raw-attempt-settlement`. No runtime/version switch or full scenario run.
+- Sub-increment 3 outcome: v4 staging now applies connection-bound window
+  grading and emits unsupported state-attempt diagnostics through the same
+  scope helper as the legacy intake. Sticky/maximize grading and classification
+  use the existing fail-closed state-property support predicate for absent
+  capabilities; declared bound-capability behavior is unchanged. Raw attempts
+  remain intact and never become manufactured held-attempt rows. Unsupported
+  attempt non-consumption is pinned through the existing settlement helper;
+  there is still no v4 accepted-run/settlement assembly.
+  All four immutable context fixtures are decoded with their manifest-declared
+  handshake capabilities. The fourth emits an Attempt diagnostic plus an
+  ancillary Window hold: its `maximized:false` conflicts with `maximize=false`,
+  which requires null under the composed-maximize contract. An in-memory
+  maximize-null counterfactual isolates the intended sticky-attempt conflict;
+  the fixture is unchanged. Permissive controls remain unheld and silent.
+  The five context scenarios independently stage 4/7/8/19/10 reports under
+  their declared handshake segments; these are capability-context checks,
+  not sequential retained-state progression or scenario execution. The
+  207-fixture census uses explicit support for all four native state properties.
+  Review found two test-isolation weaknesses, corrected with single-cause
+  conflict cases and a direct unbound classification test. A mutation restoring
+  the old permissive classification defaults makes that regression fail;
+  restoring the intended defaults passes. New regressions were first run after
+  implementation, not established as preimplementation behavioral reds.
+  Direct final verification passes the filtered core/protocol gate (1650 core
+  unit tests and every selected integration/protocol target, including seven
+  protocol staging tests), build, scoped all-target clippy with warnings denied,
+  formatting, whitespace, added ASCII, NUL and local-link checks. Only
+  `workspace_unsafe_posture` is filtered. No fixture, manifest, adapter, Cargo
+  feature, public ingress, version or contract changes are included.
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
   drop-zone scaling stay deferred.
 - Lands with unit 7, not before: contract version 3 to 4 and protocol version,
@@ -1827,7 +1896,10 @@
   an approved decision.
 - Case: diagnostic assembly in the unwired v4 staging intake. Chosen behavior:
   append held diagnostics in screen, window, native, attempt, presentation lane
-  order, preserving order within each lane. Held attempt/presentation rows with
+  order, preserving order within each lane. Unsupported typed state-attempt
+  diagnostics follow held-attempt diagnostics, in state-attempt input order,
+  before presentation; both routes share carried-window/held-window/retained-home
+  scope resolution. Held attempt/presentation rows with
   no diagnostic retain their raw row but emit no diagnostic with an invented
   scope. Held windows reuse legacy resolution from their carried output or
   retained home; unresolved rows keep no diagnostic. Evidence: typed held-row
@@ -1836,6 +1908,18 @@
   global row order, or invent a fallback output for scopeless rows. Neither is
   selected; the report has no cross-lane ordinal and scopeless evidence grants
   no scope authority. This is not promoted to an approved decision.
+- Case: unbound native-state capability defaults in core staging. Chosen
+  behavior: absent capabilities mean unsupported for sticky/maximize grading
+  and classification as well as all state-attempt support checks. Evidence:
+  `state_property_supported(None, _)` already returns false and
+  `HostCapabilities::default` declares no native state support. A bound
+  connection still uses its exact capability flags; public unbound reports
+  fail the owner gate before grading. Direct grading and classification
+  regressions pin absent, unsupported and supported bindings separately.
+  Alternative: keep the permissive grading/classification defaults or make
+  attempt support permissive too. Neither selected; both would preserve or
+  expand unsupported native-state assumptions. This is not promoted to an
+  approved decision.
 
 ## Adapter compile-failure inventory
 

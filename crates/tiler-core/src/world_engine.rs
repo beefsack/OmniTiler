@@ -1893,16 +1893,14 @@ impl WorldEngine {
             .as_ref()
             .map(|capabilities| capabilities.unavailable_facts.as_slice())
             .unwrap_or(&[]);
-        let native_sticky_supported = self
-            .capabilities
-            .as_ref()
-            .map(|capabilities| capabilities.native_sticky)
-            .unwrap_or(true);
-        let maximize_supported = self
-            .capabilities
-            .as_ref()
-            .map(|capabilities| capabilities.maximize)
-            .unwrap_or(true);
+        let native_sticky_supported = crate::world_state::state_property_supported(
+            self.capabilities(),
+            crate::world_report::StateProperty::Sticky,
+        );
+        let maximize_supported = crate::world_state::state_property_supported(
+            self.capabilities(),
+            crate::world_report::StateProperty::Maximized,
+        );
         let graded_conflicting = grade_conflicting_windows(
             report,
             unavailable,

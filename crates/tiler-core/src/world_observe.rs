@@ -16,7 +16,7 @@ use crate::world_engine::{StagedDomain, StagedReport, WorldEngine};
 use crate::world_operations::parse_direction_token;
 use crate::world_report::{
     AuthorityScope, HeldScreenRow, HeldWindowRow, HoldReason, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, TransferKind, WindowFact, WorldReport,
+    RowDiagnosticLane, StateProperty, TransferKind, WindowFact, WorldReport,
 };
 
 impl WorldEngine {
@@ -269,14 +269,14 @@ impl WorldEngine {
             .application_identity()
             .and_then(|identity| identity.process_id.as_deref());
         let fixed_predicate = self.engine.fixed_size_predicate();
-        let maximize_supported = self
-            .capabilities()
-            .map(|caps| caps.maximize)
-            .unwrap_or(true);
-        let native_sticky_supported = self
-            .capabilities()
-            .map(|caps| caps.native_sticky)
-            .unwrap_or(true);
+        let maximize_supported = crate::world_state::state_property_supported(
+            self.capabilities(),
+            StateProperty::Maximized,
+        );
+        let native_sticky_supported = crate::world_state::state_property_supported(
+            self.capabilities(),
+            StateProperty::Sticky,
+        );
         for fact in windows {
             // Core-derived classification per staged fact: retained tile
             // membership from the previous member set, explicit
@@ -400,13 +400,11 @@ impl WorldEngine {
                 !crate::world_state::state_property_supported(self.capabilities(), attempt.property)
             })
             .filter_map(|attempt| {
-                self.state_offroute_output(report, &attempt.window)
-                    .map(|output| RowDiagnostic {
-                        scope: AuthorityScope::Output(output),
-                        row: RowDiagnosticLane::Attempt,
-                        id: Some(attempt.window.0.clone()),
-                        kind: RowDiagnosticKind::ConflictingFact,
-                    })
+                self.state_offroute_diagnostic_for(
+                    &report.windows,
+                    &report.held_windows,
+                    &attempt.window,
+                )
             })
             .collect();
         let mut staged_diagnostics =

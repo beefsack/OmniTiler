@@ -6,7 +6,10 @@ use crate::directional::{OutputId, WindowId};
 use crate::intent_data::IntentData;
 use crate::session::DomainKey;
 use crate::world_engine::WorldEngine;
-use crate::world_report::{AttemptOutcome, FrameSetter, StateAttempt, StateProperty, WorldReport};
+use crate::world_report::{
+    AttemptOutcome, AuthorityScope, FrameSetter, HeldWindowRow, RowDiagnostic, RowDiagnosticKind,
+    RowDiagnosticLane, StateAttempt, StateProperty, WindowFact, WorldReport,
+};
 
 pub(crate) const MAX_RETAINED_STATE_BINDINGS: usize = crate::world_report::MAX_WORLD_FACTS * 4;
 
@@ -254,21 +257,24 @@ impl WorldEngine {
         state_fact_value(fact, property)
     }
 
-    pub(crate) fn state_offroute_output(
+    /// Shared scope precedence for unsupported state attempts, slice-based so
+    /// the legacy and v4 intakes cannot drift: carried valid window output,
+    /// carried held output, retained core home, retained session home. `None`
+    /// when unresolved: no invented scope.
+    pub(crate) fn state_offroute_scope_for(
         &self,
-        report: &WorldReport,
+        windows: &[WindowFact],
+        held_windows: &[HeldWindowRow],
         window: &WindowId,
     ) -> Option<OutputId> {
-        if let Some(out) = report
-            .windows
+        if let Some(out) = windows
             .iter()
             .find(|fact| fact.window == *window)
             .and_then(|fact| fact.output.clone())
         {
             return Some(out);
         }
-        if let Some(out) = report
-            .held_windows
+        if let Some(out) = held_windows
             .iter()
             .find(|held| held.window == *window)
             .and_then(|held| held.output.clone())
@@ -279,6 +285,24 @@ impl WorldEngine {
             return Some(home.output);
         }
         self.engine.retained_home_any(window)
+    }
+
+    /// Shared typed diagnostic for one unsupported state attempt: `None` when
+    /// the scope is unresolvable, so callers emit nothing and never fabricate
+    /// a scope. Preserves input order at the call site; never a held row.
+    pub(crate) fn state_offroute_diagnostic_for(
+        &self,
+        windows: &[WindowFact],
+        held_windows: &[HeldWindowRow],
+        window: &WindowId,
+    ) -> Option<RowDiagnostic> {
+        self.state_offroute_scope_for(windows, held_windows, window)
+            .map(|output| RowDiagnostic {
+                scope: AuthorityScope::Output(output),
+                row: RowDiagnosticLane::Attempt,
+                id: Some(window.0.clone()),
+                kind: RowDiagnosticKind::ConflictingFact,
+            })
     }
 
     pub(crate) fn prune_state_bindings(&mut self, report: &WorldReport) {
