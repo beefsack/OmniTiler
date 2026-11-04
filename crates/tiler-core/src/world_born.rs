@@ -58,12 +58,11 @@ use crate::world_report::{ClearAttempt, FrameSetter, OperationOutcome, TilingMod
 /// Forged rows (operation or window mismatch) are never evidence: they
 /// read as absent.
 fn born_attempt_for<'a>(
-    report: &'a WorldReport,
+    attempts: &'a [ClearAttempt],
     operation_id: &str,
     window: &WindowId,
 ) -> Option<&'a ClearAttempt> {
-    report
-        .clear_attempts
+    attempts
         .iter()
         .find(|attempt| attempt.operation_id == operation_id && attempt.window == *window)
 }
@@ -529,7 +528,7 @@ impl WorldEngine {
     /// unmaximized facts proves the clear; only then does the binding
     /// retire (no directional continuation follows: the window already
     /// rides its admitted session row).
-    pub(crate) fn settle_born_clears(&mut self, report: &WorldReport) {
+    pub(crate) fn settle_born_clears(&mut self) {
         // Neutral opt-in: without the capability no binding may survive to
         // publish. Mint drops the same state later in the pass; this fence
         // covers direct settlement callers. Silent: no verdict attaches to
@@ -553,14 +552,16 @@ impl WorldEngine {
                 continue;
             }
             // Stage exact-correlated raw evidence before any hold.
-            if let Some(attempt) =
-                born_attempt_for(report, &retained.operation_id, &retained.window)
-            {
+            if let Some(attempt) = born_attempt_for(
+                &self.staged.observation.clear_attempts,
+                &retained.operation_id,
+                &retained.window,
+            ) {
                 retained.pending = Some(attempt.clone());
             }
             // Gap bars hold with identities preserved, never settling from
             // absence and never erasing staged evidence.
-            if !report.inventory_complete || report.gesture_barrier {
+            if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
                 if retained.pending.is_some() {
                     retained.ambiguous = true;
                 }

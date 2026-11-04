@@ -27,13 +27,13 @@ use crate::world_report::{
 /// window plus target. Forged rows (operation, window, or target mismatch)
 /// are never evidence: they read as absent.
 fn member_attempt_for<'a>(
-    report: &'a WorldReport,
+    attempts: &'a [MemberAttempt],
     operation_id: &str,
     window: &WindowId,
     target_output: &OutputId,
     target_workspace: &str,
 ) -> Option<&'a MemberAttempt> {
-    report.member_attempts.iter().find(|attempt| {
+    attempts.iter().find(|attempt| {
         attempt.operation_id == operation_id
             && attempt.window == *window
             && attempt.target_output == *target_output
@@ -44,12 +44,12 @@ fn member_attempt_for<'a>(
 /// Exact-correlated raw view evidence for one owning phase plus target.
 /// Same forged-row rule as [`member_attempt_for`].
 fn view_attempt_for<'a>(
-    report: &'a WorldReport,
+    attempts: &'a [ViewAttempt],
     operation_id: &str,
     target_output: &OutputId,
     target_workspace: &str,
 ) -> Option<&'a ViewAttempt> {
-    report.view_attempts.iter().find(|attempt| {
+    attempts.iter().find(|attempt| {
         attempt.operation_id == operation_id
             && attempt.target_output == *target_output
             && attempt.target_workspace == target_workspace
@@ -503,7 +503,7 @@ impl WorldEngine {
             // gapped report never erases knowledge the sequencer pending
             // map forgets after acknowledgement.
             if let Some(attempt) = view_attempt_for(
-                report,
+                &self.staged.observation.view_attempts,
                 &retained.target.operation_id,
                 &retained.target.target_output,
                 &retained.target.target_workspace,
@@ -546,17 +546,18 @@ impl WorldEngine {
                 // naming the refused preimage settles to observed. Gaps
                 // (incomplete inventory, incomplete screen, gesture) hold
                 // persistently with identities preserved and no retry. The
-                // screen bar reads the CURRENT report screens (never the
-                // previous staged topology): an incomplete current screen
-                // holds even after a complete prior.
-                let current_complete = report
+                // screen bar reads the current staged screens (populated
+                // from the current report at stage_captured): an incomplete
+                // current screen holds even after a complete prior.
+                let current_complete = self
+                    .staged
                     .screens
                     .iter()
                     .find(|screen| screen.output == retained.target.target_output)
                     .map(|screen| screen.complete);
-                if !report.inventory_complete
+                if !self.staged.observation.inventory_complete
                     || current_complete != Some(true)
-                    || report.gesture_barrier
+                    || self.staged.gesture_barrier
                 {
                     keep.push(retained);
                     continue;
@@ -667,7 +668,7 @@ impl WorldEngine {
         // next: a proven born clear retires before the sweep publishes the
         // next reply, so the desire drops exactly when proof lands.
         self.settle_clears(report, consumed);
-        self.settle_born_clears(report);
+        self.settle_born_clears();
         let mut keep: Vec<RetainedTransfer> = Vec::new();
         for mut retained in std::mem::take(&mut self.retained) {
             // Stage exact-correlated raw membership evidence before any
@@ -680,7 +681,7 @@ impl WorldEngine {
                 let target_output = retained.target.target_output.clone();
                 let target_workspace = retained.target.target_workspace.clone();
                 if let Some(attempt) = member_attempt_for(
-                    report,
+                    &self.staged.observation.member_attempts,
                     &retained.target.operation_id,
                     window,
                     &target_output,
@@ -690,7 +691,7 @@ impl WorldEngine {
                 }
                 if retained.target.follow
                     && let Some(attempt) = view_attempt_for(
-                        report,
+                        &self.staged.observation.view_attempts,
                         &retained.target.operation_id,
                         &target_output,
                         &target_workspace,
@@ -856,10 +857,10 @@ impl WorldEngine {
                         // Target arrival already won above; gaps hold with
                         // the raw staged (as floats do), never settling from
                         // absence. Minimized/unreadable facts hold.
-                        let gapped = !report.inventory_complete
+                        let gapped = !self.staged.observation.inventory_complete
                             || self.screen_complete(&retained.source_output) != Some(true)
                             || self.screen_complete(&retained.target.target_output) != Some(true)
-                            || report.gesture_barrier;
+                            || self.staged.gesture_barrier;
                         if gapped {
                             let mut held = retained;
                             held.target.held = true;
@@ -965,7 +966,7 @@ impl WorldEngine {
             }
         }
         self.retained = keep;
-        self.settle_floats(report);
+        self.settle_floats();
     }
 
     /// Settle one outstanding whole-workspace migration against staged
@@ -1011,15 +1012,25 @@ impl WorldEngine {
         let target_ws = retained.target.target_workspace.clone();
         let op = retained.target.operation_id.clone();
         for member in retained.members.clone() {
-            if let Some(attempt) = member_attempt_for(report, &op, &member, &target_out, &target_ws)
-            {
+            if let Some(attempt) = member_attempt_for(
+                &self.staged.observation.member_attempts,
+                &op,
+                &member,
+                &target_out,
+                &target_ws,
+            ) {
                 retained.pending_members.insert(member, attempt.clone());
             }
         }
         retained
             .pending_members
             .retain(|member, _| retained.members.contains(member));
-        if let Some(attempt) = view_attempt_for(report, &op, &target_out, &target_ws) {
+        if let Some(attempt) = view_attempt_for(
+            &self.staged.observation.view_attempts,
+            &op,
+            &target_out,
+            &target_ws,
+        ) {
             retained.pending_view = Some(attempt.clone());
         }
         // Settle the paired refill child here: settle_views_pre skips
@@ -1032,8 +1043,12 @@ impl WorldEngine {
         }) {
             let child_out = keep[pos].target.target_output.clone();
             let child_ws = keep[pos].target.target_workspace.clone();
-            if let Some(attempt) = view_attempt_for(report, &refill_child_op, &child_out, &child_ws)
-            {
+            if let Some(attempt) = view_attempt_for(
+                &self.staged.observation.view_attempts,
+                &refill_child_op,
+                &child_out,
+                &child_ws,
+            ) {
                 keep[pos].pending_view = Some(attempt.clone());
             }
             let child_raw = keep[pos].pending_view.clone();
@@ -1204,7 +1219,7 @@ impl WorldEngine {
             // or a held gesture never prove non-arrival. Hold narrowly
             // with identities preserved, marked held persistently so the
             // flight survives the refusal acknowledgement disappearing.
-            if !report.inventory_complete {
+            if !self.staged.observation.inventory_complete {
                 let mut held = retained;
                 held.members = pruned;
                 held.target.held = true;
@@ -1220,7 +1235,7 @@ impl WorldEngine {
                 keep.push(held);
                 return;
             }
-            if report.gesture_barrier {
+            if self.staged.gesture_barrier {
                 let mut held = retained;
                 held.members = pruned;
                 held.target.held = true;
@@ -1442,7 +1457,7 @@ impl WorldEngine {
             });
             return;
         }
-        if !report.inventory_complete {
+        if !self.staged.observation.inventory_complete {
             let mut held = retained;
             held.members = pruned;
             hold(held);
@@ -1464,7 +1479,7 @@ impl WorldEngine {
             hold(held);
             return;
         }
-        if report.gesture_barrier {
+        if self.staged.gesture_barrier {
             let mut held = retained;
             held.members = pruned;
             hold(held);
@@ -1780,7 +1795,7 @@ impl WorldEngine {
     /// - Every terminal verdict above (confirmation, proven refusal,
     ///   external supersession, close) emits one `operation_settled` event
     ///   with the original op/window/outcome; holds emit nothing.
-    pub(crate) fn settle_floats(&mut self, report: &WorldReport) {
+    pub(crate) fn settle_floats(&mut self) {
         use crate::world_frames::{dpi_basis_changed, is_stale_replay};
         use crate::world_report::{FrameSetter, OperationOutcome};
         let mut keep: Vec<RetainedFloat> = Vec::new();
@@ -1803,7 +1818,7 @@ impl WorldEngine {
             // latches below and reconciles from later stable observations.
             let mut fresh_evidence = false;
             let mut fresh_dpi_flip = false;
-            for attempt in report.frames.iter().filter(|attempt| {
+            for attempt in self.staged.observation.frames.iter().filter(|attempt| {
                 attempt.window == retained.window
                     && attempt.target == retained.target
                     && attempt.operation_id.as_deref() == Some(retained.operation_id.as_str())
@@ -1837,8 +1852,8 @@ impl WorldEngine {
             // settling, but latches conservatively from retained evidence
             // so a later readable report reconciles instead of dropping
             // the operation as external input.
-            let readable = report.inventory_complete
-                && !report.gesture_barrier
+            let readable = self.staged.observation.inventory_complete
+                && !self.staged.gesture_barrier
                 && self
                     .staged
                     .facts

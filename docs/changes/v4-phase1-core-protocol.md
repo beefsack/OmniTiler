@@ -754,8 +754,12 @@
         native/view proof; the other remaining lanes follow separately.
         Then 4b-2c migrates the complete cursor focus/warp family, cursor
         history sampling and the gesture fullscreen-pause observation gate.
-        Gesture actuation/correlation and pre-observation fresh-focus routing
-        remain with their existing command and assembly dependencies.
+         Gesture actuation/correlation and pre-observation fresh-focus routing
+         remain with their existing command and assembly dependencies.
+         Next, 4b-2d migrates retained clear/born, transfer/migration and float
+         settlement's raw receipt and readability inputs. Native/view proof,
+         born authority/presentation and command continuations retain their
+         existing owners; other observation consumers follow separately.
    5. View-proof migration replacing the `views` echo legs (`view_echo_for`,
      staged echo fill, `settle_views_pre`, selection proof) with visibility and
      focus proof. The contract settles the receipt predicates (removed `views`
@@ -1081,6 +1085,46 @@
   feature, public ingress or version change is included. Remaining gesture,
   clear/born, topology/native and switch-proof dependencies keep their existing
   owners; the phase note remains active.
+- Sub-increment 4b-2d plan: move exact-correlated clear, member and view attempt
+  lookup plus retained float frame evidence to staged observation. Move the
+  same settlement paths' inventory, barrier, current-screen and clear-focus
+  reads to staged inputs, preserving receipt-before-hold order, tuple matching,
+  replacement/latching policy, replay/DPI fences and close precedence. Remove
+  the report argument from born-clear and float settlement where no dependency
+  remains; other settlement callers keep report arguments for proof or command
+  dependencies. Verify both intakes with current-versus-stale capture controls,
+  forged tuples, raw evidence under gaps/holds, recovery and lifecycle/replay
+  controls. Tests seed retained authority only to isolate shared helpers; no v4
+  accepted-run/scenario assembly is claimed. Native/view proof, born authority
+  and presentation, command continuation/correlation, prior-report retention,
+  fixture/manifest and public ingress remain unchanged.
+- Sub-increment 4b-2d outcome: clear/born, window/follow and migration/refill
+  receipt lookups now borrow staged clear/member/view lanes; float settlement
+  borrows staged frames. Their inventory/barrier, current-screen and clear-focus
+  inputs use the same staged boundary. Born-clear and float settlement no longer
+  take a report; remaining report arguments retain native/view proof and command
+  dependencies. Tuple predicates, replacement order, receipt-before-hold order,
+  replay/DPI fences and close precedence are unchanged, with no new observation
+  clones. Ten new dual-intake tests cover exact and forged tuples, contradictory
+  passed-report inputs, incomplete/barrier/held receipt retention and readable
+  recovery, host-owned view refusal under current-screen gaps, clear focus and
+  float-continuation geometry, migration parent/refill receipt capture and member
+  replacement, float replay, DPI transitions and explicit close. Migration
+  completion/recovery is proven only on the legacy intake: v4 has no view echoes
+  yet and retains the correlated receipts without completing. Test-only retained
+  authority/homing/view/domain seeds isolate helper behavior, not v4 accepted-run,
+  codec-shape or scenario acceptance. Review found no source blocker; follow-up
+  added missing branch controls, isolated gate effects from independent holds and
+  corrected a migration post-output test tuple. New tests were first run after
+  implementation, not established as preimplementation behavioral reds. Final
+  direct verification passes the filtered core/protocol gate (1697 core unit
+  tests and every selected integration/protocol target), build, scoped all-target
+  clippy with warnings denied, formatting, whitespace, added ASCII, NUL and
+  local-link checks. Only `workspace_unsafe_posture` is filtered. No new tentative
+  decision, contract, fixture, manifest, adapter, feature, public ingress or version
+  change is included. 4b-2 is not finished: remaining gesture, born authority,
+  topology/native and switch-proof dependencies retain their existing owners;
+  the phase note remains active.
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
 - Capability-held cursor grading repair plan: reproduce a valid v4 report whose
   native cursor hit names a newly capability-held window, then keep that window

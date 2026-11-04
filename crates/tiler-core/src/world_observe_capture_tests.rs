@@ -3884,3 +3884,2333 @@ fn warp_staged_clamp_and_last_effect_parity() {
         );
     }
 }
+
+// 4b-2d: settlement consumes staged observation lanes on both intakes.
+// Tests drive the real `stage_facts`/`stage_facts_v4` lanes, seed the
+// post-rollback staged join directly (TEST-ONLY retained
+// homing/view/domain seeds: the v4 accepted-run domain assembly is
+// unbuilt, so homing, views, and domains below are seeds, never runtime
+// proof), then call the shared settlement entry points. Attempt evidence,
+// inventory, barrier, screens, and focus all read from the current staged
+// capture; the passed legacy report only carries command supersession and
+// native/view proofs where the callee still takes one. No conversion, no
+// runtime change, no new files.
+fn settle_engine_4b2d() -> WorldEngine {
+    WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            birth_clear: true,
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation")
+}
+
+/// TEST-ONLY staged join seed: ring, views, homing, and one readable
+/// domain for `window`. Stands in for the unbuilt v4 accepted-run domain
+/// assembly; the classification and attempt lanes under test still come
+/// from the real staged lanes above.
+fn seed_join_4b2d(engine: &mut WorldEngine, window: &str, workspace: &str) {
+    engine.mapping.insert(
+        "out-a".to_owned(),
+        vec!["ws-1".to_owned(), "ws-9".to_owned()],
+    );
+    engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+    engine
+        .last_views
+        .insert(OutputId("out-a".to_owned()), "ws-1".to_owned());
+    let key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(workspace.to_owned()),
+    };
+    engine
+        .staged
+        .homing
+        .insert(WindowId(window.to_owned()), key.clone());
+    engine.staged.domains.push(StagedDomain {
+        key,
+        bounds: rect(0, 0, 800, 560),
+        gap: 0,
+        outer_gap: 0,
+        windows: Vec::new(),
+        focused: WindowId(String::new()),
+        minimized: Vec::new(),
+        unreadable: Vec::new(),
+        closed: Vec::new(),
+        readable: true,
+        hold: None,
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_attempts_4b2d(
+    engine: &mut WorldEngine,
+    v4: bool,
+    seq: u64,
+    screens: Vec<ScreenReport>,
+    windows: Vec<WindowFact>,
+    focused: &str,
+    views: Vec<(&str, &str)>,
+    complete: bool,
+    barrier: bool,
+    held: Vec<HeldWindowRow>,
+    clears: Vec<ClearAttempt>,
+    members: Vec<MemberAttempt>,
+    view_attempts: Vec<ViewAttempt>,
+    frames: Vec<FrameAttempt>,
+    closed: Vec<WindowId>,
+) {
+    let mut legacy = report_full(
+        seq,
+        seq,
+        screens.clone(),
+        windows.clone(),
+        views,
+        focused,
+        None,
+        None,
+    );
+    legacy.inventory_complete = complete;
+    legacy.gesture_barrier = barrier;
+    legacy.held_windows = held.clone();
+    legacy.clear_attempts = clears.clone();
+    legacy.member_attempts = members.clone();
+    legacy.view_attempts = view_attempts.clone();
+    legacy.frames = frames.clone();
+    legacy.closed = closed.clone();
+    let mut v4report = report_v4_simple(seq, screens, Vec::new(), windows, held, closed);
+    v4report.focused_global = focused.to_owned();
+    v4report.inventory_complete = complete;
+    v4report.gesture_barrier = barrier;
+    v4report.clear_attempts = clears;
+    v4report.member_attempts = members;
+    v4report.view_attempts = view_attempts;
+    v4report.frames = frames;
+    stage_either(engine, v4, &legacy, &v4report);
+}
+
+/// Passed report for callees that still take one: same screens, no
+/// command, empty attempt lanes, and deliberately wrong focus/views so
+/// only staged inputs can settle.
+fn passed_report_4b2d(seq: u64) -> WorldReport {
+    report_full(
+        seq,
+        seq,
+        vec![screen("out-a", 0)],
+        vec![fact("win-a", "out-a", 0)],
+        vec![("out-a", "ws-9")],
+        "win-other",
+        None,
+        None,
+    )
+}
+
+fn max_fact_4b2d(window: &str) -> WindowFact {
+    WindowFact {
+        maximized: Some(true),
+        ..fact(window, "out-a", 0)
+    }
+}
+
+fn clear_4b2d(
+    operation: &str,
+    window: &str,
+    setter: FrameSetter,
+    pre: Option<bool>,
+    post: Option<bool>,
+) -> ClearAttempt {
+    ClearAttempt {
+        operation_id: operation.to_owned(),
+        window: WindowId(window.to_owned()),
+        setter,
+        pre_maximized: pre,
+        post_maximized: post,
+        attempt_ms: 7,
+    }
+}
+
+fn member_4b2d(
+    operation: &str,
+    window: &str,
+    target_workspace: &str,
+    setter: FrameSetter,
+    pre: Option<WorkspaceRef>,
+    post: Option<WorkspaceRef>,
+) -> MemberAttempt {
+    MemberAttempt {
+        operation_id: operation.to_owned(),
+        window: WindowId(window.to_owned()),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: target_workspace.to_owned(),
+        setter,
+        pre,
+        post,
+        attempt_ms: 7,
+    }
+}
+
+fn logical_4b2d(workspace: &str) -> WorkspaceRef {
+    WorkspaceRef::Logical {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(workspace.to_owned()),
+    }
+}
+
+fn view_4b2d(operation: &str, target_workspace: &str) -> ViewAttempt {
+    ViewAttempt {
+        operation_id: operation.to_owned(),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: target_workspace.to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: None,
+        baseline: None,
+        attempt_ms: 7,
+    }
+}
+
+fn frame_4b2d(
+    target: crate::geometry::Rect,
+    setter: FrameSetter,
+    ms: u64,
+    dpi: (Option<u32>, Option<u32>),
+) -> FrameAttempt {
+    FrameAttempt {
+        window: WindowId("win-a".to_owned()),
+        target,
+        setter,
+        readback: None,
+        dpi_before: dpi.0,
+        dpi_after: dpi.1,
+        attempt_ms: ms,
+        operation_id: Some("op-f".to_owned()),
+        prewrite: None,
+    }
+}
+
+fn seed_clear_4b2d(engine: &mut WorldEngine, operation: &str) {
+    engine
+        .retained_clears
+        .push(crate::world_engine::RetainedClear {
+            operation_id: operation.to_owned(),
+            command_seq: 13,
+            window: WindowId("win-a".to_owned()),
+            direction: "right".to_owned(),
+            home: home_key("out-a"),
+            view: Some("ws-1".to_owned()),
+            focus: "win-a".to_owned(),
+            float_route: false,
+            same_axis: crate::directional::SameAxisMove::default(),
+            pending: None,
+            ambiguous: false,
+        });
+}
+
+fn seed_born_4b2d(engine: &mut WorldEngine, operation: &str) {
+    engine
+        .retained_born
+        .push(crate::world_engine::RetainedBornClear {
+            operation_id: operation.to_owned(),
+            window: WindowId("win-a".to_owned()),
+            home: home_key("out-a"),
+            pending: None,
+            ambiguous: false,
+        });
+}
+
+fn seed_window_transfer_4b2d(engine: &mut WorldEngine, operation: &str) {
+    engine.retained.push(crate::world_engine::RetainedTransfer {
+        target: crate::world_report::TransferTarget {
+            operation_id: operation.to_owned(),
+            kind: crate::world_report::TransferKind::Window(WindowId("win-a".to_owned())),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: "ws-1".to_owned(),
+            follow: false,
+            held: false,
+        },
+        policy: false,
+        source_output: OutputId("out-a".to_owned()),
+        source_workspace: "ws-9".to_owned(),
+        members: Vec::new(),
+        migration_refill: None,
+        migration_initial_empty: false,
+        migration_source_index: None,
+        migration_source_view: None,
+        migration_target_view: None,
+        migration_terminal: None,
+        pending_member: None,
+        pending_members: BTreeMap::new(),
+        pending_view: None,
+    });
+}
+
+fn seed_view_transfer_4b2d(engine: &mut WorldEngine, operation: &str) {
+    engine.retained.push(crate::world_engine::RetainedTransfer {
+        target: crate::world_report::TransferTarget {
+            operation_id: operation.to_owned(),
+            kind: crate::world_report::TransferKind::View,
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: "ws-1".to_owned(),
+            follow: false,
+            held: false,
+        },
+        policy: false,
+        source_output: OutputId("out-a".to_owned()),
+        source_workspace: "ws-1".to_owned(),
+        members: Vec::new(),
+        migration_refill: None,
+        migration_initial_empty: false,
+        migration_source_index: None,
+        migration_source_view: None,
+        migration_target_view: None,
+        migration_terminal: None,
+        pending_member: None,
+        pending_members: BTreeMap::new(),
+        pending_view: None,
+    });
+}
+
+/// TEST-ONLY migration join seed: two-output rings, a refill child
+/// (`{op}-refill` toward the source view) pushed before its migration
+/// parent so `settle_migration` reconciles them together. Staged homing
+/// is seeded per report below: the v4 accepted-run domain assembly is
+/// unbuilt, so this is a seed, never runtime proof.
+fn seed_migration_4b2d(engine: &mut WorldEngine, operation: &str) {
+    engine.mapping.insert(
+        "out-a".to_owned(),
+        vec!["ws-1".to_owned(), "ws-9".to_owned()],
+    );
+    engine.mapping.insert(
+        "out-b".to_owned(),
+        vec!["ws-1".to_owned(), "ws-8".to_owned()],
+    );
+    engine.retained.push(crate::world_engine::RetainedTransfer {
+        target: crate::world_report::TransferTarget {
+            operation_id: format!("{operation}-refill"),
+            kind: crate::world_report::TransferKind::View,
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: "ws-9".to_owned(),
+            follow: false,
+            held: false,
+        },
+        policy: false,
+        source_output: OutputId("out-a".to_owned()),
+        source_workspace: "ws-1".to_owned(),
+        members: Vec::new(),
+        migration_refill: None,
+        migration_initial_empty: false,
+        migration_source_index: None,
+        migration_source_view: None,
+        migration_target_view: None,
+        migration_terminal: None,
+        pending_member: None,
+        pending_members: BTreeMap::new(),
+        pending_view: None,
+    });
+    engine.retained.push(crate::world_engine::RetainedTransfer {
+        target: crate::world_report::TransferTarget {
+            operation_id: operation.to_owned(),
+            kind: crate::world_report::TransferKind::Migration,
+            target_output: OutputId("out-b".to_owned()),
+            target_workspace: "ws-1".to_owned(),
+            follow: false,
+            held: false,
+        },
+        policy: false,
+        source_output: OutputId("out-a".to_owned()),
+        source_workspace: "ws-1".to_owned(),
+        members: vec![WindowId("win-a".to_owned())],
+        migration_refill: Some("ws-9".to_owned()),
+        migration_initial_empty: false,
+        migration_source_index: Some(0),
+        migration_source_view: Some("ws-1".to_owned()),
+        migration_target_view: Some("ws-1".to_owned()),
+        migration_terminal: None,
+        pending_member: None,
+        pending_members: BTreeMap::new(),
+        pending_view: None,
+    });
+}
+
+fn home_migration_4b2d(engine: &mut WorldEngine, output: &str, workspace: &str) {
+    engine.staged.homing.insert(
+        WindowId("win-a".to_owned()),
+        DomainKey {
+            output: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+        },
+    );
+}
+
+fn member_out_4b2d(
+    operation: &str,
+    window: &str,
+    output: &str,
+    target_workspace: &str,
+    setter: FrameSetter,
+    pre: Option<WorkspaceRef>,
+    post: Option<WorkspaceRef>,
+) -> MemberAttempt {
+    MemberAttempt {
+        operation_id: operation.to_owned(),
+        window: WindowId(window.to_owned()),
+        target_output: OutputId(output.to_owned()),
+        target_workspace: target_workspace.to_owned(),
+        setter,
+        pre,
+        post,
+        attempt_ms: 7,
+    }
+}
+
+fn view_out_4b2d(operation: &str, output: &str, target_workspace: &str) -> ViewAttempt {
+    ViewAttempt {
+        operation_id: operation.to_owned(),
+        target_output: OutputId(output.to_owned()),
+        target_workspace: target_workspace.to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: None,
+        baseline: None,
+        attempt_ms: 7,
+    }
+}
+
+/// Host-owned 4b2d engine: same caps plus `host_owned`, required only
+/// for the view-refusal lane (effective view pre/post translate natives
+/// solely under the capability; the tiler-owned engine can never take
+/// the `settle_views_pre` Refused branch).
+fn settle_engine_4b2d_host() -> WorldEngine {
+    WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            birth_clear: true,
+            native_sticky: true,
+            maximize: true,
+            host_owned: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation")
+}
+
+fn native_ref_4b2d(native: &str) -> WorkspaceRef {
+    WorkspaceRef::Native {
+        output: OutputId("out-a".to_owned()),
+        workspace: crate::ids::NativeWorkspaceId::parse(native).expect("native id"),
+    }
+}
+
+fn view_native_refused_4b2d(
+    operation: &str,
+    target_workspace: &str,
+    pre_native: &str,
+) -> ViewAttempt {
+    ViewAttempt {
+        operation_id: operation.to_owned(),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: target_workspace.to_owned(),
+        setter: FrameSetter::Refused,
+        pre: Some(native_ref_4b2d(pre_native)),
+        post: Some(native_ref_4b2d(pre_native)),
+        baseline: None,
+        attempt_ms: 7,
+    }
+}
+
+fn seed_native_views_4b2d(engine: &mut WorldEngine) {
+    engine.mapping.insert(
+        "out-a".to_owned(),
+        vec!["ws-1".to_owned(), "ws-9".to_owned()],
+    );
+    engine.views.insert("out-a".to_owned(), "ws-9".to_owned());
+    engine
+        .last_views
+        .insert(OutputId("out-a".to_owned()), "ws-9".to_owned());
+    engine
+        .native_map
+        .insert(("out-a".to_owned(), "n1".to_owned()), "ws-1".to_owned());
+    engine
+        .native_map
+        .insert(("out-a".to_owned(), "n9".to_owned()), "ws-9".to_owned());
+}
+
+/// Passed report carrying a native current echo for `settle_views_pre`
+/// (echo reads the passed report; screens/inventory/barrier gates read
+/// the staged capture).
+fn passed_native_report_4b2d(seq: u64, current: &str) -> WorldReport {
+    let mut report = passed_report_4b2d(seq);
+    report.native = vec![NativeObservation {
+        output: OutputId("out-a".to_owned()),
+        native_order: vec!["n9".to_owned(), "n1".to_owned()],
+        current_native: Some(current.to_owned()),
+        occupancy: vec![
+            NativeOccupancy {
+                native: "n9".to_owned(),
+                count: None,
+            },
+            NativeOccupancy {
+                native: "n1".to_owned(),
+                count: None,
+            },
+        ],
+    }];
+    report
+}
+
+fn seed_float_clear_4b2d(engine: &mut WorldEngine, operation: &str) {
+    engine
+        .retained_clears
+        .push(crate::world_engine::RetainedClear {
+            operation_id: operation.to_owned(),
+            command_seq: 13,
+            window: WindowId("win-a".to_owned()),
+            direction: "right".to_owned(),
+            home: home_key("out-a"),
+            view: Some("ws-1".to_owned()),
+            focus: "win-a".to_owned(),
+            float_route: true,
+            same_axis: crate::directional::SameAxisMove::default(),
+            pending: None,
+            ambiguous: false,
+        });
+}
+
+fn seed_float_4b2d(
+    engine: &mut WorldEngine,
+    target: crate::geometry::Rect,
+    source: crate::geometry::Rect,
+) {
+    engine
+        .retained_floats
+        .push(crate::world_engine::RetainedFloat {
+            operation_id: "op-f".to_owned(),
+            command_seq: 11,
+            window: WindowId("win-a".to_owned()),
+            target,
+            source: Some(source),
+            output: OutputId("out-a".to_owned()),
+            workspace: "ws-1".to_owned(),
+            ambiguous: false,
+            pending: None,
+        });
+}
+
+#[test]
+fn settle_clear_uses_staged_lane_not_passed_report() {
+    use crate::world_report::OperationOutcome;
+    for v4 in [false, true] {
+        // Exact staged refusal retires even though the passed report
+        // carries no attempts and names the wrong focus/view.
+        let mut engine = settle_engine_4b2d();
+        let refused = clear_4b2d(
+            "op-1",
+            "win-a",
+            FrameSetter::Refused,
+            Some(true),
+            Some(true),
+        );
+        stage_attempts_4b2d(
+            &mut engine,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![max_fact_4b2d("win-a")],
+            "win-a",
+            vec![("out-a", "ws-1")],
+            true,
+            false,
+            Vec::new(),
+            vec![refused],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_join_4b2d(&mut engine, "win-a", "ws-1");
+        seed_clear_4b2d(&mut engine, "op-1");
+        engine.settle_clears(&passed_report_4b2d(90), false);
+        assert!(
+            engine.retained_clears.is_empty(),
+            "staged refusal retires despite contradictory report (v4={v4})"
+        );
+        assert!(
+            engine
+                .operation_settled
+                .iter()
+                .any(|event| event.operation_id == "op-1"
+                    && event.window.0 == "win-a"
+                    && event.outcome == OperationOutcome::ClearRefusedProven),
+            "refused-proven event carries op/window/outcome, got {:?} (v4={v4})",
+            engine.operation_settled,
+            v4 = v4,
+        );
+        // Forged rows (operation or window mismatch) read as absent: the
+        // flight holds with nothing staged and no event.
+        for (what, forged) in [
+            (
+                "wrong-op",
+                clear_4b2d(
+                    "op-X",
+                    "win-a",
+                    FrameSetter::Refused,
+                    Some(true),
+                    Some(true),
+                ),
+            ),
+            (
+                "wrong-window",
+                clear_4b2d(
+                    "op-1",
+                    "win-b",
+                    FrameSetter::Refused,
+                    Some(true),
+                    Some(true),
+                ),
+            ),
+        ] {
+            let mut forged_engine = settle_engine_4b2d();
+            stage_attempts_4b2d(
+                &mut forged_engine,
+                v4,
+                1,
+                vec![screen("out-a", 0)],
+                vec![max_fact_4b2d("win-a")],
+                "win-a",
+                vec![("out-a", "ws-1")],
+                true,
+                false,
+                Vec::new(),
+                vec![forged],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            seed_join_4b2d(&mut forged_engine, "win-a", "ws-1");
+            seed_clear_4b2d(&mut forged_engine, "op-1");
+            forged_engine.settle_clears(&passed_report_4b2d(90), false);
+            assert_eq!(
+                forged_engine.retained_clears.len(),
+                1,
+                "{what} holds (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                forged_engine.operation_settled.is_empty(),
+                "{what} emits nothing (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                forged_engine.retained_clears[0].pending.is_none(),
+                "{what} stages nothing (v4={v4})",
+                v4 = v4,
+            );
+        }
+        // Receipt before each gate latches evidence, then a readable
+        // recovery with an empty lane still retires via the latch.
+        for (what, complete, barrier, windows, held) in [
+            (
+                "incomplete",
+                false,
+                false,
+                vec![max_fact_4b2d("win-a")],
+                Vec::new(),
+            ),
+            (
+                "barrier",
+                true,
+                true,
+                vec![max_fact_4b2d("win-a")],
+                Vec::new(),
+            ),
+            (
+                "held",
+                true,
+                false,
+                Vec::new(),
+                vec![held_window_row("win-a", "out-a", 0)],
+            ),
+        ] {
+            let mut gated = settle_engine_4b2d();
+            stage_attempts_4b2d(
+                &mut gated,
+                v4,
+                1,
+                vec![screen("out-a", 0)],
+                windows,
+                "win-a",
+                vec![("out-a", "ws-1")],
+                complete,
+                barrier,
+                held,
+                vec![clear_4b2d(
+                    "op-1",
+                    "win-a",
+                    FrameSetter::Refused,
+                    Some(true),
+                    Some(true),
+                )],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            seed_join_4b2d(&mut gated, "win-a", "ws-1");
+            seed_clear_4b2d(&mut gated, "op-1");
+            gated.settle_clears(&passed_report_4b2d(90), false);
+            assert_eq!(
+                gated.retained_clears.len(),
+                1,
+                "{what} holds (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                gated.operation_settled.is_empty(),
+                "{what} emits nothing (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                gated.retained_clears[0].pending.is_some(),
+                "{what} latches evidence before the hold (v4={v4})",
+                v4 = v4,
+            );
+            // Readable recovery carries no fresh attempt: the latch
+            // reconciles on readable facts.
+            stage_attempts_4b2d(
+                &mut gated,
+                v4,
+                2,
+                vec![screen("out-a", 0)],
+                vec![max_fact_4b2d("win-a")],
+                "win-a",
+                vec![("out-a", "ws-1")],
+                true,
+                false,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            seed_join_4b2d(&mut gated, "win-a", "ws-1");
+            gated.settle_clears(&passed_report_4b2d(91), false);
+            assert!(
+                gated.retained_clears.is_empty(),
+                "{what} recovers readable (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                gated
+                    .operation_settled
+                    .iter()
+                    .any(|event| event.operation_id == "op-1"
+                        && event.outcome == OperationOutcome::ClearRefusedProven),
+                "{what} recovery retires refused-proven (v4={v4})",
+                v4 = v4,
+            );
+        }
+    }
+}
+
+#[test]
+fn settle_born_uses_staged_lane_with_gates_and_recovery() {
+    use crate::world_report::OperationOutcome;
+    for v4 in [false, true] {
+        // settle_born_clears takes no report: the staged capture alone
+        // decides. Exact staged refusal retires.
+        let mut engine = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut engine,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![max_fact_4b2d("win-a")],
+            "win-a",
+            vec![("out-a", "ws-1")],
+            true,
+            false,
+            Vec::new(),
+            vec![clear_4b2d(
+                "op-born-1",
+                "win-a",
+                FrameSetter::Refused,
+                Some(true),
+                Some(true),
+            )],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_join_4b2d(&mut engine, "win-a", "ws-1");
+        seed_born_4b2d(&mut engine, "op-born-1");
+        engine.settle_born_clears();
+        assert!(
+            engine.retained_born.is_empty(),
+            "staged refusal retires (v4={v4})"
+        );
+        assert!(
+            engine
+                .operation_settled
+                .iter()
+                .any(|event| event.operation_id == "op-born-1"
+                    && event.window.0 == "win-a"
+                    && event.outcome == OperationOutcome::ClearRefusedProven),
+            "refused-proven event carries op/window/outcome, got {:?} (v4={v4})",
+            engine.operation_settled,
+            v4 = v4,
+        );
+        for (what, forged) in [
+            (
+                "wrong-op",
+                clear_4b2d(
+                    "op-born-X",
+                    "win-a",
+                    FrameSetter::Refused,
+                    Some(true),
+                    Some(true),
+                ),
+            ),
+            (
+                "wrong-window",
+                clear_4b2d(
+                    "op-born-1",
+                    "win-b",
+                    FrameSetter::Refused,
+                    Some(true),
+                    Some(true),
+                ),
+            ),
+        ] {
+            let mut forged_engine = settle_engine_4b2d();
+            stage_attempts_4b2d(
+                &mut forged_engine,
+                v4,
+                1,
+                vec![screen("out-a", 0)],
+                vec![max_fact_4b2d("win-a")],
+                "win-a",
+                vec![("out-a", "ws-1")],
+                true,
+                false,
+                Vec::new(),
+                vec![forged],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            seed_join_4b2d(&mut forged_engine, "win-a", "ws-1");
+            seed_born_4b2d(&mut forged_engine, "op-born-1");
+            forged_engine.settle_born_clears();
+            assert_eq!(
+                forged_engine.retained_born.len(),
+                1,
+                "{what} holds (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                forged_engine.operation_settled.is_empty(),
+                "{what} emits nothing (v4={v4})",
+                v4 = v4,
+            );
+        }
+        for (what, complete, barrier, windows, held) in [
+            (
+                "incomplete",
+                false,
+                false,
+                vec![max_fact_4b2d("win-a")],
+                Vec::new(),
+            ),
+            (
+                "barrier",
+                true,
+                true,
+                vec![max_fact_4b2d("win-a")],
+                Vec::new(),
+            ),
+            (
+                "held",
+                true,
+                false,
+                Vec::new(),
+                vec![held_window_row("win-a", "out-a", 0)],
+            ),
+        ] {
+            let mut gated = settle_engine_4b2d();
+            stage_attempts_4b2d(
+                &mut gated,
+                v4,
+                1,
+                vec![screen("out-a", 0)],
+                windows,
+                "win-a",
+                vec![("out-a", "ws-1")],
+                complete,
+                barrier,
+                held,
+                vec![clear_4b2d(
+                    "op-born-1",
+                    "win-a",
+                    FrameSetter::Refused,
+                    Some(true),
+                    Some(true),
+                )],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            seed_join_4b2d(&mut gated, "win-a", "ws-1");
+            seed_born_4b2d(&mut gated, "op-born-1");
+            gated.settle_born_clears();
+            assert_eq!(
+                gated.retained_born.len(),
+                1,
+                "{what} holds (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                gated.retained_born[0].pending.is_some(),
+                "{what} latches evidence before the hold (v4={v4})",
+                v4 = v4,
+            );
+            stage_attempts_4b2d(
+                &mut gated,
+                v4,
+                2,
+                vec![screen("out-a", 0)],
+                vec![max_fact_4b2d("win-a")],
+                "win-a",
+                vec![("out-a", "ws-1")],
+                true,
+                false,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            seed_join_4b2d(&mut gated, "win-a", "ws-1");
+            gated.settle_born_clears();
+            assert!(
+                gated.retained_born.is_empty(),
+                "{what} recovers readable (v4={v4})",
+                v4 = v4,
+            );
+        }
+    }
+}
+
+#[test]
+fn settle_transfer_uses_staged_member_lane_not_passed_report() {
+    for v4 in [false, true] {
+        // A staged accepted logical post proves arrival even though the
+        // staged homing still names the source and the passed report
+        // carries no member attempts at all.
+        let mut engine = settle_engine_4b2d();
+        let arrival = member_4b2d(
+            "op-t",
+            "win-a",
+            "ws-1",
+            FrameSetter::Accepted,
+            None,
+            Some(logical_4b2d("ws-1")),
+        );
+        stage_attempts_4b2d(
+            &mut engine,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            vec![("out-a", "ws-1")],
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            vec![arrival],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_join_4b2d(&mut engine, "win-a", "ws-9");
+        seed_window_transfer_4b2d(&mut engine, "op-t");
+        engine.settle_rest(&passed_report_4b2d(90), false);
+        assert!(
+            engine.retained.is_empty(),
+            "staged arrival proof settles despite contradictory report (v4={v4})"
+        );
+        // Forged member rows read as absent: the flight holds at the
+        // source with nothing staged.
+        for (what, forged) in [
+            (
+                "wrong-op",
+                member_4b2d(
+                    "op-X",
+                    "win-a",
+                    "ws-1",
+                    FrameSetter::Accepted,
+                    None,
+                    Some(logical_4b2d("ws-1")),
+                ),
+            ),
+            (
+                "wrong-window",
+                member_4b2d(
+                    "op-t",
+                    "win-b",
+                    "ws-1",
+                    FrameSetter::Accepted,
+                    None,
+                    Some(logical_4b2d("ws-1")),
+                ),
+            ),
+            (
+                "wrong-target",
+                member_4b2d(
+                    "op-t",
+                    "win-a",
+                    "ws-9",
+                    FrameSetter::Accepted,
+                    None,
+                    Some(logical_4b2d("ws-9")),
+                ),
+            ),
+        ] {
+            let mut forged_engine = settle_engine_4b2d();
+            stage_attempts_4b2d(
+                &mut forged_engine,
+                v4,
+                1,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0)],
+                "win-a",
+                vec![("out-a", "ws-1")],
+                true,
+                false,
+                Vec::new(),
+                Vec::new(),
+                vec![forged],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            seed_join_4b2d(&mut forged_engine, "win-a", "ws-9");
+            seed_window_transfer_4b2d(&mut forged_engine, "op-t");
+            forged_engine.settle_rest(&passed_report_4b2d(90), false);
+            assert_eq!(
+                forged_engine.retained.len(),
+                1,
+                "{what} holds (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                forged_engine.retained[0].pending_member.is_none(),
+                "{what} stages nothing (v4={v4})",
+                v4 = v4,
+            );
+        }
+        // Proven refusal reconciles against staged homing: the incomplete
+        // gate holds with the evidence latched, then the readable
+        // recovery with an empty lane settles to observed.
+        let refused = member_4b2d(
+            "op-t",
+            "win-a",
+            "ws-1",
+            FrameSetter::Refused,
+            Some(logical_4b2d("ws-9")),
+            Some(logical_4b2d("ws-9")),
+        );
+        let mut gated = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut gated,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            vec![("out-a", "ws-1")],
+            false,
+            false,
+            Vec::new(),
+            Vec::new(),
+            vec![refused],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_join_4b2d(&mut gated, "win-a", "ws-9");
+        seed_window_transfer_4b2d(&mut gated, "op-t");
+        gated.settle_rest(&passed_report_4b2d(90), false);
+        assert_eq!(
+            gated.retained.len(),
+            1,
+            "incomplete holds the refused flight (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            gated.retained[0].pending_member.is_some(),
+            "refusal evidence latches before the hold (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            gated.retained[0].target.held,
+            "gate marks held (v4={v4})",
+            v4 = v4,
+        );
+        stage_attempts_4b2d(
+            &mut gated,
+            v4,
+            2,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            vec![("out-a", "ws-1")],
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_join_4b2d(&mut gated, "win-a", "ws-9");
+        gated.settle_rest(&passed_report_4b2d(91), false);
+        assert!(
+            gated.retained.is_empty(),
+            "readable recovery settles the refused flight (v4={v4})",
+            v4 = v4,
+        );
+        assert_eq!(
+            gated.pending_forget.len(),
+            1,
+            "refusal defers the target forget (v4={v4})",
+            v4 = v4,
+        );
+    }
+}
+
+#[test]
+fn settle_view_stages_pending_across_stale_echo_on_both_intakes() {
+    for v4 in [false, true] {
+        // The echo comes from the passed report (native/view proof lane);
+        // the attempt comes from the staged capture. A stale echo holds
+        // the flight while the exact staged attempt latches.
+        let mut engine = settle_engine_4b2d();
+        engine.views.insert("out-a".to_owned(), "ws-9".to_owned());
+        engine
+            .last_views
+            .insert(OutputId("out-a".to_owned()), "ws-9".to_owned());
+        stage_attempts_4b2d(
+            &mut engine,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            vec![("out-a", "ws-9")],
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![view_4b2d("op-v", "ws-1")],
+            Vec::new(),
+            Vec::new(),
+        );
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        seed_view_transfer_4b2d(&mut engine, "op-v");
+        let mut stale = passed_report_4b2d(90);
+        stale.member_attempts = Vec::new();
+        stale.view_attempts = Vec::new();
+        engine.settle_views_pre(&stale);
+        assert_eq!(
+            engine.retained.len(),
+            1,
+            "stale echo holds (v4={v4})",
+            v4 = v4,
+        );
+        assert_eq!(
+            engine.retained[0].pending_view,
+            Some(view_4b2d("op-v", "ws-1")),
+            "exact staged attempt latches despite contradictory report (v4={v4})",
+            v4 = v4,
+        );
+        // Forged view rows read as absent: same stale hold, no latch.
+        for (what, forged) in [
+            ("wrong-op", view_4b2d("op-X", "ws-1")),
+            ("wrong-target", view_4b2d("op-v", "ws-9")),
+        ] {
+            let mut forged_engine = settle_engine_4b2d();
+            forged_engine
+                .views
+                .insert("out-a".to_owned(), "ws-9".to_owned());
+            forged_engine
+                .last_views
+                .insert(OutputId("out-a".to_owned()), "ws-9".to_owned());
+            stage_attempts_4b2d(
+                &mut forged_engine,
+                v4,
+                1,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0)],
+                "win-a",
+                vec![("out-a", "ws-9")],
+                true,
+                false,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![forged],
+                Vec::new(),
+                Vec::new(),
+            );
+            forged_engine.mapping.insert(
+                "out-a".to_owned(),
+                vec!["ws-1".to_owned(), "ws-9".to_owned()],
+            );
+            seed_view_transfer_4b2d(&mut forged_engine, "op-v");
+            let mut stale = passed_report_4b2d(90);
+            stale.view_attempts = Vec::new();
+            forged_engine.settle_views_pre(&stale);
+            assert_eq!(
+                forged_engine.retained.len(),
+                1,
+                "{what} holds (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                forged_engine.retained[0].pending_view.is_none(),
+                "{what} stages nothing (v4={v4})",
+                v4 = v4,
+            );
+        }
+    }
+    // Exact echo confirmation drops the flight on the legacy intake (v4
+    // stages no echoes; the passed report still proves).
+    let mut engine = settle_engine_4b2d();
+    engine.views.insert("out-a".to_owned(), "ws-9".to_owned());
+    engine
+        .last_views
+        .insert(OutputId("out-a".to_owned()), "ws-9".to_owned());
+    stage_attempts_4b2d(
+        &mut engine,
+        false,
+        1,
+        vec![screen("out-a", 0)],
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        vec![("out-a", "ws-1")],
+        true,
+        false,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    engine.mapping.insert(
+        "out-a".to_owned(),
+        vec!["ws-1".to_owned(), "ws-9".to_owned()],
+    );
+    seed_view_transfer_4b2d(&mut engine, "op-v");
+    let mut proving = passed_report_4b2d(90);
+    proving.views = vec![crate::world_report::ScreenView {
+        output: OutputId("out-a".to_owned()),
+        view: "ws-1".to_owned(),
+    }];
+    engine.settle_views_pre(&proving);
+    assert!(engine.retained.is_empty(), "exact echo confirms the view");
+    assert_eq!(
+        engine.views.get("out-a"),
+        Some(&"ws-1".to_owned()),
+        "confirmation adopts the proven view"
+    );
+}
+
+#[test]
+fn settle_float_uses_staged_frames_with_replay_dpi_and_close() {
+    use crate::world_report::OperationOutcome;
+    let target = rect(404, 8, 388, 544);
+    let source = rect(100, 100, 200, 200);
+    let external = rect(10, 10, 50, 50);
+    let seed_float = |engine: &mut WorldEngine| {
+        engine
+            .retained_floats
+            .push(crate::world_engine::RetainedFloat {
+                operation_id: "op-f".to_owned(),
+                command_seq: 11,
+                window: WindowId("win-a".to_owned()),
+                target,
+                source: Some(source),
+                output: OutputId("out-a".to_owned()),
+                workspace: "ws-1".to_owned(),
+                ambiguous: false,
+                pending: None,
+            });
+    };
+    let fact_at = |rect: crate::geometry::Rect| {
+        let mut row = fact("win-a", "out-a", 0);
+        row.rect = Some(rect);
+        row
+    };
+    for v4 in [false, true] {
+        // Observation alone at the target confirms with no attempts.
+        let mut engine = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut engine,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact_at(target)],
+            "win-a",
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_float(&mut engine);
+        engine.settle_floats();
+        assert!(
+            engine.retained_floats.is_empty(),
+            "arrival confirms (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            engine
+                .operation_settled
+                .iter()
+                .any(|event| event.operation_id == "op-f"
+                    && event.window.0 == "win-a"
+                    && event.outcome == OperationOutcome::FloatFrameProven),
+            "frame-proven event carries op/window/outcome (v4={v4})",
+            v4 = v4,
+        );
+        // A forged frame tuple (wrong operation) reads as absent: the
+        // source frame holds with nothing staged.
+        let mut forged = frame_4b2d(target, FrameSetter::Accepted, 5, (None, None));
+        forged.operation_id = Some("op-X".to_owned());
+        let mut forged_engine = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut forged_engine,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact_at(source)],
+            "win-a",
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![forged],
+            Vec::new(),
+        );
+        seed_float(&mut forged_engine);
+        forged_engine.settle_floats();
+        assert_eq!(
+            forged_engine.retained_floats.len(),
+            1,
+            "forged frame holds (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            forged_engine.retained_floats[0].pending.is_none(),
+            "forged frame stages nothing (v4={v4})",
+            v4 = v4,
+        );
+        // Stale replay is ignored: the third-location frame abandons as
+        // external input instead of latching ambiguity.
+        let prior = frame_4b2d(target, FrameSetter::Accepted, 5, (None, None));
+        let mut replayed = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut replayed,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact_at(external)],
+            "win-a",
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![prior.clone()],
+            Vec::new(),
+        );
+        seed_float(&mut replayed);
+        replayed
+            .consumed_frames
+            .insert(WindowId("win-a".to_owned()), prior);
+        replayed.settle_floats();
+        assert!(
+            replayed.retained_floats.is_empty(),
+            "replay keeps external abandonment (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            replayed
+                .operation_settled
+                .iter()
+                .any(|event| event.operation_id == "op-f"
+                    && event.outcome == OperationOutcome::FloatAbandoned),
+            "replay abandons as external (v4={v4})",
+            v4 = v4,
+        );
+        // Fresh evidence on the same shape latches ambiguity instead.
+        let mut fresh = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut fresh,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact_at(external)],
+            "win-a",
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![frame_4b2d(target, FrameSetter::Accepted, 6, (None, None))],
+            Vec::new(),
+        );
+        seed_float(&mut fresh);
+        fresh.consumed_frames.insert(
+            WindowId("win-a".to_owned()),
+            frame_4b2d(target, FrameSetter::Accepted, 5, (None, None)),
+        );
+        fresh.settle_floats();
+        assert_eq!(
+            fresh.retained_floats.len(),
+            1,
+            "fresh evidence holds (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            fresh.retained_floats[0].ambiguous,
+            "fresh evidence latches ambiguity (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            fresh.operation_settled.is_empty(),
+            "fresh evidence emits nothing (v4={v4})",
+            v4 = v4,
+        );
+        // A fresh DPI transition suspends same-report confirmation; the
+        // next stable observation confirms.
+        let mut dpi = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut dpi,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact_at(target)],
+            "win-a",
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![frame_4b2d(
+                target,
+                FrameSetter::Accepted,
+                5,
+                (Some(96), Some(192)),
+            )],
+            Vec::new(),
+        );
+        seed_float(&mut dpi);
+        dpi.settle_floats();
+        assert_eq!(
+            dpi.retained_floats.len(),
+            1,
+            "DPI transition suspends confirmation (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            dpi.operation_settled.is_empty(),
+            "DPI transition emits nothing (v4={v4})",
+            v4 = v4,
+        );
+        stage_attempts_4b2d(
+            &mut dpi,
+            v4,
+            2,
+            vec![screen("out-a", 0)],
+            vec![fact_at(target)],
+            "win-a",
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        dpi.settle_floats();
+        assert!(
+            dpi.retained_floats.is_empty(),
+            "stable recovery confirms (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            dpi.operation_settled
+                .iter()
+                .any(|event| event.operation_id == "op-f"
+                    && event.outcome == OperationOutcome::FloatFrameProven),
+            "stable recovery proves the frame (v4={v4})",
+            v4 = v4,
+        );
+        // Explicit close settles even across an inventory gap.
+        let mut closed = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut closed,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact_at(source)],
+            "win-a",
+            Vec::new(),
+            false,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![WindowId("win-a".to_owned())],
+        );
+        seed_float(&mut closed);
+        closed.settle_floats();
+        assert!(
+            closed.retained_floats.is_empty(),
+            "close settles across gaps (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            closed
+                .operation_settled
+                .iter()
+                .any(|event| event.operation_id == "op-f"
+                    && event.outcome == OperationOutcome::FloatAbandoned
+                    && event.cause.as_deref() == Some("closed")),
+            "close abandons with cause (v4={v4})",
+            v4 = v4,
+        );
+    }
+}
+
+#[test]
+fn settle_migration_uses_staged_lanes_not_passed_report() {
+    let screens = || vec![screen("out-a", 0), screen("out-b", 800)];
+    let views = || vec![("out-a", "ws-9"), ("out-b", "ws-1")];
+    let windows = || vec![fact("win-a", "out-b", 800)];
+    let arrival = || {
+        member_out_4b2d(
+            "op-m",
+            "win-a",
+            "out-b",
+            "ws-1",
+            FrameSetter::Accepted,
+            None,
+            Some(WorkspaceRef::Logical {
+                output: OutputId("out-b".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+            }),
+        )
+    };
+    let parent_view = || view_out_4b2d("op-m", "out-b", "ws-1");
+    let refill_view = || view_4b2d("op-m-refill", "ws-9");
+    let parent_of = |engine: &WorldEngine| {
+        engine
+            .retained
+            .iter()
+            .find(|row| row.target.operation_id == "op-m")
+            .expect("migration parent held")
+            .clone()
+    };
+    let child_of = |engine: &WorldEngine| {
+        engine
+            .retained
+            .iter()
+            .find(|row| row.target.operation_id == "op-m-refill")
+            .expect("refill child held")
+            .clone()
+    };
+    for v4 in [false, true] {
+        // The v4 wire carries no explicit views lane, so staged echoes
+        // stay unknown there: echo-gated settlement below holds on v4
+        // while receipt latching is intake-independent. The legacy legs
+        // prove the full settle; the v4 legs prove the hold keeps every
+        // staged receipt.
+        // Staged arrival at the target homing with both echoes exact
+        // settles on legacy even though the passed report carries no
+        // attempts; on v4 the unknown echoes hold with all receipts
+        // latched.
+        let mut engine = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut engine,
+            v4,
+            1,
+            screens(),
+            windows(),
+            "win-a",
+            views(),
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            vec![arrival()],
+            vec![parent_view(), refill_view()],
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_migration_4b2d(&mut engine, "op-m");
+        home_migration_4b2d(&mut engine, "out-b", "ws-1");
+        engine.settle_rest(&passed_report_4b2d(90), false);
+        if !v4 {
+            assert!(
+                engine.retained.is_empty(),
+                "staged arrival plus exact echoes settles despite empty passed lanes"
+            );
+        } else {
+            assert_eq!(
+                engine.retained.len(),
+                2,
+                "v4 holds without echoes (v4={v4})",
+                v4 = v4,
+            );
+            assert_eq!(
+                parent_of(&engine)
+                    .pending_members
+                    .get(&WindowId("win-a".to_owned())),
+                Some(&arrival()),
+                "v4 latches the member receipt (v4={v4})",
+                v4 = v4,
+            );
+            assert_eq!(
+                parent_of(&engine).pending_view,
+                Some(parent_view()),
+                "v4 latches the parent view receipt (v4={v4})",
+                v4 = v4,
+            );
+            assert_eq!(
+                child_of(&engine).pending_view,
+                Some(refill_view()),
+                "v4 latches the refill receipt (v4={v4})",
+                v4 = v4,
+            );
+        }
+        // Forged member rows read as absent: homing stays at the source,
+        // the flight holds with no member evidence staged.
+        for (what, forged) in [
+            (
+                "wrong-op",
+                member_out_4b2d(
+                    "op-X",
+                    "win-a",
+                    "out-b",
+                    "ws-1",
+                    FrameSetter::Accepted,
+                    None,
+                    Some(logical_4b2d("ws-1")),
+                ),
+            ),
+            (
+                "wrong-target",
+                member_out_4b2d(
+                    "op-m",
+                    "win-a",
+                    "out-b",
+                    "ws-9",
+                    FrameSetter::Accepted,
+                    None,
+                    Some(logical_4b2d("ws-9")),
+                ),
+            ),
+        ] {
+            let mut forged_engine = settle_engine_4b2d();
+            stage_attempts_4b2d(
+                &mut forged_engine,
+                v4,
+                1,
+                screens(),
+                windows(),
+                "win-a",
+                views(),
+                true,
+                false,
+                Vec::new(),
+                Vec::new(),
+                vec![forged],
+                vec![parent_view(), refill_view()],
+                Vec::new(),
+                Vec::new(),
+            );
+            seed_migration_4b2d(&mut forged_engine, "op-m");
+            home_migration_4b2d(&mut forged_engine, "out-a", "ws-1");
+            forged_engine.settle_rest(&passed_report_4b2d(90), false);
+            // The refill child still settles on its exact staged echo
+            // independently on legacy (on v4 it holds echo-less); only
+            // the parent holds on the outstanding member with no member
+            // evidence staged.
+            assert_eq!(
+                forged_engine.retained.len(),
+                if v4 { 2 } else { 1 },
+                "{what} holds (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                parent_of(&forged_engine).pending_members.is_empty(),
+                "{what} stages no member (v4={v4})",
+                v4 = v4,
+            );
+        }
+        // Receipt latches before an incomplete hold; a later barrier
+        // report replaces the member tuple outright (latest-wins, never
+        // first-wins); a readable empty-lane recovery then settles.
+        let mut gated = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut gated,
+            v4,
+            1,
+            screens(),
+            windows(),
+            "win-a",
+            views(),
+            false,
+            false,
+            Vec::new(),
+            Vec::new(),
+            vec![arrival()],
+            vec![parent_view(), refill_view()],
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_migration_4b2d(&mut gated, "op-m");
+        home_migration_4b2d(&mut gated, "out-b", "ws-1");
+        gated.settle_rest(&passed_report_4b2d(90), false);
+        // Eligible homing and echoes: only the incomplete gate holds, so
+        // the hold discriminates the gate. The refill child settles on
+        // its exact echo across the gap on legacy (v4 holds echo-less).
+        assert_eq!(
+            gated.retained.len(),
+            if v4 { 2 } else { 1 },
+            "incomplete holds (v4={v4})",
+            v4 = v4,
+        );
+        assert_eq!(
+            parent_of(&gated)
+                .pending_members
+                .get(&WindowId("win-a".to_owned())),
+            Some(&arrival()),
+            "member receipt latches before the hold (v4={v4})",
+            v4 = v4,
+        );
+        assert_eq!(
+            parent_of(&gated).pending_view,
+            Some(parent_view()),
+            "parent view receipt latches before the hold (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            parent_of(&gated).target.held,
+            "latched receipt marks held (v4={v4})",
+            v4 = v4,
+        );
+        if v4 {
+            assert_eq!(
+                child_of(&gated).pending_view,
+                Some(refill_view()),
+                "refill receipt latches before the hold (v4={v4})",
+                v4 = v4,
+            );
+        }
+        let replacement = crate::world_report::MemberAttempt {
+            attempt_ms: 9,
+            ..arrival()
+        };
+        stage_attempts_4b2d(
+            &mut gated,
+            v4,
+            2,
+            screens(),
+            windows(),
+            "win-a",
+            views(),
+            true,
+            true,
+            Vec::new(),
+            Vec::new(),
+            vec![replacement.clone()],
+            vec![parent_view(), refill_view()],
+            Vec::new(),
+            Vec::new(),
+        );
+        home_migration_4b2d(&mut gated, "out-b", "ws-1");
+        gated.settle_rest(&passed_report_4b2d(91), false);
+        assert_eq!(
+            gated.retained.len(),
+            if v4 { 2 } else { 1 },
+            "barrier holds (v4={v4})",
+            v4 = v4,
+        );
+        assert_eq!(
+            parent_of(&gated)
+                .pending_members
+                .get(&WindowId("win-a".to_owned())),
+            Some(&replacement),
+            "later tuple replaces, never first-wins (v4={v4})",
+            v4 = v4,
+        );
+        stage_attempts_4b2d(
+            &mut gated,
+            v4,
+            3,
+            screens(),
+            windows(),
+            "win-a",
+            views(),
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        home_migration_4b2d(&mut gated, "out-b", "ws-1");
+        gated.settle_rest(&passed_report_4b2d(92), false);
+        if !v4 {
+            assert!(
+                gated.retained.is_empty(),
+                "readable empty-lane recovery settles"
+            );
+        } else {
+            // No echoes on the v4 wire: the readable recovery still
+            // holds, with the replaced receipt intact.
+            assert_eq!(
+                gated.retained.len(),
+                2,
+                "v4 recovery holds without echoes (v4={v4})",
+                v4 = v4,
+            );
+            assert_eq!(
+                parent_of(&gated)
+                    .pending_members
+                    .get(&WindowId("win-a".to_owned())),
+                Some(&replacement),
+                "v4 keeps the replaced receipt (v4={v4})",
+                v4 = v4,
+            );
+        }
+    }
+}
+
+#[test]
+fn settle_views_pre_refused_reads_staged_screens_not_passed_report() {
+    for v4 in [false, true] {
+        // View refusal needs the host-owned native lane: effective view
+        // pre/post translate natives solely under the capability, so the
+        // tiler-owned 4b2d engine can never take this branch.
+        let refused = || view_native_refused_4b2d("op-v", "ws-1", "n9");
+        // Each gap holds with the exact staged attempt latched, then a
+        // readable empty-lane recovery settles to observed. The first row
+        // is the discriminator: the staged screen is incomplete while the
+        // passed report screen is complete, yet settlement still holds.
+        for (what, complete, staged_complete, barrier) in [
+            ("staged-screen", true, false, false),
+            ("incomplete", false, true, false),
+            ("barrier", true, true, true),
+        ] {
+            let mut engine = settle_engine_4b2d_host();
+            let mut staged_screen = screen("out-a", 0);
+            staged_screen.complete = staged_complete;
+            stage_attempts_4b2d(
+                &mut engine,
+                v4,
+                1,
+                vec![staged_screen],
+                vec![fact("win-a", "out-a", 0)],
+                "win-a",
+                Vec::new(),
+                complete,
+                barrier,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![refused()],
+                Vec::new(),
+                Vec::new(),
+            );
+            seed_native_views_4b2d(&mut engine);
+            seed_view_transfer_4b2d(&mut engine, "op-v");
+            engine.settle_views_pre(&passed_native_report_4b2d(90, "n9"));
+            assert_eq!(engine.retained.len(), 1, "{what} holds (v4={v4})", v4 = v4,);
+            assert_eq!(
+                engine.retained[0].pending_view,
+                Some(refused()),
+                "{what} latches before the hold (v4={v4})",
+                v4 = v4,
+            );
+            stage_attempts_4b2d(
+                &mut engine,
+                v4,
+                2,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0)],
+                "win-a",
+                Vec::new(),
+                true,
+                false,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            engine.settle_views_pre(&passed_native_report_4b2d(91, "n9"));
+            assert!(
+                engine.retained.is_empty(),
+                "{what} recovers readable (v4={v4})",
+                v4 = v4,
+            );
+        }
+        // Positive control: a complete staged capture settles outright.
+        let mut engine = settle_engine_4b2d_host();
+        stage_attempts_4b2d(
+            &mut engine,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![refused()],
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_native_views_4b2d(&mut engine);
+        seed_view_transfer_4b2d(&mut engine, "op-v");
+        engine.settle_views_pre(&passed_native_report_4b2d(90, "n9"));
+        assert!(
+            engine.retained.is_empty(),
+            "complete eligible refusal settles (v4={v4})",
+            v4 = v4,
+        );
+        // A forged view row reads as absent: the stale echo holds with
+        // nothing staged.
+        let mut forged_engine = settle_engine_4b2d_host();
+        stage_attempts_4b2d(
+            &mut forged_engine,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![view_native_refused_4b2d("op-X", "ws-1", "n9")],
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_native_views_4b2d(&mut forged_engine);
+        seed_view_transfer_4b2d(&mut forged_engine, "op-v");
+        forged_engine.settle_views_pre(&passed_native_report_4b2d(90, "n9"));
+        assert_eq!(
+            forged_engine.retained.len(),
+            1,
+            "forged row holds (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            forged_engine.retained[0].pending_view.is_none(),
+            "forged row stages nothing (v4={v4})",
+            v4 = v4,
+        );
+        // An echo naming the target confirms and adopts despite the same
+        // staged attempt shape proving nothing there.
+        let mut proving = settle_engine_4b2d_host();
+        stage_attempts_4b2d(
+            &mut proving,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            Vec::new(),
+            true,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![refused()],
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_native_views_4b2d(&mut proving);
+        seed_view_transfer_4b2d(&mut proving, "op-v");
+        proving.settle_views_pre(&passed_native_report_4b2d(90, "n1"));
+        assert!(
+            proving.retained.is_empty(),
+            "exact echo confirms (v4={v4})",
+            v4 = v4,
+        );
+        assert_eq!(
+            proving.views.get("out-a"),
+            Some(&"ws-1".to_owned()),
+            "confirmation adopts the proven view (v4={v4})",
+            v4 = v4,
+        );
+    }
+}
+
+#[test]
+fn settle_clear_focus_view_home_read_staged_not_passed_report() {
+    use crate::world_report::OperationOutcome;
+    let refused = || {
+        clear_4b2d(
+            "op-1",
+            "win-a",
+            FrameSetter::Refused,
+            Some(true),
+            Some(true),
+        )
+    };
+    for v4 in [false, true] {
+        // Staged focus divergence abandons even though the passed report
+        // names the bound subject: the staged gate fires before refusal.
+        let mut engine = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut engine,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![max_fact_4b2d("win-a")],
+            "win-b",
+            vec![("out-a", "ws-1")],
+            true,
+            false,
+            Vec::new(),
+            vec![refused()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_join_4b2d(&mut engine, "win-a", "ws-1");
+        seed_clear_4b2d(&mut engine, "op-1");
+        let mut proving_focus = passed_report_4b2d(90);
+        proving_focus.focused_global = "win-a".to_owned();
+        engine.settle_clears(&proving_focus, false);
+        assert!(
+            engine.retained_clears.is_empty(),
+            "staged focus divergence retires (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            engine
+                .operation_settled
+                .iter()
+                .any(|event| event.operation_id == "op-1"
+                    && event.outcome == OperationOutcome::ClearAbandonedFocusChanged),
+            "divergence abandons at the staged focus gate, got {:?} (v4={v4})",
+            engine.operation_settled,
+            v4 = v4,
+        );
+        // Staged view divergence abandons with the retained view intact:
+        // the passed report carries no view authority for clears. The v4
+        // wire has no explicit views lane, so there the divergent retained
+        // view itself governs through the same effective-view fallback.
+        let mut viewed = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut viewed,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![max_fact_4b2d("win-a")],
+            "win-a",
+            vec![("out-a", "ws-9")],
+            true,
+            false,
+            Vec::new(),
+            vec![refused()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_join_4b2d(&mut viewed, "win-a", "ws-1");
+        if v4 {
+            viewed.views.insert("out-a".to_owned(), "ws-9".to_owned());
+        }
+        seed_clear_4b2d(&mut viewed, "op-1");
+        viewed.settle_clears(&passed_report_4b2d(90), false);
+        assert!(
+            viewed.retained_clears.is_empty(),
+            "staged view divergence retires (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            viewed
+                .operation_settled
+                .iter()
+                .any(|event| event.operation_id == "op-1"
+                    && event.outcome == OperationOutcome::ClearAbandonedViewChanged),
+            "divergence abandons at the staged view gate, got {:?} (v4={v4})",
+            viewed.operation_settled,
+            v4 = v4,
+        );
+        // Staged home divergence abandons before the view gate.
+        let mut homed = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut homed,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![max_fact_4b2d("win-a")],
+            "win-a",
+            vec![("out-a", "ws-9")],
+            true,
+            false,
+            Vec::new(),
+            vec![refused()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_join_4b2d(&mut homed, "win-a", "ws-9");
+        seed_clear_4b2d(&mut homed, "op-1");
+        homed.settle_clears(&passed_report_4b2d(90), false);
+        assert!(
+            homed.retained_clears.is_empty(),
+            "staged home divergence retires (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            homed
+                .operation_settled
+                .iter()
+                .any(|event| event.operation_id == "op-1"
+                    && event.outcome == OperationOutcome::ClearAbandonedHomingChanged),
+            "divergence abandons at the staged home gate, got {:?} (v4={v4})",
+            homed.operation_settled,
+            v4 = v4,
+        );
+    }
+}
+
+#[test]
+fn settle_clear_float_continuation_uses_staged_geometry() {
+    use crate::world_report::OperationOutcome;
+    for v4 in [false, true] {
+        // The float continuation derives its half from the staged work
+        // area: the passed report below names a contradictory one.
+        let mut engine = settle_engine_4b2d();
+        stage_attempts_4b2d(
+            &mut engine,
+            v4,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            vec![("out-a", "ws-1")],
+            true,
+            false,
+            Vec::new(),
+            vec![clear_4b2d(
+                "op-1",
+                "win-a",
+                FrameSetter::Accepted,
+                Some(true),
+                Some(false),
+            )],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        seed_join_4b2d(&mut engine, "win-a", "ws-1");
+        seed_float_clear_4b2d(&mut engine, "op-1");
+        let mut crossed = passed_report_4b2d(90);
+        let mut crossed_screen = screen("out-a", 0);
+        crossed_screen.work_area = Some(rect(0, 0, 400, 300));
+        crossed.screens = vec![crossed_screen];
+        engine.settle_clears(&crossed, false);
+        assert!(
+            engine.retained_clears.is_empty(),
+            "proven clear continues (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            engine
+                .operation_settled
+                .iter()
+                .any(|event| event.operation_id == "op-1"
+                    && event.outcome == OperationOutcome::ClearContinuedFloat),
+            "continuation rides the original op, got {:?} (v4={v4})",
+            engine.operation_settled,
+            v4 = v4,
+        );
+        assert_eq!(
+            engine.retained_floats.len(),
+            1,
+            "continuation retains one float (v4={v4})",
+            v4 = v4,
+        );
+        assert_eq!(
+            engine.retained_floats[0].target,
+            rect(404, 8, 388, 544),
+            "staged work area decides the half, not the passed report (v4={v4})",
+            v4 = v4,
+        );
+    }
+}
+
+#[test]
+fn settle_float_receipt_before_gap_with_empty_lane_recovery() {
+    use crate::world_report::OperationOutcome;
+    let target = rect(404, 8, 388, 544);
+    let source = rect(100, 100, 200, 200);
+    let fact_at = |rect: crate::geometry::Rect| {
+        let mut row = fact("win-a", "out-a", 0);
+        row.rect = Some(rect);
+        row
+    };
+    for v4 in [false, true] {
+        // Fresh frame evidence latches before each gap hold; a later
+        // readable observation with an empty lane still confirms.
+        for (what, complete, barrier, windows, held) in [
+            (
+                "incomplete",
+                false,
+                false,
+                vec![fact_at(target)],
+                Vec::new(),
+            ),
+            ("barrier", true, true, vec![fact_at(target)], Vec::new()),
+            (
+                "held",
+                true,
+                false,
+                Vec::new(),
+                vec![held_window_row("win-a", "out-a", 0)],
+            ),
+        ] {
+            let mut engine = settle_engine_4b2d();
+            stage_attempts_4b2d(
+                &mut engine,
+                v4,
+                1,
+                vec![screen("out-a", 0)],
+                windows,
+                "win-a",
+                Vec::new(),
+                complete,
+                barrier,
+                held,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![frame_4b2d(target, FrameSetter::Accepted, 5, (None, None))],
+                Vec::new(),
+            );
+            seed_float_4b2d(&mut engine, target, source);
+            engine.settle_floats();
+            assert_eq!(
+                engine.retained_floats.len(),
+                1,
+                "{what} holds (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                engine.retained_floats[0].pending.is_some(),
+                "{what} latches receipt before the hold (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                engine.retained_floats[0].ambiguous,
+                "{what} marks no-retry ambiguity (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                engine.operation_settled.is_empty(),
+                "{what} emits nothing (v4={v4})",
+                v4 = v4,
+            );
+            stage_attempts_4b2d(
+                &mut engine,
+                v4,
+                2,
+                vec![screen("out-a", 0)],
+                vec![fact_at(target)],
+                "win-a",
+                Vec::new(),
+                true,
+                false,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            engine.settle_floats();
+            assert!(
+                engine.retained_floats.is_empty(),
+                "{what} recovers readable (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                engine
+                    .operation_settled
+                    .iter()
+                    .any(|event| event.operation_id == "op-f"
+                        && event.outcome == OperationOutcome::FloatFrameProven),
+                "{what} recovery proves the frame (v4={v4})",
+                v4 = v4,
+            );
+        }
+    }
+}

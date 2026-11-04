@@ -19,12 +19,11 @@ use crate::world_report::{
 /// Forged rows (operation or window mismatch) are never evidence: they
 /// read as absent.
 fn clear_attempt_for<'a>(
-    report: &'a WorldReport,
+    attempts: &'a [ClearAttempt],
     operation_id: &str,
     window: &WindowId,
 ) -> Option<&'a ClearAttempt> {
-    report
-        .clear_attempts
+    attempts
         .iter()
         .find(|attempt| attempt.operation_id == operation_id && attempt.window == *window)
 }
@@ -142,9 +141,11 @@ impl WorldEngine {
                 continue;
             }
             // Stage exact-correlated raw evidence before any hold.
-            if let Some(attempt) =
-                clear_attempt_for(report, &retained.operation_id, &retained.window)
-            {
+            if let Some(attempt) = clear_attempt_for(
+                &self.staged.observation.clear_attempts,
+                &retained.operation_id,
+                &retained.window,
+            ) {
                 retained.pending = Some(attempt.clone());
             }
             // Same-report supersession before continuation: a fresh
@@ -162,7 +163,7 @@ impl WorldEngine {
             }
             // Gap bars hold with identities preserved, never settling from
             // absence and never erasing staged evidence.
-            if !report.inventory_complete || report.gesture_barrier {
+            if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
                 if retained.pending.is_some() {
                     retained.ambiguous = true;
                 }
@@ -272,7 +273,7 @@ impl WorldEngine {
             // baseline naming a non-subject window retires promptly with
             // `baseline-non-subject`: no stale intent survives to resume
             // later under a focus that was never its subject.
-            let current_focus = report.focused_global.as_str();
+            let current_focus = self.staged.observation.focused_global.as_str();
             let original_focus = retained.focus.as_str();
             if current_focus.is_empty() {
                 if original_focus.is_empty() {
@@ -427,7 +428,11 @@ impl WorldEngine {
                     keep.push(retained);
                     continue;
                 }
-                let Some(screen) = report.screens.iter().find(|s| s.output == effective.output)
+                let Some(screen) = self
+                    .staged
+                    .screens
+                    .iter()
+                    .find(|s| s.output == effective.output)
                 else {
                     self.emit_operation(
                         retained.operation_id.clone(),
