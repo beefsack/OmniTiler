@@ -53,7 +53,7 @@ use crate::session::DomainKey;
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
     AttemptOutcome, HoldReason, ScopeAuthority, StateProperty, StateTarget, TransferKind,
-    WindowDesire, WorldReport,
+    WindowDesire,
 };
 use crate::world_state::{MAX_RETAINED_STATE_BINDINGS, NativeAboveMeta};
 
@@ -62,11 +62,11 @@ impl WorldEngine {
     /// focused lifetime when its fact reads fullscreen. `None` otherwise.
     /// Other scopes are unaffected; the overlay subject itself holds via
     /// the healthy gate, never a replan.
-    fn above_suspended_scope(&self, report: &WorldReport) -> Option<DomainKey> {
-        if report.focused_global.is_empty() {
+    fn above_suspended_scope(&self) -> Option<DomainKey> {
+        if self.staged.observation.focused_global.is_empty() {
             return None;
         }
-        let focused = WindowId(report.focused_global.clone());
+        let focused = WindowId(self.staged.observation.focused_global.clone());
         let fact = self.staged.facts.get(&focused)?;
         if fact.fullscreen != Some(true) {
             return None;
@@ -80,7 +80,6 @@ impl WorldEngine {
     /// `StateTarget` per producer-owned binding, skipping latched tombstones.
     pub(crate) fn reconcile_and_decorate_native_above_state(
         &mut self,
-        report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
         windows: &mut [WindowDesire],
     ) {
@@ -104,7 +103,7 @@ impl WorldEngine {
             }
             homes.insert(desire.lifetime.clone(), home);
         }
-        let suspended = self.above_suspended_scope(report);
+        let suspended = self.above_suspended_scope();
         // Latch reset: native preowned-above drops the latch untouched.
         let mut unlatch: Vec<(WindowId, StateProperty)> = Vec::new();
         for ((window, property), binding) in self.retained_states.iter() {
@@ -178,7 +177,7 @@ impl WorldEngine {
             if suspended.as_ref().is_some_and(|scope| scope == &home) {
                 continue;
             }
-            if !self.above_publish_healthy(report, held_scopes, window, &home) {
+            if !self.above_publish_healthy(held_scopes, window, &home) {
                 continue;
             }
             let Some(fact) = self.staged.facts.get(window) else {
@@ -223,7 +222,7 @@ impl WorldEngine {
                     // Suspension: proven true on the suspended scope mints
                     // false. The overlay subject holds via health, never here.
                     if suspended.as_ref().is_some_and(|scope| scope == &home)
-                        && self.above_publish_healthy(report, held_scopes, window, &home)
+                        && self.above_publish_healthy(held_scopes, window, &home)
                     {
                         release.push((window.clone(), home));
                     }
@@ -231,7 +230,7 @@ impl WorldEngine {
                 }
                 // Float->tile: release false only after acquire proof.
                 // Unproven bindings drop with no owned change and no write.
-                if !self.above_publish_healthy(report, held_scopes, window, &home) {
+                if !self.above_publish_healthy(held_scopes, window, &home) {
                     continue;
                 }
                 release.push((window.clone(), home));
@@ -242,7 +241,7 @@ impl WorldEngine {
                 if suspended.as_ref().is_some_and(|scope| scope == &home) {
                     continue;
                 }
-                if !self.above_publish_healthy(report, held_scopes, window, &home) {
+                if !self.above_publish_healthy(held_scopes, window, &home) {
                     continue;
                 }
                 let Some(fact) = self.staged.facts.get(window) else {
@@ -346,14 +345,14 @@ impl WorldEngine {
             let controlled = !binding.spent
                 && !suspended_true
                 && stack_ok
-                && self.above_publish_healthy(report, held_scopes, &window, &home);
+                && self.above_publish_healthy(held_scopes, &window, &home);
             let authority = if controlled {
                 ScopeAuthority::Controlled
             } else if excluded_lane {
                 ScopeAuthority::Untouched
-            } else if report.gesture_barrier {
+            } else if self.staged.gesture_barrier {
                 ScopeAuthority::Hold(HoldReason::GestureBarrier)
-            } else if !report.inventory_complete {
+            } else if !self.staged.observation.inventory_complete {
                 ScopeAuthority::Hold(HoldReason::IncompleteInventory)
             } else if self
                 .staged
@@ -382,12 +381,11 @@ impl WorldEngine {
     /// the same gate so unhealthy bindings publish Hold, never Controlled.
     fn above_publish_healthy(
         &self,
-        report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
         window: &WindowId,
         home: &DomainKey,
     ) -> bool {
-        if !report.inventory_complete || report.gesture_barrier {
+        if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
             return false;
         }
         if held_scopes.contains(home) {

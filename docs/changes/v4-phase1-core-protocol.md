@@ -764,9 +764,13 @@
          raw gates, live topology retention and switch receipt watermark/close
          inputs. These remain independent raw consumers even where the same
          function retains a report for command, proof or presentation work.
-         Logical mapping convergence and domain-staging raw inputs remain a
-         separate raw-consumer piece; 4b-2 does not close merely because its
-         other dependencies have owners.
+          Logical mapping convergence and domain-staging raw inputs remain a
+          separate raw-consumer piece; 4b-2 does not close merely because its
+          other dependencies have owners.
+          Finally, 4b-2f migrates logical convergence/domain staging and the
+          remaining independent membership, decorator and frame-publication raw
+          gates. Close 4b-2 only after auditing remaining report reads against
+          their actual command, proof, presentation or assembly dependencies.
    5. View-proof migration replacing the `views` echo legs (`view_echo_for`,
      staged echo fill, `settle_views_pre`, selection proof) with visibility and
      focus proof. The contract settles the receipt predicates (removed `views`
@@ -1177,6 +1181,61 @@
   plus `world_observe::build_staged_domains` raw focus/inventory reads, remain
   raw consumers separate from their native/view proof dependencies. 4c is not
   started; the phase note remains active.
+- Sub-increment 4b-2f plan: move ordered valid/held output discovery, logical
+  pre/post convergence, admission focus and domain-staging focus/readability onto
+  staged observations. Include trailing-output marking, member pruning, above
+  suspension, selection/sticky/fullscreen/maximize decorator gates, frame
+  publication clocks/gates, current accepted-run inventory/focus scalars and the
+  current-focus output-memory latch before membership reconciliation.
+  Preserve ordering, primary selection, native-order presence, hold precedence,
+  focus spending, frame suppression/burst timing and prior-focus comparison.
+  Remove internal report arguments only where no dependent work remains.
+  Verify both intakes with eligible positive controls and contradictory passed
+  reports, then audit all remaining raw reads before deciding 4b-2 closure.
+  Native/view proof stays in 5, command/pre-observation routing in 4c/7,
+  presentation in 6 and envelope/bootstrap/prior-report retention in 7. No full
+  v4 runtime/domain assembly, contract, fixture, version or adapter change is
+  included; the phase note remains active.
+- Sub-increment 4b-2f outcome: logical pre/post convergence, ordered valid/held
+  output discovery, trailing marking, admission focus, domain focus/readability,
+  member pruning and the remaining decorator/publication gates now use staged
+  observation inputs. The current accepted-run migration-gap/focus checks and
+  pre-reconcile focused-output latch use that same capture. Report-free internal
+  helpers no longer take a report; proof/command/presentation dependencies keep
+  theirs. Ordering, designated/first-valid primary selection, native-order
+  presence, hold precedence, at-most-once focus spending and frame timing are
+  unchanged. Convergence derives only narrow output-id/completeness/presence
+  sets, not copies of screen/native lanes or the whole observation.
+  Eighteen new dual-intake tests cover ordering/primary fallback, displacement
+  and focused survivor views, native-order parity gates, keyed domain
+  readability/focus, admission spending, member presence/pruning, all decorator
+  families, above focus-only suspension, native-sticky continuation, output
+  planning and focused-output memory. Frame clocks are exercised through real
+  publication callers for tiled, float-token and composed-overlay suppression
+  plus burst hold/rearm. Raw inputs are set before intake; retained seeds and
+  legacy domain/proof joins isolate consumers, not v4 accepted-run/domain or
+  scenario assembly. Review corrected lane-copying and weak test controls;
+  follow-up found no blocking issue. Initial test failures corrected synthetic
+  setup/oracle assumptions, not production policy; no preimplementation
+  behavioral red is claimed. Final direct verification passes the filtered
+  core/protocol gate (1723 core unit tests and every selected integration/protocol
+  target), build, scoped all-target clippy with warnings denied, formatting,
+  whitespace, added ASCII, NUL and local-link checks. Only
+  `workspace_unsafe_posture` is filtered. No new tentative decision, contract,
+  fixture, manifest, adapter, feature, public ingress or version change is
+  included. The remaining-read audit closes 4b-2: no independent raw lane remains
+  outside the explicit dependent owners below. 4c is next and unstarted; the
+  overarching phase note remains active.
+
+| Remaining report dependency after 4b-2 | Existing owner |
+| --- | --- |
+| Command inputs, issuing correlation and observation-dependent command helpers | 4c |
+| Fresh cursor/focused/primary routing shared with pre-capture send/migration freezes and command selection; fresh-placement bootstrap context | 4c/7; do not substitute current staged state before capture |
+| Native/view receipts, echoes, ordering and occupancy proof; native creation receipt-clock bounds and provisioning mint clocks/authorization | 5 |
+| Presentation ingress/pause, focused presentation and genuine descriptor production | 6 |
+| Envelope admission, pre-ready/bootstrap, replay/reply assembly, prior-report/last-view retention and v4 run/finish wiring | 7 (native last-view proof remains 5) |
+| Raw capture/classification intake, validation, digest, codec and sizing | Source-report operations, not stranded lane consumers |
+
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
 - Capability-held cursor grading repair plan: reproduce a valid v4 report whose
   native cursor hit names a newly capability-held window, then keep that window

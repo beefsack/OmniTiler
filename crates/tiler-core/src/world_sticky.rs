@@ -1204,7 +1204,7 @@ impl WorldEngine {
         report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
     ) {
-        if !report.inventory_complete || report.gesture_barrier {
+        if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
             return;
         }
         let window = key.0.clone();
@@ -1454,7 +1454,7 @@ impl WorldEngine {
                 }
                 continue;
             }
-            if !report.inventory_complete || report.gesture_barrier {
+            if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
                 continue;
             }
             let window = key.0.clone();
@@ -1566,7 +1566,6 @@ impl WorldEngine {
     /// frame writes, no state writes.
     pub(crate) fn decorate_sticky_visibility(
         &self,
-        report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
         windows: &mut [WindowDesire],
     ) {
@@ -1609,8 +1608,8 @@ impl WorldEngine {
                 .iter()
                 .any(|domain| domain.key == home && domain.readable);
             let mut controlled = caps_ok
-                && report.inventory_complete
-                && !report.gesture_barrier
+                && self.staged.observation.inventory_complete
+                && !self.staged.gesture_barrier
                 && !held_scopes.contains(&home)
                 && !self.is_held_window(&window)
                 && !excluded_lane
@@ -1670,9 +1669,9 @@ impl WorldEngine {
             desire.visibility = Some(target);
             if excluded_lane {
                 desire.visibility_authority = ScopeAuthority::Untouched;
-            } else if report.gesture_barrier {
+            } else if self.staged.gesture_barrier {
                 desire.visibility_authority = ScopeAuthority::Hold(HoldReason::GestureBarrier);
-            } else if !report.inventory_complete {
+            } else if !self.staged.observation.inventory_complete {
                 desire.visibility_authority = ScopeAuthority::Hold(HoldReason::IncompleteInventory);
             } else if self
                 .staged
@@ -1704,7 +1703,6 @@ impl WorldEngine {
     /// lane is untouched.
     pub(crate) fn decorate_native_sticky_state(
         &self,
-        report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
         windows: &mut [WindowDesire],
     ) {
@@ -1742,8 +1740,8 @@ impl WorldEngine {
                 .iter()
                 .any(|domain| domain.key == home && domain.readable);
             let mut controlled = !binding.spent
-                && report.inventory_complete
-                && !report.gesture_barrier
+                && self.staged.observation.inventory_complete
+                && !self.staged.gesture_barrier
                 && !held_scopes.contains(&home)
                 && !self.is_held_window(&window)
                 && !excluded_lane
@@ -1780,9 +1778,9 @@ impl WorldEngine {
                 ScopeAuthority::Controlled
             } else if excluded_lane {
                 ScopeAuthority::Untouched
-            } else if report.gesture_barrier {
+            } else if self.staged.gesture_barrier {
                 ScopeAuthority::Hold(HoldReason::GestureBarrier)
-            } else if !report.inventory_complete {
+            } else if !self.staged.observation.inventory_complete {
                 ScopeAuthority::Hold(HoldReason::IncompleteInventory)
             } else if self
                 .staged

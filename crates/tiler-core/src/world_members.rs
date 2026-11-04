@@ -232,7 +232,7 @@ impl WorldEngine {
                 }
             }
         }
-        if report.inventory_complete {
+        if self.staged.observation.inventory_complete {
             let mut present: BTreeSet<WindowId> = self.staged.facts.keys().cloned().collect();
             // Narrowly held rows are live presence without usable facts:
             // they never prune a retained member.

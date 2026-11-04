@@ -29,7 +29,7 @@ use crate::world_engine::{
 };
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, CommandResult, HoldReason, ScopeAuthority, StateProperty,
-    StateTarget, TransferKind, WindowDesire, WorldReport,
+    StateTarget, TransferKind, WindowDesire,
 };
 use crate::world_state::{MAX_RETAINED_STATE_BINDINGS, NativeFullscreenMeta};
 
@@ -256,7 +256,6 @@ impl WorldEngine {
     /// sticky row on one window.
     pub(crate) fn decorate_native_fullscreen_state(
         &self,
-        report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
         windows: &mut [WindowDesire],
     ) {
@@ -291,8 +290,8 @@ impl WorldEngine {
                 .iter()
                 .any(|domain| domain.key == home && domain.readable);
             let mut controlled = !binding.spent
-                && report.inventory_complete
-                && !report.gesture_barrier
+                && self.staged.observation.inventory_complete
+                && !self.staged.gesture_barrier
                 && !held_scopes.contains(&home)
                 && !self.is_held_window(&window)
                 && !excluded_lane
@@ -330,9 +329,9 @@ impl WorldEngine {
                 ScopeAuthority::Controlled
             } else if excluded_lane {
                 ScopeAuthority::Untouched
-            } else if report.gesture_barrier {
+            } else if self.staged.gesture_barrier {
                 ScopeAuthority::Hold(HoldReason::GestureBarrier)
-            } else if !report.inventory_complete {
+            } else if !self.staged.observation.inventory_complete {
                 ScopeAuthority::Hold(HoldReason::IncompleteInventory)
             } else if self
                 .staged

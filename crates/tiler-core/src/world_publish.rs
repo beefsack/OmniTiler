@@ -831,7 +831,7 @@ impl WorldEngine {
                     geometry.rect
                 };
                 let work_missing = composed_active && work_area.is_none();
-                let (clear_operation, command_seq) = if report.gesture_barrier
+                let (clear_operation, command_seq) = if self.staged.gesture_barrier
                     || fact_unreadable
                     || unknown_maximized
                     || self.is_held_window(&geometry.window)
@@ -872,7 +872,7 @@ impl WorldEngine {
                         &geometry.window,
                         &desired,
                         Some(current),
-                        report.monotonic_ms,
+                        self.staged.observation.monotonic_ms,
                     )
                 });
                 let burst_held = Self::frame_burst_gate(
@@ -880,7 +880,7 @@ impl WorldEngine {
                     &geometry.window,
                     &desired,
                     observed,
-                    report.monotonic_ms,
+                    self.staged.observation.monotonic_ms,
                 );
                 windows.push(WindowDesire {
                     lifetime: geometry.window.clone(),
@@ -965,7 +965,7 @@ impl WorldEngine {
                                 &observed.window,
                                 &desired,
                                 current,
-                                report.monotonic_ms,
+                                self.staged.observation.monotonic_ms,
                             ) =>
                         {
                             frame_operation = None;
@@ -1010,7 +1010,7 @@ impl WorldEngine {
                         .facts
                         .get(&observed.window)
                         .is_none_or(|fact| fact.hints.is_none());
-                let (clear_operation, clear_seq) = if report.gesture_barrier
+                let (clear_operation, clear_seq) = if self.staged.gesture_barrier
                     || fact_unreadable
                     || float_blocked
                     || self.is_held_window(&observed.window)
@@ -1065,8 +1065,8 @@ impl WorldEngine {
                     && !self.fullscreen_entry_pending(&observed.window);
                 let composed_controlled = composed_active
                     && work_area.is_some()
-                    && report.inventory_complete
-                    && !report.gesture_barrier
+                    && self.staged.observation.inventory_complete
+                    && !self.staged.gesture_barrier
                     && !self.floating_scopes.contains(&composed_home)
                     && !self.hold_reasons.contains_key(&composed_home)
                     && !self.is_held_window(&observed.window)
@@ -1095,7 +1095,7 @@ impl WorldEngine {
                             &observed.window,
                             &desired,
                             Some(current),
-                            report.monotonic_ms,
+                            self.staged.observation.monotonic_ms,
                         )
                     });
                     overlay_burst = Self::frame_burst_gate(
@@ -1103,7 +1103,7 @@ impl WorldEngine {
                         &observed.window,
                         &desired,
                         overlay_observed,
-                        report.monotonic_ms,
+                        self.staged.observation.monotonic_ms,
                     );
                 }
                 // No placement write beside the owned overlay while native
@@ -1339,11 +1339,11 @@ impl WorldEngine {
         // reconcile plus central decoration over the assembled rows, after
         // membership/commands are complete. Runs before the sticky row so
         // each lane keeps its exact target authority.
-        self.reconcile_and_decorate_native_above_state(report, held_scopes, &mut windows);
+        self.reconcile_and_decorate_native_above_state(held_scopes, &mut windows);
         // Composed sticky visibility: central decoration over the
         // assembled rows (sticky-only, owner-output rows). Independent of
         // the frame/member lanes above; touches visibility fields only.
-        self.decorate_sticky_visibility(report, held_scopes, &mut windows);
+        self.decorate_sticky_visibility(held_scopes, &mut windows);
         // Native-free selection visibility: view changes outside the
         // selection command path supersede stale scopes first (no new
         // authority), then the pending grant (if any) lands in the
@@ -1354,20 +1354,20 @@ impl WorldEngine {
         self.reconcile_selection_scopes(report, held_scopes);
         self.apply_pending_selection();
         self.admit_selection_late_members();
-        self.decorate_selection_visibility(report, held_scopes, &mut windows);
+        self.decorate_selection_visibility(held_scopes, &mut windows);
         self.freeze_selection_arrival(&effects, &windows);
         // Native sticky state: central decoration over the assembled rows
         // beside the composed call. Touches state lanes only.
-        self.decorate_native_sticky_state(report, held_scopes, &mut windows);
+        self.decorate_native_sticky_state(held_scopes, &mut windows);
         // Native fullscreen state: central decoration over the assembled
         // rows beside the sticky row. Touches state lanes only; coexists
         // with the sticky row on one window.
-        self.decorate_native_fullscreen_state(report, held_scopes, &mut windows);
+        self.decorate_native_fullscreen_state(held_scopes, &mut windows);
         // Native maximize state: central decoration after the fullscreen
         // row so the paired-clear gate inspects the exact clear row
         // authority. Touches state lanes only; coexists with the
         // sticky/fullscreen rows on one window.
-        self.decorate_native_maximize_state(report, held_scopes, &mut windows);
+        self.decorate_native_maximize_state(held_scopes, &mut windows);
         let mut by_output: BTreeMap<OutputId, Vec<ScopeStatus>> = BTreeMap::new();
         for status in scopes {
             let output = match &status.scope {
@@ -1648,8 +1648,7 @@ impl WorldEngine {
         report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Vec<OutputDesire> {
-        let _ = report;
-        report
+        self.staged
             .screens
             .iter()
             .map(|screen| {

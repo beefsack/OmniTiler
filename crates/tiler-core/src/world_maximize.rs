@@ -504,7 +504,6 @@ impl WorldEngine {
     /// that supersedes the paired clear. Spent bindings never reauthorize.
     pub(crate) fn decorate_native_maximize_state(
         &self,
-        report: &WorldReport,
         held_scopes: &std::collections::BTreeSet<DomainKey>,
         windows: &mut [WindowDesire],
     ) {
@@ -539,8 +538,8 @@ impl WorldEngine {
                 .iter()
                 .any(|domain| domain.key == home && domain.readable);
             let mut controlled = !binding.spent
-                && report.inventory_complete
-                && !report.gesture_barrier
+                && self.staged.observation.inventory_complete
+                && !self.staged.gesture_barrier
                 && !held_scopes.contains(&home)
                 && !self.is_held_window(&window)
                 && !excluded_lane
@@ -623,9 +622,9 @@ impl WorldEngine {
                 ScopeAuthority::Controlled
             } else if excluded_lane {
                 ScopeAuthority::Untouched
-            } else if report.gesture_barrier {
+            } else if self.staged.gesture_barrier {
                 ScopeAuthority::Hold(HoldReason::GestureBarrier)
-            } else if !report.inventory_complete {
+            } else if !self.staged.observation.inventory_complete {
                 ScopeAuthority::Hold(HoldReason::IncompleteInventory)
             } else if self
                 .staged

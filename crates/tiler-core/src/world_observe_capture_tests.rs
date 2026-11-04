@@ -8,10 +8,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::connection::{HostCapabilities, RawSettingValue};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::gesture::{GestureIngress, GestureKind, GesturePhase};
+use crate::ids::{CorrelationId, OwnerId};
 use crate::intent_data::{IntentData, encode_intent_data};
 use crate::seed::EngineWindow;
 use crate::session::DomainKey;
-use crate::world_directional::tests::{accepted, fact, rect, report_full, screen};
+use crate::world_directional::tests::{accepted, fact, float_fact, rect, report_full, screen};
 use crate::world_engine::{
     ExcludedIntent, RetainedBornClear, RetainedTransfer, StagedDomain, StagedObservation,
     WorldEngine,
@@ -22,13 +23,14 @@ use crate::world_members::MemberState;
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, AttemptLaneV4, AttemptOutcome, AuthorityScope, ClearAttempt,
     CommandResult, EffectCause, FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow,
-    HeldNativeRow, HeldScreenRow, HeldWindowRow, IntentRecord, IntentWrite, LastWrite,
+    HeldNativeRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, IntentWrite, LastWrite,
     LastWritePath, LastWriteProperty, MemberAttempt, NativeCreationAttempt, NativeObservation,
     NativeOccupancy, OneShotEffect, PresentationIngressV4, PresentationRowV4, RenderTarget,
     RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
-    ScreenReport, StateAttempt, StateProperty, SwitchOutcome, TransferKind, TransferTarget,
-    ViewAttempt, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    WORLD_CONTRACT_VERSION_V4, WindowDesire, WindowFact, WorkspaceRef, WorldReport, WorldReportV4,
+    ScreenReport, ScreenView, StateAttempt, StateProperty, SwitchOutcome, TransferKind,
+    TransferTarget, ViewAttempt, VisibilityFact, VisibilityReason, VisibilitySample,
+    VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowDesire, WindowFact, WorkspaceRef,
+    WorldReport, WorldReportV4,
 };
 use crate::world_selection::{
     FrozenArrivalMember, RetainedSelection, SelectionScope, SelectionTarget, SwitchMember,
@@ -7169,6 +7171,2393 @@ fn staged_topology_retention_reads_staged_screens() {
             engine.live_topology_entries().len(),
             1,
             "complete restage retains (v4={v4})"
+        );
+    }
+}
+
+// 4b-2f: logical-convergence and domain-staging reads on the staged
+// observation, both intakes. Raw lanes sit on both source reports BEFORE
+// intake; assertions read staged state or staged-fed results, with a
+// divergent legacy proof join passed only where a signature still needs a
+// report (native/homing/conflict proof). Retained mapping/view/member
+// seeds below are TEST-ONLY authority stand-ins, never v4 runtime proof.
+
+#[test]
+fn staged_live_order_and_designated_primary_win_over_contra() {
+    for v4 in [false, true] {
+        let screens = vec![screen("out-a", 0), screen("out-c", 800)];
+        let mut legacy = report_full(
+            1,
+            1,
+            screens.clone(),
+            Vec::new(),
+            Vec::new(),
+            "",
+            None,
+            None,
+        );
+        legacy.held_screens = vec![held_screen_row("out-b", 1)];
+        legacy.primary_output = Some(OutputId("out-c".to_owned()));
+        let mut v4report = report_v4_simple(
+            1,
+            screens.clone(),
+            legacy.held_screens.clone(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        v4report.primary_output = Some(OutputId("out-c".to_owned()));
+        let mut engine = engine();
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        // Valid rows keep staged order, the held row returns to its carried
+        // ordinal: the merge reads staged slices on both intakes.
+        assert_eq!(
+            WorldEngine::live_output_order(&engine.staged.screens, &engine.staged.held_screens),
+            vec!["out-a", "out-b", "out-c"],
+            "staged valid+held merge (v4={v4})"
+        );
+        // Divergent passed report: extra live screen, first-valid primary.
+        let mut contra = report_full(
+            1,
+            1,
+            vec![screen("out-a", 0), screen("out-z", 1600)],
+            Vec::new(),
+            Vec::new(),
+            "",
+            None,
+            None,
+        );
+        contra.primary_output = Some(OutputId("out-a".to_owned()));
+        engine.converge_logical_pre(&contra);
+        let mut keys: Vec<&str> = engine.output_facts.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["out-a", "out-b", "out-c"],
+            "staged live set wins (v4={v4})"
+        );
+        assert!(
+            engine
+                .output_facts
+                .get("out-c")
+                .is_some_and(|facts| facts.primary),
+            "staged designated primary wins (v4={v4})"
+        );
+        assert!(
+            engine
+                .output_facts
+                .get("out-a")
+                .is_some_and(|facts| !facts.primary),
+            "contra first-valid refused (v4={v4})"
+        );
+        // Fallback: designated absent or held falls back to first valid in
+        // staged order, never a held output. Observed through displacement:
+        // the removed origin's units land on the resolved primary survivor.
+        // The contra join designates out-c, which the staged fallback must
+        // refuse. Removed origins carry no staged facts, so no survivor
+        // rect outranks the primary.
+        for (primary, expect) in [
+            (None, "out-a"),
+            (Some(OutputId("out-b".to_owned())), "out-a"),
+        ] {
+            let mut leg = report_full(
+                1,
+                1,
+                screens.clone(),
+                Vec::new(),
+                Vec::new(),
+                "",
+                None,
+                None,
+            );
+            leg.held_screens = vec![held_screen_row("out-b", 1)];
+            leg.primary_output = primary.clone();
+            let mut v4leg = report_v4_simple(
+                1,
+                screens.clone(),
+                leg.held_screens.clone(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            v4leg.primary_output = primary;
+            let mut fallback =
+                WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+            fallback
+                .mapping
+                .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+            fallback
+                .mapping
+                .insert("out-c".to_owned(), vec!["ws-2".to_owned()]);
+            fallback
+                .mapping
+                .insert("out-x".to_owned(), vec!["ws-9".to_owned()]);
+            fallback.views.insert("out-a".to_owned(), "ws-1".to_owned());
+            fallback.views.insert("out-c".to_owned(), "ws-2".to_owned());
+            fallback.views.insert("out-x".to_owned(), "ws-9".to_owned());
+            stage_either(&mut fallback, v4, &leg, &v4leg);
+            let mut contra_fallback = report_full(
+                1,
+                1,
+                vec![screen("out-a", 0), screen("out-c", 800)],
+                Vec::new(),
+                Vec::new(),
+                "",
+                None,
+                None,
+            );
+            contra_fallback.primary_output = Some(OutputId("out-c".to_owned()));
+            fallback.converge_logical_pre(&contra_fallback);
+            assert_eq!(
+                fallback
+                    .displaced
+                    .get("out-x")
+                    .map(|entry| entry.dest.clone()),
+                Some(expect.to_owned()),
+                "fallback lands on first valid {expect} (v4={v4})"
+            );
+            assert!(
+                !fallback.mapping.contains_key("out-x"),
+                "removed origin displaced (v4={v4})"
+            );
+        }
+    }
+}
+
+#[test]
+fn staged_logical_post_parity_pad_and_gap_hold() {
+    for v4 in [false, true] {
+        // Parity: the shorter ring pads to the longest on complete staged
+        // inventory. Retained ring/view/member seeds stand in for ring
+        // authority; occupancy proves through the real staged homing below.
+        let mut engine = WorldEngine::new_test_bound_with_capabilities(
+            "gen-1",
+            "adapter-1",
+            HostCapabilities {
+                equal_count: true,
+                fullscreen: true,
+                maximize: true,
+                native_sticky: true,
+                above: true,
+                ..Default::default()
+            },
+        )
+        .expect("generation");
+        engine
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        engine.mapping.insert(
+            "out-b".to_owned(),
+            vec!["ws-1".to_owned(), "ws-2".to_owned()],
+        );
+        engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+        engine.views.insert("out-b".to_owned(), "ws-2".to_owned());
+        engine.members.insert(
+            WindowId("win-b".to_owned()),
+            MemberState {
+                home: DomainKey {
+                    output: OutputId("out-b".to_owned()),
+                    workspace: WorkspaceId("ws-1".to_owned()),
+                },
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+        let windows = vec![fact("win-b", "out-b", 800)];
+        let (mut legacy, mut v4report) = (
+            report_full(
+                2,
+                2,
+                screens.clone(),
+                windows.clone(),
+                Vec::new(),
+                "",
+                None,
+                None,
+            ),
+            report_v4_simple(2, screens, Vec::new(), windows, Vec::new(), Vec::new()),
+        );
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        engine.build_staged_domains(&legacy);
+        assert_eq!(
+            engine.staged.homing.get(&WindowId("win-b".to_owned())),
+            Some(&DomainKey {
+                output: OutputId("out-b".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+            }),
+            "resident keeps homing (v4={v4})"
+        );
+        engine.converge_logical_post();
+        assert_eq!(
+            engine.mapping.get("out-a").map(Vec::len),
+            Some(2),
+            "parity pads short ring (v4={v4})"
+        );
+        assert_eq!(
+            engine.mapping.get("out-b").map(Vec::len),
+            Some(2),
+            "long ring kept (v4={v4})"
+        );
+        assert!(
+            engine
+                .mapping
+                .get("out-a")
+                .is_some_and(|ring| ring.contains(&"ws-1".to_owned())),
+            "original id kept (v4={v4})"
+        );
+        // Gap: incomplete staged inventory blocks lifecycle and parity.
+        let mut gapped = WorldEngine::new_test_bound_with_capabilities(
+            "gen-1",
+            "adapter-1",
+            HostCapabilities {
+                equal_count: true,
+                fullscreen: true,
+                maximize: true,
+                native_sticky: true,
+                above: true,
+                ..Default::default()
+            },
+        )
+        .expect("generation");
+        gapped
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        gapped.mapping.insert(
+            "out-b".to_owned(),
+            vec!["ws-1".to_owned(), "ws-2".to_owned()],
+        );
+        gapped.views.insert("out-a".to_owned(), "ws-1".to_owned());
+        gapped.views.insert("out-b".to_owned(), "ws-2".to_owned());
+        let (mut gap_leg, mut gap_v4) = pair_reports(3, Vec::new(), Vec::new());
+        gap_leg.inventory_complete = false;
+        gap_v4.inventory_complete = false;
+        gap_leg.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+        gap_v4.screens = gap_leg.screens.clone();
+        stage_either(&mut gapped, v4, &gap_leg, &gap_v4);
+        assert!(!gapped.staged.observation.inventory_complete);
+        let before = gapped.mapping.clone();
+        gapped.converge_logical_post();
+        assert_eq!(gapped.mapping, before, "staged gap holds (v4={v4})");
+        // Host-owned native order-presence gates under equal_count: parity
+        // pads only with a non-empty staged native order per live output on
+        // a complete inventory. No retained native bindings or echoes are
+        // seeded; post-convergence receives only the staged native lanes.
+        let template = WorldEngine::new_test_bound_with_capabilities(
+            "gen-1",
+            "adapter-1",
+            HostCapabilities {
+                host_owned: true,
+                equal_count: true,
+                fullscreen: true,
+                maximize: true,
+                native_sticky: true,
+                above: true,
+                ..Default::default()
+            },
+        )
+        .expect("generation");
+        for (name, complete, native_kind, expect_pad) in [
+            ("positive", true, 0u8, true),
+            ("missing", true, 1u8, false),
+            ("empty", true, 2u8, false),
+            ("gapped", false, 0u8, false),
+        ] {
+            let mut host = template.clone();
+            host.creation_counter = 100;
+            host.mapping.insert(
+                "out-a".to_owned(),
+                vec!["ws-1".to_owned(), "ws-2".to_owned()],
+            );
+            host.mapping.insert(
+                "out-b".to_owned(),
+                vec!["ws-1".to_owned(), "ws-2".to_owned(), "ws-3".to_owned()],
+            );
+            host.views.insert("out-a".to_owned(), "ws-2".to_owned());
+            host.views.insert("out-b".to_owned(), "ws-3".to_owned());
+            host.members.insert(
+                WindowId("win-a".to_owned()),
+                MemberState {
+                    home: DomainKey {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: WorkspaceId("ws-1".to_owned()),
+                    },
+                    floating: false,
+                    minimized: false,
+                    geometry: None,
+                },
+            );
+            host.members.insert(
+                WindowId("win-b".to_owned()),
+                MemberState {
+                    home: DomainKey {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: WorkspaceId("ws-1".to_owned()),
+                    },
+                    floating: false,
+                    minimized: false,
+                    geometry: None,
+                },
+            );
+            host.members.insert(
+                WindowId("win-c".to_owned()),
+                MemberState {
+                    home: DomainKey {
+                        output: OutputId("out-b".to_owned()),
+                        workspace: WorkspaceId("ws-2".to_owned()),
+                    },
+                    floating: false,
+                    minimized: false,
+                    geometry: None,
+                },
+            );
+            let native = match native_kind {
+                0 => vec![native_row("out-a"), native_row("out-b")],
+                1 => Vec::new(),
+                _ => {
+                    let mut rows = vec![native_row("out-a"), native_row("out-b")];
+                    rows[1].native_order = Vec::new();
+                    rows
+                }
+            };
+            let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+            let windows = vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-b", 800),
+                fact("win-c", "out-b", 900),
+            ];
+            let mut leg = report_full(
+                10,
+                10,
+                screens.clone(),
+                windows.clone(),
+                Vec::new(),
+                "",
+                None,
+                None,
+            );
+            leg.inventory_complete = complete;
+            leg.native = native.clone();
+            let mut v4leg =
+                report_v4_simple(10, screens, Vec::new(), windows, Vec::new(), Vec::new());
+            v4leg.inventory_complete = complete;
+            v4leg.native = native;
+            stage_either(&mut host, v4, &leg, &v4leg);
+            host.build_staged_domains(&leg);
+            host.converge_logical_post();
+            if expect_pad {
+                assert_eq!(
+                    host.mapping.get("out-a").map(Vec::len),
+                    Some(3),
+                    "{name} pads host ring (v4={v4})"
+                );
+                assert_eq!(
+                    host.mapping.get("out-b").map(Vec::len),
+                    Some(3),
+                    "{name} keeps host ring (v4={v4})"
+                );
+                assert!(
+                    host.mapping
+                        .get("out-a")
+                        .is_some_and(|ring| ring.iter().take(2).eq(["ws-1", "ws-2"].iter())),
+                    "{name} keeps host ids (v4={v4})"
+                );
+            } else {
+                assert_eq!(
+                    host.mapping.get("out-a"),
+                    Some(&vec!["ws-1".to_owned(), "ws-2".to_owned()]),
+                    "{name} holds host short ring (v4={v4})"
+                );
+                assert_eq!(
+                    host.mapping.get("out-b"),
+                    Some(&vec![
+                        "ws-1".to_owned(),
+                        "ws-2".to_owned(),
+                        "ws-3".to_owned()
+                    ]),
+                    "{name} holds host long ring (v4={v4})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn staged_displacement_reads_staged_live_not_contra() {
+    for v4 in [false, true] {
+        // Retained rings seed the pre-report topology; the staged screens
+        // drop out-a while the contra proof join still claims it live.
+        let mut engine = engine();
+        engine
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        engine
+            .mapping
+            .insert("out-b".to_owned(), vec!["ws-2".to_owned()]);
+        engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+        engine.views.insert("out-b".to_owned(), "ws-2".to_owned());
+        let (mut legacy, mut v4report) = pair_reports(2, Vec::new(), Vec::new());
+        legacy.screens = vec![screen("out-b", 800)];
+        v4report.screens = legacy.screens.clone();
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        let contra = report_full(
+            2,
+            2,
+            vec![screen("out-a", 0), screen("out-b", 800)],
+            Vec::new(),
+            Vec::new(),
+            "",
+            None,
+            None,
+        );
+        engine.converge_logical_pre(&contra);
+        assert_eq!(
+            engine
+                .displaced
+                .get("out-a")
+                .map(|entry| entry.dest.clone()),
+            Some("out-b".to_owned()),
+            "removed origin displaced to staged survivor (v4={v4})"
+        );
+        assert!(
+            engine
+                .mapping
+                .get("out-b")
+                .is_some_and(|ring| ring.contains(&"ws-1".to_owned())),
+            "survivor hosts staged unit (v4={v4})"
+        );
+        assert!(
+            !engine.mapping.contains_key("out-a"),
+            "contra live claim refused (v4={v4})"
+        );
+        // Focused branch: staged focus on a window homed in the displaced
+        // unit retains the survivor view; an unfocused staged report mints
+        // no view transfer. V4 grades facts without sticky/maximize caps,
+        // so this leg uses the settle-grade engine like the other
+        // fact-bearing controls above.
+        for (focused, expect_view) in [("win-a", true), ("", false)] {
+            let mut focus_engine = engine_settle();
+            focus_engine
+                .mapping
+                .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+            focus_engine
+                .mapping
+                .insert("out-b".to_owned(), vec!["ws-2".to_owned()]);
+            focus_engine
+                .views
+                .insert("out-a".to_owned(), "ws-1".to_owned());
+            focus_engine
+                .views
+                .insert("out-b".to_owned(), "ws-2".to_owned());
+            focus_engine.members.insert(
+                WindowId("win-a".to_owned()),
+                MemberState {
+                    home: home_key("out-a"),
+                    floating: false,
+                    minimized: false,
+                    geometry: None,
+                },
+            );
+            let (mut fleg, mut fv4) =
+                pair_reports(2, vec![fact("win-a", "out-b", 800)], Vec::new());
+            fleg.screens = vec![screen("out-b", 800)];
+            fv4.screens = fleg.screens.clone();
+            fleg.focused_global = focused.to_owned();
+            fv4.focused_global = focused.to_owned();
+            stage_either(&mut focus_engine, v4, &fleg, &fv4);
+            // Proof-only join: homing proves through retained residency,
+            // the view transfer must come from the staged focus above.
+            focus_engine.converge_logical_pre(&contra_legacy(2, Vec::new()));
+            let has_view = focus_engine.retained.iter().any(|retained| {
+                matches!(&retained.target.kind, TransferKind::View)
+                    && retained.target.target_output == OutputId("out-b".to_owned())
+                    && retained.target.target_workspace == "ws-1"
+            });
+            assert_eq!(
+                has_view, expect_view,
+                "staged focus drives survivor view (focused={focused:?}, v4={v4})"
+            );
+        }
+    }
+}
+
+#[test]
+fn staged_trailing_marker_reads_staged_gates_not_contra() {
+    for v4 in [false, true] {
+        // Retained ring/view/member seeds; occupancy proves through the
+        // real staged homing. The contra proof join carries an incomplete
+        // inventory, which the staged gates must override.
+        let mut engine = engine_settle();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-2".to_owned()],
+        );
+        engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+        engine.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        let (mut legacy, mut v4report) =
+            pair_reports(2, vec![fact("win-a", "out-a", 0)], Vec::new());
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        engine.build_staged_domains(&legacy);
+        let mut contra = contra_legacy(2, vec![fact("win-a", "out-a", 0)]);
+        contra.inventory_complete = false;
+        // views: retained ws-1 shows, ws-2 tail spare is unoccupied.
+        engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+        assert_eq!(
+            engine.trailing_marked_id(&contra, "out-a"),
+            Some("ws-2".to_owned()),
+            "staged gates mark the spare tail (v4={v4})"
+        );
+        // Staged gap fails closed despite a complete contra report.
+        let (mut gap_leg, mut gap_v4) =
+            pair_reports(3, vec![fact("win-a", "out-a", 0)], Vec::new());
+        gap_leg.inventory_complete = false;
+        gap_v4.inventory_complete = false;
+        stage_either(&mut engine, v4, &gap_leg, &gap_v4);
+        engine.build_staged_domains(&gap_leg);
+        let complete = contra_legacy(3, vec![fact("win-a", "out-a", 0)]);
+        assert_eq!(
+            engine.trailing_marked_id(&complete, "out-a"),
+            None,
+            "staged gap fails closed (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_domain_focus_and_host_readability_win_over_contra() {
+    for v4 in [false, true] {
+        // Focus: staged focus wins; the contra proof join names an unknown
+        // window that must never surface as domain focus.
+        let mut engine = engine_settle();
+        engine
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+        engine.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        let (mut legacy, mut v4report) =
+            pair_reports(2, vec![fact("win-a", "out-a", 0)], Vec::new());
+        legacy.focused_global = "win-a".to_owned();
+        v4report.focused_global = "win-a".to_owned();
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        let mut contra = contra_legacy(2, vec![fact("win-a", "out-a", 0)]);
+        contra.focused_global = "win-ghost".to_owned();
+        engine.build_staged_domains(&contra);
+        let domain = engine
+            .staged
+            .domains
+            .iter()
+            .find(|domain| domain.key == home_key("out-a"))
+            .expect("domain staged");
+        assert_eq!(
+            domain.focused,
+            WindowId("win-a".to_owned()),
+            "staged focus wins (v4={v4})"
+        );
+        assert!(
+            engine
+                .staged
+                .domains
+                .iter()
+                .all(|domain| domain.focused.0 != "win-ghost"),
+            "contra focus refused (v4={v4})"
+        );
+        // Host-owned readability: staged gap holds despite a complete
+        // contra report; staged completeness reads on a fresh engine.
+        let mut host = engine_settle_host();
+        host.mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        host.views.insert("out-a".to_owned(), "ws-1".to_owned());
+        host.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        let (mut gap_leg, mut gap_v4) =
+            pair_reports(3, vec![fact("win-a", "out-a", 0)], Vec::new());
+        gap_leg.inventory_complete = false;
+        gap_v4.inventory_complete = false;
+        stage_either(&mut host, v4, &gap_leg, &gap_v4);
+        host.build_staged_domains(&contra_legacy(3, vec![fact("win-a", "out-a", 0)]));
+        let gap_domain = host
+            .staged
+            .domains
+            .iter()
+            .find(|domain| domain.key == home_key("out-a"))
+            .expect("host domain staged");
+        assert!(
+            !gap_domain.readable,
+            "staged gap holds host domain (v4={v4})"
+        );
+        let mut clear = engine_settle_host();
+        clear
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        clear.views.insert("out-a".to_owned(), "ws-1".to_owned());
+        clear.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        let (mut ok_leg, mut ok_v4) = pair_reports(4, vec![fact("win-a", "out-a", 0)], Vec::new());
+        ok_leg.inventory_complete = true;
+        ok_v4.inventory_complete = true;
+        stage_either(&mut clear, v4, &ok_leg, &ok_v4);
+        clear.build_staged_domains(&ok_leg);
+        let clear_domain = clear
+            .staged
+            .domains
+            .iter()
+            .find(|domain| domain.key == home_key("out-a"))
+            .expect("host domain staged");
+        assert!(
+            clear_domain.readable,
+            "staged complete reads host domain (v4={v4})"
+        );
+    }
+}
+
+fn admission_known_before(engine: &WorldEngine) -> BTreeMap<DomainKey, BTreeSet<String>> {
+    // Mirrors the run_accepted pre-sweep snapshot positions: retained
+    // sessions per readable staged domain only.
+    let mut known_before: BTreeMap<DomainKey, BTreeSet<String>> = BTreeMap::new();
+    for domain in &engine.staged.domains {
+        if !domain.readable {
+            continue;
+        }
+        let Some(session) = engine.engine.session(&domain.key) else {
+            continue;
+        };
+        let mut known = BTreeSet::new();
+        for link in session.snapshot().windows {
+            if link.output == domain.key.output && link.workspace == domain.key.workspace {
+                known.insert(link.window.0.clone());
+            }
+        }
+        for observed in session.exception_observed() {
+            if observed.output == domain.key.output && observed.workspace == domain.key.workspace {
+                known.insert(observed.window.0.clone());
+            }
+        }
+        for (window, output, workspace) in session.minimized_entries() {
+            if output == domain.key.output && workspace == domain.key.workspace {
+                known.insert(window.0.clone());
+            }
+        }
+        known_before.insert(domain.key.clone(), known);
+    }
+    known_before
+}
+
+fn sweep_all(engine: &mut WorldEngine) {
+    let owner = OwnerId::parse("adapter-1").expect("owner");
+    let correlation = CorrelationId::parse("req-2").expect("correlation");
+    let mut held_scopes = BTreeSet::new();
+    let domains = engine.staged.domains.clone();
+    for domain in &domains {
+        if !domain.readable {
+            continue;
+        }
+        engine.sweep_domain(domain, &owner, &correlation, &mut held_scopes);
+    }
+}
+
+#[test]
+fn staged_admission_focus_at_most_once_and_barrier_spend() {
+    for v4 in [false, true] {
+        // Explicit legacy baseline (no v4 runtime claim): sessions,
+        // mapping, views, and the bootstrap watermark exist before the
+        // staged newcomer reports below.
+        let mut rig = engine_settle();
+        accepted(
+            &mut rig,
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0)],
+                Vec::new(),
+                "",
+                None,
+                None,
+            ),
+        );
+        // Newcomer raw lanes sit on both source reports BEFORE intake.
+        let (mut legacy, mut v4report) = pair_reports(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            Vec::new(),
+        );
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        stage_either(&mut rig, v4, &legacy, &v4report);
+        rig.converge_logical_pre(&legacy);
+        rig.build_staged_domains(&legacy);
+        let known_before = admission_known_before(&rig);
+        sweep_all(&mut rig);
+        let held = BTreeSet::new();
+        let effects = rig.take_admission_focus(&known_before, &held);
+        assert_eq!(effects.len(), 1, "newcomer mints once (v4={v4})");
+        assert_eq!(effects[0].target, WindowId("win-b".to_owned()));
+        assert_eq!(effects[0].cause, EffectCause::AutomaticAdmission);
+        assert!(effects[0].id.starts_with("af-"));
+        // Same eligible input replays: already spent, never replays.
+        assert!(
+            rig.take_admission_focus(&known_before, &held).is_empty(),
+            "at-most-once holds (v4={v4})"
+        );
+        assert!(
+            rig.admission_focus_spent.contains("win-b"),
+            "watermark records the mint (v4={v4})"
+        );
+        // Barrier: a mid-gesture newcomer spends with no effect, and the
+        // spend survives a later clean report.
+        let mut barred = engine_settle();
+        accepted(
+            &mut barred,
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0)],
+                Vec::new(),
+                "",
+                None,
+                None,
+            ),
+        );
+        let (mut bar_leg, mut bar_v4) = pair_reports(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            Vec::new(),
+        );
+        bar_leg.inventory_complete = true;
+        bar_v4.inventory_complete = true;
+        bar_leg.gesture_barrier = true;
+        bar_v4.gesture_barrier = true;
+        stage_either(&mut barred, v4, &bar_leg, &bar_v4);
+        barred.converge_logical_pre(&bar_leg);
+        barred.build_staged_domains(&bar_leg);
+        let bar_known = admission_known_before(&barred);
+        sweep_all(&mut barred);
+        assert!(
+            barred.take_admission_focus(&bar_known, &held).is_empty(),
+            "barrier spends silently (v4={v4})"
+        );
+        assert!(
+            barred.admission_focus_spent.contains("win-b"),
+            "barrier spend watermarks (v4={v4})"
+        );
+        let (mut clean_leg, mut clean_v4) = pair_reports(
+            3,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            Vec::new(),
+        );
+        clean_leg.inventory_complete = true;
+        clean_v4.inventory_complete = true;
+        stage_either(&mut barred, v4, &clean_leg, &clean_v4);
+        barred.converge_logical_pre(&clean_leg);
+        barred.build_staged_domains(&clean_leg);
+        let clean_known = admission_known_before(&barred);
+        sweep_all(&mut barred);
+        assert!(
+            barred.take_admission_focus(&clean_known, &held).is_empty(),
+            "spent barrier never replays (v4={v4})"
+        );
+    }
+}
+
+// 4b-2f: membership, decorator, above, frame-clock, and output-plan reads
+// use staged inputs on both intakes. Raw lanes sit on both source reports
+// BEFORE intake; assertions read staged state or staged-fed results, with a
+// divergent legacy proof join passed only where a signature still needs a
+// report (native/homing/conflict proof). Retained mapping/view/member and
+// domain/binding seeds below are TEST-ONLY authority stand-ins, never v4
+// runtime proof.
+
+fn fullscreen_binding(engine: &mut WorldEngine, window: &str, home: &DomainKey, command_seq: u64) {
+    engine.retained_states.insert(
+        (WindowId(window.to_owned()), StateProperty::Fullscreen),
+        RetainedStateBinding {
+            target: RetainedStateTarget {
+                window: WindowId(window.to_owned()),
+                property: StateProperty::Fullscreen,
+                value: true,
+                revision: 1,
+            },
+            pending: None,
+            spent: false,
+            disposition: AttemptOutcome::Unattempted,
+            sticky_meta: None,
+            fullscreen_meta: Some(crate::world_state::NativeFullscreenMeta {
+                command_seq,
+                home: home.clone(),
+            }),
+            maximize_meta: None,
+            above_meta: None,
+        },
+    );
+}
+
+fn desire_row(window: &str, output: &str, workspace: &str) -> WindowDesire {
+    WindowDesire {
+        lifetime: WindowId(window.to_owned()),
+        output: OutputId(output.to_owned()),
+        workspace: workspace.to_owned(),
+        allocation: None,
+        effective_frame: None,
+        frame_authority: ScopeAuthority::Controlled,
+        membership_authority: ScopeAuthority::Controlled,
+        floating: false,
+        float_origin: None,
+        frame_operation: None,
+        clear_operation: None,
+        command_seq: None,
+        visibility: None,
+        visibility_authority: ScopeAuthority::Untouched,
+        state: Vec::new(),
+    }
+}
+
+#[test]
+fn staged_member_prune_gap_and_held_presence_win_over_contra() {
+    for v4 in [false, true] {
+        // Gap holds: staged incomplete retains an absent member even though
+        // the divergent complete contra would prune it.
+        let mut engine_gap = engine();
+        engine_gap.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        let (mut legacy, mut v4report) =
+            pair_reports(1, vec![fact("win-b", "out-a", 100)], Vec::new());
+        legacy.inventory_complete = false;
+        v4report.inventory_complete = false;
+        stage_either(&mut engine_gap, v4, &legacy, &v4report);
+        let mut contra = legacy.clone();
+        contra.inventory_complete = true;
+        engine_gap.reconcile_members(&contra);
+        assert!(
+            engine_gap
+                .members
+                .contains_key(&WindowId("win-a".to_owned())),
+            "staged gap blocks prune despite complete contra (v4={v4})"
+        );
+        // Positive prune: staged complete drops the absent member even
+        // though the divergent gapped contra would hold it.
+        let mut engine_prune = engine();
+        engine_prune.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        let (mut legacy, mut v4report) =
+            pair_reports(1, vec![fact("win-b", "out-a", 100)], Vec::new());
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        stage_either(&mut engine_prune, v4, &legacy, &v4report);
+        let mut contra = legacy.clone();
+        contra.inventory_complete = false;
+        engine_prune.reconcile_members(&contra);
+        assert!(
+            !engine_prune
+                .members
+                .contains_key(&WindowId("win-a".to_owned())),
+            "staged complete prunes despite gapped contra (v4={v4})"
+        );
+        // Held presence: staged complete with a held row retains the
+        // member; the divergent contra without held rows would prune it.
+        let mut engine_held = engine();
+        engine_held.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        let (mut legacy, mut v4report) =
+            pair_reports(1, vec![fact("win-b", "out-a", 100)], Vec::new());
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        legacy.held_windows = vec![held_window_row("win-a", "out-a", 1)];
+        v4report.held_windows = vec![held_window_row("win-a", "out-a", 1)];
+        stage_either(&mut engine_held, v4, &legacy, &v4report);
+        let mut contra = legacy.clone();
+        contra.held_windows = Vec::new();
+        engine_held.reconcile_members(&contra);
+        assert!(
+            engine_held
+                .members
+                .contains_key(&WindowId("win-a".to_owned())),
+            "staged held presence retains despite bare contra (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_fullscreen_decorator_controlled_and_reason_precedence() {
+    for v4 in [false, true] {
+        // Clean staged inventory authorizes Controlled (positive control).
+        let mut engine = engine_settle();
+        let (mut legacy, mut v4report) =
+            pair_reports(1, vec![fact("win-a", "out-a", 0)], Vec::new());
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        legacy.gesture_barrier = false;
+        v4report.gesture_barrier = false;
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        seed_readable_domain(&mut engine, "win-a");
+        engine.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        fullscreen_binding(&mut engine, "win-a", &home_key("out-a"), 7);
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_native_fullscreen_state(&BTreeSet::new(), &mut windows);
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Fullscreen)
+            .expect("fullscreen row minted");
+        assert_eq!(
+            row.authority,
+            ScopeAuthority::Controlled,
+            "clean Controlled (v4={v4})"
+        );
+        assert_eq!(row.command_seq, Some(7));
+        // Staged gap holds with IncompleteInventory.
+        let mut engine = engine_settle();
+        let (mut legacy, mut v4report) =
+            pair_reports(1, vec![fact("win-a", "out-a", 0)], Vec::new());
+        legacy.inventory_complete = false;
+        v4report.inventory_complete = false;
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        seed_readable_domain(&mut engine, "win-a");
+        engine.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        fullscreen_binding(&mut engine, "win-a", &home_key("out-a"), 7);
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_native_fullscreen_state(&BTreeSet::new(), &mut windows);
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Fullscreen)
+            .expect("gap row minted");
+        assert_eq!(
+            row.authority,
+            ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+            "gap holds (v4={v4})"
+        );
+        // Staged barrier holds with GestureBarrier, and wins over a
+        // simultaneous gap (reason precedence).
+        for (complete, what) in [(true, "barrier"), (false, "barrier-over-gap")] {
+            let mut engine = engine_settle();
+            let (mut legacy, mut v4report) =
+                pair_reports(1, vec![fact("win-a", "out-a", 0)], Vec::new());
+            legacy.inventory_complete = complete;
+            v4report.inventory_complete = complete;
+            legacy.gesture_barrier = true;
+            v4report.gesture_barrier = true;
+            stage_either(&mut engine, v4, &legacy, &v4report);
+            seed_readable_domain(&mut engine, "win-a");
+            engine.members.insert(
+                WindowId("win-a".to_owned()),
+                MemberState {
+                    home: home_key("out-a"),
+                    floating: false,
+                    minimized: false,
+                    geometry: None,
+                },
+            );
+            fullscreen_binding(&mut engine, "win-a", &home_key("out-a"), 7);
+            let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+            engine.decorate_native_fullscreen_state(&BTreeSet::new(), &mut windows);
+            let row = windows[0]
+                .state
+                .iter()
+                .find(|row| row.property == StateProperty::Fullscreen)
+                .expect("barrier row minted");
+            assert_eq!(
+                row.authority,
+                ScopeAuthority::Hold(HoldReason::GestureBarrier),
+                "{what} precedence (v4={v4})"
+            );
+        }
+        // Excluded lane stays Untouched even when complete and unbarriered.
+        let mut engine = engine_settle();
+        let mut excluded_fact = fact("win-a", "out-a", 0);
+        excluded_fact.managed = Some(false);
+        let (mut legacy, mut v4report) = pair_reports(1, vec![excluded_fact], Vec::new());
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        seed_readable_domain(&mut engine, "win-a");
+        engine.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        fullscreen_binding(&mut engine, "win-a", &home_key("out-a"), 7);
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_native_fullscreen_state(&BTreeSet::new(), &mut windows);
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Fullscreen)
+            .expect("excluded row minted");
+        assert_eq!(
+            row.authority,
+            ScopeAuthority::Untouched,
+            "excluded stays Untouched (v4={v4})"
+        );
+    }
+}
+
+fn selection_caps() -> HostCapabilities {
+    HostCapabilities {
+        window_suppression: true,
+        fullscreen: true,
+        maximize: true,
+        native_sticky: true,
+        above: true,
+        ..HostCapabilities::default()
+    }
+}
+
+fn composed_visibility_caps() -> HostCapabilities {
+    HostCapabilities {
+        window_suppression: true,
+        maximize: false,
+        ..HostCapabilities::default()
+    }
+}
+
+fn seed_member(engine: &mut WorldEngine, window: &str) {
+    engine.members.insert(
+        WindowId(window.to_owned()),
+        MemberState {
+            home: home_key("out-a"),
+            floating: false,
+            minimized: false,
+            geometry: None,
+        },
+    );
+}
+
+#[test]
+fn staged_selection_visibility_gates_win_over_contra() {
+    for v4 in [false, true] {
+        // Show target on win-a: staged inventory/barrier lanes gate the
+        // same Controlled target the clean intake authorizes, and the
+        // excluded lane stays Untouched. Both intakes stage the same
+        // lanes before intake; no passed report is read here.
+        let setup = |complete: bool, barrier: bool, managed: Option<bool>| {
+            let mut engine = WorldEngine::new_test_bound_with_capabilities(
+                "gen-1",
+                "adapter-1",
+                selection_caps(),
+            )
+            .expect("generation");
+            let mut window_fact = fact("win-a", "out-a", 0);
+            window_fact.suppression_available = Some(true);
+            window_fact.visibility.suppression_owned = Some(true);
+            window_fact.managed = managed;
+            let (mut legacy, mut v4report) = pair_reports(1, vec![window_fact], Vec::new());
+            legacy.inventory_complete = complete;
+            v4report.inventory_complete = complete;
+            legacy.gesture_barrier = barrier;
+            v4report.gesture_barrier = barrier;
+            legacy.views = vec![ScreenView {
+                output: OutputId("out-a".to_owned()),
+                view: "ws-1".to_owned(),
+            }];
+            stage_either(&mut engine, v4, &legacy, &v4report);
+            engine
+                .mapping
+                .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+            engine.build_staged_domains(&legacy);
+            seed_member(&mut engine, "win-a");
+            engine.selection_targets.insert(
+                WindowId("win-a".to_owned()),
+                SelectionTarget {
+                    home: home_key("out-a"),
+                    shown: true,
+                    rev: 1,
+                },
+            );
+            engine
+        };
+        // Clean staged inventory authorizes Controlled (positive control).
+        let engine = setup(true, false, Some(true));
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_selection_visibility(&BTreeSet::new(), &mut windows);
+        let vis = windows[0].visibility.expect("clean visibility minted");
+        assert!(vis.shown, "clean shows (v4={v4})");
+        assert_eq!(
+            vis.revision, 1,
+            "clean keeps the retained revision (v4={v4})"
+        );
+        assert!(!vis.fallback, "clean is not a fallback (v4={v4})");
+        assert_eq!(
+            windows[0].visibility_authority,
+            ScopeAuthority::Controlled,
+            "clean Controlled (v4={v4})"
+        );
+        // Staged gap holds with IncompleteInventory.
+        let engine = setup(false, false, Some(true));
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_selection_visibility(&BTreeSet::new(), &mut windows);
+        assert_eq!(
+            windows[0].visibility_authority,
+            ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+            "gap holds (v4={v4})"
+        );
+        // Staged barrier holds with GestureBarrier, and wins over a
+        // simultaneous gap (reason precedence).
+        for (complete, what) in [(true, "barrier"), (false, "barrier-over-gap")] {
+            let engine = setup(complete, true, Some(true));
+            let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+            engine.decorate_selection_visibility(&BTreeSet::new(), &mut windows);
+            assert_eq!(
+                windows[0].visibility_authority,
+                ScopeAuthority::Hold(HoldReason::GestureBarrier),
+                "{what} precedence (v4={v4})"
+            );
+        }
+        // Excluded lane stays Untouched even when complete and unbarriered.
+        let engine = setup(true, false, Some(false));
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_selection_visibility(&BTreeSet::new(), &mut windows);
+        assert_eq!(
+            windows[0].visibility_authority,
+            ScopeAuthority::Untouched,
+            "excluded stays Untouched (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_sticky_visibility_gates_win_over_contra() {
+    for v4 in [false, true] {
+        // Composed sticky show on win-a: retained provenance plus a
+        // visible revision decorates Controlled when clean, holds on
+        // staged gap/barrier lanes, and stays Untouched when excluded.
+        // Null sticky/maximized facts are the contract-valid absent
+        // values on this route (non-null sticky would hold admission).
+        let setup = |complete: bool, barrier: bool, managed: Option<bool>| {
+            let mut engine = WorldEngine::new_test_bound_with_capabilities(
+                "gen-1",
+                "adapter-1",
+                composed_visibility_caps(),
+            )
+            .expect("generation");
+            let mut window_fact = fact("win-a", "out-a", 0);
+            window_fact.sticky = None;
+            window_fact.maximized = None;
+            window_fact.suppression_available = Some(true);
+            window_fact.visibility.suppression_owned = Some(true);
+            window_fact.managed = managed;
+            let (mut legacy, mut v4report) = pair_reports(1, vec![window_fact], Vec::new());
+            legacy.inventory_complete = complete;
+            v4report.inventory_complete = complete;
+            legacy.gesture_barrier = barrier;
+            v4report.gesture_barrier = barrier;
+            legacy.views = vec![ScreenView {
+                output: OutputId("out-a".to_owned()),
+                view: "ws-1".to_owned(),
+            }];
+            stage_either(&mut engine, v4, &legacy, &v4report);
+            engine
+                .mapping
+                .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+            engine.build_staged_domains(&legacy);
+            seed_member(&mut engine, "win-a");
+            engine
+                .restored_sticky
+                .insert(WindowId("win-a".to_owned()), false);
+            engine
+                .sticky_visible_rev
+                .insert(WindowId("win-a".to_owned()), 4);
+            engine
+        };
+        let engine = setup(true, false, Some(true));
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_sticky_visibility(&BTreeSet::new(), &mut windows);
+        let vis = windows[0].visibility.expect("clean visibility minted");
+        assert!(vis.shown, "clean shows (v4={v4})");
+        assert_eq!(
+            vis.revision, 4,
+            "clean keeps the retained revision (v4={v4})"
+        );
+        assert!(!vis.fallback, "clean is not a fallback (v4={v4})");
+        assert_eq!(
+            windows[0].visibility_authority,
+            ScopeAuthority::Controlled,
+            "clean Controlled (v4={v4})"
+        );
+        let engine = setup(false, false, Some(true));
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_sticky_visibility(&BTreeSet::new(), &mut windows);
+        assert_eq!(
+            windows[0].visibility_authority,
+            ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+            "gap holds (v4={v4})"
+        );
+        for (complete, what) in [(true, "barrier"), (false, "barrier-over-gap")] {
+            let engine = setup(complete, true, Some(true));
+            let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+            engine.decorate_sticky_visibility(&BTreeSet::new(), &mut windows);
+            assert_eq!(
+                windows[0].visibility_authority,
+                ScopeAuthority::Hold(HoldReason::GestureBarrier),
+                "{what} precedence (v4={v4})"
+            );
+        }
+        let engine = setup(true, false, Some(false));
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_sticky_visibility(&BTreeSet::new(), &mut windows);
+        assert_eq!(
+            windows[0].visibility_authority,
+            ScopeAuthority::Untouched,
+            "excluded stays Untouched (v4={v4})"
+        );
+    }
+}
+
+fn sticky_binding(engine: &mut WorldEngine, window: &str, home: &DomainKey, command_seq: u64) {
+    engine.retained_states.insert(
+        (WindowId(window.to_owned()), StateProperty::Sticky),
+        RetainedStateBinding {
+            target: RetainedStateTarget {
+                window: WindowId(window.to_owned()),
+                property: StateProperty::Sticky,
+                value: true,
+                revision: 1,
+            },
+            pending: None,
+            spent: false,
+            disposition: AttemptOutcome::Unattempted,
+            sticky_meta: Some(crate::world_state::NativeStickyMeta {
+                command_seq,
+                prior_saved: None,
+                prior_restored_sticky: None,
+                prior_restored_floats: false,
+                prior_float: false,
+                home: home.clone(),
+                dest: home.clone(),
+                requested: false,
+                requested_save: IntentData::new(None, None),
+                is_toggle_float_clear: false,
+                followup_done: false,
+            }),
+            fullscreen_meta: None,
+            maximize_meta: None,
+            above_meta: None,
+        },
+    );
+}
+
+fn maximize_binding(engine: &mut WorldEngine, window: &str, home: &DomainKey, command_seq: u64) {
+    engine.retained_states.insert(
+        (WindowId(window.to_owned()), StateProperty::Maximized),
+        RetainedStateBinding {
+            target: RetainedStateTarget {
+                window: WindowId(window.to_owned()),
+                property: StateProperty::Maximized,
+                value: true,
+                revision: 1,
+            },
+            pending: None,
+            spent: false,
+            disposition: AttemptOutcome::Unattempted,
+            sticky_meta: None,
+            fullscreen_meta: None,
+            maximize_meta: Some(crate::world_state::NativeMaximizeMeta {
+                command_seq,
+                home: home.clone(),
+                clear_fullscreen: false,
+            }),
+            above_meta: None,
+        },
+    );
+}
+
+#[test]
+fn staged_native_sticky_state_gates_win_over_contra() {
+    for v4 in [false, true] {
+        let setup = |complete: bool, barrier: bool, managed: Option<bool>| {
+            let mut engine = engine_settle();
+            let mut window_fact = fact("win-a", "out-a", 0);
+            window_fact.managed = managed;
+            let (mut legacy, mut v4report) = pair_reports(1, vec![window_fact], Vec::new());
+            legacy.inventory_complete = complete;
+            v4report.inventory_complete = complete;
+            legacy.gesture_barrier = barrier;
+            v4report.gesture_barrier = barrier;
+            stage_either(&mut engine, v4, &legacy, &v4report);
+            seed_readable_domain(&mut engine, "win-a");
+            seed_member(&mut engine, "win-a");
+            sticky_binding(&mut engine, "win-a", &home_key("out-a"), 7);
+            engine
+        };
+        // Clean staged inventory authorizes Controlled (positive control).
+        let engine = setup(true, false, Some(true));
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_native_sticky_state(&BTreeSet::new(), &mut windows);
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Sticky)
+            .expect("clean row minted");
+        assert!(row.value, "clean keeps the retained value (v4={v4})");
+        assert_eq!(
+            row.authority,
+            ScopeAuthority::Controlled,
+            "clean Controlled (v4={v4})"
+        );
+        assert_eq!(row.command_seq, Some(7));
+        // Staged gap holds with IncompleteInventory.
+        let engine = setup(false, false, Some(true));
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_native_sticky_state(&BTreeSet::new(), &mut windows);
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Sticky)
+            .expect("gap row minted");
+        assert_eq!(
+            row.authority,
+            ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+            "gap holds (v4={v4})"
+        );
+        // Staged barrier holds with GestureBarrier, and wins over a
+        // simultaneous gap (reason precedence).
+        for (complete, what) in [(true, "barrier"), (false, "barrier-over-gap")] {
+            let engine = setup(complete, true, Some(true));
+            let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+            engine.decorate_native_sticky_state(&BTreeSet::new(), &mut windows);
+            let row = windows[0]
+                .state
+                .iter()
+                .find(|row| row.property == StateProperty::Sticky)
+                .expect("barrier row minted");
+            assert_eq!(
+                row.authority,
+                ScopeAuthority::Hold(HoldReason::GestureBarrier),
+                "{what} precedence (v4={v4})"
+            );
+        }
+        // Excluded lane stays Untouched even when complete and unbarriered.
+        let engine = setup(true, false, Some(false));
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_native_sticky_state(&BTreeSet::new(), &mut windows);
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Sticky)
+            .expect("excluded row minted");
+        assert_eq!(
+            row.authority,
+            ScopeAuthority::Untouched,
+            "excluded stays Untouched (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_native_maximize_state_gates_win_over_contra() {
+    for v4 in [false, true] {
+        let setup = |complete: bool, barrier: bool, managed: Option<bool>| {
+            let mut engine = engine_settle();
+            let mut window_fact = fact("win-a", "out-a", 0);
+            window_fact.managed = managed;
+            let (mut legacy, mut v4report) = pair_reports(1, vec![window_fact], Vec::new());
+            legacy.inventory_complete = complete;
+            v4report.inventory_complete = complete;
+            legacy.gesture_barrier = barrier;
+            v4report.gesture_barrier = barrier;
+            stage_either(&mut engine, v4, &legacy, &v4report);
+            seed_readable_domain(&mut engine, "win-a");
+            seed_member(&mut engine, "win-a");
+            maximize_binding(&mut engine, "win-a", &home_key("out-a"), 7);
+            engine
+        };
+        // Clean staged inventory authorizes Controlled (positive control).
+        let engine = setup(true, false, Some(true));
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_native_maximize_state(&BTreeSet::new(), &mut windows);
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Maximized)
+            .expect("clean row minted");
+        assert!(row.value, "clean keeps the retained value (v4={v4})");
+        assert_eq!(
+            row.authority,
+            ScopeAuthority::Controlled,
+            "clean Controlled (v4={v4})"
+        );
+        assert_eq!(row.command_seq, Some(7));
+        // Staged gap holds with IncompleteInventory.
+        let engine = setup(false, false, Some(true));
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_native_maximize_state(&BTreeSet::new(), &mut windows);
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Maximized)
+            .expect("gap row minted");
+        assert_eq!(
+            row.authority,
+            ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+            "gap holds (v4={v4})"
+        );
+        // Staged barrier holds with GestureBarrier, and wins over a
+        // simultaneous gap (reason precedence).
+        for (complete, what) in [(true, "barrier"), (false, "barrier-over-gap")] {
+            let engine = setup(complete, true, Some(true));
+            let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+            engine.decorate_native_maximize_state(&BTreeSet::new(), &mut windows);
+            let row = windows[0]
+                .state
+                .iter()
+                .find(|row| row.property == StateProperty::Maximized)
+                .expect("barrier row minted");
+            assert_eq!(
+                row.authority,
+                ScopeAuthority::Hold(HoldReason::GestureBarrier),
+                "{what} precedence (v4={v4})"
+            );
+        }
+        // Excluded lane stays Untouched even when complete and unbarriered.
+        let engine = setup(true, false, Some(false));
+        let mut windows = vec![desire_row("win-a", "out-a", "ws-1")];
+        engine.decorate_native_maximize_state(&BTreeSet::new(), &mut windows);
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Maximized)
+            .expect("excluded row minted");
+        assert_eq!(
+            row.authority,
+            ScopeAuthority::Untouched,
+            "excluded stays Untouched (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_above_suspends_focused_fullscreen_scope() {
+    for v4 in [false, true] {
+        // Clean: the same staged fullscreen fact as the suspended leg,
+        // but with no focus, so no scope suspends. The healthy float
+        // acquires a Controlled Above true (positive control). Focus is
+        // the only difference between the legs.
+        let mut engine = engine_settle();
+        let mut full = fact("win-full", "out-a", 300);
+        full.fullscreen = Some(true);
+        let (mut legacy, mut v4report) =
+            pair_reports(1, vec![fact("win-a", "out-a", 0), full], Vec::new());
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        legacy.focused_global = String::new();
+        v4report.focused_global = String::new();
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        seed_readable_domain(&mut engine, "win-a");
+        // Same homing seed as the suspended leg: identical staged
+        // homing on both engines, only the focus differs.
+        engine
+            .staged
+            .homing
+            .insert(WindowId("win-full".to_owned()), home_key("out-a"));
+        engine.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        let mut windows = vec![
+            {
+                let mut row = desire_row("win-a", "out-a", "ws-1");
+                row.floating = true;
+                row
+            },
+            desire_row("win-full", "out-a", "ws-1"),
+        ];
+        engine.reconcile_and_decorate_native_above_state(&BTreeSet::new(), &mut windows);
+        assert!(
+            engine
+                .retained_states
+                .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Above)),
+            "clean float acquires (v4={v4})"
+        );
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Above)
+            .expect("above row minted");
+        assert!(row.value);
+        assert_eq!(row.authority, ScopeAuthority::Controlled);
+        // Suspended: staged focused fullscreen on the same scope blocks the
+        // float acquire with no binding and no row.
+        let mut engine = engine_settle();
+        let mut full = fact("win-full", "out-a", 300);
+        full.fullscreen = Some(true);
+        let (mut legacy, mut v4report) =
+            pair_reports(1, vec![fact("win-a", "out-a", 0), full], Vec::new());
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        legacy.focused_global = "win-full".to_owned();
+        v4report.focused_global = "win-full".to_owned();
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        seed_readable_domain(&mut engine, "win-a");
+        // TEST-ONLY homing seed: the focused fullscreen lifetime homes on
+        // the same staged scope as the float candidate.
+        engine
+            .staged
+            .homing
+            .insert(WindowId("win-full".to_owned()), home_key("out-a"));
+        engine.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        let mut windows = vec![
+            {
+                let mut row = desire_row("win-a", "out-a", "ws-1");
+                row.floating = true;
+                row
+            },
+            desire_row("win-full", "out-a", "ws-1"),
+        ];
+        engine.reconcile_and_decorate_native_above_state(&BTreeSet::new(), &mut windows);
+        assert!(
+            !engine
+                .retained_states
+                .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Above)),
+            "suspended scope mints nothing (v4={v4})"
+        );
+        assert!(
+            windows[0]
+                .state
+                .iter()
+                .all(|row| row.property != StateProperty::Above),
+            "suspended scope publishes no row (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_above_health_fallback_holds_rows_over_contra() {
+    for v4 in [false, true] {
+        // Producer-owned Above false binding on the float candidate: the
+        // staged health lanes decide the row authority on both intakes.
+        // The binding is observation-only seeded (Unattempted, unlatched)
+        // so only decoration asserts.
+        let setup = |complete: bool, barrier: bool, managed: Option<bool>| {
+            let mut engine = engine_settle();
+            let mut window_fact = fact("win-a", "out-a", 0);
+            window_fact.managed = managed;
+            let (mut legacy, mut v4report) = pair_reports(1, vec![window_fact], Vec::new());
+            legacy.inventory_complete = complete;
+            v4report.inventory_complete = complete;
+            legacy.gesture_barrier = barrier;
+            v4report.gesture_barrier = barrier;
+            legacy.focused_global = String::new();
+            v4report.focused_global = String::new();
+            stage_either(&mut engine, v4, &legacy, &v4report);
+            seed_readable_domain(&mut engine, "win-a");
+            seed_member(&mut engine, "win-a");
+            engine.retained_states.insert(
+                (WindowId("win-a".to_owned()), StateProperty::Above),
+                RetainedStateBinding {
+                    target: RetainedStateTarget {
+                        window: WindowId("win-a".to_owned()),
+                        property: StateProperty::Above,
+                        value: false,
+                        revision: 1,
+                    },
+                    pending: None,
+                    spent: false,
+                    disposition: AttemptOutcome::Unattempted,
+                    sticky_meta: None,
+                    fullscreen_meta: None,
+                    maximize_meta: None,
+                    above_meta: Some(crate::world_state::NativeAboveMeta {
+                        home: home_key("out-a"),
+                        latched: false,
+                    }),
+                },
+            );
+            engine
+        };
+        let float_row = || {
+            let mut row = desire_row("win-a", "out-a", "ws-1");
+            row.floating = true;
+            row
+        };
+        // Clean staged inventory: the healthy binding publishes
+        // Controlled false (positive control).
+        let mut engine = setup(true, false, Some(true));
+        let mut windows = vec![float_row()];
+        engine.reconcile_and_decorate_native_above_state(&BTreeSet::new(), &mut windows);
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Above)
+            .expect("clean row minted");
+        assert!(!row.value, "clean keeps the retained value (v4={v4})");
+        assert_eq!(
+            row.authority,
+            ScopeAuthority::Controlled,
+            "clean Controlled (v4={v4})"
+        );
+        assert_eq!(row.command_seq, None);
+        // Staged gap holds with IncompleteInventory.
+        let mut engine = setup(false, false, Some(true));
+        let mut windows = vec![float_row()];
+        engine.reconcile_and_decorate_native_above_state(&BTreeSet::new(), &mut windows);
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Above)
+            .expect("gap row minted");
+        assert_eq!(
+            row.authority,
+            ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+            "gap holds (v4={v4})"
+        );
+        // Staged barrier holds with GestureBarrier, and wins over a
+        // simultaneous gap (reason precedence).
+        for (complete, what) in [(true, "barrier"), (false, "barrier-over-gap")] {
+            let mut engine = setup(complete, true, Some(true));
+            let mut windows = vec![float_row()];
+            engine.reconcile_and_decorate_native_above_state(&BTreeSet::new(), &mut windows);
+            let row = windows[0]
+                .state
+                .iter()
+                .find(|row| row.property == StateProperty::Above)
+                .expect("barrier row minted");
+            assert_eq!(
+                row.authority,
+                ScopeAuthority::Hold(HoldReason::GestureBarrier),
+                "{what} precedence (v4={v4})"
+            );
+        }
+        // Excluded lane stays Untouched even when complete and unbarriered.
+        let mut engine = setup(true, false, Some(false));
+        let mut windows = vec![float_row()];
+        engine.reconcile_and_decorate_native_above_state(&BTreeSet::new(), &mut windows);
+        let row = windows[0]
+            .state
+            .iter()
+            .find(|row| row.property == StateProperty::Above)
+            .expect("excluded row minted");
+        assert_eq!(
+            row.authority,
+            ScopeAuthority::Untouched,
+            "excluded stays Untouched (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_native_sticky_followup_reads_staged_over_contra() {
+    for v4 in [false, true] {
+        // Spent Applied off-binding awaiting its followup: the staged
+        // lanes decide completion even when the passed contra report
+        // disagrees. The binding is observation-only seeded (unrequested,
+        // unfinished) so only the followup asserts.
+        let setup = |complete: bool, sticky: Option<bool>| {
+            let mut engine = engine_settle();
+            let mut window_fact = fact("win-a", "out-a", 0);
+            window_fact.sticky = sticky;
+            let (mut legacy, mut v4report) = pair_reports(1, vec![window_fact], Vec::new());
+            legacy.inventory_complete = complete;
+            v4report.inventory_complete = complete;
+            stage_either(&mut engine, v4, &legacy, &v4report);
+            seed_readable_domain(&mut engine, "win-a");
+            seed_member(&mut engine, "win-a");
+            let home = home_key("out-a");
+            engine.retained_states.insert(
+                (WindowId("win-a".to_owned()), StateProperty::Sticky),
+                RetainedStateBinding {
+                    target: RetainedStateTarget {
+                        window: WindowId("win-a".to_owned()),
+                        property: StateProperty::Sticky,
+                        value: false,
+                        revision: 1,
+                    },
+                    pending: None,
+                    spent: true,
+                    disposition: AttemptOutcome::Applied,
+                    sticky_meta: Some(crate::world_state::NativeStickyMeta {
+                        command_seq: 7,
+                        prior_saved: None,
+                        prior_restored_sticky: None,
+                        prior_restored_floats: false,
+                        prior_float: false,
+                        home: home.clone(),
+                        dest: home.clone(),
+                        requested: false,
+                        requested_save: IntentData::new(None, None),
+                        is_toggle_float_clear: false,
+                        followup_done: false,
+                    }),
+                    fullscreen_meta: None,
+                    maximize_meta: None,
+                    above_meta: None,
+                },
+            );
+            (engine, legacy)
+        };
+        let done = |engine: &WorldEngine| {
+            engine
+                .retained_states
+                .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
+                .expect("binding retained")
+                .sticky_meta
+                .as_ref()
+                .expect("sticky meta")
+                .followup_done
+        };
+        // Staged gap holds: the contra complete report must not finish it.
+        let (mut engine, legacy) = setup(false, Some(false));
+        let mut contra = legacy.clone();
+        contra.inventory_complete = true;
+        engine.run_native_sticky_followups(&contra, &BTreeSet::new());
+        assert!(
+            !done(&engine),
+            "staged gap holds despite complete contra (v4={v4})"
+        );
+        // Staged restick holds: the contra non-sticky proof must not
+        // finish it while the staged fact still reads sticky.
+        let (mut engine, legacy) = setup(true, Some(true));
+        let mut contra = legacy.clone();
+        contra.windows[0].sticky = Some(false);
+        engine.run_native_sticky_followups(&contra, &BTreeSet::new());
+        assert!(
+            !done(&engine),
+            "staged restick holds despite contra proof (v4={v4})"
+        );
+        // Staged complete with a fresh non-sticky fact finishes the
+        // followup (positive control).
+        let (mut engine, legacy) = setup(true, Some(false));
+        engine.run_native_sticky_followups(&legacy, &BTreeSet::new());
+        assert!(
+            done(&engine),
+            "staged complete finishes the followup (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_frame_clock_drives_suppression_and_burst() {
+    // Publish-driven: the staged source clock drives the tiled, float
+    // token, and composed-overlay frame gates through `publish`, even
+    // when the passed contra report carries a rearming clock. A caller
+    // reverted to the passed-report clock would publish Controlled
+    // under the contra clock, so these rows pin the staged input.
+    // Retained seeds (frames, bursts, float target, composed bit) are
+    // disclosed below; raw lanes sit on source reports pre-intake.
+    for v4 in [false, true] {
+        let mut engine = engine();
+        // Baseline: win-a tiles, win-b floats. The tiled row publishes
+        // Controlled with its tile frame (positive unsuppressed
+        // control); the float row carries no token yet.
+        let mut base = report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![
+                fact("win-a", "out-a", 0),
+                float_fact("win-b", "out-a", 100, 100),
+            ],
+            vec![("out-a", "ws-1")],
+            "",
+            None,
+            None,
+        );
+        base.monotonic_ms = 0;
+        let first = accepted(&mut engine, &base);
+        let tile = first
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-a")
+            .expect("tiled baseline row")
+            .effective_frame
+            .expect("tiled baseline frame");
+        assert_eq!(
+            first
+                .windows
+                .iter()
+                .find(|row| row.lifetime.0 == "win-a")
+                .expect("tiled baseline row")
+                .frame_authority,
+            ScopeAuthority::Controlled,
+            "baseline publishes Controlled (v4={v4})"
+        );
+        let float_row = first
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-b")
+            .expect("float baseline row");
+        assert!(float_row.floating, "win-b floats at baseline (v4={v4})");
+        assert_eq!(
+            float_row.frame_operation, None,
+            "baseline carries no float token (v4={v4})"
+        );
+        let float_home = float_row.workspace.clone();
+        // Retained float placement for the token lane: the desired
+        // target is the seeded rect below, independent of the
+        // (tokenless) baseline.
+        let float_target = rect(100, 100, 200, 200);
+        // Mismatched readbacks: the staged facts sit away from every
+        // desired target so the seeded memories stay applicable.
+        let mut fa = fact("win-a", "out-a", 0);
+        fa.rect = Some(rect(10, 0, 40, 90));
+        let mut fb = float_fact("win-b", "out-a", 100, 100);
+        fb.rect = Some(rect(110, 110, 200, 200));
+        let observed_a = rect(10, 0, 40, 90);
+        let observed_b = rect(110, 110, 200, 200);
+        let stage_source = |engine: &mut WorldEngine, clock: u64| {
+            let (mut legacy, mut v4report) =
+                pair_reports(2, vec![fa.clone(), fb.clone()], Vec::new());
+            legacy.inventory_complete = true;
+            v4report.inventory_complete = true;
+            legacy.monotonic_ms = clock;
+            v4report.monotonic_ms = clock;
+            legacy.views = vec![ScreenView {
+                output: OutputId("out-a".to_owned()),
+                view: "ws-1".to_owned(),
+            }];
+            stage_either(engine, v4, &legacy, &v4report);
+            assert_eq!(
+                engine.staged.observation.monotonic_ms, clock,
+                "staged clock stages on both intakes (v4={v4})"
+            );
+            // Rebuild domains against the converged mapping (same shape
+            // as the accepted baseline) so `publish` resolves sessions.
+            engine.build_staged_domains(&legacy);
+            legacy
+        };
+        // Staged 1200 sits 200ms after the seeded failure: inside the
+        // 1000ms backoff on both lanes. The contra 5000 sits
+        // outside, so a passed-report clock would not suppress.
+        let legacy = stage_source(&mut engine, 1200);
+        let id_a = WindowId("win-a".to_owned());
+        let id_b = WindowId("win-b".to_owned());
+        engine.frames.insert(
+            id_a.clone(),
+            crate::world_frames::FrameMemory {
+                desired: tile,
+                observed: observed_a,
+                failures: 1,
+                last_ms: 1000,
+                clamped: false,
+            },
+        );
+        engine.frames.insert(
+            id_b.clone(),
+            crate::world_frames::FrameMemory {
+                desired: float_target,
+                observed: observed_b,
+                failures: 1,
+                last_ms: 1000,
+                clamped: false,
+            },
+        );
+        engine
+            .retained_floats
+            .push(crate::world_engine::RetainedFloat {
+                operation_id: "op-9".to_owned(),
+                command_seq: 9,
+                window: id_b.clone(),
+                target: float_target,
+                source: None,
+                output: OutputId("out-a".to_owned()),
+                workspace: float_home,
+                ambiguous: false,
+                pending: None,
+            });
+        let mut contra = legacy.clone();
+        contra.monotonic_ms = 5000;
+        let reply = engine.publish(&contra, false, Vec::new(), None, &BTreeSet::new());
+        let row_a = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-a")
+            .expect("published tiled row");
+        assert_eq!(
+            row_a.frame_authority,
+            ScopeAuthority::Hold(HoldReason::ConstraintClamp),
+            "staged 1200 suppresses tiled despite contra 5000 (v4={v4})"
+        );
+        assert_eq!(
+            row_a.effective_frame,
+            Some(tile),
+            "suppressed desire stays intact (v4={v4})"
+        );
+        let row_b = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-b")
+            .expect("published float row");
+        assert_eq!(
+            row_b.frame_operation, None,
+            "staged 1200 withholds the float token despite contra 5000 (v4={v4})"
+        );
+        assert_eq!(
+            row_b.effective_frame,
+            Some(float_target),
+            "withheld float keeps its base frame (v4={v4})"
+        );
+        // Staged 5000 re-arms both lanes: the tiled row publishes
+        // Controlled and the float token rides again.
+        let legacy = stage_source(&mut engine, 5000);
+        let mut contra = legacy.clone();
+        contra.monotonic_ms = 5000;
+        let reply = engine.publish(&contra, false, Vec::new(), None, &BTreeSet::new());
+        let row_a = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-a")
+            .expect("rearmed tiled row");
+        assert_eq!(
+            row_a.frame_authority,
+            ScopeAuthority::Controlled,
+            "staged 5000 re-arms tiled (v4={v4})"
+        );
+        let row_b = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-b")
+            .expect("rearmed float row");
+        assert_eq!(
+            row_b.frame_operation.as_deref(),
+            Some("op-9"),
+            "staged 5000 releases the float token (v4={v4})"
+        );
+    }
+    // Composed-overlay lane: with native maximize unsupported the
+    // retained bit selects the work-area frame. Same publish-driven
+    // shape as above on a no-max engine with contract-valid null
+    // sticky/maximized facts (a non-null sticky would hold admission
+    // on this route, so the nulls are required, not incidental).
+    for v4 in [false, true] {
+        let mut engine = WorldEngine::new_test_bound_with_capabilities(
+            "gen-1",
+            "adapter-1",
+            HostCapabilities {
+                maximize: false,
+                fullscreen: true,
+                ..HostCapabilities::default()
+            },
+        )
+        .expect("generation");
+        let mut composed_fact = float_fact("win-c", "out-a", 300, 100);
+        composed_fact.sticky = None;
+        composed_fact.maximized = None;
+        let mut base = report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![composed_fact.clone()],
+            vec![("out-a", "ws-1")],
+            "",
+            None,
+            None,
+        );
+        base.monotonic_ms = 0;
+        let first = accepted(&mut engine, &base);
+        let baseline_row = first
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-c")
+            .expect("overlay baseline row");
+        assert!(baseline_row.floating, "win-c floats at baseline (v4={v4})");
+        engine
+            .composed_maximized
+            .insert(WindowId("win-c".to_owned()));
+        let mut staged_fact = composed_fact.clone();
+        staged_fact.rect = Some(rect(310, 110, 200, 200));
+        let observed = rect(310, 110, 200, 200);
+        let overlay = rect(0, 0, 800, 560);
+        let stage_source = |engine: &mut WorldEngine, clock: u64| {
+            let (mut legacy, mut v4report) = pair_reports(2, vec![staged_fact.clone()], Vec::new());
+            legacy.inventory_complete = true;
+            v4report.inventory_complete = true;
+            legacy.monotonic_ms = clock;
+            v4report.monotonic_ms = clock;
+            legacy.views = vec![ScreenView {
+                output: OutputId("out-a".to_owned()),
+                view: "ws-1".to_owned(),
+            }];
+            stage_either(engine, v4, &legacy, &v4report);
+            assert_eq!(
+                engine.staged.observation.monotonic_ms, clock,
+                "staged clock stages on both intakes (v4={v4})"
+            );
+            engine.build_staged_domains(&legacy);
+            legacy
+        };
+        let id = WindowId("win-c".to_owned());
+        let legacy = stage_source(&mut engine, 1200);
+        engine.frames.insert(
+            id.clone(),
+            crate::world_frames::FrameMemory {
+                desired: overlay,
+                observed,
+                failures: 1,
+                last_ms: 1000,
+                clamped: false,
+            },
+        );
+        let mut contra = legacy.clone();
+        contra.monotonic_ms = 5000;
+        let reply = engine.publish(&contra, false, Vec::new(), None, &BTreeSet::new());
+        let row = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-c")
+            .expect("published overlay row");
+        assert_eq!(
+            row.frame_authority,
+            ScopeAuthority::Hold(HoldReason::ConstraintClamp),
+            "staged 1200 suppresses the overlay despite contra 5000 (v4={v4})"
+        );
+        assert_eq!(
+            row.effective_frame,
+            Some(overlay),
+            "suppressed overlay stays on the work area (v4={v4})"
+        );
+        let legacy = stage_source(&mut engine, 5000);
+        let mut contra = legacy.clone();
+        contra.monotonic_ms = 5000;
+        let reply = engine.publish(&contra, false, Vec::new(), None, &BTreeSet::new());
+        let row = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-c")
+            .expect("rearmed overlay row");
+        assert_eq!(
+            row.frame_authority,
+            ScopeAuthority::Controlled,
+            "staged 5000 re-arms the overlay (v4={v4})"
+        );
+    }
+    // Burst family on the tiled lane: staged 1200 sits 200ms after the
+    // last change (inside the 500ms quiet window) so the exhausted
+    // budget holds; staged 2000 proves quiet and re-arms. The observed
+    // frame stays away from the desired target throughout (continuous
+    // burst, never an exact arrival).
+    for v4 in [false, true] {
+        let mut engine = engine();
+        let mut base = report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0)],
+            vec![("out-a", "ws-1")],
+            "",
+            None,
+            None,
+        );
+        base.monotonic_ms = 0;
+        let first = accepted(&mut engine, &base);
+        let tile = first
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-a")
+            .expect("tiled baseline row")
+            .effective_frame
+            .expect("tiled baseline frame");
+        assert_eq!(
+            first
+                .windows
+                .iter()
+                .find(|row| row.lifetime.0 == "win-a")
+                .expect("tiled baseline row")
+                .frame_authority,
+            ScopeAuthority::Controlled,
+            "baseline publishes Controlled (v4={v4})"
+        );
+        let mut fa = fact("win-a", "out-a", 0);
+        fa.rect = Some(rect(10, 0, 40, 90));
+        let burst_observed = rect(10, 0, 40, 90);
+        let id = WindowId("win-a".to_owned());
+        let stage_source = |engine: &mut WorldEngine, clock: u64| {
+            let (mut legacy, mut v4report) = pair_reports(2, vec![fa.clone()], Vec::new());
+            legacy.inventory_complete = true;
+            v4report.inventory_complete = true;
+            legacy.monotonic_ms = clock;
+            v4report.monotonic_ms = clock;
+            legacy.views = vec![ScreenView {
+                output: OutputId("out-a".to_owned()),
+                view: "ws-1".to_owned(),
+            }];
+            stage_either(engine, v4, &legacy, &v4report);
+            engine.build_staged_domains(&legacy);
+            legacy
+        };
+        let legacy = stage_source(&mut engine, 1200);
+        engine.frame_bursts.insert(
+            id.clone(),
+            crate::world_frames::FrameBurst {
+                desired: tile,
+                attempts: 2,
+                observed: burst_observed,
+                last_change_ms: 1000,
+            },
+        );
+        let mut contra = legacy.clone();
+        contra.monotonic_ms = 2000;
+        let reply = engine.publish(&contra, false, Vec::new(), None, &BTreeSet::new());
+        let row = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-a")
+            .expect("published tiled row");
+        assert_eq!(
+            row.frame_authority,
+            ScopeAuthority::Hold(HoldReason::ConstraintClamp),
+            "staged 1200 holds the burst despite contra 2000 (v4={v4})"
+        );
+        assert_eq!(
+            engine
+                .frame_bursts
+                .get(&id)
+                .expect("burst retained")
+                .attempts,
+            2,
+            "held burst spends no budget (v4={v4})"
+        );
+        // Proven quiet re-arms through the same publish path: the
+        // budget resets and the row publishes Controlled.
+        let legacy = stage_source(&mut engine, 2000);
+        let mut contra = legacy.clone();
+        contra.monotonic_ms = 2000;
+        let reply = engine.publish(&contra, false, Vec::new(), None, &BTreeSet::new());
+        let row = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-a")
+            .expect("rearmed tiled row");
+        assert_eq!(
+            row.frame_authority,
+            ScopeAuthority::Controlled,
+            "staged 2000 re-arms the burst (v4={v4})"
+        );
+        assert_eq!(
+            engine
+                .frame_bursts
+                .get(&id)
+                .expect("burst retained")
+                .attempts,
+            0,
+            "re-armed burst resets its budget (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_output_plan_follows_staged_screens_with_contra_views_proof() {
+    for v4 in [false, true] {
+        let (mut legacy, mut v4report) = pair_reports(1, Vec::new(), Vec::new());
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        let mut engine = engine();
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        // Divergent contra: extra screen plus an unknown view echo. The
+        // screens must not leak in (staged wins) while the unknown echo
+        // proof still reads the passed report (held).
+        let mut contra = legacy.clone();
+        contra.screens.push(screen("out-z", 1600));
+        contra.views = vec![crate::world_report::ScreenView {
+            output: OutputId("out-a".to_owned()),
+            view: "ws-unknown".to_owned(),
+        }];
+        let rows = engine.plan_outputs(&contra, &BTreeSet::new());
+        assert_eq!(rows.len(), 1, "staged screens win over contra (v4={v4})");
+        assert_eq!(rows[0].output.0, "out-a");
+        assert_eq!(
+            rows[0].hold,
+            Some(HoldReason::IncompleteInventory),
+            "contra unknown echo still holds the row (v4={v4})"
+        );
+        // Clean contra (no echo): the staged complete screen authorizes
+        // with no hold (positive control).
+        let clean = legacy.clone();
+        let rows = engine.plan_outputs(&clean, &BTreeSet::new());
+        assert_eq!(rows.len(), 1, "staged screen plans (v4={v4})");
+        assert_eq!(
+            rows[0].hold, None,
+            "clean staged screen holds nothing (v4={v4})"
+        );
+    }
+}
+
+// 4b-2f closure: `note_focused_output` reads the staged capture on both
+// intakes (no accepted-run proof). Source focus/screens sit on both source
+// reports BEFORE intake; retained seeds are disclosed below (member home
+// for win-a plus a prior last_output). The finish call position
+// (pre-reconcile, before `reconcile_members`) is source-reviewed, not
+// executed here: this test drives stage + the no-arg latch directly.
+#[test]
+fn staged_focused_output_latch_reads_staged_capture() {
+    for v4 in [false, true] {
+        let mut subject = engine();
+        // Retained seeds: win-a homes on out-a (so `core_homing` proves
+        // genuine managed focus), win-new has no homing (a stealing
+        // newcomer), and a prior latch predates every intake.
+        subject.members.insert(
+            WindowId("win-a".to_owned()),
+            MemberState {
+                home: home_key("out-a"),
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+        // Retained ring so `core_homing` resolves the home (fresh engines
+        // carry no rings; the accepted run converges them pre-reconcile).
+        subject
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        subject.fresh_focus.last_output = Some(OutputId("out-prior".to_owned()));
+        // Genuine managed focus on a live screen latches, overwriting the
+        // prior context.
+        let (mut legacy, mut v4report) =
+            pair_reports(1, vec![fact("win-a", "out-a", 0)], Vec::new());
+        legacy.focused_global = "win-a".to_owned();
+        v4report.focused_global = "win-a".to_owned();
+        stage_either(&mut subject, v4, &legacy, &v4report);
+        assert_eq!(
+            subject.staged.observation.focused_global, "win-a",
+            "staged focus stages (v4={v4})"
+        );
+        subject.note_focused_output();
+        assert_eq!(
+            subject.fresh_focus.last_output,
+            Some(OutputId("out-a".to_owned())),
+            "genuine managed focus on a live screen latches (v4={v4})"
+        );
+        // Unknown/newcomer focus (no retained homing) never overwrites.
+        let (mut legacy, mut v4report) =
+            pair_reports(2, vec![fact("win-a", "out-a", 0)], Vec::new());
+        legacy.focused_global = "win-new".to_owned();
+        v4report.focused_global = "win-new".to_owned();
+        stage_either(&mut subject, v4, &legacy, &v4report);
+        subject.note_focused_output();
+        assert_eq!(
+            subject.fresh_focus.last_output,
+            Some(OutputId("out-a".to_owned())),
+            "newcomer keeps the latch (v4={v4})"
+        );
+        // Empty focus never overwrites.
+        let (mut legacy, mut v4report) =
+            pair_reports(3, vec![fact("win-a", "out-a", 0)], Vec::new());
+        legacy.focused_global = String::new();
+        v4report.focused_global = String::new();
+        stage_either(&mut subject, v4, &legacy, &v4report);
+        subject.note_focused_output();
+        assert_eq!(
+            subject.fresh_focus.last_output,
+            Some(OutputId("out-a".to_owned())),
+            "empty focus keeps the latch (v4={v4})"
+        );
+        // Managed focus whose home left the live set never overwrites:
+        // focus still names win-a, but only out-b stages live.
+        let (mut legacy, mut v4report) =
+            pair_reports(4, vec![fact("win-a", "out-a", 0)], Vec::new());
+        legacy.focused_global = "win-a".to_owned();
+        v4report.focused_global = "win-a".to_owned();
+        legacy.screens = vec![screen("out-b", 800)];
+        v4report.screens = legacy.screens.clone();
+        stage_either(&mut subject, v4, &legacy, &v4report);
+        subject.fresh_focus.last_output = Some(OutputId("out-prior".to_owned()));
+        subject.note_focused_output();
+        assert_eq!(
+            subject.fresh_focus.last_output,
+            Some(OutputId("out-prior".to_owned())),
+            "absent live output keeps the latch (v4={v4})"
+        );
+        // Prior memory survival without any latch ever firing: a fresh
+        // engine holding only prior context keeps it through empty focus.
+        let mut prior = engine();
+        prior.fresh_focus.last_output = Some(OutputId("out-prior".to_owned()));
+        let (mut legacy, mut v4report) =
+            pair_reports(5, vec![fact("win-a", "out-a", 0)], Vec::new());
+        legacy.focused_global = String::new();
+        v4report.focused_global = String::new();
+        stage_either(&mut prior, v4, &legacy, &v4report);
+        prior.note_focused_output();
+        assert_eq!(
+            prior.fresh_focus.last_output,
+            Some(OutputId("out-prior".to_owned())),
+            "prior memory survives empty focus (v4={v4})"
         );
     }
 }

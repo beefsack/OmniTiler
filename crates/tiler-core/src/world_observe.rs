@@ -566,10 +566,11 @@ impl WorldEngine {
     /// existing lifecycle role only. Empty means no non-sticky homed fact
     /// for the id, mirroring the converge lifecycle facts.
     pub(crate) fn trailing_marked_id(&self, report: &WorldReport, output: &str) -> Option<String> {
-        if !report.inventory_complete {
+        if !self.staged.observation.inventory_complete {
             return None;
         }
-        if !report
+        if !self
+            .staged
             .screens
             .iter()
             .find(|screen| screen.output.0 == output)
@@ -753,10 +754,10 @@ impl WorldEngine {
                         closed.push(id.clone());
                     }
                 }
-                let focused = if report.focused_global.is_empty() {
+                let focused = if self.staged.observation.focused_global.is_empty() {
                     WindowId(String::new())
                 } else {
-                    let active = WindowId(report.focused_global.clone());
+                    let active = WindowId(self.staged.observation.focused_global.clone());
                     let homed_here = self.staged.homing.get(&active).as_ref() == Some(&&key);
                     let active_live = self.staged.facts.get(&active).is_some_and(|_| {
                         let classified = self.derived_for(&active);
@@ -769,8 +770,8 @@ impl WorldEngine {
                     }
                 };
                 // Host-owned domains need a complete inventory to read.
-                let inventory_readable =
-                    !self.host_owned_workspace_domains() || report.inventory_complete;
+                let inventory_readable = !self.host_owned_workspace_domains()
+                    || self.staged.observation.inventory_complete;
                 let readable = complete
                     && inventory_readable
                     && work_area.is_some()

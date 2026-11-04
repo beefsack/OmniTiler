@@ -3021,7 +3021,7 @@ impl WorldEngine {
         // Trailing lifecycle and history converge after staging so they see
         // homed occupancy; core-owned topology retains so the same report's
         // commands resolve against its own geometry.
-        self.converge_logical_post(report);
+        self.converge_logical_post();
         self.retain_live_topology();
         // Retained membership before the sweep, per swept domain: the
         // admission-focus pass diffs this against converged state to find
@@ -3167,7 +3167,7 @@ impl WorldEngine {
             // target scopes hold explicitly so the retained sessions (tree,
             // shares, focus) survive the gap; settlement already holds the
             // flight narrowly.
-            if !report.inventory_complete
+            if !self.staged.observation.inventory_complete
                 && self.retained.iter().any(|r| {
                     matches!(&r.target.kind, TransferKind::Migration)
                         && (DomainKey {
@@ -3208,8 +3208,9 @@ impl WorldEngine {
                 .as_ref()
                 .map(|last| last.focused_global.clone())
                 .unwrap_or_default();
-            if !report.focused_global.is_empty() && prev != report.focused_global {
-                let active = WindowId(report.focused_global.clone());
+            let current_focused = self.staged.observation.focused_global.clone();
+            if !current_focused.is_empty() && prev != current_focused {
+                let active = WindowId(current_focused);
                 let _ = self.record_canonical(&active, &held_scopes, false);
             }
         }
@@ -3260,7 +3261,7 @@ impl WorldEngine {
         // Fresh-admission focus intent for this report's sweep, if any.
         // Command execution mints no newcomers, so every publish below
         // shares it.
-        let mut effects = self.take_admission_focus(report, &known_before, &held_scopes);
+        let mut effects = self.take_admission_focus(&known_before, &held_scopes);
         // Command path: consumed sequences reconcile only, never re-execute.
         // A consumed command never re-executes, so its result never
         // re-emits either; a gesture result is the gesture's own, never
@@ -3550,7 +3551,7 @@ impl WorldEngine {
         // so the latch reflects strictly prior retention: a stealing
         // newcomer or an empty report never overwrites pre-admission
         // context. Genuine managed focus only.
-        self.note_focused_output(report);
+        self.note_focused_output();
         // Membership owner settles last on the staged candidate so the next
         // report homes through retained truth (floating release, minimized
         // and unreadable holds, view-switch stability). Included in the

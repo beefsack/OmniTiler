@@ -174,6 +174,13 @@ fn home(engine: &mut WorldEngine, window: &str, output: &str, workspace: &str) {
     );
 }
 
+fn stage_report_gates(engine: &mut WorldEngine, report: &WorldReport) {
+    // The marker reads inventory/screen gates from the staged observation:
+    // mirror the hand-built report lanes into staged capture.
+    engine.staged.observation.inventory_complete = report.inventory_complete;
+    engine.staged.screens = report.screens.clone();
+}
+
 fn plan_marks(engine: &mut WorldEngine, report: &WorldReport, output: &str) -> Vec<(String, bool)> {
     engine
         .plan_workspaces(report, &[])
@@ -214,6 +221,7 @@ fn shared_union_occupied_elsewhere_suppresses_both_outputs() {
         true,
         false,
     );
+    stage_report_gates(&mut engine, &report);
     assert_eq!(engine.trailing_marked_id(&report, "out-a"), None);
     assert_eq!(engine.trailing_marked_id(&report, "out-b"), None);
     assert!(
@@ -248,6 +256,7 @@ fn occupied_tail_marks_nothing() {
         true,
         false,
     );
+    stage_report_gates(&mut engine, &report);
     assert_eq!(engine.trailing_marked_id(&report, "o"), None);
     assert!(
         plan_marks(&mut engine, &report, "o")
@@ -274,6 +283,7 @@ fn bound_visible_tail_still_marks() {
         true,
         false,
     );
+    stage_report_gates(&mut engine, &report);
     assert_eq!(
         engine.trailing_marked_id(&report, "o"),
         Some("w2".to_owned())
@@ -306,6 +316,7 @@ fn publication_final_only_over_unequal_rings() {
         true,
         true,
     );
+    stage_report_gates(&mut engine, &report);
     assert_eq!(
         engine.trailing_marked_id(&report, "a"),
         Some("w3".to_owned())
@@ -349,6 +360,7 @@ fn empty_tail_marks_the_final_spare_in_both_streams() {
         true,
         false,
     );
+    stage_report_gates(&mut engine, &report);
     assert_eq!(
         engine.trailing_marked_id(&report, "o"),
         Some("w2".to_owned())
@@ -372,6 +384,7 @@ fn incomplete_inventory_fails_closed_at_the_helper() {
         false,
         false,
     );
+    stage_report_gates(&mut engine, &report);
     assert_eq!(engine.trailing_marked_id(&report, "o"), None);
     assert!(
         plan_marks(&mut engine, &report, "o")

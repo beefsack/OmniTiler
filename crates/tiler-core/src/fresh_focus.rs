@@ -133,14 +133,23 @@ impl WorldEngine {
         )
     }
 
-    /// Retain the last-known focused output from an accepted report. Only
+    /// Retain the last-known focused output from the staged capture. Only
     /// genuine managed focus (previously retained homing on a live screen)
     /// latches: a stealing newcomer, an empty report, or an unknown token
     /// never overwrites pre-admission context. Call before membership
     /// converges so the latch reflects strictly prior retention.
-    pub(crate) fn note_focused_output(&mut self, report: &WorldReport) {
-        if let Some(output) = self.managed_focused_output(report)
-            && report.screens.iter().any(|screen| screen.output == output)
+    pub(crate) fn note_focused_output(&mut self) {
+        let focused = self.staged.observation.focused_global.clone();
+        if focused.is_empty() {
+            return;
+        }
+        let output = self.core_homing(&WindowId(focused)).map(|key| key.output);
+        if let Some(output) = output
+            && self
+                .staged
+                .screens
+                .iter()
+                .any(|screen| screen.output == output)
         {
             self.fresh_focus.last_output = Some(output);
         }

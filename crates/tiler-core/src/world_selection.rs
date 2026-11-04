@@ -373,7 +373,7 @@ impl WorldEngine {
         report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
     ) {
-        if self.selection_scopes.is_empty() || !report.inventory_complete {
+        if self.selection_scopes.is_empty() || !self.staged.observation.inventory_complete {
             return;
         }
         let mut stale: Vec<OutputId> = Vec::new();
@@ -610,7 +610,6 @@ impl WorldEngine {
     /// suppression-owned flag is not host hiding and never blocks a show.
     pub(crate) fn decorate_selection_visibility(
         &self,
-        report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
         windows: &mut [WindowDesire],
     ) {
@@ -664,8 +663,8 @@ impl WorldEngine {
                 current_view.is_some_and(|view| view != entry.home.workspace.0)
             };
             let mut controlled = caps_ok
-                && report.inventory_complete
-                && !report.gesture_barrier
+                && self.staged.observation.inventory_complete
+                && !self.staged.gesture_barrier
                 && !held_scopes.contains(&entry.home)
                 && !self.is_held_window(&window)
                 && !excluded_lane
@@ -733,9 +732,9 @@ impl WorldEngine {
             desire.visibility = Some(target);
             if excluded_lane {
                 desire.visibility_authority = ScopeAuthority::Untouched;
-            } else if report.gesture_barrier {
+            } else if self.staged.gesture_barrier {
                 desire.visibility_authority = ScopeAuthority::Hold(HoldReason::GestureBarrier);
-            } else if !report.inventory_complete {
+            } else if !self.staged.observation.inventory_complete {
                 desire.visibility_authority = ScopeAuthority::Hold(HoldReason::IncompleteInventory);
             } else if self
                 .staged
