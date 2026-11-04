@@ -137,6 +137,13 @@ fn two_screens() -> Vec<ScreenReport> {
     vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
+fn test_issue(report: &WorldReport) -> crate::world_engine::EventIssue {
+    crate::world_engine::EventIssue {
+        owner: crate::ids::OwnerId::parse("adapter-1").expect("owner"),
+        correlation: crate::ids::CorrelationId::parse(&report.request_id).expect("correlation"),
+    }
+}
+
 fn focus_targets(reply: &crate::world_report::WorldReply) -> Vec<WindowId> {
     reply
         .effects
@@ -468,12 +475,14 @@ fn view_return_fallback_records_effect_target_not_remembered() {
         None,
         None,
     );
+    engine.stage_facts(&probe);
+    engine.build_staged_domains(&probe);
     let held = BTreeSet::new();
     // Leg 1: retain some other view so the return below actually changes
     // the view. The empty index resolves no candidate there; the logical
     // view still flips.
     let empty_by_id: BTreeMap<&WindowId, &EngineWindow> = BTreeMap::new();
-    let _ = engine.retain_view(&probe, 11, &key.output, &other, &held, &empty_by_id);
+    let _ = engine.retain_view(11, &key.output, &other, &held, &empty_by_id);
     assert_eq!(
         remembered_window(&engine, &key),
         Some(WindowId("win-a".to_owned())),
@@ -515,7 +524,7 @@ fn view_return_fallback_records_effect_target_not_remembered() {
     for window in &owned {
         by_id.insert(&window.window, window);
     }
-    let applied = engine.retain_view(&probe, 12, &key.output, &key.workspace.0, &held, &by_id);
+    let applied = engine.retain_view(12, &key.output, &key.workspace.0, &held, &by_id);
     let target = match applied {
         CommandApplied::Effect(effect) => effect.target,
         CommandApplied::NoEffect => panic!("fallback return must stage a focus effect"),
@@ -1460,7 +1469,15 @@ fn local_move_direct_records_mover_without_sweep() {
     );
     engine.stage_facts(&probe);
     engine.build_staged_domains(&probe);
-    let applied = engine.execute_command(&probe, 12, &command, &BTreeSet::new(), None, None);
+    let applied = engine.execute_command(
+        &probe,
+        &test_issue(&probe),
+        12,
+        &command,
+        &BTreeSet::new(),
+        None,
+        None,
+    );
     let target = match applied {
         CommandApplied::Effect(effect) => effect.target,
         CommandApplied::NoEffect => panic!("local move must stage a focus effect"),
@@ -1522,7 +1539,15 @@ fn swap_neighbor_move_direct_records_mover_without_sweep() {
     );
     engine.stage_facts(&probe);
     engine.build_staged_domains(&probe);
-    let applied = engine.execute_command(&probe, 12, &command, &BTreeSet::new(), None, None);
+    let applied = engine.execute_command(
+        &probe,
+        &test_issue(&probe),
+        12,
+        &command,
+        &BTreeSet::new(),
+        None,
+        None,
+    );
     let target = match applied {
         CommandApplied::Effect(effect) => effect.target,
         CommandApplied::NoEffect => panic!("swap must stage a focus effect"),

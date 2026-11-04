@@ -22,13 +22,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::boundary::{CoreCommand, CoreEvent};
 use crate::directional::{WindowId, WorkspaceId};
 use crate::engine::Engine;
-use crate::ids::CorrelationId;
 use crate::intent_data::{IntentData, encode_intent_data};
 use crate::session::{DomainKey, OutputDomain};
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
-    KIND_IN_FLIGHT, KIND_OPERATION, KIND_SCOPE_HELD, KIND_SNAPSHOT, MSG_IN_FLIGHT, MSG_OPERATION,
-    MSG_SCOPE_HELD, MSG_SNAPSHOT, WorldEngine,
+    KIND_IN_FLIGHT, KIND_OPERATION, KIND_SCOPE_HELD, MSG_IN_FLIGHT, MSG_OPERATION, MSG_SCOPE_HELD,
+    WorldEngine,
 };
 use crate::world_members::MemberState;
 use crate::world_report::{
@@ -236,6 +235,7 @@ impl WorldEngine {
     pub(crate) fn execute_sticky_command(
         &mut self,
         report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         desired_some: Option<bool>,
@@ -274,6 +274,7 @@ impl WorldEngine {
         if self.sticky_route() == StickyRoute::Native {
             return self.execute_native_sticky_command(
                 report,
+                issue,
                 command_seq,
                 window,
                 desired_some,
@@ -288,6 +289,7 @@ impl WorldEngine {
         };
         self.run_sticky_transition(
             report,
+            issue,
             command_seq,
             window,
             &src,
@@ -301,6 +303,7 @@ impl WorldEngine {
     fn execute_native_sticky_command(
         &mut self,
         report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         desired_some: Option<bool>,
@@ -338,7 +341,7 @@ impl WorldEngine {
             _ => {}
         }
         if desired {
-            self.run_native_sticky_on(report, command_seq, window, src, dest, held_scopes)
+            self.run_native_sticky_on(report, issue, command_seq, window, src, dest, held_scopes)
         } else {
             self.run_native_sticky_off(command_seq, window, src, dest, false)
         }
@@ -386,9 +389,11 @@ impl WorldEngine {
             || self.retained_states.len() < MAX_RETAINED_STATE_BINDINGS
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_native_sticky_on(
         &mut self,
         report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         src: &DomainKey,
@@ -467,8 +472,16 @@ impl WorldEngine {
             self.note_command(command_seq);
             return CommandApplied::NoEffect;
         }
-        let applied =
-            self.run_sticky_transition(report, command_seq, window, src, dest, true, held_scopes);
+        let applied = self.run_sticky_transition(
+            report,
+            issue,
+            command_seq,
+            window,
+            src,
+            dest,
+            true,
+            held_scopes,
+        );
         match (&applied, &self.command_result) {
             (CommandApplied::NoEffect, None) => {}
             _ => return applied,
@@ -613,6 +626,7 @@ impl WorldEngine {
     pub(crate) fn execute_sticky_toggle_float(
         &mut self,
         report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         held_scopes: &BTreeSet<DomainKey>,
@@ -652,7 +666,7 @@ impl WorldEngine {
             Ok(found) => found,
             Err(rejected) => return rejected,
         };
-        self.run_sticky_toggle_float(report, command_seq, window, &src, &dest, held_scopes)
+        self.run_sticky_toggle_float(report, issue, command_seq, window, &src, &dest, held_scopes)
     }
 
     /// Composed sticky clear-and-tile on the current workspace. Classification
@@ -668,9 +682,11 @@ impl WorldEngine {
     /// cannot host a tile: the clear lands floated there with its base tile
     /// intent saved and no session forced. Adopting the clone commits
     /// provenance, membership, and the staged save together.
+    #[allow(clippy::too_many_arguments)]
     fn run_sticky_toggle_float(
         &mut self,
         report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         src: &DomainKey,
@@ -729,12 +745,8 @@ impl WorldEngine {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
         if dest_floating {
-            let Some(owner) = staged.connection_owner.clone() else {
-                return refused(KIND_SNAPSHOT, MSG_SNAPSHOT);
-            };
-            let Some(correlation) = CorrelationId::parse(&report.request_id) else {
-                return refused(KIND_SNAPSHOT, MSG_SNAPSHOT);
-            };
+            let owner = issue.owner.clone();
+            let correlation = issue.correlation.clone();
             let mut held = held_scopes.clone();
             let mut affected = vec![src.clone()];
             if dest != src {
@@ -786,12 +798,8 @@ impl WorldEngine {
         if !floated_carrier {
             // Ordinary carrier: converge the current-workspace re-tile
             // through sweeps over both affected scopes.
-            let Some(owner) = staged.connection_owner.clone() else {
-                return refused(KIND_SNAPSHOT, MSG_SNAPSHOT);
-            };
-            let Some(correlation) = CorrelationId::parse(&report.request_id) else {
-                return refused(KIND_SNAPSHOT, MSG_SNAPSHOT);
-            };
+            let owner = issue.owner.clone();
+            let correlation = issue.correlation.clone();
             let domains = staged.staged.domains.clone();
             let mut affected = vec![src.clone()];
             if dest != src {
@@ -851,12 +859,8 @@ impl WorldEngine {
         }
         // Sweep the tiled source for survivor reflow before the explicit
         // tile lands at the destination; a held source refuses atomically.
-        let Some(owner) = staged.connection_owner.clone() else {
-            return refused(KIND_SNAPSHOT, MSG_SNAPSHOT);
-        };
-        let Some(correlation) = CorrelationId::parse(&report.request_id) else {
-            return refused(KIND_SNAPSHOT, MSG_SNAPSHOT);
-        };
+        let owner = issue.owner.clone();
+        let correlation = issue.correlation.clone();
         if dest != src && !staged.floating_scopes.contains(src) {
             let domains = staged.staged.domains.clone();
             if let Some(source_domain) = domains.iter().find(|domain| domain.key == *src) {
@@ -902,7 +906,7 @@ impl WorldEngine {
             target_windows: Vec::new(),
             command: command.clone(),
         };
-        let applied = staged.finish_operation_event(report, command_seq, &event);
+        let applied = staged.finish_operation_event(command_seq, &event);
         match (&applied, &staged.command_result) {
             (
                 CommandApplied::NoEffect,
@@ -932,6 +936,7 @@ impl WorldEngine {
     fn run_sticky_transition(
         &mut self,
         report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         src: &DomainKey,
@@ -1031,12 +1036,8 @@ impl WorldEngine {
         if staged.staged_homing(window).as_ref() != Some(dest) {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        let Some(owner) = staged.connection_owner.clone() else {
-            return refused(KIND_SNAPSHOT, MSG_SNAPSHOT);
-        };
-        let Some(correlation) = CorrelationId::parse(&report.request_id) else {
-            return refused(KIND_SNAPSHOT, MSG_SNAPSHOT);
-        };
+        let owner = issue.owner.clone();
+        let correlation = issue.correlation.clone();
         let mut held = held_scopes.clone();
         let mut affected = vec![src.clone()];
         if dest != src {
@@ -1153,7 +1154,7 @@ impl WorldEngine {
                 target_windows: Vec::new(),
                 command: command.clone(),
             };
-            let applied = staged.finish_operation_event(report, command_seq, &event);
+            let applied = staged.finish_operation_event(command_seq, &event);
             match (&applied, &staged.command_result) {
                 (
                     CommandApplied::NoEffect,
@@ -1202,6 +1203,7 @@ impl WorldEngine {
         key: &(WindowId, crate::world_report::StateProperty),
         meta: &NativeStickyMeta,
         report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         held_scopes: &BTreeSet<DomainKey>,
     ) {
         if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
@@ -1324,12 +1326,8 @@ impl WorldEngine {
         if staged.staged_homing(&window).as_ref() != Some(&home) {
             return;
         }
-        let Some(owner) = staged.connection_owner.clone() else {
-            return;
-        };
-        let Some(correlation) = CorrelationId::parse(&report.request_id) else {
-            return;
-        };
+        let owner = issue.owner.clone();
+        let correlation = issue.correlation.clone();
         let mut held = held_scopes.clone();
         let mut affected = vec![home.clone()];
         if meta.dest != home {
@@ -1411,6 +1409,7 @@ impl WorldEngine {
     pub(crate) fn run_native_sticky_followups(
         &mut self,
         report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         held_scopes: &BTreeSet<DomainKey>,
     ) {
         if self.sticky_route() != StickyRoute::Native {
@@ -1437,7 +1436,7 @@ impl WorldEngine {
                 continue;
             }
             if disposition == AttemptOutcome::RefusedProven {
-                self.run_native_sticky_rollback_for(&key, &meta, report, held_scopes);
+                self.run_native_sticky_rollback_for(&key, &meta, report, issue, held_scopes);
                 continue;
             }
             if disposition != AttemptOutcome::Applied {
@@ -1520,6 +1519,7 @@ impl WorldEngine {
             let applied = if meta.is_toggle_float_clear {
                 staged.run_sticky_toggle_float(
                     report,
+                    issue,
                     meta.command_seq,
                     &window,
                     &meta.home,
@@ -1529,6 +1529,7 @@ impl WorldEngine {
             } else {
                 staged.run_sticky_transition(
                     report,
+                    issue,
                     meta.command_seq,
                     &window,
                     &meta.home,

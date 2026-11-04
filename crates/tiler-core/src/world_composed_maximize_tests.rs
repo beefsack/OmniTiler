@@ -34,6 +34,13 @@ fn engine() -> WorldEngine {
         .expect("generation")
 }
 
+fn test_issue(report: &WorldReport) -> crate::world_engine::EventIssue {
+    crate::world_engine::EventIssue {
+        owner: crate::ids::OwnerId::parse("adapter-1").expect("owner"),
+        correlation: crate::ids::CorrelationId::parse(&report.request_id).expect("correlation"),
+    }
+}
+
 /// macOS-style fact: native maximize unsupported, absent value. Sticky
 /// is likewise null on the composed route (a non-null sticky with
 /// `native_sticky: false` holds admission).
@@ -3086,6 +3093,7 @@ fn b9_held_scope_refusal_retains_cleared_bit() {
     engine.build_staged_domains(&probe);
     match engine.execute_command(
         &probe,
+        &test_issue(&probe),
         3,
         &toggle_float("win-a"),
         &BTreeSet::new(),
@@ -3142,6 +3150,7 @@ fn composed_tiled_move_unreadable_topology_retains_bit() {
     engine.retain_live_topology();
     match engine.execute_command(
         &probe,
+        &test_issue(&probe),
         2,
         &move_dir("win-a", "right"),
         &BTreeSet::new(),

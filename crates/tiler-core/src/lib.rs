@@ -113,6 +113,8 @@ mod world_capacity_diagnostic_tests;
 #[cfg(test)]
 mod world_clear_tests;
 #[cfg(test)]
+mod world_command_issue_tests;
+#[cfg(test)]
 mod world_composed_maximize_tests;
 #[cfg(test)]
 mod world_coverage_gaps_tests;

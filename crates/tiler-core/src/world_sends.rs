@@ -10,7 +10,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::engine::Engine;
-use crate::ids::CorrelationId;
 use crate::seed::EngineWindow;
 use crate::session::RefusalKind;
 use crate::session::{DomainKey, OutputDomain};
@@ -22,7 +21,7 @@ use crate::world_engine::{
     MSG_SEND_REFUSED, MSG_SEND_TARGET, MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer,
     StagedDomain, WorldEngine,
 };
-use crate::world_report::{OneShotEffect, TransferKind, TransferTarget, WorldReport};
+use crate::world_report::{OneShotEffect, TransferKind, TransferTarget};
 
 impl WorldEngine {
     /// Record one consumed command sequence on the monotonic high-watermark.
@@ -228,7 +227,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_send(
         &mut self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         target_output: &OutputId,
@@ -239,7 +238,7 @@ impl WorldEngine {
     ) -> CommandApplied {
         let operation_id = format!("op-{command_seq}");
         let result = self.execute_send(
-            report,
+            issue,
             &operation_id,
             window,
             target_output,
@@ -248,7 +247,7 @@ impl WorldEngine {
             by_id,
             held_scopes,
         );
-        self.settle_send(report, command_seq, operation_id, result)
+        self.settle_send(command_seq, operation_id, result)
     }
 
     /// Cross-output window-send path for direction-only sends
@@ -259,7 +258,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_output_send(
         &mut self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         target_output: &OutputId,
@@ -270,7 +269,7 @@ impl WorldEngine {
     ) -> CommandApplied {
         let operation_id = format!("op-{command_seq}");
         let result = self.execute_output_send(
-            report,
+            issue,
             &operation_id,
             window,
             target_output,
@@ -279,7 +278,7 @@ impl WorldEngine {
             by_id,
             held_scopes,
         );
-        self.settle_send(report, command_seq, operation_id, result)
+        self.settle_send(command_seq, operation_id, result)
     }
 
     /// Settle one executed send: retain the transfer under its stable
@@ -295,7 +294,6 @@ impl WorldEngine {
     /// flights, never from this commit.
     pub(crate) fn settle_send(
         &mut self,
-        report: &WorldReport,
         command_seq: u64,
         operation_id: String,
         result: Result<(RetainedTransfer, Option<WindowId>), (&'static str, &'static str)>,
@@ -334,7 +332,8 @@ impl WorldEngine {
                         == crate::workspace_scope::WorkspaceMode::Shared
                     {
                         let canonical = self.mapping.get(&output.0).cloned().unwrap_or_default();
-                        let mut live: Vec<String> = report
+                        let mut live: Vec<String> = self
+                            .staged
                             .screens
                             .iter()
                             .map(|screen| screen.output.0.clone())
@@ -374,7 +373,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_send(
         &mut self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         operation_id: &str,
         window: &WindowId,
         target_output: &OutputId,
@@ -506,14 +505,8 @@ impl WorldEngine {
                 follow.then(|| window.clone()),
             ));
         }
-        let Some(owner) = self.connection_owner.clone() else {
-            return Err((KIND_SNAPSHOT, MSG_SNAPSHOT));
-        };
-        let (Some(owner), Some(correlation)) =
-            (Some(owner), CorrelationId::parse(&report.request_id))
-        else {
-            return Err((KIND_SNAPSHOT, MSG_SNAPSHOT));
-        };
+        let owner = issue.owner.clone();
+        let correlation = issue.correlation.clone();
         let Some(source_domain) = self.staged.domains.iter().find(|d| d.key == source_key) else {
             return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
         };
@@ -634,7 +627,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_output_send(
         &mut self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         operation_id: &str,
         window: &WindowId,
         target_output: &OutputId,
@@ -745,14 +738,8 @@ impl WorldEngine {
                 follow.then(|| window.clone()),
             ));
         }
-        let Some(owner) = self.connection_owner.clone() else {
-            return Err((KIND_SNAPSHOT, MSG_SNAPSHOT));
-        };
-        let (Some(owner), Some(correlation)) =
-            (Some(owner), CorrelationId::parse(&report.request_id))
-        else {
-            return Err((KIND_SNAPSHOT, MSG_SNAPSHOT));
-        };
+        let owner = issue.owner.clone();
+        let correlation = issue.correlation.clone();
         let Some(source_domain) = self.staged.domains.iter().find(|d| d.key == source_key) else {
             return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
         };
@@ -867,7 +854,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_numbered_send(
         &mut self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         output: &OutputId,
@@ -927,7 +914,10 @@ impl WorldEngine {
                 message: RefusalKind::CrossDomainMismatch.message(),
             };
         }
-        let ring = self.send_ring(report, output);
+        let ring = self.send_ring(
+            &crate::world_engine::RawRouting::from_staged(&self.staged),
+            output,
+        );
         if ring.is_empty() {
             return CommandApplied::Rejected {
                 kind: KIND_SEND_TARGET,
@@ -941,7 +931,7 @@ impl WorldEngine {
                 TrailingSelection::Reuse(target) => {
                     let operation_id = format!("op-{command_seq}");
                     let result = self.execute_send(
-                        report,
+                        issue,
                         &operation_id,
                         window,
                         output,
@@ -950,7 +940,7 @@ impl WorldEngine {
                         by_id,
                         held_scopes,
                     );
-                    self.settle_send(report, command_seq, operation_id, result)
+                    self.settle_send(command_seq, operation_id, result)
                 }
                 TrailingSelection::Create => {
                     // Trailing workspaces exist immediately in the logical
@@ -1025,7 +1015,7 @@ impl WorldEngine {
                     }
                     let operation_id = format!("op-{command_seq}");
                     let result = self.execute_send(
-                        report,
+                        issue,
                         &operation_id,
                         window,
                         output,
@@ -1034,7 +1024,7 @@ impl WorldEngine {
                         by_id,
                         held_scopes,
                     );
-                    self.settle_send(report, command_seq, operation_id, result)
+                    self.settle_send(command_seq, operation_id, result)
                 }
             }
         } else {
@@ -1046,7 +1036,7 @@ impl WorldEngine {
             };
             let operation_id = format!("op-{command_seq}");
             let result = self.execute_send(
-                report,
+                issue,
                 &operation_id,
                 window,
                 output,
@@ -1055,7 +1045,7 @@ impl WorldEngine {
                 by_id,
                 held_scopes,
             );
-            self.settle_send(report, command_seq, operation_id, result)
+            self.settle_send(command_seq, operation_id, result)
         }
     }
 }

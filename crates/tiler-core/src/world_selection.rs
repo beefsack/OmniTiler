@@ -1371,9 +1371,9 @@ impl WorldEngine {
     /// the simultaneous case. Conservative: at most one empty terminal for
     /// the commands that route through [`WorldEngine::retain_view`]; every
     /// other report reserves nothing beyond the retained bindings.
-    pub(crate) fn switch_issuing_reserve(&self, report: &WorldReport) -> usize {
+    pub(crate) fn switch_issuing_reserve(&self, command: Option<&WorldCommand>) -> usize {
         let selects = matches!(
-            report.command.as_ref(),
+            command,
             Some(
                 WorldCommand::SwitchView { .. }
                     | WorldCommand::SelectWorkspace { .. }

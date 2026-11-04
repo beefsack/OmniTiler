@@ -514,6 +514,60 @@ pub(crate) struct StagedReport {
     pub(crate) gesture_barrier: bool,
 }
 
+/// Explicit typed event identity for command-path event construction.
+/// Threaded from the validated envelope instead of re-parsing a report.
+#[derive(Debug, Clone)]
+pub(crate) struct EventIssue {
+    pub(crate) owner: OwnerId,
+    pub(crate) correlation: CorrelationId,
+}
+
+/// Borrowed raw routing context for observation-dependent routing leaves.
+/// Built from the source report for pre-capture freezes (prior retained
+/// homes/views) or from staged state for post-capture commands (current
+/// observations). No cloning, no ingestion.
+pub(crate) struct RawRouting<'a> {
+    pub(crate) inventory_complete: bool,
+    pub(crate) cursor: Option<(i32, i32)>,
+    pub(crate) focused_global: &'a str,
+    pub(crate) action_foreground: Option<&'a OutputId>,
+    pub(crate) action_cached: Option<&'a OutputId>,
+    pub(crate) action_outputs: &'a [OutputId],
+    pub(crate) primary_output: Option<&'a OutputId>,
+    pub(crate) screens: &'a [crate::world_report::ScreenReport],
+    pub(crate) held_screens: &'a [crate::world_report::HeldScreenRow],
+}
+
+impl<'a> RawRouting<'a> {
+    pub(crate) fn from_source(report: &'a WorldReport) -> Self {
+        Self {
+            inventory_complete: report.inventory_complete,
+            cursor: report.cursor,
+            focused_global: report.focused_global.as_str(),
+            action_foreground: report.action_foreground.as_ref(),
+            action_cached: report.action_cached.as_ref(),
+            action_outputs: report.action_outputs.as_slice(),
+            primary_output: report.primary_output.as_ref(),
+            screens: report.screens.as_slice(),
+            held_screens: report.held_screens.as_slice(),
+        }
+    }
+
+    pub(crate) fn from_staged(staged: &'a StagedReport) -> Self {
+        Self {
+            inventory_complete: staged.observation.inventory_complete,
+            cursor: staged.observation.cursor,
+            focused_global: staged.observation.focused_global.as_str(),
+            action_foreground: staged.observation.action_foreground.as_ref(),
+            action_cached: staged.observation.action_cached.as_ref(),
+            action_outputs: staged.observation.action_outputs.as_slice(),
+            primary_output: staged.observation.primary_output.as_ref(),
+            screens: staged.screens.as_slice(),
+            held_screens: staged.held_screens.as_slice(),
+        }
+    }
+}
+
 /// Stateful world boundary around the retained [`Engine`].
 #[derive(Debug, Clone)]
 pub struct WorldEngine {
@@ -1662,11 +1716,8 @@ impl WorldEngine {
     /// complete) and every pre-bootstrap report adopt native affinity;
     /// once bootstrapped, newcomers route even after an empty seed,
     /// close-all, or an incomplete gap. Retained homings never re-route.
-    pub(crate) fn fresh_placement_armed_for(
-        &self,
-        report: &crate::world_report::WorldReport,
-    ) -> bool {
-        self.placement_bootstrapped && report.inventory_complete
+    pub(crate) fn fresh_placement_armed_for(&self, ctx: &RawRouting<'_>) -> bool {
+        self.placement_bootstrapped && ctx.inventory_complete
     }
 
     /// Retained cursor-first switch target from the latest accepted
@@ -2086,7 +2137,7 @@ impl WorldEngine {
         // A select-family command can mint one zero-obligation issuing
         // terminal while old bindings settle in the same report; reserve
         // it alongside the retained bindings, never from lane slack.
-        .saturating_add(self.switch_issuing_reserve(report))
+        .saturating_add(self.switch_issuing_reserve(report.command.as_ref()))
             > WORLD_MAX_REPLY_BYTES
         {
             return WorldOutcome::Rejected {
@@ -2923,7 +2974,7 @@ impl WorldEngine {
             | Some(WorldCommand::SendNumbered { window, source, .. }) => match source {
                 crate::world_report::SendSource::Explicit(_) => None,
                 crate::world_report::SendSource::HomeThenAction => {
-                    self.resolve_home_then_action(report, window)
+                    self.resolve_home_then_action(&RawRouting::from_source(report), window)
                 }
             },
             _ => None,
@@ -2938,13 +2989,19 @@ impl WorldEngine {
         // stay downstream on staged state.
         let frozen_migration_source: Option<(OutputId, String)> = match report.command.as_ref() {
             Some(WorldCommand::MigrateDirectional { .. }) => {
-                let resolved = self.resolve_action_output(report);
+                let resolved = self.resolve_action_output(&RawRouting::from_source(report));
                 match resolved {
                     Some(output) => self.logical_view(&output.0).map(|view| (output, view)),
                     None => None,
                 }
             }
             _ => None,
+        };
+        // Typed event identity for the command path below: the validated
+        // owner/correlation pair, never a re-parse of the report.
+        let issue = EventIssue {
+            owner: owner.clone(),
+            correlation: correlation.clone(),
         };
         // Logical rings/views converge first (bootstrap, hotplug, tiling
         // seeds) so staging assigns facts against this report's ownership.
@@ -2976,7 +3033,7 @@ impl WorldEngine {
         // roll back mapping/members/views/session ownership, so restage
         // afterwards: the sweep and publish below must use post-rollback
         // domains, never the pre-rollback ones.
-        self.settle_rest(report, consumed);
+        self.settle_rest(report, &issue, consumed);
         self.build_staged_domains(report);
         // State bindings settle against post-rollback staged domains: the
         // readability join must see the committed homing, and the raw capture
@@ -3148,7 +3205,7 @@ impl WorldEngine {
         // now that floating scopes are fresh and held scopes are staged,
         // before the ordinary sweep converges. Ambiguous proof never
         // retries.
-        self.run_native_sticky_followups(report, &held_scopes);
+        self.run_native_sticky_followups(report, &issue, &held_scopes);
         // Clone the staged domains for iteration: sweeps borrow `self`
         // mutably while reading staged homing.
         let domains = self.staged.domains.clone();
@@ -3240,7 +3297,7 @@ impl WorldEngine {
         // command: it runs even on consumed-command reports, and it never
         // consumes a sequence.
         self.command_result = None;
-        match self.gesture_act(report, &mut held_scopes) {
+        match self.gesture_act(report, &issue, &mut held_scopes) {
             GestureOutcome::Absent | GestureOutcome::Held => {}
             GestureOutcome::Settled { committed, result } => {
                 if committed {
@@ -3283,6 +3340,7 @@ impl WorldEngine {
             let precommand = self.clone();
             match self.execute_command(
                 report,
+                &issue,
                 command_seq,
                 command,
                 &held_scopes,

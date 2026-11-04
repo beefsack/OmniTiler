@@ -34,7 +34,6 @@ use crate::gesture::{
     GestureIngress, GestureIntent, GestureKind, GesturePhase, classify_gesture, prefer_modal_move,
     resolve_drop_destination,
 };
-use crate::ids::CorrelationId;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, DragHoverPrior, OutputDomain};
 use crate::world_engine::{RetainedTransfer, WorldEngine};
@@ -236,6 +235,7 @@ impl WorldEngine {
     pub(crate) fn gesture_act(
         &mut self,
         report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) -> GestureOutcome {
         let ingress = match self.staged.observation.gesture.clone() {
@@ -318,9 +318,11 @@ impl WorldEngine {
                         GestureOutcome::Held
                     }
                     GesturePhase::Started | GesturePhase::Updated => {
-                        self.gesture_updated(report, &ingress, held_scopes)
+                        self.gesture_updated(issue, &ingress, held_scopes)
                     }
-                    GesturePhase::Released => self.gesture_released(report, &ingress, held_scopes),
+                    GesturePhase::Released => {
+                        self.gesture_released(report, issue, &ingress, held_scopes)
+                    }
                     GesturePhase::Cancelled => {
                         self.gesture = None;
                         self.record_gesture_terminal(retained.id, false);
@@ -506,7 +508,7 @@ impl WorldEngine {
     /// adapter never needs to second-guess a published result.
     fn gesture_updated(
         &mut self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         ingress: &GestureIngress,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> GestureOutcome {
@@ -565,7 +567,7 @@ impl WorldEngine {
                     source: Some(retained.home.clone()),
                 };
                 return match self.gesture_pair_preview(
-                    report,
+                    issue,
                     &retained,
                     &command,
                     &pointer_key,
@@ -593,7 +595,7 @@ impl WorldEngine {
                     hover_prior: retained.hover.clone(),
                     source: None,
                 };
-                self.gesture_local_event(report, &retained, &command, held_scopes)
+                self.gesture_local_event(issue, &retained, &command, held_scopes)
             }
         };
         let Some(event) = preview else {
@@ -633,6 +635,7 @@ impl WorldEngine {
     fn gesture_released(
         &mut self,
         report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         ingress: &GestureIngress,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) -> GestureOutcome {
@@ -687,7 +690,7 @@ impl WorldEngine {
         let owned_float = self.is_owned_composed_float(&retained.window);
         let outcome = match intent {
             Some(GestureIntent::MoveDrop { x, y }) if !owned_float => {
-                self.gesture_move_release(report, &retained, x, y, &by_id, held_scopes)
+                self.gesture_move_release(issue, &retained, x, y, &by_id, held_scopes)
             }
             Some(GestureIntent::PointerResize {
                 direction,
@@ -695,7 +698,7 @@ impl WorldEngine {
                 direction2,
                 boundary2,
             }) if !owned_float => self.gesture_resize_release(
-                report,
+                issue,
                 &retained,
                 direction,
                 boundary,
@@ -704,7 +707,7 @@ impl WorldEngine {
                 held_scopes,
             ),
             Some(GestureIntent::MoveDrop { .. }) | Some(GestureIntent::PointerResize { .. }) => {
-                self.gesture_float_release(report, &retained, release_frame, held_scopes)
+                self.gesture_float_release(report, issue, &retained, release_frame, held_scopes)
             }
             None => {
                 // No change (or a cursor-less move): snap back with no
@@ -756,7 +759,7 @@ impl WorldEngine {
     /// reply mechanically with fresh proof.
     fn gesture_move_release(
         &mut self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
         x: i32,
         y: i32,
@@ -793,7 +796,7 @@ impl WorldEngine {
                     hover_prior: retained.hover.clone(),
                     source: None,
                 };
-                let Some(event) = self.gesture_local_event(report, retained, &command, held_scopes)
+                let Some(event) = self.gesture_local_event(issue, retained, &command, held_scopes)
                 else {
                     return GestureOutcome::Settled {
                         committed: false,
@@ -828,7 +831,7 @@ impl WorldEngine {
                 // also serves empty destinations; send refusals snap back
                 // as before.
                 if let Some(outcome) = self.gesture_pair_drop(
-                    report,
+                    issue,
                     retained,
                     &operation_id,
                     &output,
@@ -840,7 +843,7 @@ impl WorldEngine {
                     return outcome;
                 }
                 match self.execute_output_send(
-                    report,
+                    issue,
                     &operation_id,
                     &retained.window,
                     &output,
@@ -920,7 +923,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     fn gesture_resize_release(
         &mut self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
         direction: &str,
         boundary: i32,
@@ -935,7 +938,7 @@ impl WorldEngine {
             direction2: direction2.map(str::to_owned),
             boundary2,
         };
-        let Some(event) = self.gesture_local_event(report, retained, &command, held_scopes) else {
+        let Some(event) = self.gesture_local_event(issue, retained, &command, held_scopes) else {
             return GestureOutcome::Settled {
                 committed: false,
                 result: None,
@@ -988,6 +991,7 @@ impl WorldEngine {
     fn gesture_float_release(
         &mut self,
         report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
         release_frame: crate::geometry::Rect,
         held_scopes: &mut BTreeSet<DomainKey>,
@@ -1059,15 +1063,8 @@ impl WorldEngine {
             // the existing sweep, mirroring the report sweep tail: the
             // stale home scope reconciles empty and the empty
             // destination reconciles its observed carrier.
-            let (Some(owner), Some(correlation)) = (
-                self.connection_owner.clone(),
-                CorrelationId::parse(&report.request_id),
-            ) else {
-                return GestureOutcome::Settled {
-                    committed: false,
-                    result: None,
-                };
-            };
+            let owner = issue.owner.clone();
+            let correlation = issue.correlation.clone();
             let domains = self.staged.domains.clone();
             for domain in &domains {
                 if domain.key != target_key && domain.key != retained.home {
@@ -1144,7 +1141,7 @@ impl WorldEngine {
     /// no mutation.
     fn gesture_local_event(
         &self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
         command: &CoreCommand,
         held_scopes: &BTreeSet<DomainKey>,
@@ -1162,12 +1159,8 @@ impl WorldEngine {
         if domain_key != retained.home {
             return None;
         }
-        let (Some(owner), Some(correlation)) = (
-            self.connection_owner.clone(),
-            CorrelationId::parse(&report.request_id),
-        ) else {
-            return None;
-        };
+        let owner = issue.owner.clone();
+        let correlation = issue.correlation.clone();
         let accepted = self
             .engine
             .session(&domain_key)
@@ -1213,7 +1206,7 @@ impl WorldEngine {
     /// gap, so both sessions retain their own staged gaps.
     fn gesture_pair_event(
         &self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
         command: &CoreCommand,
         pointer_key: &DomainKey,
@@ -1236,12 +1229,8 @@ impl WorldEngine {
             .iter()
             .find(|d| d.readable && d.key == domain_key)?
             .clone();
-        let (Some(owner), Some(correlation)) = (
-            self.connection_owner.clone(),
-            CorrelationId::parse(&report.request_id),
-        ) else {
-            return None;
-        };
+        let owner = issue.owner.clone();
+        let correlation = issue.correlation.clone();
         let accepted = self
             .engine
             .session(&domain_key)
@@ -1297,13 +1286,13 @@ impl WorldEngine {
     /// overlay, exactly as before.
     fn gesture_pair_preview(
         &mut self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
         command: &CoreCommand,
         pointer_key: &DomainKey,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Option<Option<CommandResult>> {
-        let event = self.gesture_pair_event(report, retained, command, pointer_key, held_scopes)?;
+        let event = self.gesture_pair_event(issue, retained, command, pointer_key, held_scopes)?;
         match self.engine.handle(&event) {
             CoreReply::DragPreview(plan) => Some(Self::command_result_from_reply(
                 &event.command,
@@ -1324,7 +1313,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     fn gesture_pair_drop(
         &mut self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
         operation_id: &str,
         output: &OutputId,
@@ -1361,7 +1350,7 @@ impl WorldEngine {
             source: Some(retained.home.clone()),
         };
         let event =
-            self.gesture_pair_event(report, retained, &command, &pointer_key, held_scopes)?;
+            self.gesture_pair_event(issue, retained, &command, &pointer_key, held_scopes)?;
         match self.engine.handle(&event) {
             CoreReply::Tiled(_) => {
                 let transfer = RetainedTransfer {

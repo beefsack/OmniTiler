@@ -41,7 +41,7 @@ use crate::world_engine::{
 };
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, CommandResult, HoldReason, ScopeAuthority, StateProperty,
-    StateTarget, TransferKind, WindowDesire, WorldReport,
+    StateTarget, TransferKind, WindowDesire,
 };
 use crate::world_state::{MAX_RETAINED_STATE_BINDINGS, NativeFullscreenMeta, NativeMaximizeMeta};
 
@@ -223,7 +223,6 @@ impl WorldEngine {
     /// lane and activates immediately.
     pub(crate) fn execute_composed_maximize(
         &mut self,
-        report: &WorldReport,
         command_seq: u64,
         window: &WindowId,
         home: DomainKey,
@@ -277,8 +276,8 @@ impl WorldEngine {
         // Frame-write availability mirrors the publish lane: the overlay
         // grants no write the row itself could not carry. Floating
         // workspaces publish untouched rows, held scopes never compose.
-        if !report.inventory_complete
-            || report.gesture_barrier
+        if !self.staged.observation.inventory_complete
+            || self.staged.gesture_barrier
             || self.floating_scopes.contains(&home)
             || self.hold_reasons.contains_key(&home)
         {

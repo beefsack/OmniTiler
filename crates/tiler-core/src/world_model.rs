@@ -951,7 +951,6 @@ impl WorldEngine {
     /// member lives.
     pub(crate) fn logical_source_refill(
         &self,
-        _report: &WorldReport,
         source_output: &OutputId,
         migrated: &str,
     ) -> Option<String> {

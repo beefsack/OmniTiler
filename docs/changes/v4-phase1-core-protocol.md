@@ -1236,6 +1236,64 @@
 | Envelope admission, pre-ready/bootstrap, replay/reply assembly, prior-report/last-view retention and v4 run/finish wiring | 7 (native last-view proof remains 5) |
 | Raw capture/classification intake, validation, digest, codec and sizing | Source-report operations, not stranded lane consumers |
 
+- Sub-increment 4c plan: migrate observation-dependent command helpers together
+  with their issuing correlation arguments. Current command gates and geometry
+  read staged inventory, focus and screens; event construction takes explicit
+  typed owner/correlation and command sequence instead of parsing a report.
+  Routing helpers take an explicit borrowed raw context so pre-observation send,
+  migration and fresh-focus decisions continue consulting prior retained homes
+  and views, while post-capture commands consult current observations. Preserve
+  freeze positions, fallback order, request identities, command continuation and
+  classification-only restaging; no full observation clone per helper or intent
+  re-ingestion. Remove unused report arguments and make selection sizing take the
+  command input explicitly. Verify dual-intake helper parity, eligible positive
+  and held/incomplete controls, staged-versus-stale inputs, typed event identity,
+  pre-sweep source freezes and fresh-placement retention. Audit remaining report
+  reads against the owner table above. Native/view proof, presentation, prior
+  report/bootstrap and v4 run/finish assembly remain with 5, 6 and 7; helper tests
+  establish neither v4 accepted-run nor scenario acceptance. No contract, fixture,
+  manifest, migration-order, adapter, feature or version change is included.
+- Sub-increment 4c outcome: command gates, float-move geometry, view/follow
+  fanout and maximize eligibility now read staged screens, focus, inventory,
+  barrier and observation watermark. Shared routing leaves take borrowed
+  `RawRouting`; pre-capture send/migration freezes and fresh-placement callers
+  retain explicit source context and prior homes/views, while command selection
+  uses current staged context. `EventIssue` carries the already validated typed
+  owner/correlation through sends, migration, local/directional operations,
+  gestures, sticky transitions and clear continuations. Original command
+  sequences remain separate explicit inputs, including retained continuations.
+  Selection reserve sizing takes the command directly; unused report arguments
+  are removed. No per-helper observation clone or intent re-ingestion is added.
+  Remaining report parameters carry native/view proof, classification/domain
+  restaging or run/command-supersession assembly, not independent raw command
+  reads; their v4 wiring remains with 5/7. Presentation stays with 6.
+  Thirteen new regressions cover both intakes for helper behavior, staged versus
+  contradictory inputs, actual event authorization with explicit identity,
+  maximize focus/held/inventory/barrier gates, float geometry, Shared view fanout,
+  GlobalUnique swaps, eligible migration versus incomplete inventory, source
+  routing and fresh-focus precedence. Existing accepted-run regressions pin both
+  pre-observation send-home and migration-view freezes. Direct-helper callers
+  now stage their source probes before restoring domain joins. Shared follow-send
+  fanout has source/full-suite parity evidence, not a new isolated regression.
+  Review corrected five sticky owner reads and weak test controls; follow-up
+  found no blocking issue. Envelope rejection gates are unchanged, so removing
+  unreachable helper parse fallbacks changes no public refusal behavior. Initial
+  failures corrected caller arity, synthetic eligibility and test scope, not
+  product policy; no preimplementation behavioral red is claimed. A planner-noop
+  move probe was replaced by an eligible orientation event, and a redundant
+  trailing-send probe was replaced by the existing exact freeze regressions.
+  Final direct verification passes the filtered core/protocol gate (1736 core
+  unit tests and every selected integration/protocol target), core/protocol
+  build, scoped all-target clippy with warnings denied, formatting, whitespace,
+  added ASCII, NUL and local-link checks. The first clippy pass required three
+  existing-style argument-count annotations; formatting required one import
+  reflow. Only `workspace_unsafe_posture` is filtered. No new tentative or parked
+  item, contract, fixture, manifest, feature, adapter, public ingress, version or
+  migration-order change is included. 4c and the shared observation boundary are
+  finished; view-proof migration (5) is next. These helper tests establish no v4
+  accepted-run, native delivery, runtime or scenario acceptance; the phase note
+  remains active and all eight OPEN/TBD gates remain unchanged.
+
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
 - Capability-held cursor grading repair plan: reproduce a valid v4 report whose
   native cursor hit names a newly capability-held window, then keep that window

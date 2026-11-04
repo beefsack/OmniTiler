@@ -4440,7 +4440,11 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
         );
         seed_join_4b2d(&mut engine, "win-a", "ws-1");
         seed_clear_4b2d(&mut engine, "op-1");
-        engine.settle_clears(&passed_report_4b2d(90), false);
+        engine.settle_clears(
+            &passed_report_4b2d(90),
+            &test_issue(&passed_report_4b2d(90)),
+            false,
+        );
         assert!(
             engine.retained_clears.is_empty(),
             "staged refusal retires despite contradictory report (v4={v4})"
@@ -4500,7 +4504,11 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
             );
             seed_join_4b2d(&mut forged_engine, "win-a", "ws-1");
             seed_clear_4b2d(&mut forged_engine, "op-1");
-            forged_engine.settle_clears(&passed_report_4b2d(90), false);
+            forged_engine.settle_clears(
+                &passed_report_4b2d(90),
+                &test_issue(&passed_report_4b2d(90)),
+                false,
+            );
             assert_eq!(
                 forged_engine.retained_clears.len(),
                 1,
@@ -4569,7 +4577,11 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
             );
             seed_join_4b2d(&mut gated, "win-a", "ws-1");
             seed_clear_4b2d(&mut gated, "op-1");
-            gated.settle_clears(&passed_report_4b2d(90), false);
+            gated.settle_clears(
+                &passed_report_4b2d(90),
+                &test_issue(&passed_report_4b2d(90)),
+                false,
+            );
             assert_eq!(
                 gated.retained_clears.len(),
                 1,
@@ -4606,7 +4618,11 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
                 Vec::new(),
             );
             seed_join_4b2d(&mut gated, "win-a", "ws-1");
-            gated.settle_clears(&passed_report_4b2d(91), false);
+            gated.settle_clears(
+                &passed_report_4b2d(91),
+                &test_issue(&passed_report_4b2d(91)),
+                false,
+            );
             assert!(
                 gated.retained_clears.is_empty(),
                 "{what} recovers readable (v4={v4})",
@@ -4851,7 +4867,11 @@ fn settle_transfer_uses_staged_member_lane_not_passed_report() {
         );
         seed_join_4b2d(&mut engine, "win-a", "ws-9");
         seed_window_transfer_4b2d(&mut engine, "op-t");
-        engine.settle_rest(&passed_report_4b2d(90), false);
+        engine.settle_rest(
+            &passed_report_4b2d(90),
+            &test_issue(&passed_report_4b2d(90)),
+            false,
+        );
         assert!(
             engine.retained.is_empty(),
             "staged arrival proof settles despite contradictory report (v4={v4})"
@@ -4913,7 +4933,11 @@ fn settle_transfer_uses_staged_member_lane_not_passed_report() {
             );
             seed_join_4b2d(&mut forged_engine, "win-a", "ws-9");
             seed_window_transfer_4b2d(&mut forged_engine, "op-t");
-            forged_engine.settle_rest(&passed_report_4b2d(90), false);
+            forged_engine.settle_rest(
+                &passed_report_4b2d(90),
+                &test_issue(&passed_report_4b2d(90)),
+                false,
+            );
             assert_eq!(
                 forged_engine.retained.len(),
                 1,
@@ -4957,7 +4981,11 @@ fn settle_transfer_uses_staged_member_lane_not_passed_report() {
         );
         seed_join_4b2d(&mut gated, "win-a", "ws-9");
         seed_window_transfer_4b2d(&mut gated, "op-t");
-        gated.settle_rest(&passed_report_4b2d(90), false);
+        gated.settle_rest(
+            &passed_report_4b2d(90),
+            &test_issue(&passed_report_4b2d(90)),
+            false,
+        );
         assert_eq!(
             gated.retained.len(),
             1,
@@ -4992,7 +5020,11 @@ fn settle_transfer_uses_staged_member_lane_not_passed_report() {
             Vec::new(),
         );
         seed_join_4b2d(&mut gated, "win-a", "ws-9");
-        gated.settle_rest(&passed_report_4b2d(91), false);
+        gated.settle_rest(
+            &passed_report_4b2d(91),
+            &test_issue(&passed_report_4b2d(91)),
+            false,
+        );
         assert!(
             gated.retained.is_empty(),
             "readable recovery settles the refused flight (v4={v4})",
@@ -5503,7 +5535,11 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
         );
         seed_migration_4b2d(&mut engine, "op-m");
         home_migration_4b2d(&mut engine, "out-b", "ws-1");
-        engine.settle_rest(&passed_report_4b2d(90), false);
+        engine.settle_rest(
+            &passed_report_4b2d(90),
+            &test_issue(&passed_report_4b2d(90)),
+            false,
+        );
         if !v4 {
             assert!(
                 engine.retained.is_empty(),
@@ -5585,7 +5621,11 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
             );
             seed_migration_4b2d(&mut forged_engine, "op-m");
             home_migration_4b2d(&mut forged_engine, "out-a", "ws-1");
-            forged_engine.settle_rest(&passed_report_4b2d(90), false);
+            forged_engine.settle_rest(
+                &passed_report_4b2d(90),
+                &test_issue(&passed_report_4b2d(90)),
+                false,
+            );
             // The refill child still settles on its exact staged echo
             // independently on legacy (on v4 it holds echo-less); only
             // the parent holds on the outstanding member with no member
@@ -5625,7 +5665,11 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
         );
         seed_migration_4b2d(&mut gated, "op-m");
         home_migration_4b2d(&mut gated, "out-b", "ws-1");
-        gated.settle_rest(&passed_report_4b2d(90), false);
+        gated.settle_rest(
+            &passed_report_4b2d(90),
+            &test_issue(&passed_report_4b2d(90)),
+            false,
+        );
         // Eligible homing and echoes: only the incomplete gate holds, so
         // the hold discriminates the gate. The refill child settles on
         // its exact echo across the gap on legacy (v4 holds echo-less).
@@ -5684,7 +5728,11 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
             Vec::new(),
         );
         home_migration_4b2d(&mut gated, "out-b", "ws-1");
-        gated.settle_rest(&passed_report_4b2d(91), false);
+        gated.settle_rest(
+            &passed_report_4b2d(91),
+            &test_issue(&passed_report_4b2d(91)),
+            false,
+        );
         assert_eq!(
             gated.retained.len(),
             if v4 { 2 } else { 1 },
@@ -5717,7 +5765,11 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
             Vec::new(),
         );
         home_migration_4b2d(&mut gated, "out-b", "ws-1");
-        gated.settle_rest(&passed_report_4b2d(92), false);
+        gated.settle_rest(
+            &passed_report_4b2d(92),
+            &test_issue(&passed_report_4b2d(92)),
+            false,
+        );
         if !v4 {
             assert!(
                 gated.retained.is_empty(),
@@ -5949,7 +6001,7 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
         seed_clear_4b2d(&mut engine, "op-1");
         let mut proving_focus = passed_report_4b2d(90);
         proving_focus.focused_global = "win-a".to_owned();
-        engine.settle_clears(&proving_focus, false);
+        engine.settle_clears(&proving_focus, &test_issue(&proving_focus), false);
         assert!(
             engine.retained_clears.is_empty(),
             "staged focus divergence retires (v4={v4})",
@@ -5992,7 +6044,11 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
             viewed.views.insert("out-a".to_owned(), "ws-9".to_owned());
         }
         seed_clear_4b2d(&mut viewed, "op-1");
-        viewed.settle_clears(&passed_report_4b2d(90), false);
+        viewed.settle_clears(
+            &passed_report_4b2d(90),
+            &test_issue(&passed_report_4b2d(90)),
+            false,
+        );
         assert!(
             viewed.retained_clears.is_empty(),
             "staged view divergence retires (v4={v4})",
@@ -6029,7 +6085,11 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
         );
         seed_join_4b2d(&mut homed, "win-a", "ws-9");
         seed_clear_4b2d(&mut homed, "op-1");
-        homed.settle_clears(&passed_report_4b2d(90), false);
+        homed.settle_clears(
+            &passed_report_4b2d(90),
+            &test_issue(&passed_report_4b2d(90)),
+            false,
+        );
         assert!(
             homed.retained_clears.is_empty(),
             "staged home divergence retires (v4={v4})",
@@ -6084,7 +6144,7 @@ fn settle_clear_float_continuation_uses_staged_geometry() {
         let mut crossed_screen = screen("out-a", 0);
         crossed_screen.work_area = Some(rect(0, 0, 400, 300));
         crossed.screens = vec![crossed_screen];
-        engine.settle_clears(&crossed, false);
+        engine.settle_clears(&crossed, &test_issue(&crossed), false);
         assert!(
             engine.retained_clears.is_empty(),
             "proven clear continues (v4={v4})",
@@ -6484,7 +6544,11 @@ fn staged_gesture_act_watermark_guard_drives_preview() {
             phase: GesturePhase::Updated,
             ..moved_started_ingress(7)
         });
-        match engine.gesture_act(&contra_updated, &mut BTreeSet::new()) {
+        match engine.gesture_act(
+            &contra_updated,
+            &test_issue(&contra_updated),
+            &mut BTreeSet::new(),
+        ) {
             GestureOutcome::Held => {}
             _ => panic!("same staged watermark holds bind-only (v4={v4})"),
         }
@@ -6507,7 +6571,11 @@ fn staged_gesture_act_watermark_guard_drives_preview() {
         );
         let mut contra_guard = contra_legacy(5, windows());
         contra_guard.gesture = Some(moved_started_ingress(7));
-        match engine.gesture_act(&contra_guard, &mut BTreeSet::new()) {
+        match engine.gesture_act(
+            &contra_guard,
+            &test_issue(&contra_guard),
+            &mut BTreeSet::new(),
+        ) {
             GestureOutcome::Settled {
                 committed: false,
                 result: Some(boxed),
@@ -6554,7 +6622,11 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
             false,
             Vec::new(),
         );
-        match engine.gesture_act(&contra_legacy(6, windows()), &mut BTreeSet::new()) {
+        match engine.gesture_act(
+            &contra_legacy(6, windows()),
+            &test_issue(&contra_legacy(6, windows())),
+            &mut BTreeSet::new(),
+        ) {
             GestureOutcome::Held => {}
             _ => panic!("staged gap holds the update (v4={v4})"),
         }
@@ -6574,7 +6646,11 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
         );
         let mut contra_gapped = contra_legacy(7, windows());
         contra_gapped.inventory_complete = false;
-        match engine.gesture_act(&contra_gapped, &mut BTreeSet::new()) {
+        match engine.gesture_act(
+            &contra_gapped,
+            &test_issue(&contra_gapped),
+            &mut BTreeSet::new(),
+        ) {
             GestureOutcome::Settled {
                 committed: false,
                 result: Some(boxed),
@@ -6608,7 +6684,11 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
             false,
             Vec::new(),
         );
-        match engine.gesture_act(&contra_legacy(6, moved_windows()), &mut BTreeSet::new()) {
+        match engine.gesture_act(
+            &contra_legacy(6, moved_windows()),
+            &test_issue(&contra_legacy(6, moved_windows())),
+            &mut BTreeSet::new(),
+        ) {
             GestureOutcome::Settled {
                 committed: false, ..
             } => {}
@@ -6642,7 +6722,11 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
         );
         let mut contra_gapped = contra_legacy(6, moved_windows());
         contra_gapped.inventory_complete = false;
-        match engine.gesture_act(&contra_gapped, &mut BTreeSet::new()) {
+        match engine.gesture_act(
+            &contra_gapped,
+            &test_issue(&contra_gapped),
+            &mut BTreeSet::new(),
+        ) {
             GestureOutcome::Settled {
                 committed: true, ..
             } => {}
@@ -6682,7 +6766,7 @@ fn staged_gesture_act_close_follows_staged() {
             true,
             vec![WindowId("win-a".to_owned())],
         );
-        match engine.gesture_act(&open, &mut BTreeSet::new()) {
+        match engine.gesture_act(&open, &test_issue(&open), &mut BTreeSet::new()) {
             GestureOutcome::Settled {
                 committed: false, ..
             } => {}
@@ -6705,7 +6789,11 @@ fn staged_gesture_act_close_follows_staged() {
         stage_gesture(&mut engine, v4, 6, windows(), None, true, Vec::new());
         let mut contra_closed = contra_legacy(6, windows());
         contra_closed.closed = vec![WindowId("win-a".to_owned())];
-        match engine.gesture_act(&contra_closed, &mut BTreeSet::new()) {
+        match engine.gesture_act(
+            &contra_closed,
+            &test_issue(&contra_closed),
+            &mut BTreeSet::new(),
+        ) {
             GestureOutcome::Held => {}
             _ => panic!("passed-only close preserves (v4={v4})"),
         }
@@ -7890,6 +7978,13 @@ fn sweep_all(engine: &mut WorldEngine) {
     }
 }
 
+fn test_issue(report: &WorldReport) -> crate::world_engine::EventIssue {
+    crate::world_engine::EventIssue {
+        owner: OwnerId::parse("adapter-1").expect("owner"),
+        correlation: CorrelationId::parse(&report.request_id).expect("correlation"),
+    }
+}
+
 #[test]
 fn staged_admission_focus_at_most_once_and_barrier_spend() {
     for v4 in [false, true] {
@@ -8987,7 +9082,7 @@ fn staged_native_sticky_followup_reads_staged_over_contra() {
         let (mut engine, legacy) = setup(false, Some(false));
         let mut contra = legacy.clone();
         contra.inventory_complete = true;
-        engine.run_native_sticky_followups(&contra, &BTreeSet::new());
+        engine.run_native_sticky_followups(&contra, &test_issue(&contra), &BTreeSet::new());
         assert!(
             !done(&engine),
             "staged gap holds despite complete contra (v4={v4})"
@@ -8997,7 +9092,7 @@ fn staged_native_sticky_followup_reads_staged_over_contra() {
         let (mut engine, legacy) = setup(true, Some(true));
         let mut contra = legacy.clone();
         contra.windows[0].sticky = Some(false);
-        engine.run_native_sticky_followups(&contra, &BTreeSet::new());
+        engine.run_native_sticky_followups(&contra, &test_issue(&contra), &BTreeSet::new());
         assert!(
             !done(&engine),
             "staged restick holds despite contra proof (v4={v4})"
@@ -9005,7 +9100,7 @@ fn staged_native_sticky_followup_reads_staged_over_contra() {
         // Staged complete with a fresh non-sticky fact finishes the
         // followup (positive control).
         let (mut engine, legacy) = setup(true, Some(false));
-        engine.run_native_sticky_followups(&legacy, &BTreeSet::new());
+        engine.run_native_sticky_followups(&legacy, &test_issue(&legacy), &BTreeSet::new());
         assert!(
             done(&engine),
             "staged complete finishes the followup (v4={v4})"

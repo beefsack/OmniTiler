@@ -1095,13 +1095,14 @@ impl WorldEngine {
         }
         if self.core_homing(window).is_none()
             && !self.engine_knows_window(window)
-            && self.fresh_placement_armed_for(report)
+            && self.fresh_placement_armed_for(&crate::world_engine::RawRouting::from_source(report))
             && !derived.floating
             && !derived.sticky
             && !derived.fixed_auto
             && !derived.fixed_suppress
             && fact.rect.is_some()
-            && let Some(key) = self.resolve_fresh_key(report)
+            && let Some(key) =
+                self.resolve_fresh_key(&crate::world_engine::RawRouting::from_source(report))
         {
             return Some(key);
         }
@@ -1147,10 +1148,13 @@ impl WorldEngine {
     /// up over the report's FULL screen rectangles. `None` when the
     /// adapter could not read the cursor or the point falls outside every
     /// known screen.
-    pub(crate) fn fresh_cursor_output(&self, report: &WorldReport) -> Option<OutputId> {
+    pub(crate) fn fresh_cursor_output(
+        &self,
+        ctx: &crate::world_engine::RawRouting<'_>,
+    ) -> Option<OutputId> {
         let _ = self;
-        let cursor = report.cursor?;
-        let screens: Vec<(OutputId, Rect)> = report
+        let cursor = ctx.cursor?;
+        let screens: Vec<(OutputId, Rect)> = ctx
             .screens
             .iter()
             .filter_map(|screen| screen.full_rect.map(|rect| (screen.output.clone(), rect)))
@@ -1164,22 +1168,25 @@ impl WorldEngine {
     /// fact output on a known screen (native truth, never a guess).
     /// `None` when no focus is observed or the focused window is unknown
     /// on every known screen.
-    pub(crate) fn focused_output(&self, report: &WorldReport) -> Option<OutputId> {
-        if report.focused_global.is_empty() {
+    pub(crate) fn focused_output(
+        &self,
+        ctx: &crate::world_engine::RawRouting<'_>,
+    ) -> Option<OutputId> {
+        if ctx.focused_global.is_empty() {
             return None;
         }
-        if let Some(key) = self.core_homing(&WindowId(report.focused_global.clone())) {
+        if let Some(key) = self.core_homing(&WindowId(ctx.focused_global.to_owned())) {
             return Some(key.output);
         }
         // Staged admitted facts only: exclusions never provide focus proof.
-        let window = WindowId(report.focused_global.clone());
+        let window = WindowId(ctx.focused_global.to_owned());
         let fact = self.staged.facts.get(&window)?;
         let derived = self.derived_for(&window);
         if derived.own_excluded || derived.excluded {
             return None;
         }
         let fact_output = fact.output.as_ref()?;
-        if report
+        if ctx
             .screens
             .iter()
             .any(|screen| &screen.output == fact_output)
@@ -1194,24 +1201,27 @@ impl WorldEngine {
     /// then valid screens in stable report order, then held outputs in
     /// report order (never winning over a usable screen, kept only so
     /// the chain stays total). Never the active screen.
-    pub(crate) fn primary_first_outputs(&self, report: &WorldReport) -> Vec<OutputId> {
+    pub(crate) fn primary_first_outputs(
+        &self,
+        ctx: &crate::world_engine::RawRouting<'_>,
+    ) -> Vec<OutputId> {
         let _ = self;
         let mut ordered = Vec::new();
-        if let Some(designated) = report.primary_output.as_ref()
-            && report
+        if let Some(designated) = ctx.primary_output
+            && ctx
                 .screens
                 .iter()
                 .any(|screen| screen.output == *designated)
             && !ordered.contains(designated)
         {
-            ordered.push(designated.clone());
+            ordered.push((*designated).clone());
         }
-        for screen in &report.screens {
+        for screen in ctx.screens {
             if !ordered.contains(&screen.output) {
                 ordered.push(screen.output.clone());
             }
         }
-        for held in &report.held_screens {
+        for held in ctx.held_screens {
             if !ordered.contains(&held.output) {
                 ordered.push(held.output.clone());
             }
@@ -1225,11 +1235,14 @@ impl WorldEngine {
     /// `None` when no output resolves or
     /// the resolved output owns no ring: the caller falls back to native
     /// affinity instead of inventing focus.
-    pub(crate) fn resolve_fresh_key(&mut self, report: &WorldReport) -> Option<DomainKey> {
-        let cursor_output = self.fresh_cursor_output(report);
-        let (focused_output, trace) = self.fresh_focused_output(report);
+    pub(crate) fn resolve_fresh_key(
+        &mut self,
+        ctx: &crate::world_engine::RawRouting<'_>,
+    ) -> Option<DomainKey> {
+        let cursor_output = self.fresh_cursor_output(ctx);
+        let (focused_output, trace) = self.fresh_focused_output(ctx);
         self.fresh_focus.trace = trace;
-        let primary_first = self.primary_first_outputs(report);
+        let primary_first = self.primary_first_outputs(ctx);
         let output = crate::cursor_targeting::resolve_fresh_output(
             self.fresh_placement_setting(),
             cursor_output.as_ref(),
@@ -1391,12 +1404,10 @@ impl WorldEngine {
 
     pub(crate) fn directional_pair_for(
         &self,
-        report: &WorldReport,
         source_key: &DomainKey,
         direction: &str,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Option<DirectionalPair> {
-        let _ = report;
         let direction = parse_direction_token(direction)?;
         let source = self
             .staged
@@ -1484,13 +1495,11 @@ impl WorldEngine {
     /// readable target domain.
     pub(crate) fn directional_pair_for_window(
         &self,
-        report: &WorldReport,
         source_key: &DomainKey,
         direction: Direction,
         window: &crate::geometry::Rect,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Result<Option<DirectionalPair>, crate::output_selection::SelectionError> {
-        let _ = report;
         let Some(source) = self
             .staged
             .domains

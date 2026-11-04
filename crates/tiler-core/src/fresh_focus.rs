@@ -13,7 +13,6 @@
 
 use crate::directional::{OutputId, WindowId};
 use crate::world_engine::WorldEngine;
-use crate::world_report::WorldReport;
 
 /// Why the fresh focused leg resolved the way it did (trace-only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -74,11 +73,14 @@ impl WorldEngine {
     /// but only when it names a previously retained member homing. A
     /// brand-new lifetime (no retained homing yet) is not managed focus,
     /// even when its native fact sits on a known screen.
-    pub(crate) fn managed_focused_output(&self, report: &WorldReport) -> Option<OutputId> {
-        if report.focused_global.is_empty() {
+    pub(crate) fn managed_focused_output(
+        &self,
+        ctx: &crate::world_engine::RawRouting<'_>,
+    ) -> Option<OutputId> {
+        if ctx.focused_global.is_empty() {
             return None;
         }
-        let active = WindowId(report.focused_global.clone());
+        let active = WindowId(ctx.focused_global.to_owned());
         self.core_homing(&active).map(|key| key.output)
     }
 
@@ -88,9 +90,9 @@ impl WorldEngine {
     /// caller falls back to primary. Never invents focus.
     pub(crate) fn fresh_focused_output(
         &self,
-        report: &WorldReport,
+        ctx: &crate::world_engine::RawRouting<'_>,
     ) -> (Option<OutputId>, FreshFocusTrace) {
-        let current = self.managed_focused_output(report);
+        let current = self.managed_focused_output(ctx);
         let retained = self.fresh_focus.last_output.clone();
         if let Some(output) = current.clone() {
             return (
@@ -104,7 +106,7 @@ impl WorldEngine {
             );
         }
         if let Some(output) = retained.clone()
-            && report.screens.iter().any(|screen| screen.output == output)
+            && ctx.screens.iter().any(|screen| screen.output == output)
         {
             return (
                 Some(output.clone()),
@@ -116,7 +118,7 @@ impl WorldEngine {
                 },
             );
         }
-        let native = self.focused_output(report);
+        let native = self.focused_output(ctx);
         let basis = if native.is_some() {
             FreshFocusBasis::Native
         } else {

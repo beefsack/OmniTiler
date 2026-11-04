@@ -11,7 +11,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
 use crate::directional::{Direction, OutputId, WindowId};
 use crate::engine::Engine;
-use crate::ids::CorrelationId;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::workspace_scope::{
@@ -21,12 +20,11 @@ use crate::workspace_scope::{
 use crate::world_engine::{
     KIND_CREATION_EXHAUSTED, KIND_DIRECTION, KIND_FOCUS, KIND_IN_FLIGHT, KIND_MIGRATION,
     KIND_OPERATION, KIND_SCOPE_HELD, KIND_SELECT_UNKNOWN, KIND_SEND_TARGET, KIND_SEND_WINDOW,
-    KIND_SNAPSHOT, MSG_CREATION_EXHAUSTED, MSG_DIRECTION, MSG_FOCUS, MSG_IN_FLIGHT, MSG_MIGRATION,
+    MSG_CREATION_EXHAUSTED, MSG_DIRECTION, MSG_FOCUS, MSG_IN_FLIGHT, MSG_MIGRATION,
     MSG_MIGRATION_FLIGHT, MSG_MIGRATION_INVENTORY, MSG_MIGRATION_RECIPROCAL, MSG_MIGRATION_RESIDUE,
     MSG_MIGRATION_SHARED, MSG_MIGRATION_SOURCE, MSG_MIGRATION_SOURCE_UNREADABLE,
     MSG_MIGRATION_TARGET_GEOMETRY, MSG_MIGRATION_TARGET_INCOMPLETE, MSG_OPERATION, MSG_SCOPE_HELD,
-    MSG_SELECT_UNKNOWN, MSG_SEND_TARGET, MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer,
-    WorldEngine,
+    MSG_SELECT_UNKNOWN, MSG_SEND_TARGET, MSG_SEND_WINDOW, RetainedTransfer, WorldEngine,
 };
 use crate::world_report::{
     CommandResult, OneShotEffect, SendSource, TransferKind, TransferTarget, WorldCommand,
@@ -46,9 +44,11 @@ impl WorldEngine {
     /// command below must use it verbatim and never re-resolve, so
     /// first-tick admissions and rehomed movers keep the retired
     /// adapter contract exactly.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_command(
         &mut self,
         report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         command: &WorldCommand,
         held_scopes: &BTreeSet<DomainKey>,
@@ -107,7 +107,7 @@ impl WorldEngine {
                 target_workspace,
                 follow,
             } => self.start_send(
-                report,
+                issue,
                 command_seq,
                 window,
                 target_output,
@@ -117,7 +117,7 @@ impl WorldEngine {
                 held_scopes,
             ),
             WorldCommand::SwitchView { output, workspace } => {
-                self.retain_view(report, command_seq, output, workspace, held_scopes, &by_id)
+                self.retain_view(command_seq, output, workspace, held_scopes, &by_id)
             }
             WorldCommand::SelectWorkspace { output, workspace } => {
                 // Global-unique visible-elsewhere swap: selecting a target
@@ -127,7 +127,7 @@ impl WorldEngine {
                     == crate::workspace_scope::WorkspaceMode::GlobalUnique
                 {
                     let mut current_by_output: BTreeMap<String, String> = BTreeMap::new();
-                    for screen in &report.screens {
+                    for screen in &self.staged.screens {
                         if let Some(view) = self.effective_view(&screen.output) {
                             current_by_output.insert(screen.output.0.clone(), view);
                         }
@@ -200,7 +200,6 @@ impl WorldEngine {
                             }
                             self.note_command(command_seq);
                             return self.retain_view(
-                                report,
                                 command_seq,
                                 output,
                                 workspace,
@@ -217,7 +216,10 @@ impl WorldEngine {
                             .any(|key| held_scopes.contains(*key));
                         let screens_complete = self.screen_complete(&out_a) == Some(true)
                             && self.screen_complete(&out_b) == Some(true);
-                        if !report.inventory_complete || !screens_complete || held_touched {
+                        if !self.staged.observation.inventory_complete
+                            || !screens_complete
+                            || held_touched
+                        {
                             return CommandApplied::Rejected {
                                 kind: KIND_MIGRATION,
                                 message: MSG_MIGRATION,
@@ -546,14 +548,8 @@ impl WorldEngine {
                             });
                         }
                         self.note_command(command_seq);
-                        let applied = self.retain_view(
-                            report,
-                            command_seq,
-                            output,
-                            workspace,
-                            held_scopes,
-                            &by_id,
-                        );
+                        let applied =
+                            self.retain_view(command_seq, output, workspace, held_scopes, &by_id);
                         // retain_view pushed the view flight for the active
                         // output; the views above already moved. Its
                         // post-commit lookup misses the stale staged domain
@@ -576,17 +572,23 @@ impl WorldEngine {
                         };
                     }
                 }
-                self.retain_view(report, command_seq, output, workspace, held_scopes, &by_id)
+                self.retain_view(command_seq, output, workspace, held_scopes, &by_id)
             }
             WorldCommand::SelectNumbered { output, index } => {
-                let Some(resolved) = self.resolve_selection_output(report, output.as_ref()) else {
+                let Some(resolved) = self.resolve_selection_output(
+                    &crate::world_engine::RawRouting::from_staged(&self.staged),
+                    output.as_ref(),
+                ) else {
                     return CommandApplied::Rejected {
                         kind: KIND_SELECT_UNKNOWN,
                         message: MSG_SELECT_UNKNOWN,
                     };
                 };
                 let Some(target) = self
-                    .resolve_selection_ring(report, &resolved)
+                    .resolve_selection_ring(
+                        &crate::world_engine::RawRouting::from_staged(&self.staged),
+                        &resolved,
+                    )
                     .and_then(|ring| resolve_numbered(&ring, *index))
                 else {
                     return CommandApplied::Rejected {
@@ -594,10 +596,13 @@ impl WorldEngine {
                         message: MSG_SELECT_UNKNOWN,
                     };
                 };
-                self.retain_view(report, command_seq, &resolved, &target, held_scopes, &by_id)
+                self.retain_view(command_seq, &resolved, &target, held_scopes, &by_id)
             }
             WorldCommand::SelectRelative { output, delta } => {
-                let Some(resolved) = self.resolve_selection_output(report, output.as_ref()) else {
+                let Some(resolved) = self.resolve_selection_output(
+                    &crate::world_engine::RawRouting::from_staged(&self.staged),
+                    output.as_ref(),
+                ) else {
                     return CommandApplied::Rejected {
                         kind: KIND_SELECT_UNKNOWN,
                         message: MSG_SELECT_UNKNOWN,
@@ -605,7 +610,10 @@ impl WorldEngine {
                 };
                 let current = self.effective_view(&resolved).unwrap_or_default();
                 let Some(target) = self
-                    .resolve_selection_ring(report, &resolved)
+                    .resolve_selection_ring(
+                        &crate::world_engine::RawRouting::from_staged(&self.staged),
+                        &resolved,
+                    )
                     .and_then(|ring| resolve_relative_step(&ring, &current, *delta))
                 else {
                     return CommandApplied::Rejected {
@@ -613,10 +621,13 @@ impl WorldEngine {
                         message: MSG_SELECT_UNKNOWN,
                     };
                 };
-                self.retain_view(report, command_seq, &resolved, &target, held_scopes, &by_id)
+                self.retain_view(command_seq, &resolved, &target, held_scopes, &by_id)
             }
             WorldCommand::SelectPrevious { output } => {
-                let Some(resolved) = self.resolve_selection_output(report, output.as_ref()) else {
+                let Some(resolved) = self.resolve_selection_output(
+                    &crate::world_engine::RawRouting::from_staged(&self.staged),
+                    output.as_ref(),
+                ) else {
                     return CommandApplied::Rejected {
                         kind: KIND_SELECT_UNKNOWN,
                         message: MSG_SELECT_UNKNOWN,
@@ -625,37 +636,33 @@ impl WorldEngine {
                 // Shared mode walks the one shared history over the
                 // unified order; scoped modes use the per-output entry.
                 if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
-                    let live: Vec<String> = self.selection_ring(report, &resolved);
+                    let live: Vec<String> = self.selection_ring(
+                        &crate::world_engine::RawRouting::from_staged(&self.staged),
+                        &resolved,
+                    );
                     let current = self.effective_view(&resolved).unwrap_or_default();
                     match self.history.resolve_shared_for(&live, &current) {
-                        PreviousTarget::Select(target) => self.retain_view(
-                            report,
-                            command_seq,
-                            &resolved,
-                            &target,
-                            held_scopes,
-                            &by_id,
-                        ),
+                        PreviousTarget::Select(target) => {
+                            self.retain_view(command_seq, &resolved, &target, held_scopes, &by_id)
+                        }
                         PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
                             self.note_command(command_seq);
                             CommandApplied::NoEffect
                         }
                     }
                 } else {
-                    let live: Vec<String> = self.selection_ring(report, &resolved);
+                    let live: Vec<String> = self.selection_ring(
+                        &crate::world_engine::RawRouting::from_staged(&self.staged),
+                        &resolved,
+                    );
                     let current = self.effective_view(&resolved).unwrap_or_default();
                     match self
                         .history
                         .resolve_previous_for(&resolved.0, &live, &current)
                     {
-                        PreviousTarget::Select(target) => self.retain_view(
-                            report,
-                            command_seq,
-                            &resolved,
-                            &target,
-                            held_scopes,
-                            &by_id,
-                        ),
+                        PreviousTarget::Select(target) => {
+                            self.retain_view(command_seq, &resolved, &target, held_scopes, &by_id)
+                        }
                         PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
                             // No-op until the next recorded change: reconcile
                             // only, never retain or emit.
@@ -666,24 +673,25 @@ impl WorldEngine {
                 }
             }
             WorldCommand::SelectTrailing { output } => {
-                let Some(resolved) = self.resolve_selection_output(report, output.as_ref()) else {
+                let Some(resolved) = self.resolve_selection_output(
+                    &crate::world_engine::RawRouting::from_staged(&self.staged),
+                    output.as_ref(),
+                ) else {
                     return CommandApplied::Rejected {
                         kind: KIND_SELECT_UNKNOWN,
                         message: MSG_SELECT_UNKNOWN,
                     };
                 };
-                let ring = self.selection_ring(report, &resolved);
+                let ring = self.selection_ring(
+                    &crate::world_engine::RawRouting::from_staged(&self.staged),
+                    &resolved,
+                );
                 let occupied = self.ring_occupied(&resolved);
                 let selection = resolve_trailing(&ring, &occupied);
                 match selection {
-                    TrailingSelection::Reuse(target) => self.retain_view(
-                        report,
-                        command_seq,
-                        &resolved,
-                        &target,
-                        held_scopes,
-                        &by_id,
-                    ),
+                    TrailingSelection::Reuse(target) => {
+                        self.retain_view(command_seq, &resolved, &target, held_scopes, &by_id)
+                    }
                     TrailingSelection::Create => {
                         // Trailing workspaces exist immediately in the
                         // logical contract: mint, then select.
@@ -695,14 +703,7 @@ impl WorldEngine {
                                 message: MSG_CREATION_EXHAUSTED,
                             };
                         };
-                        self.retain_view(
-                            report,
-                            command_seq,
-                            &resolved,
-                            &logical,
-                            held_scopes,
-                            &by_id,
-                        )
+                        self.retain_view(command_seq, &resolved, &logical, held_scopes, &by_id)
                     }
                 }
             }
@@ -736,7 +737,10 @@ impl WorldEngine {
                         resolved
                     }
                 };
-                let ring = self.send_ring(report, &source_row.output);
+                let ring = self.send_ring(
+                    &crate::world_engine::RawRouting::from_staged(&self.staged),
+                    &source_row.output,
+                );
                 let Some(target_workspace) = resolve_relative_send(&ring, &current, *delta) else {
                     return CommandApplied::Rejected {
                         kind: KIND_SEND_TARGET,
@@ -744,7 +748,7 @@ impl WorldEngine {
                     };
                 };
                 self.start_send(
-                    report,
+                    issue,
                     command_seq,
                     window,
                     &source,
@@ -773,7 +777,7 @@ impl WorldEngine {
                     }
                 };
                 self.start_numbered_send(
-                    report,
+                    issue,
                     command_seq,
                     window,
                     &output,
@@ -787,31 +791,38 @@ impl WorldEngine {
                 output,
                 workspace,
                 tiled,
-            } => self.set_workspace_tiling(report, command_seq, output, workspace, *tiled),
+            } => self.set_workspace_tiling(command_seq, output, workspace, *tiled),
             WorldCommand::ToggleWorkspaceTiling { output, workspace } => {
-                self.toggle_workspace_tiling(report, command_seq, output, workspace)
+                self.toggle_workspace_tiling(command_seq, output, workspace)
             }
             WorldCommand::MigrateWorkspace {
                 source_output,
                 target_output,
                 workspace,
             } => self.start_migration(
-                report,
+                issue,
                 command_seq,
                 source_output,
                 target_output,
                 workspace,
                 held_scopes,
             ),
-            WorldCommand::FocusDirectional { window, direction } => {
-                self.focus_directional(report, command_seq, window, direction, &by_id, held_scopes)
-            }
+            WorldCommand::FocusDirectional { window, direction } => self.focus_directional(
+                report,
+                issue,
+                command_seq,
+                window,
+                direction,
+                &by_id,
+                held_scopes,
+            ),
             WorldCommand::MoveDirectional {
                 window,
                 direction,
                 same_axis,
             } => self.move_directional(
                 report,
+                issue,
                 command_seq,
                 window,
                 direction,
@@ -824,7 +835,7 @@ impl WorldEngine {
                 direction,
                 follow,
             } => self.send_directional(
-                report,
+                issue,
                 command_seq,
                 window,
                 direction,
@@ -847,7 +858,7 @@ impl WorldEngine {
                     };
                 };
                 self.migrate_directional(
-                    report,
+                    issue,
                     command_seq,
                     &source,
                     &view,
@@ -857,13 +868,18 @@ impl WorldEngine {
                 )
             }
             WorldCommand::ToggleMaximize { window } => {
-                self.toggle_maximize(report, command_seq, window, held_scopes)
+                self.toggle_maximize(command_seq, window, held_scopes)
             }
-            WorldCommand::SetSticky { window, value } => {
-                self.execute_sticky_command(report, command_seq, window, Some(*value), held_scopes)
-            }
+            WorldCommand::SetSticky { window, value } => self.execute_sticky_command(
+                report,
+                issue,
+                command_seq,
+                window,
+                Some(*value),
+                held_scopes,
+            ),
             WorldCommand::ToggleSticky { window } => {
-                self.execute_sticky_command(report, command_seq, window, None, held_scopes)
+                self.execute_sticky_command(report, issue, command_seq, window, None, held_scopes)
             }
             WorldCommand::SetFullscreen { window, value } => {
                 self.execute_fullscreen_command(command_seq, window, Some(*value), held_scopes)
@@ -872,7 +888,7 @@ impl WorldEngine {
                 self.execute_fullscreen_command(command_seq, window, None, held_scopes)
             }
             WorldCommand::Operation(command) => {
-                self.execute_operation(report, command_seq, command, &by_id, held_scopes)
+                self.execute_operation(report, issue, command_seq, command, &by_id, held_scopes)
             }
         }
     }
@@ -886,12 +902,11 @@ impl WorldEngine {
     /// mutates topology. The composed route keeps the descriptive result only.
     pub(crate) fn toggle_maximize(
         &mut self,
-        report: &WorldReport,
         command_seq: u64,
         window: &WindowId,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
-        if report.focused_global != window.0 {
+        if self.staged.observation.focused_global != window.0 {
             return CommandApplied::Rejected {
                 kind: KIND_FOCUS,
                 message: MSG_FOCUS,
@@ -939,7 +954,7 @@ impl WorldEngine {
         if !self.capabilities().is_some_and(|caps| caps.maximize) {
             // Core-composed route: a lifetime-local owned bit selects the
             // work-area frame under the existing per-row frame lane.
-            return self.execute_composed_maximize(report, command_seq, window, home);
+            return self.execute_composed_maximize(command_seq, window, home);
         }
         // Native route: safety refusals precede unknown mapping; unreadable
         // needed state consumes a typed StateUnknown rejection.
@@ -1053,7 +1068,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_migration(
         &mut self,
-        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         source_output: &OutputId,
         target_output: &OutputId,
@@ -1069,7 +1084,7 @@ impl WorldEngine {
             };
         }
         // Partial inventory fences: members and views must prove fully.
-        if !report.inventory_complete {
+        if !self.staged.observation.inventory_complete {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
                 message: MSG_MIGRATION_INVENTORY,
@@ -1195,15 +1210,8 @@ impl WorldEngine {
                 message: MSG_MIGRATION_TARGET_GEOMETRY,
             };
         }
-        let (Some(owner), Some(correlation)) = (
-            self.connection_owner.clone(),
-            CorrelationId::parse(&report.request_id),
-        ) else {
-            return CommandApplied::Rejected {
-                kind: KIND_SNAPSHOT,
-                message: MSG_SNAPSHOT,
-            };
-        };
+        let owner = issue.owner.clone();
+        let correlation = issue.correlation.clone();
         let accepted = self
             .engine
             .session(&source_key)
@@ -1263,7 +1271,6 @@ impl WorldEngine {
                 })
                 .count();
             return self.commit_migration(
-                report,
                 command_seq,
                 source_output,
                 target_output,
@@ -1358,7 +1365,6 @@ impl WorldEngine {
                     .map(|session| session.exception_count())
                     .unwrap_or_default();
                 self.commit_migration(
-                    report,
                     command_seq,
                     source_output,
                     target_output,
@@ -1394,7 +1400,6 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn commit_migration(
         &mut self,
-        report: &WorldReport,
         command_seq: u64,
         source_output: &OutputId,
         target_output: &OutputId,
@@ -1473,7 +1478,7 @@ impl WorldEngine {
             .insert(target_output.0.clone(), workspace.to_owned());
         // The emptied source shows the refill (or a fresh trailing
         // when nothing remains); views always name a ring member.
-        let refill = self.logical_source_refill(report, source_output, workspace);
+        let refill = self.logical_source_refill(source_output, workspace);
         if self
             .mapping
             .get(&source_output.0)

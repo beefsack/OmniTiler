@@ -14,7 +14,7 @@ use crate::world_engine::{
     KIND_TILING_TARGET, KIND_VIEW_OUTPUT, KIND_VIEW_TARGET, MSG_TILING_TARGET, MSG_VIEW_OUTPUT,
     MSG_VIEW_TARGET, RetainedTransfer, WorldEngine,
 };
-use crate::world_report::{OneShotEffect, TilingMode, TransferKind, TransferTarget, WorldReport};
+use crate::world_report::{OneShotEffect, TilingMode, TransferKind, TransferTarget};
 
 impl WorldEngine {
     /// Planner-owned per-workspace tiling toggle. The workspace must be a
@@ -24,13 +24,11 @@ impl WorldEngine {
     /// Idempotent.
     pub(crate) fn set_workspace_tiling(
         &mut self,
-        report: &WorldReport,
         command_seq: u64,
         output: &OutputId,
         workspace: &str,
         tiled: bool,
     ) -> CommandApplied {
-        let _ = report;
         let known = self
             .mapping
             .get(&output.0)
@@ -83,13 +81,12 @@ impl WorldEngine {
     /// policy. Idempotent per execution.
     pub(crate) fn toggle_workspace_tiling(
         &mut self,
-        report: &WorldReport,
         command_seq: u64,
         output: &OutputId,
         workspace: &str,
     ) -> CommandApplied {
         let tiled = self.logical_tiling(&output.0, workspace) != TilingMode::Tiled;
-        self.set_workspace_tiling(report, command_seq, output, workspace, tiled)
+        self.set_workspace_tiling(command_seq, output, workspace, tiled)
     }
 
     /// Policy-retained view target (hotplug displacement/return):
@@ -160,7 +157,6 @@ impl WorldEngine {
     /// stay `NoEffect`: no focus is invented.
     pub(crate) fn retain_view(
         &mut self,
-        report: &WorldReport,
         command_seq: u64,
         output: &OutputId,
         workspace: &str,
@@ -193,7 +189,8 @@ impl WorldEngine {
         // Departing views are captured before retention moves them.
         let affected: Vec<OutputId> =
             if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
-                let mut live: Vec<String> = report
+                let mut live: Vec<String> = self
+                    .staged
                     .screens
                     .iter()
                     .map(|screen| screen.output.0.clone())
@@ -219,7 +216,8 @@ impl WorldEngine {
         if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
             let canonical = self.mapping.get(&output.0).cloned().unwrap_or_default();
             let live: Vec<String> = {
-                let mut live: Vec<String> = report
+                let mut live: Vec<String> = self
+                    .staged
                     .screens
                     .iter()
                     .map(|screen| screen.output.0.clone())
@@ -261,7 +259,7 @@ impl WorldEngine {
                 departing,
                 affected_outputs: affected,
                 rev,
-                obs: report.observation_seq,
+                obs: self.staged.observation.observation_seq,
             });
             return CommandApplied::NoEffect;
         };
@@ -291,7 +289,7 @@ impl WorldEngine {
                 departing,
                 affected_outputs: affected,
                 rev,
-                obs: report.observation_seq,
+                obs: self.staged.observation.observation_seq,
             });
             // Best-effort memory (same contract as the direct focus lane).
             let _ = self.record_command_focus(&window, held_scopes);
@@ -385,9 +383,13 @@ impl WorldEngine {
 
     /// Scoped selection ring for one output: the retained logical ring.
     /// Shared mode returns the unified order (first live screen's ring).
-    pub(crate) fn selection_ring(&self, report: &WorldReport, output: &OutputId) -> Vec<String> {
+    pub(crate) fn selection_ring(
+        &self,
+        ctx: &crate::world_engine::RawRouting<'_>,
+        output: &OutputId,
+    ) -> Vec<String> {
         if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
-            let mut live: Vec<String> = report
+            let mut live: Vec<String> = ctx
                 .screens
                 .iter()
                 .map(|screen| screen.output.0.clone())
@@ -404,10 +406,10 @@ impl WorldEngine {
     /// resolution.
     pub(crate) fn resolve_selection_ring(
         &self,
-        report: &WorldReport,
+        ctx: &crate::world_engine::RawRouting<'_>,
         output: &OutputId,
     ) -> Option<Vec<String>> {
-        let ring = self.selection_ring(report, output);
+        let ring = self.selection_ring(ctx, output);
         if ring.is_empty() { None } else { Some(ring) }
     }
 
@@ -420,7 +422,7 @@ impl WorldEngine {
     /// without inventing focus.
     pub(crate) fn resolve_selection_output(
         &self,
-        report: &WorldReport,
+        ctx: &crate::world_engine::RawRouting<'_>,
         explicit: Option<&OutputId>,
     ) -> Option<OutputId> {
         if let Some(output) = explicit {
@@ -428,16 +430,20 @@ impl WorldEngine {
         }
         crate::cursor_targeting::resolve_switch_output(
             self.switch_target_setting(),
-            self.fresh_cursor_output(report).as_ref(),
-            self.focused_output(report).as_ref(),
-            &self.primary_first_outputs(report),
+            self.fresh_cursor_output(ctx).as_ref(),
+            self.focused_output(ctx).as_ref(),
+            &self.primary_first_outputs(ctx),
         )
     }
 
     /// Send ring for a window homed on `output`: the same ring as
     /// selection, resolved once before transfer.
-    pub(crate) fn send_ring(&self, report: &WorldReport, output: &OutputId) -> Vec<String> {
-        self.selection_ring(report, output)
+    pub(crate) fn send_ring(
+        &self,
+        ctx: &crate::world_engine::RawRouting<'_>,
+        output: &OutputId,
+    ) -> Vec<String> {
+        self.selection_ring(ctx, output)
     }
 
     /// Resolve the migration/control action output from the neutral
@@ -447,12 +453,15 @@ impl WorldEngine {
     /// stale outputs); a stale mapped leg selects and refuses downstream.
     /// The sole policy owner for migration/control source selection;
     /// explicit command outputs bypass it unchanged.
-    pub(crate) fn resolve_action_output(&self, report: &WorldReport) -> Option<OutputId> {
+    pub(crate) fn resolve_action_output(
+        &self,
+        ctx: &crate::world_engine::RawRouting<'_>,
+    ) -> Option<OutputId> {
         crate::cursor_targeting::resolve_action_output(
-            report.action_foreground.as_ref(),
-            self.fresh_cursor_output(report).as_ref(),
-            report.action_cached.as_ref(),
-            &report.action_outputs,
+            ctx.action_foreground,
+            self.fresh_cursor_output(ctx).as_ref(),
+            ctx.action_cached,
+            ctx.action_outputs,
         )
     }
 
@@ -465,7 +474,7 @@ impl WorldEngine {
     /// exactly.
     pub(crate) fn resolve_home_then_action(
         &self,
-        report: &WorldReport,
+        ctx: &crate::world_engine::RawRouting<'_>,
         window: &WindowId,
     ) -> Option<OutputId> {
         if let Some(home) = self
@@ -475,6 +484,6 @@ impl WorldEngine {
         {
             return Some(home);
         }
-        self.resolve_action_output(report)
+        self.resolve_action_output(ctx)
     }
 }

@@ -111,7 +111,12 @@ impl WorldEngine {
     /// - Held (unreadable scope, incomplete inventory, gesture barrier,
     ///   minimized or unreadable fact, unknown current focus/view) holds
     ///   with identities preserved and no weakening of authority.
-    pub(crate) fn settle_clears(&mut self, report: &WorldReport, consumed: bool) {
+    pub(crate) fn settle_clears(
+        &mut self,
+        report: &WorldReport,
+        issue: &crate::world_engine::EventIssue,
+        consumed: bool,
+    ) {
         use crate::world_directional::{
             effective_domain, float_half_snap_rect, half_snap_constraints_ok,
         };
@@ -613,7 +618,7 @@ impl WorldEngine {
                     let window_name = retained.window.0.clone();
                     let direction_name = retained.direction.clone();
                     self.operation_directional(
-                        report,
+                        issue,
                         command_seq,
                         &command,
                         &window_name,
@@ -629,7 +634,14 @@ impl WorldEngine {
                         cross_output_transfer: false,
                         same_axis_move: retained.same_axis,
                     };
-                    self.run_local_operation(report, command_seq, &command, &by_id, &held_scopes)
+                    self.run_local_operation(
+                        report,
+                        issue,
+                        command_seq,
+                        &command,
+                        &by_id,
+                        &held_scopes,
+                    )
                 };
                 // Fallible commands must not leak a stale directional
                 // result into this observation-only reply.

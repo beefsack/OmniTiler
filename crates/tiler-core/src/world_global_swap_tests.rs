@@ -155,6 +155,13 @@ fn two_screens() -> Vec<ScreenReport> {
     vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
+fn test_issue(report: &WorldReport) -> crate::world_engine::EventIssue {
+    crate::world_engine::EventIssue {
+        owner: crate::ids::OwnerId::parse("adapter-1").expect("owner"),
+        correlation: crate::ids::CorrelationId::parse(&report.request_id).expect("correlation"),
+    }
+}
+
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
     match engine.handle_report(report) {
         WorldOutcome::Accepted(reply) => reply,
@@ -1093,6 +1100,7 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
     let held = BTreeSet::new();
     match engine.execute_command(
         &swap_report,
+        &test_issue(&swap_report),
         12,
         swap_report.command.as_ref().expect("command"),
         &held,

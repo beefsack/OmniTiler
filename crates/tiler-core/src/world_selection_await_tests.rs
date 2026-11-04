@@ -7270,7 +7270,7 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         "",
     );
     assert_eq!(
-        engine.switch_issuing_reserve(&issuing),
+        engine.switch_issuing_reserve(issuing.command.as_ref()),
         max_switch_settle_reserve(1, 0),
         "at most one issuing event"
     );
@@ -7287,7 +7287,7 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         "",
     );
     assert_eq!(
-        engine.switch_issuing_reserve(&switching),
+        engine.switch_issuing_reserve(switching.command.as_ref()),
         max_switch_settle_reserve(1, 0),
         "switch view is select-family"
     );
@@ -7304,7 +7304,7 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         "",
     );
     assert_eq!(
-        engine.switch_issuing_reserve(&numbered),
+        engine.switch_issuing_reserve(numbered.command.as_ref()),
         max_switch_settle_reserve(1, 0),
         "numbered select is select-family"
     );
@@ -7318,7 +7318,7 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         "",
     );
     assert_eq!(
-        engine.switch_issuing_reserve(&observation),
+        engine.switch_issuing_reserve(observation.command.as_ref()),
         0,
         "observation-only reserves nothing"
     );
@@ -7335,7 +7335,7 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         "",
     );
     assert_eq!(
-        engine.switch_issuing_reserve(&focus),
+        engine.switch_issuing_reserve(focus.command.as_ref()),
         0,
         "non-select commands reserve nothing"
     );
@@ -7358,7 +7358,8 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         fallback: false,
     };
     let estimated = switch_settled_estimate(&[old, new]);
-    let reserve = engine.switch_settle_reserve() + engine.switch_issuing_reserve(&issuing);
+    let reserve =
+        engine.switch_settle_reserve() + engine.switch_issuing_reserve(issuing.command.as_ref());
     assert!(
         reserve >= estimated,
         "no undercount: reserve {reserve} covers estimate {estimated}"

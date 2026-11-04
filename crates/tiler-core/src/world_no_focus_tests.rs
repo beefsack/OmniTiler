@@ -1277,7 +1277,9 @@ fn no_focus_held_source_refuses_without_mutation() {
         .iter()
         .map(|window| (&window.window, window))
         .collect();
-    let report = report(
+    let mut held = BTreeSet::new();
+    held.insert(source_key);
+    let probe = report(
         5,
         side_by_side(),
         vec![
@@ -1293,10 +1295,10 @@ fn no_focus_held_source_refuses_without_mutation() {
         Some("out-a"),
         None,
     );
-    let mut held = BTreeSet::new();
-    held.insert(source_key);
+    engine.stage_facts(&probe);
+    engine.build_staged_domains(&probe);
     let revision_before = engine.state_revision();
-    match engine.focus_directional_no_focus(&report, 11, Direction::Right, &held, &by_id) {
+    match engine.focus_directional_no_focus(11, Direction::Right, &held, &by_id) {
         crate::world_commands::CommandApplied::Rejected { kind, .. } => {
             assert_eq!(kind, "scope-held")
         }
