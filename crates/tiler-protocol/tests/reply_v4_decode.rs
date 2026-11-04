@@ -13,7 +13,9 @@
 //! Offline only: no adapters, no live work, no engine.
 
 use tiler_core::connection::HostCapabilities;
-use tiler_protocol::world_protocol::{DecodedReplyV4, decode_reply_v4, decode_reply_v4_for_host};
+use tiler_protocol::world_protocol::{
+    DecodedReplyV4, decode_reply_v4, decode_reply_v4_for_host, encode_reply_v4,
+};
 
 fn fixture_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
@@ -898,5 +900,341 @@ fn v4_reply_structural_regression() {
         let error = decode_value(&document).expect_err("duplicate refuses");
         assert_eq!(error.kind, "snapshot-invalid", "section {section}");
         assert_eq!(error.message, message, "section {section}");
+    }
+}
+
+#[test]
+fn v4_reply_writer_round_trips_all_valid_wire() {
+    let fixtures = world_fixtures();
+    let mut count = 0;
+    for fixture in fixtures
+        .iter()
+        .filter(|fixture| fixture.expectation == "valid-wire")
+    {
+        let text = fixture_text(&fixture.file);
+        let decoded = decode_reply_v4(&text).expect("valid-wire decodes");
+        let encoded = encode_reply_v4(&decoded).expect("valid-wire encodes");
+        if encoded != text {
+            let common = encoded
+                .bytes()
+                .zip(text.bytes())
+                .take_while(|(a, b)| a == b)
+                .count();
+            let lo = common.saturating_sub(60);
+            panic!(
+                "byte mismatch {} at {common}: wire[{lo}..]={:?} encoded[{lo}..]={:?}",
+                fixture.id,
+                &text[lo..(common + 60).min(text.len())],
+                &encoded[lo..(common + 60).min(encoded.len())],
+            );
+        }
+        let back = decode_reply_v4(&encoded).expect("encoding re-decodes");
+        assert_eq!(back, decoded, "re-decode equals {}", fixture.id);
+        count += 1;
+    }
+    assert_eq!(count, 114, "every valid-wire reply round-trips");
+}
+
+#[test]
+fn v4_reply_writer_warp_constructed() {
+    let text = fixture_text("messages/reply-observe.json");
+    let base = decode_reply_v4(&text).expect("observe decodes");
+    assert!(base.reply.cursor_warp.is_none());
+    for point in [(20, 30), (-16384, 16384)] {
+        let mut constructed = base.clone();
+        constructed.reply.cursor_warp = Some(point);
+        let expected = text.replacen(
+            "\"warpCursor\":null",
+            &format!("\"warpCursor\":[{},{}]", point.0, point.1),
+            1,
+        );
+        assert_ne!(expected, text);
+        let encoded = encode_reply_v4(&constructed).expect("warp encodes");
+        assert_eq!(encoded, expected, "warp point {point:?} spells exactly");
+        let back = decode_reply_v4(&encoded).expect("warp re-decodes");
+        assert_eq!(back, constructed, "warp re-decode equals");
+    }
+}
+
+#[test]
+fn v4_reply_writer_suspended_output_present_and_inconsistent() {
+    let suspended_text = fixture_text("messages/reply-presentation-hidden-suspended.json");
+    let suspended = decode_reply_v4(&suspended_text).expect("suspended decodes");
+    assert!(suspended.wire.suspended_output_present);
+    assert!(suspended.reply.presentation.suspended_output.is_some());
+    let encoded = encode_reply_v4(&suspended).expect("suspended encodes");
+    assert_eq!(encoded, suspended_text, "suspended presence round-trips");
+    // Flag true with no typed output refuses.
+    let mut missing = suspended.clone();
+    missing.reply.presentation.suspended_output = None;
+    let error = encode_reply_v4(&missing).expect_err("flag without value refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "suspended-output-inconsistent");
+    // Flag false with a typed output refuses.
+    let plain_text = fixture_text("messages/reply-observe.json");
+    let mut plain = decode_reply_v4(&plain_text).expect("observe decodes");
+    assert!(!plain.wire.suspended_output_present);
+    plain.reply.presentation.suspended_output =
+        Some(tiler_core::directional::OutputId("out-a".to_owned()));
+    let error = encode_reply_v4(&plain).expect_err("value without flag refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "suspended-output-inconsistent");
+}
+
+#[test]
+fn v4_reply_writer_construction_independence() {
+    let text = fixture_text("messages/reply-observe.json");
+    let edited = text
+        .replacen("\"adapter\":\"adapter-a\"", "\"adapter\":\"adapter-b\"", 1)
+        .replacen("\"req\":\"request-a\"", "\"req\":\"request-b\"", 1)
+        .replacen("\"obs\":\"1\"", "\"obs\":\"42\"", 1)
+        .replacen("\"rev\":\"1\"", "\"rev\":\"7\"", 1);
+    assert_ne!(edited, text);
+    let decoded = decode_reply_v4(&edited).expect("edited decodes");
+    assert_eq!(decoded.reply.adapter_incarnation, "adapter-b");
+    assert_eq!(decoded.reply.request_id, "request-b");
+    assert_eq!(decoded.reply.based_on_observation_seq, 42);
+    assert_eq!(decoded.reply.state_revision, 7);
+    let encoded = encode_reply_v4(&decoded).expect("edited encodes");
+    assert_eq!(encoded, edited, "text edits survive the round trip");
+}
+
+fn writer_base() -> DecodedReplyV4 {
+    decode_reply_v4(&fixture_text("messages/reply-observe.json")).expect("observe decodes")
+}
+
+fn writer_effect_focus() -> DecodedReplyV4 {
+    decode_reply_v4(&fixture_text("messages/reply-effect-focus.json")).expect("decodes")
+}
+
+fn writer_effect_automatic() -> DecodedReplyV4 {
+    decode_reply_v4(&fixture_text(
+        "messages/reply-effect-automatic-admission.json",
+    ))
+    .expect("decodes")
+}
+
+#[test]
+fn v4_reply_writer_refuses_unspellable() {
+    // (case, kind, message, mutation)
+    let mut over_cap = writer_base();
+    over_cap.reply.outputs = vec![over_cap.reply.outputs[0].clone(); 17];
+    let mut duplicate_window = writer_base();
+    duplicate_window
+        .reply
+        .windows
+        .push(duplicate_window.reply.windows[0].clone());
+    let mut duplicate_effect = writer_effect_focus();
+    duplicate_effect
+        .reply
+        .effects
+        .push(duplicate_effect.reply.effects[0].clone());
+    let mut duplicate_scope = writer_base();
+    duplicate_scope
+        .reply
+        .scopes
+        .push(duplicate_scope.reply.scopes[0].clone());
+    let mut explicit_null_seq = writer_effect_focus();
+    explicit_null_seq.reply.effects[0].command_seq = None;
+    let mut non_explicit_seq = writer_effect_automatic();
+    non_explicit_seq.reply.effects[0].command_seq = Some(1);
+    let mut automatic_await = writer_effect_automatic();
+    automatic_await.reply.effects[0].await_shown = true;
+    let mut show_fallback = writer_base();
+    show_fallback.reply.windows[0]
+        .visibility
+        .as_mut()
+        .expect("visible")
+        .fallback = true;
+    let mut intent_overbound = writer_base();
+    intent_overbound
+        .reply
+        .intent_writes
+        .push(tiler_core::world_report::IntentWrite {
+            win: tiler_core::directional::WindowId("win-a".to_owned()),
+            data: Some("x".repeat(1025)),
+        });
+    let mut warp_overbound = writer_base();
+    warp_overbound.reply.cursor_warp = Some((16385, 0));
+    let mut bad_rect = writer_base();
+    bad_rect.reply.windows[0].allocation = Some(tiler_core::geometry::Rect {
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 5,
+    });
+    let mut bad_cause = writer_base();
+    bad_cause
+        .reply
+        .operation_settled
+        .push(tiler_core::world_report::OperationEvent {
+            operation_id: "operation-a".to_owned(),
+            window: tiler_core::directional::WindowId("win-a".to_owned()),
+            outcome: tiler_core::world_report::OperationOutcome::ClearContinuedTiled,
+            cause: Some("bogus-cause".to_owned()),
+        });
+    let mut bad_id = writer_base();
+    bad_id.reply.windows[0].lifetime = tiler_core::directional::WindowId(String::new());
+    let mut bad_adapter = writer_base();
+    bad_adapter.reply.adapter_incarnation = String::new();
+    let mut bad_generation = writer_base();
+    bad_generation.reply.core_generation = "GEN-A".to_owned();
+    let mut bad_request = writer_base();
+    bad_request.reply.request_id = String::new();
+    let mut bad_version = writer_base();
+    bad_version.reply.contract_version = 3;
+    let mut state_dup =
+        decode_reply_v4(&fixture_text("messages/reply-state-authority.json")).expect("decodes");
+    let dup_target = state_dup.reply.windows[0].state[0];
+    state_dup.reply.windows[0].state.push(dup_target);
+    let mut state_over_cap =
+        decode_reply_v4(&fixture_text("messages/reply-state-authority.json")).expect("decodes");
+    state_over_cap.reply.windows[0].state = vec![
+        tiler_core::world_report::StateTarget {
+            property: tiler_core::world_report::StateProperty::Fullscreen,
+            value: false,
+            authority: tiler_core::world_report::ScopeAuthority::Controlled,
+            command_seq: None,
+        },
+        tiler_core::world_report::StateTarget {
+            property: tiler_core::world_report::StateProperty::Maximized,
+            value: false,
+            authority: tiler_core::world_report::ScopeAuthority::Controlled,
+            command_seq: None,
+        },
+        tiler_core::world_report::StateTarget {
+            property: tiler_core::world_report::StateProperty::Sticky,
+            value: false,
+            authority: tiler_core::world_report::ScopeAuthority::Controlled,
+            command_seq: None,
+        },
+        tiler_core::world_report::StateTarget {
+            property: tiler_core::world_report::StateProperty::Above,
+            value: false,
+            authority: tiler_core::world_report::ScopeAuthority::Controlled,
+            command_seq: None,
+        },
+        tiler_core::world_report::StateTarget {
+            property: tiler_core::world_report::StateProperty::Fullscreen,
+            value: true,
+            authority: tiler_core::world_report::ScopeAuthority::Controlled,
+            command_seq: None,
+        },
+    ];
+    let cases: [(&str, &str, &str, DecodedReplyV4); 19] = [
+        ("over-cap", "snapshot-invalid", "section-over-cap", over_cap),
+        (
+            "duplicate-window",
+            "snapshot-invalid",
+            "duplicate-window",
+            duplicate_window,
+        ),
+        (
+            "duplicate-effect",
+            "snapshot-invalid",
+            "duplicate-effect",
+            duplicate_effect,
+        ),
+        (
+            "duplicate-scope",
+            "snapshot-invalid",
+            "duplicate-scope",
+            duplicate_scope,
+        ),
+        (
+            "explicit-null-seq",
+            "snapshot-invalid",
+            "effect-explicit-null-seq",
+            explicit_null_seq,
+        ),
+        (
+            "non-explicit-seq",
+            "snapshot-invalid",
+            "effect-non-explicit-seq",
+            non_explicit_seq,
+        ),
+        (
+            "automatic-await",
+            "snapshot-invalid",
+            "effect-automatic-await-shown",
+            automatic_await,
+        ),
+        (
+            "show-fallback",
+            "snapshot-invalid",
+            "visibility-show-fallback",
+            show_fallback,
+        ),
+        (
+            "intent-overbound",
+            "snapshot-invalid",
+            "intent-data-invalid",
+            intent_overbound,
+        ),
+        (
+            "warp-overbound",
+            "unknown-value",
+            "request contains an unknown value",
+            warp_overbound,
+        ),
+        (
+            "bad-rect",
+            "unknown-value",
+            "request contains an unknown value",
+            bad_rect,
+        ),
+        (
+            "bad-cause",
+            "unknown-value",
+            "request contains an unknown value",
+            bad_cause,
+        ),
+        (
+            "bad-id",
+            "unknown-value",
+            "request contains an unknown value",
+            bad_id,
+        ),
+        (
+            "bad-adapter",
+            "unknown-value",
+            "request contains an unknown value",
+            bad_adapter,
+        ),
+        (
+            "bad-generation",
+            "unknown-value",
+            "request contains an unknown value",
+            bad_generation,
+        ),
+        (
+            "bad-request",
+            "unknown-value",
+            "request contains an unknown value",
+            bad_request,
+        ),
+        (
+            "bad-version",
+            "unsupported-version",
+            "unsupported contract version",
+            bad_version,
+        ),
+        (
+            "state-dup",
+            "snapshot-invalid",
+            "state-target-count",
+            state_dup,
+        ),
+        (
+            "state-over-cap",
+            "snapshot-invalid",
+            "state-target-count",
+            state_over_cap,
+        ),
+    ];
+    for (case, kind, message, decoded) in cases {
+        let error = encode_reply_v4(&decoded).expect_err("writer refuses {case}");
+        assert_eq!(error.kind, kind, "kind {case}");
+        assert_eq!(error.message, message, "message {case}");
     }
 }

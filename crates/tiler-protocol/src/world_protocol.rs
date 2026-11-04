@@ -7172,6 +7172,946 @@ pub fn decode_reply_v4_for_host(
     Ok(decoded)
 }
 
+// -- Staged canonical v4 reply writer --
+// Checked canonical encode of one decoded v4 reply: compact JSON in
+// contract table key order with the codec row key order, quoted counters
+// via to_string, JSON integers for order/ordinal/floats, C0 escapes as
+// lowercase \u00xx through the shared push_json_string, and no final LF.
+// Reuses the staged border encoder, the frame witness encoder, and the
+// legacy per-row lane encoders whose bytes are identical for the v4 row
+// (command result, gesture settled, operation settled, native creations,
+// switch settled, row diagnostics, window target lanes). Typed values
+// determine every spelling except suspended-output presence, which the
+// caller carries as wire metadata; an inconsistent combination refuses as
+// snapshot-invalid with a fixed message, never a silent null or a payload
+// echo. Unrepresentable or decoder-refused typed values refuse with the
+// fixed 5a vocabulary where the rule matches. The built bytes re-decode
+// through decode_reply_v4 and must equal the input, so a writer bug
+// surfaces as snapshot-invalid/encode-mismatch instead of corrupt bytes.
+
+fn check_reply_cap(len: usize, max: usize) -> Result<()> {
+    if len > max {
+        return Err(reply_snapshot("section-over-cap"));
+    }
+    Ok(())
+}
+
+fn check_reply_id(text: &str) -> Result<()> {
+    if !is_opaque_id(text) {
+        return Err(unknown_value());
+    }
+    Ok(())
+}
+
+fn push_checked_rect(out: &mut String, rect: &Rect) -> Result<()> {
+    if !valid_carried_rect(rect.x, rect.y, rect.w, rect.h) {
+        return Err(unknown_value());
+    }
+    push_rect(out, rect);
+    Ok(())
+}
+
+fn push_checked_opt_rect(out: &mut String, rect: &Option<Rect>) -> Result<()> {
+    match rect {
+        None => out.push_str("null"),
+        Some(rect) => push_checked_rect(out, rect)?,
+    }
+    Ok(())
+}
+
+fn push_empty_or_id(out: &mut String, text: &str) -> Result<()> {
+    if !text.is_empty() {
+        check_reply_id(text)?;
+    }
+    push_json_string(out, text);
+    Ok(())
+}
+
+fn push_opt_id_or_empty(out: &mut String, value: &Option<String>) -> Result<()> {
+    match value {
+        None => out.push_str("\"\""),
+        Some(text) => {
+            check_reply_id(text)?;
+            push_json_string(out, text);
+        }
+    }
+    Ok(())
+}
+
+fn scope_status_key(scope: &AuthorityScope) -> String {
+    match scope {
+        AuthorityScope::Output(output) => format!("out:{}", output.0),
+        AuthorityScope::Workspace { output, workspace } => {
+            format!("ws:{}:{}", output.0, workspace.0)
+        }
+    }
+}
+
+fn encode_scope_status_v4(row: &ScopeStatus, out: &mut String) -> Result<()> {
+    match &row.scope {
+        AuthorityScope::Output(output) => check_reply_id(&output.0)?,
+        AuthorityScope::Workspace { output, workspace } => {
+            check_reply_id(&output.0)?;
+            check_reply_id(&workspace.0)?;
+        }
+    }
+    out.push_str("{\"scope\":");
+    push_authority_scope(out, &row.scope);
+    out.push_str(",\"auth\":");
+    push_json_string(out, row.authority.as_str());
+    out.push_str(",\"reason\":");
+    push_json_string(
+        out,
+        row.authority.hold_reason().map_or("", HoldReason::as_str),
+    );
+    out.push('}');
+    Ok(())
+}
+
+fn encode_workspace_desire_v4(row: &WorkspaceDesire, out: &mut String) -> Result<()> {
+    check_reply_id(&row.id)?;
+    check_reply_id(&row.output.0)?;
+    if let Some(bind) = row.native_binding.as_deref() {
+        check_reply_id(bind)?;
+    }
+    match &row.scope {
+        AuthorityScope::Output(output) => check_reply_id(&output.0)?,
+        AuthorityScope::Workspace { output, workspace } => {
+            check_reply_id(&output.0)?;
+            check_reply_id(&workspace.0)?;
+        }
+    }
+    out.push_str("{\"id\":");
+    push_json_string(out, &row.id);
+    out.push_str(",\"out\":");
+    push_json_string(out, &row.output.0);
+    out.push_str(",\"bind\":");
+    push_opt_id_or_empty(out, &row.native_binding)?;
+    out.push_str(",\"scope\":");
+    push_authority_scope(out, &row.scope);
+    out.push_str(",\"order\":");
+    out.push_str(&row.order.to_string());
+    out.push_str(",\"mode\":");
+    push_json_string(out, row.tiling_mode.as_str());
+    out.push_str(",\"exist\":");
+    out.push_str(if row.existence { "true" } else { "false" });
+    out.push_str(",\"hold\":");
+    push_json_string(out, row.hold.map_or("", HoldReason::as_str));
+    if row.trailing {
+        out.push_str(",\"trailing\":true");
+    }
+    out.push('}');
+    Ok(())
+}
+
+fn encode_output_desire_v4(row: &OutputDesire, out: &mut String) -> Result<()> {
+    check_reply_id(&row.output.0)?;
+    if let Some(view) = row.logical_view.as_deref() {
+        check_reply_id(view)?;
+    }
+    out.push_str("{\"out\":");
+    push_json_string(out, &row.output.0);
+    out.push_str(",\"view\":");
+    push_opt_id_or_empty(out, &row.logical_view)?;
+    out.push_str(",\"mode\":");
+    push_json_string(out, row.tiling_mode.as_str());
+    out.push_str(",\"hold\":");
+    push_json_string(out, row.hold.map_or("", HoldReason::as_str));
+    out.push('}');
+    Ok(())
+}
+
+fn encode_window_desire_v4(row: &WindowDesire, out: &mut String) -> Result<()> {
+    check_reply_id(&row.lifetime.0)?;
+    check_reply_id(&row.output.0)?;
+    check_reply_id(&row.workspace)?;
+    if let Some(rect) = row.allocation.as_ref()
+        && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
+    {
+        return Err(unknown_value());
+    }
+    if let Some(rect) = row.effective_frame.as_ref()
+        && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
+    {
+        return Err(unknown_value());
+    }
+    if let Some(op) = row.frame_operation.as_deref() {
+        check_reply_id(op)?;
+    }
+    if let Some(op) = row.clear_operation.as_deref() {
+        check_reply_id(op)?;
+    }
+    if let Some(visibility) = row.visibility.as_ref()
+        && visibility.shown
+        && visibility.fallback
+    {
+        return Err(reply_snapshot("visibility-show-fallback"));
+    }
+    if row.state.len() > MAX_STATE_TARGETS_PER_WINDOW {
+        return Err(reply_snapshot("state-target-count"));
+    }
+    let mut seen_state = std::collections::BTreeSet::new();
+    for target in &row.state {
+        if !seen_state.insert(target.property) {
+            return Err(reply_snapshot("state-target-count"));
+        }
+    }
+    out.push_str("{\"win\":");
+    push_json_string(out, &row.lifetime.0);
+    out.push_str(",\"out\":");
+    push_json_string(out, &row.output.0);
+    out.push_str(",\"ws\":");
+    push_json_string(out, &row.workspace);
+    out.push_str(",\"alloc\":");
+    push_checked_opt_rect(out, &row.allocation)?;
+    out.push_str(",\"frame\":");
+    push_checked_opt_rect(out, &row.effective_frame)?;
+    out.push_str(",\"frame_auth\":");
+    push_json_string(out, row.frame_authority.as_str());
+    out.push_str(",\"frame_hold\":");
+    push_json_string(
+        out,
+        row.frame_authority
+            .hold_reason()
+            .map_or("", HoldReason::as_str),
+    );
+    out.push_str(",\"member_auth\":");
+    push_json_string(out, row.membership_authority.as_str());
+    out.push_str(",\"member_hold\":");
+    push_json_string(
+        out,
+        row.membership_authority
+            .hold_reason()
+            .map_or("", HoldReason::as_str),
+    );
+    out.push_str(",\"frame_op\":");
+    push_opt_id_or_empty(out, &row.frame_operation)?;
+    out.push_str(",\"floating\":");
+    out.push_str(if row.floating { "true" } else { "false" });
+    out.push_str(",\"float_origin\":");
+    push_json_string(out, row.float_origin.map_or("", FloatOrigin::as_str));
+    out.push_str(",\"clear_op\":");
+    push_opt_id_or_empty(out, &row.clear_operation)?;
+    tiler_core::world_sizing::encode_window_target_lanes(out, row);
+    out.push('}');
+    Ok(())
+}
+
+fn encode_transfer_v4(row: &TransferTargetV4, out: &mut String) -> Result<()> {
+    check_reply_id(&row.operation_id)?;
+    check_reply_id(&row.target_output.0)?;
+    check_reply_id(&row.target_workspace)?;
+    match &row.kind {
+        TransferKind::Window(window) => check_reply_id(&window.0)?,
+        TransferKind::View | TransferKind::Migration => {}
+    }
+    out.push_str("{\"op\":");
+    push_json_string(out, &row.operation_id);
+    out.push_str(",\"kind\":");
+    push_json_string(
+        out,
+        match &row.kind {
+            TransferKind::Window(_) => "window",
+            TransferKind::View => "view",
+            TransferKind::Migration => "migration",
+        },
+    );
+    out.push_str(",\"win\":");
+    match &row.kind {
+        TransferKind::Window(window) => push_json_string(out, &window.0),
+        TransferKind::View | TransferKind::Migration => out.push_str("\"\""),
+    }
+    out.push_str(",\"out\":");
+    push_json_string(out, &row.target_output.0);
+    out.push_str(",\"ws\":");
+    push_json_string(out, &row.target_workspace);
+    out.push_str(",\"follow\":");
+    out.push_str(if row.follow { "true" } else { "false" });
+    out.push_str(",\"held\":");
+    out.push_str(if row.held { "true" } else { "false" });
+    out.push_str(",\"cmdSeq\":");
+    match row.command_seq {
+        None => out.push_str("null"),
+        Some(seq) => {
+            out.push('"');
+            out.push_str(&seq.to_string());
+            out.push('"');
+        }
+    }
+    out.push('}');
+    Ok(())
+}
+
+fn encode_effect_v4(row: &OneShotEffect, out: &mut String) -> Result<()> {
+    check_reply_id(&row.id)?;
+    check_reply_id(&row.target.0)?;
+    let explicit = row.cause == tiler_core::world_report::EffectCause::ExplicitCommand;
+    if explicit && row.command_seq.is_none() {
+        return Err(reply_snapshot("effect-explicit-null-seq"));
+    }
+    if !explicit && row.command_seq.is_some() {
+        return Err(reply_snapshot("effect-non-explicit-seq"));
+    }
+    if !explicit && row.await_shown {
+        return Err(reply_snapshot("effect-automatic-await-shown"));
+    }
+    out.push_str("{\"id\":");
+    push_json_string(out, &row.id);
+    out.push_str(",\"kind\":");
+    push_json_string(out, row.kind.as_str());
+    out.push_str(",\"target\":");
+    push_json_string(out, &row.target.0);
+    out.push_str(",\"rev\":\"");
+    out.push_str(&row.issued_revision.to_string());
+    out.push_str("\",\"cause\":");
+    push_json_string(out, row.cause.as_str());
+    out.push_str(",\"cmdSeq\":");
+    match row.command_seq {
+        None => out.push_str("null"),
+        Some(seq) => {
+            out.push('"');
+            out.push_str(&seq.to_string());
+            out.push('"');
+        }
+    }
+    out.push_str(",\"awaitShown\":");
+    out.push_str(if row.await_shown { "true" } else { "false" });
+    out.push('}');
+    Ok(())
+}
+
+fn valid_operation_cause(text: &str) -> bool {
+    if CommandRejectKind::parse(text).is_some() {
+        return true;
+    }
+    matches!(
+        text,
+        "baseline-non-subject"
+            | "closed"
+            | "constraints"
+            | "early-verdict"
+            | "external"
+            | "fixed"
+            | "floating"
+            | "homing-loss"
+            | "invalid-direction"
+            | "invalid-geometry"
+            | "non-subject-focus"
+            | "refused-with-unmaximized"
+            | "sticky"
+            | "tiling-changed"
+            | "topology-unreadable"
+            | "unknown-output"
+            | "unknown-window"
+    )
+}
+
+fn encode_operation_event_v4(row: &OperationEvent, out: &mut String) -> Result<()> {
+    check_reply_id(&row.operation_id)?;
+    check_reply_id(&row.window.0)?;
+    if let Some(cause) = row.cause.as_deref()
+        && !valid_operation_cause(cause)
+    {
+        return Err(unknown_value());
+    }
+    out.push_str("{\"op\":");
+    push_json_string(out, &row.operation_id);
+    out.push_str(",\"win\":");
+    push_json_string(out, &row.window.0);
+    out.push_str(",\"outcome\":");
+    push_json_string(out, row.outcome.as_str());
+    out.push_str(",\"cause\":");
+    push_empty_or_id(out, row.cause.as_deref().unwrap_or_default())?;
+    out.push('}');
+    Ok(())
+}
+
+fn encode_native_creation_v4(row: &NativeCreationDesire, out: &mut String) -> Result<()> {
+    check_reply_id(&row.operation_id)?;
+    check_reply_id(&row.logical_workspace)?;
+    check_reply_id(&row.target_output.0)?;
+    out.push_str("{\"op\":");
+    push_json_string(out, &row.operation_id);
+    out.push_str(",\"ws\":");
+    push_json_string(out, &row.logical_workspace);
+    out.push_str(",\"out\":");
+    push_json_string(out, &row.target_output.0);
+    out.push('}');
+    Ok(())
+}
+
+fn valid_directional_cause(text: &str) -> bool {
+    matches!(
+        text,
+        "no-target" | "unknown-window" | "focus-present" | "no-source" | "no-adjacent-output"
+    )
+}
+
+fn encode_command_result_v4(result: &Option<CommandResult>, out: &mut String) -> Result<()> {
+    match result {
+        None => out.push_str("null"),
+        Some(CommandResult::DragPreview {
+            rect,
+            hover,
+            domain,
+            source,
+            target,
+            revision: _,
+        }) => {
+            if !valid_carried_rect(rect.x, rect.y, rect.w, rect.h) {
+                return Err(unknown_value());
+            }
+            check_reply_id(&domain.output.0)?;
+            check_reply_id(&domain.workspace.0)?;
+            check_reply_id(&source.output.0)?;
+            check_reply_id(&source.workspace.0)?;
+            check_reply_id(&target.0)?;
+            if let Some(hover) = hover {
+                check_reply_id(&hover.domain.output.0)?;
+                check_reply_id(&hover.domain.workspace.0)?;
+                check_reply_id(&hover.source_leaf.0)?;
+                check_reply_id(&hover.source_window.0)?;
+                if let Some(prior) = hover.prior.as_ref() {
+                    check_reply_id(&prior.group.0)?;
+                }
+                check_reply_id(&hover.prior_domain.output.0)?;
+                check_reply_id(&hover.prior_domain.workspace.0)?;
+            }
+            tiler_core::world_sizing::encode_command_result(out, result);
+        }
+        Some(CommandResult::Float { window, rect, .. }) => {
+            check_reply_id(&window.0)?;
+            if let Some(rect) = rect
+                && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
+            {
+                return Err(unknown_value());
+            }
+            tiler_core::world_sizing::encode_command_result(out, result);
+        }
+        Some(CommandResult::Migration {
+            source,
+            target,
+            members,
+            ..
+        }) => {
+            check_reply_cap(members.len(), MAX_REPLY_WINDOWS)?;
+            check_reply_id(&source.output.0)?;
+            check_reply_id(&source.workspace.0)?;
+            check_reply_id(&target.output.0)?;
+            check_reply_id(&target.workspace.0)?;
+            for member in members {
+                check_reply_id(&member.0)?;
+            }
+            tiler_core::world_sizing::encode_command_result(out, result);
+        }
+        Some(CommandResult::Directional {
+            target,
+            rect,
+            cause,
+            ..
+        }) => {
+            if let Some(target) = target {
+                check_reply_id(&target.0)?;
+            }
+            if let Some(rect) = rect
+                && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
+            {
+                return Err(unknown_value());
+            }
+            if let Some(cause) = cause
+                && !valid_directional_cause(cause)
+            {
+                return Err(unknown_value());
+            }
+            tiler_core::world_sizing::encode_command_result(out, result);
+        }
+        Some(CommandResult::Maximize { window, .. }) => {
+            check_reply_id(&window.0)?;
+            tiler_core::world_sizing::encode_command_result(out, result);
+        }
+        Some(CommandResult::Rejected { .. }) => {
+            tiler_core::world_sizing::encode_command_result(out, result);
+        }
+    }
+    Ok(())
+}
+
+fn encode_gesture_settled_v4(settled: &Option<GestureSettled>, out: &mut String) {
+    tiler_core::world_sizing::encode_gesture_settled(out, settled);
+}
+
+fn encode_intent_write_v4(row: &IntentWrite, out: &mut String) -> Result<()> {
+    check_reply_id(&row.win.0)?;
+    if let Some(data) = row.data.as_deref()
+        && data.len() > MAX_INTENT_DATA_BYTES
+    {
+        return Err(reply_snapshot("intent-data-invalid"));
+    }
+    out.push_str("{\"win\":");
+    push_json_string(out, &row.win.0);
+    out.push_str(",\"data\":");
+    match row.data.as_deref() {
+        Some(data) => push_json_string(out, data),
+        None => out.push_str("null"),
+    }
+    out.push('}');
+    Ok(())
+}
+
+fn encode_switch_event_v4(row: &SwitchEvent, out: &mut String) -> Result<()> {
+    check_reply_id(&row.operation_id)?;
+    check_reply_cap(row.failed.len(), MAX_REPLY_WINDOWS)?;
+    for window in &row.failed {
+        check_reply_id(&window.0)?;
+    }
+    out.push_str("{\"op\":");
+    push_json_string(out, &row.operation_id);
+    out.push_str(",\"outcome\":");
+    push_json_string(out, row.outcome.as_str());
+    out.push_str(",\"failed\":[");
+    for (i, window) in row.failed.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_json_string(out, &window.0);
+    }
+    out.push_str("],\"focus\":");
+    push_json_string(out, row.focus.as_str());
+    out.push_str(",\"fallback\":");
+    out.push_str(if row.fallback { "true" } else { "false" });
+    out.push('}');
+    Ok(())
+}
+
+fn encode_row_diagnostic_v4(row: &RowDiagnostic, out: &mut String) -> Result<()> {
+    if let Some(id) = row.id.as_deref() {
+        check_reply_id(id)?;
+    }
+    match &row.scope {
+        AuthorityScope::Output(output) => check_reply_id(&output.0)?,
+        AuthorityScope::Workspace { output, workspace } => {
+            check_reply_id(&output.0)?;
+            check_reply_id(&workspace.0)?;
+        }
+    }
+    tiler_core::world_sizing::push_row_diagnostic(out, row);
+    Ok(())
+}
+
+fn encode_underlay_v4(row: &PresentationUnderlay, out: &mut String) -> Result<()> {
+    match row {
+        PresentationUnderlay::Found(found) => {
+            check_reply_id(&found.home.output.0)?;
+            check_reply_id(&found.home.workspace.0)?;
+            check_reply_id(&found.group.0)?;
+            check_reply_id(&found.focused_leaf.0)?;
+            check_reply_id(&found.focused_window.0)?;
+            if !valid_carried_rect(
+                found.union_rect.x,
+                found.union_rect.y,
+                found.union_rect.w,
+                found.union_rect.h,
+            ) {
+                return Err(unknown_value());
+            }
+            if !valid_carried_rect(
+                found.outer_rect.x,
+                found.outer_rect.y,
+                found.outer_rect.w,
+                found.outer_rect.h,
+            ) {
+                return Err(unknown_value());
+            }
+            check_reply_cap(found.members.len(), MAX_REPLY_WINDOWS)?;
+            for member in &found.members {
+                check_reply_id(&member.leaf.0)?;
+                check_reply_id(&member.window.0)?;
+                if !valid_carried_rect(member.rect.x, member.rect.y, member.rect.w, member.rect.h) {
+                    return Err(unknown_value());
+                }
+            }
+            out.push_str("{\"status\":\"found\",\"reason\":\"\",\"baseRev\":\"");
+            out.push_str(&found.base_revision.to_string());
+            out.push_str("\",\"homeOut\":");
+            push_json_string(out, &found.home.output.0);
+            out.push_str(",\"homeWs\":");
+            push_json_string(out, &found.home.workspace.0);
+            out.push_str(",\"group\":");
+            push_json_string(out, &found.group.0);
+            out.push_str(",\"leaf\":");
+            push_json_string(out, &found.focused_leaf.0);
+            out.push_str(",\"win\":");
+            push_json_string(out, &found.focused_window.0);
+            out.push_str(",\"union\":");
+            push_checked_rect(out, &found.union_rect)?;
+            out.push_str(",\"outer\":");
+            push_checked_rect(out, &found.outer_rect)?;
+            out.push_str(",\"members\":[");
+            for (i, member) in found.members.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str("{\"leaf\":");
+                push_json_string(out, &member.leaf.0);
+                out.push_str(",\"win\":");
+                push_json_string(out, &member.window.0);
+                out.push_str(",\"rect\":");
+                push_checked_rect(out, &member.rect)?;
+                out.push('}');
+            }
+            out.push_str("]}");
+        }
+        PresentationUnderlay::Hidden {
+            base_revision,
+            reason,
+        } => {
+            out.push_str("{\"status\":\"hidden\",\"reason\":");
+            push_json_string(out, reason.as_str());
+            out.push_str(",\"baseRev\":");
+            match base_revision {
+                Some(rev) => {
+                    out.push('"');
+                    out.push_str(&rev.to_string());
+                    out.push('"');
+                }
+                None => out.push_str("null"),
+            }
+            out.push('}');
+        }
+    }
+    Ok(())
+}
+
+fn encode_pager_v4(pager: &[PagerScreen], out: &mut String) -> Result<()> {
+    check_reply_cap(pager.len(), MAX_REPLY_OUTPUTS)?;
+    out.push('[');
+    for (i, screen) in pager.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        check_reply_id(&screen.output)?;
+        check_reply_cap(screen.workspaces.len(), MAX_REPLY_WORKSPACES)?;
+        out.push_str("{\"out\":");
+        push_json_string(out, &screen.output);
+        out.push_str(",\"workspaces\":[");
+        for (j, workspace) in screen.workspaces.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            check_reply_id(&workspace.id)?;
+            check_reply_cap(workspace.windows.len(), MAX_REPLY_WINDOWS)?;
+            for window in &workspace.windows {
+                check_reply_id(&window.window.0)?;
+                if !valid_carried_rect(
+                    window.frame.x,
+                    window.frame.y,
+                    window.frame.w,
+                    window.frame.h,
+                ) {
+                    return Err(unknown_value());
+                }
+            }
+            out.push_str("{\"id\":");
+            push_json_string(out, &workspace.id);
+            out.push_str(",\"ordinal\":");
+            out.push_str(&workspace.ordinal.to_string());
+            out.push_str(",\"label\":");
+            push_json_string(out, &workspace.label);
+            out.push_str(",\"current\":");
+            out.push_str(if workspace.current { "true" } else { "false" });
+            out.push_str(",\"occupied\":");
+            out.push_str(if workspace.occupied { "true" } else { "false" });
+            out.push_str(",\"containsFocused\":");
+            out.push_str(if workspace.contains_focused {
+                "true"
+            } else {
+                "false"
+            });
+            if workspace.trailing {
+                out.push_str(",\"trailing\":true");
+            }
+            out.push_str(",\"windows\":[");
+            for (k, window) in workspace.windows.iter().enumerate() {
+                if k > 0 {
+                    out.push(',');
+                }
+                out.push_str("{\"win\":");
+                push_json_string(out, &window.window.0);
+                out.push_str(",\"frame\":");
+                push_checked_rect(out, &window.frame)?;
+                out.push('}');
+            }
+            out.push_str("]}");
+        }
+        out.push_str("]}");
+    }
+    out.push(']');
+    Ok(())
+}
+
+fn encode_reply_presentation_v4(
+    presentation: &WorldPresentationV4,
+    suspended_present: bool,
+    out: &mut String,
+) -> Result<()> {
+    if !presentation.foreground.is_empty() && !is_opaque_id(&presentation.foreground) {
+        return Err(unknown_value());
+    }
+    match (&presentation.suspended_output, suspended_present) {
+        (None, false) => {}
+        (Some(_), true) => {}
+        _ => return Err(reply_snapshot("suspended-output-inconsistent")),
+    }
+    if let Some(output) = presentation.suspended_output.as_ref() {
+        check_reply_id(&output.0)?;
+    }
+    out.push_str("{\"foreground\":");
+    push_json_string(out, &presentation.foreground);
+    out.push_str(",\"rev\":\"");
+    out.push_str(&presentation.rev.to_string());
+    out.push('"');
+    if let Some(output) = presentation.suspended_output.as_ref() {
+        out.push_str(",\"suspendedOutput\":");
+        push_json_string(out, &output.0);
+    }
+    out.push_str(",\"border\":");
+    out.push_str(&encode_border_presentation_v4(&presentation.border)?);
+    out.push_str(",\"underlay\":");
+    encode_underlay_v4(&presentation.underlay, out)?;
+    out.push_str(",\"pager\":");
+    encode_pager_v4(&presentation.pager, out)?;
+    out.push('}');
+    Ok(())
+}
+
+/// Checked canonical encode of one decoded v4 reply. Refuses inconsistent
+/// wire metadata and unspellable typed values instead of emitting
+/// non-wire bytes.
+pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
+    let reply = &decoded.reply;
+    if reply.contract_version != WORLD_PROTOCOL_VERSION_V4 {
+        return Err(WorldProtocolError {
+            kind: KIND_VERSION,
+            message: MSG_VERSION,
+        });
+    }
+    if !is_opaque_id(&reply.adapter_incarnation) {
+        return Err(unknown_value());
+    }
+    if reply.core_generation.len() > MAX_GENERATION_LEN
+        || !is_generation_text(&reply.core_generation)
+    {
+        return Err(unknown_value());
+    }
+    if reply.request_id.len() > MAX_CORRELATION_LEN || !is_correlation_text(&reply.request_id) {
+        return Err(unknown_value());
+    }
+    check_reply_cap(reply.scopes.len(), MAX_REPLY_SCOPES)?;
+    check_reply_cap(reply.workspaces.len(), MAX_REPLY_WORKSPACES)?;
+    check_reply_cap(reply.outputs.len(), MAX_REPLY_OUTPUTS)?;
+    check_reply_cap(reply.windows.len(), MAX_REPLY_WINDOWS)?;
+    check_reply_cap(reply.transfers.len(), MAX_REPLY_TRANSFERS)?;
+    check_reply_cap(reply.effects.len(), MAX_REPLY_EFFECTS)?;
+    check_reply_cap(reply.operation_settled.len(), MAX_REPLY_OPERATIONS)?;
+    check_reply_cap(reply.native_creations.len(), MAX_REPLY_NATIVE_CREATIONS)?;
+    check_reply_cap(reply.intent_writes.len(), MAX_INTENT_WRITES)?;
+    check_reply_cap(reply.switch_settled.len(), MAX_REPLY_SWITCH_EVENTS)?;
+    check_reply_cap(reply.diagnostics.len(), MAX_REPLY_DIAGNOSTICS)?;
+    let mut seen_scopes = std::collections::BTreeSet::new();
+    for scope in &reply.scopes {
+        let key = scope_status_key(&scope.scope);
+        if !seen_scopes.insert(key) {
+            return Err(reply_snapshot("duplicate-scope"));
+        }
+    }
+    let mut seen_workspaces = std::collections::BTreeSet::new();
+    for workspace in &reply.workspaces {
+        if !seen_workspaces.insert(workspace.id.clone()) {
+            return Err(reply_snapshot("duplicate-workspace"));
+        }
+    }
+    let mut seen_outputs = std::collections::BTreeSet::new();
+    for output in &reply.outputs {
+        if !seen_outputs.insert(output.output.0.clone()) {
+            return Err(reply_snapshot("duplicate-output"));
+        }
+    }
+    let mut seen_windows = std::collections::BTreeSet::new();
+    for window in &reply.windows {
+        if !seen_windows.insert(window.lifetime.0.clone()) {
+            return Err(reply_snapshot("duplicate-window"));
+        }
+    }
+    let mut seen_transfers = std::collections::BTreeSet::new();
+    for transfer in &reply.transfers {
+        if !seen_transfers.insert(transfer.operation_id.clone()) {
+            return Err(reply_snapshot("duplicate-transfer"));
+        }
+    }
+    let mut seen_effects = std::collections::BTreeSet::new();
+    for effect in &reply.effects {
+        if !seen_effects.insert(effect.id.clone()) {
+            return Err(reply_snapshot("duplicate-effect"));
+        }
+    }
+    let mut seen_operations = std::collections::BTreeSet::new();
+    for event in &reply.operation_settled {
+        if !seen_operations.insert(event.operation_id.clone()) {
+            return Err(reply_snapshot("duplicate-operation"));
+        }
+    }
+    let mut seen_creations = std::collections::BTreeSet::new();
+    for creation in &reply.native_creations {
+        if !seen_creations.insert(creation.operation_id.clone()) {
+            return Err(reply_snapshot("duplicate-native-creation"));
+        }
+    }
+    let mut seen_writes = std::collections::BTreeSet::new();
+    for write in &reply.intent_writes {
+        if !seen_writes.insert(write.win.0.clone()) {
+            return Err(reply_snapshot("duplicate-intent-write"));
+        }
+    }
+    let mut seen_switches = std::collections::BTreeSet::new();
+    for event in &reply.switch_settled {
+        if !seen_switches.insert(event.operation_id.clone()) {
+            return Err(reply_snapshot("duplicate-switch"));
+        }
+    }
+    if let Some((x, y)) = reply.cursor_warp
+        && (!(-tiler_core::bounds::GEOMETRY_BOUND..=tiler_core::bounds::GEOMETRY_BOUND)
+            .contains(&x)
+            || !(-tiler_core::bounds::GEOMETRY_BOUND..=tiler_core::bounds::GEOMETRY_BOUND)
+                .contains(&y))
+    {
+        return Err(unknown_value());
+    }
+    let mut out = String::new();
+    out.push_str("{\"v\":");
+    out.push_str(&reply.contract_version.to_string());
+    out.push_str(",\"adapter\":");
+    push_json_string(&mut out, &reply.adapter_incarnation);
+    out.push_str(",\"gen\":");
+    push_json_string(&mut out, &reply.core_generation);
+    out.push_str(",\"req\":");
+    push_json_string(&mut out, &reply.request_id);
+    out.push_str(",\"obs\":\"");
+    out.push_str(&reply.based_on_observation_seq.to_string());
+    out.push_str("\",\"rev\":\"");
+    out.push_str(&reply.state_revision.to_string());
+    out.push_str("\",\"ready\":");
+    out.push_str(if reply.ready { "true" } else { "false" });
+    out.push_str(",\"consumed\":");
+    out.push_str(if reply.command_consumed {
+        "true"
+    } else {
+        "false"
+    });
+    out.push_str(",\"scopes\":[");
+    for (i, scope) in reply.scopes.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_scope_status_v4(scope, &mut out)?;
+    }
+    out.push_str("],\"workspaces\":[");
+    for (i, workspace) in reply.workspaces.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_workspace_desire_v4(workspace, &mut out)?;
+    }
+    out.push_str("],\"outputs\":[");
+    for (i, output) in reply.outputs.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_output_desire_v4(output, &mut out)?;
+    }
+    out.push_str("],\"windows\":[");
+    for (i, window) in reply.windows.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_window_desire_v4(window, &mut out)?;
+    }
+    out.push_str("],\"transfers\":[");
+    for (i, transfer) in reply.transfers.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_transfer_v4(transfer, &mut out)?;
+    }
+    out.push_str("],\"effects\":[");
+    for (i, effect) in reply.effects.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_effect_v4(effect, &mut out)?;
+    }
+    out.push_str("],\"result\":");
+    encode_command_result_v4(&reply.command_result, &mut out)?;
+    out.push_str(",\"gestureSettled\":");
+    encode_gesture_settled_v4(&reply.gesture_settled, &mut out);
+    out.push_str(",\"operationSettled\":[");
+    for (i, event) in reply.operation_settled.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_operation_event_v4(event, &mut out)?;
+    }
+    out.push_str("],\"nativeCreations\":[");
+    for (i, creation) in reply.native_creations.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_native_creation_v4(creation, &mut out)?;
+    }
+    out.push_str("],\"warpCursor\":");
+    match reply.cursor_warp {
+        Some((x, y)) => {
+            out.push_str(&format!("[{x},{y}]"));
+        }
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"presentation\":");
+    encode_reply_presentation_v4(
+        &reply.presentation,
+        decoded.wire.suspended_output_present,
+        &mut out,
+    )?;
+    out.push_str(",\"intentWrites\":[");
+    for (i, write) in reply.intent_writes.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_intent_write_v4(write, &mut out)?;
+    }
+    out.push_str("],\"switchSettled\":[");
+    for (i, event) in reply.switch_settled.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_switch_event_v4(event, &mut out)?;
+    }
+    out.push_str("],\"diagnostics\":[");
+    for (i, diagnostic) in reply.diagnostics.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_row_diagnostic_v4(diagnostic, &mut out)?;
+    }
+    out.push_str("]}");
+    let back = match decode_reply_v4(&out) {
+        Ok(back) => back,
+        Err(_) => return Err(reply_snapshot("encode-mismatch")),
+    };
+    if back != *decoded {
+        return Err(reply_snapshot("encode-mismatch"));
+    }
+    Ok(out)
+}
+
 // -- Staged canonical v4 report writer --
 // Checked canonical encode of one decoded v4 report: compact JSON in
 // contract table key order with the codec/table key order for rows,

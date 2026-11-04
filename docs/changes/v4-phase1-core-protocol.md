@@ -671,8 +671,19 @@
   One-shot raise/stack effects are not gated. The envelope identity fields use
   the same bounded validators as the report decoder.
 - Typed values determine every wire spelling except suspended-output presence,
-  which is carried as protocol-owned metadata; 5b must confirm this against
-  the 114 byte-exact fixtures.
+  which is carried as protocol-owned metadata.
+- 5b outcome: the staged checked canonical reply writer re-encodes all 114
+  valid reply fixtures byte-exact and its output decodes to an equal value.
+  Every spelling is determined by the typed value plus the one wire flag: empty
+  sentinels, null-when-absent fields, trailing and no-space markers omitted
+  unless true, quoted counters and bare integers. It refuses values the decoder
+  would refuse (section caps, duplicates, state-target count, effect and
+  visibility pairings, invalid ids, inconsistent suspended-output metadata)
+  with fixed messages, and a final decode-and-compare backstop turns any
+  remaining mismatch into a fixed refusal. No fixture needed a byte form
+  outside the contract. No valid fixture carries a non-null `warpCursor`, so
+  its spelling is witnessed by constructed tests only. The legacy writers and
+  runtime are unchanged.
 - Engine fields a genuine reply needs that do not exist yet (unit 6): the
   anchored border (subject, outsets, width, radius, witness) has no producer,
   and the engine publishes the legacy absolute-rect border; staged transfer
