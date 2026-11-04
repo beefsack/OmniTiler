@@ -430,6 +430,20 @@ pub(crate) struct StagedReport {
     pub(crate) held_screens: Vec<crate::world_report::HeldScreenRow>,
     /// Identifiable bad window rows held narrowly, in report order.
     pub(crate) held_windows: Vec<crate::world_report::HeldWindowRow>,
+    /// Identifiable native rows held narrowly, in report order. The legacy
+    /// intake never fills this lane (stays empty).
+    pub(crate) held_native: Vec<crate::world_report::HeldNativeRow>,
+    /// Identifiable attempt rows held narrowly, in report order. The
+    /// legacy intake never fills this lane (stays empty).
+    pub(crate) held_attempts: Vec<crate::world_report::HeldAttemptRow>,
+    /// Staged v4 presentation outcome, verbatim from the report: the valid
+    /// ingress or the held singleton row, never a defaulted ingress. `None`
+    /// for the legacy intake (v3 carries its own presentation shape).
+    pub(crate) presentation_v4: Option<crate::world_report::PresentationRowV4>,
+    /// Staged v4 renderer input, verbatim from the report with no
+    /// validation here. `None` for the legacy intake and for v4 reports
+    /// without renderer input.
+    pub(crate) renderer_input: Option<crate::world_report::RendererInput>,
     /// Safety/own-process exclusions observed on this report: known
     /// exclusions (staged facts classifying excluded) plus own-process
     /// windows (dropped before facts). Never members, slots, or control:

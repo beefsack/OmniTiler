@@ -15,8 +15,8 @@ use crate::session::{DomainKey, OutputDomain};
 use crate::world_engine::{StagedDomain, StagedReport, WorldEngine};
 use crate::world_operations::parse_direction_token;
 use crate::world_report::{
-    AuthorityScope, HoldReason, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, TransferKind,
-    WorldReport,
+    AuthorityScope, HeldScreenRow, HeldWindowRow, HoldReason, RowDiagnostic, RowDiagnosticKind,
+    RowDiagnosticLane, TransferKind, WindowFact, WorldReport,
 };
 
 impl WorldEngine {
@@ -195,29 +195,22 @@ impl WorldEngine {
         })
     }
 
-    /// Index the raw observation for one accepted run: screens, view
-    /// echoes, facts, closes, and the gesture barrier. Homing and domains
-    /// follow in [`WorldEngine::build_staged_domains`], after rings/views
-    /// converge.
-    ///
-    /// Host-owned outputs are native-only: explicit logical echoes are
-    /// never staged there (the core derives every view receipt from the
-    /// native current map in [`WorldEngine::converge_native_pre`]).
-    /// Tiler-owned outputs keep the logical route unchanged.
-    pub(crate) fn stage_facts(&mut self, report: &WorldReport) {
-        let prior_homing = self.staged.homing.clone();
-        // Resolve output-less held rows to a real scope: the row's actual
-        // reported output first, then the retained home (live session
-        // membership, else the previous report's homing). An unhomed
-        // output-less row keeps `None`: evidence retained, no authority.
-        // The preserved `kind` carries the invalid-vs-conflicting reason
-        // so scope resolution never loses it; the rebuilt diagnostic
-        // reuses that kind, defaulting to `InvalidFact` only when the
-        // row never graded a reason. Corpus held rows always carry
-        // their output, so this path never fires there.
-        let resolved_held: Vec<crate::world_report::HeldWindowRow> = report
-            .held_windows
-            .iter()
+    /// Resolve output-less held window rows to a real scope: the row's actual
+    /// reported output first, then the retained home (live session
+    /// membership, else the previous report's homing). An unhomed
+    /// output-less row keeps `None`: evidence retained, no authority.
+    /// The preserved `kind` carries the invalid-vs-conflicting reason
+    /// so scope resolution never loses it; the rebuilt diagnostic
+    /// reuses that kind, defaulting to `InvalidFact` only when the
+    /// row never graded a reason. Corpus held rows always carry
+    /// their output, so this path never fires there. Shared by the legacy
+    /// and v4 intakes so scope resolution cannot drift.
+    pub(crate) fn resolve_held_window_scopes(
+        &self,
+        held: &[HeldWindowRow],
+        prior_homing: &BTreeMap<WindowId, DomainKey>,
+    ) -> Vec<HeldWindowRow> {
+        held.iter()
             .map(|held| {
                 let scope = match &held.output {
                     Some(out) => Some(AuthorityScope::Output(out.clone())),
@@ -236,25 +229,18 @@ impl WorldEngine {
                 });
                 held
             })
-            .collect();
-        let state_offroute: Vec<RowDiagnostic> = report
-            .state_attempts
-            .iter()
-            .filter(|attempt| {
-                !crate::world_state::state_property_supported(self.capabilities(), attempt.property)
-            })
-            .filter_map(|attempt| {
-                self.state_offroute_output(report, &attempt.window)
-                    .map(|output| RowDiagnostic {
-                        scope: AuthorityScope::Output(output),
-                        row: RowDiagnosticLane::Attempt,
-                        id: Some(attempt.window.0.clone()),
-                        kind: RowDiagnosticKind::ConflictingFact,
-                    })
-            })
-            .collect();
-        let staged_diagnostics: Vec<RowDiagnostic> = report
-            .held_screens
+            .collect()
+    }
+
+    /// Narrow-hold diagnostics shared by both intakes: held screens' typed
+    /// diagnostics first, then the resolved held windows' diagnostics, in
+    /// report order. Callers append their own lane diagnostics after this
+    /// prefix so lane order cannot drift.
+    pub(crate) fn staged_screen_window_diagnostics(
+        held_screens: &[HeldScreenRow],
+        resolved_held: &[HeldWindowRow],
+    ) -> Vec<RowDiagnostic> {
+        held_screens
             .iter()
             .map(|held| held.diagnostic.clone())
             .chain(
@@ -262,27 +248,19 @@ impl WorldEngine {
                     .iter()
                     .filter_map(|held| held.diagnostic.clone()),
             )
-            .chain(state_offroute)
-            .collect();
-        let mut staged = StagedReport {
-            screens: report.screens.clone(),
-            held_screens: report.held_screens.clone(),
-            held_windows: resolved_held,
-            diagnostics: staged_diagnostics,
-            gesture_barrier: report.gesture_barrier,
-            ..StagedReport::default()
-        };
-        for view in &report.views {
-            if view.view.is_empty() {
-                continue;
-            }
-            if self.native_authoritative(report, &view.output) {
-                continue;
-            }
-            staged
-                .echoes
-                .insert(view.output.0.clone(), view.view.clone());
-        }
+            .collect()
+    }
+
+    /// Stage the per-window classification loop plus explicit closes:
+    /// own-process exclusion, the excluded set, fact output, facts, and
+    /// derived carriers. Shared by the legacy and v4 intakes so
+    /// classification cannot drift.
+    pub(crate) fn stage_window_facts(
+        &self,
+        windows: &[WindowFact],
+        closes: &[WindowId],
+        staged: &mut StagedReport,
+    ) {
         let unavailable: &[crate::connection::FactName] = self
             .capabilities()
             .map(|capabilities| capabilities.unavailable_facts.as_slice())
@@ -299,7 +277,7 @@ impl WorldEngine {
             .capabilities()
             .map(|caps| caps.native_sticky)
             .unwrap_or(true);
-        for fact in &report.windows {
+        for fact in windows {
             // Core-derived classification per staged fact: retained tile
             // membership from the previous member set, explicit
             // tile/float overrides from the session and retained floats.
@@ -398,9 +376,62 @@ impl WorldEngine {
             staged.facts.insert(fact.window.clone(), fact.clone());
             staged.derived.insert(fact.window.clone(), classified);
         }
-        for id in &report.closed {
+        for id in closes {
             staged.closes.insert(id.clone());
         }
+    }
+
+    /// Index the raw observation for one accepted run: screens, view
+    /// echoes, facts, closes, and the gesture barrier. Homing and domains
+    /// follow in [`WorldEngine::build_staged_domains`], after rings/views
+    /// converge.
+    ///
+    /// Host-owned outputs are native-only: explicit logical echoes are
+    /// never staged there (the core derives every view receipt from the
+    /// native current map in [`WorldEngine::converge_native_pre`]).
+    /// Tiler-owned outputs keep the logical route unchanged.
+    pub(crate) fn stage_facts(&mut self, report: &WorldReport) {
+        let prior_homing = self.staged.homing.clone();
+        let resolved_held = self.resolve_held_window_scopes(&report.held_windows, &prior_homing);
+        let state_offroute: Vec<RowDiagnostic> = report
+            .state_attempts
+            .iter()
+            .filter(|attempt| {
+                !crate::world_state::state_property_supported(self.capabilities(), attempt.property)
+            })
+            .filter_map(|attempt| {
+                self.state_offroute_output(report, &attempt.window)
+                    .map(|output| RowDiagnostic {
+                        scope: AuthorityScope::Output(output),
+                        row: RowDiagnosticLane::Attempt,
+                        id: Some(attempt.window.0.clone()),
+                        kind: RowDiagnosticKind::ConflictingFact,
+                    })
+            })
+            .collect();
+        let mut staged_diagnostics =
+            Self::staged_screen_window_diagnostics(&report.held_screens, &resolved_held);
+        staged_diagnostics.extend(state_offroute);
+        let mut staged = StagedReport {
+            screens: report.screens.clone(),
+            held_screens: report.held_screens.clone(),
+            held_windows: resolved_held,
+            diagnostics: staged_diagnostics,
+            gesture_barrier: report.gesture_barrier,
+            ..StagedReport::default()
+        };
+        for view in &report.views {
+            if view.view.is_empty() {
+                continue;
+            }
+            if self.native_authoritative(report, &view.output) {
+                continue;
+            }
+            staged
+                .echoes
+                .insert(view.output.0.clone(), view.view.clone());
+        }
+        self.stage_window_facts(&report.windows, &report.closed, &mut staged);
         self.staged = staged;
     }
 

@@ -752,6 +752,53 @@
   rows; only an in-process typed value that bypasses the codec would reach them),
   and a core canonical reply encoder (the protocol writer is the encoder; the
   exact-size function is pinned against it).
+- Sub-increment 2 plan (v4 staging intake): new `world_stage_v4` module with
+  `WorldEngine::stage_facts_v4(&WorldReportV4)` filling the existing
+  `StagedReport`; the per-window classification loop and held-window scope
+  resolution move out of `stage_facts` into shared helpers so the legacy and v4
+  intake cannot drift (legacy behavior unchanged, proven by legacy-versus-v4
+  staged-equality tests over a report without views). New `StagedReport` fields,
+  empty for the legacy intake: `held_native`, `held_attempts`, `presentation_v4`
+  (valid or held singleton, never defaulted) and `renderer_input`. No echoes are
+  staged from v4. Typed diagnostics are staged in report lane order (screen,
+  window, native, attempt, presentation) for every held row that has a scope.
+  Not in this increment: the `state_offroute` diagnostic (sub-increment 3),
+  consumption of the new fields by any lane (native converge, attempt
+  settlement, presentation and renderer validation belong to later
+  sub-increments), views replacement, and any entry point from
+  `handle_report`. A read-only `#[doc(hidden)]` census over a cloned engine lets
+  the protocol tests stage every accepted fixture report and the
+  `row-hold-close-recovery`, `scale-identity-primary` and `native-domain`
+  scenario reports without running them.
+- Sub-increment 2 outcome: the parallel intake now builds `StagedReport`
+  directly from `WorldReportV4`, retaining the new lanes verbatim and sharing
+  classification and held-window scope resolution with the unchanged legacy
+  route. Four core regressions pin shared-field parity, legacy defaults, new-lane
+  retention and diagnostic order. Two protocol regressions conserve all 207
+  accepted fixtures and independently stage 6, 4 and 8 reports from
+  `row-hold-close-recovery`, `scale-identity-primary` and `native-domain`;
+  the first scenario's invalid-row-identity report refuses decoding and is
+  counted separately. These are staging checks, not scenario execution or
+  settlement evidence. Review found no blocking issue; the census now states
+  its fresh-engine scope invariant and pins exact scenario report counts.
+  Direct verification passes the filtered core/protocol gate (1636 core unit
+  tests and every selected integration/protocol target), core/protocol build,
+  scoped all-target clippy with warnings denied, formatting, whitespace, added
+  ASCII, NUL and local-link checks. Only `workspace_unsafe_posture` is filtered.
+  No `state_offroute`, new-lane consumption, views replacement, `handle_report`
+  wiring, version, adapter or immutable fixture changes are included.
+- Parked integration ownership: `run_accepted` and lane helpers still take
+  `WorldReport` and read report-only facts directly (for example
+  `inventory_complete`, `closed`, `focused_global` and native rows, plus
+  `world_model.rs`'s held-screen output ordering). Staging alone cannot run v4
+  through those helpers. The sub-increment list does not explicitly assign
+  their adaptation or the v4 accepted-run assembly. Which later sub-increment
+  owns this work remains open; no migration-order change or legacy-report
+  conversion is selected here.
+- Parked typed-ingress question: the invalid-screen/window grader twins omitted
+  from sub-increment 1 still need an explicit refuse-versus-hold wiring decision
+  for in-process typed values that bypass the codec. This intake only stages;
+  it does not decide that validation boundary.
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
   drop-zone scaling stay deferred.
 - Lands with unit 7, not before: contract version 3 to 4 and protocol version,
@@ -1778,6 +1825,17 @@
   and rely on the transactional exact check. Neither selected; the tokens and
   reserves can change at wiring time without wire effect. This is not promoted to
   an approved decision.
+- Case: diagnostic assembly in the unwired v4 staging intake. Chosen behavior:
+  append held diagnostics in screen, window, native, attempt, presentation lane
+  order, preserving order within each lane. Held attempt/presentation rows with
+  no diagnostic retain their raw row but emit no diagnostic with an invented
+  scope. Held windows reuse legacy resolution from their carried output or
+  retained home; unresolved rows keep no diagnostic. Evidence: typed held-row
+  vocabulary, legacy window-scope behavior, four staging regressions and the
+  accepted-fixture/scenario census. Alternative: interleave diagnostics by a
+  global row order, or invent a fallback output for scopeless rows. Neither is
+  selected; the report has no cross-lane ordinal and scopeless evidence grants
+  no scope authority. This is not promoted to an approved decision.
 
 ## Adapter compile-failure inventory
 

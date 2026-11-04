@@ -58,6 +58,7 @@ pub mod world_sends;
 pub mod world_settle;
 pub mod world_sizing;
 pub mod world_sizing_v4;
+pub mod world_stage_v4;
 pub(crate) mod world_state;
 pub(crate) mod world_sticky;
 pub mod world_tiling_views;
@@ -161,6 +162,8 @@ mod world_restored_routing_tests;
 mod world_selection_await_tests;
 #[cfg(test)]
 mod world_sessionless_migration_tests;
+#[cfg(test)]
+mod world_stage_v4_tests;
 #[cfg(test)]
 mod world_state_attempt_tests;
 #[cfg(test)]
