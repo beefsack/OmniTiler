@@ -1041,6 +1041,72 @@ pub struct PresentationIngressV4 {
     pub foreground_out: Option<OutputId>,
 }
 
+/// Staged v4 anchored-border hide reason: closed vocabulary with
+/// `host-hidden` (v3 `cloaked` renamed). Legacy
+/// [`crate::visual::BorderHideReason`] stays untouched for the v3 path.
+/// `None` on the row encodes as `""`: both the visible verdict and the
+/// carried-forward hidden geometry veto (eligible but uncomputable bounds)
+/// spell the empty reason, matching the existing v3 writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorderHideReasonV4 {
+    Disabled,
+    NoTarget,
+    Minimized,
+    Maximized,
+    Fullscreen,
+    HostHidden,
+    HiddenWorkspace,
+    Shell,
+    Suspended,
+}
+
+impl BorderHideReasonV4 {
+    /// Closed wire token for this value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::NoTarget => "no-target",
+            Self::Minimized => "minimized",
+            Self::Maximized => "maximized",
+            Self::Fullscreen => "fullscreen",
+            Self::HostHidden => "host-hidden",
+            Self::HiddenWorkspace => "hidden-workspace",
+            Self::Shell => "shell",
+            Self::Suspended => "suspended",
+        }
+    }
+}
+
+/// Staged v4 anchored border row (normative target in
+/// `docs/porting/world-contract.md`): NOT yet part of
+/// [`crate::world_presentation::WorldPresentation`]. The v3
+/// [`crate::visual::BorderPresentation`] stays the only reply-carried
+/// shape until the coordinated cutover; this type is a shape witness for
+/// the staged row codec only. No existing producer, writer, reservation,
+/// or envelope changes meaning.
+///
+/// Shape notes (contract table key order for the canonical writer):
+/// `visible, reason, subject, outsets, width, radius, witness`. Every key
+/// is required on the wire; the last five are required-but-nullable
+/// (`None` is wire `null`). `reason` `None` spells `""`: required when
+/// `visible`, also valid when hidden (geometry veto carry-forward).
+/// `outsets` is `[left, top, right, bottom]` adapter-unit integers;
+/// `width`/`radius` are nonnegative integers, `None` without descriptor.
+/// The descriptor fields are independent at row level: the row shape does
+/// not validate causal or producer consistency (no subject/witness
+/// equality or join is checked here).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BorderPresentationV4 {
+    pub visible: bool,
+    pub reason: Option<BorderHideReasonV4>,
+    pub subject: Option<WindowId>,
+    pub outsets: Option<[i32; 4]>,
+    pub width: Option<i32>,
+    pub radius: Option<i32>,
+    pub witness: Option<FrameWitness>,
+}
+
 /// Native reconnect identity metadata for one output: neutral adapter-read
 /// strings, never adapter identity policy. Each of the four required keys
 /// is `None` (wire `null`) when unknown; empty strings stay preserved as

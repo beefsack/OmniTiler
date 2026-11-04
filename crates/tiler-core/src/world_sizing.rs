@@ -864,6 +864,60 @@ pub fn presentation_estimate(presentation: &crate::world_presentation::WorldPres
     bytes
 }
 
+/// Structural size estimate for one staged v4 anchored-border row,
+/// field-by-field from the staged canonical row writer
+/// (`encode_border_presentation_v4` in `tiler-protocol`):
+/// `{"visible":B,"reason":S,"subject":S|null,"outsets":[l,t,r,b]|null,
+/// "width":N|null,"radius":N|null,"witness":W|null}`. Standalone: no
+/// existing full-reply estimate or reservation changes. `None` slots count
+/// `null` (4); the reason token counts its quoted token (`""` counts 2).
+#[must_use]
+pub fn anchored_border_estimate(row: &crate::world_report::BorderPresentationV4) -> usize {
+    // Fixed punctuation: `{` (1) + `"visible":` (10) + `,"reason":` (10) +
+    // `,"subject":` (11) + `,"outsets":` (11) + `,"width":` (9) +
+    // `,"radius":` (10) + `,"witness":` (11) + `}` (1) = 74.
+    let mut bytes = 74
+        + bool_len(row.visible)
+        + json_string_len(
+            row.reason
+                .map_or("", crate::world_report::BorderHideReasonV4::as_str),
+        );
+    bytes += match &row.subject {
+        None => 4,
+        Some(subject) => json_string_len(&subject.0),
+    };
+    bytes += match &row.outsets {
+        // `[l,t,r,b]` = brackets plus three commas (5) plus digits.
+        None => 4,
+        Some(outsets) => {
+            5 + int_len(outsets[0])
+                + int_len(outsets[1])
+                + int_len(outsets[2])
+                + int_len(outsets[3])
+        }
+    };
+    bytes += match row.width {
+        None => 4,
+        Some(width) => int_len(width),
+    };
+    bytes += match row.radius {
+        None => 4,
+        Some(radius) => int_len(radius),
+    };
+    bytes += match &row.witness {
+        None => 4,
+        Some(witness) => {
+            // `{"win":S,"obs":"N","frame":R,"foreground":S}` = 40 fixed
+            // plus ids, counter digits, and the rect.
+            40 + json_string_len(&witness.win.0)
+                + u64_len(witness.obs)
+                + rect_len(Some(witness.frame))
+                + json_string_len(&witness.foreground.0)
+        }
+    };
+    bytes
+}
+
 /// Structural size estimate for the correlated `command_result` section,
 /// field-by-field from [`encode_command_result`] below. `None` encodes as
 /// `,"result":null` (14); every variant counts the `,"result":` key (10)

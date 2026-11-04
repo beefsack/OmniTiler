@@ -546,6 +546,48 @@
   whole-report conformance, native witness evidence or engine presentation/input
   integration. The phase note stays active.
 
+### v4 anchored border rows
+
+- Add staged anchored-border descriptor and closed hide-reason types, strict
+  canonical row codecs and standalone exact row sizing. Reuse FrameWitness;
+  `host-hidden` replaces `cloaked` in the staged vocabulary only. Preserve the
+  legacy producer, whole-message writers, reservations and envelope/version gates.
+- Validate required nullable slots, closed keys/tokens, opaque identities,
+  counters, witness rectangles and integer styles. Use the existing i32 wire
+  integer representation; width/radius are nonnegative, while outsets are four
+  signed integers, not a Rect or the old report-ingress style cap. Preserve
+  independently nullable descriptor fields without inventing causal joins or a
+  visible/hidden all-present/all-null rule. An empty reason remains representable
+  for hidden rows, as in the existing geometry-veto path.
+- Verify every valid immutable reply's isolated border bytes, the two dedicated
+  border negatives, the complete hide catalog and constructed boundary/type/key
+  failures. Exact row sizing must match checked encoding, including null fields,
+  maximum identities/counters and integer boundaries. This does not establish
+  complete reply acceptance, producer/native witness validity or reserved sizing.
+- No genuine producer, renderer consumer, full-message codec, version/legacy
+  cutover, settings/style application, adapter, live, scaling or rehome work is
+  included. All eight OPEN/TBD evidence gates remain unchanged.
+- Implemented staged descriptor/reason types, checked canonical row encoding,
+  strict Value/string decoding and an exact standalone size estimator. All 114
+  valid reply border fragments round-trip byte-exactly and size-exactly: 101
+  visible descriptors/witnesses and 13 hidden null-witness rows cover the empty
+  reason and all nine hide tokens. The two dedicated border negatives refuse the
+  removed absolute key and retired `cloaked` token with their distinct errors.
+- Twelve regressions also cover all 64 visible/hidden descriptor-null masks,
+  hidden empty reasons, dangling identities, required keys, integer/style/id/
+  counter/rectangle boundaries, checked-output refusal, nested escaped duplicates,
+  the input-size gate and unchanged v3/full-v4-report gates. These are isolated
+  shape witnesses, not a producer consistency or native causal proof. Independent
+  review found no behavioral blocker; documentation and boundary assertions were
+  tightened without a production behavior change.
+- Direct final verification passes the exact filtered core/protocol test gate
+  (1632 core unit tests, every selected integration/protocol target, including the
+  twelve new row tests), core/protocol build, scoped all-target clippy with
+  warnings denied, formatting, whitespace, added ASCII and local-link checks.
+  Only workspace_unsafe_posture is filtered. Full-reply sizing/reservation and
+  genuine engine presentation/input integration remain separate. The phase note
+  stays active.
+
 ## Evidence
 
 - Initial fixture inventory: 518 messages (275 valid, 3 settings-diagnostic,

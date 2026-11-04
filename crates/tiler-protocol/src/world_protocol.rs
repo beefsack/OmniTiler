@@ -231,12 +231,13 @@ use tiler_core::ids::{
     MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_NATIVE_WORKSPACE_ID_LEN, NativeWorkspaceId,
 };
 use tiler_core::world_report::{
-    ActivationPolicy, ArrivalBracket, ArrivalLocation, AuthorityScope, FocusFeedback, FrameWitness,
-    FullscreenOwner, HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, LastWrite,
-    LastWritePath, LastWriteProperty, MAX_INTENT_RECORDS, NativeObservation, NativeWorkspaceFact,
-    OutputIdentity, PresentationIngress, PresentationIngressV4, PresentationPagerFrameV4,
-    RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport,
-    ScreenView, TransferKind, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    ActivationPolicy, ArrivalBracket, ArrivalLocation, AuthorityScope, BorderHideReasonV4,
+    BorderPresentationV4, FocusFeedback, FrameWitness, FullscreenOwner, HeldScreenRow,
+    HeldWindowRow, HoldReason, IntentRecord, LastWrite, LastWritePath, LastWriteProperty,
+    MAX_INTENT_RECORDS, NativeObservation, NativeWorkspaceFact, OutputIdentity,
+    PresentationIngress, PresentationIngressV4, PresentationPagerFrameV4, RenderTarget,
+    RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport, ScreenView,
+    TransferKind, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
     WORLD_CONTRACT_VERSION, WindowFact, WindowType, WorkspaceRef, WorldCommand, WorldReply,
     WorldReport, check_screen_structure, check_window_structure, validate_report_reason,
 };
@@ -2631,6 +2632,211 @@ pub fn encode_presentation_ingress_v4(ingress: &PresentationIngressV4) -> Result
     }
     out.push('}');
     decode_presentation_ingress_v4_str(&out)?;
+    Ok(out)
+}
+
+fn parse_border_hide_reason_v4(text: &str) -> Result<BorderHideReasonV4> {
+    match text {
+        "disabled" => Ok(BorderHideReasonV4::Disabled),
+        "no-target" => Ok(BorderHideReasonV4::NoTarget),
+        "minimized" => Ok(BorderHideReasonV4::Minimized),
+        "maximized" => Ok(BorderHideReasonV4::Maximized),
+        "fullscreen" => Ok(BorderHideReasonV4::Fullscreen),
+        "host-hidden" => Ok(BorderHideReasonV4::HostHidden),
+        "hidden-workspace" => Ok(BorderHideReasonV4::HiddenWorkspace),
+        "shell" => Ok(BorderHideReasonV4::Shell),
+        "suspended" => Ok(BorderHideReasonV4::Suspended),
+        _ => Err(unknown_value()),
+    }
+}
+
+/// Staged v4 anchored-border row codec (normative target in
+/// `docs/porting/world-contract.md`): strict
+/// shape-only decode plus checked canonical encode for the standalone
+/// [`BorderPresentationV4`] row. Staged: no existing v3 writer, estimator,
+/// reservation, producer, or whole-report entry point changes, and this
+/// function is not called from any existing route. No whole-reply codec is
+/// claimed here; the full reply route is untouched.
+///
+/// Wire rules shared with the v3 lane: every key is required on the wire
+/// (absence refuses as `malformed`); unknown keys (including the retired
+/// absolute `inner`/`outer`) refuse as `unknown-field`; unknown reason
+/// tokens and bad id grammar refuse as `unknown-value`; wrong JSON types
+/// refuse as `malformed` (nullable slots accept `null` only where
+/// documented). `reason` is the closed v4 token set with `host-hidden`
+/// (v3 `cloaked` refuses as `unknown-value`); `None` spells `""`.
+/// Duplicate-key rejection (including escaped duplicates) applies ONLY at
+/// the `*_str` entry point, which parses bytes through
+/// `parse_strict_json`; the `serde_json::Value` decoder operates on
+/// already-parsed values and gives no duplicate promise. Counters are
+/// canonical decimal strings (quoted, `u64::MAX` accepted); witness frames
+/// are `[x,y,w,h]` under [`valid_carried_rect`]; ids are nonempty opaque
+/// ids (ASCII `[A-Za-z0-9-_.]`, 1..128 bytes). `outsets` is exactly four
+/// bare JSON integers (`i32` range, any sign: no `Rect` bound applies to
+/// thickness rows); `width`/`radius` are bare JSON integers with
+/// `value >= 0` (negative refuses as `unknown-value`, non-integers and
+/// `i32` overflow refuse as `malformed`). No old report style cap applies
+/// to any reply outset or style number. Shape only: `visible` with a reason
+/// token refuses (the contract table requires empty when visible), but a
+/// hidden row with `""` stays valid (geometry-veto carry-forward); every
+/// other field combination is accepted: no descriptor coupling is imposed,
+/// and the row shape does not validate causal or producer consistency.
+///
+/// Strict shape decode of one staged v4 anchored-border row value.
+pub fn decode_border_presentation_v4(value: &serde_json::Value) -> Result<BorderPresentationV4> {
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "visible", "reason", "subject", "outsets", "width", "radius", "witness",
+        ],
+    )?;
+    let visible = req_bool(map, "visible")?;
+    let reason_text = req_str(map, "reason")?;
+    let reason = if reason_text.is_empty() {
+        None
+    } else {
+        Some(parse_border_hide_reason_v4(reason_text)?)
+    };
+    if visible && reason.is_some() {
+        return Err(unknown_value());
+    }
+    let subject = match map.get("subject") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            Some(WindowId(text.clone()))
+        }
+        Some(_) => return Err(malformed()),
+    };
+    let outsets = match map.get("outsets") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => {
+            let items = value.as_array().ok_or_else(malformed)?;
+            if items.len() != 4 {
+                return Err(malformed());
+            }
+            let mut nums = [0i32; 4];
+            for (i, item) in items.iter().enumerate() {
+                nums[i] = item
+                    .as_i64()
+                    .and_then(|v| i32::try_from(v).ok())
+                    .ok_or_else(malformed)?;
+            }
+            Some(nums)
+        }
+    };
+    let width = match map.get("width") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => {
+            let num = value
+                .as_i64()
+                .and_then(|v| i32::try_from(v).ok())
+                .ok_or_else(malformed)?;
+            if num < 0 {
+                return Err(unknown_value());
+            }
+            Some(num)
+        }
+    };
+    let radius = match map.get("radius") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => {
+            let num = value
+                .as_i64()
+                .and_then(|v| i32::try_from(v).ok())
+                .ok_or_else(malformed)?;
+            if num < 0 {
+                return Err(unknown_value());
+            }
+            Some(num)
+        }
+    };
+    let witness = match map.get("witness") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => Some(decode_frame_witness(value)?),
+    };
+    Ok(BorderPresentationV4 {
+        visible,
+        reason,
+        subject,
+        outsets,
+        width,
+        radius,
+        witness,
+    })
+}
+
+/// Strict shape decode of one staged v4 anchored-border row from its exact
+/// canonical bytes (4 MiB row-input gate, duplicate-key rejection).
+pub fn decode_border_presentation_v4_str(json: &str) -> Result<BorderPresentationV4> {
+    decode_row_str(json, decode_border_presentation_v4)
+}
+
+/// Checked canonical encode of one staged v4 anchored-border row in
+/// contract table order
+/// (`{"visible":B,"reason":S,"subject":S|null,"outsets":[l,t,r,b]|null,
+/// "width":N|null,"radius":N|null,"witness":W|null}`). The built bytes
+/// re-decode through the strict row decoder, so invalid typed ids, reason
+/// tokens, visible/reason coupling, or style numbers never emit unsafe
+/// JSON.
+pub fn encode_border_presentation_v4(row: &BorderPresentationV4) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("{\"visible\":");
+    out.push_str(if row.visible { "true" } else { "false" });
+    out.push_str(",\"reason\":");
+    match row.reason {
+        None => out.push_str("\"\""),
+        Some(reason) => {
+            out.push('"');
+            out.push_str(reason.as_str());
+            out.push('"');
+        }
+    }
+    out.push_str(",\"subject\":");
+    match &row.subject {
+        None => out.push_str("null"),
+        Some(subject) => push_json_string(&mut out, &subject.0),
+    }
+    out.push_str(",\"outsets\":");
+    match &row.outsets {
+        None => out.push_str("null"),
+        Some(outsets) => {
+            out.push('[');
+            out.push_str(&outsets[0].to_string());
+            out.push(',');
+            out.push_str(&outsets[1].to_string());
+            out.push(',');
+            out.push_str(&outsets[2].to_string());
+            out.push(',');
+            out.push_str(&outsets[3].to_string());
+            out.push(']');
+        }
+    }
+    out.push_str(",\"width\":");
+    match row.width {
+        None => out.push_str("null"),
+        Some(width) => out.push_str(&width.to_string()),
+    }
+    out.push_str(",\"radius\":");
+    match row.radius {
+        None => out.push_str("null"),
+        Some(radius) => out.push_str(&radius.to_string()),
+    }
+    out.push_str(",\"witness\":");
+    match &row.witness {
+        None => out.push_str("null"),
+        Some(witness) => out.push_str(&encode_frame_witness(witness)?),
+    }
+    out.push('}');
+    decode_border_presentation_v4_str(&out)?;
     Ok(out)
 }
 
