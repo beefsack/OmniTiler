@@ -1311,7 +1311,7 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
          \"scopes\":[],\"workspaces\":[],\"outputs\":[],\"windows\":[],\
          \"transfers\":[],\"effects\":[],\"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"nativeCreations\":[],\"warpCursor\":null,\
          \"presentation\":{\"foreground\":\"\",\"border\":{\"visible\":false,\"reason\":\"no-target\",\"inner\":null,\"outer\":null},\
-         \"underlay\":{\"status\":\"hidden\",\"reason\":\"no-group\",\"baseRev\":null},\"pager\":[]},\"intentWrites\":[],\"diagnostics\":[]}"
+         \"underlay\":{\"status\":\"hidden\",\"reason\":\"no-group\",\"baseRev\":null},\"pager\":[]},\"intentWrites\":[],\"switchSettled\":[],\"diagnostics\":[]}"
     );
 }
 

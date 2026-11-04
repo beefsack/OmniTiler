@@ -1001,7 +1001,10 @@ fn selection_commands_resolve_over_logical_rings() {
         output_view(&second, "out-a").as_deref(),
         Some(ring_a[1].as_str())
     );
-    assert_eq!(second.transfers.len(), 1);
+    // An empty numbered select completes at issuing: the terminal carries
+    // the switch outcome and the view parent retires with it.
+    assert_eq!(second.switch_settled.len(), 1);
+    assert!(second.transfers.is_empty());
     // Relative selection wraps around the ring.
     let third = accepted(
         &mut engine,
@@ -3373,8 +3376,11 @@ fn generations_watermarks_and_command_consumption_hold() {
             false,
         ),
     );
+    // An empty trailing select completes at issuing: the terminal carries
+    // the switch outcome and the view parent retires with it.
+    assert_eq!(view_reply.switch_settled.len(), 1);
     let transfers = view_reply.transfers.len();
-    assert_eq!(transfers, 1);
+    assert_eq!(transfers, 0);
     match engine.handle_report(&report(
         5,
         5,
@@ -4094,12 +4100,12 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
 }
 
 #[test]
-fn floating_select_workspace_retains_flight_and_settles_on_echo() {
-    // Standalone selection into a floating workspace retains its view
-    // flight exactly like a tiled selection: the logical view moves
-    // immediately, the target scope publishes Untouched, and only the
-    // exact echo settles the flight. Missing echoes and incomplete
-    // inventories hold the flight; they never erase or complete it.
+fn floating_select_workspace_completes_empty_at_issuing() {
+    // Standalone selection into an empty floating workspace completes at
+    // issuing with an unproven terminal: the logical view moves
+    // immediately, the target scope publishes Untouched, and the issuing
+    // terminal retires the view parent. Later echoes preserve the logical
+    // view with no duplicate terminal and no resurrected flight.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
@@ -4168,11 +4174,18 @@ fn floating_select_workspace_retains_flight_and_settles_on_echo() {
         scope_of(&selected, "out-a", &other),
         ScopeAuthority::Untouched
     );
-    assert_eq!(selected.transfers.len(), 1);
-    assert!(matches!(&selected.transfers[0].kind, TransferKind::View));
-    assert_eq!(selected.transfers[0].target_workspace, other);
-    // A stale report with no echo holds the flight with the retained
-    // logical view intact.
+    assert_eq!(
+        selected.switch_settled.len(),
+        1,
+        "empty select completes at issuing"
+    );
+    assert_eq!(
+        selected.transfers.len(),
+        0,
+        "issuing terminal retires the view parent"
+    );
+    // A stale report with no echo keeps the logical view intact with no
+    // duplicate terminal and no resurrected flight.
     let stale = accepted(
         &mut engine,
         &report(
@@ -4189,7 +4202,8 @@ fn floating_select_workspace_retains_flight_and_settles_on_echo() {
             false,
         ),
     );
-    assert_eq!(stale.transfers.len(), 1);
+    assert!(stale.transfers.is_empty(), "no resurrected flight");
+    assert!(stale.switch_settled.is_empty(), "no duplicate terminal");
     assert_eq!(
         output_view(&stale, "out-a").as_deref(),
         Some(other.as_str())
@@ -4211,9 +4225,9 @@ fn floating_select_workspace_retains_flight_and_settles_on_echo() {
             false,
         ),
     );
-    assert_eq!(gapped.transfers.len(), 1);
-    // The exact echo confirms: the flight drops and the logical view is
-    // preserved (never reverted, never re-emitted).
+    assert!(gapped.transfers.is_empty(), "no resurrected flight");
+    // The exact echo confirms: the logical view is preserved (never
+    // reverted, never re-emitted), with no duplicate terminal.
     let settled = accepted(
         &mut engine,
         &report(
@@ -4244,9 +4258,8 @@ fn floating_select_workspace_retains_flight_and_settles_on_echo() {
 #[test]
 fn floating_select_previous_returns_to_floating_target() {
     // Previous-toggle through recorded history resolves a floating
-    // workspace exactly like a tiled one: same retained flight, same
-    // Untouched scope, same echo completion with the logical view
-    // preserved.
+    // workspace exactly like a tiled one: same issuing terminal and
+    // Untouched scope, with the logical view preserved.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
@@ -4378,9 +4391,15 @@ fn floating_select_previous_returns_to_floating_target() {
     );
     assert_eq!(output_view(&back, "out-a").as_deref(), Some(other.as_str()));
     assert_eq!(scope_of(&back, "out-a", &other), ScopeAuthority::Untouched);
-    assert_eq!(back.transfers.len(), 1);
-    assert!(matches!(&back.transfers[0].kind, TransferKind::View));
-    assert_eq!(back.transfers[0].target_workspace, other);
+    assert_eq!(
+        back.switch_settled.len(),
+        1,
+        "empty previous-toggle completes at issuing"
+    );
+    assert!(
+        back.transfers.is_empty(),
+        "issuing terminal retires the view parent"
+    );
     let settled = accepted(
         &mut engine,
         &report(
@@ -4411,8 +4430,8 @@ fn floating_select_previous_returns_to_floating_target() {
 #[test]
 fn floating_select_trailing_reuses_floating_empty() {
     // Trailing selection reuses the live trailing empty when it is
-    // floating: same retained flight and echo completion, with the
-    // floating scope untouched throughout.
+    // floating: same issuing terminal and Untouched scope, with the
+    // logical view preserved across later echoes.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
@@ -4556,8 +4575,15 @@ fn floating_select_trailing_reuses_floating_empty() {
         scope_of(&reused, "out-a", &trailing),
         ScopeAuthority::Untouched
     );
-    assert_eq!(reused.transfers.len(), 1);
-    assert!(matches!(&reused.transfers[0].kind, TransferKind::View));
+    assert_eq!(
+        reused.switch_settled.len(),
+        1,
+        "empty trailing reuses complete at issuing"
+    );
+    assert!(
+        reused.transfers.is_empty(),
+        "issuing terminal retires the view parent"
+    );
     let settled = accepted(
         &mut engine,
         &report(

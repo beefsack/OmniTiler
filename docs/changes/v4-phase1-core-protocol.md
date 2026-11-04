@@ -102,6 +102,19 @@
   authority. Held screens/windows and incomplete inventories are not output or
   lifetime loss. All controlled desired-shown members on the focus output,
   including composed sticky, belong to its issuing arrival snapshot.
+- The next bounded selection slice adds required `switchSettled` encoding and
+  per-member accounting for the existing focus-bearing native-free route. Freeze
+  visibility targets across all affected outputs separately from the focus
+  output's arrival set; later admissions do not join either frozen switch set.
+  Correlate raw LastWrite by lifetime, polarity and authorization revision,
+  preserve spent evidence, and distinguish proof from setter acceptance. Once
+  every frozen member and the focus attempt have terminal accounting, publish
+  one event on the existing parent operation and retire its native-free selector
+  flight without logical echo authority. Terminal partial-hide failures do not
+  retry or roll back arrival. Scopes and stable targets survive completion;
+  fallback, empty/no-focus and native-owned completion remain excluded. Verify
+  producer-driven success/failure, replay/rollback/lifetime/supersession fences,
+  both canonical writers and pre-mutation size bounds before the final gates.
 
 - Intent dependency order: validate/canonically encode the core-owned opaque
   inner record first; then wire outer report/reply records and consume them in
@@ -226,10 +239,170 @@
   workspace_unsafe_posture is filtered. Focus-bearing native-free suppression-
   capable selection now publishes stable visibility targets, an awaitShown grant
   and a frozen post-layout arrival set with correlated readiness evidence.
-  This does not establish SwitchEvent/selector-flight completion, empty/no-focus
+  That first slice did not establish SwitchEvent/selector-flight completion, empty/no-focus
   selection completion, native-owned arrival migration, native adapter ordering
   or full v4 codec/scenario conformance. No adapter, immutable fixture, version
   or approved-policy files change; all eight OPEN/TBD gates remain unchanged.
+
+## Native-free switch accounting evidence
+
+- The focus-bearing suppression-capable selection route now freezes every
+  command-granted visibility target across affected outputs separately from the
+  focus output's arrival snapshot. First-correlated LastWrite evidence binds the
+  live subject, desired polarity and authorization revision; live and lossless
+  held rows contribute raw evidence before command rollback and readability
+  holds. Target confirmation requires lifetime-matched readable native post
+  facts within the issuing/receipt observation bounds, not setter acceptance.
+  Verdicts latch at receipt, so a future-dated or contradictory later sample
+  cannot upgrade the original attempt. Missing or uncorrelated evidence remains
+  pending, not a timeout failure. Late admissions do not join the frozen set.
+- Once every frozen target and the focus attempt have accounting, required
+  `switchSettled` publishes one event on the existing parent operation. Complete
+  requires no failed visibility targets and arrival-gated proven focus; a focus-
+  only failure has an empty failed list and completed-with-failures outcome.
+  The finite binding and actual native-free selector parent retire without
+  logical echo authority, while active scopes, logical homes and stable target
+  revisions survive. No retry, fallback, memory rollback or fresh focus grant
+  follows. Duplicate requests replay the cached terminal; subsequent reports
+  publish an empty event section. Native-owned and empty/no-focus completion
+  remain outside this route.
+- The approved [terminal partial-hide discriminator](../spec/reference-outcomes.md#rapid-unlanded-workspace-arrival)
+  is pinned with three real-engine members: arrival and foreground prove, one
+  departure hide succeeds and the other has a readable unchanged refusal. The
+  result is completed-with-failures with exactly that failed hide and proven
+  focus; its home/revision survives with no retry or rollback. Reference-WM and
+  native outcomes remain TBD; no equivalent reference receipt model is claimed.
+- Twenty-two additional core regressions cover success, blocked/refused/ambiguous
+  targets, missing evidence, historical receipt bounds, held/conflicting rows,
+  close/supersession, frozen late membership, Shared fanout, simultaneous output
+  completion, rejected-command observation retention, incomplete inventories and
+  duplicate delivery. A real producer terminal and synthetic maximum-token
+  events match both canonical writers; marginal event sizes are exact. The
+  pre-mutation reserve covers 117 bytes per event including its comma and 131
+  bytes per failed maximum-length id, with all retained bindings counted.
+  Boundary rejection preserves the state and permits a smaller same-sequence
+  retry. Review corrected the initial event reserve and added missing lifecycle
+  checks. Most regressions were first executed after implementation, not a
+  claimed preimplementation behavioral red. Initial test failures corrected
+  fixture/oracle setup; the required empty-section golden needed one narrowly
+  causal update, not a weakened contract assertion.
+- Final verification passes the exact filtered core/protocol test gate (1587
+  core unit tests, every selected integration target and protocol suites
+  50/12/4/15/2/8/2/59/4), core/protocol build, scoped all-target clippy with
+  warnings denied, formatting, whitespace, added ASCII and local link checks.
+  Only workspace_unsafe_posture is filtered. This remains a staged wire
+  increment, not strict whole-reply decoding, native ordering/delivery or full
+  scenario conformance. Adapter constructors/interfaces still need the required
+  event lane during their ports; no adapter or immutable fixture changes are
+  included. All eight OPEN/TBD gates and the held-output rehome follow-up remain.
+
+## Focusless switch completion decision
+
+- User decision 2026-11-04 resolves the absent-focus question using the existing
+  vocabulary: focus=unproven and outcome=complete once all visibility obligations
+  are satisfied, with failed=[] when nothing failed. This includes zero-member
+  empty-to-empty and native-owned focusless selections. Focus-bearing switches
+  still require proven focus; empty/minimized-only keeps no focused client.
+  The [canonical decision](../decisions/workspaces.md#focusless-switch-completion)
+  and [minimal discriminator](../spec/reference-outcomes.md#empty-workspace-focus-across-outputs)
+  preserve the unsupported native/reference terminal outcomes as TBD.
+- Implemented by extending the common completion predicate and retained selection
+  binding, not a separate focusless completion path. Frozen departure visibility
+  obligations require no invented effect or feedback row;
+  native-owned selections use actual native selector evidence, never logical
+  echo authority. No token, wire, fixture, fake focus, fallback or retry change.
+  Focused and focusless success/failure, zero-member completion, actual selector
+  release, lifetime/supersession/replay fences and size bounds are verified offline.
+- Tier 1 EW-C/H/I/S source-only evidence establishes empty client-focus behavior,
+  not an equivalent receipt protocol. The selected representation is a product
+  decision, not a claimed native/reference terminal result.
+
+## Focusless switch completion evidence
+
+- The existing retained selection carries an optional focus effect and freezes
+  visibility obligations independently. One terminal predicate and one stager
+  account for focus-bearing and focusless switches, retire the actual view parent
+  and publish one take-once event. Native-free zero-member focusless selections
+  complete in the issuing reply; their possible event is reserved before mutation
+  alongside terminals from older bindings. Empty/minimized-only selections mint
+  no fake focus or feedback requirement. Failed visibility members still produce
+  completed-with-failures without retry or rollback.
+- Native-owned focusless bindings freeze native selector obligations per affected
+  output, not per-window suppression targets. Exact native echoes or correlated
+  accepted target posts prove arrival; proven unchanged-preimage refusals terminate
+  with failure, while missing, wrong-tuple or logical echoes do not prove a native
+  switch. First correlated raw attempts survive holds and command rollback;
+  recovery does not upgrade them from later contradictory attempts. An independent
+  fresh native target echo remains proof. Shared same-native-id fanout requires
+  unanimous output accounting; partial observations hold. External native moves
+  supersede the binding without a stale terminal.
+- Seventeen additional core regressions cover empty/minimized-only routes,
+  visibility success/refusal/missing evidence, native success/refusal and held
+  receipt recovery, first-raw retention, Shared unanimity, supersession,
+  issuing/replay/rejected-command fences and simultaneous-event sizing. The
+  first-raw regression reproduced a later contradictory receipt replacing the
+  historical attempt before correction. Other new cases were not established as
+  preimplementation behavioral reds. Existing empty-selection flight-retention
+  oracles now assert issuing completion and no resurrection; the final integration
+  gate exposed one further stale oracle, corrected without production changes.
+  A question-mark lint was repaired without changing terminal semantics.
+- Independent review found no outstanding in-scope defect. Fresh final verification
+  passes the exact filtered core/protocol gate (1604 core unit tests, every selected
+  integration target and protocol suites 50/12/4/15/2/8/2/59/4), core/protocol build,
+  scoped all-target clippy with warnings denied, formatting, whitespace, added ASCII
+  and local-link checks. Only workspace_unsafe_posture is filtered. Native-owned
+  focus-bearing arrival migration, native adapter ordering/delivery, full v4 codecs
+  and scenario acceptance remain excluded. No adapter, immutable fixture or version
+  changes are included; all eight OPEN/TBD gates and held-output rehome follow-up
+  remain unchanged.
+
+## Native-owned focus-bearing arrival migration
+
+- Native-owned focus-bearing selections now reuse the existing explicit-selection
+  binding and awaitShown focus. The focus output's selected-home arrival members
+  and final published frames freeze independently of native selector obligations
+  across affected outputs. Per-window visibility targets remain null; no
+  suppression write or LastWrite requirement follows from native desktop ownership.
+- Native-arm arrival homes compare through the existing native-to-logical binding
+  against each frozen target, preserving full lifetime, watermark, readable frame,
+  visibility, minimized and host-hidden checks and first-feedback retention. Native
+  selector proof remains separate from foreground and arrival proof; logical
+  echoes never become native authority. The common terminal/stager, existing
+  native refusal handling and lifecycle fences are reused without new wire shapes.
+- Twenty-six additional core regressions cover actual grants and complete/proven
+  terminals, all-member arrival failures and wrong evidence, native selector
+  holds/refusal, Shared fanout, supersession, closes and size bounds. Existing
+  rollback/replay checks remain passing. The ordinary-focus grant was reproduced
+  before migration; review regressions also reproduced omitted frameless members,
+  premature accounting loss on own native refusal and sticky focus missing its
+  actual frozen home. Corrections cover split-report refusal/feedback and
+  frameless/float/fullscreen subjects. Native-owned focus targets fail readiness
+  if absent from the frozen snapshot; that omission is an artificial invariant
+  test, not a reproduced producer failure. Other new tests are not claimed as
+  preimplementation behavioral reds.
+- The Shared partial-then-external-move regression is resolved. Selecting n1,
+  observing only the focus output reach n1 while the other remains at n0, then
+  observing that other output move to n2 previously left the old binding alive:
+  the partial report had removed its output scope. The focused regression
+  `host_owned_focus_bearing_shared_partial_then_external_move_drops_binding`
+  now proves binding retirement and no late-feedback terminal. Initial covering
+  removal broke pending partial proofs; a later filter restored those checks but
+  still removed the scope. Moving the departing check before stale removal fixed
+  that sequence but retained abandoned accounting on redundant selection back
+  home. The retained guard also requires the focus output to prove its selected
+  home, preserving both partial progress and supersession. No new state or
+  per-output accounting structure was added; native-free and focusless paths are
+  unchanged. Own native refusals retain historical accounting for actual delayed
+  feedback, without resurrecting the native view flight or retrying actuation.
+- A fresh independent review found no blocking finding. Direct final verification
+  passes the exact filtered core/protocol gate (1630 core unit tests, every selected
+  integration target and protocol suites 50/12/4/15/2/8/2/59/4), core/protocol build,
+  scoped all-target clippy with warnings denied, formatting, whitespace, added ASCII
+  and local-link checks. Only workspace_unsafe_posture is filtered. This closes the
+  planned offline native-owned focus-bearing arrival migration, not native adapter
+  delivery, full v4 codecs/scenarios or reconnect/rehome. No adapter, immutable
+  fixture, version or new wire vocabulary changes are included; all eight OPEN/TBD
+  gates and unsupported native/reference outcomes remain unchanged.
 
 ## Evidence
 
@@ -1295,8 +1468,13 @@
    verdict settlement are implemented and offline-tested.
    Focus-bearing native-free suppression-capable selections now integrate stable
    visibility targets, frozen arrival sets and awaitShown feedback readiness.
-   Switch completion, empty/no-focus and native-owned arrival paths remain
-   dependent work; the pre-existing held-output recovery rehome remains in the
+   Native-free switch target accounting, required terminal event publication and
+    selector-flight completion are implemented for that route. Focusless completion
+    now uses the same accounting rule, including issuing zero-member native-free
+    events and native-owned focusless selector proof. Native-owned focus-bearing
+    arrival migration is implemented and offline-verified through Native-arm
+    home/frame/lifetime proof and the common selection terminal path. The pre-existing
+   held-output recovery rehome remains in the
    reconnect/rehome increment.
   The remaining world report/reply paths and version are still staged; no v4
   cutover or full scenario acceptance is claimed. Full adapter build-failure

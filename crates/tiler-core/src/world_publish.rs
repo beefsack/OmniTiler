@@ -1415,6 +1415,9 @@ impl WorldEngine {
         // command, else the ordinary ToggleFloat save; the exact-encoding
         // gate below still commits it atomically with the rest of the reply.
         let intent_writes = self.drain_intent_saves(report, command_consumed, &command_result);
+        // Per-report switch terminals: taken here so the next unrelated
+        // report publishes empty. Duplicates repeat the cached reply.
+        let switch_settled = std::mem::take(&mut self.switch_settled);
         WorldReply {
             contract_version: WORLD_CONTRACT_VERSION,
             adapter_incarnation: report.adapter_incarnation.clone(),
@@ -1438,6 +1441,7 @@ impl WorldEngine {
             cursor_warp,
             presentation: crate::world_presentation::WorldPresentation::default(),
             intent_writes,
+            switch_settled,
         }
     }
 

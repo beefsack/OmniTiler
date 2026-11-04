@@ -1,11 +1,17 @@
 //! Native-free suppression-capable explicit selection visibility/readiness
-//! prerequisite: an actual explicit `SelectWorkspace`/`SwitchView` routed
-//! through `retain_view` that resolves a focus target publishes same-output
-//! selected-home shows plus departing-home hides under one authorization
-//! revision with an `awaitShown` focus grant. Ordinary focus, admission,
-//! hover, sends, and every out-of-scope route keep `awaitShown=false` with
-//! no visibility targets. No `SwitchEvent` is emitted and no selector
-//! completion is claimed here.
+//! plus terminal switch settlement: an actual explicit
+//! `SelectWorkspace`/`SwitchView` routed through `retain_view` that resolves
+//! a focus target publishes same-output selected-home shows plus
+//! departing-home hides under one authorization revision with an
+//! `awaitShown` focus grant, then settles one terminal `SwitchEvent` on the
+//! existing parent view operation once every frozen switch member has a
+//! first-correlated `LastWrite` verdict and the first focus feedback
+//! latches. Focusless selections (no required focus: empty-to-empty,
+//! occupied-to-empty, minimized-only) freeze the same visibility scope and
+//! settle one terminal `SwitchEvent` with `focus:unproven` once visibility
+//! obligations are satisfied (zero members complete at issuing). Ordinary
+//! focus, admission, hover, sends, and every out-of-scope route keep
+//! `awaitShown=false` with no visibility targets and no switch events.
 
 use std::collections::BTreeSet;
 
@@ -17,9 +23,10 @@ use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, AuthorityScope, FocusFeedback, FrameSetter, HeldScreenRow,
-    MemberAttempt, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
-    VisibilityFact, VisibilitySample, VisibilitySetter, WORLD_CONTRACT_VERSION, WindowFact,
-    WorkspaceRef, WorldCommand, WorldReport,
+    HeldWindowRow, LastWrite, LastWritePath, LastWriteProperty, MemberAttempt, RowDiagnostic,
+    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, SwitchFocus, SwitchOutcome,
+    VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter, WORLD_CONTRACT_VERSION,
+    WORLD_MAX_REPLY_BYTES, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -376,7 +383,7 @@ fn selection_grants_await_shown_with_show_and_hide_targets() {
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("selection binding retained");
-    assert_eq!(binding.effect, *effect);
+    assert_eq!(binding.effect, Some(effect.clone()));
     assert_eq!(binding.parent_op, "op-3", "parent view op retained");
     assert_eq!(
         binding.members.len(),
@@ -1358,7 +1365,7 @@ fn selection_without_suppression_caps_grants_nothing() {
 }
 
 #[test]
-fn selection_host_owned_engine_grants_nothing() {
+fn selection_host_owned_focusless_pends_on_native_proof() {
     let mut engine = engine_with_caps(caps_host_owned());
     let boot = accepted(
         &mut engine,
@@ -1398,22 +1405,42 @@ fn selection_host_owned_engine_grants_nothing() {
     );
     assert!(reply.effects.is_empty(), "empty trailing selects nothing");
     for row in &reply.windows {
-        assert!(row.visibility.is_none(), "host-owned grants no targets");
+        assert!(
+            row.visibility.is_none(),
+            "host-owned grants no per-window targets"
+        );
     }
     assert!(
-        engine.retained_selection.is_empty(),
-        "host-owned keeps no bindings"
+        engine.selection_targets.is_empty(),
+        "host-owned freezes no per-window targets"
     );
+    // The focusless binding pends on the native selector readback: no
+    // native observations here, so no proof either way.
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("host-owned focusless binding pends");
+    assert!(binding.effect.is_none());
+    assert!(
+        !binding.view_targets.is_empty(),
+        "native obligation freezes: {binding:?}"
+    );
+    assert!(
+        binding.switch_members.is_empty(),
+        "no per-window obligations: {binding:?}"
+    );
+    assert!(reply.switch_settled.is_empty(), "native proof outstanding");
 }
 
 #[test]
-fn empty_selection_grants_nothing_and_drops_stale_shows() {
-    let (mut engine, _home, away) = select_setup();
+fn empty_selection_freezes_hide_then_supersedes_without_completing() {
+    let (mut engine, home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
     assert!(row(&granted, "w2").visibility.is_some());
     // Occupying the trailing spare mints a fresh trailing spare, which is
-    // empty: selecting it resolves no focus, and the superseding intent
-    // drops the stale controlled targets without completing the route.
+    // empty: selecting it resolves no focus and freezes the departing
+    // hide under a focusless binding (latest intent supersedes the old
+    // grant silently, never completing it).
     let ring = ring_ids(&granted, "out-a");
     assert!(
         ring.len() >= 3,
@@ -1423,17 +1450,39 @@ fn empty_selection_grants_nothing_and_drops_stale_shows() {
     assert_ne!(empty, away, "spare is not the occupied workspace");
     let reply = select(&mut engine, 4, &empty);
     assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
-    for row in &reply.windows {
-        assert!(
-            row.visibility.is_none() || row.visibility_authority != ScopeAuthority::Controlled,
-            "stale shows drop without completing the route: {row:?}"
-        );
-    }
     assert!(
-        !engine
-            .retained_selection
-            .contains_key(&OutputId("out-a".to_owned())),
-        "superseded binding drops with the new intent"
+        reply.switch_settled.is_empty(),
+        "supersession completes nothing: {reply:?}"
+    );
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("focusless binding retained");
+    assert_eq!(binding.parent_op, "op-4", "latest intent wins: {binding:?}");
+    assert!(binding.effect.is_none());
+    assert!(
+        binding
+            .switch_members
+            .iter()
+            .any(|member| member.window.0 == "w2" && !member.shown),
+        "departing hide freezes: {binding:?}"
+    );
+    // A newer selection supersedes the pending focusless binding without
+    // an event: selecting home resolves w1 and drops op-4 silently.
+    let back = select(&mut engine, 5, &home);
+    assert_eq!(back.effects.len(), 1, "home resolves w1: {back:?}");
+    assert!(
+        back.switch_settled.is_empty(),
+        "superseded focusless emits nothing: {back:?}"
+    );
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("new binding retained");
+    assert_eq!(binding.parent_op, "op-5", "latest intent wins: {binding:?}");
+    assert!(
+        binding.effect.is_some(),
+        "focus-bearing binding replaces focusless: {binding:?}"
     );
 }
 
@@ -2182,7 +2231,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
         .expect("held grant survives")
         .clone();
     assert_eq!(
-        held_binding.effect, grant_effect,
+        held_binding.effect,
+        Some(grant_effect.clone()),
         "held grant is the out-b award"
     );
     assert_eq!(held_binding.members.len(), 1, "frozen set is w4 alone");
@@ -2292,7 +2342,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
         .get(&OutputId("out-b".to_owned()))
         .expect("grant survives recovery");
     assert_eq!(
-        binding.effect, grant_effect,
+        binding.effect,
+        Some(grant_effect.clone()),
         "same finite grant, no renewal"
     );
     assert_eq!(binding.rev, rev_b, "grant keeps its revision");
@@ -2598,4 +2649,5165 @@ fn selection_historical_readiness_does_not_authorize_fresh_visibility() {
         "no new arrival grant follows the flip"
     );
     check_latched(&engine);
+}
+
+fn confirm_sample(obs: u64, shown: bool) -> VisibilitySample {
+    VisibilitySample {
+        obs,
+        lifetime_matched: Some(true),
+        visibility: VisibilityFact {
+            visible: Some(shown),
+            suppression_owned: Some(false),
+        },
+        minimized: Some(false),
+        host_hidden: Some(false),
+    }
+}
+
+fn last_write_confirmed(target: bool, rev: u64, post_obs: u64) -> LastWrite {
+    LastWrite {
+        property: LastWriteProperty::Visibility,
+        target,
+        revision: rev,
+        path: LastWritePath::Staged,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: None,
+        post: Some(confirm_sample(post_obs, target)),
+    }
+}
+
+fn last_write_with(
+    target: bool,
+    rev: u64,
+    setter: VisibilitySetter,
+    reason: VisibilityReason,
+    post: Option<VisibilitySample>,
+) -> LastWrite {
+    LastWrite {
+        property: LastWriteProperty::Visibility,
+        target,
+        revision: rev,
+        path: LastWritePath::Staged,
+        setter,
+        reason,
+        pre: None,
+        post,
+    }
+}
+
+fn with_lw(mut fact: WindowFact, last: LastWrite) -> WindowFact {
+    fact.last_write = Some(last);
+    fact
+}
+
+fn refused_feedback(id: &str, target: &str, revision: u64) -> FocusFeedback {
+    FocusFeedback {
+        id: id.to_owned(),
+        target: WindowId(target.to_owned()),
+        revision,
+        setter: VisibilitySetter::Refused,
+        reason: VisibilityReason::Empty,
+        pre: Some(WindowId("w-other".to_owned())),
+        post: Some(WindowId("w-other".to_owned())),
+        foreground_proven: false,
+        arrival: Vec::new(),
+        attempt_ms: 7,
+    }
+}
+
+fn notcalled_feedback(id: &str, target: &str, revision: u64) -> FocusFeedback {
+    FocusFeedback {
+        id: id.to_owned(),
+        target: WindowId(target.to_owned()),
+        revision,
+        setter: VisibilitySetter::NotCalled,
+        reason: VisibilityReason::ScopeHeld,
+        pre: None,
+        post: None,
+        foreground_proven: false,
+        arrival: Vec::new(),
+        attempt_ms: 7,
+    }
+}
+
+#[test]
+fn switch_all_confirmed_completes_with_proven_focus() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let frame = row(&granted, "w2").effective_frame;
+    assert!(frame.is_some());
+    let w2_lw = last_write_confirmed(true, rev, 4);
+    let w1_lw = last_write_confirmed(false, rev, 4);
+    let feedback = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        vec![bracket("w2", "out-a", 4, frame)],
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                with_lw(sfact("w1", "out-a", 0), w1_lw),
+                with_lw(sfact("w2", "out-a", 100), w2_lw),
+            ],
+            vec![],
+            None,
+            None,
+            vec![feedback],
+            "",
+        ),
+    );
+    assert_eq!(reply.switch_settled.len(), 1, "one terminal: {reply:?}");
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Proven);
+    assert!(!event.fallback);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases"
+    );
+    assert!(
+        engine
+            .retained
+            .iter()
+            .all(|r| r.target.operation_id != "op-3"),
+        "actual view parent retires"
+    );
+    assert!(
+        engine
+            .selection_scopes
+            .contains_key(&OutputId("out-a".to_owned())),
+        "scopes survive"
+    );
+    assert_eq!(
+        engine
+            .selection_targets
+            .get(&WindowId("w2".to_owned()))
+            .expect("target survives")
+            .rev,
+        rev
+    );
+    let wire = crate::world_report::encode_reply_canonical(&reply);
+    assert!(
+        crate::world_report::reply_estimate(&reply) >= wire.len(),
+        "estimate covers event reply"
+    );
+    assert!(wire.contains("\"switchSettled\":[{"));
+    assert!(wire.contains("\"outcome\":\"complete\""));
+    let again = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    assert!(
+        again.switch_settled.is_empty(),
+        "next report publishes empty"
+    );
+}
+
+#[test]
+fn switch_foreground_without_arrival_never_proves_focus_or_complete() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let w2_lw = last_write_confirmed(true, rev, 4);
+    let w1_lw = last_write_confirmed(false, rev, 4);
+    let feedback = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        vec![],
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                with_lw(sfact("w1", "out-a", 0), w1_lw),
+                with_lw(sfact("w2", "out-a", 100), w2_lw),
+            ],
+            vec![],
+            None,
+            None,
+            vec![feedback],
+            "",
+        ),
+    );
+    assert_eq!(reply.switch_settled.len(), 1, "still terminal: {reply:?}");
+    let event = &reply.switch_settled[0];
+    assert_eq!(
+        event.focus,
+        SwitchFocus::Unproven,
+        "no arrival means no proven focus"
+    );
+    assert_eq!(
+        event.outcome,
+        SwitchOutcome::CompletedWithFailures,
+        "refused/unproven focus with confirmed targets never completes silently"
+    );
+    assert!(event.failed.is_empty());
+}
+
+#[test]
+fn switch_refused_focus_with_confirmed_visibility_fails_outcome() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let w2_lw = last_write_confirmed(true, rev, 4);
+    let w1_lw = last_write_confirmed(false, rev, 4);
+    let feedback = refused_feedback(&effect.id, "w2", effect.issued_revision);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                with_lw(sfact("w1", "out-a", 0), w1_lw),
+                with_lw(sfact("w2", "out-a", 100), w2_lw),
+            ],
+            vec![],
+            None,
+            None,
+            vec![feedback],
+            "",
+        ),
+    );
+    assert_eq!(reply.switch_settled.len(), 1);
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.focus, SwitchFocus::Refused);
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+}
+
+#[test]
+fn switch_hide_refused_terminates_with_failed_without_readiness() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let w2_lw = last_write_confirmed(true, rev, 4);
+    let w1_lw = last_write_with(
+        false,
+        rev,
+        VisibilitySetter::Refused,
+        VisibilityReason::ShowBlocked,
+        Some(confirm_sample(4, true)),
+    );
+    let feedback = notcalled_feedback(&effect.id, "w2", effect.issued_revision);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                with_lw(sfact("w1", "out-a", 0), w1_lw),
+                with_lw(sfact("w2", "out-a", 100), w2_lw),
+            ],
+            vec![],
+            None,
+            None,
+            vec![feedback],
+            "",
+        ),
+    );
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "blocked hide + no-call focus terminates"
+    );
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(event.failed, vec![WindowId("w1".to_owned())]);
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(
+        engine
+            .selection_scopes
+            .contains_key(&OutputId("out-a".to_owned())),
+        "scopes survive failure"
+    );
+}
+
+#[test]
+fn switch_blocked_show_and_nocall_focus_terminates() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let w2_lw = last_write_with(
+        true,
+        rev,
+        VisibilitySetter::NotCalled,
+        VisibilityReason::ScopeHeld,
+        Some(confirm_sample(4, false)),
+    );
+    let w1_lw = last_write_confirmed(false, rev, 4);
+    let feedback = notcalled_feedback(&effect.id, "w2", effect.issued_revision);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                with_lw(sfact("w1", "out-a", 0), w1_lw),
+                with_lw(sfact("w2", "out-a", 100), w2_lw),
+            ],
+            vec![],
+            None,
+            None,
+            vec![feedback],
+            "",
+        ),
+    );
+    assert_eq!(reply.switch_settled.len(), 1);
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(event.failed, vec![WindowId("w2".to_owned())]);
+}
+
+#[test]
+fn switch_missing_or_uncorrelated_evidence_stays_pending() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let frame = row(&granted, "w2").effective_frame;
+    let w2_lw = last_write_confirmed(true, rev, 4);
+    let feedback = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        vec![bracket("w2", "out-a", 4, frame)],
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                sfact("w1", "out-a", 0),
+                with_lw(sfact("w2", "out-a", 100), w2_lw),
+            ],
+            vec![],
+            None,
+            None,
+            vec![feedback],
+            "",
+        ),
+    );
+    assert!(
+        reply.switch_settled.is_empty(),
+        "missing member stays pending"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned()))
+    );
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let frame = row(&granted, "w2").effective_frame;
+    let bad_rev = last_write_confirmed(true, rev + 1, 4);
+    let w1_lw = last_write_confirmed(false, rev, 4);
+    let feedback = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        vec![bracket("w2", "out-a", 4, frame)],
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                with_lw(sfact("w1", "out-a", 0), w1_lw),
+                with_lw(sfact("w2", "out-a", 100), bad_rev),
+            ],
+            vec![],
+            None,
+            None,
+            vec![feedback],
+            "",
+        ),
+    );
+    assert!(
+        reply.switch_settled.is_empty(),
+        "revision mismatch stays pending"
+    );
+}
+
+#[test]
+fn switch_first_evidence_immutable_and_future_stays_failed() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let frame = row(&granted, "w2").effective_frame;
+    let future_w2 = last_write_confirmed(true, rev, 5);
+    let w1_lw = last_write_confirmed(false, rev, 4);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                with_lw(sfact("w1", "out-a", 0), w1_lw),
+                with_lw(sfact("w2", "out-a", 100), future_w2),
+            ],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    assert!(reply.switch_settled.is_empty(), "no feedback yet: pending");
+    let feedback = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        vec![bracket("w2", "out-a", 5, frame)],
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![feedback],
+            "",
+        ),
+    );
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "feedback completes the latch"
+    );
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(
+        event.failed,
+        vec![WindowId("w2".to_owned())],
+        "future-dated stays failed"
+    );
+}
+
+#[test]
+fn switch_held_raw_evidence_correlates_without_healthy_visibility() {
+    use crate::world_report::retained_window_fields;
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let frame = row(&granted, "w2").effective_frame;
+    let w1_lw = last_write_confirmed(false, rev, 4);
+    let feedback = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        vec![bracket("w2", "out-a", 4, frame)],
+    );
+    let mut held_report = report(
+        4,
+        vec![with_lw(
+            sfact("w2", "out-a", 100),
+            last_write_confirmed(true, rev, 4),
+        )],
+        vec![],
+        None,
+        None,
+        vec![feedback],
+        "",
+    );
+    // w1 (departing hide) rides held with its lossless raw lastWrite; w2
+    // (selected show) stays live so arrival still proves.
+    let w1_fact = with_lw(sfact("w1", "out-a", 0), w1_lw);
+    held_report.held_windows = vec![HeldWindowRow {
+        window: WindowId("w1".to_owned()),
+        ordinal: 1,
+        output: Some(OutputId("out-a".to_owned())),
+        fields: retained_window_fields(&w1_fact),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    }];
+    let reply = accepted(&mut engine, &held_report);
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "held raw completes: {reply:?}"
+    );
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert_eq!(event.focus, SwitchFocus::Proven);
+}
+
+#[test]
+fn switch_close_and_supersession_emit_nothing_stale() {
+    let (mut engine, _home, _away) = select_setup();
+    let _granted = select(&mut engine, 3, &_away.clone());
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![sfact("w1", "out-a", 0)],
+            vec!["w2"],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    assert!(reply.switch_settled.is_empty());
+    assert!(engine.retained_selection.is_empty());
+    let (mut engine, _home, away) = select_setup();
+    let _granted = select(&mut engine, 3, &away);
+    let _second = select(&mut engine, 5, &away);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    assert!(
+        reply
+            .switch_settled
+            .iter()
+            .all(|e| e.operation_id != "op-3"),
+        "no stale event for superseded op"
+    );
+}
+
+#[test]
+fn switch_late_admission_never_joins_frozen_set() {
+    let (mut engine, _home, away) = boot_three();
+    let _ = send_to(&mut engine, 2, "w2", &away);
+    let granted = accepted(
+        &mut engine,
+        &report(
+            3,
+            three_facts("out-a"),
+            vec![],
+            Some(3),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away.clone(),
+            }),
+            vec![],
+            "",
+        ),
+    );
+    let rev = granted.state_revision;
+    let frozen_before: Vec<WindowId> = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding")
+        .switch_members
+        .iter()
+        .map(|m| m.window.clone())
+        .collect();
+    let moved = send_to(&mut engine, 4, "w3", &away);
+    assert!(moved.state_revision > rev);
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding");
+    let frozen_after: Vec<WindowId> = binding
+        .switch_members
+        .iter()
+        .map(|m| m.window.clone())
+        .collect();
+    assert_eq!(
+        frozen_after, frozen_before,
+        "late admission never mutates the frozen set"
+    );
+    assert_eq!(
+        engine
+            .selection_targets
+            .get(&WindowId("w3".to_owned()))
+            .expect("late target")
+            .rev,
+        moved.state_revision
+    );
+}
+
+#[test]
+fn switch_shared_fanout_freezes_all_outputs_and_retires_flight() {
+    let mut engine = shared_engine();
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let windows = || {
+        vec![
+            sfact("w1", "out-a", 0),
+            sfact("w2", "out-a", 100),
+            sfact("w3", "out-b", 800),
+            sfact("w4", "out-b", 900),
+        ]
+    };
+    let boot = accepted(
+        &mut engine,
+        &report_multi(
+            1,
+            windows(),
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+            screens.clone(),
+        ),
+    );
+    let ring_a: Vec<String> = boot
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let away = ring_a[1].clone();
+    let _ = accepted(
+        &mut engine,
+        &report_multi(
+            2,
+            windows(),
+            vec![],
+            Some(2),
+            Some(WorldCommand::Send {
+                window: WindowId("w2".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: away.clone(),
+                follow: false,
+            }),
+            vec![],
+            "w2",
+            screens.clone(),
+        ),
+    );
+    let granted = accepted(
+        &mut engine,
+        &report_multi(
+            3,
+            windows(),
+            vec![],
+            Some(3),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away.clone(),
+            }),
+            vec![],
+            "",
+            screens.clone(),
+        ),
+    );
+    let rev = granted.state_revision;
+    let effect = granted.effects[0].clone();
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding")
+        .clone();
+    assert!(
+        binding.switch_members.len() >= 4,
+        "fanout freezes all: {binding:?}"
+    );
+    assert!(binding.switch_members.iter().all(|m| m.rev == rev));
+    assert!(
+        engine
+            .retained
+            .iter()
+            .any(|r| r.target.operation_id == "op-3"
+                && matches!(r.target.kind, crate::world_report::TransferKind::View)),
+        "real view flight retained"
+    );
+    let frame_a = granted
+        .windows
+        .iter()
+        .find(|r| r.lifetime.0 == effect.target.0)
+        .and_then(|r| r.effective_frame);
+    let mut facts = Vec::new();
+    for (window, out, x, shown) in [
+        ("w1", "out-a", 0, false),
+        ("w2", "out-a", 100, true),
+        ("w3", "out-b", 800, false),
+        ("w4", "out-b", 900, false),
+    ] {
+        facts.push(with_lw(
+            sfact(window, out, x),
+            last_write_confirmed(shown, rev, 4),
+        ));
+    }
+    let feedback = feedback_row(
+        &effect.id,
+        &effect.target.0,
+        effect.issued_revision,
+        true,
+        Some(&effect.target.0),
+        vec![bracket(&effect.target.0, "out-a", 4, frame_a)],
+    );
+    let reply = accepted(
+        &mut engine,
+        &report_multi(
+            4,
+            facts,
+            vec![],
+            None,
+            None,
+            vec![feedback],
+            "",
+            screens.clone(),
+        ),
+    );
+    assert_eq!(reply.switch_settled.len(), 1, "shared terminal: {reply:?}");
+    assert!(
+        engine
+            .retained
+            .iter()
+            .all(|r| r.target.operation_id != "op-3"),
+        "real parent flight retires"
+    );
+}
+
+#[test]
+fn switch_estimate_and_reserve_cover_maximum_ids() {
+    use crate::world_report::{SwitchEvent, SwitchFocus, SwitchOutcome};
+    use crate::world_sizing::{
+        MAX_SWITCH_EVENT_FIXED_BYTES, MAX_SWITCH_FAILED_ROW_BYTES, max_switch_settle_reserve,
+        switch_settled_estimate,
+    };
+    let long_window = "w".repeat(128);
+    let long_op = format!("op-{}", u64::MAX);
+    let event = SwitchEvent {
+        operation_id: long_op,
+        outcome: SwitchOutcome::CompletedWithFailures,
+        failed: vec![WindowId(long_window)],
+        focus: SwitchFocus::Unproven,
+        fallback: true,
+    };
+    let estimated = switch_settled_estimate(std::slice::from_ref(&event));
+    let wire = {
+        let mut out = String::new();
+        crate::world_sizing::encode_switch_settled(&mut out, std::slice::from_ref(&event));
+        out
+    };
+    assert!(estimated >= wire.len(), "estimate covers maximum ids");
+    let reserve = max_switch_settle_reserve(1, 1);
+    assert!(reserve >= estimated, "reserve covers one maximum event");
+    assert_eq!(
+        reserve,
+        19 + MAX_SWITCH_EVENT_FIXED_BYTES + MAX_SWITCH_FAILED_ROW_BYTES
+    );
+    assert_eq!(max_switch_settle_reserve(0, 0), 0);
+}
+
+#[test]
+fn switch_marginal_empty_event_reserve_covers_worst_tokens() {
+    // Worst-token empty event: longest op (`op-<u64::MAX>`), longest
+    // outcome (`completed-with-failures`), longest focus (`unproven`),
+    // longer bool (`false`). Fixed 51 + 25 + 25 + 10 + 5 + 1 comma = 117
+    // per event; the pre-mutation reserve must cover the exact estimate
+    // for one event and for concurrent empty events alike (the old 115
+    // bound fails this: 19 + 115 = 134 < 135 estimated).
+    use crate::world_report::{SwitchEvent, SwitchFocus, SwitchOutcome};
+    use crate::world_sizing::{max_switch_settle_reserve, switch_settled_estimate};
+    let worst = || SwitchEvent {
+        operation_id: format!("op-{}", u64::MAX),
+        outcome: SwitchOutcome::CompletedWithFailures,
+        failed: Vec::new(),
+        focus: SwitchFocus::Unproven,
+        fallback: false,
+    };
+    for events in [vec![worst()], vec![worst(), worst()]] {
+        let n = events.len();
+        let estimated = switch_settled_estimate(&events);
+        // Exact content: 116 bytes per worst-token empty event
+        // (51 + 25 + 25 + 10 + 5), one comma between rows, plus the
+        // 19-byte section key.
+        assert_eq!(
+            estimated,
+            19 + n * 116 + (n - 1),
+            "exact estimate for empty events"
+        );
+        let mut wire = String::new();
+        crate::world_sizing::encode_switch_settled(&mut wire, &events);
+        // The section writer emits only the `[...]` array; the estimate
+        // additionally carries the `,"switchSettled":` key (19) while the
+        // writer carries the array brackets (2).
+        assert_eq!(wire.len(), estimated - 17, "section key accounts the gap");
+        let reserve = max_switch_settle_reserve(n, 0);
+        assert!(reserve >= estimated, "reserve covers {n} empty events");
+    }
+    // Failed-list maximum: one 128-char id plus the fixed row above stays
+    // covered by the per-id reserve term.
+    let failed_event = SwitchEvent {
+        operation_id: format!("op-{}", u64::MAX),
+        outcome: SwitchOutcome::CompletedWithFailures,
+        failed: vec![WindowId("w".repeat(128))],
+        focus: SwitchFocus::Unproven,
+        fallback: false,
+    };
+    let estimated = switch_settled_estimate(std::slice::from_ref(&failed_event));
+    let mut wire = String::new();
+    crate::world_sizing::encode_switch_settled(&mut wire, std::slice::from_ref(&failed_event));
+    // Exact: section key (19) + one worst-token event (116) + one
+    // 128-char failed id quoted (130); writer omits the key, keeps brackets.
+    assert_eq!(
+        estimated,
+        19 + 116 + 130,
+        "exact estimate for max failed list"
+    );
+    assert_eq!(wire.len(), estimated - 17, "section key accounts the gap");
+    assert!(
+        max_switch_settle_reserve(1, 1) >= estimated,
+        "reserve covers max failed list"
+    );
+}
+
+#[test]
+fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
+    use crate::world_sizing::reply_upper_bound;
+    let (mut engine, _home, away) = select_setup();
+    let _granted = select(&mut engine, 3, &away);
+    let rev = engine.state_revision;
+    let mut members = Vec::new();
+    for i in 0..4000 {
+        members.push(crate::world_selection::SwitchMember {
+            window: WindowId(format!("w-pad-{i:05}")),
+            home: DomainKey {
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId(away.clone()),
+            },
+            shown: false,
+            rev,
+        });
+    }
+    if let Some(binding) = engine
+        .retained_selection
+        .get_mut(&OutputId("out-a".to_owned()))
+    {
+        binding.switch_members = members;
+    }
+    let reserve = engine.switch_settle_reserve();
+    assert!(reserve > 4000 * 100, "reserve inflates: {reserve}");
+    let mut windows = vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)];
+    let logical = engine.engine.domain_keys().len();
+    let staged = engine.staged.facts.len() + engine.staged.held_windows.len();
+    let retained = engine.retained_publish_footprint();
+    let mut big = report(
+        50,
+        windows.clone(),
+        vec![],
+        Some(50),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: away.clone(),
+        }),
+        vec![],
+        "",
+    );
+    while reply_upper_bound(&big, 0, logical, 1, staged, retained).saturating_add(reserve)
+        <= WORLD_MAX_REPLY_BYTES
+    {
+        let i = windows.len();
+        windows.push(sfact(&format!("w-big-{i:05}"), "out-a", 0));
+        assert!(windows.len() < crate::world_report::MAX_WORLD_FACTS);
+        big = report(
+            50,
+            windows.clone(),
+            vec![],
+            Some(50),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away.clone(),
+            }),
+            vec![],
+            "",
+        );
+    }
+    let before_rev = engine.state_revision;
+    match engine.handle_report(&big) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(
+                message, "reply exceeds size bound",
+                "pre-mutation bound: {kind}"
+            );
+        }
+        other => panic!("expected reply-size refusal, got {other:?}"),
+    }
+    assert_eq!(
+        engine.state_revision, before_rev,
+        "rejected report mutates nothing"
+    );
+    let small = report(
+        50,
+        vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+        vec![],
+        Some(50),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: away.clone(),
+        }),
+        vec![],
+        "",
+    );
+    match engine.handle_report(&small) {
+        WorldOutcome::Accepted(_) | WorldOutcome::CommandConsumed(_) => {}
+        other => panic!("same-seq smaller retry must commit, got {other:?}"),
+    }
+}
+
+#[test]
+fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let frame = row(&granted, "w2").effective_frame;
+    // The switch evidence is spent before the command-only rollback
+    // boundary, so a refused command restores a pre-command image that
+    // already carries the terminal: the event publishes with the refusal.
+    let refused_settle = report(
+        4,
+        vec![
+            with_lw(sfact("w1", "out-a", 0), last_write_confirmed(false, rev, 4)),
+            with_lw(
+                sfact("w2", "out-a", 100),
+                last_write_confirmed(true, rev, 4),
+            ),
+        ],
+        vec![],
+        Some(4),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: "ws-nope".to_owned(),
+        }),
+        vec![feedback_row(
+            &effect.id,
+            "w2",
+            effect.issued_revision,
+            true,
+            Some("w2"),
+            vec![bracket("w2", "out-a", 4, frame)],
+        )],
+        "",
+    );
+    let reply = accepted(&mut engine, &refused_settle);
+    assert!(
+        matches!(
+            reply.command_result,
+            Some(crate::world_report::CommandResult::Rejected { .. })
+        ),
+        "unknown workspace refuses"
+    );
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "terminal survives rollback: {reply:?}"
+    );
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Proven);
+    assert!(!event.fallback);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding still releases"
+    );
+    assert!(
+        engine
+            .selection_scopes
+            .contains_key(&OutputId("out-a".to_owned())),
+        "scopes survive the refusal"
+    );
+    assert_eq!(
+        engine
+            .selection_targets
+            .get(&WindowId("w1".to_owned()))
+            .expect("hide target")
+            .rev,
+        rev
+    );
+    assert_eq!(
+        engine
+            .selection_targets
+            .get(&WindowId("w2".to_owned()))
+            .expect("show target")
+            .rev,
+        rev
+    );
+    // The refused seq is consumed: replaying it reconciles observation
+    // only, with no revived terminal and no re-execution.
+    match engine.handle_report(&report(
+        5,
+        vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+        vec![],
+        Some(4),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: "ws-nope".to_owned(),
+        }),
+        vec![],
+        "",
+    )) {
+        WorldOutcome::CommandConsumed(consumed) => {
+            assert!(consumed.switch_settled.is_empty(), "no revived terminal");
+        }
+        other => panic!("expected consumed replay, got {other:?}"),
+    }
+}
+
+#[test]
+fn switch_incomplete_inventory_settles_spent_evidence_without_renewal() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let frame = row(&granted, "w2").effective_frame;
+    let mut gapped = report(
+        4,
+        vec![
+            with_lw(sfact("w1", "out-a", 0), last_write_confirmed(false, rev, 4)),
+            with_lw(
+                sfact("w2", "out-a", 100),
+                last_write_confirmed(true, rev, 4),
+            ),
+        ],
+        vec![],
+        None,
+        None,
+        vec![feedback_row(
+            &effect.id,
+            "w2",
+            effect.issued_revision,
+            true,
+            Some("w2"),
+            vec![bracket("w2", "out-a", 4, frame)],
+        )],
+        "",
+    );
+    gapped.inventory_complete = false;
+    let reply = accepted(&mut engine, &gapped);
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "gap never blocks the terminal: {reply:?}"
+    );
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Proven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases on the gap"
+    );
+    // Targets keep the issuing revision and authority is held, never
+    // renewed: the gap settles spent evidence without granting anything.
+    for window in ["w1", "w2"] {
+        assert_eq!(
+            engine
+                .selection_targets
+                .get(&WindowId(window.to_owned()))
+                .expect("target")
+                .rev,
+            rev,
+            "{window} keeps its revision"
+        );
+    }
+    assert!(
+        reply.effects.iter().all(|effect| !effect.await_shown),
+        "no renewed arrival grant on the gap"
+    );
+    assert_eq!(
+        row(&reply, "w2").visibility_authority,
+        ScopeAuthority::Hold(crate::world_report::HoldReason::IncompleteInventory),
+        "authority holds under the gap"
+    );
+}
+
+#[test]
+fn switch_two_output_bindings_settle_two_events_in_one_report() {
+    // Per-output-local mode: independent selections on out-a and out-b
+    // retain side-by-side bindings that settle together in one report.
+    let mut engine = engine();
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let windows = || {
+        vec![
+            sfact("w1", "out-a", 0),
+            sfact("w2", "out-a", 100),
+            sfact("w3", "out-b", 800),
+            sfact("w4", "out-b", 900),
+        ]
+    };
+    let boot = accepted(
+        &mut engine,
+        &report_multi(
+            1,
+            windows(),
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+            screens.clone(),
+        ),
+    );
+    let ring = |output: &str| {
+        boot.workspaces
+            .iter()
+            .filter(|row| row.output.0 == output)
+            .map(|row| row.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let (away_a, away_b) = (ring("out-a")[1].clone(), ring("out-b")[1].clone());
+    for (seq, window, output, away) in [(2, "w2", "out-a", &away_a), (3, "w4", "out-b", &away_b)] {
+        let _ = accepted(
+            &mut engine,
+            &report_multi(
+                seq,
+                windows(),
+                vec![],
+                Some(seq),
+                Some(WorldCommand::Send {
+                    window: WindowId(window.to_owned()),
+                    target_output: OutputId(output.to_owned()),
+                    target_workspace: away.clone(),
+                    follow: false,
+                }),
+                vec![],
+                window,
+                screens.clone(),
+            ),
+        );
+    }
+    let first = accepted(
+        &mut engine,
+        &report_multi(
+            4,
+            windows(),
+            vec![],
+            Some(4),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away_a.clone(),
+            }),
+            vec![],
+            "",
+            screens.clone(),
+        ),
+    );
+    assert_eq!(first.effects[0].target.0, "w2");
+    let rev_a = first.state_revision;
+    let second = accepted(
+        &mut engine,
+        &report_multi(
+            5,
+            windows(),
+            vec![],
+            Some(5),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-b".to_owned()),
+                workspace: away_b.clone(),
+            }),
+            vec![],
+            "",
+            screens.clone(),
+        ),
+    );
+    assert_eq!(second.effects[0].target.0, "w4");
+    let rev_b = second.state_revision;
+    let effect_a = first.effects[0].clone();
+    let effect_b = second.effects[0].clone();
+    let frame_a = row(&second, "w2").effective_frame;
+    let frame_b = row(&second, "w4").effective_frame;
+    // Pre-mutation reserve covers both concurrent terminals exactly.
+    let reserve = engine.switch_settle_reserve();
+    assert_eq!(
+        reserve,
+        crate::world_sizing::max_switch_settle_reserve(2, 4),
+        "two bindings with four frozen members"
+    );
+    let settle = report_multi(
+        6,
+        vec![
+            with_lw(
+                sfact("w1", "out-a", 0),
+                last_write_confirmed(false, rev_a, 6),
+            ),
+            with_lw(
+                sfact("w2", "out-a", 100),
+                last_write_confirmed(true, rev_a, 6),
+            ),
+            with_lw(
+                sfact("w3", "out-b", 800),
+                last_write_confirmed(false, rev_b, 6),
+            ),
+            with_lw(
+                sfact("w4", "out-b", 900),
+                last_write_confirmed(true, rev_b, 6),
+            ),
+        ],
+        vec![],
+        None,
+        None,
+        vec![
+            feedback_row(
+                &effect_a.id,
+                "w2",
+                effect_a.issued_revision,
+                true,
+                Some("w2"),
+                vec![bracket("w2", "out-a", 6, frame_a)],
+            ),
+            feedback_row(
+                &effect_b.id,
+                "w4",
+                effect_b.issued_revision,
+                true,
+                Some("w4"),
+                vec![bracket("w4", "out-b", 6, frame_b)],
+            ),
+        ],
+        "",
+        screens.clone(),
+    );
+    let reply = accepted(&mut engine, &settle);
+    assert_eq!(
+        reply.switch_settled.len(),
+        2,
+        "one event per settled binding: {reply:?}"
+    );
+    let mut ops: Vec<String> = reply
+        .switch_settled
+        .iter()
+        .map(|e| e.operation_id.clone())
+        .collect();
+    ops.sort();
+    assert_eq!(ops, vec!["op-4".to_owned(), "op-5".to_owned()]);
+    for event in &reply.switch_settled {
+        assert_eq!(event.outcome, SwitchOutcome::Complete);
+        assert!(event.failed.is_empty());
+        assert_eq!(event.focus, SwitchFocus::Proven);
+        assert!(!event.fallback);
+    }
+    let wire = crate::world_report::encode_reply_canonical(&reply);
+    assert!(
+        crate::world_report::reply_estimate(&reply) >= wire.len(),
+        "estimate covers the two-event reply without truncation"
+    );
+    assert!(
+        engine.retained_selection.is_empty(),
+        "both bindings release"
+    );
+    assert!(
+        engine
+            .selection_scopes
+            .contains_key(&OutputId("out-a".to_owned()))
+            && engine
+                .selection_scopes
+                .contains_key(&OutputId("out-b".to_owned())),
+        "both scopes survive"
+    );
+    let steady = accepted(
+        &mut engine,
+        &report_multi(
+            7,
+            windows(),
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+            screens.clone(),
+        ),
+    );
+    assert!(
+        steady.switch_settled.is_empty(),
+        "next report publishes empty"
+    );
+}
+
+#[test]
+fn switch_duplicate_replays_identical_event_then_next_report_empties() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let frame = row(&granted, "w2").effective_frame;
+    let settle = report(
+        4,
+        vec![
+            with_lw(sfact("w1", "out-a", 0), last_write_confirmed(false, rev, 4)),
+            with_lw(
+                sfact("w2", "out-a", 100),
+                last_write_confirmed(true, rev, 4),
+            ),
+        ],
+        vec![],
+        None,
+        None,
+        vec![feedback_row(
+            &effect.id,
+            "w2",
+            effect.issued_revision,
+            true,
+            Some("w2"),
+            vec![bracket("w2", "out-a", 4, frame)],
+        )],
+        "",
+    );
+    let reply = accepted(&mut engine, &settle);
+    assert_eq!(reply.switch_settled.len(), 1);
+    let wire = crate::world_report::encode_reply_canonical(&reply);
+    match engine.handle_report(&settle) {
+        WorldOutcome::Duplicate(cached) => {
+            assert_eq!(cached.switch_settled, reply.switch_settled);
+            assert_eq!(
+                crate::world_report::encode_reply_canonical(&cached),
+                wire,
+                "duplicate returns the byte-identical cached event"
+            );
+        }
+        other => panic!("expected cached duplicate, got {other:?}"),
+    }
+    let again = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    assert!(
+        again.switch_settled.is_empty(),
+        "next report publishes empty"
+    );
+}
+
+#[test]
+fn switch_conflicting_held_row_correlates_without_healthy_visibility() {
+    use crate::world_report::retained_window_fields;
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let frame = row(&granted, "w2").effective_frame;
+    let w1_lw = last_write_confirmed(false, rev, 4);
+    let feedback = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        vec![bracket("w2", "out-a", 4, frame)],
+    );
+    let mut held_report = report(
+        4,
+        vec![with_lw(
+            sfact("w2", "out-a", 100),
+            last_write_confirmed(true, rev, 4),
+        )],
+        vec![],
+        None,
+        None,
+        vec![feedback],
+        "",
+    );
+    // Same lossless raw as the invalid-fact path, but graded conflicting:
+    // the kind never gates the decoded post proof.
+    let w1_fact = with_lw(sfact("w1", "out-a", 0), w1_lw);
+    held_report.held_windows = vec![HeldWindowRow {
+        window: WindowId("w1".to_owned()),
+        ordinal: 1,
+        output: Some(OutputId("out-a".to_owned())),
+        fields: retained_window_fields(&w1_fact),
+        diagnostic: None,
+        kind: RowDiagnosticKind::ConflictingFact,
+    }];
+    let reply = accepted(&mut engine, &held_report);
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "conflicting held raw completes: {reply:?}"
+    );
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Proven);
+}
+
+#[test]
+fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    let home_w1 = engine
+        .selection_targets
+        .get(&WindowId("w1".to_owned()))
+        .expect("hide target")
+        .home
+        .clone();
+    let home_w2 = engine
+        .selection_targets
+        .get(&WindowId("w2".to_owned()))
+        .expect("show target")
+        .home
+        .clone();
+    // Explicit no-call hide: a correlated row with no post can never
+    // confirm, so the departing hide fails terminally while the show
+    // confirms; unproven focus (no arrival) keeps the outcome failed.
+    let w1_lw = last_write_with(
+        false,
+        rev,
+        VisibilitySetter::NotCalled,
+        VisibilityReason::ScopeHeld,
+        None,
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                with_lw(sfact("w1", "out-a", 0), w1_lw),
+                with_lw(
+                    sfact("w2", "out-a", 100),
+                    last_write_confirmed(true, rev, 4),
+                ),
+            ],
+            vec![],
+            None,
+            None,
+            vec![notcalled_feedback(&effect.id, "w2", effect.issued_revision)],
+            "",
+        ),
+    );
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "no-call hide still terminates: {reply:?}"
+    );
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(event.failed, vec![WindowId("w1".to_owned())]);
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(
+        reply.effects.iter().all(|effect| !effect.await_shown),
+        "terminal mints no fresh grant"
+    );
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "no binding survives for a retry"
+    );
+    for (window, home) in [("w1", &home_w1), ("w2", &home_w2)] {
+        let entry = engine
+            .selection_targets
+            .get(&WindowId(window.to_owned()))
+            .expect("target survives");
+        assert_eq!(entry.rev, rev, "{window} keeps its revision");
+        assert_eq!(&entry.home, home, "{window} keeps its home");
+    }
+    // No retry after the terminal: a later observation publishes empty
+    // with the same preserved targets and no new effects.
+    let again = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    assert!(again.switch_settled.is_empty(), "no second terminal");
+    assert!(
+        again.effects.iter().all(|effect| !effect.await_shown),
+        "no resurrected grant"
+    );
+    assert!(engine.retained_selection.is_empty(), "nothing to retry");
+}
+
+#[test]
+fn switch_threw_hide_with_mismatched_post_terminates() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let effect = granted.effects[0].clone();
+    let rev = granted.state_revision;
+    // Throwing hide with a mismatched post (visible where hidden was
+    // granted) is a correlated failure; accepted focus feedback that
+    // names the wrong foreground stays unproven without arrival.
+    let w1_lw = last_write_with(
+        false,
+        rev,
+        VisibilitySetter::Threw,
+        VisibilityReason::Empty,
+        Some(confirm_sample(4, true)),
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                with_lw(sfact("w1", "out-a", 0), w1_lw),
+                with_lw(
+                    sfact("w2", "out-a", 100),
+                    last_write_confirmed(true, rev, 4),
+                ),
+            ],
+            vec![],
+            None,
+            None,
+            vec![feedback_row(
+                &effect.id,
+                "w2",
+                effect.issued_revision,
+                false,
+                Some("w1"),
+                vec![],
+            )],
+            "",
+        ),
+    );
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "threw hide still terminates: {reply:?}"
+    );
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(event.failed, vec![WindowId("w1".to_owned())]);
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(
+        engine
+            .selection_scopes
+            .contains_key(&OutputId("out-a".to_owned())),
+        "scopes survive failure"
+    );
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "no binding survives for a retry"
+    );
+}
+
+#[test]
+fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
+    // Terminal-partial-hide discriminator (reference-outcomes.md: arrival
+    // proven + focus PROVEN + one hide failed while another hide succeeds):
+    // the switch settles CompletedWithFailures with exactly the stuck
+    // member failed, never pending and never a staged handoff.
+    let (mut engine, _home, away) = boot_three();
+    let _ = send_to(&mut engine, 2, "w2", &away);
+    let granted = accepted(
+        &mut engine,
+        &report(
+            3,
+            three_facts("out-a"),
+            vec![],
+            Some(3),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away.clone(),
+            }),
+            vec![],
+            "",
+        ),
+    );
+    let effect = granted.effects[0].clone();
+    assert_eq!(effect.target.0, "w2", "focus resolves the selected member");
+    let rev = granted.state_revision;
+    let frame = row(&granted, "w2").effective_frame;
+    // Three frozen members: show w2 plus hides w1 and w3.
+    let mut frozen: Vec<String> = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding")
+        .switch_members
+        .iter()
+        .map(|member| member.window.0.clone())
+        .collect();
+    frozen.sort();
+    assert_eq!(
+        frozen,
+        vec!["w1".to_owned(), "w2".to_owned(), "w3".to_owned()]
+    );
+    // w1 hide refuses with proper readable unchanged pre/post evidence
+    // (visible before and after, never a ShowBlocked token); w3 hide and
+    // w2 show confirm; full fresh arrival plus w2 foreground proof.
+    let w1_refused = LastWrite {
+        property: LastWriteProperty::Visibility,
+        target: false,
+        revision: rev,
+        path: LastWritePath::Staged,
+        setter: VisibilitySetter::Refused,
+        reason: VisibilityReason::Empty,
+        pre: Some(confirm_sample(3, true)),
+        post: Some(confirm_sample(4, true)),
+    };
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                with_lw(sfact("w1", "out-a", 0), w1_refused),
+                with_lw(
+                    sfact("w2", "out-a", 100),
+                    last_write_confirmed(true, rev, 4),
+                ),
+                with_lw(
+                    sfact("w3", "out-a", 200),
+                    last_write_confirmed(false, rev, 4),
+                ),
+            ],
+            vec![],
+            None,
+            None,
+            vec![feedback_row(
+                &effect.id,
+                "w2",
+                effect.issued_revision,
+                true,
+                Some("w2"),
+                vec![bracket("w2", "out-a", 4, frame)],
+            )],
+            "",
+        ),
+    );
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "partial hide still terminates: {reply:?}"
+    );
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(event.failed, vec![WindowId("w1".to_owned())]);
+    assert_eq!(event.focus, SwitchFocus::Proven);
+    assert!(!event.fallback);
+    // The actual parent view flight retires; homes and stable target
+    // revisions survive the terminal.
+    assert!(
+        engine
+            .retained
+            .iter()
+            .all(|retained| retained.target.operation_id != "op-3"),
+        "actual parent flight retires"
+    );
+    for window in ["w1", "w2", "w3"] {
+        assert_eq!(
+            engine
+                .selection_targets
+                .get(&WindowId(window.to_owned()))
+                .expect("target survives")
+                .rev,
+            rev,
+            "{window} keeps its revision"
+        );
+    }
+    assert!(
+        engine
+            .selection_scopes
+            .contains_key(&OutputId("out-a".to_owned())),
+        "scopes survive failure"
+    );
+    // No retry, no fresh grant, no admission or history disturbance on the
+    // next report: the published view is unchanged and the terminal never
+    // repeats.
+    let grant_view = granted
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone());
+    let again = accepted(
+        &mut engine,
+        &report(5, three_facts("out-a"), vec![], None, None, vec![], ""),
+    );
+    assert!(again.switch_settled.is_empty(), "no second terminal");
+    assert!(
+        again.effects.iter().all(|effect| !effect.await_shown),
+        "no resurrected grant"
+    );
+    assert!(engine.retained_selection.is_empty(), "nothing to retry");
+    assert_eq!(
+        again
+            .outputs
+            .iter()
+            .find(|row| row.output.0 == "out-a")
+            .and_then(|row| row.logical_view.clone()),
+        grant_view,
+        "view history undisturbed by the terminal"
+    );
+}
+
+#[test]
+fn focusless_occupied_to_empty_freezes_hide_and_completes_unproven() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    assert_eq!(granted.effects.len(), 1, "setup focuses: {granted:?}");
+    let ring = ring_ids(&granted, "out-a");
+    let empty = ring.last().expect("fresh trailing spare").clone();
+    assert_ne!(empty, away, "spare is not the occupied workspace");
+    let reply = select(&mut engine, 4, &empty);
+    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
+    assert!(
+        reply.effects.iter().all(|effect| !effect.await_shown),
+        "focusless mints no await grant"
+    );
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("focusless binding retained");
+    assert!(binding.effect.is_none(), "no focus effect: {binding:?}");
+    assert!(
+        !binding.switch_members.is_empty(),
+        "departing hide freezes: {binding:?}"
+    );
+    assert!(
+        binding
+            .switch_members
+            .iter()
+            .any(|member| member.window.0 == "w2" && !member.shown),
+        "w2 hide frozen: {binding:?}"
+    );
+    let rev = reply.state_revision;
+    assert_eq!(
+        row(&reply, "w2")
+            .visibility
+            .expect("departing hide")
+            .revision,
+        rev
+    );
+    assert!(!row(&reply, "w2").visibility.expect("hide").shown);
+    assert_eq!(
+        row(&reply, "w2").visibility_authority,
+        ScopeAuthority::Controlled
+    );
+    assert!(reply.switch_settled.is_empty(), "hide needs proof: pending");
+    // A verdict-less observation holds: no event, same finite binding.
+    let missing = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    assert!(missing.switch_settled.is_empty(), "no verdict, no event");
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding holds"
+    );
+    // First-correlated hide proof settles the terminal with unproven focus.
+    let settled = accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![
+                sfact("w1", "out-a", 0),
+                with_lw(
+                    sfact("w2", "out-a", 100),
+                    last_write_confirmed(false, rev, 6),
+                ),
+            ],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    assert_eq!(settled.switch_settled.len(), 1, "one terminal: {settled:?}");
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-4");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(!event.fallback);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases"
+    );
+    assert!(
+        engine
+            .retained
+            .iter()
+            .all(|r| r.target.operation_id != "op-4"),
+        "actual view parent retires"
+    );
+    assert!(
+        engine
+            .selection_scopes
+            .contains_key(&OutputId("out-a".to_owned())),
+        "scopes survive the terminal"
+    );
+    assert_eq!(
+        engine
+            .selection_targets
+            .get(&WindowId("w2".to_owned()))
+            .expect("target survives")
+            .rev,
+        rev
+    );
+    let again = accepted(
+        &mut engine,
+        &report(
+            7,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    assert!(
+        again.switch_settled.is_empty(),
+        "next report publishes empty"
+    );
+}
+
+#[test]
+fn focusless_occupied_to_empty_hide_refusal_fails() {
+    let (mut engine, _home, away) = select_setup();
+    let granted = select(&mut engine, 3, &away);
+    let empty = ring_ids(&granted, "out-a").last().expect("spare").clone();
+    let reply = select(&mut engine, 4, &empty);
+    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
+    assert!(reply.switch_settled.is_empty(), "hide needs proof: pending");
+    let rev = reply.state_revision;
+    let refused = last_write_with(
+        false,
+        rev,
+        VisibilitySetter::Refused,
+        VisibilityReason::ShowBlocked,
+        Some(confirm_sample(5, true)),
+    );
+    let settled = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![
+                sfact("w1", "out-a", 0),
+                with_lw(sfact("w2", "out-a", 100), refused),
+            ],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "refusal terminates: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-4");
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(event.failed, vec![WindowId("w2".to_owned())]);
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases on failure"
+    );
+    assert!(
+        engine
+            .selection_scopes
+            .contains_key(&OutputId("out-a".to_owned())),
+        "scopes survive failure"
+    );
+}
+
+#[test]
+fn focusless_empty_to_empty_zero_members_completes_at_issuing() {
+    let mut engine = engine();
+    let boot = accepted(
+        &mut engine,
+        &report(1, vec![], vec![], None, None, vec![], ""),
+    );
+    let ring = ring_ids(&boot, "out-a");
+    assert!(ring.len() >= 2, "owned plus trailing: {ring:?}");
+    let away = ring[1].clone();
+    // Windowless issuing report: no homed member can join the selected or
+    // departing homes, so the frozen set is empty.
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![],
+            vec![],
+            Some(2),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away.clone(),
+            }),
+            vec![],
+            "",
+        ),
+    );
+    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "zero obligations complete at issuing: {reply:?}"
+    );
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.operation_id, "op-2");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(!event.fallback);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases at issuing"
+    );
+}
+
+#[test]
+fn focusless_minimized_only_invents_no_focus() {
+    let mut engine = engine();
+    let mut w1 = sfact("w1", "out-a", 0);
+    w1.minimized = Some(true);
+    w1.rect = None;
+    let mut w2 = sfact("w2", "out-a", 100);
+    w2.minimized = Some(true);
+    w2.rect = None;
+    let boot = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![w1.clone(), w2.clone()],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    let ring = ring_ids(&boot, "out-a");
+    assert!(ring.len() >= 2);
+    let away = ring[1].clone();
+    // The issuing report keeps both survivors minimized: no live member
+    // can take a per-window target, so the frozen set stays empty and the
+    // terminal issues at once with unproven focus.
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![w1, w2],
+            vec![],
+            Some(2),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away.clone(),
+            }),
+            vec![],
+            "",
+        ),
+    );
+    assert!(
+        reply.effects.is_empty(),
+        "minimized-only invents no focus: {reply:?}"
+    );
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "zero members complete at issuing: {reply:?}"
+    );
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.operation_id, "op-2");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases at issuing"
+    );
+    assert!(
+        engine.selection_targets.is_empty(),
+        "minimized members take no targets"
+    );
+}
+
+fn host_native_report(
+    seq: u64,
+    windows: Vec<WindowFact>,
+    current: &str,
+    command_seq: Option<u64>,
+    command: Option<WorldCommand>,
+) -> WorldReport {
+    use crate::world_report::{NativeObservation, NativeOccupancy};
+    let mut out = report(seq, windows, vec![], command_seq, command, vec![], "");
+    out.native = vec![NativeObservation {
+        output: OutputId("out-a".to_owned()),
+        native_order: vec!["n0".to_owned(), "n1".to_owned()],
+        current_native: Some(current.to_owned()),
+        occupancy: vec![
+            NativeOccupancy {
+                native: "n0".to_owned(),
+                count: None,
+            },
+            NativeOccupancy {
+                native: "n1".to_owned(),
+                count: None,
+            },
+        ],
+    }];
+    out
+}
+
+fn host_boot() -> (WorldEngine, String) {
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(
+        &mut engine,
+        &host_native_report(1, vec![], "n0", None, None),
+    );
+    let away = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n1"))
+        .expect("n1-backed workspace")
+        .id
+        .clone();
+    (engine, away)
+}
+
+fn host_select(
+    engine: &mut WorldEngine,
+    seq: u64,
+    workspace: &str,
+) -> crate::world_report::WorldReply {
+    accepted(
+        engine,
+        &host_native_report(
+            seq,
+            vec![],
+            "n0",
+            Some(seq),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: workspace.to_owned(),
+            }),
+        ),
+    )
+}
+
+fn native_ref(workspace: &str) -> WorkspaceRef {
+    WorkspaceRef::Native {
+        output: OutputId("out-a".to_owned()),
+        workspace: crate::ids::NativeWorkspaceId::parse(workspace).expect("native id"),
+    }
+}
+
+/// Managed host-owned member fact: ordinary top-level window with a native
+/// desktop receipt. Off-desktop members carry unreadable pre-arrival
+/// visibility, which must never exclude them from the desired arrival set.
+fn hfact(window: &str, native: &str, x: i32, visible: bool) -> WindowFact {
+    let mut fact = sfact(window, "out-a", x);
+    fact.sticky = Some(false);
+    fact.native_workspace = crate::world_report::NativeWorkspaceFact::Value(native.to_owned());
+    fact.visibility.visible = Some(visible);
+    fact
+}
+
+fn native_bracket(window: &str, native: &str, obs: u64, frame: Option<Rect>) -> ArrivalBracket {
+    ArrivalBracket {
+        window: WindowId(window.to_owned()),
+        obs,
+        before: sample(obs, true, true, false, false),
+        location: ArrivalLocation::Native {
+            home: Some(native_ref(native)),
+        },
+        frame,
+        after: sample(obs, true, true, false, false),
+    }
+}
+
+fn host_select_windows(
+    engine: &mut WorldEngine,
+    seq: u64,
+    workspace: &str,
+    windows: Vec<WindowFact>,
+    current: &str,
+    focused: &str,
+) -> crate::world_report::WorldReply {
+    let mut staged = host_native_report(
+        seq,
+        windows,
+        current,
+        Some(seq),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: workspace.to_owned(),
+        }),
+    );
+    staged.focused_global = focused.to_owned();
+    accepted(engine, &staged)
+}
+
+#[test]
+fn host_owned_focus_bearing_grants_await_shown_with_native_obligations() {
+    let (mut engine, away) = host_boot();
+    let mut staged = host_native_report(
+        2,
+        vec![
+            hfact("w0", "n0", 0, true),
+            hfact("w1", "n1", 100, false),
+            hfact("w2", "n1", 200, false),
+        ],
+        "n0",
+        None,
+        None,
+    );
+    staged.focused_global = "w2".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    let reply = host_select_windows(
+        &mut engine,
+        3,
+        &away,
+        vec![
+            hfact("w0", "n0", 0, true),
+            hfact("w1", "n1", 100, false),
+            hfact("w2", "n1", 200, false),
+        ],
+        "n0",
+        "w2",
+    );
+    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
+    let effect = &reply.effects[0];
+    assert_eq!(effect.target.0, "w2");
+    assert!(effect.await_shown, "host-owned focus awaits arrival");
+    assert_eq!(effect.command_seq, Some(3));
+    assert_eq!(
+        effect.cause,
+        crate::world_report::EffectCause::ExplicitCommand
+    );
+    for row in &reply.windows {
+        assert!(
+            row.visibility.is_none(),
+            "host-owned grants no per-window targets: {row:?}"
+        );
+    }
+    assert!(
+        engine.selection_targets.is_empty(),
+        "no per-window targets authorized"
+    );
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("selection binding retained");
+    assert_eq!(binding.effect, Some(effect.clone()));
+    assert_eq!(binding.parent_op, "op-3");
+    assert!(
+        binding.switch_members.is_empty(),
+        "no LastWrite demand: {binding:?}"
+    );
+    assert_eq!(
+        binding
+            .view_targets
+            .get(&OutputId("out-a".to_owned()))
+            .map(|home| home.workspace.0.clone()),
+        Some(away.clone()),
+        "native selector obligation: {binding:?}"
+    );
+    let frames: Vec<Option<Rect>> = reply
+        .windows
+        .iter()
+        .filter(|row| row.lifetime.0 == "w1" || row.lifetime.0 == "w2")
+        .map(|row| row.effective_frame)
+        .collect();
+    assert!(
+        frames.iter().all(|frame| frame.is_some()),
+        "managed members publish frames: {reply:?}"
+    );
+    assert_eq!(
+        binding.members.len(),
+        2,
+        "every managed selected-home member freezes: {binding:?}"
+    );
+    for member in &binding.members {
+        assert!(
+            ["w1", "w2"].contains(&member.window.0.as_str()),
+            "only selected-home members: {binding:?}"
+        );
+        assert_eq!(member.home.workspace.0, away);
+        let published = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime == member.window)
+            .expect("published row")
+            .effective_frame;
+        assert_eq!(member.frame, published, "frozen final frames");
+    }
+    let wire = crate::world_report::encode_reply_canonical(&reply);
+    assert!(
+        crate::world_report::reply_estimate(&reply) >= wire.len(),
+        "estimate covers the host-owned grant"
+    );
+    assert!(
+        wire.contains("\"awaitShown\":true"),
+        "producer spells the awaitShown grant"
+    );
+}
+
+fn host_focus_grant() -> (WorldEngine, String, crate::world_report::WorldReply) {
+    let (mut engine, away) = host_boot();
+    let stage = || {
+        vec![
+            hfact("w0", "n0", 0, true),
+            hfact("w1", "n1", 100, false),
+            hfact("w2", "n1", 200, false),
+        ]
+    };
+    let mut staged = host_native_report(2, stage(), "n0", None, None);
+    staged.focused_global = "w2".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
+    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
+    assert!(
+        reply.effects[0].await_shown,
+        "host-owned focus awaits arrival"
+    );
+    assert_eq!(reply.effects[0].target.0, "w2");
+    (engine, away, reply)
+}
+
+fn host_member_frames(
+    reply: &crate::world_report::WorldReply,
+) -> std::collections::BTreeMap<WindowId, Option<Rect>> {
+    reply
+        .windows
+        .iter()
+        .map(|row| (row.lifetime.clone(), row.effective_frame))
+        .collect()
+}
+
+fn host_proof_windows(visible: bool) -> Vec<WindowFact> {
+    vec![
+        hfact("w0", "n0", 0, true),
+        hfact("w1", "n1", 100, visible),
+        hfact("w2", "n1", 200, visible),
+    ]
+}
+
+#[test]
+fn host_owned_focus_bearing_native_arrival_and_selector_complete_proven() {
+    let (mut engine, away, grant) = host_focus_grant();
+    let effect = grant.effects[0].clone();
+    let frames = host_member_frames(&grant);
+    let arrival = ["w1", "w2"]
+        .into_iter()
+        .map(|window| native_bracket(window, "n1", 3, frames[&WindowId(window.to_owned())]))
+        .collect();
+    let row = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        arrival,
+    );
+    let mut proof = host_native_report(4, host_proof_windows(true), "n1", None, None);
+    proof.focus_feedback = vec![row];
+    let settled = accepted(&mut engine, &proof);
+    assert_eq!(settled.switch_settled.len(), 1, "proven: {settled:?}");
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Proven);
+    assert!(!event.fallback);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases"
+    );
+    assert!(
+        engine
+            .retained
+            .iter()
+            .all(|r| r.target.operation_id != "op-3"),
+        "actual parent retires"
+    );
+    let _ = away;
+}
+
+#[test]
+fn host_owned_focus_bearing_selector_proof_alone_holds() {
+    let (mut engine, _away, _grant) = host_focus_grant();
+    // Native echo proves the selector with no focus feedback at all: the
+    // feedback gate still holds the terminal.
+    let settled = accepted(
+        &mut engine,
+        &host_native_report(4, host_proof_windows(true), "n1", None, None),
+    );
+    assert!(
+        settled.switch_settled.is_empty(),
+        "selector alone never completes: {settled:?}"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "binding holds for the missing feedback"
+    );
+}
+
+#[test]
+fn host_owned_focus_bearing_arrival_without_selector_holds() {
+    let (mut engine, _away, grant) = host_focus_grant();
+    let effect = grant.effects[0].clone();
+    let frames = host_member_frames(&grant);
+    // Foreground proves and every frozen member proves its Native arm,
+    // but the current stays home with no attempt rows: the native
+    // obligation pends and the terminal holds.
+    let arrival = ["w1", "w2"]
+        .into_iter()
+        .map(|window| native_bracket(window, "n1", 3, frames[&WindowId(window.to_owned())]))
+        .collect();
+    let row = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        arrival,
+    );
+    let mut proof = host_native_report(4, host_proof_windows(true), "n0", None, None);
+    proof.focus_feedback = vec![row];
+    let settled = accepted(&mut engine, &proof);
+    assert!(
+        settled.switch_settled.is_empty(),
+        "missing selector proof holds: {settled:?}"
+    );
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding holds");
+    assert!(binding.foreground_proven, "foreground still proves");
+    assert!(binding.arrival_ready, "arrival still proves");
+}
+
+#[test]
+fn host_owned_focus_bearing_omitted_target_arrival_fails_unproven() {
+    // Artificial invariant pin, not a product path: the producer route
+    // always freezes the minted focus target, so a real binding never
+    // omits it and this omission is not proven reachable. Feedback that
+    // proves foreground with fully valid arrival for the other frozen
+    // member but no bracket for the effect target still fails the
+    // terminal with focus unproven.
+    let (mut engine, _away, grant) = host_focus_grant();
+    let effect = grant.effects[0].clone();
+    let frames = host_member_frames(&grant);
+    let arrival = vec![native_bracket(
+        "w1",
+        "n1",
+        3,
+        frames[&WindowId("w1".to_owned())],
+    )];
+    let row = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        arrival,
+    );
+    let mut proof = host_native_report(4, host_proof_windows(true), "n1", None, None);
+    proof.focus_feedback = vec![row];
+    let settled = accepted(&mut engine, &proof);
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "target omission fails: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+}
+
+#[test]
+fn host_owned_focus_bearing_accepted_without_foreground_fails() {
+    let (mut engine, _away, grant) = host_focus_grant();
+    let effect = grant.effects[0].clone();
+    let frames = host_member_frames(&grant);
+    // Setter success without foreground equality is Unproven, never a
+    // completion: the shared predicate fails the terminal.
+    let arrival = ["w1", "w2"]
+        .into_iter()
+        .map(|window| native_bracket(window, "n1", 3, frames[&WindowId(window.to_owned())]))
+        .collect();
+    let row = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        false,
+        None,
+        arrival,
+    );
+    let mut proof = host_native_report(4, host_proof_windows(true), "n1", None, None);
+    proof.focus_feedback = vec![row];
+    let settled = accepted(&mut engine, &proof);
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "unproven focus fails: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases on failure"
+    );
+}
+
+#[test]
+fn host_owned_focus_bearing_rejects_wrong_native_evidence() {
+    // Each case keeps the selector pending (current stays home) so the
+    // terminal holds either way; the latch must record arrival unreadiness
+    // for every wrong-home/output/frame/watermark/lifetime/arm variant.
+    for name in [
+        "wrong-home",
+        "null-home",
+        "wrong-output",
+        "wrong-frame",
+        "null-frame",
+        "watermark-splay",
+        "stale-bracket",
+        "lifetime-mismatch",
+        "partial-members",
+    ] {
+        let (mut engine, _away, grant) = host_focus_grant();
+        let effect = grant.effects[0].clone();
+        let frames = host_member_frames(&grant);
+        let frame = frames[&WindowId("w1".to_owned())];
+        let good = |window: &str| native_bracket(window, "n1", 3, frame);
+        let mut bad = good("w1");
+        match name {
+            "wrong-home" => bad = native_bracket("w1", "n0", 3, frame),
+            "null-home" => bad.location = ArrivalLocation::Native { home: None },
+            "wrong-output" => {
+                bad.location = ArrivalLocation::Native {
+                    home: Some(WorkspaceRef::Native {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
+                    }),
+                };
+            }
+            "wrong-frame" => {
+                bad = native_bracket("w1", "n1", 3, Some(rect(1, 2, 3, 4)));
+            }
+            "null-frame" => bad = native_bracket("w1", "n1", 3, None),
+            "watermark-splay" => bad.before.obs = 2,
+            "stale-bracket" => bad = native_bracket("w1", "n1", 2, frame),
+            "lifetime-mismatch" => bad.after.lifetime_matched = Some(false),
+            _ => {}
+        }
+        let arrival = if name == "partial-members" {
+            vec![good("w2")]
+        } else if name == "wrong-frame" || name == "null-frame" {
+            vec![bad.clone(), native_bracket("w2", "n1", 3, bad.frame)]
+        } else {
+            vec![bad, good("w2")]
+        };
+        let row = feedback_row(
+            &effect.id,
+            "w2",
+            effect.issued_revision,
+            true,
+            Some("w2"),
+            arrival,
+        );
+        let mut proof = host_native_report(4, host_proof_windows(true), "n0", None, None);
+        proof.focus_feedback = vec![row];
+        let settled = accepted(&mut engine, &proof);
+        assert!(
+            settled.switch_settled.is_empty(),
+            "{name}: wrong evidence never completes"
+        );
+        let binding = engine
+            .retained_selection
+            .get(&OutputId("out-a".to_owned()))
+            .expect("binding holds");
+        assert!(binding.foreground_proven, "{name}: foreground still proves");
+        assert!(!binding.arrival_ready, "{name}: never proves readiness");
+    }
+}
+
+#[test]
+fn host_owned_focus_bearing_wrong_host_arms_refuse_at_ingress() {
+    // Mixed or unknown-output arms never reach the proof: typed ingress
+    // refuses the wire message.
+    for (name, location) in [
+        (
+            "logical-in-native-arm",
+            ArrivalLocation::Native {
+                home: Some(WorkspaceRef::Logical {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: WorkspaceId("ws-logical".to_owned()),
+                }),
+            },
+        ),
+        (
+            "output-arm-on-host-owned",
+            ArrivalLocation::Output {
+                out: Some(OutputId("out-a".to_owned())),
+            },
+        ),
+        (
+            "null-output-arm-on-host-owned",
+            ArrivalLocation::Output { out: None },
+        ),
+    ] {
+        let (mut engine, _away, grant) = host_focus_grant();
+        let effect = grant.effects[0].clone();
+        let frames = host_member_frames(&grant);
+        let mut bad = native_bracket("w1", "n1", 3, frames[&WindowId("w1".to_owned())]);
+        bad.location = location;
+        let row = feedback_row(
+            &effect.id,
+            "w2",
+            effect.issued_revision,
+            true,
+            Some("w2"),
+            vec![bad],
+        );
+        let mut proof = host_native_report(4, host_proof_windows(true), "n0", None, None);
+        proof.focus_feedback = vec![row];
+        match engine.handle_report(&proof) {
+            WorldOutcome::Rejected { .. } => {}
+            other => panic!("{name}: wrong-host arm must refuse, got {other:?}"),
+        }
+        assert!(
+            engine
+                .retained_selection
+                .contains_key(&OutputId("out-a".to_owned())),
+            "{name}: refused report mutates nothing"
+        );
+    }
+}
+
+#[test]
+fn host_owned_focus_bearing_native_refusal_fails_with_feedback() {
+    let (mut engine, away, grant) = host_focus_grant();
+    let effect = grant.effects[0].clone();
+    // Proven selector refusal plus the latched focus feedback in the same
+    // report: the shared predicate fails the switch even though focus
+    // proves (settle runs before the publish reconcile).
+    let frames = host_member_frames(&grant);
+    let arrival = ["w1", "w2"]
+        .into_iter()
+        .map(|window| native_bracket(window, "n1", 3, frames[&WindowId(window.to_owned())]))
+        .collect();
+    let row = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        arrival,
+    );
+    let mut refused = host_native_report(4, host_proof_windows(true), "n0", None, None);
+    refused.view_attempts = vec![view_attempt("op-3", &away, FrameSetter::Refused)];
+    refused.focus_feedback = vec![row];
+    let settled = accepted(&mut engine, &refused);
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "proven refusal fails: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert!(event.failed.is_empty(), "no per-window failures: {event:?}");
+    assert_eq!(event.focus, SwitchFocus::Proven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases on refusal"
+    );
+}
+
+#[test]
+fn host_owned_focus_bearing_refusal_without_feedback_pends_until_feedback() {
+    let (mut engine, away, grant) = host_focus_grant();
+    let effect = grant.effects[0].clone();
+    // Proven selector refusal with no focus feedback: the flight retires
+    // as refused, but the refusal is the engine's own correlated attempt
+    // with an unchanged preimage and the echo still home - not newer
+    // external input - so the historical accounting pends with no
+    // invented verdict and no actuation authority.
+    let mut refused = host_native_report(4, host_proof_windows(true), "n0", None, None);
+    refused.view_attempts = vec![view_attempt("op-3", &away, FrameSetter::Refused)];
+    let quiet = accepted(&mut engine, &refused);
+    assert!(
+        quiet.switch_settled.is_empty(),
+        "no invented verdict: {quiet:?}"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "own refusal pends, never supersedes"
+    );
+    // A further no-feedback report (the consumed raw omitted) still pends:
+    // missing verdicts hold, never fail, retry, roll back, or emit.
+    let held = accepted(
+        &mut engine,
+        &host_native_report(5, host_proof_windows(true), "n0", None, None),
+    );
+    assert!(held.switch_settled.is_empty(), "still pending: {held:?}");
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "accounting survives the gap"
+    );
+    // The first exact-tuple feedback (consumed raw omitted) fails exactly
+    // once through the shared predicate: foreground proves, arrival
+    // proves, the proven native refusal fails the switch.
+    let frames = host_member_frames(&grant);
+    let arrival = ["w1", "w2"]
+        .into_iter()
+        .map(|window| native_bracket(window, "n1", 3, frames[&WindowId(window.to_owned())]))
+        .collect();
+    let row = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        arrival,
+    );
+    let mut proof = host_native_report(6, host_proof_windows(true), "n0", None, None);
+    proof.focus_feedback = vec![row.clone()];
+    let settled = accepted(&mut engine, &proof);
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "refusal fails once feedback lands: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert!(event.failed.is_empty(), "no per-window failures: {event:?}");
+    assert_eq!(event.focus, SwitchFocus::Proven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases on refusal"
+    );
+    assert!(
+        engine
+            .retained
+            .iter()
+            .all(|r| r.target.operation_id != "op-3"),
+        "actual parent retires"
+    );
+    // Replaying the same feedback emits nothing twice.
+    let replay = accepted(
+        &mut engine,
+        &host_native_report(7, host_proof_windows(true), "n0", None, None),
+    );
+    let mut replay_with_feedback =
+        host_native_report(8, host_proof_windows(true), "n0", None, None);
+    replay_with_feedback.focus_feedback = vec![row];
+    let _ = replay;
+    let again = accepted(&mut engine, &replay_with_feedback);
+    assert!(
+        again.switch_settled.is_empty(),
+        "no second event: {again:?}"
+    );
+}
+
+#[test]
+fn host_owned_focus_bearing_refusal_then_reselect_supersedes_silently() {
+    let (mut engine, away, _grant) = host_focus_grant();
+    let mut refused = host_native_report(4, host_proof_windows(true), "n0", None, None);
+    refused.view_attempts = vec![view_attempt("op-3", &away, FrameSetter::Refused)];
+    let quiet = accepted(&mut engine, &refused);
+    assert!(quiet.switch_settled.is_empty(), "refusal pends: {quiet:?}");
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "binding pends for feedback"
+    );
+    // A newer selection between refusal and feedback supersedes the
+    // pending grant without minting an event for the abandoned parent.
+    let reply = host_select_windows(&mut engine, 5, &away, host_proof_windows(true), "n0", "w1");
+    assert!(
+        reply.switch_settled.is_empty(),
+        "supersession mints no event: {reply:?}"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .values()
+            .all(|binding| binding.parent_op != "op-3"),
+        "abandoned grant releases"
+    );
+}
+
+#[test]
+fn host_owned_focus_bearing_held_refusal_recovers_from_latched_raw() {
+    let (mut engine, away, grant) = host_focus_grant();
+    let effect = grant.effects[0].clone();
+    let frames = host_member_frames(&grant);
+    let arrival = ["w1", "w2"]
+        .into_iter()
+        .map(|window| native_bracket(window, "n1", 3, frames[&WindowId(window.to_owned())]))
+        .collect();
+    let row = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        arrival,
+    );
+    // Held report: the consumed refusal latches but the incomplete screen
+    // cannot decide the refusal gate, so the terminal holds.
+    let mut held = host_native_report(4, host_proof_windows(true), "n0", None, None);
+    held.screens = vec![{
+        let mut s = screen("out-a", 0);
+        s.complete = false;
+        s
+    }];
+    held.view_attempts = vec![view_attempt("op-3", &away, FrameSetter::Refused)];
+    held.focus_feedback = vec![row];
+    let stalled = accepted(&mut engine, &held);
+    assert!(
+        stalled.switch_settled.is_empty(),
+        "held refusal stays pending: {stalled:?}"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "binding holds across the gap"
+    );
+    // Recovery omits the consumed attempt: the latched raw plus the
+    // readable echo naming the refused preimage still fails.
+    let settled = accepted(
+        &mut engine,
+        &host_native_report(5, host_proof_windows(true), "n0", None, None),
+    );
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "latched refusal fails: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(event.focus, SwitchFocus::Proven);
+}
+
+#[test]
+fn host_owned_focus_bearing_shared_needs_every_output_proof() {
+    use crate::connection::RawSettingValue;
+    use crate::world_report::{NativeObservation, NativeOccupancy};
+    let caps = HostCapabilities {
+        host_owned: true,
+        native_sticky: true,
+        maximize: true,
+        ..HostCapabilities::default()
+    };
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        caps,
+        vec![(
+            "mode".to_owned(),
+            RawSettingValue::String("shared".to_owned()),
+        )],
+    )
+    .expect("generation");
+    fn hfact_on(window: &str, output: &str, native: &str, x: i32, visible: bool) -> WindowFact {
+        let mut fact = sfact(window, output, x);
+        fact.sticky = Some(false);
+        fact.native_workspace = crate::world_report::NativeWorkspaceFact::Value(native.to_owned());
+        fact.visibility.visible = Some(visible);
+        fact
+    }
+    let mk = |seq: u64,
+              cur_a: &str,
+              cur_b: &str,
+              windows: Vec<WindowFact>,
+              feedback: Vec<FocusFeedback>,
+              cmd: Option<(u64, WorldCommand)>| {
+        let (s, c) = match cmd {
+            Some((s, c)) => (Some(s), Some(c)),
+            None => (None, None),
+        };
+        let mut r = report_multi(
+            seq,
+            windows,
+            vec![],
+            s,
+            c,
+            feedback,
+            "",
+            vec![screen("out-a", 0), screen("out-b", 800)],
+        );
+        r.native = ["out-a", "out-b"]
+            .into_iter()
+            .map(|o| {
+                let current = if o == "out-a" { cur_a } else { cur_b };
+                NativeObservation {
+                    output: OutputId(o.to_owned()),
+                    native_order: vec!["n0".to_owned(), "n1".to_owned()],
+                    current_native: Some(current.to_owned()),
+                    occupancy: ["n0", "n1"]
+                        .into_iter()
+                        .map(|n| NativeOccupancy {
+                            native: n.to_owned(),
+                            count: None,
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        r
+    };
+    let boot = accepted(&mut engine, &mk(1, "n0", "n0", vec![], vec![], None));
+    let target = boot
+        .workspaces
+        .iter()
+        .find(|row| row.output.0 == "out-a" && row.native_binding.as_deref() == Some("n1"))
+        .expect("n1-backed workspace")
+        .id
+        .clone();
+    // Stage one managed member per output on the away desktop and steer
+    // remembered focus to the out-a member.
+    let mut staged = mk(
+        2,
+        "n0",
+        "n0",
+        vec![
+            hfact_on("w0", "out-a", "n0", 0, true),
+            hfact_on("wA", "out-a", "n1", 100, false),
+            hfact_on("wB", "out-b", "n1", 900, false),
+        ],
+        vec![],
+        None,
+    );
+    staged.focused_global = "wA".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    let mut selecting = mk(
+        3,
+        "n0",
+        "n0",
+        vec![
+            hfact_on("w0", "out-a", "n0", 0, true),
+            hfact_on("wA", "out-a", "n1", 100, false),
+            hfact_on("wB", "out-b", "n1", 900, false),
+        ],
+        vec![],
+        Some((
+            3,
+            WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: target.clone(),
+            },
+        )),
+    );
+    selecting.focused_global = "wA".to_owned();
+    let reply = accepted(&mut engine, &selecting);
+    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
+    let effect = &reply.effects[0];
+    assert_eq!(effect.target.0, "wA");
+    assert!(effect.await_shown, "host-owned focus awaits arrival");
+    for row in &reply.windows {
+        assert!(
+            row.visibility.is_none(),
+            "host-owned grants no per-window targets: {row:?}"
+        );
+    }
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("shared focus-bearing binding pends");
+    assert!(binding.effect.is_some());
+    assert!(
+        binding.switch_members.is_empty(),
+        "no LastWrite demand: {binding:?}"
+    );
+    assert_eq!(
+        binding.view_targets.len(),
+        2,
+        "every output obligated: {binding:?}"
+    );
+    assert_eq!(
+        binding
+            .members
+            .iter()
+            .map(|member| member.window.0.clone())
+            .collect::<Vec<_>>(),
+        vec!["wA".to_owned()],
+        "only the focus-output selected home freezes: {binding:?}"
+    );
+    let frame = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "wA")
+        .expect("published row")
+        .effective_frame;
+    assert_eq!(binding.members[0].frame, frame);
+    // Proving one output alone never completes: unanimity is required.
+    let partial = accepted(
+        &mut engine,
+        &mk(
+            4,
+            "n1",
+            "n0",
+            vec![
+                hfact_on("w0", "out-a", "n0", 0, true),
+                hfact_on("wA", "out-a", "n1", 100, true),
+                hfact_on("wB", "out-b", "n1", 900, false),
+            ],
+            vec![],
+            None,
+        ),
+    );
+    assert!(
+        partial.switch_settled.is_empty(),
+        "one proof is not unanimous"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "binding holds for the outstanding output"
+    );
+    // Both outputs on target plus proven foreground/arrival complete.
+    let arrival = vec![{
+        let mut bracket = native_bracket("wA", "n1", 3, frame);
+        bracket.location = ArrivalLocation::Native {
+            home: Some(WorkspaceRef::Native {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::ids::NativeWorkspaceId::parse("n1").expect("native id"),
+            }),
+        };
+        bracket
+    }];
+    let row = feedback_row(
+        &effect.id,
+        "wA",
+        effect.issued_revision,
+        true,
+        Some("wA"),
+        arrival,
+    );
+    let settled = accepted(
+        &mut engine,
+        &mk(
+            5,
+            "n1",
+            "n1",
+            vec![
+                hfact_on("w0", "out-a", "n0", 0, true),
+                hfact_on("wA", "out-a", "n1", 100, true),
+                hfact_on("wB", "out-b", "n1", 900, true),
+            ],
+            vec![row],
+            None,
+        ),
+    );
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "unanimous proof completes: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Proven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases"
+    );
+}
+
+#[test]
+fn host_owned_focus_bearing_shared_nonfocus_external_move_drops_binding() {
+    use crate::connection::RawSettingValue;
+    use crate::world_report::{NativeObservation, NativeOccupancy};
+    let caps = HostCapabilities {
+        host_owned: true,
+        native_sticky: true,
+        maximize: true,
+        ..HostCapabilities::default()
+    };
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        caps,
+        vec![(
+            "mode".to_owned(),
+            RawSettingValue::String("shared".to_owned()),
+        )],
+    )
+    .expect("generation");
+    fn hfact3(window: &str, output: &str, native: &str, x: i32, visible: bool) -> WindowFact {
+        let mut fact = sfact(window, output, x);
+        fact.sticky = Some(false);
+        fact.native_workspace = crate::world_report::NativeWorkspaceFact::Value(native.to_owned());
+        fact.visibility.visible = Some(visible);
+        fact
+    }
+    let mk3 = |seq: u64,
+               cur_a: &str,
+               cur_b: &str,
+               windows: Vec<WindowFact>,
+               feedback: Vec<FocusFeedback>,
+               cmd: Option<(u64, WorldCommand)>| {
+        let (s, c) = match cmd {
+            Some((s, c)) => (Some(s), Some(c)),
+            None => (None, None),
+        };
+        let mut r = report_multi(
+            seq,
+            windows,
+            vec![],
+            s,
+            c,
+            feedback,
+            "",
+            vec![screen("out-a", 0), screen("out-b", 800)],
+        );
+        r.native = ["out-a", "out-b"]
+            .into_iter()
+            .map(|o| {
+                let current = if o == "out-a" { cur_a } else { cur_b };
+                NativeObservation {
+                    output: OutputId(o.to_owned()),
+                    native_order: vec!["n0".to_owned(), "n1".to_owned(), "n2".to_owned()],
+                    current_native: Some(current.to_owned()),
+                    occupancy: ["n0", "n1", "n2"]
+                        .into_iter()
+                        .map(|n| NativeOccupancy {
+                            native: n.to_owned(),
+                            count: None,
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        r
+    };
+    let boot = accepted(&mut engine, &mk3(1, "n0", "n0", vec![], vec![], None));
+    let target = boot
+        .workspaces
+        .iter()
+        .find(|row| row.output.0 == "out-a" && row.native_binding.as_deref() == Some("n1"))
+        .expect("n1-backed workspace")
+        .id
+        .clone();
+    let stage = || {
+        vec![
+            hfact3("w0", "out-a", "n0", 0, true),
+            hfact3("wA", "out-a", "n1", 100, false),
+            hfact3("wB", "out-b", "n1", 900, false),
+        ]
+    };
+    let mut staged = mk3(2, "n0", "n0", stage(), vec![], None);
+    staged.focused_global = "wA".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    let mut selecting = mk3(
+        3,
+        "n0",
+        "n0",
+        stage(),
+        vec![],
+        Some((
+            3,
+            WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: target.clone(),
+            },
+        )),
+    );
+    selecting.focused_global = "wA".to_owned();
+    let reply = accepted(&mut engine, &selecting);
+    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
+    let effect = reply.effects[0].clone();
+    assert_eq!(effect.target.0, "wA");
+    assert!(effect.await_shown, "shared focus awaits arrival");
+    assert_eq!(
+        engine
+            .retained_selection
+            .get(&OutputId("out-a".to_owned()))
+            .expect("binding pends")
+            .view_targets
+            .len(),
+        2,
+        "every output obligated"
+    );
+    let frame = host_member_frames(&reply)[&WindowId("wA".to_owned())];
+    // out-b externally moves to the third desktop (neither preimage nor
+    // target) with no new command: the whole affected-output binding must
+    // drop without a stale event.
+    let moved = accepted(
+        &mut engine,
+        &mk3(
+            4,
+            "n1",
+            "n2",
+            vec![
+                hfact3("w0", "out-a", "n0", 0, true),
+                hfact3("wA", "out-a", "n1", 100, true),
+                hfact3("wB", "out-b", "n1", 900, true),
+            ],
+            vec![],
+            None,
+        ),
+    );
+    assert!(
+        moved.switch_settled.is_empty(),
+        "external supersession mints no event: {moved:?}"
+    );
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "stale shared binding drops"
+    );
+    // Late exact-tuple feedback after the adapter returns must not mint a
+    // stale terminal for the dropped binding.
+    let arrival = vec![native_bracket("wA", "n1", 3, frame)];
+    let row = feedback_row(
+        &effect.id,
+        "wA",
+        effect.issued_revision,
+        true,
+        Some("wA"),
+        arrival,
+    );
+    let late = accepted(
+        &mut engine,
+        &mk3(
+            5,
+            "n1",
+            "n1",
+            vec![
+                hfact3("w0", "out-a", "n0", 0, true),
+                hfact3("wA", "out-a", "n1", 100, true),
+                hfact3("wB", "out-b", "n1", 900, true),
+            ],
+            vec![row],
+            None,
+        ),
+    );
+    assert!(
+        late.switch_settled.is_empty(),
+        "late feedback never completes a dropped binding: {late:?}"
+    );
+}
+
+#[test]
+fn host_owned_focus_bearing_shared_partial_then_external_move_drops_binding() {
+    use crate::connection::RawSettingValue;
+    use crate::world_report::{NativeObservation, NativeOccupancy};
+    let caps = HostCapabilities {
+        host_owned: true,
+        native_sticky: true,
+        maximize: true,
+        ..HostCapabilities::default()
+    };
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        caps,
+        vec![(
+            "mode".to_owned(),
+            RawSettingValue::String("shared".to_owned()),
+        )],
+    )
+    .expect("generation");
+    fn hfact3(window: &str, output: &str, native: &str, x: i32, visible: bool) -> WindowFact {
+        let mut fact = sfact(window, output, x);
+        fact.sticky = Some(false);
+        fact.native_workspace = crate::world_report::NativeWorkspaceFact::Value(native.to_owned());
+        fact.visibility.visible = Some(visible);
+        fact
+    }
+    let mk3 = |seq: u64,
+               cur_a: &str,
+               cur_b: &str,
+               windows: Vec<WindowFact>,
+               feedback: Vec<FocusFeedback>,
+               cmd: Option<(u64, WorldCommand)>| {
+        let (s, c) = match cmd {
+            Some((s, c)) => (Some(s), Some(c)),
+            None => (None, None),
+        };
+        let mut r = report_multi(
+            seq,
+            windows,
+            vec![],
+            s,
+            c,
+            feedback,
+            "",
+            vec![screen("out-a", 0), screen("out-b", 800)],
+        );
+        r.native = ["out-a", "out-b"]
+            .into_iter()
+            .map(|o| {
+                let current = if o == "out-a" { cur_a } else { cur_b };
+                NativeObservation {
+                    output: OutputId(o.to_owned()),
+                    native_order: vec!["n0".to_owned(), "n1".to_owned(), "n2".to_owned()],
+                    current_native: Some(current.to_owned()),
+                    occupancy: ["n0", "n1", "n2"]
+                        .into_iter()
+                        .map(|n| NativeOccupancy {
+                            native: n.to_owned(),
+                            count: None,
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        r
+    };
+    let boot = accepted(&mut engine, &mk3(1, "n0", "n0", vec![], vec![], None));
+    let target = boot
+        .workspaces
+        .iter()
+        .find(|row| row.output.0 == "out-a" && row.native_binding.as_deref() == Some("n1"))
+        .expect("n1-backed workspace")
+        .id
+        .clone();
+    let stage = || {
+        vec![
+            hfact3("w0", "out-a", "n0", 0, true),
+            hfact3("wA", "out-a", "n1", 100, false),
+            hfact3("wB", "out-b", "n1", 900, false),
+        ]
+    };
+    let mut staged = mk3(2, "n0", "n0", stage(), vec![], None);
+    staged.focused_global = "wA".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    let mut selecting = mk3(
+        3,
+        "n0",
+        "n0",
+        stage(),
+        vec![],
+        Some((
+            3,
+            WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: target.clone(),
+            },
+        )),
+    );
+    selecting.focused_global = "wA".to_owned();
+    let reply = accepted(&mut engine, &selecting);
+    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
+    let effect = reply.effects[0].clone();
+    assert_eq!(effect.target.0, "wA");
+    let frame = host_member_frames(&reply)[&WindowId("wA".to_owned())];
+    // Partial proof first: out-a lands on the target while out-b still
+    // echoes its preimage, with no feedback yet. The covering binding
+    // pends for its outstanding output.
+    let partial = accepted(
+        &mut engine,
+        &mk3(
+            4,
+            "n1",
+            "n0",
+            vec![
+                hfact3("w0", "out-a", "n0", 0, true),
+                hfact3("wA", "out-a", "n1", 100, true),
+                hfact3("wB", "out-b", "n1", 900, false),
+            ],
+            vec![],
+            None,
+        ),
+    );
+    assert!(
+        partial.switch_settled.is_empty(),
+        "one proof is not unanimous: {partial:?}"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "binding pends for the outstanding output"
+    );
+    // A later genuine external move of out-b to the third desktop (neither
+    // preimage nor target) must drop the covering binding without an event.
+    let moved = accepted(
+        &mut engine,
+        &mk3(
+            5,
+            "n1",
+            "n2",
+            vec![
+                hfact3("w0", "out-a", "n0", 0, true),
+                hfact3("wA", "out-a", "n1", 100, true),
+                hfact3("wB", "out-b", "n1", 900, true),
+            ],
+            vec![],
+            None,
+        ),
+    );
+    assert!(
+        moved.switch_settled.is_empty(),
+        "external supersession mints no event: {moved:?}"
+    );
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "late external move drops the covering binding"
+    );
+    // Late exact-tuple feedback must not mint a stale terminal for the
+    // dropped binding.
+    let arrival = vec![native_bracket("wA", "n1", 3, frame)];
+    let row = feedback_row(
+        &effect.id,
+        "wA",
+        effect.issued_revision,
+        true,
+        Some("wA"),
+        arrival,
+    );
+    let late = accepted(
+        &mut engine,
+        &mk3(
+            6,
+            "n1",
+            "n2",
+            vec![
+                hfact3("w0", "out-a", "n0", 0, true),
+                hfact3("wA", "out-a", "n1", 100, true),
+                hfact3("wB", "out-b", "n1", 900, true),
+            ],
+            vec![row],
+            None,
+        ),
+    );
+    assert!(
+        late.switch_settled.is_empty(),
+        "late feedback never completes a dropped binding: {late:?}"
+    );
+}
+
+#[test]
+fn host_owned_focus_bearing_shared_nonfocus_own_refusal_pends_then_fails() {
+    use crate::connection::RawSettingValue;
+    use crate::world_report::{NativeObservation, NativeOccupancy};
+    let caps = HostCapabilities {
+        host_owned: true,
+        native_sticky: true,
+        maximize: true,
+        ..HostCapabilities::default()
+    };
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        caps,
+        vec![(
+            "mode".to_owned(),
+            RawSettingValue::String("shared".to_owned()),
+        )],
+    )
+    .expect("generation");
+    fn hfact3(window: &str, output: &str, native: &str, x: i32, visible: bool) -> WindowFact {
+        let mut fact = sfact(window, output, x);
+        fact.sticky = Some(false);
+        fact.native_workspace = crate::world_report::NativeWorkspaceFact::Value(native.to_owned());
+        fact.visibility.visible = Some(visible);
+        fact
+    }
+    let mk3 = |seq: u64,
+               cur_a: &str,
+               cur_b: &str,
+               windows: Vec<WindowFact>,
+               feedback: Vec<FocusFeedback>,
+               cmd: Option<(u64, WorldCommand)>| {
+        let (s, c) = match cmd {
+            Some((s, c)) => (Some(s), Some(c)),
+            None => (None, None),
+        };
+        let mut r = report_multi(
+            seq,
+            windows,
+            vec![],
+            s,
+            c,
+            feedback,
+            "",
+            vec![screen("out-a", 0), screen("out-b", 800)],
+        );
+        r.native = ["out-a", "out-b"]
+            .into_iter()
+            .map(|o| {
+                let current = if o == "out-a" { cur_a } else { cur_b };
+                NativeObservation {
+                    output: OutputId(o.to_owned()),
+                    native_order: vec!["n0".to_owned(), "n1".to_owned(), "n2".to_owned()],
+                    current_native: Some(current.to_owned()),
+                    occupancy: ["n0", "n1", "n2"]
+                        .into_iter()
+                        .map(|n| NativeOccupancy {
+                            native: n.to_owned(),
+                            count: None,
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        r
+    };
+    let boot = accepted(&mut engine, &mk3(1, "n0", "n0", vec![], vec![], None));
+    let target = boot
+        .workspaces
+        .iter()
+        .find(|row| row.output.0 == "out-a" && row.native_binding.as_deref() == Some("n1"))
+        .expect("n1-backed workspace")
+        .id
+        .clone();
+    let stage = || {
+        vec![
+            hfact3("w0", "out-a", "n0", 0, true),
+            hfact3("wA", "out-a", "n1", 100, false),
+            hfact3("wB", "out-b", "n1", 900, false),
+        ]
+    };
+    let mut staged = mk3(2, "n0", "n0", stage(), vec![], None);
+    staged.focused_global = "wA".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    let mut selecting = mk3(
+        3,
+        "n0",
+        "n0",
+        stage(),
+        vec![],
+        Some((
+            3,
+            WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: target.clone(),
+            },
+        )),
+    );
+    selecting.focused_global = "wA".to_owned();
+    let reply = accepted(&mut engine, &selecting);
+    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
+    let effect = reply.effects[0].clone();
+    assert_eq!(effect.target.0, "wA");
+    let out_b_home = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding pends")
+        .view_targets
+        .get(&OutputId("out-b".to_owned()))
+        .expect("every output obligated")
+        .clone();
+    // Own refusal on the non-focus output alone: out-a lands on the target
+    // while out-b still echoes its preimage, so the covering binding pends
+    // for its feedback instead of dropping as external supersession.
+    let native_n0 = crate::ids::NativeWorkspaceId::parse("n0").expect("native id");
+    let mut refused = mk3(
+        4,
+        "n1",
+        "n0",
+        vec![
+            hfact3("w0", "out-a", "n0", 0, true),
+            hfact3("wA", "out-a", "n1", 100, true),
+            hfact3("wB", "out-b", "n1", 900, true),
+        ],
+        vec![],
+        None,
+    );
+    refused.view_attempts = vec![crate::world_report::ViewAttempt {
+        operation_id: "op-3".to_owned(),
+        target_output: OutputId("out-b".to_owned()),
+        target_workspace: out_b_home.workspace.0.clone(),
+        setter: FrameSetter::Refused,
+        pre: Some(WorkspaceRef::Native {
+            output: OutputId("out-b".to_owned()),
+            workspace: native_n0.clone(),
+        }),
+        post: Some(WorkspaceRef::Native {
+            output: OutputId("out-b".to_owned()),
+            workspace: native_n0.clone(),
+        }),
+        baseline: Some(WorkspaceRef::Native {
+            output: OutputId("out-b".to_owned()),
+            workspace: native_n0,
+        }),
+        attempt_ms: 7,
+    }];
+    let held = accepted(&mut engine, &refused);
+    assert!(
+        held.switch_settled.is_empty(),
+        "own refusal pends without feedback: {held:?}"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "covering binding survives its own non-focus refusal"
+    );
+    // Exact focus feedback with the latched refusal still failing the
+    // native obligation: one terminal, focus proven, outcome failed.
+    let frame = host_member_frames(&reply)[&WindowId("wA".to_owned())];
+    let row = feedback_row(
+        &effect.id,
+        "wA",
+        effect.issued_revision,
+        true,
+        Some("wA"),
+        vec![native_bracket("wA", "n1", 3, frame)],
+    );
+    let mut proved = mk3(
+        5,
+        "n1",
+        "n0",
+        vec![
+            hfact3("w0", "out-a", "n0", 0, true),
+            hfact3("wA", "out-a", "n1", 100, true),
+            hfact3("wB", "out-b", "n1", 900, true),
+        ],
+        vec![row],
+        None,
+    );
+    proved.view_attempts = vec![];
+    let settled = accepted(&mut engine, &proved);
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "refusal plus feedback settles once: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(event.focus, SwitchFocus::Proven);
+}
+
+#[test]
+fn host_owned_focus_bearing_late_admission_never_joins_frozen() {
+    let (mut engine, _away, grant) = host_focus_grant();
+    let frozen: Vec<WindowId> = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding pends")
+        .members
+        .iter()
+        .map(|member| member.window.clone())
+        .collect();
+    assert_eq!(frozen.len(), 2, "two members freeze: {frozen:?}");
+    // A newcomer homed to the selected home after the grant registers no
+    // authority and never joins the frozen arrival set.
+    let mut late = host_proof_windows(true);
+    late.push(hfact("w3", "n1", 300, false));
+    let quiet = accepted(&mut engine, &host_native_report(4, late, "n0", None, None));
+    assert!(
+        quiet.switch_settled.is_empty(),
+        "no verdict without proof: {quiet:?}"
+    );
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding holds");
+    assert_eq!(
+        binding
+            .members
+            .iter()
+            .map(|member| member.window.clone())
+            .collect::<Vec<_>>(),
+        frozen,
+        "frozen set untouched by late admission"
+    );
+    assert!(
+        engine.selection_targets.is_empty(),
+        "host-owned admits no per-window targets"
+    );
+    let _ = grant;
+}
+
+#[test]
+fn host_owned_focus_bearing_supersession_drops_without_event() {
+    let (mut engine, _away, grant) = host_focus_grant();
+    let home = grant
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0-backed workspace")
+        .id
+        .clone();
+    // A superseding selection back to the home workspace drops the pending
+    // grant without minting an event for the abandoned parent.
+    let reply = host_select_windows(&mut engine, 4, &home, host_proof_windows(true), "n0", "w0");
+    assert!(
+        reply.switch_settled.is_empty(),
+        "supersession mints no event: {reply:?}"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .values()
+            .all(|binding| binding.parent_op != "op-3"),
+        "abandoned grant releases"
+    );
+}
+
+#[test]
+fn host_owned_focus_bearing_close_drops_without_event() {
+    let (mut engine, _away, _grant) = host_focus_grant();
+    // Explicit close of the focus target drops the finite grant without an
+    // event; surviving scopes persist independently.
+    let mut closed = host_native_report(
+        4,
+        vec![hfact("w0", "n0", 0, true), hfact("w1", "n1", 100, true)],
+        "n0",
+        None,
+        None,
+    );
+    closed.closed = vec![WindowId("w2".to_owned())];
+    let quiet = accepted(&mut engine, &closed);
+    assert!(
+        quiet.switch_settled.is_empty(),
+        "close drops without event: {quiet:?}"
+    );
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite grant drops"
+    );
+    assert!(
+        engine
+            .selection_scopes
+            .contains_key(&OutputId("out-a".to_owned())),
+        "surviving scope persists"
+    );
+}
+
+fn view_attempt(op: &str, target: &str, setter: FrameSetter) -> crate::world_report::ViewAttempt {
+    crate::world_report::ViewAttempt {
+        operation_id: op.to_owned(),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: target.to_owned(),
+        setter,
+        pre: Some(native_ref("n0")),
+        post: Some(native_ref("n0")),
+        baseline: Some(native_ref("n0")),
+        attempt_ms: 7,
+    }
+}
+
+#[test]
+fn host_owned_focusless_native_echo_completes_unproven() {
+    let (mut engine, away) = host_boot();
+    let reply = host_select(&mut engine, 2, &away);
+    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
+    assert!(reply.switch_settled.is_empty(), "native proof outstanding");
+    assert!(
+        engine
+            .retained
+            .iter()
+            .any(|r| r.target.operation_id == "op-2"),
+        "actual view parent flight retained"
+    );
+    let settled = accepted(
+        &mut engine,
+        &host_native_report(3, vec![], "n1", None, None),
+    );
+    assert_eq!(settled.switch_settled.len(), 1, "echo proves: {settled:?}");
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-2");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(!event.fallback);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases"
+    );
+    assert!(
+        engine
+            .retained
+            .iter()
+            .all(|r| r.target.operation_id != "op-2"),
+        "actual view parent retires"
+    );
+}
+
+#[test]
+fn host_owned_focusless_minimized_native_member_takes_no_window_target() {
+    let (mut engine, away) = host_boot();
+    // An actual native-owned minimized survivor on the target: owned plus
+    // minimized plus a native readback naming the target desktop.
+    let mut survivor = sfact("wmin", "out-a", 0);
+    survivor.owned = Some(true);
+    survivor.minimized = Some(true);
+    survivor.rect = None;
+    survivor.native_workspace = crate::world_report::NativeWorkspaceFact::Value("n1".to_owned());
+    let reply = accepted(
+        &mut engine,
+        &host_native_report(
+            2,
+            vec![survivor],
+            "n0",
+            Some(2),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away.clone(),
+            }),
+        ),
+    );
+    assert!(
+        reply.effects.is_empty(),
+        "minimized-only invents no focus: {reply:?}"
+    );
+    assert!(reply.switch_settled.is_empty(), "native proof outstanding");
+    for row in &reply.windows {
+        assert!(
+            row.visibility.is_none(),
+            "host-owned grants no per-window targets: {row:?}"
+        );
+    }
+    assert!(engine.selection_targets.is_empty(), "no per-window targets");
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("host-owned focusless binding pends");
+    assert!(binding.effect.is_none());
+    assert!(
+        binding.switch_members.is_empty(),
+        "native-owned member takes no LastWrite demand: {binding:?}"
+    );
+    assert_eq!(
+        binding
+            .view_targets
+            .get(&OutputId("out-a".to_owned()))
+            .map(|home| home.workspace.0.clone()),
+        Some(away.clone()),
+        "native obligation freezes the selected home: {binding:?}"
+    );
+    // The native echo still proves the selection once the selector lands.
+    let mut survivor = sfact("wmin", "out-a", 0);
+    survivor.owned = Some(true);
+    survivor.minimized = Some(true);
+    survivor.rect = None;
+    survivor.native_workspace = crate::world_report::NativeWorkspaceFact::Value("n1".to_owned());
+    let settled = accepted(
+        &mut engine,
+        &host_native_report(3, vec![survivor], "n1", None, None),
+    );
+    assert_eq!(settled.switch_settled.len(), 1, "echo proves: {settled:?}");
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-2");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases"
+    );
+}
+
+#[test]
+fn host_owned_focusless_refused_attempt_fails_unproven() {
+    let (mut engine, away) = host_boot();
+    let reply = host_select(&mut engine, 2, &away);
+    assert!(reply.switch_settled.is_empty(), "native proof outstanding");
+    let mut refused = host_native_report(3, vec![], "n0", None, None);
+    refused.view_attempts = vec![view_attempt("op-2", &away, FrameSetter::Refused)];
+    let settled = accepted(&mut engine, &refused);
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "proven refusal fails: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-2");
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert!(event.failed.is_empty(), "no per-window failures: {event:?}");
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases on refusal"
+    );
+}
+
+#[test]
+fn host_owned_focusless_held_refusal_recovers_from_latched_raw() {
+    let (mut engine, away) = host_boot();
+    let reply = host_select(&mut engine, 2, &away);
+    assert!(reply.switch_settled.is_empty(), "native proof outstanding");
+    // Held report: the adapter consumed the refusal on an unreadable
+    // screen, so the gate cannot decide yet, but the exact raw latches.
+    let mut held = host_native_report(3, vec![], "n0", None, None);
+    held.screens = vec![{
+        let mut s = screen("out-a", 0);
+        s.complete = false;
+        s
+    }];
+    held.view_attempts = vec![view_attempt("op-2", &away, FrameSetter::Refused)];
+    let stalled = accepted(&mut engine, &held);
+    assert!(
+        stalled.switch_settled.is_empty(),
+        "held refusal stays pending"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "binding holds across the gap"
+    );
+    // Recovery omits the consumed attempt: the latched raw plus the
+    // readable echo naming the refused preimage still fails the terminal.
+    let settled = accepted(
+        &mut engine,
+        &host_native_report(4, vec![], "n0", None, None),
+    );
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "latched refusal fails: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-2");
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases"
+    );
+}
+
+#[test]
+fn host_owned_focusless_wrong_tuples_and_logical_echo_hold() {
+    use crate::world_report::ScreenView;
+    let (mut engine, away) = host_boot();
+    let reply = host_select(&mut engine, 2, &away);
+    assert!(reply.switch_settled.is_empty(), "native proof outstanding");
+    // Wrong operation id, wrong target workspace, and a logical echo
+    // naming the target while the native current stays home: none of
+    // these prove anything for a host-owned selector.
+    let mut noisy = host_native_report(3, vec![], "n0", None, None);
+    noisy.views = vec![ScreenView {
+        output: OutputId("out-a".to_owned()),
+        view: away.clone(),
+    }];
+    noisy.view_attempts = vec![
+        view_attempt("op-9", &away, FrameSetter::Refused),
+        crate::world_report::ViewAttempt {
+            target_workspace: "ws-1".to_owned(),
+            ..view_attempt("op-2", &away, FrameSetter::Refused)
+        },
+    ];
+    let stalled = accepted(&mut engine, &noisy);
+    assert!(
+        stalled.switch_settled.is_empty(),
+        "forged rows and logical echoes hold"
+    );
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding holds");
+    assert!(
+        binding.view_raw.is_empty(),
+        "wrong tuples never latch: {binding:?}"
+    );
+}
+
+#[test]
+fn host_owned_focusless_shared_needs_every_output_proof() {
+    use crate::connection::RawSettingValue;
+    use crate::world_report::{NativeObservation, NativeOccupancy};
+    let caps = HostCapabilities {
+        host_owned: true,
+        native_sticky: true,
+        maximize: true,
+        ..HostCapabilities::default()
+    };
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        caps,
+        vec![(
+            "mode".to_owned(),
+            RawSettingValue::String("shared".to_owned()),
+        )],
+    )
+    .expect("generation");
+    let mk = |seq: u64, cur_a: &str, cur_b: &str, cmd: Option<(u64, WorldCommand)>| {
+        let (s, c) = match cmd {
+            Some((s, c)) => (Some(s), Some(c)),
+            None => (None, None),
+        };
+        let mut r = report_multi(
+            seq,
+            vec![],
+            vec![],
+            s,
+            c,
+            vec![],
+            "",
+            vec![screen("out-a", 0), screen("out-b", 800)],
+        );
+        r.native = ["out-a", "out-b"]
+            .into_iter()
+            .map(|o| {
+                let (n0, n1) = (format!("{o}-n0"), format!("{o}-n1"));
+                NativeObservation {
+                    output: OutputId(o.to_owned()),
+                    native_order: vec![n0.clone(), n1.clone()],
+                    current_native: Some(if o == "out-a" {
+                        cur_a.to_owned()
+                    } else {
+                        cur_b.to_owned()
+                    }),
+                    occupancy: vec![n0, n1]
+                        .into_iter()
+                        .map(|n| NativeOccupancy {
+                            native: n,
+                            count: None,
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        r
+    };
+    let boot = accepted(&mut engine, &mk(1, "out-a-n0", "out-b-n0", None));
+    let target = boot
+        .workspaces
+        .iter()
+        .find(|row| row.output.0 == "out-a" && row.native_binding.as_deref() == Some("out-a-n1"))
+        .expect("n1-backed workspace")
+        .id
+        .clone();
+    // Shared fanout obligates every live output; the reply carries the
+    // pending binding with per-output native obligations.
+    let reply = accepted(
+        &mut engine,
+        &mk(
+            2,
+            "out-a-n0",
+            "out-b-n0",
+            Some((
+                2,
+                WorldCommand::SelectWorkspace {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: target.clone(),
+                },
+            )),
+        ),
+    );
+    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
+    assert!(reply.switch_settled.is_empty(), "proofs outstanding");
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("shared focusless binding pends");
+    assert!(binding.effect.is_none());
+    assert_eq!(
+        binding.view_targets.len(),
+        2,
+        "every output obligated: {binding:?}"
+    );
+    // Proving one output alone never completes: unanimity is required.
+    let partial = accepted(&mut engine, &mk(3, "out-a-n1", "out-b-n0", None));
+    assert!(
+        partial.switch_settled.is_empty(),
+        "one proof is not unanimous"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "binding holds for the outstanding output"
+    );
+}
+
+#[test]
+fn host_owned_focusless_first_latched_raw_wins_over_later_row() {
+    let (mut engine, away) = host_boot();
+    let reply = host_select(&mut engine, 2, &away);
+    assert!(reply.switch_settled.is_empty(), "native proof outstanding");
+    // First exact-tuple row latches: an accepted attempt whose post still
+    // names the preimage, so the write has not landed and the gate holds.
+    let mut unlanded = host_native_report(3, vec![], "n0", None, None);
+    unlanded.view_attempts = vec![crate::world_report::ViewAttempt {
+        operation_id: "op-2".to_owned(),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: away.clone(),
+        setter: FrameSetter::Accepted,
+        pre: Some(native_ref("n0")),
+        post: Some(native_ref("n0")),
+        baseline: Some(native_ref("n0")),
+        attempt_ms: 7,
+    }];
+    let stalled = accepted(&mut engine, &unlanded);
+    assert!(
+        stalled.switch_settled.is_empty(),
+        "unlanded write holds: {stalled:?}"
+    );
+    // A later row claiming the target landed must not upgrade the first
+    // latched receipt; only a genuine current-target echo proves. The
+    // current is unknown here so no independent current-target fact
+    // exists: the fresh row is the only new signal, and first-evidence
+    // discipline keeps the original latch.
+    let mut upgraded = host_native_report(4, vec![], "n0", None, None);
+    upgraded.native[0].current_native = None;
+    upgraded.view_attempts = vec![crate::world_report::ViewAttempt {
+        operation_id: "op-2".to_owned(),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: away.clone(),
+        setter: FrameSetter::Accepted,
+        pre: Some(native_ref("n0")),
+        post: Some(native_ref("n1")),
+        baseline: Some(native_ref("n0")),
+        attempt_ms: 9,
+    }];
+    let still = accepted(&mut engine, &upgraded);
+    assert!(
+        still.switch_settled.is_empty(),
+        "later row never upgrades the first latch: {still:?}"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "binding holds for genuine proof"
+    );
+    // The independent current-target echo still proves on its own facts.
+    let settled = accepted(
+        &mut engine,
+        &host_native_report(5, vec![], "n1", None, None),
+    );
+    assert_eq!(settled.switch_settled.len(), 1, "echo proves: {settled:?}");
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-2");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases"
+    );
+}
+
+#[test]
+fn host_owned_focusless_shared_same_ids_complete_unproven() {
+    use crate::connection::RawSettingValue;
+    use crate::world_report::{NativeObservation, NativeOccupancy};
+    let caps = HostCapabilities {
+        host_owned: true,
+        native_sticky: true,
+        maximize: true,
+        ..HostCapabilities::default()
+    };
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        caps,
+        vec![(
+            "mode".to_owned(),
+            RawSettingValue::String("shared".to_owned()),
+        )],
+    )
+    .expect("generation");
+    // Same native ids on both outputs bind to the same logical backing:
+    // one unified ring, not per-output fakes.
+    let mk = |seq: u64, cur_a: &str, cur_b: &str, cmd: Option<(u64, WorldCommand)>| {
+        let (s, c) = match cmd {
+            Some((s, c)) => (Some(s), Some(c)),
+            None => (None, None),
+        };
+        let mut r = report_multi(
+            seq,
+            vec![],
+            vec![],
+            s,
+            c,
+            vec![],
+            "",
+            vec![screen("out-a", 0), screen("out-b", 800)],
+        );
+        r.native = ["out-a", "out-b"]
+            .into_iter()
+            .map(|o| {
+                let current = if o == "out-a" { cur_a } else { cur_b };
+                NativeObservation {
+                    output: OutputId(o.to_owned()),
+                    native_order: vec!["n0".to_owned(), "n1".to_owned()],
+                    current_native: Some(current.to_owned()),
+                    occupancy: ["n0", "n1"]
+                        .into_iter()
+                        .map(|n| NativeOccupancy {
+                            native: n.to_owned(),
+                            count: None,
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        r
+    };
+    let boot = accepted(&mut engine, &mk(1, "n0", "n0", None));
+    let target = boot
+        .workspaces
+        .iter()
+        .find(|row| row.output.0 == "out-a" && row.native_binding.as_deref() == Some("n1"))
+        .expect("n1-backed workspace")
+        .id
+        .clone();
+    assert!(
+        boot.workspaces.iter().any(|row| row.output.0 == "out-b"
+            && row.id == target
+            && row.native_binding.as_deref() == Some("n1")),
+        "same ids share one logical backing: {boot:?}"
+    );
+    // Shared fanout obligates every live output; the reply carries the
+    // pending binding with per-output native obligations.
+    let reply = accepted(
+        &mut engine,
+        &mk(
+            2,
+            "n0",
+            "n0",
+            Some((
+                2,
+                WorldCommand::SelectWorkspace {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: target.clone(),
+                },
+            )),
+        ),
+    );
+    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
+    assert!(reply.switch_settled.is_empty(), "proofs outstanding");
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("shared focusless binding pends");
+    assert!(binding.effect.is_none());
+    assert_eq!(
+        binding.view_targets.len(),
+        2,
+        "every output obligated: {binding:?}"
+    );
+    // Proving one output alone never completes: unanimity is required.
+    let partial = accepted(&mut engine, &mk(3, "n1", "n0", None));
+    assert!(
+        partial.switch_settled.is_empty(),
+        "one proof is not unanimous"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "binding holds for the outstanding output"
+    );
+    // Both outputs on the same target prove together: one Complete
+    // Unproven terminal on the existing parent, and the parent retires.
+    let settled = accepted(&mut engine, &mk(4, "n1", "n1", None));
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "unanimous proof completes: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-2");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(!event.fallback);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases"
+    );
+    assert!(
+        engine
+            .retained
+            .iter()
+            .all(|r| r.target.operation_id != "op-2"),
+        "actual parent retires"
+    );
+    assert!(
+        engine
+            .selection_scopes
+            .contains_key(&OutputId("out-a".to_owned())),
+        "scopes survive"
+    );
+}
+
+#[test]
+fn host_owned_focusless_external_move_supersedes_without_event() {
+    use crate::world_report::{NativeObservation, NativeOccupancy};
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let mk = |seq: u64, current: &str, cmd: Option<(u64, WorldCommand)>| {
+        let (s, c) = match cmd {
+            Some((s, c)) => (Some(s), Some(c)),
+            None => (None, None),
+        };
+        let mut r = report(seq, vec![], vec![], s, c, vec![], "");
+        r.native = vec![NativeObservation {
+            output: OutputId("out-a".to_owned()),
+            native_order: vec!["n0".to_owned(), "n1".to_owned(), "n2".to_owned()],
+            current_native: Some(current.to_owned()),
+            occupancy: ["n0", "n1", "n2"]
+                .into_iter()
+                .map(|n| NativeOccupancy {
+                    native: n.to_owned(),
+                    count: None,
+                })
+                .collect(),
+        }];
+        r
+    };
+    let boot = accepted(&mut engine, &mk(1, "n0", None));
+    let target = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n1"))
+        .expect("n1-backed workspace")
+        .id
+        .clone();
+    let other = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n2"))
+        .expect("n2-backed workspace")
+        .id
+        .clone();
+    // Attempt a selection of the n1-backed workspace: the binding pends.
+    let reply = accepted(
+        &mut engine,
+        &mk(
+            2,
+            "n0",
+            Some((
+                2,
+                WorldCommand::SelectWorkspace {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: target.clone(),
+                },
+            )),
+        ),
+    );
+    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
+    assert!(reply.switch_settled.is_empty(), "native proof outstanding");
+    assert!(
+        engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "binding pends"
+    );
+    // Genuine external move to n2 with no command: the attempted flight
+    // settles to observed, the reconcile supersedes the binding, and no
+    // event mints.
+    let moved = accepted(&mut engine, &mk(3, "n2", None));
+    assert!(moved.switch_settled.is_empty(), "no stale event: {moved:?}");
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "binding superseded"
+    );
+    assert!(
+        !engine
+            .selection_scopes
+            .contains_key(&OutputId("out-a".to_owned())),
+        "no stale scope"
+    );
+    assert!(engine.selection_targets.is_empty(), "no stale authority");
+    assert_eq!(
+        engine
+            .effective_view(&OutputId("out-a".to_owned()))
+            .as_deref(),
+        Some(other.as_str()),
+        "views follow adapter truth"
+    );
+    // No hang: the next observation stays quiet and a fresh selection to
+    // the externally selected workspace still settles.
+    let quiet = accepted(&mut engine, &mk(4, "n2", None));
+    assert!(quiet.switch_settled.is_empty(), "no hang event: {quiet:?}");
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "no hang binding"
+    );
+    let retry = accepted(
+        &mut engine,
+        &mk(
+            5,
+            "n2",
+            Some((
+                5,
+                WorldCommand::SelectWorkspace {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: target.clone(),
+                },
+            )),
+        ),
+    );
+    assert!(retry.effects.is_empty(), "no focus invented: {retry:?}");
+    assert!(
+        retry.switch_settled.is_empty(),
+        "new binding pends proof: {retry:?}"
+    );
+    let done = accepted(&mut engine, &mk(6, "n1", None));
+    assert_eq!(done.switch_settled.len(), 1, "fresh lane settles: {done:?}");
+    let event = &done.switch_settled[0];
+    assert_eq!(event.operation_id, "op-5");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+}
+
+#[test]
+fn host_owned_focusless_refused_command_keeps_staged_terminal() {
+    use crate::world_report::CommandResult;
+    let (mut engine, away) = host_boot();
+    let reply = host_select(&mut engine, 2, &away);
+    assert!(reply.switch_settled.is_empty(), "native proof outstanding");
+    // A refused selection command on the proof report: the pre-command
+    // image keeps the staged terminal for the pending binding, while the
+    // refused command mints nothing itself.
+    let settled = accepted(
+        &mut engine,
+        &host_native_report(
+            3,
+            vec![],
+            "n1",
+            Some(3),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: "ws-nope".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "staged terminal survives refusal: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-2");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(!event.fallback);
+    assert!(
+        matches!(settled.command_result, Some(CommandResult::Rejected { .. })),
+        "refusal reported: {settled:?}"
+    );
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "binding releases"
+    );
+    assert!(
+        engine
+            .retained_selection
+            .values()
+            .all(|binding| binding.parent_op != "op-3"),
+        "refused command retains nothing"
+    );
+}
+
+#[test]
+fn focusless_issuing_terminal_duplicate_replays_cached_then_empties() {
+    let mut engine = engine();
+    let mut w1 = sfact("w1", "out-a", 0);
+    w1.minimized = Some(true);
+    w1.rect = None;
+    let mut w2 = sfact("w2", "out-a", 100);
+    w2.minimized = Some(true);
+    w2.rect = None;
+    let boot = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![w1.clone(), w2.clone()],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    let ring = ring_ids(&boot, "out-a");
+    assert!(ring.len() >= 2);
+    let away = ring[1].clone();
+    let issuing = report(
+        2,
+        vec![w1, w2],
+        vec![],
+        Some(2),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: away.clone(),
+        }),
+        vec![],
+        "",
+    );
+    let reply = accepted(&mut engine, &issuing);
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "zero members complete at issuing: {reply:?}"
+    );
+    let wire = crate::world_report::encode_reply_canonical(&reply);
+    match engine.handle_report(&issuing) {
+        WorldOutcome::Duplicate(cached) => {
+            assert_eq!(cached.switch_settled, reply.switch_settled);
+            assert_eq!(
+                crate::world_report::encode_reply_canonical(&cached),
+                wire,
+                "duplicate returns the byte-identical cached event"
+            );
+        }
+        other => panic!("expected cached duplicate, got {other:?}"),
+    }
+    let again = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    assert!(
+        again.switch_settled.is_empty(),
+        "next report publishes empty"
+    );
+}
+
+#[test]
+fn focusless_issuing_terminal_consumed_replay_reconciles_empty() {
+    let mut engine = engine();
+    let mut w1 = sfact("w1", "out-a", 0);
+    w1.minimized = Some(true);
+    w1.rect = None;
+    let mut w2 = sfact("w2", "out-a", 100);
+    w2.minimized = Some(true);
+    w2.rect = None;
+    let boot = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![w1.clone(), w2.clone()],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    let ring = ring_ids(&boot, "out-a");
+    assert!(ring.len() >= 2);
+    let away = ring[1].clone();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![w1.clone(), w2.clone()],
+            vec![],
+            Some(2),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away.clone(),
+            }),
+            vec![],
+            "",
+        ),
+    );
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "zero members complete at issuing: {reply:?}"
+    );
+    // The consumed seq reconciles only: no revived terminal, no re-execution.
+    match engine.handle_report(&report(
+        3,
+        vec![w1, w2],
+        vec![],
+        Some(2),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: away.clone(),
+        }),
+        vec![],
+        "",
+    )) {
+        WorldOutcome::CommandConsumed(consumed) => {
+            assert!(
+                consumed.switch_settled.is_empty(),
+                "no revived terminal: {consumed:?}"
+            );
+            assert!(
+                consumed.command_consumed,
+                "replay marks consumed: {consumed:?}"
+            );
+        }
+        other => panic!("expected consumed replay, got {other:?}"),
+    }
+}
+
+#[test]
+fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
+    use crate::world_report::{SwitchEvent, SwitchFocus, SwitchOutcome};
+    use crate::world_sizing::{MAX_SWITCH_EVENT_FIXED_BYTES, MAX_SWITCH_FAILED_ROW_BYTES};
+    use crate::world_sizing::{max_switch_settle_reserve, switch_settled_estimate};
+    let (mut engine, _home, away) = select_setup();
+    let _granted = select(&mut engine, 3, &away);
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("pending binding");
+    assert!(!binding.switch_members.is_empty(), "members to settle");
+    let member_count = binding.switch_members.len();
+    // A select-family command on the same report can additionally mint the
+    // zero-obligation issuing event while the old binding settles.
+    let issuing = report(
+        4,
+        vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+        vec![],
+        Some(4),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: away.clone(),
+        }),
+        vec![],
+        "",
+    );
+    assert_eq!(
+        engine.switch_issuing_reserve(&issuing),
+        max_switch_settle_reserve(1, 0),
+        "at most one issuing event"
+    );
+    let switching = report(
+        4,
+        vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+        vec![],
+        Some(4),
+        Some(WorldCommand::SwitchView {
+            output: OutputId("out-a".to_owned()),
+            workspace: away.clone(),
+        }),
+        vec![],
+        "",
+    );
+    assert_eq!(
+        engine.switch_issuing_reserve(&switching),
+        max_switch_settle_reserve(1, 0),
+        "switch view is select-family"
+    );
+    let numbered = report(
+        4,
+        vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+        vec![],
+        Some(4),
+        Some(WorldCommand::SelectNumbered {
+            output: Some(OutputId("out-a".to_owned())),
+            index: 1,
+        }),
+        vec![],
+        "",
+    );
+    assert_eq!(
+        engine.switch_issuing_reserve(&numbered),
+        max_switch_settle_reserve(1, 0),
+        "numbered select is select-family"
+    );
+    let observation = report(
+        4,
+        vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+        vec![],
+        None,
+        None,
+        vec![],
+        "",
+    );
+    assert_eq!(
+        engine.switch_issuing_reserve(&observation),
+        0,
+        "observation-only reserves nothing"
+    );
+    let focus = report(
+        4,
+        vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+        vec![],
+        Some(4),
+        Some(WorldCommand::Focus {
+            window: WindowId("w1".to_owned()),
+            direction: "left".to_owned(),
+        }),
+        vec![],
+        "",
+    );
+    assert_eq!(
+        engine.switch_issuing_reserve(&focus),
+        0,
+        "non-select commands reserve nothing"
+    );
+    // Worst case on one report: the retained binding's full-failure
+    // terminal plus one worst-token empty issuing event.
+    let old = SwitchEvent {
+        operation_id: format!("op-{}", u64::MAX),
+        outcome: SwitchOutcome::CompletedWithFailures,
+        failed: (0..member_count)
+            .map(|_| WindowId("w".repeat(128)))
+            .collect(),
+        focus: SwitchFocus::Refused,
+        fallback: true,
+    };
+    let new = SwitchEvent {
+        operation_id: format!("op-{}", u64::MAX),
+        outcome: SwitchOutcome::CompletedWithFailures,
+        failed: Vec::new(),
+        focus: SwitchFocus::Unproven,
+        fallback: false,
+    };
+    let estimated = switch_settled_estimate(&[old, new]);
+    let reserve = engine.switch_settle_reserve() + engine.switch_issuing_reserve(&issuing);
+    assert!(
+        reserve >= estimated,
+        "no undercount: reserve {reserve} covers estimate {estimated}"
+    );
+    assert_eq!(MAX_SWITCH_EVENT_FIXED_BYTES, 117, "fixed event bound stays");
+    assert_eq!(MAX_SWITCH_FAILED_ROW_BYTES, 131, "failed id bound stays");
+}
+
+#[test]
+fn host_owned_focus_bearing_fullscreen_focus_freezes_frameless_and_proves() {
+    // Intentional fullscreen focus: the native overlay owns its pixels,
+    // so the published row is frameless, and the off-desktop
+    // `visible=false` pre-arrival fact never excludes it.
+    let (mut engine, away) = host_boot();
+    let mut w2 = hfact("w2", "n1", 200, false);
+    w2.fullscreen = Some(true);
+    let stage = || {
+        vec![
+            hfact("w0", "n0", 0, true),
+            hfact("w1", "n1", 100, false),
+            w2.clone(),
+        ]
+    };
+    let mut staged = host_native_report(2, stage(), "n0", None, None);
+    staged.focused_global = "w2".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
+    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
+    assert_eq!(reply.effects[0].target.0, "w2");
+    assert!(
+        reply.effects[0].await_shown,
+        "fullscreen focus awaits arrival"
+    );
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding pends");
+    let frozen = binding
+        .members
+        .iter()
+        .find(|member| member.window.0 == "w2")
+        .expect("frameless fullscreen focus freezes: {binding:?}");
+    assert_eq!(frozen.frame, None);
+    assert_eq!(frozen.home.workspace.0, away);
+    // Any readable live frame proves: null desired waives equality only.
+    let effect = reply.effects[0].clone();
+    let frames = host_member_frames(&reply);
+    let arrival = vec![
+        native_bracket("w1", "n1", 3, frames[&WindowId("w1".to_owned())]),
+        native_bracket("w2", "n1", 3, Some(rect(200, 0, 40, 90))),
+    ];
+    let row = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        arrival,
+    );
+    let mut wins = host_proof_windows(true);
+    wins[2].fullscreen = Some(true);
+    let mut proof = host_native_report(4, wins, "n1", None, None);
+    proof.focus_feedback = vec![row];
+    let settled = accepted(&mut engine, &proof);
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "fullscreen arrival proves: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert_eq!(event.focus, SwitchFocus::Proven);
+}
+
+#[test]
+fn host_owned_focus_bearing_float_focus_freezes_frameless_and_proves() {
+    // Intentional float focus: a fresh float carries no retained frame,
+    // so its published row is frameless, and the off-desktop
+    // `visible=false` pre-arrival fact never excludes it.
+    let (mut engine, away) = host_boot();
+    let mut w2 = hfact("w2", "n1", 200, false);
+    w2.transient = Some(true);
+    let stage = || {
+        vec![
+            hfact("w0", "n0", 0, true),
+            hfact("w1", "n1", 100, false),
+            w2.clone(),
+        ]
+    };
+    let mut staged = host_native_report(2, stage(), "n0", None, None);
+    staged.focused_global = "w2".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
+    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
+    assert_eq!(reply.effects[0].target.0, "w2");
+    assert!(reply.effects[0].await_shown, "float focus awaits arrival");
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding pends");
+    let frozen = binding
+        .members
+        .iter()
+        .find(|member| member.window.0 == "w2")
+        .expect("frameless float focus freezes: {binding:?}");
+    assert_eq!(frozen.frame, None);
+    assert_eq!(frozen.home.workspace.0, away);
+    let effect = reply.effects[0].clone();
+    let frames = host_member_frames(&reply);
+    let arrival = vec![
+        native_bracket("w1", "n1", 3, frames[&WindowId("w1".to_owned())]),
+        native_bracket("w2", "n1", 3, Some(rect(200, 0, 40, 90))),
+    ];
+    let row = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        arrival,
+    );
+    let mut proof = host_native_report(4, host_proof_windows(true), "n1", None, None);
+    proof.focus_feedback = vec![row];
+    let settled = accepted(&mut engine, &proof);
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "float arrival proves: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert_eq!(event.focus, SwitchFocus::Proven);
+}
+
+#[test]
+fn host_owned_focus_bearing_freezes_sticky_focus_at_actual_home() {
+    let (mut engine, away) = host_boot();
+    let mut ws = hfact("ws", "n0", 50, false);
+    ws.sticky = Some(true);
+    let stage = || {
+        vec![
+            hfact("w0", "n0", 0, true),
+            ws.clone(),
+            hfact("w1", "n1", 100, false),
+            hfact("w2", "n1", 200, false),
+        ]
+    };
+    // Newcomers first (admission settles), so the later sticky
+    // observation is the only canonical write.
+    let mut introduced = host_native_report(2, stage(), "n0", None, None);
+    introduced.focused_global = "w2".to_owned();
+    let _ = accepted(&mut engine, &introduced);
+    // Record sticky memory at the away domain: the adapter shows away
+    // while the sticky window stays homed to home. No newcomers, so no
+    // admission focus overwrites the slot.
+    let mut observed = host_native_report(3, stage(), "n1", None, None);
+    observed.focused_global = "ws".to_owned();
+    let _ = accepted(&mut engine, &observed);
+    // Select away from home: the remembered sticky focus must resolve.
+    let mut selecting = host_native_report(
+        4,
+        stage(),
+        "n0",
+        Some(4),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: away.clone(),
+        }),
+    );
+    selecting.focused_global = "ws".to_owned();
+    let reply = accepted(&mut engine, &selecting);
+    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
+    assert_eq!(
+        reply.effects[0].target.0, "ws",
+        "remembered sticky focus resolves: {reply:?}"
+    );
+    assert!(reply.effects[0].await_shown, "sticky focus awaits arrival");
+    let home = reply
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0-backed workspace")
+        .id
+        .clone();
+    assert_ne!(home, away);
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding pends");
+    for row in &reply.windows {
+        assert!(
+            row.visibility.is_none(),
+            "host-owned grants no per-window targets: {row:?}"
+        );
+    }
+    // Every minted effect target freezes with its ACTUAL home: the sticky
+    // focus stays homed to home, never fabricated onto the target.
+    let frozen = binding
+        .members
+        .iter()
+        .find(|member| member.window.0 == "ws")
+        .expect("sticky effect target freezes: {binding:?}");
+    assert_eq!(
+        frozen.home.workspace.0, home,
+        "actual core home: {binding:?}"
+    );
+    assert_eq!(
+        binding.members.len(),
+        3,
+        "only required members freeze: {binding:?}"
+    );
+    assert!(
+        binding
+            .members
+            .iter()
+            .filter(|member| member.window.0 == "w1" || member.window.0 == "w2")
+            .all(|member| member.home.workspace.0 == away),
+        "selected-home members keep the target home: {binding:?}"
+    );
+    // Native proof translates each frozen per-window home through this
+    // engine's own bindings: the sticky bracket names n0, the rest n1.
+    let effect = reply.effects[0].clone();
+    let frames = host_member_frames(&reply);
+    let mut arrival = vec![
+        native_bracket("w1", "n1", 4, frames[&WindowId("w1".to_owned())]),
+        native_bracket("w2", "n1", 4, frames[&WindowId("w2".to_owned())]),
+    ];
+    let ws_frame = frames.get(&WindowId("ws".to_owned())).copied().flatten();
+    arrival.push(native_bracket(
+        "ws",
+        "n0",
+        4,
+        ws_frame.or(Some(rect(50, 0, 40, 90))),
+    ));
+    let row = feedback_row(
+        &effect.id,
+        "ws",
+        effect.issued_revision,
+        true,
+        Some("ws"),
+        arrival,
+    );
+    let mut proof = host_native_report(5, stage(), "n1", None, None);
+    proof.focus_feedback = vec![row];
+    let settled = accepted(&mut engine, &proof);
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "sticky arrival proves: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-4");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert_eq!(event.focus, SwitchFocus::Proven);
+}
+
+fn host_focus_grant_fullscreen_nonfocus() -> (WorldEngine, String, crate::world_report::WorldReply)
+{
+    let (mut engine, away) = host_boot();
+    let mut w1 = hfact("w1", "n1", 100, false);
+    w1.fullscreen = Some(true);
+    let stage = || {
+        vec![
+            hfact("w0", "n0", 0, true),
+            w1.clone(),
+            hfact("w2", "n1", 200, false),
+        ]
+    };
+    let mut staged = host_native_report(2, stage(), "n0", None, None);
+    staged.focused_global = "w2".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
+    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
+    assert_eq!(reply.effects[0].target.0, "w2");
+    assert!(
+        reply.effects[0].await_shown,
+        "host-owned focus awaits arrival"
+    );
+    (engine, away, reply)
+}
+
+fn host_fullscreen_proof_windows() -> Vec<WindowFact> {
+    let mut wins = host_proof_windows(true);
+    wins[1].fullscreen = Some(true);
+    wins
+}
+
+#[test]
+fn host_owned_focus_bearing_freezes_frameless_fullscreen_nonfocus_member() {
+    let (engine, away, grant) = host_focus_grant_fullscreen_nonfocus();
+    let published = grant
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "w1")
+        .expect("fullscreen member publishes a row: {grant:?}");
+    assert_eq!(
+        published.effective_frame, None,
+        "native overlay owns fullscreen pixels: {grant:?}"
+    );
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("binding pends");
+    let frozen = binding
+        .members
+        .iter()
+        .find(|member| member.window.0 == "w1")
+        .expect("frameless required member freezes: {binding:?}");
+    assert_eq!(frozen.frame, None, "frame equality waived, never dropped");
+    assert_eq!(frozen.home.workspace.0, away);
+    assert!(
+        binding.members.iter().any(|member| member.window.0 == "w2"),
+        "focus member still freezes: {binding:?}"
+    );
+}
+
+#[test]
+fn host_owned_focus_bearing_missing_frameless_bracket_holds_not_ready() {
+    let (mut engine, _away, grant) = host_focus_grant_fullscreen_nonfocus();
+    let effect = grant.effects[0].clone();
+    let frames = host_member_frames(&grant);
+    // Arrival covers every frozen member except the frameless one: the
+    // switch holds with foreground proven but arrival unreadiness.
+    let arrival = vec![native_bracket(
+        "w2",
+        "n1",
+        3,
+        frames[&WindowId("w2".to_owned())],
+    )];
+    let row = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        arrival,
+    );
+    let mut proof = host_native_report(4, host_fullscreen_proof_windows(), "n1", None, None);
+    proof.focus_feedback = vec![row];
+    let settled = accepted(&mut engine, &proof);
+    // The latched feedback row decides arrival once and for all: the
+    // missing member bracket fails the terminal (never a hold for more
+    // evidence), with foreground proven but arrival unreadiness.
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "missing member bracket fails: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert!(event.failed.is_empty(), "no per-window failures: {event:?}");
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases on failure"
+    );
+}
+
+#[test]
+fn host_owned_focus_bearing_null_live_frame_never_proves() {
+    let (mut engine, _away, grant) = host_focus_grant_fullscreen_nonfocus();
+    let effect = grant.effects[0].clone();
+    let frames = host_member_frames(&grant);
+    // A null live frame for the frameless member never proves: waived
+    // equality still needs a readable live frame.
+    let arrival = vec![
+        native_bracket("w1", "n1", 3, None),
+        native_bracket("w2", "n1", 3, frames[&WindowId("w2".to_owned())]),
+    ];
+    let row = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        arrival,
+    );
+    let mut proof = host_native_report(4, host_fullscreen_proof_windows(), "n1", None, None);
+    proof.focus_feedback = vec![row];
+    let settled = accepted(&mut engine, &proof);
+    // Waived equality still needs a readable live frame: the null live
+    // frame fails the terminal, never proves.
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "null live frame fails: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+    assert!(event.failed.is_empty(), "no per-window failures: {event:?}");
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases on failure"
+    );
+}
+
+#[test]
+fn host_owned_focus_bearing_frameless_member_proves_on_readable_frame() {
+    let (mut engine, away, grant) = host_focus_grant_fullscreen_nonfocus();
+    let effect = grant.effects[0].clone();
+    let frames = host_member_frames(&grant);
+    // Any readable live frame proves the frameless member: null desired
+    // waives equality only.
+    let arrival = vec![
+        native_bracket("w1", "n1", 3, Some(rect(100, 0, 40, 90))),
+        native_bracket("w2", "n1", 3, frames[&WindowId("w2".to_owned())]),
+    ];
+    let row = feedback_row(
+        &effect.id,
+        "w2",
+        effect.issued_revision,
+        true,
+        Some("w2"),
+        arrival,
+    );
+    let mut proof = host_native_report(4, host_fullscreen_proof_windows(), "n1", None, None);
+    proof.focus_feedback = vec![row];
+    let settled = accepted(&mut engine, &proof);
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "readable frame proves: {settled:?}"
+    );
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Proven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "finite binding releases"
+    );
+    assert!(
+        engine
+            .retained
+            .iter()
+            .all(|r| r.target.operation_id != "op-3"),
+        "actual parent retires"
+    );
+    let _ = away;
 }

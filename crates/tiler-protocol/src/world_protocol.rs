@@ -3309,7 +3309,9 @@ pub fn encode_reply(reply: &WorldReply) -> String {
         }
         out.push('}');
     }
-    out.push_str("],\"diagnostics\":[");
+    out.push_str("],\"switchSettled\":");
+    tiler_core::world_sizing::encode_switch_settled(&mut out, &reply.switch_settled);
+    out.push_str(",\"diagnostics\":[");
     for (i, diagnostic) in reply.diagnostics.iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -3351,5 +3353,64 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["outcome"], "rejected");
         assert_eq!(parsed["gen"], "gen-1");
+    }
+
+    #[test]
+    fn switch_settled_both_writers_emit_identical_bytes() {
+        use tiler_core::directional::WindowId;
+        use tiler_core::world_report::{SwitchEvent, SwitchFocus, SwitchOutcome};
+        let settled = vec![
+            SwitchEvent {
+                operation_id: "op-3".to_owned(),
+                outcome: SwitchOutcome::Complete,
+                failed: Vec::new(),
+                focus: SwitchFocus::Proven,
+                fallback: false,
+            },
+            SwitchEvent {
+                operation_id: format!("op-{}", u64::MAX),
+                outcome: SwitchOutcome::CompletedWithFailures,
+                failed: vec![WindowId("w".repeat(128))],
+                focus: SwitchFocus::Unproven,
+                fallback: true,
+            },
+        ];
+        let mut core_section = String::new();
+        tiler_core::world_sizing::encode_switch_settled(&mut core_section, &settled);
+        let reply = tiler_core::world_report::WorldReply {
+            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            request_id: "req-1".to_owned(),
+            based_on_observation_seq: 4,
+            state_revision: 9,
+            ready: true,
+            command_consumed: false,
+            scopes: Vec::new(),
+            workspaces: Vec::new(),
+            outputs: Vec::new(),
+            diagnostics: Vec::new(),
+            windows: Vec::new(),
+            transfers: Vec::new(),
+            effects: Vec::new(),
+            command_result: None,
+            gesture_settled: None,
+            operation_settled: Vec::new(),
+            native_creations: Vec::new(),
+            cursor_warp: None,
+            presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            intent_writes: Vec::new(),
+            switch_settled: settled.clone(),
+        };
+        let core_wire = tiler_core::world_report::encode_reply_canonical(&reply);
+        let transport_wire = encode_reply(&reply);
+        assert_eq!(transport_wire, core_wire, "both writers byte-identical");
+        assert!(
+            tiler_core::world_report::reply_estimate(&reply) >= core_wire.len(),
+            "estimate covers event reply"
+        );
+        assert!(core_wire.contains("\"switchSettled\":[{"));
+        assert!(core_wire.contains("\"outcome\":\"complete\""));
+        assert!(core_wire.contains("\"outcome\":\"completed-with-failures\""));
     }
 }

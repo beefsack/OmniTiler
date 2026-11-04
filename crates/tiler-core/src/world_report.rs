@@ -2065,6 +2065,78 @@ pub struct OperationEvent {
     pub cause: Option<String>,
 }
 
+/// Terminal switch outcome: `Complete` only when every frozen switch
+/// target proved its desired state (empty `failed`) AND the focus proved
+/// against full frozen arrival readiness; `CompletedWithFailures` in every
+/// other terminal case, including a focus-only failure with an empty
+/// `failed` list (confirmed targets, unproven/refused focus). Focusless
+/// switches carry no focus effect, so their focus reads `Unproven` without
+/// failing: with every member verdict confirmed-equivalent (zero vacuously)
+/// and no native obligation outstanding, the terminal is `Complete`.
+/// Closed: no other token is encodable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitchOutcome {
+    Complete,
+    CompletedWithFailures,
+}
+
+impl SwitchOutcome {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::CompletedWithFailures => "completed-with-failures",
+        }
+    }
+}
+
+/// Core-derived focus outcome for one settled switch: `Proven` only when
+/// the first correlated focus feedback proved the foreground target AND
+/// the full frozen arrival snapshot proved ready (foreground proof alone
+/// never proves focus); `Refused` on explicit refusal with an unchanged
+/// readable non-target preimage, else `Unproven`. Switches without a focus
+/// effect (focusless selections, which mint none) always report `Unproven`:
+/// no foreground target exists to prove or refuse. Closed: no other token
+/// is encodable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitchFocus {
+    Proven,
+    Refused,
+    Unproven,
+}
+
+impl SwitchFocus {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Proven => "proven",
+            Self::Refused => "refused",
+            Self::Unproven => "unproven",
+        }
+    }
+}
+
+/// One terminal selection event: the existing parent
+/// transfer/view operation (`op-<cmdseq>`, never a new id), the terminal
+/// accounting outcome, the frozen switch target failures (empty on
+/// `Complete`), the core-derived foreground outcome (`Unproven` for
+/// focusless switches, which mint no focus effect), and whether
+/// separately authorized fallback hides ran (never on this lane).
+/// Covers both the native-free zero-obligation issuing terminal and
+/// host-owned native-obligated terminals. Emitted once on the existing
+/// parent when every frozen switch member has a verdict, never retained
+/// across reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchEvent {
+    pub operation_id: String,
+    pub outcome: SwitchOutcome,
+    pub failed: Vec<WindowId>,
+    pub focus: SwitchFocus,
+    pub fallback: bool,
+}
+
 /// World reply: single globally ordered full desired snapshot. No
 /// tree/shares/focus-history/serialized Engine.
 ///
@@ -2147,6 +2219,13 @@ pub struct WorldReply {
     /// Required on the wire (`intentWrites`); empty until a later increment
     /// publishes decisions. The engine emits no writes in this increment.
     pub intent_writes: Vec<IntentWrite>,
+    /// Terminal native-free selection events incorporated by this report
+    /// (see [`SwitchEvent`]): one per settled parent transfer/view
+    /// operation whose frozen switch members all reached a verdict, never
+    /// retained across reports. Empty on observation-only holds and on
+    /// replies with no switch settlement. Duplicate deliveries repeat the
+    /// cached reply (and its events).
+    pub switch_settled: Vec<SwitchEvent>,
 }
 
 /// Closed command-rejection catalog for an accepted report whose command

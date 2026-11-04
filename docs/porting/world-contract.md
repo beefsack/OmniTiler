@@ -1001,6 +1001,15 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `focus` | `proven/refused/unproven` | no | Core-derived foreground outcome. |
 | | `fallback` | bool | no | Whether separately authorized fallback hides ran. |
 
+- A selection with no required focus target uses `focus:"unproven"` and
+  `outcome:"complete"` once all visibility obligations are satisfied, with
+  `failed:[]` when nothing failed. This includes empty-to-empty selections with
+  zero visibility members and native-owned focusless selections. Focus-bearing
+  switches still require proven focus for complete. Empty/minimized-only
+  workspaces retain no focused client. This is the same completion rule, not a
+  new token, wire shape, fake focus, fallback, retry or second completion path.
+  [Focusless completion](../decisions/workspaces.md#focusless-switch-completion).
+
 - `VisibilityReason` is `""` or
   `identity-stale,scope-held,unreadable,unsupported,preimage-unavailable,foreground-changed,fullscreen,game,show-blocked,focus-unproven,superseded,native-refused`.
   Samples are facts, never a copied target. Arrival requires the same live

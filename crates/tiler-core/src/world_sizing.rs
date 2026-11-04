@@ -423,6 +423,64 @@ pub fn operation_settled_estimate(settled: &[crate::world_report::OperationEvent
     bytes
 }
 
+/// Structural size estimate for the switch-settled section:
+/// `,"switchSettled":[]` (19) when empty; each event
+/// `{"op":,"outcome":,"failed":[],"focus":,"fallback":}` counts 51 fixed
+/// punctuation plus the parent operation id, outcome/focus tokens, the
+/// fallback bool, and every failed window id (one comma between rows).
+#[must_use]
+pub fn switch_settled_estimate(settled: &[crate::world_report::SwitchEvent]) -> usize {
+    // `,"switchSettled":[` (18) plus `]` (1) when empty = 19.
+    let mut bytes = 19usize;
+    for (i, event) in settled.iter().enumerate() {
+        if i > 0 {
+            bytes += 1;
+        }
+        // {"op":,"outcome":,"failed":[],"focus":,"fallback":} = 51 fixed.
+        bytes += 51
+            + json_string_len(&event.operation_id)
+            + json_string_len(event.outcome.as_str())
+            + json_string_len(event.focus.as_str())
+            + bool_len(event.fallback);
+        for (j, window) in event.failed.iter().enumerate() {
+            if j > 0 {
+                bytes += 1;
+            }
+            bytes += json_string_len(&window.0);
+        }
+    }
+    bytes
+}
+
+/// Worst-case fixed bytes per switch-settled event row: 51 punctuation
+/// plus the longest parent operation id (`op-<u64>`, 23 raw / 25 quoted),
+/// the longest outcome (`completed-with-failures`, 23 raw / 25 quoted),
+/// the longest focus token (`unproven`, 8 raw / 10 quoted), and the
+/// longer bool (`false`, 5), plus one array comma (overcounts the final
+/// row, conservatively). 51 + 25 + 25 + 10 + 5 + 1 = 117.
+pub const MAX_SWITCH_EVENT_FIXED_BYTES: usize = 117;
+
+/// Worst-case bytes per failed window id in a switch event: the longest
+/// opaque window id (128 raw bytes, never escaped, so 130 quoted) plus one
+/// array comma (overcounts the final id, conservatively).
+pub const MAX_SWITCH_FAILED_ROW_BYTES: usize = 131;
+
+/// Pre-mutation reserve for simultaneous switch completions: at most one
+/// terminal event per retained selection binding completing in this report
+/// (bindings are keyed by focus output, so simultaneous completions across
+/// outputs stay covered), each failed list a subset of its frozen switch
+/// members. Zero when no binding is retained. Conservative like every
+/// other [`reply_upper_bound`] term; the exact-encoded staged reply stays
+/// the commit backstop.
+#[must_use]
+pub fn max_switch_settle_reserve(event_count: usize, failed_total: usize) -> usize {
+    if event_count == 0 {
+        return 0;
+    }
+    19 + event_count.saturating_mul(MAX_SWITCH_EVENT_FIXED_BYTES)
+        + failed_total.saturating_mul(MAX_SWITCH_FAILED_ROW_BYTES)
+}
+
 /// Structural size estimate for the optional cursor-warp section:
 /// `,"warpCursor":null` (18) when absent; the present point `[x,y]` counts
 /// its key plus brackets, comma, and decimal digits.
@@ -453,7 +511,9 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     // the gesture-settled section in [`gesture_settled_estimate`]
     // (`,\"gestureSettled\":null` = 22 when absent), the operation-settled
     // section in [`operation_settled_estimate`]
-    // (`,\"operationSettled\":[]` = 21 when empty), and the warp section
+    // (`,\"operationSettled\":[]` = 21 when empty), the switch-settled
+    // section in [`switch_settled_estimate`]
+    // (`,\"switchSettled\":[]` = 19 when empty), and the warp section
     // in [`warp_cursor_estimate`] (`,\"warpCursor\":null` = 18 when absent).
     // The intent save/clear section rides between presentation and
     // diagnostics ([`intent_writes_estimate`], `,\"intentWrites\":[]` = 18
@@ -581,6 +641,7 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     bytes += warp_cursor_estimate(&reply.cursor_warp);
     bytes += presentation_estimate(&reply.presentation);
     bytes += intent_writes_estimate(&reply.intent_writes);
+    bytes += switch_settled_estimate(&reply.switch_settled);
     bytes
 }
 
@@ -2350,7 +2411,9 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
         }
         out.push('}');
     }
-    out.push_str("],\"diagnostics\":[");
+    out.push_str("],\"switchSettled\":");
+    encode_switch_settled(&mut out, &reply.switch_settled);
+    out.push_str(",\"diagnostics\":[");
     for (i, diagnostic) in reply.diagnostics.iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -2360,6 +2423,37 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
     out.push(']');
     out.push('}');
     out
+}
+
+/// Exact canonical encoding for the switch-settled section, with frozen
+/// key order (mirrored by [`switch_settled_estimate`] and the protocol
+/// codec): `[]` when no switch settled, else one object per settled parent
+/// `{"op":..,"outcome":..,"failed":..,"focus":..,"fallback":..}` where a
+/// `complete` outcome carries an empty `failed` list.
+pub fn encode_switch_settled(out: &mut String, settled: &[crate::world_report::SwitchEvent]) {
+    out.push('[');
+    for (i, event) in settled.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"op\":");
+        push_json_string(out, &event.operation_id);
+        out.push_str(",\"outcome\":");
+        push_json_string(out, event.outcome.as_str());
+        out.push_str(",\"failed\":[");
+        for (j, window) in event.failed.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            push_json_string(out, &window.0);
+        }
+        out.push_str("],\"focus\":");
+        push_json_string(out, event.focus.as_str());
+        out.push_str(",\"fallback\":");
+        out.push_str(if event.fallback { "true" } else { "false" });
+        out.push('}');
+    }
+    out.push(']');
 }
 
 /// Exact canonical encoding for one narrow-hold row diagnostic, with
@@ -2921,6 +3015,13 @@ pub const MAX_EFFECT_RESERVE_BYTES: usize = MAX_EFFECT_ROW_BYTES * 2 + 1;
 ///   [`MAX_INTENT_SAVE_DATA_JSON`], at most 194), gated on the report's
 ///   own command (`SetSticky`, `ToggleSticky`, or the sticky-clearing
 ///   `ToggleFloat`) so non-save reports reserve nothing.
+/// - switch terminals: the empty 19-byte `switchSettled` section fits in the
+///   envelope slack. The caller separately adds [`max_switch_settle_reserve`]
+///   for every retained selection binding and its frozen visibility members,
+///   including simultaneous completions on different outputs, plus
+///   `max_switch_settle_reserve(1, 0)` for the at-most-one zero-obligation
+///   issuing terminal a select-family command can mint while old bindings
+///   settle (see `WorldEngine::switch_issuing_reserve`).
 /// - outbound target lanes (current engine only): each published window
 ///   carries at most one composed sticky show plus the command correlation
 ///   and at most one native sticky state target plus at most one native

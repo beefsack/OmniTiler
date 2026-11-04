@@ -245,13 +245,6 @@ impl WorldEngine {
             workspace: crate::directional::WorkspaceId(workspace.to_owned()),
         };
         let Some(window) = self.remembered_view_focus(&target_key, held_scopes, by_id) else {
-            return CommandApplied::NoEffect;
-        };
-        // Native-free suppression-capable route: an actual resolved focus
-        // effect carries the arrival grant with shows and hides authorized
-        // under its issuing revision. Ordinary direct focus, admission,
-        // and every out-of-scope route keep the legacy effect below.
-        if self.selection_route_eligible(&window, &target_key, held_scopes) {
             let rev = self.state_revision + 1;
             let selected: Vec<DomainKey> = affected
                 .iter()
@@ -262,7 +255,37 @@ impl WorldEngine {
                 .collect();
             self.pending_selection = Some(crate::world_selection::PendingSelection {
                 command_seq,
-                focus: window.clone(),
+                focus: None,
+                focus_home: target_key,
+                selected,
+                departing,
+                affected_outputs: affected,
+                rev,
+                obs: report.observation_seq,
+            });
+            return CommandApplied::NoEffect;
+        };
+        // Native-free suppression-capable route: an actual resolved focus
+        // effect carries the arrival grant with shows and hides authorized
+        // under its issuing revision. Host-owned native route: the same
+        // awaitShown carrier with native desktop obligations (native
+        // selector readback plus native-home arrival) and no per-window
+        // targets. Ordinary direct focus, admission, and every
+        // out-of-scope route keep the legacy effect below.
+        if self.selection_route_eligible(&window, &target_key, held_scopes)
+            || self.host_selection_route_eligible(&window, &target_key, held_scopes)
+        {
+            let rev = self.state_revision + 1;
+            let selected: Vec<DomainKey> = affected
+                .iter()
+                .map(|out| DomainKey {
+                    output: out.clone(),
+                    workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+                })
+                .collect();
+            self.pending_selection = Some(crate::world_selection::PendingSelection {
+                command_seq,
+                focus: Some(window.clone()),
                 focus_home: target_key,
                 selected,
                 departing,

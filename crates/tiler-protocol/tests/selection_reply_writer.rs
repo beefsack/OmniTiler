@@ -14,8 +14,9 @@ use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    ScopeAuthority, ScreenReport, VisibilityFact, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand,
-    WorldReport,
+    ArrivalBracket, ArrivalLocation, FocusFeedback, LastWrite, LastWritePath, LastWriteProperty,
+    ScopeAuthority, ScreenReport, VisibilityFact, VisibilityReason, VisibilitySample,
+    VisibilitySetter, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
 };
 use tiler_protocol::world_protocol::encode_reply;
 
@@ -152,6 +153,51 @@ fn accepted(
     }
 }
 
+fn confirmed_write(target: bool, rev: u64, post_obs: u64) -> LastWrite {
+    LastWrite {
+        property: LastWriteProperty::Visibility,
+        target,
+        revision: rev,
+        path: LastWritePath::Staged,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: None,
+        post: Some(VisibilitySample {
+            obs: post_obs,
+            lifetime_matched: Some(true),
+            visibility: VisibilityFact {
+                visible: Some(target),
+                suppression_owned: Some(false),
+            },
+            minimized: Some(false),
+            host_hidden: Some(false),
+        }),
+    }
+}
+
+fn settle_report(
+    seq: u64,
+    w1_last: LastWrite,
+    w2_last: LastWrite,
+    feedback: FocusFeedback,
+) -> WorldReport {
+    let mut base = report(seq, None, None, "");
+    base.windows = vec![
+        {
+            let mut fact = sfact("w1", 0);
+            fact.last_write = Some(w1_last);
+            fact
+        },
+        {
+            let mut fact = sfact("w2", 100);
+            fact.last_write = Some(w2_last);
+            fact
+        },
+    ];
+    base.focus_feedback = vec![feedback];
+    base
+}
+
 #[test]
 fn selection_reply_spells_through_both_writers() {
     let mut engine = WorldEngine::new_test_bound_with_capabilities(
@@ -251,4 +297,150 @@ fn selection_reply_spells_through_both_writers() {
             "selection rows stay controlled"
         );
     }
+}
+
+#[test]
+fn selection_reply_carries_switch_terminal_through_both_writers() {
+    // Real-producer parity through the actual terminal: the same
+    // boot/send-aside/select route, then raw LastWrite plus arrival plus
+    // focus feedback settle the parent op on the real engine.
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            window_suppression: true,
+            maximize: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation");
+    let boot = accepted(&mut engine, &report(1, None, None, ""));
+    let ring: Vec<String> = boot
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    assert!(ring.len() >= 2, "owned plus trailing: {ring:?}");
+    let away = ring[1].clone();
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            Some(2),
+            Some(WorldCommand::Send {
+                window: WindowId("w2".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: away.clone(),
+                follow: false,
+            }),
+            "w2",
+        ),
+    );
+    let granted = accepted(
+        &mut engine,
+        &report(
+            3,
+            Some(3),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away.clone(),
+            }),
+            "",
+        ),
+    );
+    let effect = granted.effects[0].clone();
+    assert!(effect.await_shown, "selection focus awaits arrival");
+    let rev = granted.state_revision;
+    let frame = granted
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "w2")
+        .and_then(|row| row.effective_frame);
+    let sample = |obs: u64| VisibilitySample {
+        obs,
+        lifetime_matched: Some(true),
+        visibility: VisibilityFact {
+            visible: Some(true),
+            suppression_owned: Some(false),
+        },
+        minimized: Some(false),
+        host_hidden: Some(false),
+    };
+    let feedback = FocusFeedback {
+        id: effect.id.clone(),
+        target: effect.target.clone(),
+        revision: effect.issued_revision,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: None,
+        post: Some(effect.target.clone()),
+        foreground_proven: true,
+        arrival: vec![ArrivalBracket {
+            window: effect.target.clone(),
+            obs: 4,
+            before: sample(4),
+            location: ArrivalLocation::Output {
+                out: Some(OutputId("out-a".to_owned())),
+            },
+            frame,
+            after: sample(4),
+        }],
+        attempt_ms: 7,
+    };
+    let settled = accepted(
+        &mut engine,
+        &settle_report(
+            4,
+            confirmed_write(false, rev, 4),
+            confirmed_write(true, rev, 4),
+            feedback,
+        ),
+    );
+    assert_eq!(settled.switch_settled.len(), 1, "one terminal: {settled:?}");
+    let event = &settled.switch_settled[0];
+    assert_eq!(event.operation_id, "op-3");
+    assert_eq!(
+        event.outcome,
+        tiler_core::world_report::SwitchOutcome::Complete
+    );
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, tiler_core::world_report::SwitchFocus::Proven);
+    assert!(!event.fallback);
+    // Both writers spell the terminal reply byte-identically with the
+    // exact canonical event row in frozen key order.
+    let wire = encode_reply(&settled);
+    assert_eq!(
+        wire,
+        tiler_core::world_report::encode_reply_canonical(&settled),
+        "transport mirrors the core writer over a switch terminal"
+    );
+    assert!(
+        wire.contains(
+            "\"switchSettled\":[{\"op\":\"op-3\",\"outcome\":\"complete\",\
+             \"failed\":[],\"focus\":\"proven\",\"fallback\":false}]"
+        ),
+        "exact canonical event row in frozen key order"
+    );
+    // Marginal switch lane is exact against its wire bytes (the estimate
+    // carries the 19-byte section key while the section writer keeps the
+    // 2 array brackets), and the whole-reply estimate bounds the wire.
+    let mut section = String::new();
+    tiler_core::world_sizing::encode_switch_settled(&mut section, &settled.switch_settled);
+    let estimated = tiler_core::world_sizing::switch_settled_estimate(&settled.switch_settled);
+    assert_eq!(
+        estimated,
+        section.len() + 17,
+        "section key accounts the gap"
+    );
+    assert!(
+        tiler_core::world_report::reply_estimate(&settled) >= wire.len(),
+        "estimate covers the terminal reply"
+    );
+    // The terminal never repeats: the next report publishes empty.
+    let again = accepted(&mut engine, &report(5, None, None, ""));
+    assert!(
+        again.switch_settled.is_empty(),
+        "next report publishes empty"
+    );
 }

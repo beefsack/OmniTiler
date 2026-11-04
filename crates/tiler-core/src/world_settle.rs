@@ -138,7 +138,11 @@ impl WorldEngine {
     /// only the native current readback through this engine's own bindings
     /// for the attempt's target output; tiler-owned uses only the logical
     /// pre. Unmapped or unreadable natives stay unknown.
-    fn effective_view_pre(&self, attempt: &ViewAttempt, host_owned: bool) -> Option<String> {
+    pub(crate) fn effective_view_pre(
+        &self,
+        attempt: &ViewAttempt,
+        host_owned: bool,
+    ) -> Option<String> {
         if !host_owned {
             return None;
         }
@@ -224,7 +228,7 @@ impl WorldEngine {
     /// unchanged-readable-preimage rule as [`WorldEngine::member_refused`]. A
     /// follow miss is never a refused window: callers hold the parent
     /// ambiguous instead of settling refusal.
-    fn view_refused(
+    pub(crate) fn view_refused(
         &self,
         attempt: &ViewAttempt,
         target_workspace: &str,
@@ -242,7 +246,7 @@ impl WorldEngine {
     /// without it) names the target. The immediate post-write readback proves
     /// the write landed even when the current observation already moved on;
     /// that departure is newer external input, never a reason to re-actuate.
-    fn view_post_proves_target(&self, attempt: &ViewAttempt, host_owned: bool) -> bool {
+    pub(crate) fn view_post_proves_target(&self, attempt: &ViewAttempt, host_owned: bool) -> bool {
         matches!(attempt.setter, FrameSetter::Accepted)
             && self.effective_view_post(attempt, host_owned).as_deref()
                 == Some(attempt.target_workspace.as_str())

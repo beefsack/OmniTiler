@@ -14,6 +14,13 @@
 - Status: active, 2026-10-16
 - Evidence: [full-state replies](../changes/archive/core-full-state-replies.md).
 
+### Focusless switch completion
+- Decision: A selection with no required focus target reports `focus:"unproven"` and `outcome:"complete"` once all visibility obligations are satisfied, with `failed:[]` when nothing failed. The same rule covers empty-to-empty selections with zero visibility members and native-owned focusless selections. Focus-bearing switches still require proven focus for complete; empty/minimized-only workspaces retain no focused client.
+- Why: use the existing completion rule without unnecessary branching or new wire vocabulary.
+- Assumes / revisit if: no fake focus, fallback, retry, second completion path, new token or fixture change. Unsupported native terminal outcomes remain TBD.
+- Status: active, 2026-11-04
+- Evidence: [contract](../porting/world-contract.md#visibility-and-focus-ordering), [discriminator](../spec/reference-outcomes.md#empty-workspace-focus-across-outputs).
+
 ### Capacity hold and best-effort policy
 - Decision: Preserve topology when projection cannot allocate positive extents after gaps, using narrow recoverable `constraint-clamp` hold with complete held-lifetime rows; unaffected domains continue. Keep classification in one replaceable core policy location. No admission fallback is implied by this hold; see [layout and admission](layout-and-admission.md).
 - Why: not recorded.

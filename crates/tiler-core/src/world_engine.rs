@@ -716,6 +716,12 @@ pub struct WorldEngine {
     /// at the start of every staged run so a previous report's events never
     /// leak.
     pub(crate) operation_settled: Vec<crate::world_report::OperationEvent>,
+    /// Terminal selection events staged by switch settlement
+    /// and consumed once by [`WorldEngine::publish`] for the reply being
+    /// built. Empty on holds and on reports with no switch settlement.
+    /// Cleared at the start of every staged run so a previous report's
+    /// events never leak.
+    pub(crate) switch_settled: Vec<crate::world_report::SwitchEvent>,
     /// Fresh-admission focus intents already emitted, by window id (D4):
     /// at-most-once per lifetime, pruned on close so a reused id focuses
     /// again as a fresh newcomer. Survives incarnation resets within the
@@ -1199,6 +1205,7 @@ impl WorldEngine {
             pending_forget: Vec::new(),
             command_result: None,
             operation_settled: Vec::new(),
+            switch_settled: Vec::new(),
             placement_bootstrapped: false,
             admission_focus_spent: BTreeSet::new(),
             automatic_focus_tokens: BTreeMap::new(),
@@ -1558,6 +1565,7 @@ impl WorldEngine {
             cursor_warp: None,
             presentation: crate::world_presentation::WorldPresentation::default(),
             intent_writes: Vec::new(),
+            switch_settled: Vec::new(),
         }
     }
 
@@ -2019,6 +2027,11 @@ impl WorldEngine {
             self.retained_publish_footprint(),
         )
         .saturating_add(max_intent_rollback_bound(self.rollback_reserve_count()))
+        .saturating_add(self.switch_settle_reserve())
+        // A select-family command can mint one zero-obligation issuing
+        // terminal while old bindings settle in the same report; reserve
+        // it alongside the retained bindings, never from lane slack.
+        .saturating_add(self.switch_issuing_reserve(report))
             > WORLD_MAX_REPLY_BYTES
         {
             return WorldOutcome::Rejected {
@@ -2173,6 +2186,7 @@ impl WorldEngine {
             cursor_warp: None,
             presentation: crate::world_presentation::WorldPresentation::default(),
             intent_writes: Vec::new(),
+            switch_settled: Vec::new(),
         }
     }
 
@@ -2908,6 +2922,10 @@ impl WorldEngine {
         // opaque-tuple correlation latches raw evidence with no authority
         // upgrade, so consumed and observation-only reports settle alike.
         self.settle_selection_feedback(report);
+        // Selection switch terminals settle next from the latched feedback
+        // plus first-correlated LastWrite evidence, still before the
+        // command-only rollback boundary.
+        self.settle_selection_switch(report);
         // Core-owned frame policy: fold mechanical write/readback facts into
         // retained clamp/transient memory (scoped by exact staged lifetime)
         // so this same reply publishes suppression.

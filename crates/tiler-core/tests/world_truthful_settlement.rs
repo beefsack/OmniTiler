@@ -8,8 +8,8 @@ use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    FrameSetter, MemberAttempt, ScreenReport, ScreenView, TransferKind, WORLD_CONTRACT_VERSION,
-    WindowFact, WorkspaceRef, WorldCommand, WorldReport,
+    FrameSetter, MemberAttempt, ScreenReport, ScreenView, SwitchFocus, SwitchOutcome, TransferKind,
+    WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -502,7 +502,7 @@ fn host_owned_unknown_holds_exact_settles() {
 }
 
 #[test]
-fn missing_empty_stale_views_hold_external_known_settles() {
+fn empty_focusless_issues_terminal_without_echo_resurrection() {
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
@@ -524,32 +524,78 @@ fn missing_empty_stale_views_hold_external_known_settles() {
             true,
         ),
     );
-    let target = reply
-        .transfers
-        .iter()
-        .find(|t| matches!(t.kind, TransferKind::View))
-        .expect("view flight")
-        .target_workspace
-        .clone();
-    // Missing echo holds.
+    // Empty native-free focusless selection completes in the issuing
+    // reply: one terminal on the existing op, no focus effect, no view
+    // flight (the actual view parent retires at once).
+    assert!(
+        reply.transfers.is_empty(),
+        "empty focusless issues no flight: {:?}",
+        reply.transfers
+    );
+    assert!(
+        reply.effects.is_empty(),
+        "empty focusless invents no focus: {:?}",
+        reply.effects
+    );
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "zero obligations complete at issuing: {:?}",
+        reply.switch_settled
+    );
+    let event = &reply.switch_settled[0];
+    assert_eq!(event.operation_id, "op-11");
+    assert_eq!(event.outcome, SwitchOutcome::Complete);
+    assert!(event.failed.is_empty());
+    assert_eq!(event.focus, SwitchFocus::Unproven);
+    assert!(!event.fallback);
+    let target = view_of(&reply, "out-a").expect("selected logical view");
+    // Missing observation: settled parent stays retired, no duplicate.
     let held = accepted(
         &mut engine,
         &report(3, 3, vec![], vec![], None, None, vec![], true),
     );
-    assert_eq!(held.transfers.len(), 1, "missing holds");
-    // Empty echo holds.
+    assert!(
+        held.transfers.is_empty(),
+        "missing stays retired: {:?}",
+        held.transfers
+    );
+    assert!(
+        held.switch_settled.is_empty(),
+        "no duplicate terminal: {:?}",
+        held.switch_settled
+    );
+    // Empty observation: settled parent stays retired, no duplicate.
     let held = accepted(
         &mut engine,
         &report(4, 4, vec![], vec![("out-a", "")], None, None, vec![], true),
     );
-    assert_eq!(held.transfers.len(), 1, "empty holds");
-    // Stale echo holds.
+    assert!(
+        held.transfers.is_empty(),
+        "empty stays retired: {:?}",
+        held.transfers
+    );
+    assert!(
+        held.switch_settled.is_empty(),
+        "no duplicate terminal: {:?}",
+        held.switch_settled
+    );
+    // Stale observation: settled parent stays retired, no duplicate.
     let held = accepted(
         &mut engine,
         &report(5, 5, vec![], vec![("out-a", "")], None, None, vec![], true),
     );
-    assert_eq!(held.transfers.len(), 1, "stale holds");
-    // External unknown holds.
+    assert!(
+        held.transfers.is_empty(),
+        "stale stays retired: {:?}",
+        held.transfers
+    );
+    assert!(
+        held.switch_settled.is_empty(),
+        "no duplicate terminal: {:?}",
+        held.switch_settled
+    );
+    // External unknown observation: settled parent stays retired, no duplicate.
     let held = accepted(
         &mut engine,
         &report(
@@ -563,13 +609,17 @@ fn missing_empty_stale_views_hold_external_known_settles() {
             true,
         ),
     );
-    assert_eq!(
-        held.transfers.len(),
-        1,
-        "unknown holds: {:?}",
+    assert!(
+        held.transfers.is_empty(),
+        "unknown stays retired: {:?}",
         held.transfers
     );
-    // Exact echo settles.
+    assert!(
+        held.switch_settled.is_empty(),
+        "no duplicate terminal: {:?}",
+        held.switch_settled
+    );
+    // Exact observation: settled parent stays retired, no duplicate.
     let settled = accepted(
         &mut engine,
         &report(
@@ -585,8 +635,13 @@ fn missing_empty_stale_views_hold_external_known_settles() {
     );
     assert!(
         settled.transfers.is_empty(),
-        "exact settles: {:?}",
+        "exact stays retired: {:?}",
         settled.transfers
+    );
+    assert!(
+        settled.switch_settled.is_empty(),
+        "no duplicate terminal: {:?}",
+        settled.switch_settled
     );
 }
 
