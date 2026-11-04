@@ -3770,7 +3770,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
 /// Staged v4 world protocol version: `rendererInput` carried, `views`
 /// removed, identifiable bad rows held narrowly. The v3
 /// [`WORLD_PROTOCOL_VERSION`] constant stays untouched.
-pub const WORLD_PROTOCOL_VERSION_V4: u32 = 4;
+pub const WORLD_PROTOCOL_VERSION_V4: u32 = tiler_core::world_report::WORLD_CONTRACT_VERSION_V4;
 
 /// Per-valid-row creation-receipt wire spelling (lane-level
 /// `creationAttempts[].created`): the normalized

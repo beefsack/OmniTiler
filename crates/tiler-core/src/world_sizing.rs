@@ -33,7 +33,7 @@ pub fn json_string_len(value: &str) -> usize {
     bytes
 }
 
-fn authority_scope_len(scope: &AuthorityScope) -> usize {
+pub(crate) fn authority_scope_len(scope: &AuthorityScope) -> usize {
     match scope {
         AuthorityScope::Output(out) => {
             "{\"kind\":\"output\",\"out\":}".len() + json_string_len(&out.0)
@@ -61,7 +61,9 @@ fn workspace_ref_len(reference: &crate::world_report::WorkspaceRef) -> usize {
     }
 }
 
-fn workspace_ref_option_len(reference: &Option<crate::world_report::WorkspaceRef>) -> usize {
+pub(crate) fn workspace_ref_option_len(
+    reference: &Option<crate::world_report::WorkspaceRef>,
+) -> usize {
     reference.as_ref().map_or(4, workspace_ref_len)
 }
 
@@ -135,7 +137,7 @@ fn arrival_bracket_estimate(bracket: &crate::world_report::ArrivalBracket) -> us
 /// two decimal stamps, and the empty arrival brackets) plus ids, tokens,
 /// nullable endpoints (`null` counts 4 each), the proof bool, the brackets
 /// (one comma per extra bracket), and the stamp digits.
-fn focus_feedback_estimate(row: &crate::world_report::FocusFeedback) -> usize {
+pub(crate) fn focus_feedback_estimate(row: &crate::world_report::FocusFeedback) -> usize {
     109 + json_string_len(&row.id)
         + json_string_len(&row.target.0)
         + u64_len(row.revision)
@@ -170,7 +172,7 @@ fn row_diagnostic_estimate(diagnostic: &crate::world_report::RowDiagnostic) -> u
         + json_string_len(diagnostic.kind.as_str())
 }
 
-fn scope_status_estimate(scope: &crate::world_report::ScopeStatus) -> usize {
+pub(crate) fn scope_status_estimate(scope: &crate::world_report::ScopeStatus) -> usize {
     // {"scope":,"auth":,"reason":} = 28 outer punctuation.
     28 + authority_scope_len(&scope.scope)
         + json_string_len(scope.authority.as_str())
@@ -1057,7 +1059,7 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
 /// (braces, keys, commas, and the revision quotes) plus the property/path/
 /// setter/reason tokens, the target bool, the revision digits, and the two
 /// nullable samples below.
-fn last_write_estimate(last: &Option<crate::world_report::LastWrite>) -> usize {
+pub(crate) fn last_write_estimate(last: &Option<crate::world_report::LastWrite>) -> usize {
     match last {
         None => 4,
         Some(last) => {
@@ -1529,7 +1531,7 @@ pub const fn direction_token(direction: Direction) -> &'static str {
 /// Estimated encoded size of one world command: fixed wire punctuation
 /// per variant (derived from the protocol shapes) plus exact carried
 /// string/numeric widths. The caller counts `null` (4) when absent.
-fn command_estimate_owned(command: &WorldCommand) -> usize {
+pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
     match command {
         WorldCommand::Focus { window, direction } => {
             // {"op":"focus","win":S,"direction":S} = 34 fixed.
@@ -2056,7 +2058,7 @@ pub fn raw_setting_value_len(value: &crate::connection::RawSettingValue) -> Opti
 /// when any nested number is non-finite), this never collapses carried
 /// structure or text around one bad scalar, so the request estimator
 /// cannot undercount the report. A bound only, never an encoding.
-fn raw_setting_value_estimate(value: &crate::connection::RawSettingValue) -> usize {
+pub(crate) fn raw_setting_value_estimate(value: &crate::connection::RawSettingValue) -> usize {
     use crate::connection::RawSettingValue;
     match value {
         RawSettingValue::Null => 4,

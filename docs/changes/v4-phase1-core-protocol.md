@@ -690,6 +690,75 @@
   rows carry a command sequence for which the engine retains no source. The
   codec fabricates neither.
 
+### v4 engine bridge sub-increments (unit 6)
+
+- Shape: a parallel core-internal v4 path (`*_v4` validate, stage and publish
+  functions reusing the lane helpers below the staging boundary). The broker is
+  never switched, no version bump and no dual decode happens in this unit, so a
+  single live report shape remains until unit 7. A generic-over-report engine is
+  rejected: it would force unifying presentation rows, transfer targets and
+  views across about fifteen lanes.
+- Sub-increments, each verified and committed separately:
+  1. Pure-function v4 twins of validation, structure checks, grading, digest,
+     estimates and canonical encode for `WorldReportV4`/`WorldReplyV4`. Evidence:
+     the 126 valid, 81 accepted-held and 82 reject report fixtures through
+     `decode_report_v4(_for_host)` and the 114 valid and 26 reply fixtures
+     (`report_v4_decode.rs`, `reply_v4_decode.rs`). Legacy functions untouched.
+  2. v4 staging intake: `StagedReport` from `WorldReportV4` (no views,
+     `PresentationRowV4`, `renderer_input`, native and attempt held rows).
+     Evidence: scenarios `row-hold-close-recovery`, `scale-identity-primary`,
+     `native-domain` and held-row census tests.
+  3. Capability-conflict grading on v4 for the four capability-context fixtures
+     (`invalid-unavailable-fact-contradiction`,
+     `invalid-executable-unavailable-value`, `invalid-sticky-projected-fact`,
+     `invalid-sticky-native-free-attempt`): the decoder pins them as valid typed
+     rows with zero held rows and the engine holds them as `conflicting-fact`.
+     Evidence: engine tests per fixture; scenarios `raw-fact-availability`,
+     `executable-identity`, `native-domain`, `window-state`,
+     `raw-attempt-settlement`.
+  4. View-proof migration replacing the `views` echo legs (`view_echo_for`,
+     staged echo fill, `settle_views_pre`, selection proof) with visibility and
+     focus proof. The contract settles the receipt predicates (removed `views`
+     text, arrival requirements, frozen switch target sets); only the observe
+     staging function is implementation detail.
+  5. Genuine presentation producer plus `rendererInput` validation. The contract
+     settles the anchored descriptor shape, core-scaled style, unknown witness
+     disabling the border, and a stale target refusing the command with
+     `stale-render-target` at command handling (not a publish hold). Scenarios
+     `anchored-border`, `decorations-target-row`, `arrival-mismatch-*`. The
+     native witness-join proof stays an adapter-port gate.
+  6. `WorldReplyV4` publish assembly (transfers with an explicit command
+     sequence, diagnostics, switch events) plus v4 bootstrap. The contract
+     settles the transfer command sequence as the original command sequence,
+     null for commandless work. Scenarios `raw-attempt-settlement`,
+     `visibility-*`, `window-state`, `persistent-above`,
+     `linked-selectors-warp`.
+- Sub-increment 1 outcome: staged pure-function twins in two new core modules,
+  `world_report_v4_checks` (`validate_report_v4_reason`,
+  `grade_conflicting_windows_v4`, `report_digest_v4`) and `world_sizing_v4`
+  (`report_estimate_v4`, `reply_estimate_v4`, `reply_exact_bytes_v4`,
+  `reply_upper_bound_v4`), plus a core `WORLD_CONTRACT_VERSION_V4` constant that
+  the protocol's staged version constant now points at (the runtime version
+  stays 3). Nothing calls them yet. Evidence: over the 207 accepted report
+  fixtures (126 valid, 81 accepted-held) validation passes, the digest is stable
+  and sensitive to one field per lane family, the estimate bounds the canonical
+  encoded bytes, and permissive-capability grading is a no-op; three of the four
+  capability-context fixtures grade to exactly one `conflicting-fact` window hold
+  (the fourth is an attempt row owned by sub-increment 3); the exact reply size
+  equals the canonical encoded length over every valid reply fixture, and the
+  reply estimate bounds it, including extreme transfer command sequences and a
+  maximal anchored border. Legacy edits are visibility-only. Not built: twins of
+  the invalid-screen and invalid-window graders (the decoder already holds those
+  rows; only an in-process typed value that bypasses the codec would reach them),
+  and a core canonical reply encoder (the protocol writer is the encoder; the
+  exact-size function is pinned against it).
+- Presentation-local style scaling only; keyboard-step, resize-minimum and
+  drop-zone scaling stay deferred.
+- Lands with unit 7, not before: contract version 3 to 4 and protocol version,
+  broker and service decode and encode switch, handshake and version
+  negotiation, adapter report and reply shapes, legacy envelope removal,
+  protocol and core harness switches, and live cutover of the v4 scenarios.
+
 ## Evidence
 
 - Initial fixture inventory: 518 messages (275 valid, 3 settings-diagnostic,
@@ -1695,6 +1764,20 @@
   because the gap is 0. Alternatives: outsets equal to the scaled width only, or
   a new hide reason for unknown witness; neither selected. This is not promoted
   to an approved decision.
+- Case: fixed diagnostic and sizing choices in the staged v4 twins, not yet wired.
+  Chosen behavior: the v4 report gate reuses the legacy reason tokens where the
+  check is the same and adds `renderer-target-invalid`,
+  `presentation-foreground-invalid` and `native-invalid` (held row with a bad id);
+  a renderer input without a command is `command-pair-invalid`; pager order and
+  pager frames share the 1024 presentation cap the decoder uses; the report
+  estimate counts wire-optional lanes as present, so it may overcount but never
+  undercount; the reply upper bound raises two reserves for the larger v4 shapes
+  (retained transfer row 512 to 544, border 256 to 704). Evidence: the decoder's
+  own caps and spellings, the staged reply writer's byte lengths, and the
+  fixtures. Alternatives: reuse legacy tokens only, or keep the legacy reserves
+  and rely on the transactional exact check. Neither selected; the tokens and
+  reserves can change at wiring time without wire effect. This is not promoted to
+  an approved decision.
 
 ## Adapter compile-failure inventory
 

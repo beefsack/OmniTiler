@@ -43,6 +43,10 @@ use crate::session::{DomainKey, DragHoverPrior};
 /// native row carries an explicit occupancy row per ordered desktop
 /// (`count: null` is unknown, never an inferred zero).
 pub const WORLD_CONTRACT_VERSION: u32 = 3;
+/// Staged v4 world contract version: `rendererInput` carried, `views`
+/// removed, identifiable bad rows held narrowly. The runtime stays on
+/// [`WORLD_CONTRACT_VERSION`]; the v4 twins stage the migration.
+pub const WORLD_CONTRACT_VERSION_V4: u32 = 4;
 /// D4 selected transport budget: 4 MiB request AND reply.
 pub const WORLD_MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 /// D4 selected transport budget: 4 MiB request AND reply.
@@ -4104,7 +4108,7 @@ pub fn check_window_structure(
 /// owner/parent references or a bad native workspace id. These refuse the
 /// whole report like other id shapes; they are never graded to a hold even
 /// when the same row also carries overbound text or a bad process id.
-fn hidden_window_id_violation(fact: &WindowFact) -> bool {
+pub(crate) fn hidden_window_id_violation(fact: &WindowFact) -> bool {
     for id in [&fact.owner, &fact.parent].into_iter().flatten() {
         if !is_opaque_id(&id.0) {
             return true;
@@ -4124,7 +4128,7 @@ fn hidden_window_id_violation(fact: &WindowFact) -> bool {
 /// process id). Structural violations (bad ids, duplicates, geometry)
 /// still refuse: grading re-runs [`validate_report_reason`] on the
 /// normalized report and returns `None` unless it passes.
-fn gradable_window(fact: &WindowFact) -> bool {
+pub(crate) fn gradable_window(fact: &WindowFact) -> bool {
     if !is_opaque_id(&fact.window.0) {
         return false;
     }
@@ -4489,7 +4493,7 @@ pub fn grade_invalid_windows(report: &WorldReport) -> Option<WorldReport> {
 /// fullscreen/layer ownership and suppression support) are never waived by
 /// this list and never conflict. Sticky contradicts separately: without
 /// `nativeSticky` support any non-null sticky (false or true) conflicts.
-fn conflicting_window(
+pub(crate) fn conflicting_window(
     fact: &WindowFact,
     unavailable: &[crate::connection::FactName],
     native_sticky_supported: bool,
