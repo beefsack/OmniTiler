@@ -971,6 +971,21 @@
      Retain the 7d evidence gap: command rollback restoration after partial
      mutation remains source-audited only; add a discriminating reachable case
      if available, without weakening command gates or inventing runtime hooks.
+     Split into gated dependency slices: 7f-1 closes the carried rollback and
+     discarded-candidate ingestion evidence gaps, and audits whether the exact
+     reply-size disjunct can be isolated without violating conservative sizing.
+     7f-2 adds ordered internal scenario execution, beginning with the entirely
+     core-driven `raw-attempt-settlement`; keep the public entry unchanged and
+     preserve each immutable assertion. 7f-3 exercises `window-state`,
+     `persistent-above` and `linked-selectors-warp`, including their declared
+     connection/storage events where an offline driver can faithfully execute
+     them. 7f-4 exercises both `visibility-*` scenarios with an explicit offline
+     host-evidence driver, separating executable internal legs from native-only
+     evidence. 7f-5 supplies internal v4 stress coverage without switching the
+     legacy public stress harness. Refine these later slices against source
+     before execution; do not count staging censuses or skipped host steps as
+     end-to-end scenario evidence. Unit 7 retains public/harness cutover and its
+     remaining stress integration.
   Each slice receives the filtered core/protocol tests, scoped build/clippy,
   formatting and changed-file checks before the next slice begins. These are
   implementation dependencies within unit 6, not a change to migration order.
@@ -1244,6 +1259,51 @@
   checks pass. No new behavioral decision, fixture, manifest, Cargo, adapter,
   public-ingress or version change is included. 7e is finished; the phase note
   remains active. 7f, later unit 7 and all eight OPEN/TBD gates remain.
+- Sub-increment 7f-1 outcome: two new internal-boundary regressions close the
+  partial-command rollback and discarded-trial ingestion count gaps. An
+  incomplete-inventory observation prevents lifecycle from minting the spare;
+  the numbered trailing send therefore creates a workspace before refusing the
+  sticky mover. Mapping, creation counter, tiling modes, staged domains,
+  membership and retained transfers match a commandless observation control;
+  the new window/explicit close survive and the refused sequence is consumed.
+  The initial complete-inventory setup did not discriminate restoration: its
+  lifecycle spare allowed mutation-free reuse, and omitting restoration stayed
+  green. After the incomplete-inventory correction, omitting the command-reject
+  restore fails the mapping assertion; restoring it passes. This closes the
+  previously source-only gap for an actually reachable partial mutation, not
+  for every possible command refusal.
+  A per-engine, clone-shared test-only atomic counter observes ingestion even
+  when the candidate is discarded. The regression counts zero for early
+  refusal, one per observation/command entry including command restaging, one
+  for a genuine late creation-exhaustion discard, and zero for replay. The
+  discarded candidate preserves retained state, revision, command watermark
+  and replay cache. A temporary duplicate ingestion fails the count assertion;
+  removing it passes. These regression failures were observed during test
+  development after the existing implementation, not as preimplementation bugs.
+  The outbound exact-size disjunct is not independently isolated: with a
+  conservative estimate, `estimate <= cap < exact` requires an estimator
+  undercount. The combined `||` gate short-circuits when the estimate exceeds
+  the cap, so the forged oversize test proves combined refusal, not execution
+  of the exact disjunct. Existing reply-twin fixture/extreme tests compare exact
+  bytes with the canonical encoder and bound them by the estimate; they are not
+  a universal proof. No deliberate undercount or weakened gate is introduced.
+  Unit 7 retains this exact-disjunct coverage limitation and genuine-producer
+  overflow stress evidence alongside its remaining sizing work.
+  Direct sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1947 core unit tests and all selected core/protocol targets),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. Changed-file whitespace,
+  added ASCII, NUL and relative Markdown link-file checks pass.
+  No immutable scenario runs end to end in 7f-1: `raw-attempt-settlement`, both
+  `visibility-*`, `window-state`, `persistent-above` and `linked-selectors-warp`
+  await the ordered internal runner and event drivers in 7f-2 through 7f-4;
+  existing staging censuses are not sequential execution. Internal v4 stress
+  remains 7f-5; passing legacy stress tests do not establish that evidence.
+  No new behavioral decision, fixture, manifest, Cargo, adapter, public-ingress
+  or version change is included. 7f-1 is finished; the phase note stays active.
+  Sub-increment 7, unit 6, later unit 7 and all eight OPEN/TBD gates remain.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and

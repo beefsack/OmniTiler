@@ -1231,6 +1231,14 @@ pub struct WorldEngine {
     /// without global instrumentation.
     #[cfg(test)]
     pub(crate) ingest_calls: u64,
+    /// Test-only clone-shared count of [`Self::ingest_staged_intent`]
+    /// executions across every trial clone, including staged candidates
+    /// that are later discarded. Clones share the same counter, so a
+    /// discarded trial stays observable on the parent after the clone
+    /// drops; [`Self::ingest_calls`] only counts adoptions on `self`.
+    /// Never read outside tests; production behavior is unchanged.
+    #[cfg(test)]
+    pub(crate) ingest_trials: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Canonical last-active identity per workspace (R-WS-09 memory):
     /// one slot per effective domain across sticky/link migration.
     /// Written by accepted command choices before native writes and by
@@ -1551,6 +1559,8 @@ impl WorldEngine {
             latest_published_presentation_rev_v4: 0,
             #[cfg(test)]
             ingest_calls: 0,
+            #[cfg(test)]
+            ingest_trials: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             last_active_window: BTreeMap::new(),
             focused_fullscreen_presentation_suspension: false,
         })
@@ -2599,6 +2609,8 @@ impl WorldEngine {
         #[cfg(test)]
         {
             self.ingest_calls = self.ingest_calls.saturating_add(1);
+            self.ingest_trials
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         let closed: BTreeSet<&WindowId> = observation.closed.iter().collect();
         // Explicit closes end the lifetime: drop every ledger entry and

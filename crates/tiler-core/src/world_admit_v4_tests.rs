@@ -17,10 +17,11 @@ use crate::world_engine::{
     KIND_SNAPSHOT, KIND_SUPERSEDED, WorldEngine, WorldOutcome,
 };
 use crate::world_report::{
-    AuthorityScope, CommandResult, HeldWindowRow, IntentWrite, PresentationIngressV4,
-    PresentationRowV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport,
-    WORLD_CONTRACT_VERSION, WORLD_CONTRACT_VERSION_V4, WORLD_MAX_REPLY_BYTES, WindowFact,
-    WorldCommand, WorldReport, WorldReportV4, retained_window_fields,
+    AuthorityScope, CommandRejectKind, CommandResult, HeldWindowRow, IntentWrite,
+    PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
+    ScreenReport, SendSource, WORLD_CONTRACT_VERSION, WORLD_CONTRACT_VERSION_V4,
+    WORLD_MAX_REPLY_BYTES, WindowFact, WorldCommand, WorldReport, WorldReportV4,
+    retained_window_fields,
 };
 use crate::world_report_v4_checks::report_digest_v4;
 use crate::world_run_v4::V4RunOutcome;
@@ -189,6 +190,19 @@ fn observe(seq: u64, windows: Vec<WindowFact>, focused: &str) -> WorldReportV4 {
 
 fn facts_pair() -> Vec<WindowFact> {
     vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)]
+}
+
+fn sticky_fact(window: &str, output: &str, x: i32) -> WindowFact {
+    WindowFact {
+        sticky: Some(true),
+        ..fact(window, output, x)
+    }
+}
+
+fn trials(engine: &WorldEngine) -> u64 {
+    engine
+        .ingest_trials
+        .load(std::sync::atomic::Ordering::Relaxed)
 }
 
 fn accepted_reply(report_seq: u64, outcome: V4RunOutcome) -> crate::world_report::WorldReplyV4 {
@@ -1179,5 +1193,343 @@ fn policy_terminal_reserve_matches_legacy_when_displaced() {
     assert!(
         typed_reserve > 0,
         "populated displaced/mapping lanes must reserve"
+    );
+}
+
+#[test]
+fn refused_numbered_send_rolls_back_trailing_create_through_boundary() {
+    // Incomplete inventory skips lifecycle's spare mint, forcing the numbered
+    // trailing send to create before the sticky mover refuses. Complete
+    // inventory would instead supply a spare for mutation-free reuse, making
+    // that setup unable to discriminate the pre-command restore.
+    let mut engine = engine();
+    let base_windows = || {
+        vec![
+            fact("w0", "out-a", 0),
+            sticky_fact("wSticky", "out-a", 100),
+            fact("wClose", "out-a", 200),
+        ]
+    };
+    accepted_reply(
+        1,
+        admit(
+            &mut engine,
+            &report(
+                1,
+                base_windows(),
+                "w0",
+                PresentationRowV4::Valid(ingress("w0")),
+                None,
+                None,
+                Vec::new(),
+            ),
+        ),
+    );
+    accepted_reply(
+        2,
+        admit(
+            &mut engine,
+            &report(
+                2,
+                base_windows(),
+                "w0",
+                PresentationRowV4::Valid(ingress("w0")),
+                Some(1),
+                Some(WorldCommand::SelectTrailing { output: None }),
+                Vec::new(),
+            ),
+        ),
+    );
+    let sent = accepted_reply(
+        3,
+        admit(
+            &mut engine,
+            &report(
+                3,
+                base_windows(),
+                "w0",
+                PresentationRowV4::Valid(ingress("w0")),
+                Some(2),
+                Some(WorldCommand::Send {
+                    window: WindowId("w0".to_owned()),
+                    target_output: OutputId("out-a".to_owned()),
+                    target_workspace: "ws-2".to_owned(),
+                    follow: true,
+                }),
+                Vec::new(),
+            ),
+        ),
+    );
+    assert!(
+        sent.command_result.is_none(),
+        "occupying send executes, got {:?}",
+        sent.command_result
+    );
+    assert!(
+        engine
+            .ring_occupied(&OutputId("out-a".to_owned()))
+            .contains("ws-2"),
+        "trailing occupied so the numbered send must take the Create path"
+    );
+    // Fresh observation for the refused report: a new window and the real
+    // close of a bootstrapped lifetime must incorporate despite the refusal.
+    // Incomplete inventory holds lifecycle so the occupied trailing forces
+    // the Create path (see above); explicit closes still drop.
+    let refused_windows = vec![
+        fact("w0", "out-a", 0),
+        sticky_fact("wSticky", "out-a", 100),
+        fact("w2", "out-a", 300),
+    ];
+    let refused = report_full(
+        4,
+        4,
+        vec![screen("out-a", 0)],
+        refused_windows,
+        "w0",
+        PresentationRowV4::Valid(ingress("w0")),
+        Some(3),
+        Some(WorldCommand::SendNumbered {
+            window: WindowId("wSticky".to_owned()),
+            source: SendSource::Explicit(OutputId("out-a".to_owned())),
+            index: 0,
+            follow: false,
+        }),
+        Vec::new(),
+        vec!["wClose"],
+        false,
+    );
+    // Commandless control over the same observation: the refused boundary
+    // run must converge identically apart from the consumed sequence and
+    // typed result. The control never sees the refused command.
+    let mut control = engine.clone();
+    let mut control_obs = refused.clone();
+    control_obs.command_seq = None;
+    control_obs.command = None;
+    accepted_reply(4, admit(&mut control, &control_obs));
+    let reply = accepted_reply(4, admit(&mut engine, &refused));
+    assert_eq!(
+        reply.command_result,
+        Some(CommandResult::Rejected {
+            kind: CommandRejectKind::SendRefused
+        }),
+        "sticky send refuses with its catalog kind"
+    );
+    assert_eq!(engine.command_highwater, Some(3));
+    assert_eq!(
+        engine.mapping, control.mapping,
+        "refusal preserves the commandless mapping"
+    );
+    assert_eq!(
+        engine.creation_counter, control.creation_counter,
+        "trailing creation rolls back to the commandless counter"
+    );
+    assert_eq!(
+        engine.retained, control.retained,
+        "no transfer minted for the refused mover"
+    );
+    assert_eq!(
+        engine.members, control.members,
+        "membership matches the commandless image"
+    );
+    assert_eq!(engine.tiling, control.tiling, "created mode rolls back");
+    assert_eq!(
+        engine.staged.domains, control.staged.domains,
+        "created domain rolls back"
+    );
+    assert!(
+        !engine.retained.iter().any(|transfer| matches!(&transfer.target.kind, crate::world_report::TransferKind::Window(w) if w.0 == "wSticky")),
+        "refused sticky leaves no flight: {:?}",
+        engine.retained
+    );
+    let ids: Vec<String> = reply
+        .windows
+        .iter()
+        .map(|window| window.lifetime.0.clone())
+        .collect();
+    assert!(
+        ids.contains(&"w2".to_owned()),
+        "new window publishes: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"wClose".to_owned()),
+        "closed lifetime drops from published rows: {ids:?}"
+    );
+}
+
+#[test]
+fn ingest_sensor_counts_adopted_and_discarded_trials() {
+    // Exact ingestion accounting through the genuine `handle_report_v4`
+    // boundary: `ingest_calls` counts adoptions on `self`, while the
+    // clone-shared `ingest_trials` sensor counts every genuine run trial,
+    // including staged candidates that are later discarded. Command
+    // restaging stays classification-only, so each accepted entry pays
+    // exactly one trial.
+    let mut engine = engine();
+    assert_eq!(engine.ingest_calls, 0);
+    assert_eq!(trials(&engine), 0, "fresh engine runs no trials");
+    // Early refusal pays no clone and no trial.
+    let mut versioned = observe(1, facts_pair(), "win-a");
+    versioned.contract_version = WORLD_CONTRACT_VERSION;
+    match admit(&mut engine, &versioned) {
+        V4RunOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "version-mismatch");
+        }
+        other => panic!("expected version refusal, got {other:?}"),
+    }
+    assert_eq!(engine.ingest_calls, 0, "refusals ingest nothing");
+    assert_eq!(trials(&engine), 0, "early refusal runs no trial");
+    // Successful entries pay exactly one trial each, restaging included.
+    accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
+    assert_eq!(engine.ingest_calls, 1);
+    assert_eq!(trials(&engine), 1, "one adopted entry runs one trial");
+    accepted_reply(
+        2,
+        admit(
+            &mut engine,
+            &report(
+                2,
+                facts_pair(),
+                "win-a",
+                PresentationRowV4::Valid(ingress("win-a")),
+                Some(1),
+                Some(WorldCommand::Focus {
+                    window: WindowId("win-b".to_owned()),
+                    direction: String::new(),
+                }),
+                Vec::new(),
+            ),
+        ),
+    );
+    assert_eq!(engine.ingest_calls, 2);
+    assert_eq!(
+        trials(&engine),
+        2,
+        "command restaging ingests exactly once per entry"
+    );
+    let sent = accepted_reply(
+        3,
+        admit(
+            &mut engine,
+            &report(
+                3,
+                facts_pair(),
+                "win-a",
+                PresentationRowV4::Valid(ingress("win-a")),
+                Some(2),
+                Some(WorldCommand::Send {
+                    window: WindowId("win-a".to_owned()),
+                    target_output: OutputId("out-a".to_owned()),
+                    target_workspace: "ws-2".to_owned(),
+                    follow: false,
+                }),
+                Vec::new(),
+            ),
+        ),
+    );
+    assert!(
+        sent.command_result.is_none(),
+        "occupying send executes, got {:?}",
+        sent.command_result
+    );
+    assert_eq!(engine.ingest_calls, 3);
+    assert_eq!(trials(&engine), 3, "third entry runs its own trial");
+    // A late discarded candidate still trials once on its staged clone:
+    // creation exhaustion refuses only after the trial ingested, and the
+    // drop adopts nothing onto `self`. Snapshot the pre-refusal image:
+    // the envelope refusal must leave state, watermarks, and replay cache
+    // exactly unchanged apart from the shared trial tick.
+    let saved_mapping = engine.mapping.clone();
+    let saved_retained = engine.retained.clone();
+    let saved_members = engine.members.clone();
+    let saved_highwater = engine.command_highwater;
+    let saved_revision = engine.state_revision;
+    let saved_reply = engine.last_reply_v4.clone();
+    let saved_request_seq = engine.last_request_seq_v4;
+    engine.creation_counter = u64::MAX;
+    match admit(
+        &mut engine,
+        &report(
+            4,
+            facts_pair(),
+            "win-a",
+            PresentationRowV4::Valid(ingress("win-a")),
+            Some(3),
+            Some(WorldCommand::SelectTrailing {
+                output: Some(OutputId("out-a".to_owned())),
+            }),
+            Vec::new(),
+        ),
+    ) {
+        V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, "creation-exhausted"),
+        other => panic!("exhaustion stays envelope, got {other:?}"),
+    }
+    assert_eq!(
+        engine.ingest_calls, 3,
+        "discarded candidate adopts no ingest onto self"
+    );
+    assert_eq!(
+        trials(&engine),
+        4,
+        "discarded candidate still ran exactly one trial"
+    );
+    assert_eq!(
+        engine.mapping, saved_mapping,
+        "envelope refusal adopts no mapping"
+    );
+    assert_eq!(
+        engine.retained, saved_retained,
+        "envelope refusal adopts no transfers"
+    );
+    assert_eq!(
+        engine.members, saved_members,
+        "envelope refusal adopts no membership"
+    );
+    assert_eq!(
+        engine.command_highwater, saved_highwater,
+        "envelope refusal consumes no sequence"
+    );
+    assert_eq!(
+        engine.state_revision, saved_revision,
+        "envelope refusal advances no revision"
+    );
+    assert_eq!(
+        engine.last_reply_v4, saved_reply,
+        "envelope refusal caches no reply"
+    );
+    assert_eq!(
+        engine.last_request_seq_v4, saved_request_seq,
+        "envelope refusal moves no replay watermark"
+    );
+    assert_eq!(engine.creation_counter, u64::MAX);
+    // Replays run no trial at all. The duplicate hits the replay cache,
+    // so no counter fixup is needed: the cached reply returns before any
+    // creation gate reads the saturated counter.
+    match admit(
+        &mut engine,
+        &report(
+            3,
+            facts_pair(),
+            "win-a",
+            PresentationRowV4::Valid(ingress("win-a")),
+            Some(2),
+            Some(WorldCommand::Send {
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: "ws-2".to_owned(),
+                follow: false,
+            }),
+            Vec::new(),
+        ),
+    ) {
+        V4RunOutcome::Duplicate(_) => {}
+        other => panic!("expected duplicate, got {other:?}"),
+    }
+    assert_eq!(engine.ingest_calls, 3, "duplicates pay no ingest");
+    assert_eq!(trials(&engine), 4, "duplicates run no trial");
+    assert_eq!(engine.mapping, saved_mapping, "duplicate adopts no mapping");
+    assert_eq!(
+        engine.command_highwater, saved_highwater,
+        "duplicate consumes no sequence"
     );
 }
