@@ -28,6 +28,18 @@ trivially different start state.
 | --- | --- | --- | --- |
 | X11 urgency hint versus attention state | With B active, request critical attention on A; clear A's attention; activate A | WM_HINTS urgency clears, but KWin DEMANDS_ATTENTION persists until activation. Accepted clear is a client-hint acknowledgement, not compositor-state withdrawal | Other hosts/reference WMs and visual urgency presentation TBD; no tiler urgency policy changed. [Evidence](../changes/archive/kde-dev-scope-fixture-integration.md#tiler-findings-and-host-limits) |
 
+### Workspace-floating classification diagnostic
+
+| Minimal action sequence | Existing core evidence | Unsupported outcome / decision |
+| --- | --- | --- |
+| Close ordinary A; disable workspace tiling and first observe B in the same report; repeat with disable and B arrival in separate reports; inspect `floating` and above target | Both internal v4 routes publish B with `floating:false`, empty origin, untouched frame/membership and controlled above=true. Shared publication deliberately leaves floating-scope rows unclassified; the existing above unit test pins this separately from W1 eligibility | PARKED: immutable `persistent-above` expects `floating:true`; choose oracle amendment or change carried-forward classification. [R-FLT-04](reference-outcomes/floating.md#r-flt-04-backfill-workspace-floating-toggle-scrolling) supports workspace-mode native behavior, not an external classification bit. Native frames/stacking and exact reference-WM diagnostic counterparts remain TBD; [phase finding](../changes/v4-phase1-core-protocol.md) |
+
+### Shared-workspace reply identity
+
+| Minimal action sequence | Existing core/codec evidence | Unsupported outcome / decision |
+| --- | --- | --- |
+| Handshake host-owned all-output selectors; request separate mode; observe two outputs with the same native workspace order; encode the first shared reply | Effective shared mode preserves one logical ring and publishes each member on both outputs. Existing v4 encoder refuses `duplicate-workspace` because it keys bare id, not `(output,id)`; the decoder has the same gate | Public codec boundary OPEN: no identity relabel/dedup or codec accommodation selected. Reference-WM external row-identity equivalents and native conformance TBD; [shared policy](../decisions/workspaces.md#workspace-scope-vocabulary), [phase finding](../changes/v4-phase1-core-protocol.md) |
+
 ### Raw self-identity applicability
 
 | Minimal action sequence | Selected cross-platform outcome | Evidence / remaining gate |

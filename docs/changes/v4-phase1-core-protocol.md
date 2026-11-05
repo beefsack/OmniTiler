@@ -1466,7 +1466,7 @@
 
   | Step | Literal assertion results | Dependence on capacity classification |
   | --- | --- | --- |
-  | `workspace-mode-float-acquire` | Output floating mode passes; window floating/above fails | Unresolved; fails in both diagnostics below |
+  | `workspace-mode-float-acquire` | Output floating mode and controlled above pass; window `floating:true` fails | Separate carried-forward classification conflict; follow-up below |
   | `stacking-preimage-before-write` | Both pass | Independent storage model |
   | `stacking-reused-lifetime-no-restore` | Pass | Independent storage model |
   | `stacking-owned-coupled-restore` | Both pass | Independent storage model |
@@ -1485,8 +1485,9 @@
   controlled above. All later immutable steps/assertions run unchanged: the
   workspace-mode window assertion still fails, the other eight steps pass
   (40/41 assertions overall). The extra anchor changes prior state, so this
-  is not a clean causal control: whether the workspace-mode failure depends
-  on the original capacity outcome remains TBD, not a proven cascade. An
+  is not a clean causal control; that comparison alone did not resolve
+  whether workspace-mode depended on capacity. The follow-up below resolves
+  classification by source and bundled/split diagnostics, not this pair. An
   earlier discarded local trial retained only an existing float and did not
   exhaust geometry; no production repair was attempted in either diagnostic.
   The test-only storage driver models acquire-true above writes only. It now
@@ -1518,6 +1519,113 @@
   Next: obtain the parked user decision before resolving the capacity oracle;
   investigate the separate workspace-mode failure without assuming causation,
   then rerun the strict full scenario and every slice gate.
+- Workspace-mode follow-up finding (second oracle conflict, PARKED):
+  `workspace-mode-float-acquire` does acquire above=true under controlled
+  authority. Only its immutable `floating == true` conjunct fails: `win-mode`
+  publishes `floating:false`, empty origin and untouched frame/membership.
+  Shared `world_publish.rs` floating-scope assembly deliberately sets those
+  fields independently of prior capacity classification; v4 uses that same
+  assembly. The existing `workspace_floating_scope_rows_acquire_above` core
+  test explicitly pins `!row.floating` and controlled above for the floating
+  scope and its newcomer. This is not a demonstrated v4 defect or a cascade
+  from the parked capacity outcome. W1 union eligibility holds.
+  The recorded [workspace-mode decision](../decisions/workspaces.md#per-workspace-tiling-floating-and-bindings)
+  disables domain tiling while preserving native placement; it does not
+  select a new per-window classification bit. The
+  [migration decision](../decisions/contract.md#contract-authority-and-v4-migration)
+  and unchanged v4 classification diagnostic carry forward the implemented
+  baseline. Explicit `floating:false` is source/unit-pinned, not separately
+  spelled out in decision prose. The existing Tier 1
+  [R-FLT-04 evidence](../spec/reference-outcomes/floating.md#r-flt-04-backfill-workspace-floating-toggle-scrolling)
+  records COSMIC's workspace-wide floating conversion and no equivalent
+  workspace-mode toggle in Hyprland/i3/sway; it does not settle an external
+  diagnostic bit. These are reused source records, not new native verification.
+  The second open choice is oracle amendment (retain above assertion but
+  expect floating:false) versus changing carried-forward classification for
+  floating-scope occupants. Neither is selected; no tentative/product fix,
+  fixture/manifest change or admission workaround is included.
+  Two DIAGNOSTIC ONLY tests retain all original expressions: the bundled
+  first-22-step copy appends three shape clauses (30 assertions), and the
+  split copy replays the original first 21 steps then separates close/toggle
+  from newcomer arrival without adding any window or changing geometry
+  (31 steps, 22 reports, 44 assertions). Both pin floating:false, empty origin,
+  untouched frame/membership and controlled above; the two original oracle
+  failures remain. Splitting rules out same-report ordering; the unconditional
+  shared publication branch establishes independence from prior capacity.
+  No bit-identical full-row comparison or clean floated-prior control is
+  claimed. The strict first-20-step prefix remains passing and the full
+  scenario remains ignored, not accepted. The unmodified diagnostic still
+  evaluates 41 original assertions with exactly two false results.
+  The split fixture-conjunction failure was observed during test development;
+  no product-regression red-first repair is claimed. The bundled test's first
+  failure was an assertion-count authoring error, corrected from 29 to 30.
+  Source review found no blocking diagnostic issue after tightening the shape
+  clauses. Direct sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1947 core unit tests; runner fifteen pass and one ignored),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. Initial format check found
+  test formatting, repaired mechanically before those gates. Changed-file
+  whitespace, added ASCII, unchanged baseline non-ASCII, NUL and local Markdown
+  link-file targets pass; the outcome index has five pre-existing non-ASCII
+  lines, left unchanged. Next: preserve both parked choices and execute 7f-3c.
+- Sub-increment 7f-3c plan: independently reproduce `linked-observe` canonical
+  encoding refusal, trace shared-workspace producer identity and codec uniqueness
+  against recorded workspace decisions, and resolve only demonstrated internal
+  defects without changing public codec semantics. Reuse the ordered runner for
+  all five immutable reports through genuine codecs/internal `handle_report_v4`.
+  Preserve every literal oracle. If a fixture-versus-decision conflict blocks
+  execution, retain an honest passing prefix, ignored strict full run and
+  labelled causal diagnostics with a parked decision; apply all scoped gates.
+- Sub-increment 7f-3c finding (public codec boundary, BLOCKED): independent
+  strict execution reproduces `linked-observe reply encodes` refusing
+  `snapshot-invalid` / `duplicate-workspace`. The preceding handshake/settings
+  pass all four original assertions. Genuine internal `handle_report_v4`
+  produces workspace rows `(out-a,ws-1)`, `(out-a,ws-2)`, `(out-b,ws-1)`,
+  `(out-b,ws-2)`. Host-owned all-output selectors force effective shared mode
+  in `settings_state.rs`, retaining the raw requested mode and its diagnostic.
+  Shared convergence in `world_model.rs` mirrors one logical ring; common
+  `plan_workspaces` emits each ring member per output. This matches the
+  [shared-workspace decision](../decisions/workspaces.md#workspace-scope-vocabulary)
+  and its one-ring policy, not a duplicate producer row in the same scope.
+  Both public v4 codec functions instead key `duplicate-workspace` on bare
+  logical id. Workspace scopes already key output plus workspace, and the
+  shared legacy publication has no equivalent bare-id refusal. No explicit
+  recorded decision selecting global workspace-row uniqueness was found;
+  the contract's unchanged `id,out` row does not settle a new codec rule.
+  The existing reference-WM workspace-mode evidence does not define this
+  external array-row identity protocol. No new Tier 1/native claim is made.
+  A discarded codec-key change to `(output,id)` reportedly allowed all ten
+  steps/five reports/16 original assertions in an unaccepted local trial;
+  that success was not independently verified. That trial is NOT
+  accepted scenario evidence: it changed public encode/decode acceptance and
+  crossed this slice's explicit boundary. Both codec changes are removed;
+  public behavior and producer identities remain unchanged. No producer-side
+  relabel/dedup workaround or new tentative policy is selected. The boundary
+  needs resolution before a composite-key correction can be retained.
+  Retained evidence is an honest two-step passing prefix (zero reports, four
+  literal assertions), an ignored strict full run preserving all ten steps
+  and 16 assertions, and a diagnostic pinning all four genuine typed rows
+  plus the exact encoder refusal. The diagnostic does not encode a report
+  reply or evaluate `linked-observe`'s assertion; later reports/assertions
+  have no accepted end-to-end evidence. Direct execution of the ignored
+  strict test after removing the codec trial fails at the same encoder gate.
+  The initial failure was observed before the trial; neither post-trial test
+  was a red-first product regression. `linked-selectors-warp` is NOT passing
+  or accepted end to end. Direct sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1947 core unit tests; runner seventeen pass and two ignored),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`; test formatting was
+  corrected after the initial format check. Changed-file whitespace, added
+  ASCII, unchanged baseline non-ASCII, NUL and local link-file targets pass.
+  Direct targeted `linked_selectors_warp` execution passes the prefix and
+  encode-boundary diagnostic with the strict run explicitly ignored. Next:
+  resolve public v4 workspace-row uniqueness,
+  then add symmetric codec guards/round-trip coverage, enable the strict full
+  run and rerun every scoped gate. No 7f-4 or later-unit work is included.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and

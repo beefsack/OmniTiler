@@ -11,6 +11,8 @@
 //! prefix test, an ignored full ordered run (parked blocker, not a pass), and
 //! labelled DIAGNOSTIC tests that record executed assertion outcomes without
 //! claiming any scenario pass.
+//! `linked-selectors-warp` retains a two-step passing prefix, ignored strict
+//! run and first-report diagnostic at the shared-workspace codec boundary.
 
 use std::io::Write as _;
 use std::process::{Command, Stdio};
@@ -806,7 +808,7 @@ fn persistent_above_prefix_first_twenty_steps_pass() {
 }
 
 #[test]
-#[ignore = "7f-3b blocker: capacity oracle contradicts the recorded D1 admission decision; see docs/changes/v4-phase1-core-protocol.md phase note (parked for user)"]
+#[ignore = "7f-3b blockers (parked for user): capacity oracle contradicts recorded D1 admission; workspace-mode oracle contradicts recorded floating-scope untouched-row semantics; see docs/changes/v4-phase1-core-protocol.md phase note"]
 fn persistent_above_runs_ordered_core_scenario() {
     let run = run_ordered_scenario("persistent-above");
     assert_eq!(
@@ -835,10 +837,10 @@ fn persistent_above_capacity_diagnostic_maps_post_failure_steps() {
     // Observed failures: step 21 `capacity-float-acquire` (sole
     // oversized-minimum newcomer tiles under recorded D1) and step 22
     // `workspace-mode-float-acquire`'s win-mode-float assertion (win-mode
-    // arrives with no allocation and floating:false). Whether step 22 is
-    // caused by step 21's tiling is UNRESOLVED: no controlled rerun with a
-    // floated step 21 outcome exists, and the same-report close/command/admit
-    // ordering is not traced here. Steps 23-30 pass, all eight of them.
+    // arrives with no allocation and floating:false). The floating-scope
+    // publication arm fixes floating:false independently of prior capacity;
+    // bundled/split shape diagnostics below pin controlled above and rule
+    // out same-report command/newcomer ordering. Steps 23-30 pass.
     let scenario = load_scenario_value("persistent-above");
     let assertion_at = |index: usize, position: usize| {
         scenario["steps"][index]["expect"]["assertions"][position]
@@ -890,10 +892,10 @@ fn persistent_above_capacity_copy_two_newcomer_exhaustion() {
     // Observed: the original capacity assertion PASSES here (genuine D1
     // exhaustion floats win-capacity with capacity origin and controlled
     // above), while step 22's win-mode-float assertion still FAILS with
-    // steps 23-30 passing. That weighs against step 22 being caused by step
-    // 21's tiling, but it is not a clean control: the anchor necessarily
-    // stays tiled at step 22 entry, unlike the intended empty domain, so
-    // full independence is UNRESOLVED. Decision evidence only.
+    // steps 23-30 passing. Per `persistent_above_workspace_mode_split_sequence`
+    // the step 22 failure is the oracle `floating == true` bit conflicting
+    // with recorded floating-scope untouched-row semantics, not the step 21
+    // tiling outcome. Decision evidence only.
     let mut scenario = load_scenario_value("persistent-above");
     {
         let steps = scenario
@@ -973,6 +975,221 @@ fn persistent_above_capacity_copy_two_newcomer_exhaustion() {
     assert_eq!(run.assertions, 41, "copy evaluates every assertion");
 }
 
+#[test]
+fn persistent_above_workspace_mode_split_sequence() {
+    // DIAGNOSTIC ONLY: replays steps 0..=20 byte-identical, then splits
+    // step 21 into a command-only flip plus a newcomer-only arrival (no
+    // second window, no geometry change). Arrival carries the original
+    // conjunction plus clauses pinning floating:false, untouched
+    // authorities with empty float_origin, and controlled above.
+    // Observed: only the parked capacity assertion and the oracle
+    // conjunction fail; mode flip and all three shape clauses pass. Cause
+    // is the oracle `floating == true` bit versus recorded floating-scope
+    // untouched-row semantics (`world_publish.rs` floating-scope arm;
+    // `world_above.rs::workspace_floating_scope_rows_acquire_above`
+    // asserts `!row.floating`); W1 above-eligibility holds. Needs a user
+    // decision, not a product fix.
+    let mut scenario = load_scenario_value("persistent-above");
+    {
+        let steps = scenario
+            .get("steps")
+            .and_then(|value| value.as_array())
+            .expect("scenario steps array");
+        assert_eq!(
+            steps[21].get("id").and_then(serde_json::Value::as_str),
+            Some("workspace-mode-float-acquire"),
+            "split step"
+        );
+    }
+    let steps = scenario
+        .get_mut("steps")
+        .and_then(|value| value.as_array_mut())
+        .expect("scenario steps array");
+    let original = steps[21].clone();
+    let original_message = original
+        .get("input")
+        .expect("step input")
+        .get("message")
+        .expect("step message")
+        .clone();
+    let mode_assertion = original["expect"]["assertions"][0]
+        .as_str()
+        .expect("mode assertion string")
+        .to_owned();
+    let win_assertion = original["expect"]["assertions"][1]
+        .as_str()
+        .expect("win assertion string")
+        .to_owned();
+    let mut flip_message = original_message.clone();
+    flip_message["windows"] = serde_json::json!([]);
+    flip_message["focused"] = serde_json::json!("");
+    flip_message["presentation"]["foreground"] = serde_json::json!("");
+    flip_message["presentation"]["witness"] = serde_json::Value::Null;
+    let flip = serde_json::json!({
+        "id": "workspace-mode-flip-only",
+        "input": {"kind": "wire", "to": "core", "message": flip_message},
+        "expect": {"status": "settled", "assertions": [mode_assertion]},
+    });
+    let mut arrival_message = original_message.clone();
+    arrival_message["closed"] = serde_json::json!([]);
+    arrival_message["cmdSeq"] = serde_json::Value::Null;
+    arrival_message["command"] = serde_json::Value::Null;
+    arrival_message["obs"] = serde_json::json!("21");
+    arrival_message["reqSeq"] = serde_json::json!("21");
+    arrival_message["req"] = serde_json::json!("request-21");
+    arrival_message["presentation"]["witness"]["obs"] = serde_json::json!("21");
+    let floating_false =
+        ".output.message.windows | any(.win == \"win-mode\" and .floating == false)".to_owned();
+    let untouched = ".output.message.windows | any(.win == \"win-mode\" and .frame_auth == \"untouched\" and .member_auth == \"untouched\" and .float_origin == \"\")".to_owned();
+    let above_only = ".output.message.windows | any(.win == \"win-mode\" and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))".to_owned();
+    let arrival_assertions = vec![win_assertion, floating_false, untouched, above_only];
+    let arrival = serde_json::json!({
+        "id": "workspace-mode-newcomer-only",
+        "input": {"kind": "wire", "to": "core", "message": arrival_message},
+        "expect": {"status": "settled", "assertions": arrival_assertions},
+    });
+    let mut rebuilt: Vec<serde_json::Value> = Vec::new();
+    for (index, step) in steps.clone().iter().enumerate() {
+        if index == 21 {
+            rebuilt.push(flip.clone());
+            rebuilt.push(arrival.clone());
+        } else {
+            rebuilt.push(step.clone());
+        }
+    }
+    scenario["steps"] = serde_json::Value::Array(rebuilt);
+    let (run, records) = run_loaded_scenario(&scenario, "persistent-above", usize::MAX, true);
+    assert_eq!(run.steps, 31, "split runs every ordered step plus one");
+    assert_eq!(run.assertions, 44, "split evaluates every assertion");
+    let failures: Vec<(String, String)> = records
+        .iter()
+        .filter(|record| !record.passed)
+        .map(|record| (record.sid.clone(), record.expression.clone()))
+        .collect();
+    let capacity_assertion = scenario["steps"][20]["expect"]["assertions"][0]
+        .as_str()
+        .expect("capacity assertion string")
+        .to_owned();
+    let win_conjunction = scenario["steps"][22]["expect"]["assertions"][0]
+        .as_str()
+        .expect("arrival conjunction string")
+        .to_owned();
+    assert_eq!(
+        failures,
+        vec![
+            ("capacity-float-acquire".to_owned(), capacity_assertion),
+            ("workspace-mode-newcomer-only".to_owned(), win_conjunction),
+        ],
+        "only the parked capacity assertion and the oracle conjunction fail"
+    );
+    let shape_passed = |sid: &str, expression: &str| {
+        records
+            .iter()
+            .any(|record| record.sid == sid && record.expression == expression && record.passed)
+    };
+    for clause in scenario["steps"][22]["expect"]["assertions"]
+        .as_array()
+        .expect("arrival assertions")
+        .iter()
+        .skip(1)
+    {
+        let expression = clause.as_str().expect("clause string");
+        assert!(
+            shape_passed("workspace-mode-newcomer-only", expression),
+            "shape clause passes: {expression}"
+        );
+    }
+    println!(
+        "DIAG summary: steps={} assertions={} failures=2 (capacity, oracle conjunction); \
+         flip-only mode and all three newcomer shape clauses pass",
+        run.steps,
+        records.len(),
+    );
+}
+
+#[test]
+fn persistent_above_workspace_mode_bundled_shape_prefix() {
+    // DIAGNOSTIC ONLY: test-local copy of the immutable bundled step 21
+    // with three extra labelled clauses (floating:false, untouched
+    // authorities with empty float_origin, controlled above); prefix run of
+    // steps 0..=21 only. Observed: the two original assertions fail exactly
+    // as in the unmodified run while all three shape clauses pass, pinning
+    // the bundled row to the same untouched shape the split arrival shows.
+    let mut scenario = load_scenario_value("persistent-above");
+    let extra = vec![
+        ".output.message.windows | any(.win == \"win-mode\" and .floating == false)".to_owned(),
+        ".output.message.windows | any(.win == \"win-mode\" and .frame_auth == \"untouched\" and .member_auth == \"untouched\" and .float_origin == \"\")".to_owned(),
+        ".output.message.windows | any(.win == \"win-mode\" and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))".to_owned(),
+    ];
+    {
+        let steps = scenario
+            .get_mut("steps")
+            .and_then(|value| value.as_array_mut())
+            .expect("scenario steps array");
+        assert_eq!(
+            steps[21].get("id").and_then(serde_json::Value::as_str),
+            Some("workspace-mode-float-acquire"),
+            "copied step"
+        );
+        let assertions = steps[21]
+            .pointer_mut("/expect/assertions")
+            .and_then(|value| value.as_array_mut())
+            .expect("step assertions");
+        assert_eq!(
+            assertions.len(),
+            2,
+            "bundled step carries two original assertions"
+        );
+        for clause in &extra {
+            assertions.push(serde_json::Value::String(clause.clone()));
+        }
+    }
+    let (run, records) = run_loaded_scenario(&scenario, "persistent-above", 22, true);
+    assert_eq!(run.steps, 22, "prefix runs steps 0..=21");
+    assert_eq!(records.len(), 30, "prefix evaluates every assertion");
+    let failures: Vec<(String, String)> = records
+        .iter()
+        .filter(|record| !record.passed)
+        .map(|record| (record.sid.clone(), record.expression.clone()))
+        .collect();
+    assert_eq!(
+        failures.len(),
+        2,
+        "only the two original oracle assertions fail in the prefix"
+    );
+    assert!(
+        failures
+            .iter()
+            .any(|(sid, _)| sid == "capacity-float-acquire"),
+        "parked capacity assertion still fails"
+    );
+    assert!(
+        failures
+            .iter()
+            .any(|(sid, _)| sid == "workspace-mode-float-acquire"),
+        "oracle conjunction still fails bundled"
+    );
+    let bundled_passed = |expression: &str| {
+        records.iter().any(|record| {
+            record.sid == "workspace-mode-float-acquire"
+                && record.expression == expression
+                && record.passed
+        })
+    };
+    for clause in &extra {
+        assert!(
+            bundled_passed(clause),
+            "bundled shape clause passes: {clause}"
+        );
+    }
+    println!(
+        "DIAG summary: steps={} assertions={} failures=2 (capacity, oracle conjunction); \
+         all three bundled shape clauses pass",
+        run.steps,
+        records.len(),
+    );
+}
+
 /// The test bridge refuses an unbound engine, which remains usable for
 /// the initial handshake afterwards.
 #[test]
@@ -1013,4 +1230,107 @@ fn test_bridge_refuses_unbound_engine() {
     let reply = engine.handshake(&request);
     assert_eq!(reply.generation.as_deref(), Some("generation-a"));
     assert!(!reply.ready);
+}
+
+#[test]
+#[ignore = "7f-3c codec boundary: genuine shared rows repeat logical ids across outputs, but v4 codecs require bare-id uniqueness; see docs/changes/v4-phase1-core-protocol.md"]
+fn linked_selectors_warp_runs_ordered_core_scenario() {
+    let run = run_ordered_scenario("linked-selectors-warp");
+    assert_eq!(
+        run.generations,
+        vec!["generation-a".to_owned(), "generation-b".to_owned(),],
+        "generation sequence"
+    );
+    assert_eq!(
+        run.generations_consumed, 2,
+        "every generation seed consumed across reconnects"
+    );
+    assert_eq!(run.steps, 10, "ordered step count");
+    assert_eq!(run.wires, 9, "wire step count");
+    assert_eq!(run.handshakes, 2, "handshake step count");
+    assert_eq!(run.settings, 2, "settings step count");
+    assert_eq!(run.reports, 5, "report step count");
+    assert_eq!(run.events, 1, "event step count");
+    assert_eq!(run.assertions, 16, "evaluated assertion count");
+    assert_eq!(run.pending, 0, "pending gate count");
+}
+
+#[test]
+fn linked_selectors_warp_shared_workspace_encode_boundary() {
+    // DIAGNOSTIC ONLY: the genuine first report produces one shared ring
+    // per output. The existing v4 encoder refuses its repeated logical ids;
+    // do not accommodate this public codec boundary in the internal runner.
+    let scenario = load_scenario_value("linked-selectors-warp");
+    let steps = scenario
+        .get("steps")
+        .and_then(serde_json::Value::as_array)
+        .expect("steps");
+    let message_of = |wanted: &str| {
+        steps
+            .iter()
+            .find(|step| step.get("id").and_then(serde_json::Value::as_str) == Some(wanted))
+            .expect("step present")
+            .get("input")
+            .expect("input")
+            .get("message")
+            .expect("message")
+            .clone()
+    };
+    let mut engine = WorldEngine::new("generation-a").expect("fresh engine seeds");
+    let handshake = decode_handshake_request(
+        &serde_json::to_string(&message_of("linked-no-warp")).expect("serializes"),
+    )
+    .expect("handshake decodes");
+    let _ = engine.handshake(&handshake);
+    let settings = decode_settings(
+        &serde_json::to_string(&message_of("requested-not-substituted")).expect("serializes"),
+    )
+    .expect("settings decodes");
+    let _ = engine
+        .handle_settings(&settings)
+        .expect("settings admitted");
+    let report = decode_report_v4(
+        &serde_json::to_string(&message_of("linked-observe")).expect("serializes"),
+    )
+    .expect("report decodes")
+    .report;
+    let reply = engine
+        .handle_report_v4_for_test(&report)
+        .expect("report accepted");
+    let rows: Vec<(String, String)> = reply
+        .workspaces
+        .iter()
+        .map(|row| (row.output.0.clone(), row.id.clone()))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("out-a".to_owned(), "ws-1".to_owned()),
+            ("out-a".to_owned(), "ws-2".to_owned()),
+            ("out-b".to_owned(), "ws-1".to_owned()),
+            ("out-b".to_owned(), "ws-2".to_owned()),
+        ],
+        "shared ring mirrors logical ids across outputs"
+    );
+    let wire_flags = ReplyWireOptionals {
+        suspended_output_present: reply.presentation.suspended_output.is_some(),
+    };
+    let error = encode_reply_v4(&DecodedReplyV4 {
+        reply,
+        wire: wire_flags,
+    })
+    .expect_err("shared logical ids hit the existing codec boundary");
+    assert_eq!(error.message, "duplicate-workspace", "exact encode refusal");
+}
+
+#[test]
+fn linked_selectors_warp_prefix_before_first_report_passes() {
+    let scenario = load_scenario_value("linked-selectors-warp");
+    let (run, _) = run_loaded_scenario(&scenario, "linked-selectors-warp", 2, false);
+    assert_eq!(run.steps, 2, "prefix step count");
+    assert_eq!(run.handshakes, 1, "handshake step count");
+    assert_eq!(run.settings, 1, "settings step count");
+    assert_eq!(run.reports, 0, "no report reply encodes in the prefix");
+    assert_eq!(run.assertions, 4, "four original literal assertions");
+    assert_eq!(run.pending, 0, "pending gate count");
 }
