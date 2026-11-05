@@ -1550,6 +1550,18 @@
   The [minimal discriminator](../spec/reference-outcomes.md#rendered-decoration-target-equality)
   records same-id payload changes and an unissued revision separately; inspected
   Tier 1 current-target routing is not an equivalent receipt/history model.
+- User decision 2026-11-05, row equality: a rendered target stays valid while the
+  fields it carries still hold now: workspace on `out`; window lifetime in `ws` on
+  `out`; group in `ws` on `out`. Ordinal, trailing, binding, label, occupied and
+  group members are not compared and no rendered-row history is retained. Selected
+  commands keep their normal gates. Sub-increment 6b must verify group `NodeId`s
+  are not reused while a stale target can name them.
+- User decision 2026-11-05, unissued revision: `rendererInput.rev` above the latest
+  published presentation revision refuses the command with the existing
+  `stale-render-target`. Every published revision, however old, proceeds to the
+  row-equality check. Sub-increment 6b must confirm revision behavior across
+  generations and agree the latest-published source with sub-increment 7's
+  stamping, wiring the check there if needed.
 - Sub-increment 6a implementation: a parallel core-internal producer reads staged
   v4 presentation facts directly. Visible borders preserve the exact identity-
   joined witness and derive scaled width/radius and gap-plus-width outsets;
