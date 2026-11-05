@@ -14,9 +14,20 @@ use crate::session::{DomainKey, RefusalKind};
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
     CommandResult, FloatOrigin, HoldReason, IntentWrite, OneShotEffect, OutputDesire,
-    ScopeAuthority, ScopeStatus, TilingMode, TransferKind, WORLD_CONTRACT_VERSION, WindowDesire,
-    WorkspaceDesire, WorldCommand, WorldReply, WorldReport, workspace_authority_scope,
+    ScopeAuthority, ScopeStatus, ScreenView, TilingMode, TransferKind, WORLD_CONTRACT_VERSION,
+    WindowDesire, WorkspaceDesire, WorldCommand, WorldReply, WorldReport,
+    workspace_authority_scope,
 };
+
+/// Shared assembled publication rows: every known logical scope plus
+/// the one-homing window rows, with scope collapse/sort applied. Both
+/// the legacy and v4 publication paths build their envelopes from this
+/// single assembly; only the report-dependent lanes (envelope identity,
+/// output views, takes, saves) differ per path.
+pub(crate) struct PublicationRows {
+    pub scopes: Vec<ScopeStatus>,
+    pub windows: Vec<WindowDesire>,
+}
 
 impl WorldEngine {
     /// Sticky-command save drain plus proven-refusal rollback merge plus
@@ -43,7 +54,7 @@ impl WorldEngine {
     /// gate (over-cap rejects without adopting, never a silent drop).
     pub(crate) fn drain_intent_saves(
         &mut self,
-        report: &WorldReport,
+        command: Option<&WorldCommand>,
         command_consumed: bool,
         command_result: &Option<CommandResult>,
     ) -> Vec<IntentWrite> {
@@ -62,7 +73,7 @@ impl WorldEngine {
             return merged;
         }
         if let Some(save) = queued {
-            let matches = match report.command.as_ref() {
+            let matches = match command {
                 Some(WorldCommand::SetSticky { window, .. }) => window == &save.win,
                 Some(WorldCommand::ToggleSticky { window }) => window == &save.win,
                 Some(WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
@@ -79,7 +90,7 @@ impl WorldEngine {
                 return merged;
             }
         }
-        let ordinary = self.toggle_float_intent_save(report, false, command_result);
+        let ordinary = self.toggle_float_intent_save(command, false, command_result);
         if !ordinary.is_empty() {
             // A fresh same-window ordinary save wins over a stale rollback.
             for write in &ordinary {
@@ -134,14 +145,14 @@ impl WorldEngine {
     /// command report carries no Float result and emits nothing.
     pub(crate) fn toggle_float_intent_save(
         &self,
-        report: &WorldReport,
+        command: Option<&WorldCommand>,
         command_consumed: bool,
         command_result: &Option<CommandResult>,
     ) -> Vec<IntentWrite> {
         if command_consumed || self.intent_sticky_saturated {
             return Vec::new();
         }
-        let window = match report.command.as_ref() {
+        let window = match command {
             Some(WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
                 window,
                 ..
@@ -236,21 +247,53 @@ impl WorldEngine {
     /// carries allocation or frame authority (no frame writes on floats).
     /// A held scope with no retained session carries its staged lifetimes
     /// as complete held rows, so no inventory ever vanishes.
-    pub(crate) fn publish(
+    /// Whether one window rides an outstanding transfer whose source or
+    /// target homes on the style-held output. Narrow v4 presentation-style
+    /// hold only: legacy passes `None` and never holds here.
+    fn style_flight_held(&self, style_held_output: Option<&OutputId>, window: &WindowId) -> bool {
+        let Some(held) = style_held_output else {
+            return false;
+        };
+        self.retained.iter().any(|retained| {
+            let carries = match &retained.target.kind {
+                TransferKind::Window(w) => w == window,
+                TransferKind::Migration => retained.members.contains(window),
+                TransferKind::View => false,
+            };
+            carries && (retained.target.target_output == *held || retained.source_output == *held)
+        })
+    }
+
+    /// Effective born-pause for one home output under the narrow v4
+    /// style hold: held homes withhold born-clear tokens like a paused
+    /// presentation. Legacy (`None`) is identity.
+    fn style_born_paused(
+        born_paused: bool,
+        style_held_output: Option<&OutputId>,
+        home_output: &OutputId,
+    ) -> bool {
+        born_paused || style_held_output.is_some_and(|held| held == home_output)
+    }
+
+    /// Assemble the shared publication rows from staged/retained state.
+    /// `born_paused` gates the born-clear token lane (legacy passes the
+    /// report presentation pause; v4 passes false: suspension is not a
+    /// write hold). `effects` feed the focus record/retain/freeze lanes.
+    /// `style_held_output` is the narrow v4 presentation-style hold (v4
+    /// path only; legacy passes `None`): born tokens withhold, flight
+    /// rows hold, and the minimized tail falls back to it. Never reads a
+    /// caller report.
+    pub(crate) fn assemble_publication_rows(
         &mut self,
-        report: &WorldReport,
-        command_consumed: bool,
-        effects: Vec<OneShotEffect>,
-        command_result: Option<CommandResult>,
+        born_paused: bool,
+        effects: &[OneShotEffect],
         held_scopes: &BTreeSet<DomainKey>,
-    ) -> WorldReply {
-        // Accepted focus-effect publication record: every Focus effect in
-        // order (latest wins) lands on the one canonical slot under the
-        // publish held scopes before any native write is built below.
-        self.record_published_focus(&effects, held_scopes);
+        style_held_output: Option<&OutputId>,
+    ) -> PublicationRows {
+        self.record_published_focus(effects, held_scopes);
         // Freeze the actually emitted ordinary focus batch: a newer batch
         // supersedes the older one, an effect-free reply retains it.
-        self.retain_published_focus(&effects);
+        self.retain_published_focus(effects);
         // Command-created logicals land after convergence: mint their
         // explicit creation desires here (idempotent with the pre-command
         // ensure) so the same reply authorizes them. Same-reply desires
@@ -345,7 +388,12 @@ impl WorldEngine {
                 TransferKind::Migration => continue,
                 TransferKind::View => continue,
             };
-            if held_scopes.contains(&key) {
+            // Style-held targets still emit a Hold row below (gated by
+            // `style_flight_held`); only non-style holds suppress the
+            // mover row here.
+            if held_scopes.contains(&key)
+                && style_held_output.is_none_or(|held| *held != key.output)
+            {
                 continue;
             }
             // Narrowly held rows keep their retained homes, never a mover
@@ -366,7 +414,9 @@ impl WorldEngine {
                 output: retained.target.target_output.clone(),
                 workspace: WorkspaceId(retained.target.target_workspace.clone()),
             };
-            if held_scopes.contains(&key) {
+            if held_scopes.contains(&key)
+                && style_held_output.is_none_or(|held| *held != key.output)
+            {
                 continue;
             }
             for member in &retained.members {
@@ -430,7 +480,11 @@ impl WorldEngine {
                         allocation: None,
                         effective_frame: None,
                         frame_authority: ScopeAuthority::Untouched,
-                        membership_authority: if boundary_mover {
+                        membership_authority: if self
+                            .style_flight_held(style_held_output, &window.window)
+                        {
+                            ScopeAuthority::Hold(HoldReason::Unreadable)
+                        } else if boundary_mover {
                             ScopeAuthority::Controlled
                         } else {
                             ScopeAuthority::Untouched
@@ -499,7 +553,7 @@ impl WorldEngine {
                         _ => HoldReason::Unreadable,
                     };
                     self.push_held_lifetimes(
-                        report,
+                        Self::style_born_paused(born_paused, style_held_output, &key.output),
                         session,
                         &key,
                         reason,
@@ -529,8 +583,12 @@ impl WorldEngine {
                         // maximize-clear is a property transition proven by
                         // the window's own birth facts, not a geometry
                         // write, so the adapter can consume it while the
-                        // geometry hold stands.
-                        let clear_operation = self.born_desire_for(&window.window, report);
+                        // geometry hold stands. The narrow style hold
+                        // withholds even this token on its output.
+                        let clear_operation = self.born_desire_for(
+                            &window.window,
+                            Self::style_born_paused(born_paused, style_held_output, &window.output),
+                        );
                         windows.push(WindowDesire {
                             lifetime: window.window.clone(),
                             output: window.output.clone(),
@@ -687,7 +745,7 @@ impl WorldEngine {
                         live.remove(&window.window.0);
                     }
                     self.push_held_lifetimes(
-                        report,
+                        born_paused,
                         session,
                         &key,
                         HoldReason::ConstraintClamp,
@@ -718,7 +776,7 @@ impl WorldEngine {
                         live.remove(&window.window.0);
                     }
                     self.push_held_lifetimes(
-                        report,
+                        born_paused,
                         session,
                         &key,
                         HoldReason::ConstraintClamp,
@@ -850,7 +908,7 @@ impl WorldEngine {
                         ),
                         // Born commandless clears ride the token lane
                         // with no command correlation.
-                        None => (self.born_desire_for(&geometry.window, report), None),
+                        None => (self.born_desire_for(&geometry.window, born_paused), None),
                     }
                 };
                 // Core-owned frame policy (stage 3a) over the actually
@@ -905,7 +963,13 @@ impl WorldEngine {
                     } else {
                         ScopeAuthority::Hold(HoldReason::Unreadable)
                     },
-                    membership_authority: ScopeAuthority::Controlled,
+                    membership_authority: if self
+                        .style_flight_held(style_held_output, &geometry.window)
+                    {
+                        ScopeAuthority::Hold(HoldReason::Unreadable)
+                    } else {
+                        ScopeAuthority::Controlled
+                    },
                     // Tiled rows never carry a float-placement token.
                     frame_operation: None,
                     clear_operation,
@@ -1027,7 +1091,7 @@ impl WorldEngine {
                         ),
                         // Born commandless clears ride the token lane
                         // with no command correlation.
-                        None => (self.born_desire_for(&observed.window, report), None),
+                        None => (self.born_desire_for(&observed.window, born_paused), None),
                     }
                 };
                 // Single command slot for the row. The clear->float continuation
@@ -1135,7 +1199,11 @@ impl WorldEngine {
                     } else {
                         ScopeAuthority::Untouched
                     },
-                    membership_authority: if in_flight {
+                    membership_authority: if self
+                        .style_flight_held(style_held_output, &observed.window)
+                    {
+                        ScopeAuthority::Hold(HoldReason::Unreadable)
+                    } else if in_flight {
                         ScopeAuthority::Controlled
                     } else {
                         ScopeAuthority::Untouched
@@ -1169,6 +1237,7 @@ impl WorldEngine {
                     .get(&window.0)
                     .map(|target| (target.output.clone(), target.workspace.0.clone()))
                     .unwrap_or((output.clone(), workspace.0.clone()));
+                let session_flight_held = self.style_flight_held(style_held_output, &window);
                 windows.push(WindowDesire {
                     lifetime: window,
                     output: home_output,
@@ -1176,7 +1245,11 @@ impl WorldEngine {
                     allocation: None,
                     effective_frame: None,
                     frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
-                    membership_authority: ScopeAuthority::Controlled,
+                    membership_authority: if session_flight_held {
+                        ScopeAuthority::Hold(HoldReason::Unreadable)
+                    } else {
+                        ScopeAuthority::Controlled
+                    },
                     frame_operation: None,
                     clear_operation: None,
                     floating: false,
@@ -1232,7 +1305,10 @@ impl WorldEngine {
                 continue;
             }
             let window = WindowId(window_id.clone());
-            let placement = if migration_redirect.contains(window_id) {
+            let flight_held = self.style_flight_held(style_held_output, &window);
+            let placement = if flight_held {
+                None
+            } else if migration_redirect.contains(window_id) {
                 migration_cross_output_placement(&staged, &window, key)
             } else {
                 None
@@ -1244,7 +1320,11 @@ impl WorldEngine {
                 allocation: None,
                 effective_frame: placement,
                 frame_authority: ScopeAuthority::Untouched,
-                membership_authority: ScopeAuthority::Controlled,
+                membership_authority: if flight_held {
+                    ScopeAuthority::Hold(HoldReason::Unreadable)
+                } else {
+                    ScopeAuthority::Controlled
+                },
                 frame_operation: None,
                 clear_operation: None,
                 floating: false,
@@ -1302,7 +1382,8 @@ impl WorldEngine {
             }
             // A minimized lifetime homed on a held scope carries that
             // scope's hold on membership. Omission inside a held scope
-            // authorizes no write or retirement.
+            // authorizes no write or retirement. The narrow style hold
+            // covers held targets absent a staged domain.
             let scope_hold = staged
                 .domains
                 .iter()
@@ -1315,6 +1396,15 @@ impl WorldEngine {
                     } else {
                         self.hold_reasons.get(&domain.key).copied()
                     }
+                })
+                .or_else(|| {
+                    style_held_output.and_then(|held| {
+                        if *held == home_output {
+                            Some(HoldReason::Unreadable)
+                        } else {
+                            None
+                        }
+                    })
                 });
             windows.push(WindowDesire {
                 lifetime: fact.window.clone(),
@@ -1325,6 +1415,9 @@ impl WorldEngine {
                 frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
                 membership_authority: match scope_hold {
                     Some(reason) => ScopeAuthority::Hold(reason),
+                    None if self.style_flight_held(style_held_output, &fact.window) => {
+                        ScopeAuthority::Hold(HoldReason::Unreadable)
+                    }
                     None => ScopeAuthority::Controlled,
                 },
                 frame_operation: None,
@@ -1357,7 +1450,7 @@ impl WorldEngine {
         self.apply_pending_selection();
         self.admit_selection_late_members();
         self.decorate_selection_visibility(held_scopes, &mut windows);
-        self.freeze_selection_arrival(&effects, &windows);
+        self.freeze_selection_arrival(effects, &windows);
         // Native sticky state: central decoration over the assembled rows
         // beside the composed call. Touches state lanes only.
         self.decorate_native_sticky_state(held_scopes, &mut windows);
@@ -1394,6 +1487,21 @@ impl WorldEngine {
             }
         }
         scopes.sort_by(|a, b| a.scope.cmp(&b.scope));
+        PublicationRows { scopes, windows }
+    }
+
+    pub(crate) fn publish(
+        &mut self,
+        report: &WorldReport,
+        command_consumed: bool,
+        effects: Vec<OneShotEffect>,
+        command_result: Option<CommandResult>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> WorldReply {
+        let rows =
+            self.assemble_publication_rows(report.presentation.paused, &effects, held_scopes, None);
+        let scopes = rows.scopes;
+        let windows = rows.windows;
         // Omission of a minimized/absent window inside a controlled scope
         // means "no managed geometry", never a close or teardown instruction.
         let workspaces = self.plan_workspaces(&scopes);
@@ -1416,7 +1524,8 @@ impl WorldEngine {
         // sticky-command save drains exactly once on its successful fresh
         // command, else the ordinary ToggleFloat save; the exact-encoding
         // gate below still commits it atomically with the rest of the reply.
-        let intent_writes = self.drain_intent_saves(report, command_consumed, &command_result);
+        let intent_writes =
+            self.drain_intent_saves(report.command.as_ref(), command_consumed, &command_result);
         // Per-report switch terminals: taken here so the next unrelated
         // report publishes empty. Duplicates repeat the cached reply.
         let switch_settled = std::mem::take(&mut self.switch_settled);
@@ -1432,7 +1541,7 @@ impl WorldEngine {
             scopes,
             workspaces,
             outputs,
-            diagnostics: staged.diagnostics.clone(),
+            diagnostics: self.staged.diagnostics.clone(),
             windows,
             transfers: self.retained_transfers(),
             effects,
@@ -1454,7 +1563,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn push_held_lifetimes(
         &self,
-        report: &WorldReport,
+        born_paused: bool,
         session: &crate::session::Session,
         key: &DomainKey,
         reason: HoldReason,
@@ -1476,7 +1585,7 @@ impl WorldEngine {
             }
             // Like the fresh-seed held rows above: no frame/member write,
             // but an outstanding born clear still rides its token.
-            let clear_operation = self.born_desire_for(&link.window, report);
+            let clear_operation = self.born_desire_for(&link.window, born_paused);
             windows.push(WindowDesire {
                 lifetime: link.window.clone(),
                 output: link.output.clone(),
@@ -1505,7 +1614,7 @@ impl WorldEngine {
             if live.contains(&observed.window.0) || !emitted.insert(observed.window.0.clone()) {
                 continue;
             }
-            let clear_operation = self.born_desire_for(&observed.window, report);
+            let clear_operation = self.born_desire_for(&observed.window, born_paused);
             windows.push(WindowDesire {
                 lifetime: observed.window.clone(),
                 output: observed.output.clone(),
@@ -1645,6 +1754,21 @@ impl WorldEngine {
         report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Vec<OutputDesire> {
+        self.plan_outputs_inner(&report.views, None, held_scopes)
+    }
+
+    /// Output-view core over explicit inputs: `view_echoes` are the
+    /// report's unknown-view proofs (legacy path only; the v4 path passes
+    /// none and relies on staged state), and `style_held_output` is the
+    /// narrow v4 presentation-style hold (v4 path only; legacy passes
+    /// `None`). The unknown-echo guard reads `view_echoes` only, never
+    /// staged state.
+    pub(crate) fn plan_outputs_inner(
+        &self,
+        view_echoes: &[ScreenView],
+        style_held_output: Option<&OutputId>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Vec<OutputDesire> {
         self.staged
             .screens
             .iter()
@@ -1671,25 +1795,34 @@ impl WorldEngine {
                 // An echo naming an unknown workspace never authorizes:
                 // the adapter shows something the core does not own, so
                 // the row holds instead of adopting it. The host-owned
-                // capability tolerates such echoes (observed only).
+                // capability tolerates such echoes (observed only). Legacy
+                // path only: v4 passes no echoes.
                 let ring = self.mapping.get(&screen.output.0);
-                let echo_unknown = report
-                    .views
-                    .iter()
-                    .find(|view| view.output == screen.output)
-                    .is_some_and(|view| {
-                        !view.view.is_empty()
-                            && !ring.is_some_and(|ring| ring.iter().any(|id| id == &view.view))
-                            && !self.host_owned_workspace_domains()
-                    });
-                let unreadable = !screen.complete
+                let echo_unknown = !view_echoes.is_empty()
+                    && view_echoes
+                        .iter()
+                        .find(|view| view.output == screen.output)
+                        .is_some_and(|view| {
+                            !view.view.is_empty()
+                                && !ring.is_some_and(|ring| ring.iter().any(|id| id == &view.view))
+                                && !self.host_owned_workspace_domains()
+                        });
+                let style_only = style_held_output.is_some_and(|output| *output == screen.output);
+                let legacy_hold = !screen.complete
                     || echo_unknown
                     || held_scopes.iter().any(|key| key.output == screen.output);
+                let hold = if legacy_hold {
+                    Some(HoldReason::IncompleteInventory)
+                } else if style_only {
+                    Some(HoldReason::Unreadable)
+                } else {
+                    None
+                };
                 OutputDesire {
                     output: screen.output.clone(),
                     logical_view,
                     tiling_mode,
-                    hold: unreadable.then_some(HoldReason::IncompleteInventory),
+                    hold,
                 }
             })
             .collect()

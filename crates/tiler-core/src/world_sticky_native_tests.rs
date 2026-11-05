@@ -3216,6 +3216,7 @@ fn pending_window_transfer_holds_sticky_publication() {
             held: false,
         },
         policy: false,
+        command_seq: None,
         source_output: OutputId("out-a".to_owned()),
         source_workspace: ring[0].clone(),
         members: Vec::new(),

@@ -105,8 +105,6 @@ impl WorldEngine {
     /// [`crate::world_report::MAX_PRESENTATION_STYLE_PX`] cap). Internal
     /// signal only: sub-7 assembly must apply the [`HoldReason::Unreadable`]
     /// hold before publication. No wire lane is minted here.
-    // allow(dead_code): pending publish assembly owns this signal; tests drive it.
-    #[allow(dead_code)]
     pub(crate) fn presentation_style_hold_v4(&self) -> Option<(OutputId, HoldReason)> {
         let ingress = match &self.staged.presentation_v4 {
             Some(PresentationRowV4::Valid(ingress)) => ingress,
@@ -143,8 +141,6 @@ impl WorldEngine {
     }
 
     /// Unconditional neutral focused-fullscreen suspension verdict (v4).
-    // allow(dead_code): pending sub-7 publish assembly; tests drive this.
-    #[allow(dead_code)]
     pub(crate) fn focused_fullscreen_suspended_output_v4(&self) -> Option<OutputId> {
         let focus = self.staged.observation.focused_global.clone();
         if focus.is_empty() {
@@ -188,8 +184,6 @@ impl WorldEngine {
         }
     }
 
-    // allow(dead_code): pending sub-7 publish assembly; tests drive this.
-    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn presentation_border_v4(
         &self,
@@ -287,8 +281,6 @@ impl WorldEngine {
         }
     }
 
-    // allow(dead_code): pending sub-7 publish assembly; tests drive this.
-    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn presentation_underlay_v4(
         &self,
@@ -634,8 +626,6 @@ impl WorldEngine {
         self.presentation_live_v4.get(window).copied()
     }
 
-    // allow(dead_code): pending sub-7 publish assembly; tests drive this.
-    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn presentation_pager_v4(&self, suspended: Option<&OutputId>) -> Vec<PagerScreen> {
         let focused_home = self
@@ -700,8 +690,6 @@ impl WorldEngine {
         screens
     }
 
-    // allow(dead_code): pending sub-7 publish assembly; tests drive this.
-    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn presentation_for_publish_v4(&self) -> WorldPresentationV4 {
         let suspended = self.focused_fullscreen_suspended_output_v4();

@@ -919,6 +919,15 @@
      narrow unreadable-output/style hold before authorizing writes, with no new
      wire diagnostic; retain genuine v4 presentation rather than converting it.
      Verify publication/hold behavior directly; no accepted-run claim follows.
+     Implementation plan: extract report-independent shared publication rows,
+     retaining the legacy envelope/presentation route. Retain original command
+     sequences explicitly on transfers, including continuation children; never
+     infer correlation from operation-id spelling. Assemble a genuine v4 reply,
+     stamp its supplied issuing revision, and retain that published presentation
+     revision on the candidate for subsequent command validation. Apply style
+     holds before row/effect/transfer authority is assembled. Pager retention and
+     renderer-input command wiring remain 7d; candidate adoption/replay remains
+     7e. Direct staged publication tests do not exercise those later boundaries.
   4. 7d assembles internal v4 accepted-run/finish and command dispatch: capture,
      ingest once, then classify; retain pager at the accepted-run boundary;
      preserve settlement/sweep order, command rollback and prior-context capture.
@@ -1065,6 +1074,51 @@
   header. No new behavioral decision, fixture, manifest, Cargo, adapter,
   public-ingress or version change is included. 7b-3 and 7b are finished;
   the note remains active. 7c-7f and all eight OPEN/TBD gates remain.
+- Sub-increment 7c outcome: parallel core-internal `publish_v4` assembles a
+  genuine `WorldReplyV4` from retained/staged state through shared report-free
+  scope/window projection. The legacy envelope and presentation route remain
+  unchanged. Born-clear and intent-save helpers take their actual inputs rather
+  than a legacy report; legacy output-echo checks remain on the legacy route.
+  Every retained transfer now carries explicit original command correlation:
+  command constructors and migration refill children keep that sequence;
+  commandless policy/gesture transfers carry null, never parsed operation ids.
+  Diagnostics retain staged order; gesture, operation and switch terminals drain
+  once. The genuine v4 presentation and reply share the supplied issuing revision;
+  `latest_published_presentation_rev_v4` retains it on the candidate. This is not
+  candidate-adoption evidence: 7d must validate against the old value before
+  publication and retain pager at its accepted-run boundary; 7e owns adoption,
+  bounds and replay. Publication itself never retains pager.
+  The producer's narrow style signal applies an output-local unreadable hold
+  before authority assembly, including born clears, effects, native creations,
+  transfer endpoints, floating movers and minimized/missing-domain memberships.
+  Unaffected outputs remain live, no new diagnostic is minted, and held
+  presentation alone is not a blanket write hold. Intent persistence retains
+  its existing exact-save/rollback semantics rather than becoming a geometry
+  write gate.
+  Twenty-six new direct publication regressions cover these projections,
+  original/null/opaque-id correlation, genuine send/view/migration helper
+  constructors, terminal takes, the 1024/1024.5 style boundary, clone-local
+  revision retention and held presentation. Setup uses labelled legacy accepted
+  seeds and direct v4 staging; these are not v4 accepted-run, complete scenario,
+  public cutover or native execution checks. The genuine send constructor test
+  uses a same-output send; an attempted cross-output seed reached the existing
+  cross-domain refusal, not publication. Source review exposed born-clear,
+  minimized, floating and source-held membership omissions; corrective
+  regressions were observed behaviorally failing before their fixes. Most
+  initial tests were first run after implementation. A temporary removal of
+  the local hold merge also failed its regression. Initial incomplete helper
+  refactors failed compilation and were repaired without changing test oracles.
+  Final direct sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1901 core unit tests and all selected core/protocol targets),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. The first full test invocation
+  exceeded its command timeout; the complete rerun passes. Changed-file
+  whitespace, added ASCII, NUL and relative Markdown link-file checks pass.
+  No new behavioral decision, fixture, manifest, Cargo, adapter, public-ingress
+  or version change is included. 7c is finished; the phase note remains active.
+  7d-7f, later unit 7 and all eight OPEN/TBD gates remain.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and

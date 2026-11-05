@@ -854,6 +854,7 @@ impl WorldEngine {
                     held: false,
                 },
                 policy: true,
+                command_seq: None,
                 source_output: source.output,
                 source_workspace: source.workspace.0,
                 members: Vec::new(),

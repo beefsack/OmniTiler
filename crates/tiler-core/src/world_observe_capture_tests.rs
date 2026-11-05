@@ -4477,6 +4477,7 @@ fn seed_window_transfer_4b2d(engine: &mut WorldEngine, operation: &str) {
             held: false,
         },
         policy: false,
+        command_seq: None,
         source_output: OutputId("out-a".to_owned()),
         source_workspace: "ws-9".to_owned(),
         members: Vec::new(),
@@ -4504,6 +4505,7 @@ fn seed_view_transfer_4b2d(engine: &mut WorldEngine, operation: &str) {
             held: false,
         },
         policy: false,
+        command_seq: None,
         source_output: OutputId("out-a".to_owned()),
         source_workspace: "ws-1".to_owned(),
         members: Vec::new(),
@@ -4544,6 +4546,7 @@ fn seed_migration_4b2d(engine: &mut WorldEngine, operation: &str) {
             held: false,
         },
         policy: false,
+        command_seq: None,
         source_output: OutputId("out-a".to_owned()),
         source_workspace: "ws-1".to_owned(),
         members: Vec::new(),
@@ -4568,6 +4571,7 @@ fn seed_migration_4b2d(engine: &mut WorldEngine, operation: &str) {
             held: false,
         },
         policy: false,
+        command_seq: None,
         source_output: OutputId("out-a".to_owned()),
         source_workspace: "ws-1".to_owned(),
         members: vec![WindowId("win-a".to_owned())],
@@ -7085,6 +7089,7 @@ fn touching_migration() -> RetainedTransfer {
             held: false,
         },
         policy: false,
+        command_seq: None,
         source_output: OutputId("out-a".to_owned()),
         source_workspace: "ws-1".to_owned(),
         members: Vec::new(),
@@ -7113,7 +7118,7 @@ fn staged_born_authorization_gates_win_over_passed_report() {
         contra.inventory_complete = false;
         contra.gesture_barrier = true;
         assert_eq!(
-            engine.born_desire_for(&id, &contra),
+            engine.born_desire_for(&id, contra.presentation.paused),
             Some("op-born-1".to_owned()),
             "staged complete desires (v4={v4})"
         );
@@ -7122,7 +7127,7 @@ fn staged_born_authorization_gates_win_over_passed_report() {
         seed_born_desire(&mut engine, v4, true, true);
         let contra = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
         assert_eq!(
-            engine.born_desire_for(&id, &contra),
+            engine.born_desire_for(&id, contra.presentation.paused),
             None,
             "staged barrier holds (v4={v4})"
         );
@@ -7133,7 +7138,7 @@ fn staged_born_authorization_gates_win_over_passed_report() {
         engine.retained.push(touching_migration());
         let contra = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
         assert_eq!(
-            engine.born_desire_for(&id, &contra),
+            engine.born_desire_for(&id, contra.presentation.paused),
             None,
             "touching gap holds (v4={v4})"
         );
@@ -7143,7 +7148,7 @@ fn staged_born_authorization_gates_win_over_passed_report() {
         let mut contra_gapped = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
         contra_gapped.inventory_complete = false;
         assert_eq!(
-            engine.born_desire_for(&id, &contra_gapped),
+            engine.born_desire_for(&id, contra_gapped.presentation.paused),
             Some("op-born-1".to_owned()),
             "staged complete desires under touching migration (v4={v4})"
         );
@@ -7154,7 +7159,7 @@ fn staged_born_authorization_gates_win_over_passed_report() {
         let mut contra_paused = contra_legacy(1, vec![fact("win-a", "out-a", 0)]);
         contra_paused.presentation.paused = true;
         assert_eq!(
-            engine.born_desire_for(&id, &contra_paused),
+            engine.born_desire_for(&id, contra_paused.presentation.paused),
             None,
             "report pause vetoes (v4={v4})"
         );

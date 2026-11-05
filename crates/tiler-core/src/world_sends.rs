@@ -302,7 +302,12 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
         match result {
-            Ok((retained, focus)) => {
+            Ok((mut retained, focus)) => {
+                // Original command correlation for the v4 transfer lane:
+                // the send executed under this sequence, and continuation
+                // publications keep it even when the current report
+                // carries a different sequence.
+                retained.command_seq = Some(command_seq);
                 debug_assert_eq!(retained.target.operation_id, operation_id);
                 // Single-owner membership commits with the transfer: the
                 // mover homes at the target while settlement proves
@@ -587,6 +592,10 @@ impl WorldEngine {
                         held: false,
                     },
                     policy: false,
+                    // No command correlation here: `settle_send`
+                    // stamps the originating sequence for the command
+                    // path, and the direct gesture path stays None.
+                    command_seq: None,
                     source_output: source_key.output,
                     source_workspace: source_key.workspace.0,
                     members: Vec::new(),
@@ -695,6 +704,10 @@ impl WorldEngine {
                             held: false,
                         },
                         policy: false,
+                        // No command correlation here: `settle_send`
+                        // stamps the originating sequence for the command
+                        // path, and the direct gesture path stays None.
+                        command_seq: None,
                         source_output: source_key.output,
                         source_workspace: source_key.workspace.0,
                         members: Vec::new(),
@@ -822,6 +835,10 @@ impl WorldEngine {
                         held: false,
                     },
                     policy: false,
+                    // No command correlation here: `settle_send`
+                    // stamps the originating sequence for the command
+                    // path, and the direct gesture path stays None.
+                    command_seq: None,
                     source_output: source_key.output,
                     source_workspace: source_key.workspace.0,
                     members: Vec::new(),
@@ -927,6 +944,10 @@ impl WorldEngine {
                             held: false,
                         },
                         policy: false,
+                        // No command correlation here: `settle_send`
+                        // stamps the originating sequence for the command
+                        // path, and the direct gesture path stays None.
+                        command_seq: None,
                         source_output: source_key.output,
                         source_workspace: source_key.workspace.0,
                         members: Vec::new(),

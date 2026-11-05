@@ -52,6 +52,7 @@ pub mod world_operations;
 pub mod world_presentation;
 pub(crate) mod world_presentation_v4;
 pub mod world_publish;
+pub(crate) mod world_publish_v4;
 pub mod world_report;
 pub mod world_report_v4_checks;
 pub(crate) mod world_selection;
@@ -165,6 +166,8 @@ mod world_pager_presentation_tests;
 mod world_presentation_v4_tests;
 #[cfg(test)]
 mod world_prior_context_tests;
+#[cfg(test)]
+mod world_publish_v4_tests;
 #[cfg(test)]
 mod world_rejected_accepted_tests;
 #[cfg(test)]

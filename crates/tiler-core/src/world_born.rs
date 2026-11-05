@@ -113,11 +113,11 @@ impl WorldEngine {
     /// they become WindowFacts; no new core controllability field is used.
     fn born_clear_authorized(
         &self,
-        report: &WorldReport,
+        presentation_paused: bool,
         window: &WindowId,
         home: &DomainKey,
     ) -> bool {
-        if report.presentation.paused || self.staged.gesture_barrier {
+        if presentation_paused || self.staged.gesture_barrier {
             return false;
         }
         let Some(fact) = self.staged.facts.get(window) else {
@@ -225,7 +225,7 @@ impl WorldEngine {
     pub(crate) fn born_desire_for(
         &self,
         window: &WindowId,
-        report: &WorldReport,
+        presentation_paused: bool,
     ) -> Option<String> {
         // Neutral opt-in: without the automatic birth-clear capability no
         // retained binding ever publishes, even if one somehow survived an
@@ -237,7 +237,9 @@ impl WorldEngine {
         self.retained_born
             .iter()
             .find(|retained| retained.window == *window && retained.pending.is_none())
-            .filter(|retained| self.born_clear_authorized(report, window, &retained.home))
+            .filter(|retained| {
+                self.born_clear_authorized(presentation_paused, window, &retained.home)
+            })
             .map(|retained| retained.operation_id.clone())
     }
 
@@ -433,7 +435,7 @@ impl WorldEngine {
                 if fixed_exit {
                     continue;
                 }
-                if !self.born_clear_authorized(report, &window, &home) {
+                if !self.born_clear_authorized(report.presentation.paused, &window, &home) {
                     continue;
                 }
                 let operation_id = self.mint_born_operation_id();
@@ -468,7 +470,7 @@ impl WorldEngine {
             if self.born_floating_first.contains(&window) {
                 continue;
             }
-            if !self.born_clear_authorized(report, &window, &home) {
+            if !self.born_clear_authorized(report.presentation.paused, &window, &home) {
                 continue;
             }
             // R-MAX-06 latch at tiled-first evaluation under the live value:

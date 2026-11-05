@@ -1354,6 +1354,7 @@ impl WorldEngine {
                         held: false,
                     },
                     policy: false,
+                    command_seq: None,
                     source_output: retained.home.output.clone(),
                     source_workspace: retained.home.workspace.0.clone(),
                     members: Vec::new(),

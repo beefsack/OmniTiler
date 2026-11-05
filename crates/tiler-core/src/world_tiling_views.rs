@@ -120,7 +120,7 @@ impl WorldEngine {
             })
             .into_iter()
             .collect();
-        self.retain_view_inner(output, workspace, operation_id.clone());
+        self.retain_view_inner(output, workspace, operation_id.clone(), None);
         let home = DomainKey {
             output: output.clone(),
             workspace: crate::directional::WorkspaceId(workspace.to_owned()),
@@ -152,6 +152,7 @@ impl WorldEngine {
         output: &OutputId,
         workspace: &str,
         operation_id: String,
+        command_seq: Option<u64>,
     ) {
         self.retained.retain(|r| {
             !(matches!(r.target.kind, TransferKind::View) && r.target.target_output == *output)
@@ -166,6 +167,7 @@ impl WorldEngine {
                 held: false,
             },
             policy: false,
+            command_seq,
             source_output: output.clone(),
             source_workspace: String::new(),
             members: Vec::new(),
@@ -262,7 +264,12 @@ impl WorldEngine {
         // staged native proof.
         let native_free = !self.host_owned_workspace_domains();
         if changed || !native_free {
-            self.retain_view_inner(output, workspace, format!("op-{command_seq}"));
+            self.retain_view_inner(
+                output,
+                workspace,
+                format!("op-{command_seq}"),
+                Some(command_seq),
+            );
         }
         if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
             let canonical = self.mapping.get(&output.0).cloned().unwrap_or_default();

@@ -181,6 +181,13 @@ pub(crate) struct ExcludedIntent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainedTransfer {
     pub(crate) target: TransferTarget,
+    /// Explicit original command correlation for the v4 transfer lane
+    /// (`TransferTargetV4.command_seq`): `Some` from command constructors
+    /// (continuation children inherit the originating sequence even when a
+    /// later report carries a different sequence), `None` on policy,
+    /// commandless, and gesture work. Never inferred from operation-id
+    /// spelling at projection time.
+    pub(crate) command_seq: Option<u64>,
     /// True for hotplug policy member moves; false for command transfers.
     pub(crate) policy: bool,
     pub(crate) source_output: OutputId,
@@ -1198,6 +1205,12 @@ pub struct WorldEngine {
     /// v4 pager presentation focus: the adapter-observed focused lifetime
     /// from the latest staged v4 report.
     pub(crate) presentation_focused_v4: Option<WindowId>,
+    /// Latest published v4 presentation revision, stamped by `publish_v4`
+    /// from its supplied issuing revision. Read by 7d renderer-input
+    /// validation BEFORE calling publication (the staged producer revision
+    /// stays a placeholder and is never read there); the stored value only
+    /// becomes authoritative when 7e adopts the publication candidate.
+    pub(crate) latest_published_presentation_rev_v4: u64,
     /// Canonical last-active identity per workspace (R-WS-09 memory):
     /// one slot per effective domain across sticky/link migration.
     /// Written by accepted command choices before native writes and by
@@ -1509,6 +1522,7 @@ impl WorldEngine {
             presentation_order_v4: Vec::new(),
             presentation_live_v4: BTreeMap::new(),
             presentation_focused_v4: None,
+            latest_published_presentation_rev_v4: 0,
             last_active_window: BTreeMap::new(),
             focused_fullscreen_presentation_suspension: false,
         })

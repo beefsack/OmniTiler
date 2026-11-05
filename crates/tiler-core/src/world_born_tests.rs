@@ -2276,6 +2276,7 @@ fn empty_native_free_migration_retires_echoless_born_clear_proceeds() {
             held: false,
         },
         policy: false,
+        command_seq: None,
         source_output: OutputId("out-a".to_owned()),
         source_workspace: "ws-1".to_owned(),
         members: Vec::new(),
