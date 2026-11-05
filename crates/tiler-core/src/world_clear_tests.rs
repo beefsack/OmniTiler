@@ -1143,7 +1143,11 @@ fn clear_changed_focus_view_domain_abandons() {
         "focus abandonment observable, got {:?}",
         reply.operation_settled
     );
-    // Displayed-view change abandons.
+    // Displayed-view change abandons. The logical-echo views lane is
+    // inert native-free, so the view move rides a real SelectWorkspace
+    // command on its own report: settle runs pre-command, so the proof
+    // report follows and observes the moved view. The old views-echo
+    // setup never moved the view.
     bind(&mut engine, 5, 15);
     let spare = engine
         .mapping
@@ -1153,25 +1157,37 @@ fn clear_changed_focus_view_domain_abandons() {
         .find(|id| Some(*id) != engine.retained_clears[0].view.as_ref())
         .expect("spare workspace exists")
         .clone();
-    let mut viewed = report_clears(
+    let selected = report_full(
         7,
         7,
         vec![screen("out-a", 0)],
-        vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
+        vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
+        vec![("out-a", spare.as_str())],
         "win-max",
-        vec![clear_attempt(
-            "op-15",
-            "win-max",
-            crate::world_report::FrameSetter::Accepted,
-            Some(true),
-            Some(false),
-        )],
+        Some(16),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: spare.clone(),
+        }),
     );
-    viewed.views = vec![crate::world_report::ScreenView {
-        output: OutputId("out-a".to_owned()),
-        view: spare,
-    }];
-    let reply = accepted(&mut engine, &viewed);
+    let _ = accepted(&mut engine, &selected);
+    let reply = accepted(
+        &mut engine,
+        &report_clears(
+            8,
+            8,
+            vec![screen("out-a", 0)],
+            vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
+            "win-max",
+            vec![clear_attempt(
+                "op-15",
+                "win-max",
+                crate::world_report::FrameSetter::Accepted,
+                Some(true),
+                Some(false),
+            )],
+        ),
+    );
     assert!(engine.retained_clears.is_empty(), "view change abandons");
     assert!(engine.retained_floats.is_empty(), "no continuation raced");
     assert!(

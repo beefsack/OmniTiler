@@ -141,10 +141,12 @@ impl WorldEngine {
             .map(|screen| screen.complete)
     }
 
-    /// Effective view for one screen: the adapter echo when it names a
-    /// known ring member (adapter truth wins), else the retained core view
-    /// when it names one, else the ring head. `None` when the screen owns
-    /// no ring.
+    /// Effective view for one screen: the staged echo when it names a
+    /// known ring member (adapter truth wins; only host-owned outputs
+    /// stage echoes, from the native current map), else the retained core
+    /// view when it names one, else the ring head. `None` when the screen
+    /// owns no ring. Native-free outputs always resolve through the
+    /// retained core view.
     pub(crate) fn effective_view(&self, output: &OutputId) -> Option<String> {
         let ring = self.mapping.get(&output.0)?;
         if ring.is_empty() {
@@ -449,10 +451,11 @@ impl WorldEngine {
     /// follow in [`WorldEngine::build_staged_domains`], after rings/views
     /// converge.
     ///
-    /// Host-owned outputs are native-only: explicit logical echoes are
-    /// never staged there (the core derives every view receipt from the
-    /// native current map in [`WorldEngine::converge_native_pre`]).
-    /// Tiler-owned outputs keep the logical route unchanged.
+    /// Host-owned outputs are native-only: the core derives every view
+    /// receipt from the native current map in
+    /// [`WorldEngine::converge_native_pre`]. Native-free outputs stage no
+    /// echoes: their views ride the frozen selection binding, and the
+    /// report `views` lane is never staged or consulted.
     pub(crate) fn stage_facts(&mut self, report: &WorldReport) {
         // Classification-only restage: raw capture first, with no
         // retained mutation (the capture only clones report lanes), then
@@ -502,17 +505,6 @@ impl WorldEngine {
             gesture_barrier: report.gesture_barrier,
             ..StagedReport::default()
         };
-        for view in &report.views {
-            if view.view.is_empty() {
-                continue;
-            }
-            if self.native_authoritative(report, &view.output) {
-                continue;
-            }
-            staged
-                .echoes
-                .insert(view.output.0.clone(), view.view.clone());
-        }
         self.stage_window_facts(&report.windows, &report.closed, &mut staged);
         self.staged = staged;
     }
@@ -565,7 +557,7 @@ impl WorldEngine {
     /// binding, and retention never disqualify: the marker names the
     /// existing lifecycle role only. Empty means no non-sticky homed fact
     /// for the id, mirroring the converge lifecycle facts.
-    pub(crate) fn trailing_marked_id(&self, report: &WorldReport, output: &str) -> Option<String> {
+    pub(crate) fn trailing_marked_id(&self, output: &str) -> Option<String> {
         if !self.staged.observation.inventory_complete {
             return None;
         }
@@ -578,7 +570,7 @@ impl WorldEngine {
         {
             return None;
         }
-        if self.native_order_conflict(report) {
+        if self.native_order_conflict() {
             return None;
         }
         let ring = self.mapping.get(output)?;
@@ -859,7 +851,7 @@ impl WorldEngine {
         // Effective logical receipt: native-derived under the capability,
         // else `None` (native-free has no logical receipt vocabulary).
         // Unknown/unmapped holds, never collapses into the view.
-        let receipt = self.effective_logical_receipt(report, fact);
+        let receipt = self.effective_logical_receipt(fact);
         // Unknown output: retain the actual prior core home, then narrow
         // hold downstream. An unhomed unknown never guesses the current
         // screen.
@@ -939,7 +931,7 @@ impl WorldEngine {
             // desktop at launch; unknown evidence keeps retained homing
             // (publish fences the scope, it does not bless writes) or
             // stays unhomed for newcomers.
-            if self.native_authoritative(report, fact_output) {
+            if self.native_authoritative() {
                 if let Some(observed) = receipt.as_deref()
                     && self.known_workspace(fact_output, observed)
                 {
@@ -1064,7 +1056,7 @@ impl WorldEngine {
         // withholds write authority there; keeping the homing is not a
         // proof of arrival). Outputs with no native evidence at all keep
         // the native-free path.
-        if receipt.is_none() && self.native_authoritative(report, fact_output) {
+        if receipt.is_none() && self.native_authoritative() {
             if let Some(key) = self.core_homing(window) {
                 if &key.output == fact_output {
                     return Some(key);

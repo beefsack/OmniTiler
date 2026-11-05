@@ -703,8 +703,14 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 - Composed maximize follows the same overlay directional-focus/move policy:
   directional focus skips same-output siblings, and directional move clears the
   core bit locally before ordinary move policy, without native clear/readback.
-  B9 intentional unfloat clears the bit locally before fresh admission, with no
-  observe-clear wait. R-MAX-11 first exits native fullscreen under existing
+  For a composed-maximized float directional move when the screen or work area
+  is missing, or half-snap geometry is unavailable: retain the bit, emit the
+  existing directional refusal, mint no placement token and perform no deferred
+  clear on recovery; a fresh move may clear. Once geometry resolves, the local
+  clear precedes ordinary constraints; a constraint refusal restores the
+  retained base with one authorized token. Exact native/reference timing
+  remains TBD. B9 intentional unfloat clears the bit locally before fresh
+  admission, with no observe-clear wait. R-MAX-11 first exits native fullscreen under existing
   exitability/observation rules, then composes; unconfirmed exit grants no frame
   write. Fullscreen precedence and all safety/arrival gates remain unchanged.
   Sends/output transfers preserve the bit and recompute the destination work-area
@@ -1004,11 +1010,35 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 - A selection with no required focus target uses `focus:"unproven"` and
   `outcome:"complete"` once all visibility obligations are satisfied, with
   `failed:[]` when nothing failed. This includes empty-to-empty selections with
-  zero visibility members and native-owned focusless selections. Focus-bearing
+  zero visibility members and native-owned focusless selections. An explicit
+  selection whose resolved focus target fails route eligibility freezes a
+  binding with no required focus target; visibility completes through this same
+  path and focus reports `unproven`. The direct focus effect stays and the
+  eligibility gates are unchanged. Focus-bearing
   switches still require proven focus for complete. Empty/minimized-only
   workspaces retain no focused client. This is the same completion rule, not a
   new token, wire shape, fake focus, fallback, retry or second completion path.
   [Focusless completion](../decisions/workspaces.md#focusless-switch-completion).
+- Commandless disconnect/return policy views bind as focusless selections under
+  their existing `op-dpv-*` parent, without an invented `cmdSeq` or focus effect,
+  and retire through the same completion. Native focus stays untouched. Internal
+  parent/correlation carriers do not add a wire identity or receipt predicate.
+  [Disconnect](../decisions/workspaces.md#kde-aligned-output-disconnection),
+  [return](../decisions/workspaces.md#kde-aligned-output-reconnection).
+- Cross-output follow-send and same-output follow-send take the same frozen
+  selection binding as an ordinary explicit selection. Window membership
+  settles the transfer independently; the binding owns destination visibility
+  and focus through the existing selection completion, with no follow-specific
+  predicate or second completion path. The `{op}-follow` child is removed; the
+  follow focus effect waits until the destination is shown. Existing
+  refusal/safety fences are unchanged.
+  [Follow settlement](../decisions/workspaces.md#workspace-send-follow-settlement).
+- Native-free workspace migration takes one frozen selection binding covering
+  both outputs. Member arrival settles membership; the binding owns target and
+  source-refill visibility and focus through the existing selection completion,
+  and the refill child is removed. Empty migration uses the zero-member
+  completion rule. Native-owned migration keeps its native proof.
+  [Migration settlement](../decisions/workspaces.md#workspace-migration-d6-focus-settlement).
 
 - `VisibilityReason` is `""` or
   `identity-stale,scope-held,unreadable,unsupported,preimage-unavailable,foreground-changed,fullscreen,game,show-blocked,focus-unproven,superseded,native-refused`.
@@ -1184,7 +1214,14 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   no local click-freshness policy. Named border/underlay/pager share this rule.
   [Decorations](../decisions/contract.md#decorations).
 - Apply an accepted border descriptor to the live native frame through existing
-  native frame events, not stale absolute rectangles. A witness must be joined
+  native frame events, not stale absolute rectangles. Scale `width` and
+  `radius` once by the foreground output scale with the existing nearest,
+  halves-upward rule; `outsets` is `[g+w, g+w, g+w, g+w]` from the scaled
+  border gap plus width. An unknown or absent witness, or a witness whose
+  subject or foreground does not join the observed foreground, hides the
+  border with empty reason and null subject, outsets, width, radius and
+  witness under the existing carried hidden geometry-veto spelling; no hide
+  token is added. A witness must be joined
   to the subject and native capture/invalidation chain; later frame events may
   move that same accepted anchor only while foreground/lifetime/eligibility
   facts remain causally valid. A constant event-name string, elapsed delay or

@@ -32,8 +32,10 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    AuthorityScope, FrameSetter, MemberAttempt, OutputIdentity, ScreenReport, ScreenView,
-    WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReply, WorldReport,
+    AuthorityScope, FrameSetter, LastWrite, LastWritePath, LastWriteProperty, MemberAttempt,
+    OutputIdentity, ScopeAuthority, ScreenReport, ScreenView, VisibilityReason, VisibilitySample,
+    VisibilitySetter, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReply,
+    WorldReport,
 };
 
 fn rect4(v: [i32; 4]) -> Rect {
@@ -748,6 +750,15 @@ struct Sim {
     homing_alias: BTreeMap<String, String>,
     /// Last non-empty one-shot effect target (window id, "" when none yet).
     focus: String,
+    /// Recorded desire at issue (pending, not proof): per-window commanded
+    /// target and issuing revision from the actual issuing reply's own
+    /// visibility rows. This lane is blocked-only (no suppression
+    /// support): a `Controlled` row fails closed instead of storing a
+    /// grant. The next observation report samples the actual read (post at
+    /// the current observation, post state from the raw facts) as a
+    /// `NotCalled`/`ScopeHeld` no-call and spends the desire; command
+    /// reports carry none.
+    grants: BTreeMap<String, (bool, u64)>,
     /// Accepted (report, reply) pairs in emission order.
     pairs: Vec<(WorldReport, WorldReply)>,
 }
@@ -884,6 +895,12 @@ fn build_report(
     }
     let mut windows = Vec::new();
     for id in &live {
+        // The raw visibility facts the post sample must agree with: the
+        // sample below reuses this exact value, never a desired state.
+        let visibility = tiler_core::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: Some(false),
+        };
         windows.push(WindowFact {
             window: WindowId(id.clone()),
             output: Some(OutputId(sim.out.clone())),
@@ -920,11 +937,37 @@ fn build_report(
             fullscreen_owner: None,
             fullscreen_exitable: None,
             suppression_available: None,
-            visibility: tiler_core::world_report::VisibilityFact {
-                visible: Some(true),
-                suppression_owned: Some(false),
+            visibility,
+            // Correlated visibility verdicts ride the next observation
+            // report only: the recorded target/revision plus the actual
+            // read sampled now (post at this report's observation, post
+            // state from the raw facts above). This lane holds every
+            // write, so the verdict is always the blocked no-call shape,
+            // never an invented write: a hide target cannot read back
+            // hidden while the raw fact stays visible, so it fails
+            // terminally through the common path. Command reports carry
+            // none (same-report raw would guess a future issuing
+            // revision).
+            last_write: if command.is_none() {
+                sim.grants.get(id).map(|(shown, rev)| LastWrite {
+                    property: LastWriteProperty::Visibility,
+                    target: *shown,
+                    revision: *rev,
+                    path: LastWritePath::Staged,
+                    setter: VisibilitySetter::NotCalled,
+                    reason: VisibilityReason::ScopeHeld,
+                    pre: None,
+                    post: Some(VisibilitySample {
+                        obs: sim.obs,
+                        lifetime_matched: Some(true),
+                        visibility,
+                        minimized: Some(false),
+                        host_hidden: Some(false),
+                    }),
+                })
+            } else {
+                None
             },
-            last_write: None,
         });
     }
     let mut views = Vec::new();
@@ -1014,6 +1057,7 @@ fn bootstrap_binding(
             .map(|w| (w.clone(), "home".to_owned()))
             .collect(),
         focus: String::new(),
+        grants: BTreeMap::new(),
         pairs: Vec::new(),
     };
     let first = build_report(case, mode, &sim, None, None, vec![])?;
@@ -1492,6 +1536,7 @@ fn submit(
 ) -> Result<(), String> {
     sim.req += 1;
     sim.obs += 1;
+    let observation_only = command.is_none();
     let report = build_report(case, mode, sim, command, command_seq, closed)?;
     let debug = std::env::var("WORLD_STRESS_DEBUG").is_ok();
     if debug {
@@ -1557,6 +1602,11 @@ fn submit(
             sim.pairs.push((report, reply));
             refresh_away_slot(sim, at)?;
             sim.next_attempts.clear();
+            // A spent desire never retries or upgrades: the observation
+            // just emitted carried the single correlated verdict.
+            if observation_only {
+                sim.grants.clear();
+            }
             Ok(())
         }
         WorldOutcome::Duplicate(_) => Err(fail(at, "duplicate reply is not fresh acceptance")),
@@ -1582,9 +1632,14 @@ fn submit_command(
     // subject-carrying command is natively honorable only when the subject
     // already holds the foreground (acquired by an explicit focus-window
     // observation, never silently).
+    let mut select_changed = false;
     match action.op.as_str() {
         "select-workspace" => {
             let alias = action.workspace.clone().expect("validated");
+            // Changed selections freeze a new binding in the core;
+            // redundant ones keep the old authorization. Track the change
+            // against the pre-command prediction like the view-change gate.
+            select_changed = sim.predicted_alias != alias;
             sim.pending.view = Some((action.output.clone().expect("validated"), alias.clone()));
             sim.predicted_alias = alias;
         }
@@ -1592,6 +1647,7 @@ fn submit_command(
             // Core-resolved output lands on the single live screen; the
             // explicit form names it directly.
             let alias = resolve_numbered_relative(action, sim, at)?;
+            select_changed = sim.predicted_alias != alias;
             let out = action.output.clone().unwrap_or_else(|| sim.out.clone());
             sim.pending.view = Some((out, alias.clone()));
             sim.predicted_alias = alias;
@@ -1672,6 +1728,36 @@ fn submit_command(
     // land on the visible target, follow sends keep the mover foreground,
     // stay sends hide the mover. Selects keep the foreground until the
     // receipt hides it (recomputed there).
+    //
+    // Changed selections freeze a new visibility binding in the core:
+    // record the commanded desire (target, revision) from the actual
+    // issuing reply's own visibility rows, pending until the next
+    // observation samples the read. This lane is blocked-only: a
+    // `Controlled` row fails closed rather than pretending a setter ran.
+    // Follow sends prune the binding with no replacement on this lane, so
+    // they clear the desire.
+    if select_changed {
+        sim.grants.clear();
+        let reply = &sim.pairs.last().expect("just pushed").1;
+        for row in &reply.windows {
+            if let Some(target) = &row.visibility {
+                if matches!(row.visibility_authority, ScopeAuthority::Controlled) {
+                    return Err(fail(
+                        at,
+                        format!(
+                            "controlled visibility for {} is not covered on the blocked lane",
+                            row.lifetime.0
+                        ),
+                    ));
+                }
+                sim.grants
+                    .insert(row.lifetime.0.clone(), (target.shown, target.revision));
+            }
+        }
+    }
+    if action.op == "send" && action.follow.expect("validated") {
+        sim.grants.clear();
+    }
     match action.op.as_str() {
         "focus-directional" | "move-directional" => {
             let target = action.expect_target.clone().expect("validated");
@@ -1870,6 +1956,7 @@ pub fn run_stress(
             .map(|w| (w.clone(), "home".to_owned()))
             .collect(),
         focus: String::new(),
+        grants: BTreeMap::new(),
         pairs: Vec::new(),
     };
     let mut lines = Vec::new();
@@ -2237,6 +2324,7 @@ fn probe_completions(
             foreground: sim.foreground.clone(),
             homing_alias: sim.homing_alias.clone(),
             focus: sim.focus.clone(),
+            grants: BTreeMap::new(),
             pairs: Vec::new(),
         };
         let report = build_report(
@@ -2297,6 +2385,204 @@ mod stress_tests {
             .iter_mut()
             .find(|a| a["op"] == "checkpoint" && a["name"] == name)
             .unwrap_or_else(|| panic!("checkpoint {name}"))
+    }
+
+    /// Minimal real-path drive to duo seq16 (first changed select, home to
+    /// away): bootstrap plus the one command, so verdict derivation reads
+    /// the actual issuing reply instead of a fabricated shape.
+    fn drive_to_seq16() -> (StressCase, WorkspaceMode, WorldEngine, Sim) {
+        let case = load_stress_case(&duo_path()).expect("load duo");
+        let mode = case_mode(&case.mode).expect("mode");
+        let binding = bootstrap_binding(&case, mode).expect("binding");
+        let mut engine = WorldEngine::new(&case.generation).expect("generation");
+        bind_engine(&mut engine, &case, mode).expect("bind");
+        let mut sim = Sim {
+            req: 0,
+            obs: 0,
+            facts: case.initial_facts.clone(),
+            echo: BTreeMap::new(),
+            live: case.initial_facts.keys().cloned().collect(),
+            pending: Pending::empty(),
+            next_attempts: Vec::new(),
+            outstanding: BTreeSet::new(),
+            home: binding["home"].clone(),
+            away: binding["away"].clone(),
+            seen: BTreeSet::new(),
+            out: case.screens[0].out.clone(),
+            predicted_alias: "home".to_owned(),
+            foreground: None,
+            homing_alias: case
+                .initial_facts
+                .keys()
+                .map(|w| (w.clone(), "home".to_owned()))
+                .collect(),
+            focus: String::new(),
+            grants: BTreeMap::new(),
+            pairs: Vec::new(),
+        };
+        submit(
+            &case,
+            mode,
+            &mut engine,
+            &mut sim,
+            None,
+            None,
+            vec![],
+            "bootstrap",
+        )
+        .expect("bootstrap");
+        let action = case
+            .actions
+            .iter()
+            .find(|a| a.seq == Some(16))
+            .expect("seq16")
+            .clone();
+        assert_eq!(action.op, "select-workspace");
+        submit_command(&case, mode, &mut engine, &mut sim, &action, "seq16").expect("select");
+        (case, mode, engine, sim)
+    }
+
+    #[test]
+    fn select_verdicts_are_blocked_nocalls_sampled_at_the_receipt() {
+        use tiler_core::world_report::{SwitchFocus, SwitchOutcome};
+        let (case, mode, mut engine, mut sim) = drive_to_seq16();
+        // Desire recorded from the actual issuing reply rows, never a live
+        // guess: target and revision per row.
+        let reply = &sim.pairs.last().expect("select reply").1;
+        assert!(!sim.grants.is_empty(), "changed select records desire");
+        for row in &reply.windows {
+            let target = row
+                .visibility
+                .as_ref()
+                .expect("row carries a commanded visibility target");
+            let (shown, rev) = sim
+                .grants
+                .get(&row.lifetime.0)
+                .expect("grant per reply row");
+            assert_eq!((*shown, *rev), (target.shown, target.revision));
+            assert!(
+                !matches!(row.visibility_authority, ScopeAuthority::Controlled),
+                "blocked lane never grants write authority"
+            );
+        }
+        // The command report itself proves nothing.
+        let cmd_report = &sim.pairs.last().expect("select report").0;
+        assert!(
+            cmd_report.windows.iter().all(|w| w.last_write.is_none()),
+            "no premature verdict on the command report"
+        );
+        // Probe: a redundant select (no supersession) carries no verdict
+        // and leaves the recorded desire unconsumed for the real receipt.
+        let redundant = RawAction {
+            op: "select-workspace".to_owned(),
+            seq: Some(999),
+            output: Some(case.screens[0].out.clone()),
+            workspace: Some("away".to_owned()),
+            index: None,
+            delta: None,
+            window: None,
+            direction: None,
+            same_axis: None,
+            follow: None,
+            rect: None,
+            name: None,
+            view: None,
+            members: None,
+            homing: None,
+            tiles: None,
+            focus: None,
+            foreground: None,
+            expect_effect: None,
+            expect_target: None,
+            pager_current: None,
+            pager_occupied: None,
+        };
+        let grants_before = sim.grants.clone();
+        submit_command(&case, mode, &mut engine, &mut sim, &redundant, "redundant")
+            .expect("redundant select");
+        let cmd_report = &sim.pairs.last().expect("redundant report").0;
+        assert!(
+            cmd_report.windows.iter().all(|w| w.last_write.is_none()),
+            "commands never carry verdicts"
+        );
+        assert_eq!(
+            sim.grants, grants_before,
+            "commands never consume the desire"
+        );
+        // The original receipt boundary emits the verdict once, sampled at
+        // the receipt observation from the raw facts.
+        let obs_before = sim.obs;
+        submit_receipt(&case, mode, &mut engine, &mut sim, "receipt").expect("receipt");
+        let (report, reply) = sim.pairs.last().expect("receipt pair");
+        assert_eq!(report.observation_seq, obs_before + 1);
+        for window in &report.windows {
+            let (shown, rev) = grants_before.get(&window.window.0).expect("spent grant");
+            let last = window
+                .last_write
+                .as_ref()
+                .expect("verdict rides the receipt");
+            assert_eq!(last.property, LastWriteProperty::Visibility);
+            assert_eq!(last.target, *shown);
+            assert_eq!(last.revision, *rev);
+            assert_eq!(last.setter, VisibilitySetter::NotCalled);
+            assert_eq!(last.reason, VisibilityReason::ScopeHeld);
+            let post = last.post.as_ref().expect("no-call still samples the read");
+            assert_eq!(
+                post.obs, report.observation_seq,
+                "read watermarked at this receipt, never an older observation"
+            );
+            assert_eq!(
+                post.visibility, window.visibility,
+                "sample agrees the raw facts"
+            );
+            assert_eq!(post.lifetime_matched, Some(true));
+            assert_eq!(post.minimized, Some(false));
+            assert_eq!(post.host_hidden, Some(false));
+        }
+        assert!(sim.grants.is_empty(), "first receipt spends the desire");
+        // The common terminal still fires: this isolated drive never ran
+        // the prefix sends, so both windows are homed home and the
+        // away-select hides both. Neither hide can read back hidden while
+        // the raw facts stay visible, so both fail; focus stays unproven
+        // on this focusless lane.
+        assert_eq!(reply.switch_settled.len(), 1);
+        let event = &reply.switch_settled[0];
+        assert_eq!(event.operation_id, "op-16");
+        assert_eq!(event.outcome, SwitchOutcome::CompletedWithFailures);
+        assert_eq!(
+            event.failed,
+            vec![WindowId("win-a".to_owned()), WindowId("win-b".to_owned())]
+        );
+        assert_eq!(event.focus, SwitchFocus::Unproven);
+    }
+
+    #[test]
+    fn spent_verdicts_never_retry_and_commands_carry_none() {
+        let (case, mode, mut engine, mut sim) = drive_to_seq16();
+        submit_receipt(&case, mode, &mut engine, &mut sim, "receipt").expect("receipt");
+        assert!(sim.grants.is_empty(), "first receipt spends the desire");
+        // A second observation retries nothing: the first-latched verdict
+        // stands, and no second terminal follows from a retry.
+        submit(
+            &case,
+            mode,
+            &mut engine,
+            &mut sim,
+            None,
+            None,
+            vec![],
+            "again",
+        )
+        .expect("again");
+        let (report, reply) = sim.pairs.last().expect("second observation");
+        assert!(
+            report.windows.iter().all(|w| w.last_write.is_none()),
+            "spent verdicts are not re-emitted"
+        );
+        assert!(
+            reply.switch_settled.is_empty(),
+            "no second terminal from a retry"
+        );
     }
 
     #[test]

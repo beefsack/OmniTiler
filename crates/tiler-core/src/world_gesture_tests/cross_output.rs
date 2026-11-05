@@ -416,22 +416,22 @@ fn cross_release_with_mover_in_flight_refuses_without_duplicate() {
         .clone();
     let first_alloc = row_of(&released1, "win-3").allocation;
     // Fresh gesture while the flight is outstanding: release back onto
-    // out-b at live coordinates.
+    // out-b at live coordinates. The adapter still observes the mover at
+    // the source with its readable seed frame (delayed capture of the
+    // first drop never arrived): the fresh gesture binds against the
+    // retained target home, yet staged homing must not self-confirm
+    // from that shielded state. The first Window flight holds through
+    // settlement instead of retiring on homing, and the mover keeps
+    // its target redirect row.
     let back = row_of(&released1, "win-2")
         .allocation
         .expect("first release keeps win-2");
     let cursor2 = (back.x + 2, back.y + back.h / 2);
-    let updated_facts: Vec<WindowFact> = seed_facts
-        .iter()
-        .map(|row| {
-            if row.window.0 == "win-3" {
-                fact("win-3", "out-a", moved1)
-            } else {
-                row.clone()
-            }
-        })
-        .collect();
-    accepted(
+    // The mover never arrived: the source observation stays readable
+    // at out-b (delayed capture), so settlement must hold the flight
+    // on the source key rather than retire it.
+    let updated_facts: Vec<WindowFact> = seed_facts.clone();
+    let updated5 = accepted(
         &mut engine,
         &mixed_report(
             5,
@@ -443,14 +443,22 @@ fn cross_release_with_mover_in_flight_refuses_without_duplicate() {
                 GestureKind::Move,
                 Some(cursor2),
                 GesturePhase::Updated,
-                moved1,
+                start,
                 2,
             )),
             vec![],
             true,
         ),
     );
+    assert!(
+        updated5.transfers.iter().any(|t| t.operation_id == op1
+            && matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-3")),
+        "first Window flight still present before the second release, got {:?}",
+        updated5.transfers
+    );
     let moved2 = rect(2100, 200, start.w, start.h);
+    // Second release still observes the mover at the source with a
+    // readable frame: no arrival, so the fresh release must refuse.
     let release_facts2: Vec<WindowFact> = seed_facts
         .iter()
         .map(|row| {
@@ -473,7 +481,7 @@ fn cross_release_with_mover_in_flight_refuses_without_duplicate() {
                 GestureKind::Move,
                 Some(cursor2),
                 GesturePhase::Released,
-                moved1,
+                start,
                 2,
             )),
             vec![],

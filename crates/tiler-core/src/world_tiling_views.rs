@@ -91,15 +91,57 @@ impl WorldEngine {
 
     /// Policy-retained view target (hotplug displacement/return):
     /// latest per output wins, exactly like command views, under a caller
-    /// supplied stable operation identity (per-cycle epoch, see the
-    /// displacement pass). Never consumes a command sequence.
+    /// supplied stable operation identity (per-cycle `op-dpv-*` with a
+    /// per-run index, see the displacement pass). Never consumes a command
+    /// sequence.
+    ///
+    /// The retained flight proves actuation like a command view. Beside
+    /// it, the policy view binds a focusless frozen selection under the
+    /// same parent: no command sequence is invented, no focus effect is
+    /// minted, and visibility completes through the common path while
+    /// native focus stays untouched. Each parent keeps its own pending
+    /// carrier (latest per output wins); the command carrier is never
+    /// touched here (command dispatch owns supersession there at command
+    /// time).
     pub(crate) fn retain_policy_view(
         &mut self,
         output: &OutputId,
         workspace: &str,
         operation_id: String,
     ) {
-        self.retain_view_inner(output, workspace, operation_id);
+        // Departing home reads before retention moves the view: the
+        // post-retain view already names the target.
+        let departing: Vec<DomainKey> = self
+            .effective_view(output)
+            .filter(|view| view != workspace)
+            .map(|view| DomainKey {
+                output: output.clone(),
+                workspace: crate::directional::WorkspaceId(view),
+            })
+            .into_iter()
+            .collect();
+        self.retain_view_inner(output, workspace, operation_id.clone());
+        let home = DomainKey {
+            output: output.clone(),
+            workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+        };
+        let rev = self.state_revision + 1;
+        let obs = self.staged.observation.observation_seq;
+        self.pending_policy_selections
+            .retain(|pending| pending.focus_home.output != *output);
+        self.pending_policy_selections
+            .push(crate::world_selection::PendingSelection {
+                command_seq: None,
+                parent_op: operation_id,
+                focus: None,
+                focus_home: home.clone(),
+                selected: vec![home],
+                departing,
+                affected_outputs: vec![output.clone()],
+                rev,
+                obs,
+                follow_mover: false,
+            });
     }
 
     /// Shared view retention: latest view command wins per output. The
@@ -133,6 +175,7 @@ impl WorldEngine {
             migration_source_view: None,
             migration_target_view: None,
             migration_terminal: None,
+            migration_selection_rev: None,
             pending_member: None,
             pending_members: BTreeMap::new(),
             pending_view: None,
@@ -212,7 +255,15 @@ impl WorldEngine {
         self.note_command(command_seq);
         // Latest view command wins per output. Core views move immediately
         // (logical authority); the retained flight proves actuation.
-        self.retain_view_inner(output, workspace, format!("op-{command_seq}"));
+        // Native-free redundant selects mint no flight: the view already
+        // shows the target, supersession and history converge without it,
+        // and the selection binding (when one freezes below) retires
+        // nothing. Host-owned redundant selects keep their flight for the
+        // staged native proof.
+        let native_free = !self.host_owned_workspace_domains();
+        if changed || !native_free {
+            self.retain_view_inner(output, workspace, format!("op-{command_seq}"));
+        }
         if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
             let canonical = self.mapping.get(&output.0).cloned().unwrap_or_default();
             let live: Vec<String> = {
@@ -252,7 +303,8 @@ impl WorldEngine {
                 })
                 .collect();
             self.pending_selection = Some(crate::world_selection::PendingSelection {
-                command_seq,
+                command_seq: Some(command_seq),
+                parent_op: format!("op-{command_seq}"),
                 focus: None,
                 focus_home: target_key,
                 selected,
@@ -260,6 +312,7 @@ impl WorldEngine {
                 affected_outputs: affected,
                 rev,
                 obs: self.staged.observation.observation_seq,
+                follow_mover: false,
             });
             return CommandApplied::NoEffect;
         };
@@ -270,19 +323,25 @@ impl WorldEngine {
         // selector readback plus native-home arrival) and no per-window
         // targets. Ordinary direct focus, admission, and every
         // out-of-scope route keep the legacy effect below.
-        if self.selection_route_eligible(&window, &target_key, held_scopes)
-            || self.host_selection_route_eligible(&window, &target_key, held_scopes)
-        {
-            let rev = self.state_revision + 1;
-            let selected: Vec<DomainKey> = affected
-                .iter()
-                .map(|out| DomainKey {
-                    output: out.clone(),
-                    workspace: crate::directional::WorkspaceId(workspace.to_owned()),
-                })
-                .collect();
-            self.pending_selection = Some(crate::world_selection::PendingSelection {
-                command_seq,
+        //
+        // A resolved focus that fails route eligibility still freezes a
+        // focusless binding with no required focus target: visibility
+        // completes through the common path and focus reports unproven,
+        // while the legacy direct effect below stays untouched.
+        let eligible = self.selection_route_eligible(&window, &target_key, held_scopes)
+            || self.host_selection_route_eligible(&window, &target_key, held_scopes);
+        let rev = self.state_revision + 1;
+        let selected: Vec<DomainKey> = affected
+            .iter()
+            .map(|out| DomainKey {
+                output: out.clone(),
+                workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+            })
+            .collect();
+        let pending = if eligible {
+            crate::world_selection::PendingSelection {
+                command_seq: Some(command_seq),
+                parent_op: format!("op-{command_seq}"),
                 focus: Some(window.clone()),
                 focus_home: target_key,
                 selected,
@@ -290,20 +349,37 @@ impl WorldEngine {
                 affected_outputs: affected,
                 rev,
                 obs: self.staged.observation.observation_seq,
-            });
+                follow_mover: false,
+            }
+        } else {
+            crate::world_selection::PendingSelection {
+                command_seq: Some(command_seq),
+                parent_op: format!("op-{command_seq}"),
+                focus: None,
+                focus_home: target_key,
+                selected,
+                departing,
+                affected_outputs: affected,
+                rev,
+                obs: self.staged.observation.observation_seq,
+                follow_mover: false,
+            }
+        };
+        self.pending_selection = Some(pending);
+        if !eligible {
             // Best-effort memory (same contract as the direct focus lane).
             let _ = self.record_command_focus(&window, held_scopes);
-            let mut effect = OneShotEffect::explicit_focus(command_seq, window, rev);
-            effect.await_shown = true;
-            return CommandApplied::Effect(effect);
+            return CommandApplied::Effect(OneShotEffect::explicit_focus(
+                command_seq,
+                window,
+                self.state_revision + 1,
+            ));
         }
         // Best-effort memory (same contract as the direct focus lane).
         let _ = self.record_command_focus(&window, held_scopes);
-        CommandApplied::Effect(OneShotEffect::explicit_focus(
-            command_seq,
-            window,
-            self.state_revision + 1,
-        ))
+        let mut effect = OneShotEffect::explicit_focus(command_seq, window, rev);
+        effect.await_shown = true;
+        CommandApplied::Effect(effect)
     }
 
     /// Remembered R-WS-09 focus candidate for one view target: the

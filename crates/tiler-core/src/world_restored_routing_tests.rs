@@ -1236,14 +1236,31 @@ fn operation_send_retains_and_foreign_routes_refuse() {
     );
     let reply = accepted(&mut engine, &send);
     assert_eq!(row_of(&reply, "win-a").workspace, ring[1]);
-    // Same-output follow retains the window flight plus its own view
-    // flight under a derived identity, exactly like an explicit send.
-    assert_eq!(reply.transfers.len(), 2);
-    assert!(matches!(&reply.transfers[0].kind, TransferKind::View));
-    assert!(matches!(&reply.transfers[1].kind, TransferKind::Window(_)));
+    // Same-output follow retains the single window flight under the stable
+    // command identity: no `{op}-follow` child, no view flight. These
+    // fixture facts carry no suppression support, so the mover is
+    // selection-ineligible and keeps the legacy direct focus with no
+    // frozen binding.
+    assert_eq!(reply.transfers.len(), 1);
+    assert!(matches!(&reply.transfers[0].kind, TransferKind::Window(_)));
     assert_eq!(reply.transfers[0].target_workspace, ring[1]);
-    assert_eq!(reply.transfers[1].target_workspace, ring[1]);
-    assert_eq!(reply.transfers[0].operation_id, "op-32-follow");
+    assert_eq!(reply.transfers[0].operation_id, "op-32");
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "ineligible mover binds nothing"
+    );
+    assert_eq!(
+        output_view(&reply, "out-a").as_deref(),
+        Some(ring[1].as_str()),
+        "ineligible follow still moves the logical view"
+    );
+    assert_eq!(reply.effects.len(), 1, "legacy direct focus");
+    assert!(
+        !reply.effects[0].await_shown,
+        "ineligible follow does not wait on the destination"
+    );
     // Operation directional migration with a single live output has no
     // resolvable target and refuses without mutation, never silently
     // local. (Single output here; the strict map cannot resolve.)
@@ -1380,12 +1397,23 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
     );
     seq += 1;
     let reply = accepted(&mut engine, &send);
-    // Follow retains the window flight plus its own view flight under a
-    // derived identity, exactly like an explicit send.
-    assert_eq!(reply.transfers.len(), 2);
-    assert!(matches!(&reply.transfers[0].kind, TransferKind::View));
-    assert!(matches!(&reply.transfers[1].kind, TransferKind::Window(_)));
-    assert_eq!(reply.transfers[0].operation_id, "op-44-follow");
+    // Floating-boundary follow keeps the membership-only window flight
+    // under the stable command identity: no `{op}-follow` child, no view
+    // flight, no frozen binding (legacy direct focus only).
+    assert_eq!(reply.transfers.len(), 1);
+    assert!(matches!(&reply.transfers[0].kind, TransferKind::Window(_)));
+    assert_eq!(reply.transfers[0].operation_id, "op-44");
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "floating follow binds nothing"
+    );
+    assert_eq!(
+        output_view(&reply, "out-a").as_deref(),
+        Some(ring[1].as_str()),
+        "floating follow still moves the logical view"
+    );
     let row = row_of(&reply, "win-f");
     assert_eq!(row.workspace, ring[1]);
     assert_eq!(row.membership_authority, ScopeAuthority::Controlled);
@@ -1395,17 +1423,14 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
     assert!(
         matches!(
             flight.as_slice(),
-            [v, t] if v.operation_id == "op-44-follow"
-                && matches!(&v.kind, TransferKind::View)
-                && t.operation_id == "op-44"
+            [t] if t.operation_id == "op-44"
                 && matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-f")
         ),
-        "window plus follow-view flights retained under their identities: {flight:?}"
+        "membership-only window flight retained under its identity: {flight:?}"
     );
     // Membership proof settles the window flight (accepted member
-    // attempt naming the target) while the echoed view confirms the
-    // follow-view flight; a fresh ordinary send then
-    // still works.
+    // attempt naming the target); the echoed view proves nothing further
+    // on this route. A fresh ordinary send then still works.
     let arrived = fact("win-f", "out-a", 200);
     let mut settle_report = report(
         seq,
@@ -1466,8 +1491,20 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
             follow: true,
         }),
     );
-    accepted(&mut engine, &send);
-    assert_eq!(engine.retained_transfers().len(), 2);
+    let tail = accepted(&mut engine, &send);
+    assert_eq!(engine.retained_transfers().len(), 1);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned())),
+        "ineligible mover binds nothing"
+    );
+    assert_eq!(row_of(&tail, "win-a").workspace, ring[1]);
+    assert_eq!(
+        output_view(&tail, "out-a").as_deref(),
+        Some(ring[1].as_str()),
+        "ineligible follow still moves the logical view"
+    );
 }
 
 #[test]
@@ -2309,8 +2346,27 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
                 assert_ne!(focus[0].target.0, "win-a", "focus crosses the output");
             }
             4 => {
-                assert_eq!(reply.transfers.len(), 2, "follow keeps view flight");
+                // Ineligible same-output follow (no suppression support in
+                // these facts): the single window flight under the stable
+                // command identity with no frozen binding, legacy direct
+                // focus, but the logical view still moves.
+                assert_eq!(reply.transfers.len(), 1, "window flight only");
+                assert!(matches!(&reply.transfers[0].kind, TransferKind::Window(_)));
+                assert_eq!(reply.transfers[0].target_workspace, ring[1]);
+                assert_eq!(reply.transfers[0].operation_id, "op-11");
                 assert_eq!(row_of(&reply, "win-a").workspace, ring[1]);
+                assert_eq!(
+                    output_view(&reply, "out-a").as_deref(),
+                    Some(ring[1].as_str())
+                );
+                assert!(
+                    !engine
+                        .retained_selection
+                        .contains_key(&OutputId("out-a".to_owned())),
+                    "ineligible mover binds nothing"
+                );
+                assert_eq!(reply.effects.len(), 1, "legacy direct focus");
+                assert!(!reply.effects[0].await_shown);
             }
             5 => {
                 assert_eq!(reply.transfers.len(), 1, "stay keeps only the window");
@@ -2721,25 +2777,57 @@ fn explicit_output_send_fences_match_output_route() {
         let (mut engine, screens, view_a, _view_b, ring) = bootstrap_gapped_pair();
         assert!(ring.len() >= 2, "pioneer needs a second workspace");
         let pioneer = fact_rect("win-x", "out-a", rect(200, 40, 40, 90));
+        let residents = vec![
+            fact_rect("win-a", "out-a", rect(10, 40, 40, 90)),
+            fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
+            fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
+        ];
         let facts = vec![
             fact_rect("win-a", "out-a", rect(10, 40, 40, 90)),
             fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
             fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
             pioneer,
         ];
-        // Echo the spare so the pioneer newcomer homes there; residents
-        // keep their retained homing.
-        let mut bootstrap = report(2, 2, screens.clone(), facts.clone(), "win-a", None, None);
-        bootstrap.views.push(ScreenView {
-            output: OutputId("out-a".to_owned()),
-            view: ring[1].clone(),
-        });
-        let _ = accepted(&mut engine, &bootstrap);
-        let migrated = accepted(
+        // Real selection to the spare before the newcomer arrives, so the
+        // pioneer newcomer homes there; residents keep their retained
+        // homing. (Logical-echo views are inert, so the old views-echo
+        // setup is dead.)
+        let _ = accepted(
+            &mut engine,
+            &report(
+                2,
+                2,
+                screens.clone(),
+                residents.clone(),
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        let _ = accepted(
             &mut engine,
             &report(
                 3,
                 3,
+                screens.clone(),
+                residents,
+                "win-a",
+                Some(10),
+                Some(WorldCommand::SelectWorkspace {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: ring[1].clone(),
+                }),
+            ),
+        );
+        let _ = accepted(
+            &mut engine,
+            &report(4, 4, screens.clone(), facts.clone(), "win-a", None, None),
+        );
+        let migrated = accepted(
+            &mut engine,
+            &report(
+                5,
+                5,
                 screens.clone(),
                 facts.clone(),
                 "win-a",
@@ -2759,8 +2847,8 @@ fn explicit_output_send_fences_match_output_route() {
         assert_eq!(cell.target_output.0, "out-b");
         assert_eq!(cell.target_workspace, view_a);
         let probe = report(
-            4,
-            4,
+            6,
+            6,
             screens,
             facts,
             "win-x",

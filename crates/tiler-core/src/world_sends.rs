@@ -247,7 +247,7 @@ impl WorldEngine {
             by_id,
             held_scopes,
         );
-        self.settle_send(command_seq, operation_id, result)
+        self.settle_send(command_seq, operation_id, result, held_scopes)
     }
 
     /// Cross-output window-send path for direction-only sends
@@ -278,25 +278,28 @@ impl WorldEngine {
             by_id,
             held_scopes,
         );
-        self.settle_send(command_seq, operation_id, result)
+        self.settle_send(command_seq, operation_id, result, held_scopes)
     }
 
     /// Settle one executed send: retain the transfer under its stable
     /// operation identity (consuming the command sequence), then emit the
     /// one-shot focus outcome. Follow focuses the mover; stay focuses the
     /// source MRU survivor (`None` when the source is left empty, so no
-    /// effect rather than a guessed fallback). Follow also selects the
-    /// target view on the same output (core logical authority: the moved
-    /// view plus a retained follow-view flight under `{op}-follow`, latest
-    /// per output wins exactly like selection; shared mode fans out); stay
-    /// never moves any view and retains no flight. The moved view is still
-    /// only a desire: native arrival proves separately through the retained
-    /// flights, never from this commit.
+    /// effect rather than a guessed fallback). Follow additionally binds
+    /// the common frozen selection binding for the destination (same
+    /// frozen binding as an ordinary explicit selection, keyed by the
+    /// dispatching command sequence, so `Window` membership settles
+    /// independently and no `{op}-follow` child exists): the binding owns
+    /// destination visibility and focus through the existing selection
+    /// completion, and the follow focus effect waits until the
+    /// destination is shown (`await_shown`). Stay never moves any view
+    /// and binds nothing.
     pub(crate) fn settle_send(
         &mut self,
         command_seq: u64,
         operation_id: String,
         result: Result<(RetainedTransfer, Option<WindowId>), (&'static str, &'static str)>,
+        held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
         match result {
             Ok((retained, focus)) => {
@@ -313,25 +316,34 @@ impl WorldEngine {
                     };
                     self.commit_send_member(window, &target);
                 }
-                // Follow owns the same-output target view: without the
-                // logical move the adapter's follow switch can never prove
-                // (visibility is checked against the core view) and the
-                // transfer holds forever. The moved view plus a retained
-                // follow-view flight (latest per output wins, exactly like
-                // selection) lets the existing view machinery actuate and
-                // prove the switch; the window flight still settles only on
-                // observed membership. Cross-output targets stay untouched:
-                // direction-only sends already target the neighbor's
-                // current view.
-                if retained.target.follow && retained.target.target_output == retained.source_output
+                // Follow always retains logical view semantics (like an
+                // ordinary selection, which moves views before focus
+                // eligibility): the core view moves immediately under
+                // logical authority without minting any view flight, and
+                // latest intent prunes per affected output. Binding plus
+                // awaitShown is the only eligible-gated part; floating
+                // boundary transfers and ineligible movers keep the legacy
+                // direct focus with no binding but still move the view.
+                // Membership still settles only on observed homing via the
+                // ordinary window path.
+                if retained.target.follow
+                    && let TransferKind::Window(window) = retained.target.kind.clone()
                 {
-                    let output = retained.target.target_output.clone();
-                    let workspace = retained.target.target_workspace.clone();
-                    self.retain_view_inner(&output, &workspace, format!("{operation_id}-follow"));
-                    if self.workspace_mode_setting()
+                    let target_key = DomainKey {
+                        output: retained.target.target_output.clone(),
+                        workspace: crate::directional::WorkspaceId(
+                            retained.target.target_workspace.clone(),
+                        ),
+                    };
+                    let source_key = DomainKey {
+                        output: retained.source_output.clone(),
+                        workspace: crate::directional::WorkspaceId(
+                            retained.source_workspace.clone(),
+                        ),
+                    };
+                    let affected: Vec<OutputId> = if self.workspace_mode_setting()
                         == crate::workspace_scope::WorkspaceMode::Shared
                     {
-                        let canonical = self.mapping.get(&output.0).cloned().unwrap_or_default();
                         let mut live: Vec<String> = self
                             .staged
                             .screens
@@ -339,11 +351,100 @@ impl WorldEngine {
                             .map(|screen| screen.output.0.clone())
                             .collect();
                         live.sort();
+                        live.into_iter().map(OutputId).collect()
+                    } else {
+                        vec![retained.target.target_output.clone()]
+                    };
+                    let departing: Vec<DomainKey> = affected
+                        .iter()
+                        .filter_map(|out| {
+                            self.effective_view(out).map(|view| DomainKey {
+                                output: out.clone(),
+                                workspace: crate::directional::WorkspaceId(view),
+                            })
+                        })
+                        .collect();
+                    let current = self.effective_view(&retained.target.target_output);
+                    let changed =
+                        current.as_deref() != Some(retained.target.target_workspace.as_str());
+                    // Latest-follow intent wins: the no-flight logical view
+                    // move mints no View flight of its own, so older
+                    // retained View flights on the target output are pruned
+                    // here exactly like the old retain_view_inner lane did,
+                    // before the new follow view update.
+                    self.retained.retain(|r| {
+                        !(matches!(r.target.kind, TransferKind::View)
+                            && r.target.target_output == retained.target.target_output)
+                    });
+                    if self.workspace_mode_setting()
+                        == crate::workspace_scope::WorkspaceMode::Shared
+                    {
+                        let canonical = self
+                            .mapping
+                            .get(&retained.target.target_output.0)
+                            .cloned()
+                            .unwrap_or_default();
+                        let live: Vec<String> = {
+                            let mut live: Vec<String> = self
+                                .staged
+                                .screens
+                                .iter()
+                                .map(|screen| screen.output.0.clone())
+                                .collect();
+                            live.sort();
+                            live
+                        };
                         for out in &live {
                             self.mapping.insert(out.clone(), canonical.clone());
-                            self.views.insert(out.clone(), workspace.clone());
+                            self.views
+                                .insert(out.clone(), retained.target.target_workspace.clone());
                         }
-                        self.history.observe_shared(&canonical, &workspace);
+                        self.history
+                            .observe_shared(&canonical, &retained.target.target_workspace);
+                    } else if changed {
+                        self.views.insert(
+                            retained.target.target_output.0.clone(),
+                            retained.target.target_workspace.clone(),
+                        );
+                    }
+                    self.prune_selection_for_outputs(&affected);
+                    let floating = self.floating_scopes.contains(&source_key)
+                        || self.floating_scopes.contains(&target_key);
+                    let eligible = !floating
+                        && (self.selection_route_eligible(&window, &target_key, held_scopes)
+                            || self.host_selection_route_eligible(
+                                &window,
+                                &target_key,
+                                held_scopes,
+                            ));
+                    if eligible {
+                        let selected: Vec<DomainKey> = affected
+                            .iter()
+                            .map(|out| DomainKey {
+                                output: out.clone(),
+                                workspace: crate::directional::WorkspaceId(
+                                    retained.target.target_workspace.clone(),
+                                ),
+                            })
+                            .collect();
+                        let rev = self.state_revision + 1;
+                        self.pending_selection = Some(crate::world_selection::PendingSelection {
+                            command_seq: Some(command_seq),
+                            parent_op: format!("op-{command_seq}"),
+                            focus: Some(window.clone()),
+                            focus_home: target_key,
+                            selected,
+                            departing,
+                            affected_outputs: affected,
+                            rev,
+                            obs: self.staged.observation.observation_seq,
+                            follow_mover: true,
+                        });
+                        self.note_command(command_seq);
+                        self.retained.push(retained);
+                        let mut effect = OneShotEffect::explicit_focus(command_seq, window, rev);
+                        effect.await_shown = true;
+                        return CommandApplied::Effect(effect);
                     }
                 }
                 self.note_command(command_seq);
@@ -495,6 +596,7 @@ impl WorldEngine {
                     migration_source_view: None,
                     migration_target_view: None,
                     migration_terminal: None,
+                    migration_selection_rev: None,
                     pending_member: None,
                     pending_members: BTreeMap::new(),
                     pending_view: None,
@@ -602,6 +704,7 @@ impl WorldEngine {
                         migration_source_view: None,
                         migration_target_view: None,
                         migration_terminal: None,
+                        migration_selection_rev: None,
                         pending_member: None,
                         pending_members: BTreeMap::new(),
                         pending_view: None,
@@ -728,6 +831,7 @@ impl WorldEngine {
                     migration_source_view: None,
                     migration_target_view: None,
                     migration_terminal: None,
+                    migration_selection_rev: None,
                     pending_member: None,
                     pending_members: BTreeMap::new(),
                     pending_view: None,
@@ -832,6 +936,7 @@ impl WorldEngine {
                         migration_source_view: None,
                         migration_target_view: None,
                         migration_terminal: None,
+                        migration_selection_rev: None,
                         pending_member: None,
                         pending_members: BTreeMap::new(),
                         pending_view: None,
@@ -940,7 +1045,7 @@ impl WorldEngine {
                         by_id,
                         held_scopes,
                     );
-                    self.settle_send(command_seq, operation_id, result)
+                    self.settle_send(command_seq, operation_id, result, held_scopes)
                 }
                 TrailingSelection::Create => {
                     // Trailing workspaces exist immediately in the logical
@@ -1024,7 +1129,7 @@ impl WorldEngine {
                         by_id,
                         held_scopes,
                     );
-                    self.settle_send(command_seq, operation_id, result)
+                    self.settle_send(command_seq, operation_id, result, held_scopes)
                 }
             }
         } else {
@@ -1045,7 +1150,7 @@ impl WorldEngine {
                 by_id,
                 held_scopes,
             );
-            self.settle_send(command_seq, operation_id, result)
+            self.settle_send(command_seq, operation_id, result, held_scopes)
         }
     }
 }

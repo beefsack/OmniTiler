@@ -160,7 +160,7 @@
   fullscreen/frame-policy integration, gestures, sends, directional operations and
   intentional unfloat. Empty-destination float drags match the existing ordinary
   path after clearing the bit; ordinary-path geometry loss is not repaired here.
-  Final verification and the tentative directional preflight choice are below.
+  Final verification and the approved directional preflight choice are below.
 - Sticky commands are split into composed and native increments. The composed
   increment adds neutral set/toggle WorldCommand variants, same-output visibility
   and canonical saves, replacing the ToggleFloat fence only on that route.
@@ -775,7 +775,16 @@
      staged echo fill, `settle_views_pre`, selection proof) with visibility and
      focus proof. The contract settles the receipt predicates (removed `views`
      text, arrival requirements, frozen switch target sets); only the observe
-     staging function is implementation detail.
+      staging function is implementation detail. Split into 5a staged native
+      proof inputs and 5b logical echo replacement. Selection predicates remain
+       settled. Both follow routes reuse the common frozen selection binding
+       under the 2026-11-05 decisions below. Split 5b into 5b-1 both follow routes,
+       staged native last-view retention and approved decision promotions; then
+       5b-2 native-free migration/refill using one binding across both outputs.
+        The remaining logical echo legs are audited below; their replacement is
+        5b-3, now verified; sub-increment 5 is finished. Its narrow unit-7 pull-forward adapts only
+        the `world_stress.rs` simulated host's correlated visibility verdict
+        emission; the remaining unit-7 stress integration stays with unit 7.
    6. Genuine presentation producer plus `rendererInput` validation. The contract
      settles the anchored descriptor shape, core-scaled style, unknown witness
      disabling the border, and a stale target refusing the command with
@@ -795,8 +804,10 @@
       v4 reply/replay bookkeeping and bounds. Current-observation facts belong
       to sub-increment 4; view proofs and presentation belong to 5 and 6.
       Envelope admission and the public `handle_report` switch remain unit 7,
-      alongside broker/service/handshake cutover. Internal assembly tests do
-      not establish public cutover acceptance.
+       alongside broker/service/handshake cutover. Internal assembly tests do
+       not establish public cutover acceptance. Except for the narrow simulated
+       visibility-verdict emission pulled forward into 5b-3, stress integration
+       and v4 stress conformance remain here.
 - Sub-increment 1 outcome: staged pure-function twins in two new core modules,
   `world_report_v4_checks` (`validate_report_v4_reason`,
   `grade_conflicting_windows_v4`, `report_digest_v4`) and `world_sizing_v4`
@@ -859,11 +870,12 @@
   that staged facts alone are insufficient: raw lifetime presence and observation
   watermarks must survive alongside classification, and intent ingestion and
   pre-observation routing must keep their existing order.
-- Parked typed-ingress question: the invalid-screen/window grader twins omitted
-  from sub-increment 1 still need an explicit refuse-versus-hold wiring decision
-  for in-process typed values that bypass the codec. Unit 7 public cutover,
-  which wires `handle_report`, owns that decision; staging and internal accepted-
-  run assembly do not decide that validation boundary.
+- Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
+  v4 reports that bypass the codec, through v4 twins of the invalid-screen and
+  invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and
+  structural refusal. In-process hosts call `handle_report` directly, so every
+  host gets the same semantics. Unit 7 public cutover, which wires
+  `handle_report`, builds the twins.
 - Sub-increment 3 plan: apply the existing v4 conflicting-window grader using
   the engine's bound capabilities before v4 staging; append unsupported state
   attempts' `conflicting-fact` diagnostics in the attempt lane, resolving scope
@@ -1294,6 +1306,223 @@
   accepted-run, native delivery, runtime or scenario acceptance; the phase note
   remains active and all eight OPEN/TBD gates remain unchanged.
 
+- Sub-increment 5a plan: move the complete native proof-input family onto staged
+  observations: completeness/order and occupancy joins, native-derived current
+  view and member receipts, adoption/reorder/pruning, creation correlation and
+  receipt-clock bounds, provisioning authorization/mint clocks and retirement.
+  Adapt internal signatures and legacy callers without changing their positions
+  or predicates. Selection native proof reads the same staged current/attempt/
+  screen/inventory/barrier inputs, preserving its immutable first receipt and
+  independent fresh-target proof. Keep logical `views` fill/echo settlement and
+  native last-view retention with 5b; presentation and run/finish/prior-report
+  assembly retain owners 6/7. Verify both intakes with eligible paired controls,
+  source inputs set before intake, current-versus-stale evidence, creation
+  receipt/mint clock bounds, order/adoption/occupancy and selection refusal/
+  first-receipt fences. No full observation clone, re-ingestion, runtime/scenario
+  claim, fixture, manifest, contract, version or adapter change is included.
+- Sub-increment 5a implementation and evidence: native completeness/current-view/
+  member receipts, order/adoption/reorder/pruning, retirement occupancy joins,
+  creation receipt and mint-clock bounds, provisioning authorization and migrated
+  source-release retry now consume staged observations. Selection native proof
+  and own-refusal scope retention use the same capture, preserving immutable
+  first receipts and independent fresh native-target proof. Obsolete internal
+  report parameters are removed; remaining logical echo/last-view, presentation
+  and assembly dependencies retain owners 5b/6/7. No full observation clone or
+  intent re-ingestion is added, and legacy call positions and predicates remain.
+  Ten dual-intake regressions cover eligible receipt/order/occupancy joins,
+  adoption and binding identity, complete-versus-gapped pruning, provisioning
+  mint clocks/idempotency, authorization gates, exact creation tuples and clock
+  fences, source-release recovery, native selection refusal and first-latch
+  retention despite genuinely proving contradictory later raw. Independent
+  review found no production blocker; coverage follow-up and review tightened
+  the eligible controls and replaced a corrupt-latch seed with a forged source
+  row through real intake. Initial failures corrected synthetic setup and a
+  stale direct-helper native echo probe, not production policy. No
+  preimplementation behavioral red is claimed. Two test-only clippy findings
+  and formatting reflows were corrected.
+  Direct final verification passes the filtered core/protocol test gate (1746
+  core unit tests and every selected integration/protocol target), core/protocol
+  build, scoped all-target clippy with warnings denied, formatting, whitespace,
+  added ASCII, NUL and local-link checks. Only `workspace_unsafe_posture` is
+  filtered in that gate. These are shared-helper/staging checks, not v4
+  accepted-run, native delivery or scenario evidence. No fixture, manifest,
+  contract, Cargo feature, adapter, public-ingress or version change is included.
+  Sub-increment 5 remains unfinished: 5b replaces logical echo legs and native
+  last-view proof; its cross-output follow predicate is now approved below.
+  The phase note remains active and all eight OPEN/TBD gates are unchanged.
+- Sub-increment 5b-1 plan: apply both approved follow routes through
+  the ordinary frozen selection binding. Membership settles the Window transfer;
+  destination visibility and focus use the existing selection completion, with
+  no follow-specific predicate or second completion path. Extract native
+  last-view proof retention onto staged screens/current-native facts at its
+  existing publication position, preserving removal of an unknown native proof
+  and leaving legacy logical last-view handling unchanged until its owner moves.
+  Promote the approved follow, composed-maximized unavailable-geometry and
+  anchored-border descriptor decisions into the canonical decisions and contract;
+  tidy the resolved phase-note entries. Verify producer-driven follow grants,
+  frozen post-layout arrivals, membership-versus-switch completion, first-latch,
+  hold/lifecycle/supersession/replay and sizing fences, plus dual-intake native
+  last-view retention. No v4 accepted-run/scenario, presentation implementation,
+  fixture/manifest, version, adapter or migration-order change is included.
+- Sub-increment 5b-1 outcome: eligible same-output and cross-output follow sends
+  now bind the ordinary frozen selection completion under the Window parent's
+  command identity, without a `{op}-follow` child. Membership retires separately;
+  destination visibility and focus remain with the common binding. Legacy
+  ineligible focus routes keep their existing eligibility boundary and logical
+  view movement. Latest follow prunes stale View flights, and pending bindings
+  tolerate departing echoes without treating a genuine third location or newer
+  select as completion. Native follow freezes the mover at its destination, not
+  its source receipt; ordinary sticky selections keep their actual-home rule.
+  Native last-view retention now reads staged native proof only, at its existing
+  finish position; unknown native proof still removes the retained last view.
+  Ten new regressions cover producer grants, post-layout snapshots, membership
+  versus terminal completion, source-echo lag, source-home rejection/first latch,
+  stale View receipts, unrelated-revision scope joins, supersession/close/replay,
+  sizing and native last-view parity across both staging intakes. Existing
+  follow and gesture regressions use eligible independent evidence. Review
+  corrected skipped ineligible view movement, a source-home-positive native
+  test and missing departing-echo/supersession guards. The full gate exposed
+  gesture-shielded homing self-confirming a cross-output Window: three setup-only
+  variants did not preserve the original checks, so settlement now requires
+  independent current target-output evidence (plus native receipt when owned)
+  or an exact member post receipt. The readable source control now preserves
+  the in-flight refusal, no-duplicate and geometry invariants. The common
+  selection terminal predicate is unchanged; no follow-specific completion is
+  added. Follow, directional unavailable-geometry and anchored-border decisions
+  are promoted below; native-free migration promotion waits for 5b-2.
+  Final verification passes the filtered core/protocol test gate (1756 core
+  unit tests and every selected integration/protocol target), scoped build,
+  all-target clippy with warnings denied, formatting, whitespace, added ASCII,
+  NUL and local-link checks. Two test-only Copy clones and formatting reflows
+  were corrected. Only `workspace_unsafe_posture` is filtered. This is shared
+  helper/legacy-run/staging evidence, not v4 accepted-run, scenario or native
+  delivery evidence. Sub-increment 5 remains unfinished; 5b-2 migration/refill
+  and the remaining echo audit are next. All eight OPEN/TBD gates are unchanged.
+- Sub-increment 5b-2 migration plan: replace native-free target-view and source-refill
+  echo waits in `world_settle::settle_migration` with the approved single frozen
+  selection binding across both outputs; remove the refill View child. Member
+  arrival settles membership, while the binding owns both visibility legs and
+  focus through existing selection completion; empty migration uses the
+  zero-member rule. Native-owned migration keeps its native proof. Source
+  inspection confirms `PendingSelection.selected: Vec<DomainKey>` and
+  `affected_outputs` can carry different selected workspaces on both outputs;
+  no public interface change is needed. Adapt internal scope coverage,
+  focus-output keying and zero-member issuance; promote the migration decision
+  and contract with this piece. Minimal discriminator: migrate an occupied workspace between outputs,
+  prove member arrival without logical views, then separately prove target and
+  refill visibility; repeat empty. The existing Tier 1
+  [follow/stay comparison](../spec/reference-outcomes/workspaces.md#r-ws-01-send-to-another-workspace)
+  and [source-refill comparison](../spec/reference-outcomes/workspaces.md#r-ws-23-source-refill-and-empty-migration)
+  establish visible behavior, not an
+  equivalent external receipt protocol.
+- Sub-increment 5b-2 outcome: all native-free migrations now freeze destination
+  and actual source-refill homes under one parent operation and issuing revision,
+  including fresh trailing refill, floating and suppression-incapable routes.
+  Existing per-window authority gates remain; unsupported evidence grants no
+  writes. Only the moved foreground member can receive the existing awaitShown
+  focus effect; no member-order fallback or fabricated empty/sticky/minimized
+  activation is added. Arrival settles Migration membership without logical
+  echoes or a refill child. Empty native-free migrations retain no membership
+  flight at issue; zero-obligation switches complete at normal issuing
+  publication, while nonzero refill obligations remain with the binding.
+  Internal selected/affected associations cover different workspaces on both
+  outputs, including focusless supersession. A retained issuing revision revokes
+  only the rolled-back migration's scopes/targets/grant, preserving newer
+  selections. Native-owned migration retains its native proof and refill path.
+  Review corrected pre-arrival snapshot omission, rollback cleanup and an
+  artificial empty-parent wake; the common terminal predicate is unchanged.
+  Twelve new regressions exercise real producers, MRU occupied-refill obligations,
+  member-versus-switch completion, target-only evidence, wrong-source arrival,
+  issuing zero-member/reserve behavior, focusless/minimized/sticky/floating
+  routes, supersession, close and exact-revision rollback. The wrong-source
+  control follows the existing completed-with-failures/unproven verdict once
+  all visibility verdicts latch; later corrected feedback cannot upgrade it.
+  Initial negative designs expecting a pending grant were not accepted as
+  evidence. Capability-conflicting sticky fixture facts were corrected to a
+  supported binding; refill fixtures explicitly select MRU rather than assuming
+  the default trailing refill is occupied. Final-gate regressions restored
+  composed-sticky arrival precedence and replaced a vacuous migration negative
+  that already reported independent physical arrival with a readable-source
+  control plus a target-arrival positive. No product policy changed in those
+  repairs. Final direct verification passes the filtered core/protocol gate
+  (1768 core unit tests and every selected integration/protocol target), scoped
+  build, all-target clippy with warnings denied, formatting, whitespace, added
+  ASCII, NUL and local links. One collapsible-if lint and formatting reflows were
+  corrected. Only `workspace_unsafe_posture` is filtered. Targeted native-owned
+  regression coverage also passes; no native-owned proof change is claimed.
+  This is shared-helper/legacy-run/staging evidence, not v4 accepted-run,
+  scenario or native-delivery evidence. No immutable fixture, manifest, version,
+  adapter, public wire shape or migration-order change is included. Migration
+  policy is promoted below; the phase remains active.
+- Sub-increment 5b-3 outcome: native-free observation
+  staging no longer ingests logical echoes, finish no longer retains logical
+  `last_views`, and View flights retire through frozen selection completion,
+  never desired-view equality or a logical echo. The obsolete `view_echo_for`
+  wrapper and `settle_views_pre` report argument are removed; native selection
+  proof/refusal helpers have no logical fallback. Native proof and native
+  last-view retention remain staged. Commandless disconnect/return selections
+  preserve each existing `op-dpv-{epoch}-{index}` parent with internal policy
+  carriers, no fabricated command sequence or focus effect, and the common
+  terminal, including issuing zero-obligation completion with a pre-mutation
+  reserve. Ineligible explicit focus binds without a required focus target while
+  retaining the direct effect and existing eligibility gates. Redundant unchanged
+  native-free selection mints no new View flight; producer regression coverage
+  preserves the existing binding, scopes, targets, history and no-effect result.
+  An initial shared policy identity and delayed commandless zero-member terminal
+  were corrected before acceptance; original identities and the common terminal
+  are preserved. Source review found no blocking implementation issue. Targeted
+  producer and dual-intake capture/native tests pass. Stale echo-based test setups
+  were replaced with real selection commands without changing refusal precedence,
+  clear semantics or lifecycle expectations. No native delivery or v4 accepted-run
+  evidence is claimed; unit 7 assembly and unit 6 presentation remain separate.
+- 5b-3 resolved verification blocker: the initial full core/protocol gate reached passing core
+  tests (1772) and core integration targets, then failed nine protocol stress
+  tests. The common cause is the simulated host's echo-only selection receipt:
+  `world_stress` emitted no correlated visibility `LastWrite` rows, so a real changed
+  selection's focusless binding keeps its View parent outstanding. This is not
+  redundant-select supersession. The approved completion requires visibility
+  verdicts and cannot accept the old logical echo instead. The approved narrow
+  unit-7 pull-forward adapts only simulated-host verdict emission in
+  `world_stress.rs`, preserving fixture files, authored schedules, counts and
+  oracles; all other unit-7 stress work stays there. Actual reply visibility
+  target/revision pairs are retained as pending desires. The next observation
+  receipt reports one correlated `not-called/scope-held` verdict per blocked
+  desire, sampled at that receipt's watermark from unchanged raw visibility
+  facts, then spends it without retry/upgrade. This lane has no suppression
+  support; controlled authority fails closed rather than fabricating a setter.
+  An initial synthetic accepted-post design was rejected because held writes
+  cannot confirm a copied target. Truthful no-call verdicts use the existing
+  completed-with-failures/unproven terminal where hides remain visible, without
+  weakening completion. All 30 targeted stress tests pass, including unchanged
+  duo counts 186/149/151, trio counts 190/156/158 and checkpoint counts 16/19.
+  Two added regressions cover raw-sample agreement, receipt watermark, commands
+  withholding verdicts, original receipt emission and spent no-retry behavior.
+  Approved ineligible-focus and commandless-policy decisions are promoted to
+  workspace decisions and the contract, with minimal reference discriminators.
+  Final verification is recorded below; all eight OPEN/TBD gates are unchanged.
+- Adapter source audit (read-only): none of the real KWin, Windows or macOS
+  adapters currently emits correlated visibility `LastWrite` verdicts. KWin's
+  `kwin/src/world-report.ts` window serializer emits native facts without that
+  lane; Windows `world_capture.rs` and macOS `runtime_core.rs` fact constructors
+  likewise have no verdict producer. Core/protocol shapes and simulated/test
+  producers are not native delivery evidence. Adapter migration remains outside
+  this core-only increment; no adapter command or native test was run.
+- Sub-increment 5 completion: final sequential verification passes the exact
+  filtered core/protocol test gate (1772 core unit tests, every selected core
+  integration target and all protocol targets, including 52 protocol unit tests),
+  scoped build, scoped all-target clippy with warnings denied, formatting,
+  whitespace, added ASCII, NUL and local-link checks. Only
+  `workspace_unsafe_posture` is filtered. One needless-return lint and formatting
+  reflows were corrected before the final passing gates. The link checker was
+  corrected to ignore inline-code examples rather than treating a literal tree
+  expression as a broken link; no product content changed for that check.
+  Producer accounting and all remaining logical echo legs assigned to unit 5 are
+  closed; sub-increment 5 is finished. This is core-helper/legacy-run/staging and
+  simulated-host evidence, not public v4 cutover, native delivery or complete
+  world-wire scenario evidence. No immutable fixture, fixture manifest, adapter,
+  public wire shape, Cargo feature or version change is included. The phase note
+  remains active for presentation (6), run/finish and public assembly (7), and
+  the remaining planned work. All eight OPEN/TBD gates remain unchanged.
 - Presentation-local style scaling only; keyboard-step, resize-minimum and
 - Capability-held cursor grading repair plan: reproduce a valid v4 report whose
   native cursor hit names a newly capability-held window, then keep that window
@@ -1320,7 +1549,7 @@
   core unit tests and every selected integration/protocol target), build, scoped
   all-target clippy with warnings denied, formatting, whitespace, added ASCII,
   NUL and local-link checks. Only `workspace_unsafe_posture` is filtered. The
-  effective-hit normalization choice remains tentative below; the earlier
+  effective-hit normalization choice is approved below; the earlier
   grading risk is repaired, not an outstanding blocker. No contract, fixture,
   manifest, adapter, feature, version or public-ingress change is included, and
   4b remains unstarted.
@@ -2112,7 +2341,7 @@
   only echoed the base without actuation; failing-first coverage now requires its
   existing one-shot base-restore token. Successful half-snaps keep exactly their
   own token, with no native clear. Unavailable geometry remains a preflight under
-  the tentative choice below, not an automatically deferred clear.
+  the approved choice below, not an automatically deferred clear.
 - Fifty-five focused composed regressions pass, including ordinary empty-output
   parity, constrained base restoration and unreadable-work-area recovery. Fresh
   independent review and its directional follow-up have no outstanding finding.
@@ -2126,7 +2355,7 @@
   paths across this note and the reference outcomes. Only the previously recorded
   workspace unsafe-posture guardrail is filtered. No adapter or immutable fixture
   changes, native delivery, full scenario execution or baseline float-geometry
-  repair are included. The tentative choice below still awaits user review.
+  repair are included. The directional preflight choice is approved below.
 - Accepted-report command rejection is implemented and offline-verified.
   The command boundary restores a post-observation pre-command image on refusal,
   publishes the existing typed rejected result and consumes the command sequence.
@@ -2299,8 +2528,51 @@
   arrival-ready selection and switch completion remain pending; all eight
   OPEN/TBD fixture gates are unchanged.
 
-## Tentative decisions pending user review
+## Approved decisions and implementation status
 
+- User decision 2026-11-05: an explicit selection whose resolved focus target
+  fails route eligibility freezes a binding with no required focus target, so
+  visibility completes through the common path and focus reports `unproven`. The
+  direct focus effect stays and the eligibility gates are unchanged. An
+  ineligible target counts as "no required focus target" under focusless
+  completion. Implemented in 5b-3 and promoted to
+  [focusless completion](../decisions/workspaces.md#focusless-switch-completion)
+  and [visibility ordering](../porting/world-contract.md#visibility-and-focus-ordering).
+- User decision 2026-11-05: commandless disconnect/return policy views bind as
+  focusless selections under their existing `op-dpv-*` parent, with no invented
+  `cmdSeq` and no focus effect, and retire through the common completion. Native
+  focus stays untouched. If the carrier needs more than internal adaptation to
+  accept a commandless parent, that returns for discussion. Implemented in 5b-3
+  with internal per-parent carriers only; promoted to the
+  [disconnect](../decisions/workspaces.md#kde-aligned-output-disconnection),
+  [return](../decisions/workspaces.md#kde-aligned-output-reconnection) and
+  [visibility ordering](../porting/world-contract.md#visibility-and-focus-ordering)
+  entries.
+- User decision 2026-11-05: native-free workspace migration takes one frozen
+  selection binding covering both outputs. Member arrival settles membership;
+  the binding owns target and source-refill visibility and focus through the
+  existing selection completion, and the refill child is removed. Empty
+  migration uses the zero-member completion rule. Native-owned migration keeps
+  its native proof. If the binding needs an interface change to carry two
+  selected workspaces, that returns for discussion. Source inspection confirms
+  the existing internal vectors can carry both. Implemented in 5b-2 with internal
+  selected/affected coverage and issuing-revision retention; promoted to
+  [D6](../decisions/workspaces.md#workspace-migration-d6-focus-settlement) and
+  [visibility ordering](../porting/world-contract.md#visibility-and-focus-ordering).
+- User decision 2026-11-05: same-output follow takes the same binding as
+  cross-output follow below; Window membership settles independently and the
+  `{op}-follow` child is removed, so one completion rule covers every follow.
+  The follow focus effect waits until the destination is shown. Implemented in
+  5b-1 and promoted with the cross-output rule below.
+- User decision 2026-11-05, applied in 5b-1 and promoted with the contract text:
+  cross-output follow takes the same frozen selection binding as an ordinary
+  explicit selection. Membership settles the window transfer; the binding owns
+  destination visibility and focus through the existing selection completion.
+  No follow-specific predicate or second completion path. The old destination
+  logical-echo gate no longer holds Window membership; the retained binding
+  accounts for visibility and focus instead. Canonical policy is in
+  [follow settlement](../decisions/workspaces.md#workspace-send-follow-settlement)
+  and [visibility ordering](../porting/world-contract.md#visibility-and-focus-ordering).
 - Case: a native cursor hit names a window moved to a capability-conflict hold
   during v4 grading. Chosen internal behavior: preserve the original hit in the
   staged raw observation, but clear that newly ineligible hit in the effective
@@ -2313,8 +2585,8 @@
   unchanged; malformed original cursor/reference combinations must not become
   acceptable through normalization. Alternative: retain the hit in the effective
   report and bypass its cursor validation. Not selected because that would give
-  the normalized report a second structural-validity convention. This internal
-  normalization choice is tentative, not an approved contract change.
+  the normalized report a second structural-validity convention. User approved
+  this internal normalization 2026-11-05; no contract change.
 - Case: a composed-maximized float receives directional move after its screen or
   work area becomes unavailable, or half-snap geometry cannot be computed.
   Chosen behavior: retain the bit, emit the existing directional refusal, mint no
@@ -2333,7 +2605,9 @@
   Alternatives: clear the bit without an authorized base restore, or retain a
   restore token for later authority recovery. Neither alternative was selected;
   the former leaves the old overlay pixels, the latter adds deferred actuation.
-  This is not promoted to an approved decision.
+  User approved 2026-11-05; promoted to
+  [directional overlay policy](../decisions/window-state.md#directional-maximize-and-fullscreen-operations)
+  and the [window-state contract](../porting/world-contract.md#window-state-policy).
 - Case: anchored border descriptor values for the real producer. Chosen behavior:
   `width` and `radius` are the border settings scaled once by the foreground
   output's scale with the existing nearest, halves-upward rule; `outsets` is
@@ -2348,8 +2622,10 @@
   gap, then width) and the `anchored-border` scenario (`borderGap` 0, width 3,
   outsets all 3). That scenario cannot tell gap-plus-width from width alone
   because the gap is 0. Alternatives: outsets equal to the scaled width only, or
-  a new hide reason for unknown witness; neither selected. This is not promoted
-  to an approved decision.
+  a new hide reason for unknown witness; neither selected. User approved
+  2026-11-05; promoted to [R20](../decisions/contract.md#anchored-border-r20)
+  and the [presentation contract](../porting/world-contract.md#worldpresentation-and-anchored-border).
+  K5 native witness-join evidence remains OPEN.
 - Case: fixed diagnostic and sizing choices in the staged v4 twins, not yet wired.
   Chosen behavior: the v4 report gate reuses the legacy reason tokens where the
   check is the same and adds `renderer-target-invalid`,
@@ -2362,8 +2638,8 @@
   own caps and spellings, the staged reply writer's byte lengths, and the
   fixtures. Alternatives: reuse legacy tokens only, or keep the legacy reserves
   and rely on the transactional exact check. Neither selected; the tokens and
-  reserves can change at wiring time without wire effect. This is not promoted to
-  an approved decision.
+  reserves can change at wiring time without wire effect. User approved
+  2026-11-05.
 - Case: diagnostic assembly in the unwired v4 staging intake. Chosen behavior:
   append held diagnostics in screen, window, native, attempt, presentation lane
   order, preserving order within each lane. Unsupported typed state-attempt
@@ -2377,7 +2653,7 @@
   accepted-fixture/scenario census. Alternative: interleave diagnostics by a
   global row order, or invent a fallback output for scopeless rows. Neither is
   selected; the report has no cross-lane ordinal and scopeless evidence grants
-  no scope authority. This is not promoted to an approved decision.
+  no scope authority. User approved 2026-11-05.
 - Case: unbound native-state capability defaults in core staging. Chosen
   behavior: absent capabilities mean unsupported for sticky/maximize grading
   and classification as well as all state-attempt support checks. Evidence:
@@ -2388,8 +2664,7 @@
   regressions pin absent, unsupported and supported bindings separately.
   Alternative: keep the permissive grading/classification defaults or make
   attempt support permissive too. Neither selected; both would preserve or
-  expand unsupported native-state assumptions. This is not promoted to an
-  approved decision.
+  expand unsupported native-state assumptions. User approved 2026-11-05.
 
 ## Adapter compile-failure inventory
 
@@ -2450,7 +2725,7 @@
      acceptance remain pending.
    The core-composed maximize increment is implemented and offline-verified,
    including ordinary empty-output float-drag parity; the directional preflight
-   choice above remains tentative, and native outcomes remain TBD.
+    choice above is approved and promoted, and native outcomes remain TBD.
    Accepted-report command rejection now retains trustworthy observations while
    rolling back partial command mutations, consuming the sequence and publishing
    the existing typed rejected result. Envelope failures still adopt nothing.
@@ -2474,5 +2749,147 @@
    held-output recovery rehome remains in the
    reconnect/rehome increment.
   The remaining world report/reply paths and version are still staged; no v4
-  cutover or full scenario acceptance is claimed. Full adapter build-failure
-  inventory remains pending.
+   cutover or full scenario acceptance is claimed. Full adapter build-failure
+   inventory remains pending.
+
+## Edge-case complexity inventory
+
+- Ranked by potential simplification benefit against qualitative likelihood, not
+  measured frequency. These are options, not decisions or removable-code claims.
+  Current source and existing reference rows were inspected; reference-WM source
+  was not rechecked and no tests were run. Contract/manifest witnesses are not
+  Tier 1 evidence. The 2026-11-05 decisions above remain outside this review.
+
+1. **Born-fullscreen exit still maximized: a second automatic-clear lane. Cost:
+   largest distinct lane here; likelihood: low, especially its setting/race matrix.**
+   - Sequence: first observe a slotless fullscreen window; its first exit still
+     reads maximized; clear once even under `keep-maximized-overlay`. A plain exit
+     instead consumes the mark; fullscreen returning before clear re-arms it.
+     Startup/session restore can reach the basic case; the combined flags, both
+     settings and re-entry timing are narrower, with native frequency unmeasured.
+   - Cost: [world_born.rs:362-448](../../crates/tiler-core/src/world_born.rs#L362-L448)
+     separates hold/plain/maximized/fixed exits;
+     [718-729](../../crates/tiler-core/src/world_born.rs#L718-L729) re-arms.
+     [world_engine.rs:646-658](../../crates/tiler-core/src/world_engine.rs#L646-L658)
+     retains the held-fullscreen set and sighting context; floating-first and
+     ordinary born-clear ledgers are shared, not wholly removable. Dedicated exit
+     assertions are in [world_born_tests.rs:606](../../crates/tiler-core/src/world_born_tests.rs#L606)
+     `fullscreen_birth_holds_then_exit_clears`, `:663`
+     `fullscreen_exit_to_plain_consumes_hold_without_clear`, `:810`
+     `keep_overlay_skips_born_but_clears_held_exit` (also tests ordinary policy),
+     and `:1109` `fullscreen_flip_abandons_into_held_lane`.
+   - Simpler option: no special automatic maximize-clear on fullscreen-born exit;
+     expose the native maximize overlay instead, retaining fullscreen no-write,
+     slotless and fixed-admission safety. This can remove the held-clear/re-arm
+     lane, but loses guaranteed non-fixed tiling on first exit and changes D5;
+     it is not a safe local deletion.
+   - Decisions/approval: [born policy](../decisions/window-state.md#born-maximized-policy-and-tile-overlays)
+     was explicitly selected 2026-10-13; [D5](../decisions/layout-and-admission.md#fixed-size-d3-d7-user-tile-override)
+     first-exit classification was explicitly approved 2026-10-08 and confirmed
+     2026-10-12 in [R-SPC-11](../spec/reference-outcomes/special-windows.md#r-spc-11-fixed-client-exits-fullscreen-born-or-previously-floating).
+     That row addresses COSMIC/Hyprland/i3/sway fixed/non-fixed exits and hint
+     changes, but its Given excludes maximize. [R-MAX-06](../spec/reference-outcomes/maximize-fullscreen.md#r-max-06-admit-a-first-seen-maximized-window)
+     addresses non-fullscreen births. Neither covers this combined-flag,
+     both-settings clear/re-arm matrix; separate approval of that exact matrix
+     was not established.
+   - Disposition: user keeps this unchanged 2026-11-05, to recheck with real KDE
+     data.
+
+2. **Shared partial arrival followed by a third native desktop. Cost: moderate
+   conditional interaction, shared machinery; likelihood: very low.**
+   - Sequence: select n1 from n0 on two host-owned Shared outputs; the focus
+     output reaches n1, the other still reports n0; before feedback, externally
+     move the latter to n2. Retire the covering binding without a terminal and
+     ignore late feedback. Split arrival alone is plausible; an intervening
+     third-desktop move makes this particular sequence much narrower.
+   - Cost: `reconcile_selection_scopes` has departing-echo/revision/superseding-View
+     branches at [world_selection.rs:453-479](../../crates/tiler-core/src/world_selection.rs#L453-L479),
+     outstanding/key-proven coverage at [494-527](../../crates/tiler-core/src/world_selection.rs#L494-L527),
+     and whole-covering-binding removal at [541-567](../../crates/tiler-core/src/world_selection.rs#L541-L567).
+     It retains existing output scopes, visibility targets and the keyed frozen
+     selection, not a new ledger. Exact dedicated regression:
+     [world_selection_await_tests.rs:7456](../../crates/tiler-core/src/world_selection_await_tests.rs#L7456)
+     `host_owned_focus_bearing_shared_partial_then_external_move_drops_binding`.
+     The earlier departing-echo guard already handles matching old-home lag;
+     these blocks also serve follow/migration, so their full size is not savings.
+   - Simpler option: abort the host-owned Shared binding on any readable mixed
+     native views, including lag at n0, rather than preserve partial progress and
+     distinguish n2 later. This sacrifices legitimate asynchronous completion;
+     unanimity and stale-terminal prevention must remain. Net code deletion is
+     unproven without a scoped design; fresh follow/migration rules are unchanged.
+   - Decisions/approval: touches Shared selection supersession and the existing
+     common completion, not a new completion policy. The [migration evidence](#native-owned-focus-bearing-arrival-migration)
+     records this as an engineering correction, not a separately user-approved
+     sequence. [R-WS-01](../spec/reference-outcomes/workspaces.md#r-ws-01-send-to-another-workspace)
+     and [R-WS-23](../spec/reference-outcomes/workspaces.md#r-ws-23-source-refill-and-empty-migration)
+     compare COSMIC/Hyprland/i3/sway visible follow/refill behavior, not this
+     partial-proof/third-desktop receipt sequence; no exact Tier 1 row was found.
+   - Disposition: user keeps this 2026-11-05, consistent with their 2026-11-04
+     choice of the key-proven guard over a lingering binding.
+
+3. **External above-clear retains a lifetime tombstone. Cost: moderate persistent
+   state/matrix; likelihood: low, not limited to a race.**
+   - Sequence: core owns a float's above target; the user/app clears proven above
+     or sets below, including during pending acquire/release. Keep a silent latch
+     across tile/float/sticky changes until lifetime end or native above=true reset.
+     Manual stacking changes are plausible; the pending-polarity/reset combinations
+     and same-lifetime re-entry are less routine.
+   - Cost: [world_above.rs:107-158](../../crates/tiler-core/src/world_above.rs#L107-L158)
+     scans reset/latch cases; `:168`, `:207` and `:322` block reacquisition,
+     transitions and publication. [world_state.rs:85-87](../../crates/tiler-core/src/world_state.rs#L85-L87)
+     adds `latched` to the existing retained state binding, preserving its tuple,
+     pending evidence and spent verdict. Dedicated tests in
+     [world_above.rs:1070](../../crates/tiler-core/src/world_above.rs#L1070):
+     `external_clear_and_below_latch_until_preowned_reset`; `:1234`
+     `external_below_latches_pending_true_without_controlled_write`; `:1313`
+     `external_below_latches_pending_release_without_controlled_write`; `:1462`
+     `external_clear_with_simultaneous_tile_latches_without_false_write`.
+   - Simpler option: external clear/below drops ownership without a tombstone;
+     ordinary acquisition gates apply thereafter. This removes lifetime latch/reset
+     policy but can reacquire immediately after an above-clear, fighting user/app
+     intent. The rule itself, not fullscreen suspension, capability, preimage or
+     readable-fact safety, is the simplification question.
+   - Decisions/approval: the [W1 float policy](../decisions/contract.md#persistent-above-float-policy)
+     and [lifetime/reset rule](../porting/world-contract.md#persistent-stacking)
+     are explicitly approved 2026-11-02; pending/unattempted disposition-specific
+     approval was not separately established. Tier 1 [R-FLT-01](../spec/reference-outcomes/floating.md#r-flt-01-toggle-float-then-unfloat)
+     and [R-FLT-12](../spec/reference-outcomes/floating.md#r-flt-12-raise-and-lower-overlapping-floats)
+     cover COSMIC/Hyprland/i3/sway float layers and raise/lower, not an external
+     setter ownership latch lasting the native lifetime.
+   - Disposition: user keeps this 2026-11-05.
+
+4. **Ambiguous fullscreen-on releases held maximize at first readable false.
+   Cost: small hold branch, near-zero release-only savings; likelihood: very low.**
+   - Sequence: leave maximize-on/off unattempted; request newer fullscreen-on;
+     its setter throws ambiguously; fullscreen=false is readable either in that
+     receipt or after an unreadable gap. Resume the original maximize tuple without
+     retrying fullscreen. This needs rapid overlapping intents plus ambiguous host
+     execution, not an ordinary fullscreen exit.
+   - Cost: [world_maximize.rs:577-594](../../crates/tiler-core/src/world_maximize.rs#L577-L594)
+     cross-checks the two property bindings/revisions before any attempt. Generic
+     settlement/readability and the existing fullscreen gate provide release;
+     there is no release-specific state, counter or event. Dedicated two-timing-leg
+     characterization: [world_maximize_tests.rs:1531](../../crates/tiler-core/src/world_maximize_tests.rs#L1531)
+     `ambiguous_fullscreen_on_releases_max_on_first_readable_false`. Other pending
+     hold tests and generic spent-evidence state are shared, not release-only cost.
+   - Simpler option with actual benefit: cancel the older unattempted maximize
+     target when accepting newer fullscreen-on. This removes the cross-property
+     pending hold, but loses the requested maximize state beneath fullscreen;
+     changing only ambiguous-release timing buys almost no simplification.
+   - Decisions/approval: both hold and exact release are explicitly approved
+     2026-11-03 in [overlay policy](../decisions/window-state.md#fullscreen-and-maximize-overlays)
+     and [pending-maximize discriminator](../spec/reference-outcomes.md#pending-maximize-intent-at-fullscreen-entry).
+     That row cites COSMIC save/restore only as analogy, rejects Hyprland's pre-map
+     policy as a counterpart, and establishes no ambiguous external-setter timing;
+     i3/sway have no maximize counterpart. [Immediate-entry evidence](../spec/reference-outcomes.md#native-fullscreen-entry-from-maximized)
+     likewise does not settle this sequence.
+   - Disposition: user keeps this 2026-11-05.
+
+- Coverage: four core cases. Core review sampled born/state/maximize/sticky/above,
+  selection, gestures and adjacent command/settlement code. Protocol review sampled
+  connection/world codecs, wire optionals and creation receipts; adapter sampling
+  covered Windows tick/diagnostic handling and macOS report/native/occupancy building.
+  No additional case survived the ordinary-safety/contract-validation exclusions.
+  Not searched exhaustively: legacy Session/layout algorithms, all protocol modules,
+  KDE adapter implementation, Windows/macOS native actuation/recovery, platform
+  reference sources or runtime behavior. No simplification is selected here.

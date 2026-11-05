@@ -9,9 +9,14 @@
 //! under the issuing revision plus one `awaitShown` focus grant), and a
 //! focusless selection (no required focus: empty, minimized-only, or
 //! native-owned without a focus candidate), which freezes the same
-//! visibility scope with no focus effect. Every other route (ordinary focus,
-//! admission, hover, sends) keeps `awaitShown=false` with no visibility
-//! targets, exactly as before.
+//! visibility scope with no focus effect. Window sends with `follow=true`
+//! bind the same common frozen selection binding on the destination (same
+//! frozen binding as an ordinary explicit selection, so one completion rule
+//! covers every follow): `Window` membership settles independently with no
+//! `{op}-follow` child, and the follow focus effect carries the arrival
+//! grant until the destination is shown. Every other route (ordinary focus,
+//! admission, hover, stay sends, ineligible follow movers) keeps
+//! `awaitShown=false` with no visibility targets, exactly as before.
 //!
 //! This lane freezes every command-granted visibility target across all
 //! affected outputs at publish, latches the first target-and-revision
@@ -59,13 +64,17 @@ use crate::world_report::{
 /// selected home, the newly selected and departing homes per affected
 /// output, and the issuing world revision and observation watermark.
 /// `focus` is `None` for focusless selections (no required focus: empty,
-/// minimized-only, or native-owned without a focus candidate); the target
-/// selected home is still carried in `focus_home` for scope freezing and
-/// binding identity. Dropped unadopted on envelope failure; restored away
-/// on command refusal via the pre-command image.
+/// minimized-only, ineligible focus, or native-owned without a focus
+/// candidate); the target selected home is still carried in `focus_home`
+/// for scope freezing and binding identity. `command_seq` is `None` for
+/// commandless policy selections, which carry their existing `op-dpv-*`
+/// parent in `parent_op` instead of inventing a sequence. Dropped
+/// unadopted on envelope failure; restored away on command refusal via
+/// the pre-command image.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingSelection {
-    pub command_seq: u64,
+    pub command_seq: Option<u64>,
+    pub parent_op: String,
     pub focus: Option<WindowId>,
     pub focus_home: DomainKey,
     pub selected: Vec<DomainKey>,
@@ -73,6 +82,11 @@ pub(crate) struct PendingSelection {
     pub affected_outputs: Vec<OutputId>,
     pub rev: u64,
     pub obs: u64,
+    /// Follow sends move the focus target to the retained destination, so
+    /// the focus fallback freezes the retained target instead of the
+    /// target's actual staged home at grant (ordinary sticky selections
+    /// keep the actual home).
+    pub follow_mover: bool,
 }
 
 /// One retained per-window selection visibility authorization: the logical
@@ -168,6 +182,17 @@ pub(crate) struct RetainedSelection {
     pub arrival_ready: bool,
     pub view_targets: BTreeMap<OutputId, DomainKey>,
     pub view_raw: BTreeMap<OutputId, crate::world_report::ViewAttempt>,
+    /// Frozen selected homes plus affected outputs from the granting
+    /// [`PendingSelection`]. Ordinary selections carry one home per
+    /// affected output with a shared workspace id; a native-free
+    /// whole-workspace migration carries distinct selected workspaces on
+    /// the target (migrated id) and the source (refill). Used only for
+    /// internal scope coverage (departing-echo tolerance on the exact
+    /// selected home, supersession of the whole covering binding from a
+    /// non-focus output). Never published; no wire or observable reply
+    /// effect beyond which binding survives.
+    pub selected: Vec<DomainKey>,
+    pub affected: Vec<OutputId>,
 }
 
 /// Live outputs for selection retention: reported live screens plus held
@@ -285,6 +310,15 @@ impl WorldEngine {
         }) {
             self.pending_selection = None;
         }
+        // Latest intent wins over policy carriers too: a command on an
+        // overlapping output supersedes the policy pending there (policy
+        // never supersedes a command).
+        self.pending_policy_selections.retain(|pending| {
+            !pending
+                .affected_outputs
+                .iter()
+                .any(|out| affected.contains(out))
+        });
     }
 
     /// Whether one resolved selection focus target may take the
@@ -368,11 +402,7 @@ impl WorldEngine {
     /// ring), held selected scopes, and incomplete inventories never
     /// prove a change. A pending new select applies after this reconcile,
     /// so `retain_view`'s own prune still owns the superseding intent.
-    pub(crate) fn reconcile_selection_scopes(
-        &mut self,
-        report: &WorldReport,
-        held_scopes: &BTreeSet<DomainKey>,
-    ) {
+    pub(crate) fn reconcile_selection_scopes(&mut self, held_scopes: &BTreeSet<DomainKey>) {
         if self.selection_scopes.is_empty() || !self.staged.observation.inventory_complete {
             return;
         }
@@ -394,7 +424,7 @@ impl WorldEngine {
             // An own refusal that retired the flight above still echoes
             // its preimage: not external supersession, so the binding
             // pends for its feedback instead of dropping silently.
-            if self.selection_refusal_pends(output, report) {
+            if self.selection_refusal_pends(output) {
                 continue;
             }
             let Some(current) = self.effective_view(output) else {
@@ -405,24 +435,90 @@ impl WorldEngine {
                 .iter()
                 .any(|home| home.output == *output && home.workspace.0 == current);
             if !matches {
+                // Common departing-echo tolerance for focus-bearing
+                // bindings: the adapter echo still names the scope's
+                // departing home while the selection proves (a follow
+                // keeps no view flight, so no own_flight guards the
+                // initial echo; native-free bindings mint no native
+                // obligation either). Revision-joined: an unrelated output
+                // grant over shared workspace text never keeps the scope.
+                // Exact selected-home coverage (not just the focus
+                // workspace id) so a native-free migration with distinct
+                // selected workspaces on each output tolerates lag on
+                // either leg. A genuine third-location echo still drops
+                // through the normal path below. Effect-gated so focusless
+                // (no effect) keeps the existing removal; selected-covered
+                // via the scope (not the native view_targets map) so both
+                // lanes share one guard.
+                let departing_echo = self.retained_selection.values().any(|binding| {
+                    binding.effect.is_some()
+                        && scope.rev == binding.rev
+                        && scope
+                            .selected
+                            .iter()
+                            .any(|selected| binding.selected.contains(selected))
+                        && scope
+                            .departing
+                            .iter()
+                            .any(|home| home.output == *output && home.workspace.0 == current)
+                });
+                if departing_echo {
+                    // Explicit superseding View flight to the departing
+                    // home restores the prior supersession drop: a
+                    // redundant select back home mints a fresh View flight
+                    // via retain_view_inner, while a follow keeps no view
+                    // flight at all.
+                    let superseding_view = self.retained.iter().any(|retained| {
+                        matches!(retained.target.kind, TransferKind::View)
+                            && retained.target.target_output == *output
+                            && retained.target.target_workspace == current
+                    });
+                    if !superseding_view {
+                        continue;
+                    }
+                }
                 // Shared host-owned focus-bearing bindings are keyed by the
                 // focus output but obligate every affected output. A
                 // non-focus output still echoing its frozen departing home
                 // is merely outstanding while the key output already proves
                 // the selection: keep the scope so a later genuine
                 // third-location move still drops the covering binding
-                // through the normal path. Effect-gated so native-free
-                // (empty view_targets) and focusless (no effect) keep
-                // key-only removal; key-proven-gated so a superseding
-                // redundant select back home (key itself stale) still drops.
+                // through the normal path. Native-free migration bindings
+                // leave view_targets empty but obligate both outputs via
+                // the frozen selected/affected association, so the same
+                // non-key cover applies there, focus-bearing and focusless
+                // alike (effect-gated only for host-owned bindings, whose
+                // focusless form keeps key-only removal). Key-proven-gated
+                // so a superseding redundant select back home (key itself
+                // stale) still drops.
                 let outstanding = self.retained_selection.iter().any(|(key, binding)| {
-                    binding.effect.is_some()
-                        && binding.view_targets.contains_key(output)
-                        && scope
-                            .departing
-                            .iter()
-                            .any(|home| home.output == *output && home.workspace.0 == current)
-                        && binding.view_targets.get(key).is_some_and(|home| {
+                    if binding.effect.is_none() && !binding.view_targets.is_empty() {
+                        return false;
+                    }
+                    let covers = binding.view_targets.contains_key(output)
+                        || (binding.view_targets.is_empty()
+                            && *output != *key
+                            && binding.affected.contains(output));
+                    if !covers {
+                        return false;
+                    }
+                    if !scope
+                        .departing
+                        .iter()
+                        .any(|home| home.output == *output && home.workspace.0 == current)
+                    {
+                        return false;
+                    }
+                    if let Some(home) = binding.view_targets.get(key) {
+                        return self.effective_view(key).as_ref() == Some(&home.workspace.0);
+                    }
+                    // Native-free cover: the key output already shows its
+                    // frozen selected home.
+                    binding
+                        .selected
+                        .iter()
+                        .find(|home| home.output == *key)
+                        .is_some_and(|home| {
                             self.effective_view(key).as_ref() == Some(&home.workspace.0)
                         })
                 });
@@ -434,10 +530,14 @@ impl WorldEngine {
         }
         // Shared host-owned focus-bearing bindings are keyed by the focus
         // output but obligate every affected output. A stale non-focus
-        // output drops the whole covering binding. Departing echoes never
-        // reach this filter: they stay out of stale above.
-        // Native-free bindings leave view_targets empty and host-owned
-        // focusless bindings mint no effect, so both keep key-only removal.
+        // output drops the whole covering binding. Native-free migration
+        // bindings leave view_targets empty but cover both outputs via
+        // the frozen affected association, so a stale non-key output
+        // drops the whole covering binding there too (never leaving the
+        // destination grant alive), focus-bearing and focusless alike;
+        // only host-owned focusless and single-output native-free
+        // bindings keep key-only removal. Departing echoes never reach
+        // this filter: they stay out of stale above.
         let covered: Vec<OutputId> = self
             .retained_selection
             .iter()
@@ -445,12 +545,15 @@ impl WorldEngine {
                 if stale.contains(*key) {
                     return true;
                 }
-                if binding.effect.is_none() {
+                if binding.effect.is_none() && !binding.view_targets.is_empty() {
                     return false;
                 }
-                stale
-                    .iter()
-                    .any(|output| binding.view_targets.contains_key(output))
+                stale.iter().any(|output| {
+                    binding.view_targets.contains_key(output)
+                        || (binding.view_targets.is_empty()
+                            && *key != output
+                            && binding.affected.contains(output))
+                })
             })
             .map(|(key, _)| key.clone())
             .collect();
@@ -470,7 +573,7 @@ impl WorldEngine {
     /// echoes. Newer commands prune elsewhere; third-location echoes,
     /// output loss, and closes never satisfy this gate, so genuine
     /// supersession still drops through the existing paths.
-    fn selection_refusal_pends(&self, output: &OutputId, report: &WorldReport) -> bool {
+    fn selection_refusal_pends(&self, output: &OutputId) -> bool {
         // Keyed binding first (original behavior); a shared host-owned
         // focus-bearing binding is keyed by its focus output, so a stale
         // non-focus output falls back to the covering binding whose
@@ -493,7 +596,9 @@ impl WorldEngine {
             return false;
         };
         let host_owned = self.host_owned_workspace_domains();
-        let echo = self.view_echo_for(report, output);
+        // Production view_targets freeze host-owned only: native proof
+        // only, never logical echoes.
+        let echo = self.native_echo_for(output);
         self.view_refused(attempt, home.workspace.0.as_str(), host_owned)
             && self.effective_view_pre(attempt, host_owned).as_deref() == echo.as_deref()
     }
@@ -505,9 +610,19 @@ impl WorldEngine {
     /// native-owned, composed-sticky) keep their existing lanes. Entries
     /// keep the issuing revision; later facts never rewrite it.
     pub(crate) fn apply_pending_selection(&mut self) {
-        let Some(pending) = self.pending_selection.clone() else {
-            return;
-        };
+        let mut pendings: Vec<PendingSelection> = Vec::new();
+        if let Some(pending) = self.pending_selection.clone() {
+            pendings.push(pending);
+        }
+        pendings.extend(self.pending_policy_selections.iter().cloned());
+        for pending in &pendings {
+            self.apply_one_pending_selection(pending);
+        }
+    }
+
+    /// Carry one pending selection into the retained per-window target
+    /// map, same grant rules for command and policy carriers.
+    fn apply_one_pending_selection(&mut self, pending: &PendingSelection) {
         self.selection_targets
             .retain(|_, entry| !pending.affected_outputs.contains(&entry.home.output));
         // Host-owned (focus-bearing and focusless alike) freezes native
@@ -519,8 +634,8 @@ impl WorldEngine {
         if self.host_owned_workspace_domains() {
             return;
         }
-        let selected: BTreeSet<DomainKey> = pending.selected.into_iter().collect();
-        let departing: BTreeSet<DomainKey> = pending.departing.into_iter().collect();
+        let selected: BTreeSet<DomainKey> = pending.selected.iter().cloned().collect();
+        let departing: BTreeSet<DomainKey> = pending.departing.iter().cloned().collect();
         let mut homed: Vec<(WindowId, DomainKey)> = self
             .staged
             .homing
@@ -547,6 +662,54 @@ impl WorldEngine {
                     rev: pending.rev,
                 },
             );
+        }
+        // Native-free whole-workspace migration members ride the
+        // committed target home (show) even though staged homing still
+        // names the source cell until arrival: the core already moved the
+        // mapping, and the frozen binding owns target visibility through
+        // the existing completion. Membership still settles independently
+        // through the Migration flight plus the frozen arrival brackets;
+        // this grant never self-confirms it.
+        if !self.host_owned_workspace_domains() {
+            let op = pending.parent_op.clone();
+            let target = self.retained.iter().find_map(|retained| {
+                if matches!(&retained.target.kind, TransferKind::Migration)
+                    && retained.target.operation_id == op
+                {
+                    Some(DomainKey {
+                        output: retained.target.target_output.clone(),
+                        workspace: crate::directional::WorkspaceId(
+                            retained.target.target_workspace.clone(),
+                        ),
+                    })
+                } else {
+                    None
+                }
+            });
+            if let Some(target) = target {
+                let movers: Vec<WindowId> = self
+                    .retained
+                    .iter()
+                    .find(|retained| {
+                        matches!(&retained.target.kind, TransferKind::Migration)
+                            && retained.target.operation_id == op
+                    })
+                    .map(|retained| retained.members.clone())
+                    .unwrap_or_default();
+                for window in movers {
+                    if self.selection_member_blocked(&window) {
+                        continue;
+                    }
+                    self.selection_targets.insert(
+                        window,
+                        SelectionTarget {
+                            home: target.clone(),
+                            shown: true,
+                            rev: pending.rev,
+                        },
+                    );
+                }
+            }
         }
     }
 
@@ -652,6 +815,20 @@ impl WorldEngine {
                 .iter()
                 .any(|domain| domain.key == entry.home && domain.readable);
             let homing_current = self.staged_homing(&window).as_ref() == Some(&entry.home);
+            // Committed whole-workspace migration members show at the
+            // target under commit authority even though staged homing
+            // still names the source cell until arrival (the mapping
+            // already moved; the Migration flight plus arrival brackets
+            // still prove membership independently, never this desire).
+            // Every other gate below still applies.
+            let committed_mover = !homing_current
+                && !self.host_owned_workspace_domains()
+                && self.retained.iter().any(|retained| {
+                    matches!(&retained.target.kind, TransferKind::Migration)
+                        && retained.members.contains(&window)
+                        && retained.target.target_output == entry.home.output
+                        && retained.target.target_workspace == entry.home.workspace.0
+                });
             // Polarity gating: a show authorizes only on the current view,
             // a hide only when the current view is known and elsewhere.
             // An unknown current view never authorizes Controlled in
@@ -669,7 +846,7 @@ impl WorldEngine {
                 && !self.is_held_window(&window)
                 && !excluded_lane
                 && domain_readable
-                && homing_current
+                && (homing_current || committed_mover)
                 && view_current
                 && (self.engine_knows_window_any(&window) || self.members.contains_key(&window));
             match self.staged.facts.get(&window) {
@@ -765,8 +942,9 @@ impl WorldEngine {
     /// still demands visible, non-minimized, non-host-hidden reads with a
     /// matching translated home and frame. The minted focus target always
     /// freezes below with its ACTUAL staged home (a sticky focus stays
-    /// homed away from the target, never fabricated onto it); an
-    /// exactly-homed focus with no published frame freezes frameless
+    /// homed away from the target, never fabricated onto it), except a
+    /// follow mover, which freezes the retained target it relocates to;
+    /// an exactly-homed focus with no published frame freezes frameless
     /// rather than dropping the required subject.
     fn host_arrival_snapshot(
         &self,
@@ -809,32 +987,41 @@ impl WorldEngine {
         }
         // The minted effect target always freezes with its ACTUAL staged
         // home (a sticky focus stays homed away from the target, never
-        // fabricated onto it). Same fail-closed gates as the main loop;
-        // an unfrozen focus simply holds, never completes.
+        // fabricated onto it). Follow movers relocate to the retained
+        // target, so the fallback freezes the retained target instead.
+        // Same fail-closed gates as the main loop; an unfrozen focus
+        // simply holds, never completes.
         if let Some(focus) = pending.focus.clone()
             && !members.iter().any(|member| member.window == focus)
-            && let Some(home) = self.staged_homing(&focus)
-            && !self.is_held_window(&focus)
-            && !self.is_excluded_window(&focus)
         {
-            let derived = self.derived_for(&focus);
-            let blocked =
-                derived.excluded || derived.own_excluded || derived.hold || derived.hidden;
-            let minimized = self
-                .staged
-                .facts
-                .get(&focus)
-                .is_none_or(|fact| fact.minimized == Some(true));
-            if !blocked && !minimized {
-                let frame = windows
-                    .iter()
-                    .find(|row| row.lifetime == focus)
-                    .and_then(|row| row.effective_frame);
-                members.push(FrozenArrivalMember {
-                    window: focus,
-                    home,
-                    frame,
-                });
+            let home = if pending.follow_mover {
+                Some(pending.focus_home.clone())
+            } else {
+                self.staged_homing(&focus)
+            };
+            if let Some(home) = home
+                && !self.is_held_window(&focus)
+                && !self.is_excluded_window(&focus)
+            {
+                let derived = self.derived_for(&focus);
+                let blocked =
+                    derived.excluded || derived.own_excluded || derived.hold || derived.hidden;
+                let minimized = self
+                    .staged
+                    .facts
+                    .get(&focus)
+                    .is_none_or(|fact| fact.minimized == Some(true));
+                if !blocked && !minimized {
+                    let frame = windows
+                        .iter()
+                        .find(|row| row.lifetime == focus)
+                        .and_then(|row| row.effective_frame);
+                    members.push(FrozenArrivalMember {
+                        window: focus,
+                        home,
+                        frame,
+                    });
+                }
             }
         }
         members
@@ -849,21 +1036,36 @@ impl WorldEngine {
     /// frame, and one active scope per affected output that late
     /// admissions register against. Later admissions never join the frozen
     /// set and later layout changes never update it. The parent view
-    /// operation identity (`op-<cmdseq>`) is recorded for the follow-on
-    /// switch dependency; no new wire id is minted. Consumes the pending
-    /// carrier. Focusless selections (no focus target, no effect) freeze an
+    /// operation identity is recorded for the follow-on switch dependency;
+    /// no new wire id is minted. Consumes the command pending plus every
+    /// policy pending, each freezing its own binding under its own parent.
+    /// Focusless selections (no focus target, no effect) freeze an
     /// empty arrival snapshot with the same scope/switch-member rules and no
-    /// focus effect; zero-member native-free focusless bindings complete
-    /// synchronously into the issuing reply via the shared focusless
-    /// terminal predicate.
+    /// focus effect; zero-obligation bindings complete synchronously into
+    /// the issuing reply via the common terminal predicate below.
     pub(crate) fn freeze_selection_arrival(
         &mut self,
         effects: &[OneShotEffect],
         windows: &[WindowDesire],
     ) {
-        let Some(pending) = self.pending_selection.take() else {
-            return;
-        };
+        let mut pendings: Vec<PendingSelection> = Vec::new();
+        if let Some(pending) = self.pending_selection.take() {
+            pendings.push(pending);
+        }
+        pendings.extend(std::mem::take(&mut self.pending_policy_selections));
+        for pending in pendings {
+            self.freeze_one_selection(effects, windows, pending);
+        }
+    }
+
+    /// Freeze one pending selection (command or policy) into its retained
+    /// binding under its own parent identity.
+    fn freeze_one_selection(
+        &mut self,
+        effects: &[OneShotEffect],
+        windows: &[WindowDesire],
+        pending: PendingSelection,
+    ) {
         let effect: Option<OneShotEffect> = match pending.focus.clone() {
             Some(focus) => effects
                 .iter()
@@ -871,7 +1073,7 @@ impl WorldEngine {
                     effect.kind == EffectKind::Focus
                         && effect.await_shown
                         && effect.cause == crate::world_report::EffectCause::ExplicitCommand
-                        && effect.command_seq == Some(pending.command_seq)
+                        && effect.command_seq == pending.command_seq
                         && effect.target == focus
                 })
                 .cloned(),
@@ -912,6 +1114,30 @@ impl WorldEngine {
             if host_owned {
                 members = self.host_arrival_snapshot(&pending, windows);
             } else {
+                // Committed whole-workspace migration members freeze at
+                // the TARGET with their final published frame even while
+                // the pre-arrival target domain still decorates Hold
+                // (the commit grant names a DomainKey absent from the
+                // pre-command staged domains, so domain_readable is
+                // false): the Migration flight plus arrival brackets
+                // still prove membership independently, never this
+                // grant. Ordinary selectors keep the Controlled rule.
+                let parent_op = pending.parent_op.clone();
+                let committed_movers: BTreeSet<WindowId> = self
+                    .retained
+                    .iter()
+                    .find(|retained| {
+                        matches!(&retained.target.kind, TransferKind::Migration)
+                            && retained.target.operation_id == parent_op
+                    })
+                    .map(|retained| {
+                        retained
+                            .members
+                            .iter()
+                            .cloned()
+                            .collect::<BTreeSet<WindowId>>()
+                    })
+                    .unwrap_or_default();
                 for row in windows {
                     if row.output != focus_output {
                         continue;
@@ -919,17 +1145,47 @@ impl WorldEngine {
                     if row.visibility.is_none_or(|target| !target.shown) {
                         continue;
                     }
-                    if row.visibility_authority != ScopeAuthority::Controlled {
-                        continue;
+                    // Committed migration movers freeze the granted home
+                    // (entry.home): staged homing still names the source
+                    // cell until arrival while the binding already owns
+                    // target visibility, and the pre-arrival target domain
+                    // may decorate Hold (allowed only when the granted
+                    // entry homes the focus target). Ordinary rows keep
+                    // the Controlled rule with the staged_homing fallback:
+                    // the composed sticky producer keeps precedence with a
+                    // separate target ledger (no selection_targets entry),
+                    // so requiring a granted entry here would wrongly drop
+                    // sticky members from the frozen snapshot.
+                    if committed_movers.contains(&row.lifetime) {
+                        if row.visibility_authority != ScopeAuthority::Controlled
+                            && !self
+                                .selection_targets
+                                .get(&row.lifetime)
+                                .is_some_and(|entry| entry.home == pending.focus_home)
+                        {
+                            continue;
+                        }
+                        let Some(entry) = self.selection_targets.get(&row.lifetime) else {
+                            continue;
+                        };
+                        members.push(FrozenArrivalMember {
+                            window: row.lifetime.clone(),
+                            home: entry.home.clone(),
+                            frame: row.effective_frame,
+                        });
+                    } else {
+                        if row.visibility_authority != ScopeAuthority::Controlled {
+                            continue;
+                        }
+                        let Some(home) = self.staged_homing(&row.lifetime) else {
+                            continue;
+                        };
+                        members.push(FrozenArrivalMember {
+                            window: row.lifetime.clone(),
+                            home,
+                            frame: row.effective_frame,
+                        });
                     }
-                    let Some(home) = self.staged_homing(&row.lifetime) else {
-                        continue;
-                    };
-                    members.push(FrozenArrivalMember {
-                        window: row.lifetime.clone(),
-                        home,
-                        frame: row.effective_frame,
-                    });
                 }
             }
             members.sort_by(|a, b| a.window.cmp(&b.window));
@@ -973,10 +1229,12 @@ impl WorldEngine {
                 }
             }
         }
-        let parent_op = format!("op-{}", pending.command_seq);
+        let parent_op = pending.parent_op.clone();
         let home = pending.focus_home.clone();
         let rev = pending.rev;
         let obs = pending.obs;
+        let selected = pending.selected.clone();
+        let affected = pending.affected_outputs.clone();
         self.retained_selection.insert(
             pending.focus_home.output.clone(),
             RetainedSelection {
@@ -993,16 +1251,20 @@ impl WorldEngine {
                 arrival_ready: false,
                 view_targets,
                 view_raw: BTreeMap::new(),
+                selected,
+                affected,
             },
         );
         // Zero-obligation completion at the earliest normal publication: a
         // binding with no frozen switch members, no feedback gate, and no
         // native obligation is vacuously satisfied, so the issuing reply
-        // carries its terminal through the shared predicate (no timer,
-        // poll, or artificial future wake). Host-owned focusless never
-        // completes here: its native obligation still reads Pending with
-        // no raw yet. No evidence latches here: same-report raw facts
-        // would guess a future issuing revision.
+        // carries its terminal through the common predicate below, command
+        // and policy carriers alike (no timer, poll, or artificial future
+        // wake; policy issuing terminals size pre-mutation via
+        // `policy_terminal_reserve`). Host-owned focusless never completes
+        // here: its native obligation still reads Pending with no raw yet.
+        // No evidence latches here: same-report raw facts would guess a
+        // future issuing revision.
         if let Some(binding) = self.retained_selection.get(&focus_output).cloned()
             && let Some(event) = selection_terminal(&binding, NativeSelectionProof::Pending)
         {
@@ -1137,7 +1399,7 @@ impl WorldEngine {
     /// event, like the existing grant prune. Empty native-free focusless
     /// bindings already complete at the issuing reply; they never reach
     /// this settle.
-    pub(crate) fn settle_selection_switch(&mut self, report: &WorldReport) {
+    pub(crate) fn settle_selection_switch(&mut self) {
         if self.retained_selection.is_empty() {
             return;
         }
@@ -1175,7 +1437,7 @@ impl WorldEngine {
                     Some(binding) => binding.clone(),
                     None => continue,
                 };
-                self.selection_native_proof(&binding, report)
+                self.selection_native_proof(&binding)
             };
             let Some(binding) = self.retained_selection.get_mut(&output) else {
                 continue;
@@ -1233,14 +1495,6 @@ impl WorldEngine {
         }
     }
 
-    /// Native selector proof for one host-owned focusless binding: exact
-    /// fresh native echo per affected output proves; a proven refusal (exact
-    /// correlated `Refused` attempt with unchanged readable preimage plus a
-    /// readable echo naming the preimage, on a complete inventory with a
-    /// complete screen and no gesture barrier) fails; anything else holds.
-    /// Logical `ScreenView` echoes never count (host-owned reads native
-    /// only via [`WorldEngine::view_echo_for`]); wrong-tuple attempts read
-    /// as absent.
     /// Native selector proof for one binding: vacuous when the binding
     /// carries no native obligation, else exact fresh native echo per
     /// obligated output proves. The first exact-tuple correlated raw (the
@@ -1251,16 +1505,12 @@ impl WorldEngine {
     /// complete inventory with a complete screen and no gesture barrier)
     /// fails. Anything else holds, including wrong-tuple rows (never
     /// latched, read as absent) and logical `ScreenView` echoes (host-owned
-    /// reads native only via [`WorldEngine::view_echo_for`]). A stronger
+    /// reads native only via [`WorldEngine::native_echo_for`]). A stronger
     /// fresh row never upgrades the latched original: only the independent
     /// current-target echo above proves on fresh facts. Genuine external
     /// moves hold here; the existing scope reconcile at publish supersedes
     /// the affected binding without an event.
-    fn selection_native_proof(
-        &self,
-        binding: &RetainedSelection,
-        report: &WorldReport,
-    ) -> NativeSelectionProof {
+    fn selection_native_proof(&self, binding: &RetainedSelection) -> NativeSelectionProof {
         if binding.view_targets.is_empty() {
             return NativeSelectionProof::Proven;
         }
@@ -1268,14 +1518,22 @@ impl WorldEngine {
         let mut refused = false;
         for (output, home) in &binding.view_targets {
             let target = home.workspace.0.as_str();
-            if self.view_echo_for(report, output).as_deref() == Some(target) {
+            // Production view_targets freeze host-owned only: native proof
+            // only, never logical echoes.
+            let echo = self.native_echo_for(output);
+            if echo.as_deref() == Some(target) {
                 continue;
             }
-            let fresh = report.view_attempts.iter().find(|attempt| {
-                attempt.operation_id == binding.parent_op
-                    && attempt.target_output == *output
-                    && attempt.target_workspace == target
-            });
+            let fresh = self
+                .staged
+                .observation
+                .view_attempts
+                .iter()
+                .find(|attempt| {
+                    attempt.operation_id == binding.parent_op
+                        && attempt.target_output == *output
+                        && attempt.target_workspace == target
+                });
             let latched = binding.view_raw.get(output);
             let Some(attempt) = latched.or(fresh) else {
                 return NativeSelectionProof::Pending;
@@ -1287,17 +1545,17 @@ impl WorldEngine {
                 return NativeSelectionProof::Pending;
             }
             let pre = self.effective_view_pre(attempt, host_owned);
-            let echo = self.view_echo_for(report, output);
-            let complete_screen = report
+            let complete_screen = self
+                .staged
                 .screens
                 .iter()
                 .find(|screen| screen.output == *output)
                 .map(|screen| screen.complete);
             if pre.is_some()
                 && echo.as_deref() == pre.as_deref()
-                && report.inventory_complete
+                && self.staged.observation.inventory_complete
                 && complete_screen == Some(true)
-                && !report.gesture_barrier
+                && !self.staged.gesture_barrier
             {
                 refused = true;
                 continue;
@@ -1369,8 +1627,10 @@ impl WorldEngine {
     /// through the shared terminal predicate, and it needs no retained
     /// binding, so [`Self::switch_settle_reserve`] alone would undercount
     /// the simultaneous case. Conservative: at most one empty terminal for
-    /// the commands that route through [`WorldEngine::retain_view`]; every
-    /// other report reserves nothing beyond the retained bindings.
+    /// the commands that route through [`WorldEngine::retain_view`] plus
+    /// whole-workspace migrations (an empty native-free migration freezes
+    /// a focusless zero-obligation binding the same way); every other
+    /// report reserves nothing beyond the retained bindings.
     pub(crate) fn switch_issuing_reserve(&self, command: Option<&WorldCommand>) -> usize {
         let selects = matches!(
             command,
@@ -1381,6 +1641,8 @@ impl WorldEngine {
                     | WorldCommand::SelectRelative { .. }
                     | WorldCommand::SelectPrevious { .. }
                     | WorldCommand::SelectTrailing { .. }
+                    | WorldCommand::MigrateWorkspace { .. }
+                    | WorldCommand::MigrateDirectional { .. }
             )
         );
         if selects {
@@ -1388,6 +1650,37 @@ impl WorldEngine {
         } else {
             0
         }
+    }
+
+    /// Pre-mutation upper bound on policy issuing terminals for this
+    /// cycle: every fresh displaced/returned workspace passing the focus
+    /// filter mints at most one commandless terminal at publish under its
+    /// own `op-dpv-*` parent, so bound the fresh placements knowable
+    /// before convergence: returned origins' preserved workspaces plus
+    /// removed outputs' ring ids. The focus/view filter and the per-output
+    /// latest-wins carrier only reduce. Zero in shared mode (no
+    /// displacement) and when nothing moved.
+    pub(crate) fn policy_terminal_reserve(&self, report: &WorldReport) -> usize {
+        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
+            return 0;
+        }
+        let live: BTreeSet<&str> = report
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.as_str())
+            .collect();
+        let mut bound: usize = 0;
+        for (origin, entry) in &self.displaced {
+            if live.contains(origin.as_str()) {
+                bound = bound.saturating_add(entry.workspaces.len());
+            }
+        }
+        for (output, ring) in &self.mapping {
+            if !live.contains(output.as_str()) {
+                bound = bound.saturating_add(ring.len());
+            }
+        }
+        crate::world_sizing::max_switch_settle_reserve(bound, 0)
     }
 
     /// Prune retained selection bindings on explicit close or proven

@@ -174,7 +174,7 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
     assert_eq!(ring_a.len(), 2);
     let (ws_a, ws_b) = (ring_a[0].clone(), ring_a[1].clone());
     // win-t stays on the fresh workspace; win-s joins on the next
-    // report through the echoed view below.
+    // report through the real selection below.
     let s = fact("win-s", "out-a", 0);
     accepted(
         &mut engine,
@@ -191,17 +191,39 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             true,
         ),
     );
-    // Float ws_b.
+    // Real selection to ws_b before the newcomer arrives: the echoed
+    // views lane is inert native-free, so the old echo-only setup left
+    // win-s homed to the head instead of joining ws_b. Selection drives
+    // homing; the echo below is retained only as inert context.
     accepted(
         &mut engine,
         &report(
             3,
             WorkspaceMode::PerOutputLocal,
             two_screens(),
-            vec![s.clone(), fact("win-t", "out-a", 100)],
+            vec![fact("win-t", "out-a", 100)],
             vec![("out-a", ws_b.as_str())],
             vec![],
             Some(11),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: ws_b.clone(),
+            }),
+            true,
+            true,
+        ),
+    );
+    // Float ws_b; win-s arrives homed to the selected workspace.
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            WorkspaceMode::PerOutputLocal,
+            two_screens(),
+            vec![s.clone(), fact("win-t", "out-a", 100)],
+            vec![("out-a", ws_b.as_str())],
+            vec![],
+            Some(12),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
                 workspace: ws_b.clone(),
@@ -216,13 +238,13 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
     let reply = accepted(
         &mut engine,
         &report(
-            4,
+            5,
             WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fact("win-t", "out-a", 100), s.clone()],
             vec![],
             vec![],
-            Some(12),
+            Some(13),
             Some(WorldCommand::Send {
                 window: WindowId("win-t".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
@@ -233,8 +255,22 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             true,
         ),
     );
-    assert_eq!(reply.transfers.len(), 1);
-    let flight = &reply.transfers[0];
+    // The real-selection setup retains its own view flight alongside
+    // the send (native-free view flights never settle from echoes, and
+    // adapters send no native view proof): the send's own doing is the
+    // single membership-only window flight below.
+    let windows: Vec<_> = reply
+        .transfers
+        .iter()
+        .filter(|t| matches!(&t.kind, TransferKind::Window(_)))
+        .collect();
+    assert_eq!(
+        windows.len(),
+        1,
+        "one membership-only window flight: {:?}",
+        reply.transfers
+    );
+    let flight = windows[0];
     assert_eq!(
         (
             flight.target_output.0.as_str(),
@@ -321,6 +357,9 @@ fn default_seed_changes_only_new_workspaces() {
     // Flip the saved default: existing modes never reseed; only subsequently
     // created workspaces seed from the new default. Fill the live trailing
     // empty so lifecycle mints a fresh trailing seeded from the new default.
+    // The trailing fill rides a real selection: the echoed views lane is
+    // inert native-free, so the old echo-only fill never occupied the
+    // trailing and lifecycle minted nothing.
     let before: Vec<(String, crate::world_report::TilingMode)> = toggled
         .workspaces
         .iter()
@@ -345,10 +384,28 @@ fn default_seed_changes_only_new_workspaces() {
         )
         .expect("settings accepted");
     let fill = fact("win-a", "out-a", 0);
-    let calm = accepted(
+    accepted(
         &mut engine,
         &report(
             3,
+            WorkspaceMode::PerOutputLocal,
+            two_screens(),
+            vec![],
+            vec![("out-a", trailing.as_str())],
+            vec![],
+            Some(12),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: trailing.clone(),
+            }),
+            true,
+            true,
+        ),
+    );
+    let calm = accepted(
+        &mut engine,
+        &report(
+            4,
             WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fill],

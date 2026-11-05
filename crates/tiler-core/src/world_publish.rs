@@ -260,24 +260,26 @@ impl WorldEngine {
         // never recreates. Ambiguous rows persist for their visible hold.
         if self.host_owned_workspace_domains() {
             if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
-                let mut ordered: Vec<String> = report
+                let mut ordered: Vec<String> = self
+                    .staged
                     .screens
                     .iter()
                     .map(|screen| screen.output.0.clone())
                     .collect();
                 ordered.sort();
-                self.ensure_native_creations_shared(report, &ordered);
+                self.ensure_native_creations_shared(&ordered);
             } else {
-                let live: Vec<String> = report
+                let live: Vec<String> = self
+                    .staged
                     .screens
                     .iter()
                     .map(|screen| screen.output.0.clone())
                     .collect();
                 for output in &live {
-                    self.ensure_native_creations(report, output);
+                    self.ensure_native_creations(output);
                 }
             }
-            self.prune_unneeded_creations(report);
+            self.prune_unneeded_creations();
         }
         let staged = self.staged.clone();
         let mut scopes = Vec::with_capacity(staged.domains.len());
@@ -1293,8 +1295,8 @@ impl WorldEngine {
                 && fact
                     .output
                     .as_ref()
-                    .is_some_and(|output| self.native_authoritative(report, output))
-                && self.effective_logical_receipt(report, fact).is_none()
+                    .is_some_and(|_| self.native_authoritative())
+                && self.effective_logical_receipt(fact).is_none()
             {
                 continue;
             }
@@ -1351,7 +1353,7 @@ impl WorldEngine {
         // decorates the assembled rows (sticky rows keep precedence), and
         // the final arrival snapshot plus per-output scopes freeze from
         // the published frames.
-        self.reconcile_selection_scopes(report, held_scopes);
+        self.reconcile_selection_scopes(held_scopes);
         self.apply_pending_selection();
         self.admit_selection_late_members();
         self.decorate_selection_visibility(held_scopes, &mut windows);
@@ -1394,7 +1396,7 @@ impl WorldEngine {
         scopes.sort_by(|a, b| a.scope.cmp(&b.scope));
         // Omission of a minimized/absent window inside a controlled scope
         // means "no managed geometry", never a close or teardown instruction.
-        let workspaces = self.plan_workspaces(report, &scopes);
+        let workspaces = self.plan_workspaces(&scopes);
         let outputs = self.plan_outputs(report, held_scopes);
         // Per-report warp desire (stage 4b, cross-output only): computed
         // over the final focus effects plus the published window rows, so
@@ -1409,7 +1411,7 @@ impl WorldEngine {
         let operation_settled = std::mem::take(&mut self.operation_settled);
         // Capability-named note: explicit creation desires only; the reply
         // carries one stable op per outstanding authorization.
-        let native_creations = self.native_creation_desires(report);
+        let native_creations = self.native_creation_desires();
         // Real-engine canonical intent saves (at most one): a staged
         // sticky-command save drains exactly once on its successful fresh
         // command, else the ordinary ToggleFloat save; the exact-encoding
@@ -1576,22 +1578,17 @@ impl WorldEngine {
     /// deleting, and the ring plus native binding stay until a complete
     /// readback drops the desktop. Incomplete screens hold their rows
     /// without authorizing writes.
-    pub(crate) fn plan_workspaces(
-        &mut self,
-        report: &WorldReport,
-        scopes: &[ScopeStatus],
-    ) -> Vec<WorkspaceDesire> {
-        let _ = report;
+    pub(crate) fn plan_workspaces(&mut self, scopes: &[ScopeStatus]) -> Vec<WorkspaceDesire> {
         let mut outputs: Vec<String> = self.mapping.keys().cloned().collect();
         outputs.sort();
         let staged = self.staged.clone();
-        let doomed = self.retirement_deletion_set(report);
+        let doomed = self.retirement_deletion_set();
         let mut rows = Vec::new();
         for output in outputs {
             let Some(ring) = self.mapping.get(&output).cloned() else {
                 continue;
             };
-            let marked = self.trailing_marked_id(report, &output);
+            let marked = self.trailing_marked_id(&output);
             let held = !staged
                 .screens
                 .iter()
@@ -1609,9 +1606,9 @@ impl WorldEngine {
                 // AmbiguousCreation (producer) and never blind-recreate.
                 let hold = if held {
                     Some(HoldReason::IncompleteInventory)
-                } else if self.native_order_conflict(report) {
+                } else if self.native_order_conflict() {
                     Some(HoldReason::Unreadable)
-                } else if self.creation_hold_for(report, &output, id) {
+                } else if self.creation_hold_for(&output, id) {
                     Some(HoldReason::AmbiguousCreation)
                 } else {
                     None

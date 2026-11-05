@@ -15,7 +15,7 @@ use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::world_engine::WorldEngine;
-use crate::world_report::{TransferKind, WorldReport};
+use crate::world_report::TransferKind;
 
 /// Core-owned per-lifetime logical state: the homed logical workspace plus
 /// the exact-lifetime float/minimized marks that survive session release.
@@ -99,7 +99,7 @@ impl WorldEngine {
     /// the core view; a truthful `observed_workspace` receipt naming a
     /// known workspace on the observed screen wins over desire.
     /// View switches never yank a resident observed on its retained screen.
-    pub(crate) fn reconcile_members(&mut self, report: &WorldReport) {
+    pub(crate) fn reconcile_members(&mut self) {
         for id in &self.staged.closes {
             self.members.remove(id);
         }
@@ -130,7 +130,7 @@ impl WorldEngine {
             });
             // Effective receipt: native-derived under the capability
             // (unknown/conflicting holds), adapter logical otherwise.
-            let receipt = self.effective_logical_receipt(report, fact);
+            let receipt = self.effective_logical_receipt(fact);
             let observed_known = receipt.as_deref().and_then(|obs| {
                 let output = fact.output.as_ref()?;
                 if self.known_workspace(output, obs) {

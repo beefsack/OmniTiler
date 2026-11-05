@@ -13,23 +13,27 @@ use crate::directional::{OutputId, WorkspaceId};
 use crate::session::DomainKey;
 use crate::workspace::MIN_WORKSPACES;
 use crate::world_engine::WorldEngine;
-use crate::world_report::{WindowFact, WorldReport};
+use crate::world_report::{NativeObservation, ScreenReport, WindowFact};
 
 /// True when the shared first-appearance union across sorted outputs
 /// would reverse some output's reported native order. Choosing another
 /// merge order is unresolved, so the fresh projection is ambiguous.
-/// Identical lists and disjoint lists are consistent. Pure report shape:
-/// outputs without a row carry no information and are skipped.
-pub(crate) fn shared_order_conflict(report: &WorldReport) -> bool {
-    let mut ordered: Vec<&str> = report
-        .screens
+/// Identical lists and disjoint lists are consistent. Pure shape over
+/// borrowed screens/native: outputs without a row carry no information
+/// and are skipped. Source-report callers pass their report lanes;
+/// staged callers pass the current staged screens and raw native rows.
+pub(crate) fn shared_order_conflict(
+    screens: &[ScreenReport],
+    native: &[NativeObservation],
+) -> bool {
+    let mut ordered: Vec<&str> = screens
         .iter()
         .map(|screen| screen.output.0.as_str())
         .collect();
     ordered.sort();
     let mut union: Vec<&str> = Vec::new();
     for output in &ordered {
-        if let Some(entry) = report.native.iter().find(|entry| entry.output.0 == *output) {
+        if let Some(entry) = native.iter().find(|entry| entry.output.0 == *output) {
             for id in &entry.native_order {
                 if !union.contains(&id.as_str()) {
                     union.push(id);
@@ -39,7 +43,7 @@ pub(crate) fn shared_order_conflict(report: &WorldReport) -> bool {
     }
     let position = |id: &str| union.iter().position(|member| *member == id);
     for output in &ordered {
-        if let Some(entry) = report.native.iter().find(|entry| entry.output.0 == *output) {
+        if let Some(entry) = native.iter().find(|entry| entry.output.0 == *output) {
             let mut last: Option<usize> = None;
             for id in &entry.native_order {
                 let Some(at) = position(id) else {
@@ -82,16 +86,15 @@ impl WorldEngine {
         self.native_map.values().any(|id| id == logical)
     }
 
-    /// Whether native evidence is authoritative for one output: the
-    /// capability is on. Host-owned mode is native-only: the core derives
+    /// Whether native evidence is authoritative: the capability is on.
+    /// Host-owned mode is native-only: the core derives
     /// every logical receipt from per-window `native_workspace` plus the
     /// per-output `native[]` order/current, and never reads the adapter
     /// logical receipt (`observed_workspace`) on any output. Tiler-owned
     /// Windows never sets the capability and keeps the logical route
     /// unchanged.
     /// Capability-named note: native-only evidence, core-derived receipts.
-    pub(crate) fn native_authoritative(&self, _report: &WorldReport, output: &OutputId) -> bool {
-        let _ = output;
+    pub(crate) fn native_authoritative(&self) -> bool {
         self.host_owned_workspace_domains()
     }
 
@@ -114,16 +117,12 @@ impl WorldEngine {
     ///   publish, it is not held by returning `None` here.
     ///
     /// Capability-named note: no fallback dual receipt route for host-owned.
-    pub(crate) fn effective_logical_receipt(
-        &self,
-        report: &WorldReport,
-        fact: &WindowFact,
-    ) -> Option<String> {
+    pub(crate) fn effective_logical_receipt(&self, fact: &WindowFact) -> Option<String> {
         if !self.host_owned_workspace_domains() {
             return None;
         }
         let output = fact.output.as_ref()?;
-        if !self.native_list_complete(report, &output.0) {
+        if !self.native_list_complete(&output.0) {
             return None;
         }
         let native = fact.native_workspace.as_deref()?;
@@ -137,12 +136,12 @@ impl WorldEngine {
     /// are consistent. While ambiguous the core adopts nothing (no merge
     /// policy selected) and holds the affected rows through the existing
     /// fences instead.
-    pub(crate) fn native_order_conflict(&self, report: &WorldReport) -> bool {
+    pub(crate) fn native_order_conflict(&self) -> bool {
         self.host_owned_workspace_domains()
-            && report.inventory_complete
+            && self.staged.observation.inventory_complete
             && self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared
             && self.native_map.is_empty()
-            && shared_order_conflict(report)
+            && shared_order_conflict(&self.staged.screens, &self.staged.observation.native)
     }
 
     /// Native-derived view echo for one output: the mapped logical for
@@ -150,18 +149,19 @@ impl WorldEngine {
     /// current surface is not an ordered desktop: retains the logical view
     /// while still using the order; unknown holds).
     /// Capability-named note: `None` current never adopts, never moves.
-    pub(crate) fn native_echo_for(
-        &self,
-        report: &WorldReport,
-        output: &OutputId,
-    ) -> Option<String> {
+    pub(crate) fn native_echo_for(&self, output: &OutputId) -> Option<String> {
         if !self.host_owned_workspace_domains() {
             return None;
         }
-        if !self.native_list_complete(report, &output.0) {
+        if !self.native_list_complete(&output.0) {
             return None;
         }
-        let native = report.native.iter().find(|entry| entry.output == *output)?;
+        let native = self
+            .staged
+            .observation
+            .native
+            .iter()
+            .find(|entry| entry.output == *output)?;
         let current = native.current_native.as_deref()?;
         let mapped = self.native_logical(output, current)?;
         if self.known_workspace(output, &mapped) {
@@ -171,40 +171,38 @@ impl WorldEngine {
         }
     }
 
-    /// View echo actually proving for one output.
-    ///
-    /// Host-owned domains are native-only: the explicit logical echo is
-    /// never consulted and never conflicts. The staged echo derives
-    /// solely from the native current map; an unknown current proves
-    /// nothing (retained views hold, flights hold).
-    ///
-    /// Without the capability no native echo exists here: only the
-    /// explicit logical echo proves, when it names a known workspace.
-    pub(crate) fn view_echo_for(&self, report: &WorldReport, output: &OutputId) -> Option<String> {
-        if self.host_owned_workspace_domains() {
-            return self.native_echo_for(report, output);
-        }
-        let explicit = report
-            .views
+    /// Stage-only native last-view retention: the host-owned branch of
+    /// `finish` proof retention over staged screens only (no source
+    /// report read). Unknown proof removes, exactly like the previous
+    /// report-echo loop. Native-free outputs retain no last views: their
+    /// views ride the frozen selection binding, never echo comparison.
+    pub(crate) fn retain_native_last_views(&mut self) {
+        let outputs: Vec<OutputId> = self
+            .staged
+            .screens
             .iter()
-            .find(|view| view.output == *output)
-            .map(|view| view.view.as_str())
-            .filter(|view| !view.is_empty())
-            .map(str::to_owned);
-        match explicit {
-            Some(explicit) if self.known_workspace(output, &explicit) => Some(explicit),
-            _ => None,
+            .map(|screen| screen.output.clone())
+            .collect();
+        for output in &outputs {
+            match self.native_echo_for(output) {
+                Some(echo) => {
+                    self.last_views.insert(output.clone(), echo);
+                }
+                None => {
+                    self.last_views.remove(output);
+                }
+            }
         }
     }
 
     /// Whether a complete native list is available for one output: the
-    /// capability is on, the report inventory is complete, and the screen
-    /// is complete. Partial reports never create mappings.
-    pub(crate) fn native_list_complete(&self, report: &WorldReport, output: &str) -> bool {
-        let _ = self;
+    /// capability is on, the staged inventory is complete, and the staged
+    /// screen is complete. Partial observations never create mappings.
+    pub(crate) fn native_list_complete(&self, output: &str) -> bool {
         self.host_owned_workspace_domains()
-            && report.inventory_complete
-            && report
+            && self.staged.observation.inventory_complete
+            && self
+                .staged
                 .screens
                 .iter()
                 .find(|screen| screen.output.0 == output)
@@ -220,34 +218,36 @@ impl WorldEngine {
     /// rename; partial/absent rows never remove). Native current views are
     /// staged into echoes before desires mint, so a pruned-away stale view
     /// never recreates.
-    pub(crate) fn converge_native_pre(&mut self, report: &WorldReport) {
+    pub(crate) fn converge_native_pre(&mut self) {
         use crate::workspace_scope::WorkspaceMode;
         if !self.host_owned_workspace_domains() {
             return;
         }
         let shared = self.workspace_mode_setting() == WorkspaceMode::Shared;
-        self.prune_retained_creations(report);
+        self.prune_retained_creations();
         if shared {
-            self.converge_native_shared(report);
+            self.converge_native_shared();
         } else {
-            let live: Vec<String> = report
+            let live: Vec<String> = self
+                .staged
                 .screens
                 .iter()
                 .map(|screen| screen.output.0.clone())
                 .collect();
             for output in &live {
-                self.prune_vanished_output(report, output);
-                self.settle_native_creations(report, output);
+                self.prune_vanished_output(output);
+                self.settle_native_creations(output);
             }
             for output in &live {
-                self.reorder_ring_to_native(report, output);
+                self.reorder_ring_to_native(output);
             }
             for output in &live {
-                self.adopt_native_output(report, output);
+                self.adopt_native_output(output);
             }
         }
-        self.retry_pending_source_releases(report);
-        let outputs: Vec<OutputId> = report
+        self.retry_pending_source_releases();
+        let outputs: Vec<OutputId> = self
+            .staged
             .screens
             .iter()
             .map(|screen| screen.output.clone())
@@ -258,7 +258,7 @@ impl WorldEngine {
             // never evidence and never conflicts. The staged echo
             // derives solely from the native current; an unknown
             // current stages nothing so the retained view holds.
-            match self.native_echo_for(report, output) {
+            match self.native_echo_for(output) {
                 Some(native) => {
                     self.staged.echoes.insert(output.0.clone(), native);
                 }
@@ -268,21 +268,23 @@ impl WorldEngine {
             }
         }
         if !shared {
-            let live: Vec<String> = report
+            let live: Vec<String> = self
+                .staged
                 .screens
                 .iter()
                 .map(|screen| screen.output.0.clone())
                 .collect();
             for output in &live {
-                self.ensure_native_creations(report, output);
+                self.ensure_native_creations(output);
             }
         }
     }
 
     /// Drop retained creations whose logical workspace left every ring or
     /// whose output left the live set (lifecycle/disconnect cleanup).
-    fn prune_retained_creations(&mut self, report: &WorldReport) {
-        let live: BTreeSet<String> = report
+    fn prune_retained_creations(&mut self) {
+        let live: BTreeSet<String> = self
+            .staged
             .screens
             .iter()
             .map(|screen| screen.output.0.clone())
@@ -301,11 +303,13 @@ impl WorldEngine {
     /// complete. Vanished pairs delete; a logical left unbound everywhere
     /// is lifecycle removal, never a rename. Partial or absent rows never
     /// prune.
-    fn prune_vanished_output(&mut self, report: &WorldReport, output: &str) {
-        if !self.native_list_complete(report, output) {
+    fn prune_vanished_output(&mut self, output: &str) {
+        if !self.native_list_complete(output) {
             return;
         }
-        let Some(order) = report
+        let Some(order) = self
+            .staged
+            .observation
             .native
             .iter()
             .find(|entry| entry.output.0 == output)
@@ -349,21 +353,19 @@ impl WorldEngine {
     /// own floor. Pure read of mapping/native_map/current and staged
     /// homing/domain holds; no ring or binding mutation (prune plus the
     /// trailing lifecycle settle the row only after complete absence).
-    pub(crate) fn retirement_deletion_set(
-        &self,
-        report: &WorldReport,
-    ) -> BTreeSet<(String, String)> {
+    pub(crate) fn retirement_deletion_set(&self) -> BTreeSet<(String, String)> {
         let mut doomed: BTreeSet<(String, String)> = BTreeSet::new();
-        if !self.host_owned_workspace_domains() || !report.inventory_complete {
+        if !self.host_owned_workspace_domains() || !self.staged.observation.inventory_complete {
             return doomed;
         }
-        if report.gesture_barrier || self.staged.gesture_barrier {
+        if self.staged.gesture_barrier {
             return doomed;
         }
-        if self.native_order_conflict(report) {
+        if self.native_order_conflict() {
             return doomed;
         }
-        let mut live: Vec<String> = report
+        let mut live: Vec<String> = self
+            .staged
             .screens
             .iter()
             .map(|screen| screen.output.0.clone())
@@ -375,10 +377,16 @@ impl WorldEngine {
         let mut orders: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut counts: BTreeMap<String, BTreeMap<String, Option<u32>>> = BTreeMap::new();
         for output in &live {
-            if !self.native_list_complete(report, output) {
+            if !self.native_list_complete(output) {
                 return doomed;
             }
-            let Some(entry) = report.native.iter().find(|entry| entry.output.0 == *output) else {
+            let Some(entry) = self
+                .staged
+                .observation
+                .native
+                .iter()
+                .find(|entry| entry.output.0 == *output)
+            else {
                 return doomed;
             };
             if entry.occupancy.len() != entry.native_order.len() {
@@ -438,7 +446,7 @@ impl WorldEngine {
                 {
                     continue 'candidate;
                 }
-                if !self.retirement_guards(report, output, &logical) {
+                if !self.retirement_guards(output, &logical) {
                     continue 'candidate;
                 }
                 projections.push((output.clone(), logical));
@@ -455,7 +463,7 @@ impl WorldEngine {
                         .mapping
                         .get(output)
                         .is_some_and(|ring| ring.contains(logical))
-                        && !self.retirement_guards(report, output, logical)
+                        && !self.retirement_guards(output, logical)
                     {
                         continue 'candidate;
                     }
@@ -622,11 +630,11 @@ impl WorldEngine {
     /// no retained flight/source/refill, no retained creation, no pending
     /// source release, no displaced hosting, no creation hold, and a
     /// readable unheld staged domain. True when the row is clear.
-    fn retirement_guards(&self, report: &WorldReport, output: &str, logical: &str) -> bool {
+    fn retirement_guards(&self, output: &str, logical: &str) -> bool {
         if self.effective_view(&OutputId(output.to_owned())).as_deref() == Some(logical) {
             return false;
         }
-        if self.trailing_marked_id(report, output).as_deref() == Some(logical) {
+        if self.trailing_marked_id(output).as_deref() == Some(logical) {
             return false;
         }
         let homed = DomainKey {
@@ -670,7 +678,7 @@ impl WorldEngine {
         {
             return false;
         }
-        if self.creation_hold_for(report, output, logical) {
+        if self.creation_hold_for(output, logical) {
             return false;
         }
         self.staged
@@ -681,14 +689,16 @@ impl WorldEngine {
     }
 
     /// Exact-correlated raw creation attempt for one retained op (op plus
-    /// logical plus output; forged rows read as absent).
+    /// logical plus output; forged rows read as absent). Reads the staged
+    /// raw creation lane; first-raw latching stays with the caller.
     fn creation_attempt_for(
-        report: &WorldReport,
+        &self,
         operation_id: &str,
         logical: &str,
         output: &OutputId,
     ) -> Option<crate::world_report::NativeCreationAttempt> {
-        report
+        self.staged
+            .observation
             .creation_attempts
             .iter()
             .find(|attempt| {
@@ -699,10 +709,11 @@ impl WorldEngine {
             .cloned()
     }
 
-    /// Unmapped native ids for one output in reported order.
-    fn unmapped_natives(&self, report: &WorldReport, output: &str) -> Vec<String> {
+    /// Unmapped native ids for one output in staged order.
+    fn unmapped_natives(&self, output: &str) -> Vec<String> {
         let out = OutputId(output.to_owned());
-        report
+        self.staged
+            .observation
             .native
             .iter()
             .find(|entry| entry.output.0 == output)
@@ -724,7 +735,7 @@ impl WorldEngine {
     /// ordinary trailing spare (empty, unviewed, untargeted, unoccupied)
     /// never needs a desire; a vanished desktop's emptied logical is
     /// lifecycle removal, never a recreation.
-    fn logical_needs_backing(&self, _report: &WorldReport, output: &str, logical: &str) -> bool {
+    fn logical_needs_backing(&self, output: &str, logical: &str) -> bool {
         if self.native_binding_for(output, logical).is_some() {
             return false;
         }
@@ -793,12 +804,14 @@ impl WorldEngine {
     ///   adopting; absence never binds.
     ///
     /// Capability-named note: core owns binding; one authorization per op.
-    fn settle_native_creations(&mut self, report: &WorldReport, output: &str) -> bool {
-        if !self.native_list_complete(report, output) {
+    fn settle_native_creations(&mut self, output: &str) -> bool {
+        if !self.native_list_complete(output) {
             return false;
         }
         let out = OutputId(output.to_owned());
-        let order: Vec<String> = report
+        let order: Vec<String> = self
+            .staged
+            .observation
             .native
             .iter()
             .find(|entry| entry.output.0 == output)
@@ -822,8 +835,7 @@ impl WorldEngine {
         // the consumed evidence.
         for index in &pending_here {
             let retained = &self.retained_creations[*index];
-            let Some(attempt) = Self::creation_attempt_for(
-                report,
+            let Some(attempt) = self.creation_attempt_for(
                 &retained.operation_id,
                 &retained.logical_workspace,
                 &retained.target_output,
@@ -856,8 +868,8 @@ impl WorldEngine {
                         !matches!(attempt.setter, crate::world_report::FrameSetter::Accepted)
                             || (attempt.created_native.is_none()
                                 && attempt.order_before != retained.order_before)
-                            || (report.monotonic_ms != 0
-                                && attempt.attempt_ms > report.monotonic_ms)
+                            || (self.staged.observation.monotonic_ms != 0
+                                && attempt.attempt_ms > self.staged.observation.monotonic_ms)
                             || (retained.minted_ms != 0 && attempt.attempt_ms < retained.minted_ms)
                             || attempt.created_native.as_ref().is_some_and(|created| {
                                 attempt.order_before.iter().any(|id| id == created)
@@ -1036,17 +1048,14 @@ impl WorldEngine {
     /// by the same count. Returns the fresh logical id, or `None` when
     /// already bound or minting fails. Callers gate on the complete list
     /// and pending creations.
-    pub(crate) fn adopt_single_native(
-        &mut self,
-        report: &WorldReport,
-        output: &str,
-        native: &str,
-    ) -> Option<String> {
+    pub(crate) fn adopt_single_native(&mut self, output: &str, native: &str) -> Option<String> {
         let out = OutputId(output.to_owned());
         if self.native_logical(&out, native).is_some() {
             return None;
         }
-        let order: Vec<String> = report
+        let order: Vec<String> = self
+            .staged
+            .observation
             .native
             .iter()
             .find(|entry| entry.output.0 == output)
@@ -1120,12 +1129,14 @@ impl WorldEngine {
     /// keep their existing relative order after the bound prefix. A host
     /// reorder with no new ids reorders logical rows instead of keeping a
     /// stale insertion order. No-op on partial snapshots.
-    fn reorder_ring_to_native(&mut self, report: &WorldReport, output: &str) {
-        if !self.native_list_complete(report, output) {
+    fn reorder_ring_to_native(&mut self, output: &str) {
+        if !self.native_list_complete(output) {
             return;
         }
         let out = OutputId(output.to_owned());
-        let order: Vec<String> = report
+        let order: Vec<String> = self
+            .staged
+            .observation
             .native
             .iter()
             .find(|entry| entry.output.0 == output)
@@ -1166,14 +1177,16 @@ impl WorldEngine {
     /// the ordinary spare). One stable `op-native-<serial>` per logical;
     /// replay idempotent; the adapter never treats an unbound row without a
     /// desire as permission.
-    pub(crate) fn ensure_native_creations(&mut self, report: &WorldReport, output: &str) {
+    pub(crate) fn ensure_native_creations(&mut self, output: &str) {
         if !self.host_owned_workspace_domains() {
             return;
         }
-        if !self.native_list_complete(report, output) {
+        if !self.native_list_complete(output) {
             return;
         }
-        let order: Vec<String> = report
+        let order: Vec<String> = self
+            .staged
+            .observation
             .native
             .iter()
             .find(|entry| entry.output.0 == output)
@@ -1184,7 +1197,7 @@ impl WorldEngine {
         }
         let ring: Vec<String> = self.mapping.get(output).cloned().unwrap_or_default();
         for logical in ring {
-            if !self.logical_needs_backing(report, output, &logical) {
+            if !self.logical_needs_backing(output, &logical) {
                 continue;
             }
             let exists = self.retained_creations.iter().any(|retained| {
@@ -1201,7 +1214,7 @@ impl WorldEngine {
                     logical_workspace: logical,
                     target_output: OutputId(output.to_owned()),
                     order_before: order.clone(),
-                    minted_ms: report.monotonic_ms,
+                    minted_ms: self.staged.observation.monotonic_ms,
                     pending: None,
                     ambiguous: false,
                 });
@@ -1215,10 +1228,10 @@ impl WorldEngine {
     /// the ring go stale and drop; still-gated entries re-queue through
     /// the release routine itself. Runs in native intake so fresh
     /// bindings stage into echoes on the same report.
-    fn retry_pending_source_releases(&mut self, report: &WorldReport) {
+    fn retry_pending_source_releases(&mut self) {
         for (output, workspace) in std::mem::take(&mut self.pending_source_releases) {
             let out = OutputId(output.clone());
-            self.release_migrated_source_backing(report, &out, &workspace);
+            self.release_migrated_source_backing(&out, &workspace);
         }
     }
 
@@ -1227,17 +1240,13 @@ impl WorldEngine {
     /// later proves elsewhere): they must not recreate from stale state.
     /// Ambiguous rows persist for their visible hold until the mapping
     /// drops them or a new generation starts.
-    pub(crate) fn prune_unneeded_creations(&mut self, report: &WorldReport) {
+    pub(crate) fn prune_unneeded_creations(&mut self) {
         let mut drop: Vec<usize> = Vec::new();
         for (index, retained) in self.retained_creations.iter().enumerate() {
             if retained.ambiguous {
                 continue;
             }
-            if !self.logical_needs_backing(
-                report,
-                &retained.target_output.0,
-                &retained.logical_workspace,
-            ) {
+            if !self.logical_needs_backing(&retained.target_output.0, &retained.logical_workspace) {
                 drop.push(index);
             }
         }
@@ -1254,8 +1263,10 @@ impl WorldEngine {
     /// is unresolved, unmapped desktops are never adopted as outside
     /// creations (late desktops belong to the pending creation); a
     /// multi-candidate collision holds with `AmbiguousCreation`.
-    fn adopt_native_output(&mut self, report: &WorldReport, output: &str) {
-        let Some(order) = report
+    fn adopt_native_output(&mut self, output: &str) {
+        let Some(order) = self
+            .staged
+            .observation
             .native
             .iter()
             .find(|entry| entry.output.0 == output)
@@ -1263,7 +1274,7 @@ impl WorldEngine {
         else {
             return;
         };
-        if order.is_empty() || !self.native_list_complete(report, output) {
+        if order.is_empty() || !self.native_list_complete(output) {
             return;
         }
         let out = OutputId(output.to_owned());
@@ -1285,7 +1296,9 @@ impl WorldEngine {
                 ids.push(id);
             }
             self.mapping.insert(output.to_owned(), ids.clone());
-            let current = report
+            let current = self
+                .staged
+                .observation
                 .native
                 .iter()
                 .find(|entry| entry.output.0 == output)
@@ -1358,20 +1371,25 @@ impl WorldEngine {
     /// logical (linked views span displays); differing lists union without
     /// dropping members. Pending creations settle first (late desktops
     /// belong to them); multi-candidate collisions hold.
-    fn converge_native_shared(&mut self, report: &WorldReport) {
-        let mut ordered: Vec<String> = report
+    fn converge_native_shared(&mut self) {
+        let mut ordered: Vec<String> = self
+            .staged
             .screens
             .iter()
             .map(|screen| screen.output.0.clone())
             .collect();
         ordered.sort();
-        if self.native_map.is_empty() && shared_order_conflict(report) {
+        if self.native_map.is_empty()
+            && shared_order_conflict(&self.staged.screens, &self.staged.observation.native)
+        {
             return;
         }
         let mut union: Vec<String> = Vec::new();
         let mut seen = BTreeSet::new();
         for output in &ordered {
-            let Some(order) = report
+            let Some(order) = self
+                .staged
+                .observation
                 .native
                 .iter()
                 .find(|entry| entry.output.0 == *output)
@@ -1388,11 +1406,11 @@ impl WorldEngine {
         if union.is_empty() {
             return;
         }
-        if !report.inventory_complete {
+        if !self.staged.observation.inventory_complete {
             return;
         }
         let all_complete = ordered.iter().all(|output| {
-            report
+            self.staged
                 .screens
                 .iter()
                 .find(|screen| screen.output.0 == *output)
@@ -1414,7 +1432,7 @@ impl WorldEngine {
             }
         }
         for output in &ordered {
-            self.prune_vanished_output(report, output);
+            self.prune_vanished_output(output);
         }
         let inhabited = ordered.iter().any(|output| {
             self.mapping
@@ -1437,7 +1455,7 @@ impl WorldEngine {
             }
             for output in &ordered {
                 for (native, id) in &ids {
-                    let observed = report.native.iter().any(|entry| {
+                    let observed = self.staged.observation.native.iter().any(|entry| {
                         entry.output.0 == *output
                             && entry.native_order.iter().any(|id| id == native)
                     });
@@ -1447,7 +1465,9 @@ impl WorldEngine {
                     }
                 }
             }
-            let current = report
+            let current = self
+                .staged
+                .observation
                 .native
                 .iter()
                 .find(|entry| entry.output.0 == first)
@@ -1471,16 +1491,16 @@ impl WorldEngine {
         }
         let mut blocked: BTreeSet<String> = BTreeSet::new();
         for output in &ordered {
-            if self.settle_native_creations(report, output) {
+            if self.settle_native_creations(output) {
                 // Scoped hold: only outputs with an outstanding creation
                 // facing fresh candidates suppress adoption. Unrelated
                 // outputs keep adopting their own outside desktops.
                 blocked.insert(output.clone());
             }
         }
-        self.adopt_native_shared_union(report, &ordered, &union, &blocked);
+        self.adopt_native_shared_union(&ordered, &union, &blocked);
         self.reorder_shared_rings(&ordered, &union);
-        self.ensure_native_creations_shared(report, &ordered);
+        self.ensure_native_creations_shared(&ordered);
     }
 
     /// Outside-adoption over the shared union: binds missing pairs and
@@ -1490,7 +1510,6 @@ impl WorldEngine {
     /// everywhere: hold, no guessing, no partial adoption of a race.
     fn adopt_native_shared_union(
         &mut self,
-        report: &WorldReport,
         ordered: &[String],
         union: &[String],
         blocked: &BTreeSet<String>,
@@ -1503,7 +1522,7 @@ impl WorldEngine {
             // output adopts or pairs it until the race resolves.
             let raced = ordered.iter().any(|output| {
                 blocked.contains(output)
-                    && report.native.iter().any(|entry| {
+                    && self.staged.observation.native.iter().any(|entry| {
                         entry.output.0 == *output && entry.native_order.iter().any(|n| n == native)
                     })
                     && self
@@ -1528,7 +1547,7 @@ impl WorldEngine {
                 .map(|(_, id)| id.clone())
             {
                 for output in ordered {
-                    let observed = report.native.iter().any(|entry| {
+                    let observed = self.staged.observation.native.iter().any(|entry| {
                         entry.output.0 == *output && entry.native_order.iter().any(|n| n == native)
                     });
                     if observed
@@ -1569,7 +1588,7 @@ impl WorldEngine {
                 ring.pop();
             }
             for output in ordered {
-                let observed = report.native.iter().any(|entry| {
+                let observed = self.staged.observation.native.iter().any(|entry| {
                     entry.output.0 == *output && entry.native_order.iter().any(|n| n == native)
                 });
                 if observed {
@@ -1648,19 +1667,15 @@ impl WorldEngine {
     /// ordered output with an observed native row (independent orders may
     /// not list the sorted-first output at all); binding fans out on proof.
     /// The trailing spare never mints.
-    pub(crate) fn ensure_native_creations_shared(
-        &mut self,
-        report: &WorldReport,
-        ordered: &[String],
-    ) {
+    pub(crate) fn ensure_native_creations_shared(&mut self, ordered: &[String]) {
         if !self.host_owned_workspace_domains() || ordered.is_empty() {
             return;
         }
-        if !report.inventory_complete {
+        if !self.staged.observation.inventory_complete {
             return;
         }
         let all_complete = ordered.iter().all(|output| {
-            report
+            self.staged
                 .screens
                 .iter()
                 .find(|screen| screen.output.0 == *output)
@@ -1671,12 +1686,20 @@ impl WorldEngine {
         }
         let first = ordered
             .iter()
-            .find(|output| report.native.iter().any(|entry| entry.output.0 == **output))
+            .find(|output| {
+                self.staged
+                    .observation
+                    .native
+                    .iter()
+                    .any(|entry| entry.output.0 == **output)
+            })
             .or_else(|| ordered.first());
         let Some(first) = first else {
             return;
         };
-        let order_non_empty = report
+        let order_non_empty = self
+            .staged
+            .observation
             .native
             .iter()
             .find(|entry| entry.output.0 == *first)
@@ -1723,7 +1746,9 @@ impl WorldEngine {
             if exists {
                 continue;
             }
-            let order: Vec<String> = report
+            let order: Vec<String> = self
+                .staged
+                .observation
                 .native
                 .iter()
                 .find(|entry| entry.output.0 == *first)
@@ -1737,7 +1762,7 @@ impl WorldEngine {
                     logical_workspace: logical,
                     target_output: OutputId(first.clone()),
                     order_before: order,
-                    minted_ms: report.monotonic_ms,
+                    minted_ms: self.staged.observation.monotonic_ms,
                     pending: None,
                     ambiguous: false,
                 });
@@ -1749,18 +1774,15 @@ impl WorldEngine {
     /// ambiguity latches, the authorization is spent: no republication, and
     /// ambiguous rows carry no execution work (the workspace hold alone
     /// signals). Replay idempotent by op id.
-    pub(crate) fn native_creation_desires(
-        &self,
-        report: &WorldReport,
-    ) -> Vec<crate::world_report::NativeCreationDesire> {
+    pub(crate) fn native_creation_desires(&self) -> Vec<crate::world_report::NativeCreationDesire> {
         if !self.host_owned_workspace_domains() {
             return Vec::new();
         }
-        if !report.inventory_complete {
+        if !self.staged.observation.inventory_complete {
             return Vec::new();
         }
         if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared
-            && !report.screens.iter().all(|screen| screen.complete)
+            && !self.staged.screens.iter().all(|screen| screen.complete)
         {
             return Vec::new();
         }
@@ -1768,14 +1790,15 @@ impl WorldEngine {
             .iter()
             .filter(|retained| retained.pending.is_none() && !retained.ambiguous)
             .filter(|retained| {
-                report
+                self.staged
                     .screens
                     .iter()
                     .find(|screen| screen.output == retained.target_output)
                     .is_some_and(|screen| screen.complete)
             })
             .filter(|retained| {
-                report
+                self.staged
+                    .observation
                     .native
                     .iter()
                     .find(|entry| entry.output == retained.target_output)
@@ -1795,12 +1818,7 @@ impl WorldEngine {
     /// unconsumed creation still faces fresh unmapped candidates on its
     /// output (transient correlation hold: not latched, clears when the
     /// late readback binds or the candidates resolve).
-    pub(crate) fn creation_hold_for(
-        &self,
-        report: &WorldReport,
-        output: &str,
-        logical: &str,
-    ) -> bool {
+    pub(crate) fn creation_hold_for(&self, output: &str, logical: &str) -> bool {
         if self.retained_creations.iter().any(|retained| {
             retained.target_output.0 == output
                 && retained.logical_workspace == logical
@@ -1820,6 +1838,6 @@ impl WorldEngine {
         if !pending {
             return false;
         }
-        !self.unmapped_natives(report, output).is_empty()
+        !self.unmapped_natives(output).is_empty()
     }
 }

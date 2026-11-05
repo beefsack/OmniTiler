@@ -15,7 +15,7 @@
 - Evidence: [full-state replies](../changes/archive/core-full-state-replies.md).
 
 ### Focusless switch completion
-- Decision: A selection with no required focus target reports `focus:"unproven"` and `outcome:"complete"` once all visibility obligations are satisfied, with `failed:[]` when nothing failed. The same rule covers empty-to-empty selections with zero visibility members and native-owned focusless selections. Focus-bearing switches still require proven focus for complete; empty/minimized-only workspaces retain no focused client.
+- Decision: A selection with no required focus target reports `focus:"unproven"` and `outcome:"complete"` once all visibility obligations are satisfied, with `failed:[]` when nothing failed. The same rule covers empty-to-empty selections with zero visibility members and native-owned focusless selections. An explicit selection whose resolved focus target fails route eligibility freezes a binding with no required focus target; visibility completes through the common path and focus reports `unproven`. The direct focus effect stays and eligibility gates are unchanged. Focus-bearing switches still require proven focus for complete; empty/minimized-only workspaces retain no focused client.
 - Why: use the existing completion rule without unnecessary branching or new wire vocabulary.
 - Assumes / revisit if: no fake focus, fallback, retry, second completion path, new token or fixture change. Unsupported native terminal outcomes remain TBD.
 - Status: active, 2026-11-04
@@ -106,7 +106,7 @@
 - Evidence: [follow/stay](../changes/archive/windows-workspace-send-follow-stay.md).
 
 ### Workspace send follow settlement
-- Decision: Send follows by default; bindable send-and-stay counterpart is unbound. Relative sends resolve once against scoped ordinal ring before transfer. Exact follow needs fresh mover-absent-source/present-target proof, then switch-before-focus; unrelated async geometry/layout settling does not gate confirmed follow. KWin geometry and membership are non-atomic; setter returns and signal delivery alone are not proof.
+- Decision: Send follows by default; bindable send-and-stay counterpart is unbound. Relative sends resolve once against scoped ordinal ring before transfer. Exact follow needs fresh mover-absent-source/present-target proof, then switch-before-focus; unrelated async geometry/layout settling does not gate confirmed follow. KWin geometry and membership are non-atomic; setter returns and signal delivery alone are not proof. Cross-output follow-send and same-output follow-send take the same frozen selection binding as an ordinary explicit selection. Window membership settles the transfer independently; the binding owns destination visibility and focus through the existing selection completion. No follow-specific predicate or second completion path. The `{op}-follow` child is removed; the follow focus effect waits until the destination is shown. Existing refusal and safety fences are unchanged.
 - Why: not recorded.
 - Assumes / revisit if: stale, ambiguous, missing, no-op, wrong-target, owner, scope and hook failures do not follow; no retry/replay. Partial successes are reported honestly; rapid-use preference authorizes no ignored errors, retries, queue resets or uncertain-recovery change.
 - Status: active, 2026-10-16
@@ -162,7 +162,7 @@
 - Evidence: [migration settings](../changes/archive/reference-comparison-implementation.md), [Windows migration](../changes/archive/windows-workspace-output-migration.md).
 
 ### Workspace migration D6: focus settlement
-- Decision: Retain moved active client only after all member arrivals and both view changes verify. Empty/sticky-active migration uses native output switching without fabricated client activation; minimized clients are not unminimized or explicitly focused.
+- Decision: Retain moved active client only after all member arrivals and both view changes verify. Empty/sticky-active migration uses native output switching without fabricated client activation; minimized clients are not unminimized or explicitly focused. Native-free workspace migration takes one frozen selection binding covering both outputs. Member arrival settles membership; the binding owns target and source-refill visibility and focus through the existing selection completion, and the refill child is removed. Empty migration uses the zero-member completion rule. Native-owned migration keeps its native proof.
 - Why: not recorded.
 - Assumes / revisit if: no focus before verified arrival/view settlement.
 - Status: active, 2026-10-08
@@ -197,14 +197,14 @@
 - Evidence: [aligned workspaces](../changes/kde-aligned-output-workspaces.md), [discriminator](../spec/reference-outcomes.md#kde-dual-output-admission-and-workspace-scope-discriminators).
 
 ### KDE aligned output disconnection
-- Decision: On disconnect, preserve displaced layout in separate workspace(s), never merge it into the remaining layout. If the disconnected monitor's active window survives, show its relocated workspace retaining focus; a surviving-monitor active window preserves its view and focus.
+- Decision: On disconnect, preserve displaced layout in separate workspace(s), never merge it into the remaining layout. If the disconnected monitor's active window survives, show its relocated workspace retaining focus; a surviving-monitor active window preserves its view and focus. Commandless policy views bind as focusless selections under their existing `op-dpv-*` parent, with no invented `cmdSeq` or focus effect, and retire through the common completion; native focus stays untouched.
 - Why: not recorded.
 - Assumes / revisit if: Focus continuity deliberately keeps the window in use visible; selection among multiple survivors follows the reconnect rule.
 - Status: active, 2026-10-18.
 - Evidence: [aligned workspaces](../changes/kde-aligned-output-workspaces.md).
 
 ### KDE aligned output reconnection
-- Decision: Return displaced workspaces automatically to their original monitor with then-current contents; do not restore a snapshot or pull back individually moved windows. Choose among multiple survivors by nearest disconnect-time geometry, falling back to current primary then output order; never use post-disconnect frame geometry. Show the returning active workspace with focus retained; preserve surviving-output active views/focus without stealing focus.
+- Decision: Return displaced workspaces automatically to their original monitor with then-current contents; do not restore a snapshot or pull back individually moved windows. Choose among multiple survivors by nearest disconnect-time geometry, falling back to current primary then output order; never use post-disconnect frame geometry. Show the returning active workspace with focus retained; preserve surviving-output active views/focus without stealing focus. Commandless return-policy views use the same focusless binding under their existing `op-dpv-*` parent, without an invented `cmdSeq` or focus effect, and retire through the common completion with native focus untouched.
 - Why: not recorded.
 - Assumes / revisit if: Reconnect selection never restores prior-view history; observed hotplug changes enter ordinary history. Spatial proximity is a deliberate COSMIC/six-reference deviation, discriminating only with 3+ outputs. No restart-persistent mapping or return guarantee.
 - Status: active, 2026-10-18.

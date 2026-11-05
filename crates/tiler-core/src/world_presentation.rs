@@ -698,12 +698,7 @@ impl WorldEngine {
     /// focused-fullscreen suspension omits only the suspended output; every
     /// other output keeps its content. Never admits, never mutates.
     #[must_use]
-    fn presentation_pager(
-        &self,
-        report: &WorldReport,
-        paused: bool,
-        suspended: Option<&OutputId>,
-    ) -> Vec<PagerScreen> {
+    fn presentation_pager(&self, paused: bool, suspended: Option<&OutputId>) -> Vec<PagerScreen> {
         if paused {
             return Vec::new();
         }
@@ -719,7 +714,7 @@ impl WorldEngine {
                 continue;
             }
             let ring = self.logical_ring(&output);
-            let marked = self.trailing_marked_id(report, &output);
+            let marked = self.trailing_marked_id(&output);
             let view = self.logical_view(&output);
             // Effective current workspace: the retained view when it names a
             // live ring member, else the ring head. This preserves the
@@ -826,7 +821,7 @@ impl WorldEngine {
             suspended_output: suspended.clone(),
             border: self.presentation_border(ingress, suspended.as_ref()),
             underlay: self.presentation_underlay(ingress, suspended.as_ref()),
-            pager: self.presentation_pager(report, ingress.paused, suspended.as_ref()),
+            pager: self.presentation_pager(ingress.paused, suspended.as_ref()),
         }
     }
 }

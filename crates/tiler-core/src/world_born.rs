@@ -181,14 +181,14 @@ impl WorldEngine {
         // This mirrors the accept-time fence without consulting the
         // conflated sweep-hold set. Unknown output never authorizes.
         if self.host_owned_workspace_domains() {
-            if self.native_order_conflict(report) {
+            if self.native_order_conflict() {
                 return false;
             }
             let authoritative = match fact.output.as_ref() {
-                Some(out) => self.native_authoritative(report, out),
+                Some(_) => self.native_authoritative(),
                 None => true,
             };
-            if authoritative && self.effective_logical_receipt(report, fact).is_none() {
+            if authoritative && self.effective_logical_receipt(fact).is_none() {
                 return false;
             }
         }

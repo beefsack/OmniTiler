@@ -2244,12 +2244,13 @@ fn mode_flip_does_not_reclear_retained_lifetime() {
 }
 
 #[test]
-fn migration_gap_withholds_born_clear_authority() {
-    // Migration-gap safety: incomplete inventory with an outstanding
-    // migration touching the home scope withholds mint and desire,
-    // mirroring the sweep gap fence. A memberless retained migration is
-    // staged directly (it holds inertly through settlement); only the
-    // born-authority mirror is pinned here.
+fn empty_native_free_migration_retires_echoless_born_clear_proceeds() {
+    // Native-free originally-empty migration carries zero membership to
+    // await, so it retires at the earliest normal publication instead
+    // of holding the parent across gaps: the born-clear authority no
+    // longer withholds on its account. A memberless retained migration
+    // is staged directly; only the born-authority mirror is pinned
+    // here.
     use std::collections::BTreeMap;
     let mut engine = born_clear_engine();
     accepted(
@@ -2284,6 +2285,7 @@ fn migration_gap_withholds_born_clear_authority() {
         migration_source_view: None,
         migration_target_view: None,
         migration_terminal: None,
+        migration_selection_rev: None,
         pending_member: None,
         pending_members: BTreeMap::new(),
         pending_view: None,
@@ -2300,9 +2302,9 @@ fn migration_gap_withholds_born_clear_authority() {
     let held = accepted(&mut engine, &gapped);
     assert_eq!(engine.born_retained_len(), 1, "gap holds the binding");
     assert_eq!(
-        desire_op(&held, "win-born"),
-        None,
-        "migration gap withholds the token"
+        desire_op(&held, "win-born").as_deref(),
+        Some("op-born-1"),
+        "empty native-free migration retires echoless, token proceeds"
     );
     engine.retained.clear();
     let recovered = accepted(

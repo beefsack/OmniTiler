@@ -1342,6 +1342,8 @@ fn seed_lifetime_ledgers(engine: &mut WorldEngine, window: &str, output: &str) {
             arrival_ready: false,
             view_targets: BTreeMap::new(),
             view_raw: BTreeMap::new(),
+            selected: vec![home.clone()],
+            affected: vec![OutputId(output.to_owned())],
         },
     );
 }
@@ -2757,6 +2759,8 @@ fn seed_selection_binding(
             arrival_ready: false,
             view_targets,
             view_raw: BTreeMap::new(),
+            selected: outputs.iter().map(|o| home_key(o)).collect(),
+            affected: outputs.iter().map(|o| OutputId((*o).to_owned())).collect(),
         },
     );
 }
@@ -4015,6 +4019,65 @@ fn passed_report_4b2d(seq: u64) -> WorldReport {
     )
 }
 
+/// 5a seam for the 4b2d view tests below: the host-owned view echo reads
+/// the staged native current, so staging carries the same current the
+/// passed report names. Attempt lanes stay exactly as staged.
+#[allow(clippy::too_many_arguments)]
+fn stage_views_pre_4b2d(
+    engine: &mut WorldEngine,
+    v4: bool,
+    seq: u64,
+    screens: Vec<ScreenReport>,
+    complete: bool,
+    barrier: bool,
+    view_attempts: Vec<ViewAttempt>,
+    current: &str,
+) {
+    let native = vec![NativeObservation {
+        output: OutputId("out-a".to_owned()),
+        native_order: vec!["n9".to_owned(), "n1".to_owned()],
+        current_native: Some(current.to_owned()),
+        occupancy: vec![
+            NativeOccupancy {
+                native: "n9".to_owned(),
+                count: None,
+            },
+            NativeOccupancy {
+                native: "n1".to_owned(),
+                count: None,
+            },
+        ],
+    }];
+    let mut legacy = report_full(
+        seq,
+        seq,
+        screens.clone(),
+        vec![fact("win-a", "out-a", 0)],
+        Vec::new(),
+        "win-a",
+        None,
+        None,
+    );
+    legacy.inventory_complete = complete;
+    legacy.gesture_barrier = barrier;
+    legacy.view_attempts = view_attempts.clone();
+    legacy.native = native.clone();
+    let mut v4report = report_v4_simple(
+        seq,
+        screens,
+        Vec::new(),
+        vec![fact("win-a", "out-a", 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    v4report.focused_global = "win-a".to_owned();
+    v4report.inventory_complete = complete;
+    v4report.gesture_barrier = barrier;
+    v4report.view_attempts = view_attempts;
+    v4report.native = native;
+    stage_either(engine, v4, &legacy, &v4report);
+}
+
 fn max_fact_4b2d(window: &str) -> WindowFact {
     WindowFact {
         maximized: Some(true),
@@ -4148,6 +4211,7 @@ fn seed_window_transfer_4b2d(engine: &mut WorldEngine, operation: &str) {
         migration_source_view: None,
         migration_target_view: None,
         migration_terminal: None,
+        migration_selection_rev: None,
         pending_member: None,
         pending_members: BTreeMap::new(),
         pending_view: None,
@@ -4174,6 +4238,7 @@ fn seed_view_transfer_4b2d(engine: &mut WorldEngine, operation: &str) {
         migration_source_view: None,
         migration_target_view: None,
         migration_terminal: None,
+        migration_selection_rev: None,
         pending_member: None,
         pending_members: BTreeMap::new(),
         pending_view: None,
@@ -4213,6 +4278,7 @@ fn seed_migration_4b2d(engine: &mut WorldEngine, operation: &str) {
         migration_source_view: None,
         migration_target_view: None,
         migration_terminal: None,
+        migration_selection_rev: None,
         pending_member: None,
         pending_members: BTreeMap::new(),
         pending_view: None,
@@ -4236,6 +4302,7 @@ fn seed_migration_4b2d(engine: &mut WorldEngine, operation: &str) {
         migration_source_view: Some("ws-1".to_owned()),
         migration_target_view: Some("ws-1".to_owned()),
         migration_terminal: None,
+        migration_selection_rev: None,
         pending_member: None,
         pending_members: BTreeMap::new(),
         pending_view: None,
@@ -4344,29 +4411,6 @@ fn seed_native_views_4b2d(engine: &mut WorldEngine) {
     engine
         .native_map
         .insert(("out-a".to_owned(), "n9".to_owned()), "ws-9".to_owned());
-}
-
-/// Passed report carrying a native current echo for `settle_views_pre`
-/// (echo reads the passed report; screens/inventory/barrier gates read
-/// the staged capture).
-fn passed_native_report_4b2d(seq: u64, current: &str) -> WorldReport {
-    let mut report = passed_report_4b2d(seq);
-    report.native = vec![NativeObservation {
-        output: OutputId("out-a".to_owned()),
-        native_order: vec!["n9".to_owned(), "n1".to_owned()],
-        current_native: Some(current.to_owned()),
-        occupancy: vec![
-            NativeOccupancy {
-                native: "n9".to_owned(),
-                count: None,
-            },
-            NativeOccupancy {
-                native: "n1".to_owned(),
-                count: None,
-            },
-        ],
-    }];
-    report
 }
 
 fn seed_float_clear_4b2d(engine: &mut WorldEngine, operation: &str) {
@@ -5042,9 +5086,9 @@ fn settle_transfer_uses_staged_member_lane_not_passed_report() {
 #[test]
 fn settle_view_stages_pending_across_stale_echo_on_both_intakes() {
     for v4 in [false, true] {
-        // The echo comes from the passed report (native/view proof lane);
-        // the attempt comes from the staged capture. A stale echo holds
-        // the flight while the exact staged attempt latches.
+        // Native-free view proof is the frozen selection binding, never
+        // the echo lane: the flight is kept for its binding terminal and
+        // no staged attempt latches here, on both intakes.
         let mut engine = settle_engine_4b2d();
         engine.views.insert("out-a".to_owned(), "ws-9".to_owned());
         engine
@@ -5072,23 +5116,25 @@ fn settle_view_stages_pending_across_stale_echo_on_both_intakes() {
             vec!["ws-1".to_owned(), "ws-9".to_owned()],
         );
         seed_view_transfer_4b2d(&mut engine, "op-v");
-        let mut stale = passed_report_4b2d(90);
-        stale.member_attempts = Vec::new();
-        stale.view_attempts = Vec::new();
-        engine.settle_views_pre(&stale);
+        engine.settle_views_pre();
         assert_eq!(
             engine.retained.len(),
             1,
-            "stale echo holds (v4={v4})",
+            "native-free flight kept for its binding (v4={v4})",
+            v4 = v4,
+        );
+        assert!(
+            engine.retained[0].pending_view.is_none(),
+            "native-free latches no echo attempt (v4={v4})",
             v4 = v4,
         );
         assert_eq!(
-            engine.retained[0].pending_view,
-            Some(view_4b2d("op-v", "ws-1")),
-            "exact staged attempt latches despite contradictory report (v4={v4})",
+            engine.views.get("out-a"),
+            Some(&"ws-9".to_owned()),
+            "no echo confirm moves the native-free view (v4={v4})",
             v4 = v4,
         );
-        // Forged view rows read as absent: same stale hold, no latch.
+        // Forged view rows read as absent: same keep, no latch.
         for (what, forged) in [
             ("wrong-op", view_4b2d("op-X", "ws-1")),
             ("wrong-target", view_4b2d("op-v", "ws-9")),
@@ -5122,13 +5168,11 @@ fn settle_view_stages_pending_across_stale_echo_on_both_intakes() {
                 vec!["ws-1".to_owned(), "ws-9".to_owned()],
             );
             seed_view_transfer_4b2d(&mut forged_engine, "op-v");
-            let mut stale = passed_report_4b2d(90);
-            stale.view_attempts = Vec::new();
-            forged_engine.settle_views_pre(&stale);
+            forged_engine.settle_views_pre();
             assert_eq!(
                 forged_engine.retained.len(),
                 1,
-                "{what} holds (v4={v4})",
+                "{what} keeps the flight (v4={v4})",
                 v4 = v4,
             );
             assert!(
@@ -5138,8 +5182,8 @@ fn settle_view_stages_pending_across_stale_echo_on_both_intakes() {
             );
         }
     }
-    // Exact echo confirmation drops the flight on the legacy intake (v4
-    // stages no echoes; the passed report still proves).
+    // Exact echo no longer confirms native-free: the flight is kept for
+    // the frozen selection binding terminal, never settled from echoes.
     let mut engine = settle_engine_4b2d();
     engine.views.insert("out-a".to_owned(), "ws-9".to_owned());
     engine
@@ -5167,17 +5211,20 @@ fn settle_view_stages_pending_across_stale_echo_on_both_intakes() {
         vec!["ws-1".to_owned(), "ws-9".to_owned()],
     );
     seed_view_transfer_4b2d(&mut engine, "op-v");
-    let mut proving = passed_report_4b2d(90);
-    proving.views = vec![crate::world_report::ScreenView {
-        output: OutputId("out-a".to_owned()),
-        view: "ws-1".to_owned(),
-    }];
-    engine.settle_views_pre(&proving);
-    assert!(engine.retained.is_empty(), "exact echo confirms the view");
+    engine.settle_views_pre();
+    assert_eq!(
+        engine.retained.len(),
+        1,
+        "exact echo keeps the native-free flight for its binding"
+    );
+    assert!(
+        engine.retained[0].pending_view.is_none(),
+        "exact echo latches nothing native-free"
+    );
     assert_eq!(
         engine.views.get("out-a"),
-        Some(&"ws-1".to_owned()),
-        "confirmation adopts the proven view"
+        Some(&"ws-9".to_owned()),
+        "echo alone never moves the native-free view"
     );
 }
 
@@ -5511,10 +5558,11 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
         // while receipt latching is intake-independent. The legacy legs
         // prove the full settle; the v4 legs prove the hold keeps every
         // staged receipt.
-        // Staged arrival at the target homing with both echoes exact
-        // settles on legacy even though the passed report carries no
-        // attempts; on v4 the unknown echoes hold with all receipts
-        // latched.
+        // Staged arrival at the target homing settles on both wires even
+        // though the passed report carries no attempts: membership arrival
+        // retires the native-free parent with no echo proof (v4 carries
+        // no explicit views lane, so no binding ever reverts to the echo
+        // path there either).
         let mut engine = settle_engine_4b2d();
         stage_attempts_4b2d(
             &mut engine,
@@ -5546,30 +5594,13 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
                 "staged arrival plus exact echoes settles despite empty passed lanes"
             );
         } else {
-            assert_eq!(
-                engine.retained.len(),
-                2,
-                "v4 holds without echoes (v4={v4})",
-                v4 = v4,
-            );
-            assert_eq!(
-                parent_of(&engine)
-                    .pending_members
-                    .get(&WindowId("win-a".to_owned())),
-                Some(&arrival()),
-                "v4 latches the member receipt (v4={v4})",
-                v4 = v4,
-            );
-            assert_eq!(
-                parent_of(&engine).pending_view,
-                Some(parent_view()),
-                "v4 latches the parent view receipt (v4={v4})",
-                v4 = v4,
-            );
-            assert_eq!(
-                child_of(&engine).pending_view,
-                Some(refill_view()),
-                "v4 latches the refill receipt (v4={v4})",
+            // The native-free binding owns both views through the member
+            // settlement: staged arrival retires the parent with no echo
+            // proof, so v4 settles exactly like legacy (no binding ever
+            // reverts to the echo path).
+            assert!(
+                engine.retained.is_empty(),
+                "staged arrival settles without echoes (v4={v4})",
                 v4 = v4,
             );
         }
@@ -5626,13 +5657,15 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
                 &test_issue(&passed_report_4b2d(90)),
                 false,
             );
-            // The refill child still settles on its exact staged echo
-            // independently on legacy (on v4 it holds echo-less); only
-            // the parent holds on the outstanding member with no member
+            // The synthetic refill child holds echo-less on both intakes:
+            // the staged echo lane carries no logical echoes native-free,
+            // and production no longer mints refill children on this route
+            // (the frozen selection binding owns both views). Only the
+            // parent holds on the outstanding member with no member
             // evidence staged.
             assert_eq!(
                 forged_engine.retained.len(),
-                if v4 { 2 } else { 1 },
+                2,
                 "{what} holds (v4={v4})",
                 v4 = v4,
             );
@@ -5671,11 +5704,12 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
             false,
         );
         // Eligible homing and echoes: only the incomplete gate holds, so
-        // the hold discriminates the gate. The refill child settles on
-        // its exact echo across the gap on legacy (v4 holds echo-less).
+        // the hold discriminates the gate. The synthetic refill child
+        // holds echo-less on both intakes (no logical echoes staged
+        // native-free; production mints no refill children here).
         assert_eq!(
             gated.retained.len(),
-            if v4 { 2 } else { 1 },
+            2,
             "incomplete holds (v4={v4})",
             v4 = v4,
         );
@@ -5735,8 +5769,8 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
         );
         assert_eq!(
             gated.retained.len(),
-            if v4 { 2 } else { 1 },
-            "barrier holds (v4={v4})",
+            2,
+            "barrier holds with the echo-less refill child (v4={v4})",
             v4 = v4,
         );
         assert_eq!(
@@ -5770,29 +5804,14 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
             &test_issue(&passed_report_4b2d(92)),
             false,
         );
-        if !v4 {
-            assert!(
-                gated.retained.is_empty(),
-                "readable empty-lane recovery settles"
-            );
-        } else {
-            // No echoes on the v4 wire: the readable recovery still
-            // holds, with the replaced receipt intact.
-            assert_eq!(
-                gated.retained.len(),
-                2,
-                "v4 recovery holds without echoes (v4={v4})",
-                v4 = v4,
-            );
-            assert_eq!(
-                parent_of(&gated)
-                    .pending_members
-                    .get(&WindowId("win-a".to_owned())),
-                Some(&replacement),
-                "v4 keeps the replaced receipt (v4={v4})",
-                v4 = v4,
-            );
-        }
+        // The readable empty-lane recovery settles on both wires:
+        // staged target homing already proved arrival, so the parent
+        // retires with no echo proof (v4 settles exactly like legacy).
+        assert!(
+            gated.retained.is_empty(),
+            "readable empty-lane recovery settles (v4={v4})",
+            v4 = v4,
+        );
     }
 }
 
@@ -5815,26 +5834,19 @@ fn settle_views_pre_refused_reads_staged_screens_not_passed_report() {
             let mut engine = settle_engine_4b2d_host();
             let mut staged_screen = screen("out-a", 0);
             staged_screen.complete = staged_complete;
-            stage_attempts_4b2d(
+            stage_views_pre_4b2d(
                 &mut engine,
                 v4,
                 1,
                 vec![staged_screen],
-                vec![fact("win-a", "out-a", 0)],
-                "win-a",
-                Vec::new(),
                 complete,
                 barrier,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
                 vec![refused()],
-                Vec::new(),
-                Vec::new(),
+                "n9",
             );
             seed_native_views_4b2d(&mut engine);
             seed_view_transfer_4b2d(&mut engine, "op-v");
-            engine.settle_views_pre(&passed_native_report_4b2d(90, "n9"));
+            engine.settle_views_pre();
             assert_eq!(engine.retained.len(), 1, "{what} holds (v4={v4})", v4 = v4,);
             assert_eq!(
                 engine.retained[0].pending_view,
@@ -5842,24 +5854,17 @@ fn settle_views_pre_refused_reads_staged_screens_not_passed_report() {
                 "{what} latches before the hold (v4={v4})",
                 v4 = v4,
             );
-            stage_attempts_4b2d(
+            stage_views_pre_4b2d(
                 &mut engine,
                 v4,
                 2,
                 vec![screen("out-a", 0)],
-                vec![fact("win-a", "out-a", 0)],
-                "win-a",
-                Vec::new(),
                 true,
                 false,
                 Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
+                "n9",
             );
-            engine.settle_views_pre(&passed_native_report_4b2d(91, "n9"));
+            engine.settle_views_pre();
             assert!(
                 engine.retained.is_empty(),
                 "{what} recovers readable (v4={v4})",
@@ -5868,26 +5873,19 @@ fn settle_views_pre_refused_reads_staged_screens_not_passed_report() {
         }
         // Positive control: a complete staged capture settles outright.
         let mut engine = settle_engine_4b2d_host();
-        stage_attempts_4b2d(
+        stage_views_pre_4b2d(
             &mut engine,
             v4,
             1,
             vec![screen("out-a", 0)],
-            vec![fact("win-a", "out-a", 0)],
-            "win-a",
-            Vec::new(),
             true,
             false,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
             vec![refused()],
-            Vec::new(),
-            Vec::new(),
+            "n9",
         );
         seed_native_views_4b2d(&mut engine);
         seed_view_transfer_4b2d(&mut engine, "op-v");
-        engine.settle_views_pre(&passed_native_report_4b2d(90, "n9"));
+        engine.settle_views_pre();
         assert!(
             engine.retained.is_empty(),
             "complete eligible refusal settles (v4={v4})",
@@ -5896,26 +5894,19 @@ fn settle_views_pre_refused_reads_staged_screens_not_passed_report() {
         // A forged view row reads as absent: the stale echo holds with
         // nothing staged.
         let mut forged_engine = settle_engine_4b2d_host();
-        stage_attempts_4b2d(
+        stage_views_pre_4b2d(
             &mut forged_engine,
             v4,
             1,
             vec![screen("out-a", 0)],
-            vec![fact("win-a", "out-a", 0)],
-            "win-a",
-            Vec::new(),
             true,
             false,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
             vec![view_native_refused_4b2d("op-X", "ws-1", "n9")],
-            Vec::new(),
-            Vec::new(),
+            "n9",
         );
         seed_native_views_4b2d(&mut forged_engine);
         seed_view_transfer_4b2d(&mut forged_engine, "op-v");
-        forged_engine.settle_views_pre(&passed_native_report_4b2d(90, "n9"));
+        forged_engine.settle_views_pre();
         assert_eq!(
             forged_engine.retained.len(),
             1,
@@ -5930,26 +5921,19 @@ fn settle_views_pre_refused_reads_staged_screens_not_passed_report() {
         // An echo naming the target confirms and adopts despite the same
         // staged attempt shape proving nothing there.
         let mut proving = settle_engine_4b2d_host();
-        stage_attempts_4b2d(
+        stage_views_pre_4b2d(
             &mut proving,
             v4,
             1,
             vec![screen("out-a", 0)],
-            vec![fact("win-a", "out-a", 0)],
-            "win-a",
-            Vec::new(),
             true,
             false,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
             vec![refused()],
-            Vec::new(),
-            Vec::new(),
+            "n1",
         );
         seed_native_views_4b2d(&mut proving);
         seed_view_transfer_4b2d(&mut proving, "op-v");
-        proving.settle_views_pre(&passed_native_report_4b2d(90, "n1"));
+        proving.settle_views_pre();
         assert!(
             proving.retained.is_empty(),
             "exact echo confirms (v4={v4})",
@@ -6049,21 +6033,42 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
             &test_issue(&passed_report_4b2d(90)),
             false,
         );
-        assert!(
-            viewed.retained_clears.is_empty(),
-            "staged view divergence retires (v4={v4})",
-            v4 = v4,
-        );
-        assert!(
-            viewed
-                .operation_settled
-                .iter()
-                .any(|event| event.operation_id == "op-1"
-                    && event.outcome == OperationOutcome::ClearAbandonedViewChanged),
-            "divergence abandons at the staged view gate, got {:?} (v4={v4})",
-            viewed.operation_settled,
-            v4 = v4,
-        );
+        if v4 {
+            assert!(
+                viewed.retained_clears.is_empty(),
+                "staged view divergence retires (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                viewed
+                    .operation_settled
+                    .iter()
+                    .any(|event| event.operation_id == "op-1"
+                        && event.outcome == OperationOutcome::ClearAbandonedViewChanged),
+                "divergence abandons at the staged view gate, got {:?} (v4={v4})",
+                viewed.operation_settled,
+                v4 = v4,
+            );
+        } else {
+            // Legacy staged-only views row is inert native-free (no echo
+            // ingress into the effective view): no abandon at the view
+            // gate, so the staged refusal proof wins instead.
+            assert!(
+                viewed.retained_clears.is_empty(),
+                "refusal proof retires (v4={v4})",
+                v4 = v4,
+            );
+            assert!(
+                viewed
+                    .operation_settled
+                    .iter()
+                    .any(|event| event.operation_id == "op-1"
+                        && event.outcome == OperationOutcome::ClearRefusedProven),
+                "inert echo lane yields to refusal, got {:?} (v4={v4})",
+                viewed.operation_settled,
+                v4 = v4,
+            );
+        }
         // Staged home divergence abandons before the view gate.
         let mut homed = settle_engine_4b2d();
         stage_attempts_4b2d(
@@ -6845,6 +6850,7 @@ fn touching_migration() -> RetainedTransfer {
         migration_source_view: None,
         migration_target_view: None,
         migration_terminal: None,
+        migration_selection_rev: None,
         pending_member: None,
         pending_members: BTreeMap::new(),
         pending_view: None,
@@ -7013,6 +7019,12 @@ fn fact_with_lw(window: &str, last: LastWrite) -> WindowFact {
 }
 
 fn seed_switch_binding(engine: &mut WorldEngine, members: Vec<SwitchMember>) {
+    let mut selected: Vec<DomainKey> = members.iter().map(|member| member.home.clone()).collect();
+    selected.sort();
+    selected.dedup();
+    let mut affected: Vec<OutputId> = selected.iter().map(|home| home.output.clone()).collect();
+    affected.sort();
+    affected.dedup();
     engine.retained_selection.insert(
         OutputId("out-a".to_owned()),
         RetainedSelection {
@@ -7029,6 +7041,8 @@ fn seed_switch_binding(engine: &mut WorldEngine, members: Vec<SwitchMember>) {
             arrival_ready: false,
             view_targets: BTreeMap::new(),
             view_raw: BTreeMap::new(),
+            selected,
+            affected,
         },
     );
 }
@@ -7056,8 +7070,8 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
             Vec::new(),
         );
         stage_either(&mut engine, v4, &legacy, &v4report);
-        let contra = contra_legacy(99, vec![fact("win-a", "out-a", 0)]);
-        engine.settle_selection_switch(&contra);
+        let _contra = contra_legacy(99, vec![fact("win-a", "out-a", 0)]);
+        engine.settle_selection_switch();
         let binding = engine.retained_selection.get(&OutputId("out-a".to_owned()));
         assert!(
             engine.switch_settled.len() == 1
@@ -7085,7 +7099,7 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
             Vec::new(),
         );
         stage_either(&mut engine, v4, &legacy, &v4report);
-        engine.settle_selection_switch(&contra_legacy(99, Vec::new()));
+        engine.settle_selection_switch();
         assert!(
             engine.switch_settled.is_empty(),
             "pending member holds terminal (v4={v4})"
@@ -7099,7 +7113,7 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
             Vec::new(),
         );
         stage_either(&mut engine, v4, &legacy, &v4report);
-        engine.settle_selection_switch(&contra_legacy(99, Vec::new()));
+        engine.settle_selection_switch();
         let latched = engine
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
@@ -7124,7 +7138,7 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
             vec![WindowId("win-a".to_owned())],
         );
         stage_either(&mut engine, v4, &legacy, &v4report);
-        engine.settle_selection_switch(&contra_legacy(2, Vec::new()));
+        engine.settle_selection_switch();
         assert!(
             engine.switch_settled.is_empty()
                 && engine
@@ -7140,9 +7154,9 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
             Vec::new(),
         );
         stage_either(&mut engine, v4, &legacy, &v4report);
-        let mut contra_closed = contra_legacy(2, Vec::new());
-        contra_closed.closed = vec![WindowId("win-a".to_owned())];
-        engine.settle_selection_switch(&contra_closed);
+        let mut _contra_closed = contra_legacy(2, Vec::new());
+        _contra_closed.closed = vec![WindowId("win-a".to_owned())];
+        engine.settle_selection_switch();
         assert_eq!(
             engine.switch_settled.len(),
             1,
@@ -7799,12 +7813,12 @@ fn staged_trailing_marker_reads_staged_gates_not_contra() {
         v4report.inventory_complete = true;
         stage_either(&mut engine, v4, &legacy, &v4report);
         engine.build_staged_domains(&legacy);
-        let mut contra = contra_legacy(2, vec![fact("win-a", "out-a", 0)]);
-        contra.inventory_complete = false;
+        let mut _contra = contra_legacy(2, vec![fact("win-a", "out-a", 0)]);
+        _contra.inventory_complete = false;
         // views: retained ws-1 shows, ws-2 tail spare is unoccupied.
         engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
         assert_eq!(
-            engine.trailing_marked_id(&contra, "out-a"),
+            engine.trailing_marked_id("out-a"),
             Some("ws-2".to_owned()),
             "staged gates mark the spare tail (v4={v4})"
         );
@@ -7815,9 +7829,9 @@ fn staged_trailing_marker_reads_staged_gates_not_contra() {
         gap_v4.inventory_complete = false;
         stage_either(&mut engine, v4, &gap_leg, &gap_v4);
         engine.build_staged_domains(&gap_leg);
-        let complete = contra_legacy(3, vec![fact("win-a", "out-a", 0)]);
+        let _complete = contra_legacy(3, vec![fact("win-a", "out-a", 0)]);
         assert_eq!(
-            engine.trailing_marked_id(&complete, "out-a"),
+            engine.trailing_marked_id("out-a"),
             None,
             "staged gap fails closed (v4={v4})"
         );
@@ -8162,9 +8176,9 @@ fn staged_member_prune_gap_and_held_presence_win_over_contra() {
         legacy.inventory_complete = false;
         v4report.inventory_complete = false;
         stage_either(&mut engine_gap, v4, &legacy, &v4report);
-        let mut contra = legacy.clone();
-        contra.inventory_complete = true;
-        engine_gap.reconcile_members(&contra);
+        let mut _contra = legacy.clone();
+        _contra.inventory_complete = true;
+        engine_gap.reconcile_members();
         assert!(
             engine_gap
                 .members
@@ -8188,9 +8202,9 @@ fn staged_member_prune_gap_and_held_presence_win_over_contra() {
         legacy.inventory_complete = true;
         v4report.inventory_complete = true;
         stage_either(&mut engine_prune, v4, &legacy, &v4report);
-        let mut contra = legacy.clone();
-        contra.inventory_complete = false;
-        engine_prune.reconcile_members(&contra);
+        let mut _contra = legacy.clone();
+        _contra.inventory_complete = false;
+        engine_prune.reconcile_members();
         assert!(
             !engine_prune
                 .members
@@ -8216,9 +8230,9 @@ fn staged_member_prune_gap_and_held_presence_win_over_contra() {
         legacy.held_windows = vec![held_window_row("win-a", "out-a", 1)];
         v4report.held_windows = vec![held_window_row("win-a", "out-a", 1)];
         stage_either(&mut engine_held, v4, &legacy, &v4report);
-        let mut contra = legacy.clone();
-        contra.held_windows = Vec::new();
-        engine_held.reconcile_members(&contra);
+        let mut _contra = legacy.clone();
+        _contra.held_windows = Vec::new();
+        engine_held.reconcile_members();
         assert!(
             engine_held
                 .members
@@ -9655,4 +9669,1488 @@ fn staged_focused_output_latch_reads_staged_capture() {
             "prior memory survives empty focus (v4={v4})"
         );
     }
+}
+
+/// Unit 6 sub-increment 5a: stage one native lane through the real intake.
+/// Source reports carry the native rows BEFORE staging on both intakes.
+fn stage_native_5a(
+    engine: &mut WorldEngine,
+    v4: bool,
+    seq: u64,
+    native: Vec<NativeObservation>,
+    views: Vec<ViewAttempt>,
+    complete: bool,
+) {
+    let (mut legacy, mut v4report) = pair_reports(seq, Vec::new(), Vec::new());
+    legacy.inventory_complete = complete;
+    v4report.inventory_complete = complete;
+    legacy.native = native.clone();
+    v4report.native = native;
+    legacy.view_attempts = views.clone();
+    v4report.view_attempts = views;
+    stage_either(engine, v4, &legacy, &v4report);
+}
+
+fn shared_host_engine_5a() -> WorldEngine {
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            host_owned: true,
+            ..Default::default()
+        },
+        vec![(
+            "mode".to_owned(),
+            RawSettingValue::String("shared".to_owned()),
+        )],
+    )
+    .expect("generation")
+}
+
+fn native_lane_5a(output: &str, order: Vec<&str>, current: &str) -> NativeObservation {
+    NativeObservation {
+        output: OutputId(output.to_owned()),
+        native_order: order.iter().map(|id| (*id).to_owned()).collect(),
+        current_native: Some(current.to_owned()),
+        occupancy: order
+            .iter()
+            .map(|id| NativeOccupancy {
+                native: (*id).to_owned(),
+                count: None,
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn staged_native_completeness_echo_receipt_and_order_conflict() {
+    for v4 in [false, true] {
+        // Eligible positive: a complete staged list proves the current
+        // echo and the native-derived member receipt.
+        let mut engine = engine_settle_host();
+        engine
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        engine.native_map.insert(
+            ("out-a".to_owned(), "native-out-a-0".to_owned()),
+            "ws-1".to_owned(),
+        );
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_row("out-a")],
+            Vec::new(),
+            true,
+        );
+        assert!(
+            engine.native_list_complete("out-a"),
+            "complete list (v4={v4})"
+        );
+        assert_eq!(
+            engine.native_echo_for(&OutputId("out-a".to_owned())),
+            Some("ws-1".to_owned()),
+            "staged current echo (v4={v4})"
+        );
+        let mut receipt_fact = fact("win-a", "out-a", 0);
+        receipt_fact.native_workspace =
+            crate::world_report::NativeWorkspaceFact::Value("native-out-a-0".to_owned());
+        assert_eq!(
+            engine.effective_logical_receipt(&receipt_fact),
+            Some("ws-1".to_owned()),
+            "staged member receipt (v4={v4})"
+        );
+        // Negative: an unmapped current proves nothing on the same joins.
+        stage_native_5a(
+            &mut engine,
+            v4,
+            3,
+            vec![native_lane_5a(
+                "out-a",
+                vec!["native-unknown"],
+                "native-unknown",
+            )],
+            Vec::new(),
+            true,
+        );
+        assert_eq!(
+            engine.native_echo_for(&OutputId("out-a".to_owned())),
+            None,
+            "unknown current holds echo (v4={v4})"
+        );
+        receipt_fact.native_workspace =
+            crate::world_report::NativeWorkspaceFact::Value("native-unknown".to_owned());
+        assert_eq!(
+            engine.effective_logical_receipt(&receipt_fact),
+            None,
+            "unmapped receipt holds (v4={v4})"
+        );
+        // Negative: a staged inventory gap fails closed even with the
+        // mapped rows restaged.
+        stage_native_5a(
+            &mut engine,
+            v4,
+            4,
+            vec![native_row("out-a")],
+            Vec::new(),
+            false,
+        );
+        assert!(
+            !engine.native_list_complete("out-a"),
+            "staged gap fails list (v4={v4})"
+        );
+        assert_eq!(
+            engine.native_echo_for(&OutputId("out-a".to_owned())),
+            None,
+            "staged gap holds echo (v4={v4})"
+        );
+        receipt_fact.native_workspace =
+            crate::world_report::NativeWorkspaceFact::Value("native-out-a-0".to_owned());
+        assert_eq!(
+            engine.effective_logical_receipt(&receipt_fact),
+            None,
+            "staged gap holds receipt (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_native_shared_order_conflict_current_vs_stale() {
+    for v4 in [false, true] {
+        // Positive: first-appearance union across sorted outputs reverses
+        // out-b's reported order, so the fresh snapshot is ambiguous.
+        let mut engine = shared_host_engine_5a();
+        let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+        let mut legacy = report_full(
+            2,
+            2,
+            screens.clone(),
+            Vec::new(),
+            Vec::new(),
+            "",
+            None,
+            None,
+        );
+        let mut v4report =
+            report_v4_simple(2, screens, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let conflict = vec![
+            native_lane_5a("out-a", vec!["n1", "n2"], "n1"),
+            native_lane_5a("out-b", vec!["n2", "n1"], "n2"),
+        ];
+        legacy.native = conflict.clone();
+        v4report.native = conflict;
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        assert!(
+            engine.native_order_conflict(),
+            "conflicting snapshot holds adoption (v4={v4})"
+        );
+        // Negative: identical lists are consistent on the same screens.
+        let mut engine = shared_host_engine_5a();
+        let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+        let mut legacy = report_full(
+            2,
+            2,
+            screens.clone(),
+            Vec::new(),
+            Vec::new(),
+            "",
+            None,
+            None,
+        );
+        let mut v4report =
+            report_v4_simple(2, screens, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let aligned = vec![
+            native_lane_5a("out-a", vec!["n1", "n2"], "n1"),
+            native_lane_5a("out-b", vec!["n1", "n2"], "n1"),
+        ];
+        legacy.native = aligned.clone();
+        v4report.native = aligned;
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        assert!(
+            !engine.native_order_conflict(),
+            "aligned snapshot consistent (v4={v4})"
+        );
+        // Negative: a staged inventory gap never conflicts even with the
+        // conflicting rows restaged.
+        let mut engine = shared_host_engine_5a();
+        let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+        let mut legacy = report_full(
+            2,
+            2,
+            screens.clone(),
+            Vec::new(),
+            Vec::new(),
+            "",
+            None,
+            None,
+        );
+        let mut v4report =
+            report_v4_simple(2, screens, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        legacy.inventory_complete = false;
+        v4report.inventory_complete = false;
+        let conflict = vec![
+            native_lane_5a("out-a", vec!["n1", "n2"], "n1"),
+            native_lane_5a("out-b", vec!["n2", "n1"], "n2"),
+        ];
+        legacy.native = conflict.clone();
+        v4report.native = conflict;
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        assert!(
+            !engine.native_order_conflict(),
+            "staged gap never conflicts (v4={v4})"
+        );
+    }
+}
+
+/// Unit 6 sub-increment 5a: creation correlation reads the staged raw
+/// creation lane with the exact op/logical/output tuple, bounds the
+/// attempt stamp against the staged receipt clock and the mint clock,
+/// and never upgrades the latched first receipt.
+fn stage_creation_5a(
+    engine: &mut WorldEngine,
+    v4: bool,
+    seq: u64,
+    attempts: Vec<NativeCreationAttempt>,
+    monotonic_ms: u64,
+) {
+    let (mut legacy, mut v4report) = pair_reports(seq, Vec::new(), Vec::new());
+    legacy.monotonic_ms = monotonic_ms;
+    v4report.monotonic_ms = monotonic_ms;
+    legacy.native = vec![native_row("out-a")];
+    v4report.native = vec![native_row("out-a")];
+    legacy.creation_attempts = attempts.clone();
+    v4report.creation_attempts = attempts;
+    stage_either(engine, v4, &legacy, &v4report);
+}
+
+fn retained_creation_5a(minted_ms: u64) -> crate::world_engine::RetainedNativeCreation {
+    crate::world_engine::RetainedNativeCreation {
+        operation_id: "op-c".to_owned(),
+        logical_workspace: "ws-9".to_owned(),
+        target_output: OutputId("out-a".to_owned()),
+        order_before: vec!["native-out-a-0".to_owned()],
+        minted_ms,
+        pending: None,
+        ambiguous: false,
+    }
+}
+
+#[test]
+fn staged_native_creation_exact_tuple_clocks_and_first_receipt() {
+    for v4 in [false, true] {
+        // Eligible positive: the exact-tuple Accepted attempt inside both
+        // clocks latches pending, and the unconsumed creation still reads
+        // as a desire before settlement consumes the evidence.
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        engine.native_map.insert(
+            ("out-a".to_owned(), "native-out-a-0".to_owned()),
+            "ws-1".to_owned(),
+        );
+        engine.retained_creations.push(retained_creation_5a(10));
+        let mut attempt = creation_row("op-c", "ws-9", "out-a");
+        attempt.attempt_ms = 15;
+        stage_creation_5a(&mut engine, v4, 2, vec![attempt], 20);
+        assert_eq!(
+            engine.native_creation_desires().len(),
+            1,
+            "desire (v4={v4})"
+        );
+        engine.converge_native_pre();
+        let retained = engine.retained_creations.first().expect("creation");
+        assert!(retained.pending.is_some(), "exact tuple latches (v4={v4})");
+        assert!(!retained.ambiguous, "in-bounds attempt clean (v4={v4})");
+        assert!(
+            engine.native_creation_desires().is_empty(),
+            "consumed evidence leaves desires (v4={v4})"
+        );
+        // A contradictory replay never upgrades the latched first
+        // receipt: the second tuple latches ambiguity, pending stays.
+        let mut replay = creation_row("op-c", "ws-9", "out-a");
+        replay.attempt_ms = 16;
+        replay.order_after = vec!["native-out-a-0".to_owned(), "native-out-a-9".to_owned()];
+        stage_creation_5a(&mut engine, v4, 3, vec![replay], 20);
+        engine.converge_native_pre();
+        let retained = engine.retained_creations.first().expect("creation");
+        assert!(retained.ambiguous, "replay latches ambiguity (v4={v4})");
+        assert_eq!(
+            retained.pending.as_ref().map(|pending| pending.attempt_ms),
+            Some(15),
+            "first receipt never upgrades (v4={v4})"
+        );
+        // Negative: a wrong-tuple row reads as absent, never latches.
+        // Same eligible baseline as the positive (bound head, no unmapped
+        // candidate) so absence proves the tuple, not a race hold.
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        engine.native_map.insert(
+            ("out-a".to_owned(), "native-out-a-0".to_owned()),
+            "ws-1".to_owned(),
+        );
+        engine.retained_creations.push(retained_creation_5a(10));
+        let mut forged = creation_row("op-other", "ws-9", "out-a");
+        forged.attempt_ms = 15;
+        stage_creation_5a(&mut engine, v4, 2, vec![forged], 20);
+        engine.converge_native_pre();
+        let retained = engine.retained_creations.first().expect("creation");
+        assert!(retained.pending.is_none(), "forged tuple absent (v4={v4})");
+        assert!(!retained.ambiguous, "forged tuple clean (v4={v4})");
+        // Negative: a stale stamp before the mint clock latches
+        // ambiguity instead of proving the creation. Same eligible
+        // baseline with no unmapped candidate: the positive above latches
+        // clean at 15ms, so ambiguity is causal to the stamp.
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        engine.native_map.insert(
+            ("out-a".to_owned(), "native-out-a-0".to_owned()),
+            "ws-1".to_owned(),
+        );
+        engine.retained_creations.push(retained_creation_5a(10));
+        let mut stale = creation_row("op-c", "ws-9", "out-a");
+        stale.attempt_ms = 5;
+        stage_creation_5a(&mut engine, v4, 2, vec![stale], 20);
+        engine.converge_native_pre();
+        let retained = engine.retained_creations.first().expect("creation");
+        assert!(
+            retained.pending.is_some(),
+            "stale receipt latched (v4={v4})"
+        );
+        assert!(retained.ambiguous, "stale stamp ambiguous (v4={v4})");
+        // Negative: a future stamp past the staged receipt clock latches
+        // ambiguity instead of proving the creation. Same eligible
+        // baseline, so ambiguity is causal to the stamp.
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        engine.native_map.insert(
+            ("out-a".to_owned(), "native-out-a-0".to_owned()),
+            "ws-1".to_owned(),
+        );
+        engine.retained_creations.push(retained_creation_5a(10));
+        let mut future = creation_row("op-c", "ws-9", "out-a");
+        future.attempt_ms = 25;
+        stage_creation_5a(&mut engine, v4, 2, vec![future], 20);
+        engine.converge_native_pre();
+        let retained = engine.retained_creations.first().expect("creation");
+        assert!(
+            retained.pending.is_some(),
+            "future receipt latched (v4={v4})"
+        );
+        assert!(retained.ambiguous, "future stamp ambiguous (v4={v4})");
+    }
+}
+
+#[test]
+fn staged_native_creation_hold_exact_tuple_and_unmapped_gate() {
+    for v4 in [false, true] {
+        // Positive: an outstanding creation faces a fresh unmapped
+        // staged candidate, so the row holds.
+        let mut engine = engine_settle_host();
+        engine.retained_creations.push(retained_creation_5a(0));
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_row("out-a")],
+            Vec::new(),
+            true,
+        );
+        assert!(
+            engine.creation_hold_for("out-a", "ws-9"),
+            "unmapped candidate holds (v4={v4})"
+        );
+        // Exact tuple: neighbouring rows never hold.
+        assert!(
+            !engine.creation_hold_for("out-a", "ws-8"),
+            "wrong logical free (v4={v4})"
+        );
+        assert!(
+            !engine.creation_hold_for("out-b", "ws-9"),
+            "wrong output free (v4={v4})"
+        );
+        // Negative: once the staged candidate binds, the hold clears.
+        engine.native_map.insert(
+            ("out-a".to_owned(), "native-out-a-0".to_owned()),
+            "ws-9".to_owned(),
+        );
+        assert!(
+            !engine.creation_hold_for("out-a", "ws-9"),
+            "bound candidate frees (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_selection_native_proof_success_refusal_and_latched_hold() {
+    for v4 in [false, true] {
+        // Positive: the staged current echo names the obligated home.
+        let mut engine = engine_settle_host();
+        seed_selection_binding(&mut engine, "op-4", false, &["out-a"]);
+        engine
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        engine.native_map.insert(
+            ("out-a".to_owned(), "native-out-a-0".to_owned()),
+            "ws-1".to_owned(),
+        );
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_row("out-a")],
+            Vec::new(),
+            true,
+        );
+        engine.settle_selection_switch();
+        assert_eq!(
+            engine.switch_settled.len(),
+            1,
+            "staged echo proves (v4={v4})"
+        );
+        assert_eq!(
+            engine.switch_settled.first().map(|event| event.outcome),
+            Some(SwitchOutcome::Complete),
+            "proven outcome (v4={v4})"
+        );
+        // Negative: a staged gap holds the terminal with the binding kept.
+        let mut engine = engine_settle_host();
+        seed_selection_binding(&mut engine, "op-4", false, &["out-a"]);
+        engine
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        engine.native_map.insert(
+            ("out-a".to_owned(), "native-out-a-0".to_owned()),
+            "ws-1".to_owned(),
+        );
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_row("out-a")],
+            Vec::new(),
+            false,
+        );
+        engine.settle_selection_switch();
+        assert!(
+            engine.switch_settled.is_empty()
+                && engine
+                    .retained_selection
+                    .contains_key(&OutputId("out-a".to_owned())),
+            "staged gap holds terminal (v4={v4})"
+        );
+        // Proven refusal: the exact-tuple Refused attempt keeps its
+        // readable preimage while the staged echo still names it.
+        let mut engine = engine_settle_host();
+        seed_selection_binding(&mut engine, "op-4", false, &["out-a"]);
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-2".to_owned()],
+        );
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "n0".to_owned()), "ws-2".to_owned());
+        let refused = ViewAttempt {
+            operation_id: "op-4".to_owned(),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: "ws-1".to_owned(),
+            setter: FrameSetter::Refused,
+            pre: Some(WorkspaceRef::Native {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
+            }),
+            post: Some(WorkspaceRef::Native {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
+            }),
+            baseline: None,
+            attempt_ms: 7,
+        };
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_lane_5a("out-a", vec!["n0"], "n0")],
+            vec![refused.clone()],
+            true,
+        );
+        engine.settle_selection_switch();
+        assert_eq!(
+            engine.switch_settled.len(),
+            1,
+            "refusal terminates (v4={v4})"
+        );
+        assert_eq!(
+            engine.switch_settled.first().map(|event| event.outcome),
+            Some(SwitchOutcome::CompletedWithFailures),
+            "refused outcome (v4={v4})"
+        );
+        // The identical refusal under a wrong operation never latches.
+        let mut engine = engine_settle_host();
+        seed_selection_binding(&mut engine, "op-4", false, &["out-a"]);
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-2".to_owned()],
+        );
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "n0".to_owned()), "ws-2".to_owned());
+        let mut forged = refused;
+        forged.operation_id = "op-other".to_owned();
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_lane_5a("out-a", vec!["n0"], "n0")],
+            vec![forged],
+            true,
+        );
+        engine.settle_selection_feedback();
+        assert!(
+            engine
+                .retained_selection
+                .get(&OutputId("out-a".to_owned()))
+                .expect("binding")
+                .view_raw
+                .is_empty(),
+            "wrong-tuple source row never latches (v4={v4})"
+        );
+        engine.settle_selection_switch();
+        assert!(
+            engine.switch_settled.is_empty()
+                && engine
+                    .retained_selection
+                    .contains_key(&OutputId("out-a".to_owned())),
+            "wrong-tuple source row holds (v4={v4})"
+        );
+    }
+}
+
+fn native_occ_5a(
+    output: &str,
+    order: &[&str],
+    current: &str,
+    counts: &[Option<u32>],
+) -> NativeObservation {
+    assert_eq!(order.len(), counts.len(), "order/counts keyed coverage");
+    NativeObservation {
+        output: OutputId(output.to_owned()),
+        native_order: order.iter().map(|id| (*id).to_owned()).collect(),
+        current_native: Some(current.to_owned()),
+        occupancy: order
+            .iter()
+            .zip(counts.iter())
+            .map(|(id, count)| NativeOccupancy {
+                native: (*id).to_owned(),
+                count: *count,
+            })
+            .collect(),
+    }
+}
+
+fn seed_domain_5a(engine: &mut WorldEngine, output: &str, workspace: &str, readable: bool) {
+    engine.staged.domains.push(StagedDomain {
+        key: DomainKey {
+            output: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+        },
+        bounds: rect(0, 0, 800, 560),
+        gap: 0,
+        outer_gap: 0,
+        windows: Vec::new(),
+        focused: WindowId(String::new()),
+        minimized: Vec::new(),
+        unreadable: Vec::new(),
+        closed: Vec::new(),
+        readable,
+        hold: None,
+    });
+}
+
+/// Eligible four-row retirement seed: d1 viewed, d4 the bound trailing
+/// spare, d2/d3 empty with every guard clear. Call after staging: the
+/// intake rebuilds staged domains, so domain seeds would not survive.
+fn seed_retirement_5a(engine: &mut WorldEngine) {
+    engine.mapping.insert(
+        "out-a".to_owned(),
+        vec![
+            "ws-1".to_owned(),
+            "ws-2".to_owned(),
+            "ws-3".to_owned(),
+            "ws-4".to_owned(),
+        ],
+    );
+    for (native, logical) in [
+        ("d1", "ws-1"),
+        ("d2", "ws-2"),
+        ("d3", "ws-3"),
+        ("d4", "ws-4"),
+    ] {
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), native.to_owned()), logical.to_owned());
+    }
+    engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+    for workspace in ["ws-1", "ws-2", "ws-3", "ws-4"] {
+        seed_domain_5a(engine, "out-a", workspace, true);
+    }
+}
+
+fn stage_retire_5a(
+    engine: &mut WorldEngine,
+    v4: bool,
+    seq: u64,
+    native: Vec<NativeObservation>,
+    complete: bool,
+    barrier: bool,
+    screen_complete: bool,
+) {
+    let (mut legacy, mut v4report) = pair_reports(seq, Vec::new(), Vec::new());
+    legacy.inventory_complete = complete;
+    v4report.inventory_complete = complete;
+    legacy.gesture_barrier = barrier;
+    v4report.gesture_barrier = barrier;
+    legacy.screens[0].complete = screen_complete;
+    v4report.screens[0].complete = screen_complete;
+    legacy.native = native.clone();
+    v4report.native = native;
+    stage_either(engine, v4, &legacy, &v4report);
+}
+
+fn empty_retire_5a() -> NativeObservation {
+    native_occ_5a(
+        "out-a",
+        &["d1", "d2", "d3", "d4"],
+        "d1",
+        &[Some(0), Some(0), Some(0), Some(0)],
+    )
+}
+
+#[test]
+fn staged_native_retirement_occupancy_join_and_holds() {
+    use std::collections::BTreeSet;
+    for v4 in [false, true] {
+        // Eligible positive: zero-count d2/d3 with exact coverage join;
+        // the viewed d1 and the trailing d4 veto.
+        let mut engine = engine_settle_host();
+        stage_retire_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![empty_retire_5a()],
+            true,
+            false,
+            true,
+        );
+        seed_retirement_5a(&mut engine);
+        assert_eq!(
+            engine.retirement_deletion_set(),
+            BTreeSet::from([
+                ("out-a".to_owned(), "ws-2".to_owned()),
+                ("out-a".to_owned(), "ws-3".to_owned()),
+            ]),
+            "empty join retires (v4={v4})"
+        );
+        // Negative: staged inventory gap authorizes no deletion.
+        let mut engine = engine_settle_host();
+        stage_retire_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![empty_retire_5a()],
+            false,
+            false,
+            true,
+        );
+        seed_retirement_5a(&mut engine);
+        assert!(
+            engine.retirement_deletion_set().is_empty(),
+            "inventory gap holds (v4={v4})"
+        );
+        // Negative: incomplete staged screen authorizes no deletion.
+        let mut engine = engine_settle_host();
+        stage_retire_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![empty_retire_5a()],
+            true,
+            false,
+            false,
+        );
+        seed_retirement_5a(&mut engine);
+        assert!(
+            engine.retirement_deletion_set().is_empty(),
+            "screen gap holds (v4={v4})"
+        );
+        // Negative: inexact occupancy coverage authorizes no deletion.
+        let mut engine = engine_settle_host();
+        let mut bad = empty_retire_5a();
+        bad.occupancy.pop();
+        stage_retire_5a(&mut engine, v4, 2, vec![bad], true, false, true);
+        seed_retirement_5a(&mut engine);
+        assert!(
+            engine.retirement_deletion_set().is_empty(),
+            "coverage gap holds (v4={v4})"
+        );
+        // Negative: gesture barrier vetoes every retirement.
+        let mut engine = engine_settle_host();
+        stage_retire_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![empty_retire_5a()],
+            true,
+            true,
+            true,
+        );
+        seed_retirement_5a(&mut engine);
+        assert!(
+            engine.retirement_deletion_set().is_empty(),
+            "barrier holds (v4={v4})"
+        );
+        // Occupied d2 survives while the eligible d3 still retires.
+        let mut engine = engine_settle_host();
+        stage_retire_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_occ_5a(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                "d1",
+                &[Some(0), Some(2), Some(0), Some(0)],
+            )],
+            true,
+            false,
+            true,
+        );
+        seed_retirement_5a(&mut engine);
+        assert_eq!(
+            engine.retirement_deletion_set(),
+            BTreeSet::from([("out-a".to_owned(), "ws-3".to_owned())]),
+            "occupied vetoes narrowly (v4={v4})"
+        );
+        // Unreadable d3 domain holds while the eligible d2 still retires.
+        let mut engine = engine_settle_host();
+        stage_retire_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![empty_retire_5a()],
+            true,
+            false,
+            true,
+        );
+        seed_retirement_5a(&mut engine);
+        engine
+            .staged
+            .domains
+            .retain(|domain| domain.key.workspace.0 != "ws-3");
+        seed_domain_5a(&mut engine, "out-a", "ws-3", false);
+        assert_eq!(
+            engine.retirement_deletion_set(),
+            BTreeSet::from([("out-a".to_owned(), "ws-2".to_owned())]),
+            "unreadable holds narrowly (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_native_adoption_reorder_and_prune() {
+    for v4 in [false, true] {
+        // Outside desktop binds at native-order position behind the
+        // retained head; the ring follows the staged current order.
+        let mut engine = engine_settle_host();
+        // Fresh mints count from ws-1: skip past the seeded row.
+        engine.creation_counter = 100;
+        engine
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "d1".to_owned()), "ws-1".to_owned());
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_lane_5a("out-a", vec!["d1", "d2"], "d2")],
+            Vec::new(),
+            true,
+        );
+        engine.converge_native_pre();
+        let ring = engine.mapping.get("out-a").cloned().unwrap_or_default();
+        assert_eq!(ring.len(), 2, "outside desktop binds (v4={v4})");
+        assert_eq!(ring[0], "ws-1", "head keeps order (v4={v4})");
+        let fresh = ring[1].clone();
+        assert_ne!(fresh, "ws-1", "fresh id minted (v4={v4})");
+        assert_eq!(
+            engine
+                .native_map
+                .get(&("out-a".to_owned(), "d2".to_owned())),
+            Some(&fresh),
+            "outside desktop bound (v4={v4})"
+        );
+        // Reorder-only: the same identities follow the observed order.
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-2".to_owned(), "ws-1".to_owned()],
+        );
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "d1".to_owned()), "ws-1".to_owned());
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "d2".to_owned()), "ws-2".to_owned());
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_lane_5a("out-a", vec!["d1", "d2"], "d1")],
+            Vec::new(),
+            true,
+        );
+        engine.converge_native_pre();
+        assert_eq!(
+            engine.mapping.get("out-a"),
+            Some(&vec!["ws-1".to_owned(), "ws-2".to_owned()]),
+            "reorder follows native order (v4={v4})"
+        );
+        assert_eq!(
+            engine
+                .native_map
+                .get(&("out-a".to_owned(), "d1".to_owned())),
+            Some(&"ws-1".to_owned()),
+            "identities preserved (v4={v4})"
+        );
+        // Vanished native prunes its pair on a complete snapshot.
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "d1".to_owned()), "ws-1".to_owned());
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "dx".to_owned()), "ws-9".to_owned());
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_lane_5a("out-a", vec!["d1"], "d1")],
+            Vec::new(),
+            true,
+        );
+        engine.converge_native_pre();
+        assert!(
+            !engine
+                .native_map
+                .contains_key(&("out-a".to_owned(), "dx".to_owned())),
+            "vanished pair prunes (v4={v4})"
+        );
+        assert_eq!(
+            engine
+                .native_map
+                .get(&("out-a".to_owned(), "d1".to_owned())),
+            Some(&"ws-1".to_owned()),
+            "survivor keeps binding (v4={v4})"
+        );
+        // Negative: an incomplete staged list never prunes.
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "d1".to_owned()), "ws-1".to_owned());
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "dx".to_owned()), "ws-9".to_owned());
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_lane_5a("out-a", vec!["d1"], "d1")],
+            Vec::new(),
+            false,
+        );
+        engine.converge_native_pre();
+        assert_eq!(
+            engine
+                .native_map
+                .get(&("out-a".to_owned(), "dx".to_owned())),
+            Some(&"ws-9".to_owned()),
+            "gap holds vanished pair (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_native_provisioning_mint_authorization_and_gates() {
+    for v4 in [false, true] {
+        // Eligible positive: the unbound demanded ws-9 mints one desire
+        // stamped with the staged clock, stable across repeats.
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        engine.views.insert("out-a".to_owned(), "ws-9".to_owned());
+        stage_creation_5a(&mut engine, v4, 2, Vec::new(), 42);
+        engine.ensure_native_creations("out-a");
+        assert_eq!(engine.retained_creations.len(), 1, "demand mints (v4={v4})");
+        let minted = engine.retained_creations.first().expect("minted").clone();
+        assert_eq!(minted.logical_workspace, "ws-9", "mint target (v4={v4})");
+        assert_eq!(minted.minted_ms, 42, "staged mint clock (v4={v4})");
+        assert_eq!(
+            minted.order_before,
+            vec!["native-out-a-0".to_owned()],
+            "mint baseline order (v4={v4})"
+        );
+        let desires = engine.native_creation_desires();
+        assert_eq!(desires.len(), 1, "desire emitted (v4={v4})");
+        assert_eq!(
+            desires[0].logical_workspace, "ws-9",
+            "desire target (v4={v4})"
+        );
+        assert_eq!(
+            desires[0].operation_id, minted.operation_id,
+            "desire operation (v4={v4})"
+        );
+        engine.ensure_native_creations("out-a");
+        assert_eq!(
+            engine.retained_creations.len(),
+            1,
+            "repeat mints nothing (v4={v4})"
+        );
+        assert_eq!(
+            engine
+                .retained_creations
+                .first()
+                .expect("minted")
+                .operation_id,
+            minted.operation_id,
+            "stable operation id (v4={v4})"
+        );
+        // Negative: incomplete inventory mints nothing.
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        engine.views.insert("out-a".to_owned(), "ws-9".to_owned());
+        let (mut legacy, mut v4report) = pair_reports(2, Vec::new(), Vec::new());
+        legacy.inventory_complete = false;
+        v4report.inventory_complete = false;
+        legacy.native = vec![native_row("out-a")];
+        v4report.native = vec![native_row("out-a")];
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        engine.ensure_native_creations("out-a");
+        assert!(
+            engine.retained_creations.is_empty() && engine.native_creation_desires().is_empty(),
+            "inventory gap blocks mint (v4={v4})"
+        );
+        // Negative: incomplete staged screen mints nothing.
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        engine.views.insert("out-a".to_owned(), "ws-9".to_owned());
+        let (mut legacy, mut v4report) = pair_reports(2, Vec::new(), Vec::new());
+        legacy.screens[0].complete = false;
+        v4report.screens[0].complete = false;
+        legacy.native = vec![native_row("out-a")];
+        v4report.native = vec![native_row("out-a")];
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        engine.ensure_native_creations("out-a");
+        assert!(
+            engine.retained_creations.is_empty() && engine.native_creation_desires().is_empty(),
+            "screen gap blocks mint (v4={v4})"
+        );
+        // Negative: absent native row mints nothing.
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        engine.views.insert("out-a".to_owned(), "ws-9".to_owned());
+        let (legacy, v4report) = pair_reports(2, Vec::new(), Vec::new());
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        engine.ensure_native_creations("out-a");
+        assert!(
+            engine.retained_creations.is_empty() && engine.native_creation_desires().is_empty(),
+            "absent row blocks mint (v4={v4})"
+        );
+        // Negative: pending and ambiguous creations emit no desire.
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        engine.views.insert("out-a".to_owned(), "ws-9".to_owned());
+        stage_creation_5a(&mut engine, v4, 2, Vec::new(), 42);
+        engine.ensure_native_creations("out-a");
+        let pending = creation_row("op-c", "ws-9", "out-a");
+        engine.retained_creations[0].pending = Some(pending);
+        assert!(
+            engine.native_creation_desires().is_empty(),
+            "pending emits nothing (v4={v4})"
+        );
+        engine.retained_creations[0].pending = None;
+        engine.retained_creations[0].ambiguous = true;
+        assert!(
+            engine.native_creation_desires().is_empty(),
+            "ambiguous emits nothing (v4={v4})"
+        );
+        // Shared gate positive: a complete Shared snapshot emits the
+        // seeded retained desire; the identical incomplete non-target
+        // screen then hides the same retained row.
+        let mut engine = shared_host_engine_5a();
+        engine.retained_creations.push(retained_creation_5a(10));
+        let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+        let mut legacy = report_full(
+            2,
+            2,
+            screens.clone(),
+            Vec::new(),
+            Vec::new(),
+            "",
+            None,
+            None,
+        );
+        let mut v4report =
+            report_v4_simple(2, screens, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        legacy.native = vec![native_row("out-a"), native_row("out-b")];
+        v4report.native = vec![native_row("out-a"), native_row("out-b")];
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        assert_eq!(
+            engine.native_creation_desires().len(),
+            1,
+            "shared complete emits (v4={v4})"
+        );
+        let mut engine = shared_host_engine_5a();
+        engine.retained_creations.push(retained_creation_5a(10));
+        let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+        let mut legacy = report_full(
+            2,
+            2,
+            screens.clone(),
+            Vec::new(),
+            Vec::new(),
+            "",
+            None,
+            None,
+        );
+        let mut v4report =
+            report_v4_simple(2, screens, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        v4report.screens[1].complete = false;
+        legacy.screens[1].complete = false;
+        legacy.native = vec![native_row("out-a"), native_row("out-b")];
+        v4report.native = vec![native_row("out-a"), native_row("out-b")];
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        assert!(
+            engine.native_creation_desires().is_empty(),
+            "shared screen gap blocks desires (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_native_source_release_defer_and_retry() {
+    for v4 in [false, true] {
+        // The migrated ws-9 left the out-a ring; its dx pair is dormant.
+        let mut engine = engine_settle_host();
+        // Fresh mints count from ws-1: skip past the seeded row.
+        engine.creation_counter = 100;
+        engine
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "d1".to_owned()), "ws-1".to_owned());
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "dx".to_owned()), "ws-9".to_owned());
+        // Incomplete staged list requeues the pair without adopting.
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_lane_5a("out-a", vec!["d1", "dx"], "d1")],
+            Vec::new(),
+            false,
+        );
+        let out = OutputId("out-a".to_owned());
+        assert!(
+            engine
+                .release_migrated_source_backing(&out, "ws-9")
+                .is_empty(),
+            "gap releases nothing (v4={v4})"
+        );
+        assert_eq!(
+            engine.pending_source_releases,
+            vec![("out-a".to_owned(), "ws-9".to_owned())],
+            "gap requeues pair (v4={v4})"
+        );
+        assert_eq!(
+            engine
+                .native_map
+                .get(&("out-a".to_owned(), "dx".to_owned())),
+            Some(&"ws-9".to_owned()),
+            "gap holds pair (v4={v4})"
+        );
+        engine.release_migrated_source_backing(&out, "ws-9");
+        assert_eq!(
+            engine.pending_source_releases.len(),
+            1,
+            "requeue deduplicates (v4={v4})"
+        );
+        // Complete recovery drives the retry itself: the complete
+        // snapshot converges while the pair is pending, so native intake
+        // releases and adopts once with a fresh binding and drained queue.
+        stage_native_5a(
+            &mut engine,
+            v4,
+            3,
+            vec![native_lane_5a("out-a", vec!["d1", "dx"], "d1")],
+            Vec::new(),
+            true,
+        );
+        engine.converge_native_pre();
+        assert!(
+            engine.pending_source_releases.is_empty(),
+            "retry drains queue (v4={v4})"
+        );
+        let fresh = engine
+            .native_map
+            .get(&("out-a".to_owned(), "dx".to_owned()))
+            .cloned()
+            .expect("dx rebound");
+        assert_ne!(fresh, "ws-9", "fresh id minted (v4={v4})");
+        assert_eq!(
+            engine.mapping.get("out-a"),
+            Some(&vec!["ws-1".to_owned(), fresh.clone()]),
+            "fresh row at order (v4={v4})"
+        );
+        engine.converge_native_pre();
+        assert!(
+            engine.pending_source_releases.is_empty(),
+            "repeat drains queue (v4={v4})"
+        );
+        assert_eq!(
+            engine
+                .native_map
+                .get(&("out-a".to_owned(), "dx".to_owned())),
+            Some(&fresh),
+            "retry binds nothing new (v4={v4})"
+        );
+        assert_eq!(
+            engine.mapping.get("out-a"),
+            Some(&vec!["ws-1".to_owned(), fresh.clone()]),
+            "repeat stable (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_selection_feedback_first_latch_across_restage() {
+    for v4 in [false, true] {
+        // Refusal latches at feedback; a later recovery that omits fresh
+        // attempts still terminates against the readable preimage.
+        let mut engine = engine_settle_host();
+        seed_selection_binding(&mut engine, "op-4", false, &["out-a"]);
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-2".to_owned()],
+        );
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "n0".to_owned()), "ws-2".to_owned());
+        let refused = ViewAttempt {
+            operation_id: "op-4".to_owned(),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: "ws-1".to_owned(),
+            setter: FrameSetter::Refused,
+            pre: Some(WorkspaceRef::Native {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
+            }),
+            post: Some(WorkspaceRef::Native {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
+            }),
+            baseline: None,
+            attempt_ms: 7,
+        };
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_lane_5a("out-a", vec!["n0"], "n0")],
+            vec![refused],
+            true,
+        );
+        engine.settle_selection_feedback();
+        assert_eq!(
+            engine
+                .retained_selection
+                .get(&OutputId("out-a".to_owned()))
+                .and_then(|binding| binding.view_raw.get(&OutputId("out-a".to_owned())))
+                .map(|attempt| attempt.attempt_ms),
+            Some(7),
+            "first raw latches (v4={v4})"
+        );
+        // Fresh attempts gone on recovery: the latched raw still proves.
+        stage_native_5a(
+            &mut engine,
+            v4,
+            3,
+            vec![native_lane_5a("out-a", vec!["n0"], "n0")],
+            Vec::new(),
+            true,
+        );
+        engine.settle_selection_feedback();
+        engine.settle_selection_switch();
+        assert_eq!(
+            engine.switch_settled.len(),
+            1,
+            "latched refusal terminates (v4={v4})"
+        );
+        assert_eq!(
+            engine.switch_settled.first().map(|event| event.outcome),
+            Some(SwitchOutcome::CompletedWithFailures),
+            "refused outcome (v4={v4})"
+        );
+        // Accepted ambiguous original: a later genuinely-proving raw
+        // (Accepted post n1 -> ws-1) never upgrades the latch, so the
+        // terminal still holds while the current echo stays n0/ws-2.
+        let mut engine = engine_settle_host();
+        seed_selection_binding(&mut engine, "op-4", false, &["out-a"]);
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-2".to_owned()],
+        );
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "n0".to_owned()), "ws-2".to_owned());
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "n1".to_owned()), "ws-1".to_owned());
+        let mut original = view_row("op-4");
+        original.attempt_ms = 7;
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_lane_5a("out-a", vec!["n0"], "n0")],
+            vec![original],
+            true,
+        );
+        engine.settle_selection_feedback();
+        engine.settle_selection_switch();
+        assert!(
+            engine.switch_settled.is_empty(),
+            "ambiguous original holds (v4={v4})"
+        );
+        let mut contradict = view_row("op-4");
+        contradict.attempt_ms = 8;
+        contradict.post = Some(WorkspaceRef::Native {
+            output: OutputId("out-a".to_owned()),
+            workspace: crate::ids::NativeWorkspaceId::parse("n1").expect("native id"),
+        });
+        stage_native_5a(
+            &mut engine,
+            v4,
+            3,
+            vec![native_lane_5a("out-a", vec!["n0"], "n0")],
+            vec![contradict],
+            true,
+        );
+        engine.settle_selection_feedback();
+        engine.settle_selection_switch();
+        assert!(
+            engine.switch_settled.is_empty(),
+            "contradiction never upgrades (v4={v4})"
+        );
+        assert_eq!(
+            engine
+                .retained_selection
+                .get(&OutputId("out-a".to_owned()))
+                .and_then(|binding| binding.view_raw.get(&OutputId("out-a".to_owned())))
+                .map(|attempt| attempt.attempt_ms),
+            Some(7),
+            "first raw kept (v4={v4})"
+        );
+        // Positive control: the same proving raw without the original
+        // latch actually completes, so the hold above proves the
+        // first-latch guard rather than an unprovable row.
+        let mut control = engine_settle_host();
+        seed_selection_binding(&mut control, "op-4", false, &["out-a"]);
+        control.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-2".to_owned()],
+        );
+        control
+            .native_map
+            .insert(("out-a".to_owned(), "n0".to_owned()), "ws-2".to_owned());
+        control
+            .native_map
+            .insert(("out-a".to_owned(), "n1".to_owned()), "ws-1".to_owned());
+        let mut proof = view_row("op-4");
+        proof.attempt_ms = 8;
+        proof.post = Some(WorkspaceRef::Native {
+            output: OutputId("out-a".to_owned()),
+            workspace: crate::ids::NativeWorkspaceId::parse("n1").expect("native id"),
+        });
+        stage_native_5a(
+            &mut control,
+            v4,
+            3,
+            vec![native_lane_5a("out-a", vec!["n0"], "n0")],
+            vec![proof],
+            true,
+        );
+        control.settle_selection_feedback();
+        control.settle_selection_switch();
+        assert_eq!(
+            control.switch_settled.len(),
+            1,
+            "proving raw completes without latch (v4={v4})"
+        );
+        assert_eq!(
+            control.switch_settled.first().map(|event| event.outcome),
+            Some(SwitchOutcome::Complete),
+            "control proven outcome (v4={v4})"
+        );
+        // ... but the independent fresh current-target echo proves.
+        stage_native_5a(
+            &mut engine,
+            v4,
+            4,
+            vec![native_lane_5a("out-a", vec!["n0", "n1"], "n1")],
+            Vec::new(),
+            true,
+        );
+        engine.settle_selection_feedback();
+        engine.settle_selection_switch();
+        assert_eq!(
+            engine.switch_settled.len(),
+            1,
+            "fresh echo proves (v4={v4})"
+        );
+        assert_eq!(
+            engine.switch_settled.first().map(|event| event.outcome),
+            Some(SwitchOutcome::Complete),
+            "proven outcome (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_native_last_views_follow_only_staged_echo_dual_intake() {
+    // Helper-level staged probe only (no v4 runtime claim: the v4
+    // accepted-run domain assembly is unbuilt, so mappings are seeds and
+    // only the staged native/current lanes under test come from the real
+    // intakes). The staged native echo alone decides; the legacy logical
+    // `views` lane never does, even when it contradicts the staged echo.
+    for v4 in [false, true] {
+        let mut engine = engine_settle_host();
+        engine.mapping.insert(
+            "out-a".to_owned(),
+            vec!["ws-1".to_owned(), "ws-9".to_owned()],
+        );
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "n0".to_owned()), "ws-1".to_owned());
+        engine
+            .native_map
+            .insert(("out-a".to_owned(), "n1".to_owned()), "ws-9".to_owned());
+        stage_native_5a(
+            &mut engine,
+            v4,
+            2,
+            vec![native_lane_5a("out-a", vec!["n0", "n1"], "n0")],
+            Vec::new(),
+            true,
+        );
+        engine.retain_native_last_views();
+        assert_eq!(
+            engine.last_views.get(&OutputId("out-a".to_owned())),
+            Some(&"ws-1".to_owned()),
+            "staged n0 echo retains (v4={v4})"
+        );
+        // Same staged native move through the same intake, but the legacy
+        // logical lane still names the stale workspace: native wins.
+        let (mut legacy, mut v4report) = pair_reports(3, Vec::new(), Vec::new());
+        let lane = native_lane_5a("out-a", vec!["n0", "n1"], "n1");
+        legacy.native = vec![lane.clone()];
+        v4report.native = vec![lane];
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        legacy.views = vec![ScreenView {
+            output: OutputId("out-a".to_owned()),
+            view: "ws-1".to_owned(),
+        }];
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        engine.retain_native_last_views();
+        assert_eq!(
+            engine.last_views.get(&OutputId("out-a".to_owned())),
+            Some(&"ws-9".to_owned()),
+            "staged n1 echo wins over stale logical lane (v4={v4})"
+        );
+    }
+    // True cross-intake leg: v4 source intake first, then a contradictory
+    // legacy intake. Only the current staged echo decides.
+    let mut engine = engine_settle_host();
+    engine.mapping.insert(
+        "out-a".to_owned(),
+        vec!["ws-1".to_owned(), "ws-9".to_owned()],
+    );
+    engine
+        .native_map
+        .insert(("out-a".to_owned(), "n0".to_owned()), "ws-1".to_owned());
+    engine
+        .native_map
+        .insert(("out-a".to_owned(), "n1".to_owned()), "ws-9".to_owned());
+    let (mut legacy0, mut v40) = pair_reports(2, Vec::new(), Vec::new());
+    let first = native_lane_5a("out-a", vec!["n0", "n1"], "n0");
+    legacy0.native = vec![first.clone()];
+    v40.native = vec![first];
+    stage_either(&mut engine, true, &legacy0, &v40);
+    engine.retain_native_last_views();
+    assert_eq!(
+        engine.last_views.get(&OutputId("out-a".to_owned())),
+        Some(&"ws-1".to_owned()),
+        "v4 staged n0 echo retains"
+    );
+    let (mut legacy1, mut v41) = pair_reports(3, Vec::new(), Vec::new());
+    let second = native_lane_5a("out-a", vec!["n0", "n1"], "n1");
+    legacy1.native = vec![second.clone()];
+    v41.native = vec![second];
+    legacy1.views = vec![ScreenView {
+        output: OutputId("out-a".to_owned()),
+        view: "ws-1".to_owned(),
+    }];
+    stage_either(&mut engine, false, &legacy1, &v41);
+    engine.retain_native_last_views();
+    assert_eq!(
+        engine.last_views.get(&OutputId("out-a".to_owned())),
+        Some(&"ws-9".to_owned()),
+        "later legacy staged n1 echo wins over its own stale logical lane"
+    );
 }

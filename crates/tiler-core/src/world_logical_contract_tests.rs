@@ -10,9 +10,10 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, FrameSetter, HoldReason, MemberAttempt, ScopeAuthority,
-    ScreenReport, ScreenView, SendSource, TransferKind, WORLD_CONTRACT_VERSION, WindowFact,
-    WorkspaceRef, WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, FrameSetter, HoldReason, LastWrite, LastWritePath,
+    LastWriteProperty, MemberAttempt, ScopeAuthority, ScreenReport, ScreenView, SendSource,
+    TransferKind, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -714,23 +715,33 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
             false,
         ),
     );
-    assert_eq!(reply.transfers.len(), 2);
-    assert!(matches!(&reply.transfers[0].kind, TransferKind::View));
-    assert!(matches!(&reply.transfers[1].kind, TransferKind::Window(_)));
+    // Same-output follow retains the single window flight under the stable
+    // command identity: no `{op}-follow` child, no view flight, no frozen
+    // binding (these facts carry no suppression support, so the mover is
+    // selection-ineligible and keeps the legacy direct focus). The logical
+    // view still moves.
+    assert_eq!(reply.transfers.len(), 1);
+    assert!(matches!(&reply.transfers[0].kind, TransferKind::Window(_)));
     assert_eq!(reply.transfers[0].target_workspace, ring_a[1]);
-    assert_eq!(reply.transfers[1].target_workspace, ring_a[1]);
-    assert_eq!(reply.transfers[0].operation_id, "op-11-follow");
+    assert_eq!(reply.transfers[0].operation_id, "op-11");
+    assert_eq!(
+        output_view(&reply, "out-a").as_deref(),
+        Some(ring_a[1].as_str()),
+        "ineligible follow still moves the logical view"
+    );
     // Explicit cross-output send refuses at the engine boundary (parked
     // explicit-vs-directional mismatch): directional sends own the
     // crossing, even when the logical target is known. The prior
-    // same-output flight settles on the member-attempt proof carried in
-    // the observation-only report above (a rejected command would discard
-    // the settlement with it).
+    // same-output window flight settles on the member-attempt proof carried
+    // in the observation-only report below (a rejected command would
+    // discard the settlement with it); the echoed view proves nothing
+    // further on this ineligible route.
     let view_b = output_view(&first, "out-b").expect("view b");
     let arrived = fact("win-a", "out-a", 0);
-    // The window flight settles on the member-attempt proof while the
-    // follow-view flight confirms on the echoed view: each proves
-    // independently, so the report carries both proofs.
+    // The window flight settles on the member-attempt proof; the echoed
+    // view is inert here (the follow already moved the logical view at
+    // command time with no binding), so the report carries both proofs
+    // with no further effect.
     let mut settle = report(
         3,
         3,
@@ -1125,20 +1136,27 @@ fn numbered_send_trailing_path_creates_and_commits_immediately() {
     );
     assert_eq!(reply.effects.len(), 1);
     assert_eq!(reply.effects[0].target.0, "win-a");
-    // Follow retains the window flight plus its own view flight under a
-    // derived identity, both aimed at the reused trailing empty.
+    // Ineligible follow (no suppression support in these facts): the
+    // window flight under the stable command identity with no view
+    // flight and no frozen binding, legacy direct focus only. The
+    // logical view still moves to the reused trailing empty.
     let window = reply
         .transfers
         .iter()
         .find(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-a"))
         .expect("window flight");
-    let view = reply
-        .transfers
-        .iter()
-        .find(|t| matches!(&t.kind, TransferKind::View))
-        .expect("follow view flight");
-    assert_eq!(view.operation_id, format!("{}-follow", window.operation_id));
-    assert_eq!(view.target_workspace, window.target_workspace);
+    assert_eq!(reply.transfers.len(), 1, "window flight only");
+    assert_eq!(window.operation_id, "op-11");
+    assert!(
+        !reply.effects[0].await_shown,
+        "ineligible follow never awaits"
+    );
+    let trailing = window.target_workspace.clone();
+    assert_eq!(
+        output_view(&reply, "out-a").as_deref(),
+        Some(trailing.as_str()),
+        "ineligible follow still moves the logical view"
+    );
     // Filling the trailing empty grows the ring by lifecycle, never pends.
     let ringed = accepted(
         &mut engine,
@@ -2018,8 +2036,25 @@ fn numbered_follow_moves_only_its_output_in_global_mode() {
     );
 }
 
+fn migrated_selection_binding(
+    engine: &WorldEngine,
+    parent_op: &str,
+) -> crate::world_selection::RetainedSelection {
+    engine
+        .retained_selection
+        .values()
+        .find(|binding| binding.parent_op == parent_op)
+        .unwrap_or_else(|| panic!("missing selection binding {parent_op}"))
+        .clone()
+}
+
 #[test]
-fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phases() {
+fn valid_migration_holds_target_without_suppression_then_retires_on_arrival() {
+    // Native-free migration without suppression support binds one frozen
+    // selection covering both outputs (target plus source refill) with no
+    // refill child and no logical echo gates: per-window writes hold
+    // without suppression, member arrival retires the Migration parent
+    // while the Switch pends on its unprovable visibility obligations.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
@@ -2061,8 +2096,11 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
             false,
         ),
     );
-    // BEFORE any arrival: the logical target scope is Controlled with
-    // Controlled membership desire, and both flights are retained.
+    // BEFORE any arrival: the committed move publishes the target scope
+    // Controlled with Controlled membership and frames, and only the
+    // Migration flight is retained: no refill child rides the
+    // native-free route (per-window visibility holds without
+    // suppression, owned by the frozen binding below instead).
     assert_eq!(
         scope_of(&reply, "out-b", &view_a),
         ScopeAuthority::Controlled
@@ -2085,7 +2123,43 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
         reply
             .transfers
             .iter()
-            .any(|t| matches!(t.kind, TransferKind::View) && t.operation_id == "op-11-refill")
+            .all(|t| t.operation_id != "op-11-refill"),
+        "no refill child on the native-free route: {:?}",
+        reply.transfers
+    );
+    // One frozen binding covers both outputs with distinct selected
+    // workspaces (migrated target plus source refill), focusless here
+    // (no foreground member), granting the arrived member at the target.
+    let binding = migrated_selection_binding(&engine, "op-11");
+    assert!(binding.effect.is_none(), "no invented focus");
+    {
+        let mut affected = binding.affected.clone();
+        affected.sort();
+        assert_eq!(
+            affected,
+            vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())]
+        );
+    }
+    let source_selected = binding
+        .selected
+        .iter()
+        .find(|home| home.output.0 == "out-a")
+        .expect("source selected home");
+    assert_ne!(source_selected.workspace.0, view_a);
+    assert!(
+        binding
+            .selected
+            .iter()
+            .any(|home| home.output.0 == "out-b" && home.workspace.0 == view_a)
+    );
+    assert!(
+        binding
+            .switch_members
+            .iter()
+            .any(|member| member.window.0 == "win-a"
+                && member.home.output.0 == "out-b"
+                && member.home.workspace.0 == view_a
+                && member.shown)
     );
     // Mapping authority moved the logical id to the target screen.
     let row = reply
@@ -2110,8 +2184,8 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
             .iter()
             .any(|link| link.window.0 == "win-a")
     );
-    // An unchanged report does not flap the source: same desire, same
-    // flights, same mapping.
+    // An unchanged report does not flap the source: same held scope, same
+    // single flight, same mapping, same frozen binding.
     let stuck = accepted(
         &mut engine,
         &report(
@@ -2148,10 +2222,19 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
         stuck
             .transfers
             .iter()
-            .any(|t| matches!(t.kind, TransferKind::View) && t.operation_id == "op-11-refill")
+            .all(|t| t.operation_id != "op-11-refill"),
+        "unchanged report mints no refill child: {:?}",
+        stuck.transfers
     );
-    // Member arrival alone does not settle: target view and source refill
-    // proofs are still missing.
+    assert!(
+        engine
+            .retained_selection
+            .values()
+            .any(|binding| binding.parent_op == "op-11"),
+        "frozen binding survives the unchanged report"
+    );
+    // Member arrival retires the Migration parent with no echo proof: the
+    // Switch pends on its own (here unprovable) visibility obligations.
     let arrived = accepted(
         &mut engine,
         &report(
@@ -2169,10 +2252,9 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
         ),
     );
     assert!(
-        arrived
-            .transfers
-            .iter()
-            .any(|t| matches!(t.kind, TransferKind::Migration) && t.operation_id == "op-11")
+        arrived.transfers.iter().all(|t| t.operation_id != "op-11"),
+        "arrival retires the parent with no echo proof: {:?}",
+        arrived.transfers
     );
     let member = window_row(&arrived, "win-a");
     assert_eq!(
@@ -2180,8 +2262,8 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
         ("out-b", view_a.as_str())
     );
     assert_eq!(member.frame_authority, ScopeAuthority::Controlled);
-    // Target view proof alone does not settle: the source refill is still
-    // missing.
+    // Target view proof changes nothing: the parent already retired on
+    // arrival, and the Switch still pends its visibility obligations.
     let viewed = accepted(
         &mut engine,
         &report(
@@ -2199,10 +2281,9 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
         ),
     );
     assert!(
-        viewed
-            .transfers
-            .iter()
-            .any(|t| matches!(t.kind, TransferKind::Migration) && t.operation_id == "op-11")
+        viewed.transfers.is_empty(),
+        "retired parent stays retired: {:?}",
+        viewed.transfers
     );
     // Source refill proof settles everything: flights drop, refill row
     // gone, views adopted.
@@ -2561,12 +2642,14 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 false,
             ),
         );
-        // Arrival on the target screen is progress, not settlement.
+        // Arrival on the target screen retires the native-free parent with
+        // no echo proof: membership arrival is the settlement, and the
+        // Switch pends its own obligations invisibly.
         assert!(
             moved
                 .transfers
                 .iter()
-                .any(|t| matches!(t.kind, TransferKind::Migration)),
+                .all(|t| !matches!(t.kind, TransferKind::Migration)),
             "{name}"
         );
     }
@@ -2781,7 +2864,12 @@ fn multi_member_migration_preserves_tree_and_focus() {
 }
 
 #[test]
-fn empty_migration_still_verifies_both_views() {
+fn empty_migration_binds_focusless_and_retires_without_echoes() {
+    // An empty native-free migration binds a focusless zero-obligation
+    // selection (no members, no feedback gate, no native obligation),
+    // which completes into the issuing reply, and retains no Migration
+    // parent at all: zero members means zero membership to await. No
+    // refill child, no future wake, no new logical echoes.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
@@ -2806,7 +2894,7 @@ fn empty_migration_still_verifies_both_views() {
         .map(|row| row.id.clone())
         .collect();
     assert_eq!(ring_a.len(), 2);
-    // Migrate the trailing empty: no members, still needs both proofs.
+    // Migrate the trailing empty: no members, no proofs needed.
     let reply = accepted(
         &mut engine,
         &report(
@@ -2831,21 +2919,27 @@ fn empty_migration_still_verifies_both_views() {
         reply
             .transfers
             .iter()
-            .any(|t| matches!(t.kind, TransferKind::Migration))
+            .all(|t| !matches!(t.kind, TransferKind::Migration)),
+        "zero-member native-free migration retains no parent: {:?}",
+        reply.transfers
     );
-    // Views alone settle an empty migration.
-    let target = reply
-        .transfers
-        .iter()
-        .find(|t| matches!(t.kind, TransferKind::Migration))
-        .map(|t| t.target_workspace.clone())
-        .expect("target");
-    let refill = reply
-        .transfers
-        .iter()
-        .find(|t| t.operation_id == "op-11-refill")
-        .map(|t| t.target_workspace.clone())
-        .expect("refill");
+    // The zero-obligation binding already completed at issuing: no
+    // retained selection, no refill child, and no Migration parent.
+    assert!(
+        engine.retained_selection.is_empty(),
+        "zero-member binding completes at issuing"
+    );
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .all(|t| t.operation_id != "op-11-refill"),
+        "no refill child on the native-free route: {:?}",
+        reply.transfers
+    );
+    // The emptied source shows a fresh trailing workspace; with no
+    // parent retained there is nothing to settle with echo proof.
+    let target = ring_a[1].clone();
     let settled = accepted(
         &mut engine,
         &report(
@@ -2853,7 +2947,7 @@ fn empty_migration_still_verifies_both_views() {
             3,
             two_screens(),
             vec![],
-            vec![("out-b", target.as_str()), ("out-a", refill.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -2867,6 +2961,8 @@ fn empty_migration_still_verifies_both_views() {
         "settled: {:?}",
         settled.transfers
     );
+    let source_view = output_view(&settled, "out-a").expect("source view");
+    assert_ne!(source_view, target);
 }
 
 #[test]
@@ -2954,11 +3050,22 @@ fn migration_refill_prefers_mru_history() {
         )
         .expect("settings accepted");
     let reply = accepted(&mut engine, &migrate);
-    let refill = reply
-        .transfers
+    // The MRU refill rides the frozen binding's source selected home: no
+    // refill child exists on the native-free route.
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .all(|t| t.operation_id != "op-13-refill"),
+        "no refill child on the native-free route: {:?}",
+        reply.transfers
+    );
+    let binding = migrated_selection_binding(&engine, "op-13");
+    let refill = binding
+        .selected
         .iter()
-        .find(|t| t.operation_id == "op-13-refill")
-        .map(|t| t.target_workspace.clone())
+        .find(|home| home.output.0 == "out-a")
+        .map(|home| home.workspace.0.clone())
         .expect("mru refill");
     assert_eq!(refill, spare);
 }
@@ -3636,12 +3743,12 @@ fn hotplug_displacement_preserves_logical_units_on_the_survivor() {
 }
 
 #[test]
-fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
-    // Membership arrival alone never settles a cross-output follow parent:
-    // absent/stale views and failed phases persist across acknowledgement
-    // and gaps with the staged follow evidence retained (never retrying),
-    // settling only on the exact observed view or genuine third-location
-    // proof. Same-output membership-before-follow is preserved elsewhere.
+fn cross_output_follow_ineligible_moves_view_without_binding() {
+    // Ineligible cross-output follow (no suppression support in these
+    // facts): the logical view still moves at command time under the
+    // stable window identity with no frozen binding and legacy direct
+    // focus. Membership retires the window flight on homing; the echoed
+    // view alone settles nothing further (no binding, no terminal).
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
@@ -3660,7 +3767,7 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
         ),
     );
     let view_b = output_view(&first, "out-b").expect("view b");
-    accepted(
+    let followed = accepted(
         &mut engine,
         &report(
             2,
@@ -3680,10 +3787,26 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
             false,
         ),
     );
-    // Membership arrives but the follow view misses (failed setter): hold.
-    let failed = accepted(
+    assert_eq!(followed.transfers.len(), 1, "window flight only");
+    assert!(matches!(
+        &followed.transfers[0].kind,
+        TransferKind::Window(_)
+    ));
+    assert_eq!(followed.transfers[0].operation_id, "op-11");
+    assert_eq!(followed.transfers[0].target_workspace, view_b);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-b".to_owned())),
+        "ineligible mover binds nothing"
+    );
+    assert_eq!(followed.effects.len(), 1, "legacy direct focus");
+    assert!(!followed.effects[0].await_shown);
+    // Membership arrival retires the window flight with no binding and no
+    // terminal.
+    let arrived = accepted(
         &mut engine,
-        &report_attempts(
+        &report(
             3,
             3,
             two_screens(),
@@ -3695,22 +3818,25 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
             None,
             true,
             false,
-            crate::workspace_scope::WorkspaceMode::PerOutputLocal,
-            Vec::new(),
-            Vec::new(),
         ),
     );
     assert!(
-        failed
-            .transfers
-            .iter()
-            .any(|t| t.operation_id == "op-11" && t.held),
-        "failed follow holds: {:?}",
-        failed.transfers
+        arrived.transfers.iter().all(|t| t.operation_id != "op-11"),
+        "window retires on homing: {:?}",
+        arrived.transfers
     );
-    // Ack with no new attempt and still-stale echo: still holds (pending
-    // follow evidence survives the acknowledgement, never silently settling
-    // on membership alone).
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-b".to_owned())),
+        "no binding pends"
+    );
+    assert!(
+        arrived.switch_settled.is_empty(),
+        "no terminal without a binding: {:?}",
+        arrived.switch_settled
+    );
+    // Ack with no new attempt: still nothing (no binding to persist).
     let acked = accepted(
         &mut engine,
         &report(
@@ -3728,14 +3854,12 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
         ),
     );
     assert!(
-        acked
-            .transfers
-            .iter()
-            .any(|t| t.operation_id == "op-11" && t.held),
-        "follow persists across ack: {:?}",
+        acked.transfers.iter().all(|t| t.operation_id != "op-11"),
+        "nothing persists across ack: {:?}",
         acked.transfers
     );
-    // Gap also holds.
+    assert!(acked.switch_settled.is_empty());
+    // Gap also holds nothing.
     let gapped = accepted(
         &mut engine,
         &report(
@@ -3753,11 +3877,12 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
         ),
     );
     assert!(
-        gapped.transfers.iter().any(|t| t.operation_id == "op-11"),
-        "follow persists across gap: {:?}",
+        gapped.transfers.iter().all(|t| t.operation_id != "op-11"),
+        "nothing persists across gap: {:?}",
         gapped.transfers
     );
-    // Late exact view settles without requiring a new write.
+    assert!(gapped.switch_settled.is_empty());
+    // Late exact view echoes with no further effect.
     let settled = accepted(
         &mut engine,
         &report(
@@ -3776,8 +3901,13 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
     );
     assert!(
         settled.transfers.is_empty(),
-        "exact view settles: {:?}",
+        "echo proves nothing further: {:?}",
         settled.transfers
+    );
+    assert!(
+        settled.switch_settled.is_empty(),
+        "echo alone settles nothing: {:?}",
+        settled.switch_settled
     );
 }
 
@@ -3872,10 +4002,12 @@ fn window_refusal_needs_readable_source_proof_and_holds_across_gap() {
 }
 
 #[test]
-fn standalone_view_refusal_holds_on_gap_then_reconciles_to_pre() {
-    // Missing/gapped echo holds with the raw staged; a later readable echo
-    // naming the refused preimage settles to observed; an exact target echo
-    // would win as confirmation (covered elsewhere).
+fn standalone_view_hold_completes_through_member_verdict_not_echo() {
+    // Missing/gapped echo holds the flight for its frozen selection
+    // binding; a later producer verdict for the frozen hide member
+    // completes the common terminal and retires the flight. No echo lane
+    // is consulted native-free: a views row naming the preimage proves
+    // nothing on its own.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let first = accepted(
         &mut engine,
@@ -3941,14 +4073,42 @@ fn standalone_view_refusal_holds_on_gap_then_reconciles_to_pre() {
         "gapped view refusal holds: {:?}",
         gapped.transfers
     );
-    // Later readable echo naming the preimage settles to observed.
+    // Later producer verdict for the frozen hide member completes the
+    // common terminal and retires the flight: the views row below names
+    // the preimage yet proves nothing on its own.
+    let binding_rev = engine
+        .retained_selection
+        .values()
+        .find(|binding| binding.parent_op == "op-11")
+        .expect("frozen selection binding")
+        .rev;
+    let mut hidden = fact("win-a", "out-a", 0);
+    hidden.last_write = Some(LastWrite {
+        property: LastWriteProperty::Visibility,
+        target: false,
+        revision: binding_rev,
+        path: LastWritePath::Staged,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: None,
+        post: Some(VisibilitySample {
+            obs: 4,
+            lifetime_matched: Some(true),
+            visibility: VisibilityFact {
+                visible: Some(false),
+                suppression_owned: Some(false),
+            },
+            minimized: Some(false),
+            host_hidden: Some(false),
+        }),
+    });
     let settled = accepted(
         &mut engine,
         &report(
             4,
             4,
             two_screens(),
-            vec![fact("win-a", "out-a", 0)],
+            vec![hidden],
             vec![("out-a", current.as_str())],
             vec![],
             "",
@@ -3960,9 +4120,16 @@ fn standalone_view_refusal_holds_on_gap_then_reconciles_to_pre() {
     );
     assert!(
         settled.transfers.is_empty(),
-        "readable pre reconciles: {:?}",
+        "verdict retires the flight: {:?}",
         settled.transfers
     );
+    assert_eq!(
+        settled.switch_settled.len(),
+        1,
+        "one terminal: {:?}",
+        settled.switch_settled
+    );
+    assert_eq!(settled.switch_settled[0].operation_id, "op-11");
 }
 
 #[test]
@@ -4850,20 +5017,33 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
             .iter()
             .any(|t| matches!(t.kind, TransferKind::Migration) && t.operation_id == "op-12")
     );
+    // The floating sessionless carry binds the same frozen selection: no
+    // refill child, both outputs covered with distinct selected homes.
     assert!(
         moved
             .transfers
             .iter()
-            .any(|t| t.operation_id == "op-12-refill")
+            .all(|t| t.operation_id != "op-12-refill"),
+        "no refill child on the native-free route: {:?}",
+        moved.transfers
     );
+    let binding = migrated_selection_binding(&engine, "op-12");
+    {
+        let mut affected = binding.affected.clone();
+        affected.sort();
+        assert_eq!(
+            affected,
+            vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())]
+        );
+    }
     let member = window_row(&moved, "win-a");
     assert_eq!(
         (member.output.0.as_str(), member.workspace.as_str()),
         ("out-b", view_a.as_str())
     );
     assert_eq!(member.membership_authority, ScopeAuthority::Controlled);
-    // Member arrival plus both view echoes settles the whole migration:
-    // the flight drops instead of stalling on the floating target.
+    // Member arrival retires the whole migration with no echo wait: the
+    // flight drops instead of stalling on the floating target.
     let settled = accepted(
         &mut engine,
         &report(

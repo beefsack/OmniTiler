@@ -292,22 +292,15 @@ fn settlement_shared_fixture_partial_holds_then_completes() {
             ),
         );
         match case["expect_settled"].as_str().expect("expect_settled") {
+            // The shared fixture still labels this shape "refill-only"
+            // (kept byte-for-byte: other seams consume it). Under the
+            // native-free binding the full arrival retires the parent
+            // with no echo proof and no refill child: member settlement
+            // is the terminal.
             "refill-only" => {
                 assert!(
-                    settled
-                        .transfers
-                        .iter()
-                        .any(|t| t.operation_id == "op-11"
-                            && matches!(t.kind, TransferKind::Migration)),
-                    "{name}: full arrival keeps the migration only for the refill: {:?}",
-                    settled.transfers
-                );
-                assert!(
-                    settled
-                        .transfers
-                        .iter()
-                        .any(|t| t.operation_id == "op-11-refill"),
-                    "{name}: the remaining work is the source refill: {:?}",
+                    settled.transfers.is_empty(),
+                    "{name}: full arrival retires the migration with no refill wait: {:?}",
                     settled.transfers
                 );
                 for member in &members {
@@ -2544,12 +2537,11 @@ fn logical_selector_attempt_rejects_while_migration_remains_in_flight() {
 }
 
 #[test]
-fn refused_refill_keeps_child_and_holds_parent_across_ack() {
-    // A refused refill never retires its child and never lets the parent
-    // settle as externally moved: the child stays held with its raw
-    // staged (spent fence blocks repeats), the parent holds persistently,
-    // and mere child absence can never itself prove external. Multi-report:
-    // refusal, ack/gap with no new attempt, then late exact arrival.
+fn arrived_members_retire_parent_without_refill_child_across_ack() {
+    // A refused refill is legacy: no refill child exists on the
+    // native-free route, so members arriving at the target retires the
+    // parent with no echo proof, and the ack stays retired. The spent
+    // view-phase fence is unneeded: there is no refill flight to defend.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
@@ -2606,27 +2598,24 @@ fn refused_refill_keeps_child_and_holds_parent_across_ack() {
             vec![],
         ),
     );
-    let parent = refused
+    let parent_gone = refused
         .transfers
         .iter()
-        .find(|t| matches!(t.kind, TransferKind::Migration))
-        .expect("parent holds after refill refusal");
+        .all(|t| !matches!(t.kind, TransferKind::Migration));
     assert!(
-        refused
-            .transfers
-            .iter()
-            .any(|t| matches!(t.kind, TransferKind::Migration)),
-        "parent held: {parent:?}"
-    );
-    assert!(
-        refused
-            .transfers
-            .iter()
-            .any(|t| t.operation_id == refill_op),
-        "refused child kept, never retired: {:?}",
+        parent_gone,
+        "arrival retires the parent with no refill leg: {:?}",
         refused.transfers
     );
-    // Ack/gap with no new attempt: still held, never settled as external.
+    assert!(
+        refused
+            .transfers
+            .iter()
+            .all(|t| t.operation_id != refill_op),
+        "no refill child ever exists: {:?}",
+        refused.transfers
+    );
+    // Ack/gap with no new attempt: still retired, never resurrected.
     let acked = accepted(
         &mut engine,
         &report(
@@ -2641,24 +2630,17 @@ fn refused_refill_keeps_child_and_holds_parent_across_ack() {
         ),
     );
     assert!(
-        acked
-            .transfers
-            .iter()
-            .any(|t| matches!(t.kind, TransferKind::Migration)),
-        "parent holds across ack: {:?}",
-        acked.transfers
-    );
-    assert!(
-        acked.transfers.iter().any(|t| t.operation_id == refill_op),
-        "child survives ack: {:?}",
+        acked.transfers.is_empty(),
+        "retired parent stays retired across ack: {:?}",
         acked.transfers
     );
 }
 
 #[test]
-fn logical_refill_selector_attempt_is_rejected_and_migration_retained() {
-    // Logical selector receipts cannot settle a host-free v4 migration.
-    // Independent member arrival and refill-child state remain represented.
+fn logical_refill_selector_attempt_is_rejected_and_migration_already_retired() {
+    // Logical selector receipts cannot settle a host-free v4 migration,
+    // and there is no refill leg to defend: independent member arrival
+    // already retired the parent, so the invalid proof changes nothing.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
@@ -2697,12 +2679,20 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_retained() {
         ),
     );
     let refill_op = "op-11-refill".to_owned();
+    // No refill child exists on the native-free route; the source view
+    // rides the commit reply instead.
+    assert!(
+        reply.transfers.iter().all(|t| t.operation_id != refill_op),
+        "no refill child: {:?}",
+        reply.transfers
+    );
     let refill_ws = reply
-        .transfers
+        .outputs
         .iter()
-        .find(|t| t.operation_id == refill_op)
-        .map(|t| t.target_workspace.clone())
-        .expect("refill child retained");
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone())
+        .expect("source view");
+    // Members arrive: the parent retires with no echo proof.
     let refused = accepted(
         &mut engine,
         &report_with_screens(
@@ -2719,14 +2709,13 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_retained() {
             vec![],
         ),
     );
+    // Members arrive: the parent retires with no echo proof, and the
+    // ack stays retired.
     assert!(
-        refused
-            .transfers
-            .iter()
-            .any(|t| matches!(t.kind, TransferKind::Migration)),
-        "parent holds after refusal"
+        refused.transfers.is_empty(),
+        "arrival retires the parent: {:?}",
+        refused.transfers
     );
-    // Ack with no new attempt: still held.
     let acked = accepted(
         &mut engine,
         &report(
@@ -2741,8 +2730,8 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_retained() {
         ),
     );
     assert!(
-        acked.transfers.iter().any(|t| t.operation_id == refill_op),
-        "child survives ack: {:?}",
+        acked.transfers.is_empty(),
+        "retired parent stays retired: {:?}",
         acked.transfers
     );
     // Third known workspace on the source output, neither the refill nor
@@ -2804,19 +2793,8 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_retained() {
     }
     let settled = accepted(&mut engine, &external);
     assert!(
-        settled
-            .transfers
-            .iter()
-            .any(|t| matches!(t.kind, TransferKind::Migration)),
-        "rejected logical proof leaves migration active: {:?} (third={third:?} refill={refill_ws:?} pre={view_a:?})",
-        settled.transfers
-    );
-    assert!(
-        settled
-            .transfers
-            .iter()
-            .any(|t| t.operation_id == refill_op),
-        "refill child remains without native selector proof: {:?}",
+        settled.transfers.is_empty(),
+        "nothing retained after the external move: {:?} (third={third:?} refill={refill_ws:?} pre={view_a:?})",
         settled.transfers
     );
     assert_eq!(
@@ -3195,10 +3173,21 @@ fn migrate_directional_ignores_same_report_view_creation() {
             )
         },
     );
-    let transfer = reply
-        .transfers
-        .iter()
-        .find(|t| matches!(t.kind, TransferKind::Migration))
-        .expect("migration applies once the view is retained");
-    assert_eq!(transfer.target_output.0, "out-a");
+    // The empty directional move commits (Migration provenance in the
+    // command result) but retains no flight: zero members means zero
+    // membership to await, so the issuing reply carries no Migration
+    // transfer.
+    let target = match &reply.command_result {
+        Some(CommandResult::Migration { target, .. }) => target.clone(),
+        other => panic!("migration applies once the view is retained: {:?}", other),
+    };
+    assert_eq!(target.output.0, "out-a");
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .all(|t| !matches!(t.kind, TransferKind::Migration)),
+        "empty directional retains no flight: {:?}",
+        reply.transfers
+    );
 }

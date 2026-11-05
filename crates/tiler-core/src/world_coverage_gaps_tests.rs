@@ -2238,8 +2238,10 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
         revision_before + 3,
         "directional retry commits its own flight"
     );
-    // Both migration flights survive with stable identity: the original
-    // plus the direction-only retry's own commit.
+    // The original non-empty flight survives with stable identity; the
+    // direction-only retry migrated an empty workspace, so it retains
+    // no flight (zero members means zero membership to await) while
+    // still reporting Migration provenance above.
     assert!(
         engine
             .retained_transfers()
@@ -2252,8 +2254,8 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
         engine
             .retained_transfers()
             .iter()
-            .any(|t| matches!(t.kind, TransferKind::Migration) && t.operation_id == "op-13"),
-        "directional flight stable: {:?}",
+            .all(|t| !(matches!(t.kind, TransferKind::Migration) && t.operation_id == "op-13")),
+        "empty directional retains no flight: {:?}",
         engine.retained_transfers()
     );
 }
@@ -2263,8 +2265,8 @@ fn floating_source_migration_carries_without_engine_tree() {
     // Accepted behavior: a floating workspace holds no retained session,
     // so migration carries by sessionless core-owned membership remap (no
     // fabricated tree or focus). Members, tiling mode, source refill, and
-    // target view commit; arrival with both views settles; proven refusal
-    // rolls back to observed.
+    // target view commit; target-homed arrival retires the parent with no
+    // echo proof; proven refusal rolls back to observed.
     let screens = two_roomy();
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
@@ -2356,13 +2358,36 @@ fn floating_source_migration_carries_without_engine_tree() {
         .find(|t| matches!(t.kind, TransferKind::Migration))
         .expect("migration transfer");
     assert_eq!(migration.operation_id, "op-12");
-    let refill = reply
-        .transfers
-        .iter()
-        .find(|t| matches!(t.kind, TransferKind::View))
-        .expect("core refill view");
-    assert_eq!(refill.operation_id, "op-12-refill");
-    assert_eq!(refill.target_output.0, "out-a");
+    // No refill child rides the native-free route; the frozen binding
+    // covers both outputs with distinct selected homes instead.
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .all(|t| !matches!(t.kind, TransferKind::View)),
+        "no refill child: {:?}",
+        reply.transfers
+    );
+    let (affected, source_selected_ws) = {
+        let binding = engine
+            .retained_selection
+            .values()
+            .find(|binding| binding.parent_op == "op-12")
+            .expect("frozen selection binding");
+        let mut affected = binding.affected.clone();
+        affected.sort();
+        let source_selected_ws = binding
+            .selected
+            .iter()
+            .find(|home| home.output.0 == "out-a")
+            .map(|home| home.workspace.0.clone())
+            .expect("source selected home");
+        (affected, source_selected_ws)
+    };
+    assert_eq!(
+        affected,
+        vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())]
+    );
     assert!(
         reply.effects.is_empty(),
         "no focus writes: {:?}",
@@ -2420,8 +2445,9 @@ fn floating_source_migration_carries_without_engine_tree() {
             "{window} desired homing at the target"
         );
     }
-    // Arrival with both views actuated settles the sessionless carry.
-    let refill_ws = refill.target_workspace.clone();
+    // Arrival retires the sessionless carry with no echo proof: the
+    // parent drops once every member homing names the target.
+    let refill_ws = source_selected_ws;
     let arrived = fact("w0", "out-b", 800);
     let arrived_float = float_fact("wf", "out-b", 900);
     let mut arrival = report(
@@ -2446,7 +2472,7 @@ fn floating_source_migration_carries_without_engine_tree() {
     let settled = accepted(&mut engine, &arrival);
     assert!(
         settled.transfers.is_empty(),
-        "both views settle: {:?}",
+        "arrival retires with no echo wait: {:?}",
         settled.transfers
     );
 }
@@ -2511,7 +2537,7 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
             }),
         ),
     );
-    assert_eq!(engine.retained_transfers().len(), 2, "flight retained");
+    assert_eq!(engine.retained_transfers().len(), 1, "flight retained");
     let mut refused = report(
         4,
         screens.clone(),

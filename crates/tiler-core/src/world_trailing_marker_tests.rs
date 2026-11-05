@@ -181,9 +181,9 @@ fn stage_report_gates(engine: &mut WorldEngine, report: &WorldReport) {
     engine.staged.screens = report.screens.clone();
 }
 
-fn plan_marks(engine: &mut WorldEngine, report: &WorldReport, output: &str) -> Vec<(String, bool)> {
+fn plan_marks(engine: &mut WorldEngine, output: &str) -> Vec<(String, bool)> {
     engine
-        .plan_workspaces(report, &[])
+        .plan_workspaces(&[])
         .into_iter()
         .filter(|row| row.output.0 == output)
         .map(|row| (row.id.clone(), row.trailing))
@@ -222,15 +222,15 @@ fn shared_union_occupied_elsewhere_suppresses_both_outputs() {
         false,
     );
     stage_report_gates(&mut engine, &report);
-    assert_eq!(engine.trailing_marked_id(&report, "out-a"), None);
-    assert_eq!(engine.trailing_marked_id(&report, "out-b"), None);
+    assert_eq!(engine.trailing_marked_id("out-a"), None);
+    assert_eq!(engine.trailing_marked_id("out-b"), None);
     assert!(
-        plan_marks(&mut engine, &report, "out-a")
+        plan_marks(&mut engine, "out-a")
             .iter()
             .all(|(_, marked)| !marked)
     );
     assert!(
-        plan_marks(&mut engine, &report, "out-b")
+        plan_marks(&mut engine, "out-b")
             .iter()
             .all(|(_, marked)| !marked)
     );
@@ -257,9 +257,9 @@ fn occupied_tail_marks_nothing() {
         false,
     );
     stage_report_gates(&mut engine, &report);
-    assert_eq!(engine.trailing_marked_id(&report, "o"), None);
+    assert_eq!(engine.trailing_marked_id("o"), None);
     assert!(
-        plan_marks(&mut engine, &report, "o")
+        plan_marks(&mut engine, "o")
             .iter()
             .all(|(_, marked)| !marked)
     );
@@ -284,18 +284,15 @@ fn bound_visible_tail_still_marks() {
         false,
     );
     stage_report_gates(&mut engine, &report);
-    assert_eq!(
-        engine.trailing_marked_id(&report, "o"),
-        Some("w2".to_owned())
-    );
+    assert_eq!(engine.trailing_marked_id("o"), Some("w2".to_owned()));
     let bound = engine
-        .plan_workspaces(&report, &[])
+        .plan_workspaces(&[])
         .into_iter()
         .find(|row| row.output.0 == "o" && row.id == "w2")
         .expect("bound tail row");
     assert_eq!(bound.native_binding.as_deref(), Some("n1"));
     assert_eq!(
-        plan_marks(&mut engine, &report, "o"),
+        plan_marks(&mut engine, "o"),
         vec![("w1".to_owned(), false), ("w2".to_owned(), true)]
     );
     assert_eq!(
@@ -317,16 +314,10 @@ fn publication_final_only_over_unequal_rings() {
         true,
     );
     stage_report_gates(&mut engine, &report);
+    assert_eq!(engine.trailing_marked_id("a"), Some("w3".to_owned()));
+    assert_eq!(engine.trailing_marked_id("b"), Some("w2".to_owned()));
     assert_eq!(
-        engine.trailing_marked_id(&report, "a"),
-        Some("w3".to_owned())
-    );
-    assert_eq!(
-        engine.trailing_marked_id(&report, "b"),
-        Some("w2".to_owned())
-    );
-    assert_eq!(
-        plan_marks(&mut engine, &report, "a"),
+        plan_marks(&mut engine, "a"),
         vec![
             ("w1".to_owned(), false),
             ("w2".to_owned(), false),
@@ -334,7 +325,7 @@ fn publication_final_only_over_unequal_rings() {
         ]
     );
     assert_eq!(
-        plan_marks(&mut engine, &report, "b"),
+        plan_marks(&mut engine, "b"),
         vec![("w1".to_owned(), false), ("w2".to_owned(), true)]
     );
     assert_eq!(
@@ -361,12 +352,9 @@ fn empty_tail_marks_the_final_spare_in_both_streams() {
         false,
     );
     stage_report_gates(&mut engine, &report);
+    assert_eq!(engine.trailing_marked_id("o"), Some("w2".to_owned()));
     assert_eq!(
-        engine.trailing_marked_id(&report, "o"),
-        Some("w2".to_owned())
-    );
-    assert_eq!(
-        plan_marks(&mut engine, &report, "o"),
+        plan_marks(&mut engine, "o"),
         vec![("w1".to_owned(), false), ("w2".to_owned(), true)]
     );
     assert_eq!(
@@ -385,9 +373,9 @@ fn incomplete_inventory_fails_closed_at_the_helper() {
         false,
     );
     stage_report_gates(&mut engine, &report);
-    assert_eq!(engine.trailing_marked_id(&report, "o"), None);
+    assert_eq!(engine.trailing_marked_id("o"), None);
     assert!(
-        plan_marks(&mut engine, &report, "o")
+        plan_marks(&mut engine, "o")
             .iter()
             .all(|(_, marked)| !marked)
     );

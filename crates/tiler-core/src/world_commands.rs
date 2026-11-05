@@ -517,6 +517,7 @@ impl WorldEngine {
                                 migration_source_view: None,
                                 migration_target_view: None,
                                 migration_terminal: None,
+                                migration_selection_rev: None,
                                 pending_member: None,
                                 pending_members: BTreeMap::new(),
                                 pending_view: None,
@@ -542,6 +543,7 @@ impl WorldEngine {
                                 migration_source_view: None,
                                 migration_target_view: None,
                                 migration_terminal: None,
+                                migration_selection_rev: None,
                                 pending_member: None,
                                 pending_members: BTreeMap::new(),
                                 pending_view: None,
@@ -1278,6 +1280,7 @@ impl WorldEngine {
                 direction_token,
                 members,
                 floats,
+                held_scopes,
             );
         }
         let event = CoreEvent {
@@ -1372,6 +1375,7 @@ impl WorldEngine {
                     direction_token,
                     members,
                     floats,
+                    held_scopes,
                 )
             }
             CoreReply::Rejected { kind, message } => CommandApplied::Rejected { kind, message },
@@ -1407,6 +1411,7 @@ impl WorldEngine {
         direction_token: &str,
         members: Vec<WindowId>,
         floats: usize,
+        held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
         let source_key = DomainKey {
             output: source_output.clone(),
@@ -1423,11 +1428,17 @@ impl WorldEngine {
                 "up" => Direction::Up,
                 _ => Direction::Down,
             },
-            source: source_key,
-            target: target_key,
+            source: source_key.clone(),
+            target: target_key.clone(),
             members: members.clone(),
             floats,
         });
+        // Native-free selection route: without host-owned domains, the
+        // migration binds one frozen selection covering both outputs
+        // (target plus the actual source view) instead of the refill
+        // View child plus logical echo gates. Only host-owned migrations
+        // keep the legacy refill-child path.
+        let selection_route = !self.host_owned_workspace_domains();
         // Authoritative ring move: the logical id changes screens,
         // landing after the target's current view (append when the
         // target view is unknown). Tiling mode follows the id.
@@ -1493,15 +1504,95 @@ impl WorldEngine {
                 .unwrap_or_default()
         });
         if !source_view.is_empty() {
-            self.views.insert(source_output.0.clone(), source_view);
+            self.views
+                .insert(source_output.0.clone(), source_view.clone());
         }
+        // The actual source view is frozen here (before any retained
+        // settlement reads it): the selection pending below carries it
+        // and settlement never recomputes it per report.
+        let pending_selection = if selection_route {
+            let mut affected = vec![source_output.clone(), target_output.clone()];
+            affected.sort();
+            affected.dedup();
+            // Both actually chosen selected workspaces: the migrated
+            // target plus the source view now shown (the refill, or the
+            // fresh trailing when the source emptied), regardless of the
+            // refill Option.
+            let mut selected = vec![target_key.clone()];
+            if !source_view.is_empty() {
+                selected.push(DomainKey {
+                    output: source_output.clone(),
+                    workspace: crate::directional::WorkspaceId(source_view.clone()),
+                });
+            }
+            // The source's old view leaves with the workspace: no
+            // departing grant there, so in-flight members never take a
+            // dangling hide. The target's replaced view hides its
+            // stayers exactly like an ordinary selection.
+            let departing: Vec<DomainKey> = prev_target_view
+                .clone()
+                .filter(|view| view != workspace)
+                .map(|view| DomainKey {
+                    output: target_output.clone(),
+                    workspace: crate::directional::WorkspaceId(view),
+                })
+                .into_iter()
+                .collect();
+            // D6: only the moved active client refocuses, resolved from
+            // the already-carried foreground state when it names a member
+            // with a grantable arrival subject; empty, sticky-active (not
+            // a member), and minimized/ineligible subjects resolve to no
+            // focus with no fallback member. Never invents activation.
+            let focus = {
+                let foreground = self.staged.observation.focused_global.clone();
+                let candidate = WindowId(foreground);
+                if !candidate.0.is_empty()
+                    && members.contains(&candidate)
+                    && self.selection_route_eligible(&candidate, &target_key, held_scopes)
+                {
+                    Some(candidate)
+                } else {
+                    None
+                }
+            };
+            let rev = self.state_revision + 1;
+            Some(crate::world_selection::PendingSelection {
+                command_seq: Some(command_seq),
+                parent_op: format!("op-{command_seq}"),
+                focus: focus.clone(),
+                focus_home: target_key.clone(),
+                selected,
+                departing,
+                affected_outputs: affected,
+                rev,
+                obs: self.staged.observation.observation_seq,
+                follow_mover: false,
+            })
+        } else {
+            None
+        };
         self.note_command(command_seq);
+        if let Some(pending) = pending_selection.clone() {
+            // Latest intent wins on both outputs: supersede retained
+            // selection authorization and prune stale View flights
+            // (no `{op}-refill` child rides this route).
+            self.prune_selection_for_outputs(&pending.affected_outputs);
+            self.retained.retain(|retained| {
+                !(matches!(&retained.target.kind, TransferKind::View)
+                    && pending
+                        .affected_outputs
+                        .contains(&retained.target.target_output))
+            });
+            self.pending_selection = Some(pending);
+        }
         // R-WS-12 source-refill actuation: retain the core-chosen
         // refill view on the source output so the adapter shows it
         // from the core result (retained views win in plan_outputs
         // and actuate through the shared view path). An emptied
-        // source (no refill) shows its fresh trailing instead.
-        if let Some(refill) = refill.clone() {
+        // source (no refill) shows its fresh trailing instead. The
+        // native-free selection route owns both views through the
+        // frozen binding instead and mints no refill child.
+        if !selection_route && let Some(refill) = refill.clone() {
             self.retained.retain(|r| {
                 !(matches!(&r.target.kind, TransferKind::View)
                     && r.target.target_output == *source_output)
@@ -1525,38 +1616,63 @@ impl WorldEngine {
                 migration_source_view: None,
                 migration_target_view: None,
                 migration_terminal: None,
+                migration_selection_rev: None,
                 pending_member: None,
                 pending_members: BTreeMap::new(),
                 pending_view: None,
             });
         }
         let initial_empty = members.is_empty();
-        self.retained.push(RetainedTransfer {
-            target: TransferTarget {
-                operation_id: format!("op-{command_seq}"),
-                kind: TransferKind::Migration,
-                target_output: target_output.clone(),
-                target_workspace: workspace.to_owned(),
-                follow: false,
-                held: false,
-            },
-            policy: false,
-            source_output: source_output.clone(),
-            source_workspace: workspace.to_owned(),
-            members,
-            migration_refill: refill,
-            migration_initial_empty: initial_empty,
-            migration_source_index: source_index,
-            migration_source_view: prev_source_view,
-            migration_target_view: prev_target_view,
-            migration_terminal: None,
-            pending_member: None,
-            pending_members: BTreeMap::new(),
-            pending_view: None,
-        });
+        let selection_rev = pending_selection.as_ref().map(|pending| pending.rev);
+        // Zero-member native-free migrations carry no membership to await,
+        // so they retain no Migration flight at all: the logical move is
+        // already committed above and any visibility obligations ride the
+        // frozen selection binding (which may still pend on a refill
+        // stayer). Retaining an empty parent would force a meaningless
+        // next-report wake just to retire it. Native-owned empty
+        // migrations still retain the parent for their view-proof path.
+        if !(selection_route && initial_empty) {
+            self.retained.push(RetainedTransfer {
+                target: TransferTarget {
+                    operation_id: format!("op-{command_seq}"),
+                    kind: TransferKind::Migration,
+                    target_output: target_output.clone(),
+                    target_workspace: workspace.to_owned(),
+                    follow: false,
+                    held: false,
+                },
+                policy: false,
+                source_output: source_output.clone(),
+                source_workspace: workspace.to_owned(),
+                members,
+                migration_refill: refill,
+                migration_initial_empty: initial_empty,
+                migration_source_index: source_index,
+                migration_source_view: prev_source_view,
+                migration_target_view: prev_target_view,
+                migration_terminal: None,
+                migration_selection_rev: selection_rev,
+                pending_member: None,
+                pending_members: BTreeMap::new(),
+                pending_view: None,
+            });
+        }
         // Single-owner membership follows the logical id: every
         // member homed at the source rekeys to the target.
         self.rekey_members(workspace, &source_output.0, &target_output.0);
+        // The native-free selection route carries the follow-style
+        // arrival grant: the focus effect waits until the destination
+        // is shown, and the frozen binding owns both views through
+        // the existing selection completion. Focusless (empty, or no
+        // eligible focus) binds the same frozen scope with no effect.
+        if let Some(pending) = pending_selection
+            && let Some(focus) = pending.focus.clone()
+        {
+            let _ = self.record_command_focus(&focus, held_scopes);
+            let mut effect = OneShotEffect::explicit_focus(command_seq, focus, pending.rev);
+            effect.await_shown = true;
+            return CommandApplied::Effect(effect);
+        }
         CommandApplied::NoEffect
     }
 }

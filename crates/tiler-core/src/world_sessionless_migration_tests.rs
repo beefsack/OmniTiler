@@ -485,8 +485,9 @@ fn sessionless_partial_arrival_holds_then_recovers() {
         unreadable.transfers
     );
     // Full arrival: both members prove at their published slots. The
-    // held member recovers to the target homing, and the migration holds
-    // only for the deferred source refill (never for arrival anymore).
+    // held member recovers to the target homing, and the migration
+    // retires with no echo proof and no refill child: member settlement
+    // is the terminal, never a refill echo wait.
     let settled = accepted(
         &mut engine,
         &report_screens(
@@ -513,17 +514,8 @@ fn sessionless_partial_arrival_holds_then_recovers() {
         row_of(&settled, "w1")
     );
     assert!(
-        settled.transfers.iter().any(|t| t.operation_id == op
-            && matches!(t.kind, crate::world_report::TransferKind::Migration)),
-        "full arrival keeps the migration only for the refill: {:?}",
-        settled.transfers
-    );
-    assert!(
-        settled
-            .transfers
-            .iter()
-            .any(|t| t.operation_id == format!("{op}-refill")),
-        "the remaining work is the source refill: {:?}",
+        settled.transfers.is_empty(),
+        "full arrival retires the migration with no refill wait: {:?}",
         settled.transfers
     );
 }

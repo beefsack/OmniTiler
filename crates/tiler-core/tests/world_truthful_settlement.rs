@@ -8,8 +8,9 @@ use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    FrameSetter, MemberAttempt, ScreenReport, ScreenView, SwitchFocus, SwitchOutcome, TransferKind,
-    WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
+    FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport, ScreenView, SwitchFocus,
+    SwitchOutcome, TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand,
+    WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -243,7 +244,7 @@ fn migration_contradictory_receipt_does_not_settle() {
         ),
     );
     let view_a = view_of(&first, "out-a").expect("view a");
-    accepted(
+    let issued = accepted(
         &mut engine,
         &report(
             2,
@@ -259,6 +260,33 @@ fn migration_contradictory_receipt_does_not_settle() {
             vec![],
             true,
         ),
+    );
+    // Genuine one-member control-eligible issuing shape, never vacuous:
+    // exactly one Migration flight for op-11 with a Controlled member row.
+    assert_eq!(
+        issued.transfers.len(),
+        1,
+        "one issuing flight: {:?}",
+        issued.transfers
+    );
+    assert!(
+        issued
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == "op-11" && matches!(t.kind, TransferKind::Migration)),
+        "migration flight issued: {:?}",
+        issued.transfers
+    );
+    let issued_row = issued
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a")
+        .expect("issuing member row");
+    assert_eq!(
+        issued_row.membership_authority,
+        ScopeAuthority::Controlled,
+        "issuing member control-eligible: {:?}",
+        issued_row
     );
     // Member observed on the target screen but naming a different workspace
     // must not settle the migration.
@@ -284,13 +312,15 @@ fn migration_contradictory_receipt_does_not_settle() {
         .into_iter()
         .find(|id| id != &view_a)
         .expect("other target workspace");
-    let wrong = fact("win-a", "out-b", 800);
+    // Contradictory raw while the fact remains SOURCE-readable must hold:
+    // the member is still observed at out-a, and the Accepted post names a
+    // different workspace than the migration target, so nothing proves.
     let held = accepted(
         &mut engine,
         &report(
             4,
             4,
-            vec![wrong],
+            vec![fact("win-a", "out-a", 0)],
             vec![],
             None,
             None,
@@ -316,6 +346,29 @@ fn migration_contradictory_receipt_does_not_settle() {
             .any(|t| matches!(t.kind, TransferKind::Migration)),
         "contradictory migration holds: {:?}",
         held.transfers
+    );
+    // Independent physical arrival at the actual target retires the parent
+    // with no view echoes, despite the old ambiguous raw above.
+    let arrived = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![fact("win-a", "out-b", 800)],
+            vec![],
+            None,
+            None,
+            vec![],
+            true,
+        ),
+    );
+    assert!(
+        arrived
+            .transfers
+            .iter()
+            .all(|t| !matches!(t.kind, TransferKind::Migration)),
+        "real arrival retires despite stale raw: {:?}",
+        arrived.transfers
     );
 }
 

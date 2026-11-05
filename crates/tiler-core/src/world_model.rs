@@ -513,7 +513,7 @@ impl WorldEngine {
                 // singleton below so the reply still publishes held rows,
                 // and [`WorldEngine::converge_native_pre`] skips adoption.
                 let native_ready = native_bootstrap
-                    && !self.native_order_conflict(report)
+                    && !self.native_order_conflict()
                     && ordered
                         .iter()
                         .all(|output| complete_map.get(output.as_str()).copied().unwrap_or(false))
@@ -572,7 +572,7 @@ impl WorldEngine {
         // Host-owned native adoption: build each display's ring from its
         // observed native order (initial) and bind outside-created native
         // desktops (later). Absent rows never delete mappings.
-        self.converge_native_pre(report);
+        self.converge_native_pre();
         // Returns first: a live origin reclaims its preserved units.
         // Shared mode never displaces: disconnected output history
         // discards while the one shared history persists.
@@ -817,7 +817,8 @@ impl WorldEngine {
         // Focused survivor/return view policy, fresh placements only: when
         // the active window homes in a moving workspace whose output does
         // not show it, retain the view (adapter actuates; focus stays
-        // native). Operation identities pin the creating revision plus a
+        // native) and bind one focusless frozen selection under the same
+        // parent. Operation identities pin the creating revision plus a
         // per-run index: stable across repeated snapshots of the
         // outstanding intent, yet distinct for every cycle.
         let epoch = self.state_revision;
@@ -862,6 +863,7 @@ impl WorldEngine {
                 migration_source_view: None,
                 migration_target_view: None,
                 migration_terminal: None,
+                migration_selection_rev: None,
                 pending_member: None,
                 pending_members: BTreeMap::new(),
                 pending_view: None,
@@ -945,10 +947,11 @@ impl WorldEngine {
     }
 
     /// Source-refill view for one migration: the still-valid unrelated
-    /// source current (echo, else core view) when it differs from the
+    /// source current (staged echo, else core view) when it differs from the
     /// migrated id, else the per-output previous live logical id (MRU
     /// setting), else the last remaining ring member. `None` when no other
-    /// member lives.
+    /// member lives. Native-free outputs stage no echoes, so the core view
+    /// decides there; host-owned outputs read the staged native echo.
     pub(crate) fn logical_source_refill(
         &self,
         source_output: &OutputId,

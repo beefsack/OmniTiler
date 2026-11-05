@@ -216,6 +216,14 @@ pub(crate) struct RetainedTransfer {
     /// evidence reconciles against the latched outcome. `None` until a
     /// terminal raw attempt arrives.
     pub(crate) migration_terminal: Option<crate::world_report::AttemptOutcome>,
+    /// Issuing selection revision for a native-free migration binding
+    /// (`pending.rev` at commit, `None` on the legacy host-owned route
+    /// which mints no per-window selection targets). Lets terminal
+    /// refusal rollback revoke ONLY the exact parent-issued selection
+    /// binding/scopes/targets by revision, so a newer selection on the
+    /// same outputs survives a late parent refusal. Survives binding
+    /// completion (scopes/targets outlive the finite grant).
+    pub(crate) migration_selection_rev: Option<u64>,
     /// Latest exact-correlated raw membership evidence staged BEFORE any
     /// readability hold (window transfer) or per-member map (migration
     /// parent), mirroring [`RetainedFloat::pending`]: a gapped report never
@@ -862,6 +870,12 @@ pub struct WorldEngine {
     /// revision, and observation watermark. Never a row, slot, or wire
     /// value.
     pub(crate) pending_selection: Option<crate::world_selection::PendingSelection>,
+    /// Pending commandless policy selections, one per policy view parent
+    /// (see [`WorldEngine::retain_policy_view`]): same carrier as the
+    /// command pending above, but each keeps its own `op-dpv-*` parent
+    /// identity instead of merging. Latest per output wins. Never a row,
+    /// slot, or wire value.
+    pub(crate) pending_policy_selections: Vec<crate::world_selection::PendingSelection>,
     /// Retained per-window native-free selection visibility authorizations
     /// by live lifetime (see [`crate::world_selection`]): the logical home
     /// at grant, desired shown state, and issuing revision. Never a row,
@@ -1317,6 +1331,7 @@ impl WorldEngine {
             automatic_focus_tokens: BTreeMap::new(),
             retained_focus: Vec::new(),
             pending_selection: None,
+            pending_policy_selections: Vec::new(),
             selection_targets: BTreeMap::new(),
             retained_selection: BTreeMap::new(),
             selection_scopes: BTreeMap::new(),
@@ -2138,6 +2153,10 @@ impl WorldEngine {
         // terminal while old bindings settle in the same report; reserve
         // it alongside the retained bindings, never from lane slack.
         .saturating_add(self.switch_issuing_reserve(report.command.as_ref()))
+        // Commandless policy views can mint at most one zero-obligation
+        // terminal per fresh displaced/returned workspace at publish;
+        // bound the placements knowable before convergence.
+        .saturating_add(self.policy_terminal_reserve(report))
             > WORLD_MAX_REPLY_BYTES
         {
             return WorldOutcome::Rejected {
@@ -3014,10 +3033,12 @@ impl WorldEngine {
         self.ingest_staged_intent(&observation);
         self.stage_captured(report, observation);
         self.converge_logical_pre(report);
-        // View flights settle against raw echoes before staging: confirms
-        // and external supersessions move core views, so homing assigns
-        // against adapter truth, never a stale desire.
-        self.settle_views_pre(report);
+        // View flights settle with staged native proof before staging:
+        // host-owned confirms and external supersessions move core views,
+        // so homing assigns against adapter truth, never a stale desire.
+        // Native-free flights are kept for their selection binding and
+        // never settle from echoes here.
+        self.settle_views_pre();
         // Stage the observation: homing plus one domain per known logical
         // workspace.
         self.build_staged_domains(report);
@@ -3052,7 +3073,7 @@ impl WorldEngine {
         // Selection switch terminals settle next from the latched feedback
         // plus first-correlated LastWrite evidence, still before the
         // command-only rollback boundary.
-        self.settle_selection_switch(report);
+        self.settle_selection_switch();
         // Core-owned frame policy: fold mechanical write/readback facts into
         // retained clamp/transient memory (scoped by exact staged lifetime)
         // so this same reply publishes suppression.
@@ -3146,7 +3167,7 @@ impl WorldEngine {
             let mut fence: Vec<DomainKey> = Vec::new();
             for (window, fact) in &self.staged.facts {
                 let authoritative = match fact.output.as_ref() {
-                    Some(out) => self.native_authoritative(report, out),
+                    Some(_) => self.native_authoritative(),
                     // Unknown output under host-owned domains never proves
                     // membership: fence the retained homing like any
                     // unknown receipt.
@@ -3155,7 +3176,7 @@ impl WorldEngine {
                 if !authoritative {
                     continue;
                 }
-                if self.effective_logical_receipt(report, fact).is_some() {
+                if self.effective_logical_receipt(fact).is_some() {
                     continue;
                 }
                 if let Some(key) = self.staged.homing.get(window) {
@@ -3164,7 +3185,7 @@ impl WorldEngine {
             }
             // Incompatible fresh shared projection: fence every staged
             // scope (the fallback singletons), not just homed members.
-            if self.native_order_conflict(report) {
+            if self.native_order_conflict() {
                 for domain in &self.staged.domains {
                     if !fence.contains(&domain.key) {
                         fence.push(domain.key.clone());
@@ -3614,7 +3635,7 @@ impl WorldEngine {
         // report homes through retained truth (floating release, minimized
         // and unreadable holds, view-switch stability). Included in the
         // adopted candidate, never a separate commit.
-        self.reconcile_members(report);
+        self.reconcile_members();
         // Drop membership for workspaces lifecycle just removed (empty only,
         // so this is a backstop, never a live-member delete).
         let mut ringed: BTreeSet<DomainKey> = BTreeSet::new();
@@ -3658,34 +3679,11 @@ impl WorldEngine {
             self.placement_bootstrapped = true;
         }
         // Latest proving echo per output for external-supersession
-        // detection. Host-owned domains are native-only: track the
-        // native-derived echo (never the explicit logical echo), so the
-        // staged comparison keeps a single provenance. Tiler-owned
-        // outputs keep tracking the raw logical echo.
+        // detection: host-owned domains track the native-derived echo
+        // (never the explicit logical echo). Native-free outputs retain no
+        // last views: their views ride the frozen selection binding.
         if self.host_owned_workspace_domains() {
-            let outputs: Vec<OutputId> = report
-                .screens
-                .iter()
-                .map(|screen| screen.output.clone())
-                .collect();
-            for output in &outputs {
-                match self.view_echo_for(report, output) {
-                    Some(echo) => {
-                        self.last_views.insert(output.clone(), echo);
-                    }
-                    None => {
-                        self.last_views.remove(output);
-                    }
-                }
-            }
-        } else {
-            for view in &report.views {
-                if view.view.is_empty() {
-                    continue;
-                }
-                self.last_views
-                    .insert(view.output.clone(), view.view.clone());
-            }
+            self.retain_native_last_views();
         }
         if reply.command_consumed {
             WorldOutcome::CommandConsumed(reply)

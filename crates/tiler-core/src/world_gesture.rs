@@ -1372,6 +1372,7 @@ impl WorldEngine {
                     migration_source_view: None,
                     migration_target_view: None,
                     migration_terminal: None,
+                    migration_selection_rev: None,
                     pending_member: None,
                     pending_members: BTreeMap::new(),
                     pending_view: None,

@@ -298,7 +298,6 @@ impl WorldEngine {
     /// Returns the adopted fresh ids in native-order sequence.
     pub(crate) fn release_migrated_source_backing(
         &mut self,
-        report: &WorldReport,
         source_output: &OutputId,
         workspace: &str,
     ) -> Vec<String> {
@@ -327,7 +326,7 @@ impl WorldEngine {
         // pair is remembered and retried by native intake until it
         // releases exactly once — settling the flight must never orphan
         // a dormant binding.
-        if !self.native_list_complete(report, &source_output.0) {
+        if !self.native_list_complete(&source_output.0) {
             return self.defer_source_release(source_output, workspace);
         }
         // Ordinary adoption rule: while a creation is outstanding on this
@@ -339,7 +338,9 @@ impl WorldEngine {
         {
             return self.defer_source_release(source_output, workspace);
         }
-        let order: Vec<String> = report
+        let order: Vec<String> = self
+            .staged
+            .observation
             .native
             .iter()
             .find(|entry| entry.output == *source_output)
@@ -367,11 +368,13 @@ impl WorldEngine {
             if !order.iter().any(|id| id == &native) {
                 continue;
             }
-            if let Some(fresh) = self.adopt_single_native(report, &source_output.0, &native) {
+            if let Some(fresh) = self.adopt_single_native(&source_output.0, &native) {
                 adopted.push((native, fresh));
             }
         }
-        let current = report
+        let current = self
+            .staged
+            .observation
             .native
             .iter()
             .find(|entry| entry.output == *source_output)
@@ -465,7 +468,11 @@ impl WorldEngine {
 }
 
 impl WorldEngine {
-    /// Settle retained view targets against raw echoes before staging.
+    /// Settle retained view targets with staged native proof before
+    /// staging. Host-owned only: native-free views ride the frozen
+    /// selection binding (ordinary, follow, migration, and policy routes
+    /// all freeze one), so their flights are kept here for the binding to
+    /// retire at its common terminal and never settle from echoes.
     /// Confirms move core views to the proven logical id and record
     /// history; externally moved echoes (differing from both the
     /// expectation and the last echo) are newer input and win: the flight
@@ -478,7 +485,7 @@ impl WorldEngine {
     /// and settled with their parent in [`WorldEngine::settle_migration`].
     /// Runs before [`WorldEngine::build_staged`] so homing assigns against
     /// adapter truth, never a stale desire.
-    pub(crate) fn settle_views_pre(&mut self, report: &WorldReport) {
+    pub(crate) fn settle_views_pre(&mut self) {
         // Migration parents live in the same vec: refill children with a
         // live parent settle with the parent, never alone.
         let parent_ops: std::collections::BTreeSet<String> = self
@@ -487,9 +494,17 @@ impl WorldEngine {
             .filter(|retained| matches!(&retained.target.kind, TransferKind::Migration))
             .map(|retained| retained.target.operation_id.clone())
             .collect();
+        let native_free = !self.host_owned_workspace_domains();
         let mut keep: Vec<RetainedTransfer> = Vec::new();
         for mut retained in std::mem::take(&mut self.retained) {
             if !matches!(&retained.target.kind, TransferKind::View) {
+                keep.push(retained);
+                continue;
+            }
+            if native_free {
+                // Native-free view proof is the frozen selection binding:
+                // keep the flight for its terminal and never settle from
+                // logical echoes here.
                 keep.push(retained);
                 continue;
             }
@@ -511,10 +526,9 @@ impl WorldEngine {
                 retained.pending_view = Some(attempt.clone());
             }
             let raw = retained.pending_view.clone();
-            // Proof echo: the explicit logical echo, else the
-            // native-derived echo under the capability. A conflicting
-            // pair holds (neither proves); unknown holds.
-            let echo = self.view_echo_for(report, &retained.target.target_output);
+            // Proof echo: the staged native-derived echo under the
+            // host-owned capability. Unknown holds.
+            let echo = self.native_echo_for(&retained.target.target_output);
             let echo = echo.as_deref();
             if echo == Some(retained.target.target_workspace.as_str()) {
                 // Confirmed by echo: adopt as the core view.
@@ -678,10 +692,11 @@ impl WorldEngine {
         for mut retained in std::mem::take(&mut self.retained) {
             // Stage exact-correlated raw membership evidence before any
             // hold so gapped reports never erase knowledge the sequencer
-            // pending map forgets after acknowledgement. Window follow
-            // phases stage their view evidence here too (as migration
-            // does): the follow must persist across acknowledgement and
-            // gaps, never silently settle on membership alone.
+            // pending map forgets after acknowledgement. Window transfers
+            // stage membership evidence only; the follow view gate is
+            // removed (membership settles independently while the common
+            // frozen selection binding owns destination visibility and
+            // focus through the existing selection completion).
             if let TransferKind::Window(window) = &retained.target.kind {
                 let target_output = retained.target.target_output.clone();
                 let target_workspace = retained.target.target_workspace.clone();
@@ -693,16 +708,6 @@ impl WorldEngine {
                     &target_workspace,
                 ) {
                     retained.pending_member = Some(attempt.clone());
-                }
-                if retained.target.follow
-                    && let Some(attempt) = view_attempt_for(
-                        &self.staged.observation.view_attempts,
-                        &retained.target.operation_id,
-                        &target_output,
-                        &target_workspace,
-                    )
-                {
-                    retained.pending_view = Some(attempt.clone());
                 }
             }
             let raw = retained.pending_member.clone();
@@ -757,99 +762,53 @@ impl WorldEngine {
                         if closed {
                             // Explicit close settles; the sweep forgets it.
                         } else {
-                            // Confirmed by staged homing -- except same-output
-                            // transfers, where the committed Engine session
-                            // already homes at the target before the native
-                            // moves. Retained session homing must not confirm
-                            // itself: a same-output send settles only on
-                            // observed logical membership naming the exact
-                            // target workspace (unknown or wrong membership
-                            // holds the flight).
                             let same_output =
                                 retained.source_output == retained.target.target_output;
-                            // Exact native receipt feeds the same proof lane:
-                            // under the capability the native-derived logical
-                            // receipt decides; native-free carries no
-                            // logical receipt vocabulary (unknown holds),
-                            // without bypassing at-most-once/refusal/unknown
-                            // handling around it.
+                            // Native-derived receipt proof (host-owned only;
+                            // native-free carries no receipt vocabulary).
                             let observed_proves = self
                                 .staged
                                 .facts
                                 .get(window)
                                 .and_then(|fact| {
                                     if self.host_owned_workspace_domains() {
-                                        self.effective_logical_receipt(report, fact)
+                                        self.effective_logical_receipt(fact)
                                     } else {
                                         None
                                     }
                                 })
                                 .as_deref()
                                 == Some(retained.target.target_workspace.as_str());
-                            // A translated native post readback proves
-                            // arrival like an observed receipt: the
-                            // immediate post-write homing is independent
-                            // evidence, never retained-state
-                            // self-confirmation.
-                            if same_output && !observed_proves && !raw_arrival_proves {
+                            // Staged homing alone never confirms: an active
+                            // gesture shields the mover at its retained home
+                            // (already the target after commit), and the
+                            // committed session already homes same-output
+                            // sends at the target before the native moves.
+                            // Same-output needs observed receipt or raw post;
+                            // cross-output needs a raw current fact at the
+                            // target output (plus the native receipt naming
+                            // the target when host-owned) or the exact raw
+                            // post. Source facts, unknown outputs, and
+                            // shielding alone never prove arrival.
+                            let independent_proves = if same_output {
+                                observed_proves || raw_arrival_proves
+                            } else {
+                                let fact_at_target = self
+                                    .staged
+                                    .facts
+                                    .get(window)
+                                    .and_then(|fact| fact.output.as_ref())
+                                    == Some(&retained.target.target_output);
+                                let receipt_ok =
+                                    !self.host_owned_workspace_domains() || observed_proves;
+                                (fact_at_target && receipt_ok) || raw_arrival_proves
+                            };
+                            if !independent_proves {
                                 let mut held = retained;
                                 if ambiguous {
                                     held.target.held = true;
                                 }
                                 keep.push(held);
-                            } else if retained.target.follow && !same_output {
-                                // Cross-output follow only: same-output
-                                // membership settles before its separate
-                                // `{op}-follow` view flight (membership-
-                                // before-follow), so the Window never waits
-                                // here; cross-output follow shares the parent
-                                // operation and must prove the exact view.
-                                let echo_exact = self
-                                    .staged
-                                    .echoes
-                                    .get(&retained.target.target_output.0)
-                                    .map(String::as_str)
-                                    == Some(retained.target.target_workspace.as_str());
-                                if echo_exact {
-                                    // Follow proves on the exact observed
-                                    // view: no new write is required when the
-                                    // view already shows the target.
-                                } else if retained.pending_view.as_ref().is_some_and(|attempt| {
-                                    self.view_third_location(
-                                        attempt,
-                                        &retained.target.target_workspace,
-                                        self.host_owned_workspace_domains(),
-                                    ) && self
-                                        .effective_view_post(
-                                            attempt,
-                                            self.host_owned_workspace_domains(),
-                                        )
-                                        .as_deref()
-                                        .is_some_and(|post| {
-                                            self.mapping
-                                                .get(&retained.target.target_output.0)
-                                                .is_some_and(|ring| {
-                                                    ring.iter().any(|id| id == post)
-                                                })
-                                        })
-                                }) {
-                                    // Genuine known third-location external
-                                    // supersession settles the parent instead
-                                    // of fighting newer input.
-                                } else {
-                                    // Membership proves but the follow view
-                                    // is absent/stale/failed/ambiguous: hold
-                                    // persistently across acknowledgement and
-                                    // gaps with the staged follow evidence
-                                    // retained (never a refused window, never
-                                    // a view outcome on the window id). The
-                                    // spent view-phase fence blocks repeats;
-                                    // the next report settles only on exact
-                                    // echo or genuine external proof.
-                                    let mut held = retained;
-                                    held.target.held = true;
-                                    keep.push(held);
-                                }
                             }
                         }
                         // Otherwise confirmed: the flight drops.
@@ -966,7 +925,7 @@ impl WorldEngine {
                     keep.push(retained);
                 }
                 TransferKind::Migration => {
-                    self.settle_migration(report, retained, &mut keep);
+                    self.settle_migration(retained, &mut keep);
                 }
             }
         }
@@ -1006,7 +965,6 @@ impl WorldEngine {
     /// ambiguous attempts hold the flight without re-actuation.
     pub(crate) fn settle_migration(
         &mut self,
-        report: &WorldReport,
         mut retained: RetainedTransfer,
         keep: &mut Vec<RetainedTransfer>,
     ) {
@@ -1416,19 +1374,48 @@ impl WorldEngine {
                     .unwrap_or_default();
                 self.history
                     .observe(&retained.source_output.0, &source_view, &source_ring);
+                // Terminal rollback revokes ONLY the exact parent-issued
+                // selection binding/scopes/targets by the stored issuing
+                // revision: departing-echo tolerance would otherwise keep
+                // the rolled-back grant alive to Complete later. Newer
+                // selections on the same outputs carry a newer revision
+                // and survive; silent drop, no new event or token.
+                if let Some(sel_rev) = retained.migration_selection_rev {
+                    let op_id = retained.target.operation_id.clone();
+                    self.retained_selection.retain(|_, binding| {
+                        !(binding.parent_op == op_id && binding.rev == sel_rev)
+                    });
+                    self.selection_scopes
+                        .retain(|_, scope| scope.rev != sel_rev);
+                    self.selection_targets
+                        .retain(|_, entry| entry.rev != sel_rev);
+                }
             } else {
                 // No rollback: members arrived, closed, or the move was
                 // empty — settling to observed with no return onto the
                 // source backing. Release it here (option 1) rather than
                 // orphaning a dormant pair with the retired flight.
                 self.release_migrated_source_backing(
-                    report,
                     &retained.source_output,
                     &retained.target.target_workspace,
                 );
             }
             // Settle to observed; the retained logical mapping persists
             // (rolled back above for the wholly-unarrived case).
+            keep.retain(|r| {
+                !(matches!(&r.target.kind, TransferKind::View)
+                    && r.target.operation_id == refill_child_op)
+            });
+            return;
+        }
+        // Native-free originally-empty migration: zero members means
+        // no membership to await. Retire at the earliest normal
+        // publication alongside the existing zero-member Switch
+        // completion; never hold the parent on inventory/screens/
+        // gesture gaps, never an artificial wake. Native-owned empty
+        // keeps its view-proof path below; nonzero visibility
+        // obligations stay held in the selection binding.
+        if retained.migration_initial_empty && !self.host_owned_workspace_domains() {
             keep.retain(|r| {
                 !(matches!(&r.target.kind, TransferKind::View)
                     && r.target.operation_id == refill_child_op)
@@ -1452,7 +1439,6 @@ impl WorldEngine {
             // backing — closed lifetimes never roll back, so no dormant
             // pair may remain with the retired flight.
             self.release_migrated_source_backing(
-                report,
                 &retained.source_output,
                 &retained.target.target_workspace,
             );
@@ -1549,7 +1535,6 @@ impl WorldEngine {
         // dormant pair may remain with the retired flight.
         if surviving.is_empty() && !retained.migration_initial_empty {
             self.release_migrated_source_backing(
-                report,
                 &retained.source_output,
                 &retained.target.target_workspace,
             );
@@ -1569,10 +1554,27 @@ impl WorldEngine {
         // staged-unknown echo holds (never settled from a gap), and the
         // fresh echo resolves next round with the switch winning.
         self.release_migrated_source_backing(
-            report,
             &retained.source_output,
             &retained.target.target_workspace,
         );
+        // Native-free selection route: the frozen binding owns both views
+        // through the existing selection completion, so no logical echo
+        // proof gates the Migration. All members arrived (or the move was
+        // empty/fully closed above): retire the parent now while the
+        // Switch pends on its own visibility and focus proofs. Holds,
+        // gaps, refusals, and external supersession above still apply
+        // unchanged; only the echo tail is skipped, and no refill child
+        // exists on this route. Stable native-free route identity (never
+        // the live binding presence: an issued zero-member terminal or a
+        // superseded/closed binding must never revert membership to the
+        // echo path).
+        if !self.host_owned_workspace_domains() {
+            keep.retain(|r| {
+                !(matches!(&r.target.kind, TransferKind::View)
+                    && r.target.operation_id == refill_child_op)
+            });
+            return;
+        }
         // Both views: the adapter actuates the destination follow and the
         // stored source refill; settlement waits for each echo proof. Empty
         // migrations verify both views exactly like arrived ones. The

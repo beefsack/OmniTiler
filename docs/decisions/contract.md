@@ -152,10 +152,10 @@
 - Evidence: [review R18, F29](../changes/core-interface-review.md).
 
 ### Anchored border (R20)
-- Decision: v4 border is anchored descriptor (subject lifetime, core outsets, width/radius, eligibility, causal freshness witness), not absolute bounds. Adapters apply to live frame via existing native events, no polling. One core rule replaces KDE hide-during-motion and Windows/macOS trailing; group underlay remains group-defined absolute.
+- Decision: v4 border is anchored descriptor (subject lifetime, core outsets, width/radius, eligibility, causal freshness witness), not absolute bounds. Adapters apply to live frame via existing native events, no polling. One core rule replaces KDE hide-during-motion and Windows/macOS trailing; group underlay remains group-defined absolute. `width` and `radius` are the border settings scaled once by the foreground output scale with the existing nearest, halves-upward rule; `outsets` is `[g+w, g+w, g+w, g+w]` from the scaled border gap plus width. An unknown or absent witness, or a witness whose subject or foreground does not join the observed foreground, hides the border with empty reason and null subject, outsets, width, radius and witness under the existing carried hidden geometry-veto spelling; no hide token is added.
 - Why: adapter motion behavior was janky; an anchored descriptor avoids replaying stale absolute bounds.
-- Rejected: wait for macOS drag evidence and retain absolute bounds in v4.
-- Assumes / revisit if: each native frame event arrives during motion; macOS drag evidence measures smoothness only. Similar shape may fit future group tab strip.
+- Rejected: wait for macOS drag evidence and retain absolute bounds in v4; outsets equal to scaled width only; a new hide reason for unknown witness.
+- Assumes / revisit if: each native frame event arrives during motion; macOS drag evidence measures smoothness only. Similar shape may fit future group tab strip. K5 native witness join remains OPEN.
 - Status: active, 2026-10-31
 - Evidence: [review R20, F31](../changes/core-interface-review.md), [offline comparison](../changes/kde-world-v2-port.md#moving-border-offline-comparison-2026-10-28).
 
