@@ -100,10 +100,12 @@ use crate::policy::{LayoutPolicy, default_policy};
 use crate::reconcile::{AckApplied, AckError, Commit, Reconciler, StatusView, VerifyError};
 
 mod fit;
+mod group_alloc;
 mod ops;
 mod world;
 
 pub mod capacity;
+pub(crate) use group_alloc::GroupAllocator;
 
 /// Test-only re-export of the shared entry-edge ranking helper (the sole
 /// out-of-module caller is the `#[cfg(test)]` selector suite).
@@ -849,6 +851,11 @@ pub struct Session {
     // Only a transient canonical pair uses this. It restores target-local node
     // identities after pair-wide planning, whose snapshot requires uniqueness.
     canonical_pair_target_restore: BTreeMap<NodeId, NodeId>,
+    /// Generation-shared monotonic group allocator (see
+    /// [`GroupAllocator`]): every group mint in this session draws from
+    /// the generation counter. Clones share it, so discarded trials burn
+    /// serials that are never reissued.
+    group_alloc: GroupAllocator,
     reconciler: Reconciler,
     pending_desired: Option<PendingDesired>,
     drag: Option<DragState>,
@@ -960,6 +967,7 @@ impl Session {
             overlap_accepted: BTreeSet::new(),
             minimized_slots: BTreeMap::new(),
             canonical_pair_target_restore: BTreeMap::new(),
+            group_alloc: GroupAllocator::new(),
             reconciler,
             pending_desired: None,
             drag: None,
@@ -1037,6 +1045,22 @@ impl Session {
     /// selected policy.
     pub fn set_policy(&mut self, policy: Arc<dyn LayoutPolicy>) {
         self.policy = policy;
+    }
+
+    /// Generation-shared group allocator driving every group mint in
+    /// this session. Cloning the allocator shares the generation
+    /// counter; burns survive discarded clones.
+    #[must_use]
+    pub(crate) fn group_allocator(&self) -> GroupAllocator {
+        self.group_alloc.clone()
+    }
+
+    /// Carry the generation-shared group allocator into this session
+    /// without touching owner, generation, revision, divergence,
+    /// pending, or drag state. The engine uses this when retaining
+    /// sessions so every stored session shares the generation counter.
+    pub(crate) fn set_group_allocator(&mut self, alloc: GroupAllocator) {
+        self.group_alloc = alloc;
     }
 
     /// Recorded divergence, if fail-closed.
@@ -1213,6 +1237,10 @@ impl Session {
         // selected policy wins (inputs always agree while COSMIC v1 is the
         // only policy). No revision/divergence/pending state is touched.
         pair.set_policy(source.policy.clone());
+        // Paired planning shares the generation counter: the pair draws
+        // from the source component's allocator so new groups burn
+        // generation serials even when the pair itself is discarded.
+        pair.set_group_allocator(source.group_allocator());
         let source_key = source.domains[0].key();
         let pair_source_key = pair_domains[0].key();
         let pair_target_key = pair_domains[1].key();
@@ -1428,6 +1456,11 @@ impl Session {
         // revision/divergence/pending state is touched.
         source.set_policy(self.policy.clone());
         target.set_policy(self.policy.clone());
+        // Split outputs keep sharing the generation counter so later
+        // mints never reissue pair-burned serials.
+        let alloc = self.group_allocator();
+        source.set_group_allocator(alloc.clone());
+        target.set_group_allocator(alloc);
         let source_key = source_domain.key();
         let target_key = target_domain.key();
         let mut source_trees: BTreeMap<DomainKey, Option<Node>> = BTreeMap::new();
@@ -2492,12 +2525,11 @@ fn replace_leaf(tree: Node, leaf: &NodeId, node: Node) -> Option<Node> {
 /// leaf id) returns `None`. Callers gate homing/domain liveness and the
 /// exact fast path before this.
 fn best_effort_rejoin(
+    alloc: &GroupAllocator,
     slot: &MinimizedSlot,
     current: &Option<Node>,
     windows: &BTreeMap<WindowId, WindowLink>,
     existing_ids: &mut BTreeSet<NodeId>,
-    window: &WindowId,
-    base_revision: u64,
 ) -> Option<Node> {
     if existing_ids.contains(&slot.leaf) {
         return None;
@@ -2586,8 +2618,7 @@ fn best_effort_rejoin(
         vec![anchor_share, old_share]
     };
     normalize_shares(&mut regroup);
-    let group_id = generate_group_id(window, base_revision, existing_ids);
-    existing_ids.insert(group_id.clone());
+    let group_id = generate_group_id(alloc, existing_ids)?;
     existing_ids.insert(slot.leaf.clone());
     let children = if before {
         vec![
@@ -2929,23 +2960,14 @@ fn collect_leaves_into(node: &Node, out: &mut Vec<NodeId>) {
     }
 }
 
-fn generate_group_id(
-    window: &WindowId,
-    base_revision: u64,
-    existing: &mut BTreeSet<NodeId>,
-) -> NodeId {
-    let base = format!("grp-{}-r{}", window.0, base_revision);
-    if !existing.contains(&NodeId(base.clone())) {
-        return NodeId(base);
-    }
-    let mut n = 1u32;
-    loop {
-        let candidate = NodeId(format!("{base}-{n}"));
-        if !existing.contains(&candidate) {
-            return candidate;
-        }
-        n += 1;
-    }
+/// Mint one fresh group id from the generation-shared allocator,
+/// reserving it in `existing`. Replaces the former per-window/revision
+/// spelling search: serials burn on trial and rollback and removed ids
+/// are never reissued. Fails closed (`None`) on exhaustion.
+fn generate_group_id(alloc: &GroupAllocator, existing: &mut BTreeSet<NodeId>) -> Option<NodeId> {
+    let minted = alloc.mint(existing)?;
+    existing.insert(minted.clone());
+    Some(minted)
 }
 
 fn find_node_by_id<'a>(node: &'a Node, id: &NodeId) -> Option<&'a Node> {
@@ -3040,13 +3062,12 @@ pub(crate) fn admission_placement_for(
 #[allow(clippy::too_many_arguments)]
 fn insert_tiled(
     policy: &dyn LayoutPolicy,
+    alloc: &GroupAllocator,
     tree: Option<Node>,
     focused: Option<&NodeId>,
     new_leaf_id: NodeId,
     orientation: Axis,
     existing_ids: &mut BTreeSet<NodeId>,
-    window: &WindowId,
-    base_revision: u64,
 ) -> Option<Node> {
     let new_leaf = Node::Leaf { id: new_leaf_id };
     let Some(tree) = tree else {
@@ -3057,8 +3078,7 @@ fn insert_tiled(
         // for focus only, not source COSMIC parity): wrap the entire existing
         // root old/new under a new binary group carrying the admission axis
         // and [`crate::cosmic_v1::new_group_shares`].
-        let group_id = generate_group_id(window, base_revision, existing_ids);
-        existing_ids.insert(group_id.clone());
+        let group_id = generate_group_id(alloc, existing_ids)?;
         return Some(Node::Group {
             id: group_id,
             axis: orientation,
@@ -3072,8 +3092,7 @@ fn insert_tiled(
     // admission axis and [`crate::cosmic_v1::new_group_shares`]. Same-axis
     // N-ary parent append never applies here; N-ary groups remain for
     // movement/drag representation only.
-    let group_id = generate_group_id(window, base_revision, existing_ids);
-    existing_ids.insert(group_id.clone());
+    let group_id = generate_group_id(alloc, existing_ids)?;
     nest_focused_with_new(policy, tree, focused, new_leaf, group_id, orientation)
 }
 
@@ -7161,11 +7180,11 @@ mod tests {
         };
         let left = apply_group_edge_placement(
             &CosmicV1Policy,
+            &GroupAllocator::new(),
             &tree,
             &NodeId("m".to_owned()),
             &NodeId("g".to_owned()),
             DragSide::Left,
-            9,
         )
         .expect("left placement");
         assert!(!left.wrap);
@@ -7174,11 +7193,11 @@ mod tests {
         assert!(left.new_group.is_none());
         let right = apply_group_edge_placement(
             &CosmicV1Policy,
+            &GroupAllocator::new(),
             &tree,
             &NodeId("m".to_owned()),
             &NodeId("g".to_owned()),
             DragSide::Right,
-            9,
         )
         .expect("right placement");
         assert!(!right.wrap);
@@ -7187,11 +7206,11 @@ mod tests {
         // Perpendicular Top wraps the whole group.
         let top = apply_group_edge_placement(
             &CosmicV1Policy,
+            &GroupAllocator::new(),
             &tree,
             &NodeId("m".to_owned()),
             &NodeId("g".to_owned()),
             DragSide::Top,
-            9,
         )
         .expect("top placement");
         assert!(top.wrap);
@@ -8730,5 +8749,1307 @@ mod tests {
             comparable_inserted_shares((1u64 << 63) - 2, 1u128 << 63, &[1, 1], 0),
             Some(vec![(1u64 << 63) - 2, 1, 1])
         );
+    }
+
+    // ---- generation-shared group allocation acceptance (alloc_*) ----
+    //
+    // Every production group mint draws from one generation-owned
+    // monotonic counter: removed ids are never reissued, trials and
+    // rolled-back placements burn serials, and exhaustion fails closed.
+
+    fn alloc_group_ids(session: &Session) -> BTreeSet<NodeId> {
+        fn walk(node: &Node, out: &mut BTreeSet<NodeId>) {
+            if let Node::Group { id, children, .. } = node {
+                out.insert(id.clone());
+                for child in children {
+                    walk(child, out);
+                }
+            }
+        }
+        let mut ids = BTreeSet::new();
+        for d in session.snapshot().domains {
+            if let Some(tree) = d.tree {
+                walk(&tree, &mut ids);
+            }
+        }
+        ids
+    }
+
+    fn alloc_all_ids(session: &Session) -> BTreeSet<NodeId> {
+        fn walk(node: &Node, out: &mut BTreeSet<NodeId>) {
+            out.insert(node.id().clone());
+            if let Node::Group { children, .. } = node {
+                for child in children {
+                    walk(child, out);
+                }
+            }
+        }
+        let mut ids = BTreeSet::new();
+        for d in session.snapshot().domains {
+            if let Some(tree) = d.tree {
+                walk(&tree, &mut ids);
+            }
+        }
+        ids
+    }
+
+    fn alloc_serial(id: &NodeId) -> Option<u64> {
+        id.0.strip_prefix("grp-")?.parse().ok()
+    }
+
+    fn alloc_snapshot_group_ids(snapshot: &SessionSnapshot) -> BTreeSet<NodeId> {
+        fn walk(node: &Node, out: &mut BTreeSet<NodeId>) {
+            if let Node::Group { id, children, .. } = node {
+                out.insert(id.clone());
+                for child in children {
+                    walk(child, out);
+                }
+            }
+        }
+        let mut ids = BTreeSet::new();
+        for d in &snapshot.domains {
+            if let Some(tree) = &d.tree {
+                walk(tree, &mut ids);
+            }
+        }
+        ids
+    }
+
+    fn alloc_obs_for(
+        session: &Session,
+        windows: Vec<ObservedWindow>,
+        fingerprint: u64,
+    ) -> SessionObservation {
+        SessionObservation {
+            observation: Observation::new(
+                owner(),
+                generation(),
+                session.accepted_revision(),
+                fingerprint,
+            ),
+            windows,
+        }
+    }
+
+    /// Admit through the full propose/acknowledge/verify cycle on an
+    /// explicit domain with explicit placement bounds (multi-domain and
+    /// tight-geometry scenarios the fixed `admit` helper cannot express).
+    fn alloc_admit_placed(
+        session: &mut Session,
+        window: &str,
+        output: &str,
+        workspace: &str,
+        bounds: Rect,
+        correlation: &str,
+    ) {
+        let rev = session.accepted_revision();
+        let window_id = WindowId(window.to_owned());
+        let mut windows = obs_windows(session);
+        windows.push(ObservedWindow {
+            window: window_id.clone(),
+            output: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+            floating: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: crate::size_hints::WindowSizeHints::none(),
+        });
+        let command = SessionCommand::Admit {
+            window: window_id,
+            output: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+            exceptions: ExceptionFlags::none(),
+            exception_behavior: None,
+            placement_bounds: bounds,
+            suppress_fixed_float: false,
+        };
+        let observation = alloc_obs_for(session, windows, 100 + rev);
+        let correlation = corr(correlation);
+        let plan = session
+            .propose(
+                &command,
+                &observation,
+                &correlation,
+                &LifecycleCapabilities::full(),
+            )
+            .expect("admit propose");
+        session
+            .acknowledge(&AdapterAck::new(
+                correlation.clone(),
+                owner(),
+                generation(),
+                rev,
+                AckOutcome::Accepted,
+            ))
+            .expect("admit ack");
+        session
+            .verify_lifecycle(&LifecyclePostObservation::new(
+                Observation::new(owner(), generation(), rev, 200 + rev),
+                correlation,
+                true,
+                plan.dispatch.preconditions.clone(),
+                plan.dispatch.operation.clone(),
+            ))
+            .expect("admit verify");
+    }
+
+    fn alloc_remove_committed(session: &mut Session, window: &str) {
+        let rev = session.accepted_revision();
+        let window_id = WindowId(window.to_owned());
+        let command = SessionCommand::Remove { window: window_id };
+        let observation = obs_for(session);
+        let correlation = corr(&format!("corr-alloc-remove-{window}"));
+        let plan = session
+            .propose(
+                &command,
+                &observation,
+                &correlation,
+                &LifecycleCapabilities::full(),
+            )
+            .expect("remove propose");
+        session
+            .acknowledge(&AdapterAck::new(
+                correlation.clone(),
+                owner(),
+                generation(),
+                rev,
+                AckOutcome::Accepted,
+            ))
+            .expect("remove ack");
+        session
+            .verify_lifecycle(&LifecyclePostObservation::new(
+                Observation::new(owner(), generation(), rev, 200 + rev),
+                correlation,
+                true,
+                plan.dispatch.preconditions.clone(),
+                plan.dispatch.operation.clone(),
+            ))
+            .expect("remove verify");
+    }
+
+    fn alloc_converge(
+        session: &mut Session,
+        names: &[&str],
+        focused: Option<&str>,
+        fingerprint: u64,
+    ) {
+        let windows = names
+            .iter()
+            .map(|name| ObservedWindow {
+                window: WindowId((*name).to_owned()),
+                output: OutputId("out-1".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+                floating: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            })
+            .collect();
+        let focused = focused.map(|name| WindowId(name.to_owned()));
+        session
+            .converge_observation(
+                &alloc_obs_for(session, windows, fingerprint),
+                focused.as_ref(),
+            )
+            .expect("converge");
+    }
+
+    #[test]
+    fn alloc_ordinary_remove_never_reissues() {
+        // Ordinary admission family: the second admit wraps into grp-0.
+        let mut session = session_two();
+        assert_eq!(
+            alloc_group_ids(&session),
+            BTreeSet::from([NodeId("grp-0".to_owned())])
+        );
+        assert_eq!(session.group_allocator().next_value(), 1);
+        // Removing the entrant collapses the wrapper; the serial is gone.
+        alloc_remove_committed(&mut session, "win-2");
+        assert!(alloc_group_ids(&session).is_empty());
+        // Readmission mints the next serial, never the removed id.
+        admit(&mut session, "win-3", true);
+        assert_eq!(
+            alloc_group_ids(&session),
+            BTreeSet::from([NodeId("grp-1".to_owned())])
+        );
+        assert_eq!(session.group_allocator().next_value(), 2);
+    }
+
+    #[test]
+    fn alloc_restore_rejoin_mints_fresh_never_reissues() {
+        // Minimize/restore family through the real converge primitive: an
+        // omission minimizes, a re-observed window restores.
+        let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        alloc_converge(&mut session, &["win-a"], Some("win-a"), 101);
+        alloc_converge(&mut session, &["win-a", "win-b"], Some("win-b"), 102);
+        alloc_converge(
+            &mut session,
+            &["win-a", "win-b", "win-c"],
+            Some("win-c"),
+            103,
+        );
+        let seeded_groups = alloc_group_ids(&session);
+        assert_eq!(seeded_groups.len(), 2);
+        let seeded_next = session.group_allocator().next_value();
+        // Omit win-b: a bare absence stays a minimize with a stored slot.
+        alloc_converge(&mut session, &["win-a", "win-c"], Some("win-c"), 104);
+        assert!(
+            session
+                .minimized_slot(&WindowId("win-b".to_owned()))
+                .is_some(),
+            "omission stores a restore slot"
+        );
+        // An intervening newcomer reshapes the tree so the restore cannot
+        // take the exact-tree path and must regroup with a live neighbor.
+        admit(&mut session, "win-d", true);
+        let pre_restore = alloc_group_ids(&session);
+        let pre_next = session.group_allocator().next_value();
+        assert!(pre_next > seeded_next);
+        alloc_converge(
+            &mut session,
+            &["win-a", "win-c", "win-d", "win-b"],
+            Some("win-b"),
+            105,
+        );
+        assert!(
+            session
+                .minimized_slot(&WindowId("win-b".to_owned()))
+                .is_none(),
+            "slot consumed by restore"
+        );
+        let post_restore = alloc_group_ids(&session);
+        let fresh: Vec<NodeId> = post_restore.difference(&pre_restore).cloned().collect();
+        assert_eq!(fresh.len(), 1, "restore regroups exactly one fresh group");
+        assert!(
+            !seeded_groups.contains(&fresh[0]),
+            "restored group never reissues a seeded id: {:?}",
+            fresh[0]
+        );
+        let distinct: BTreeSet<_> = post_restore.iter().collect();
+        assert_eq!(distinct.len(), post_restore.len());
+        assert_eq!(
+            session.group_allocator().next_value(),
+            pre_next + 1,
+            "restore burns exactly one serial"
+        );
+        assert_eq!(leaves_of(&session).len(), 4);
+        // Remove-then-remint: explicitly remove the restored window and
+        // re-observe it. The fresh admission mints a group never seen
+        // before, never any removed id.
+        let mut seen = seeded_groups.clone();
+        seen.extend(pre_restore.iter().cloned());
+        seen.extend(post_restore.iter().cloned());
+        let restore_next = session.group_allocator().next_value();
+        alloc_remove_committed(&mut session, "win-b");
+        alloc_converge(
+            &mut session,
+            &["win-a", "win-c", "win-d", "win-b"],
+            Some("win-b"),
+            106,
+        );
+        let repeat_groups = alloc_group_ids(&session);
+        let live_fresh: Vec<NodeId> = repeat_groups
+            .iter()
+            .filter(|id| !seen.contains(*id))
+            .cloned()
+            .collect();
+        assert_eq!(
+            live_fresh.len(),
+            1,
+            "repeat admission mints exactly one fresh group"
+        );
+        assert!(
+            alloc_serial(&live_fresh[0]).is_some(),
+            "repeat mint uses the shared counter"
+        );
+        assert!(
+            session.group_allocator().next_value() > restore_next,
+            "repeat admission burns forward"
+        );
+        assert_eq!(leaves_of(&session).len(), 4);
+    }
+
+    #[test]
+    fn alloc_cap_fallback_burns_tried_serials() {
+        // Capacity-fallback family: 12x12 gap 4, H[a,b] halves of 4x12. A
+        // wide-placed newcomer fails the ordinary wrap of b, then the
+        // largest fallback splits a. Both the failed ordinary mint and the
+        // tried fallback mint burn serials.
+        let tight = OutputDomain {
+            id: OutputId("o".to_owned()),
+            workspace: WorkspaceId("w".to_owned()),
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 12,
+                h: 12,
+            },
+            gap: 4,
+            adjacent: BTreeMap::new(),
+        };
+        let mut session = Session::new(owner(), generation(), 0, 7, vec![tight]).expect("new");
+        let placed = Rect {
+            x: 0,
+            y: 0,
+            w: 12,
+            h: 4,
+        };
+        alloc_admit_placed(&mut session, "a", "o", "w", placed, "c-alloc-1");
+        alloc_admit_placed(&mut session, "b", "o", "w", placed, "c-alloc-2");
+        assert_eq!(
+            alloc_group_ids(&session),
+            BTreeSet::from([NodeId("grp-0".to_owned())])
+        );
+        alloc_admit_placed(&mut session, "c", "o", "w", placed, "c-alloc-3");
+        // The failed ordinary wrap burned grp-1; the fallback split minted
+        // grp-2. grp-1 is never live again.
+        assert_eq!(
+            alloc_group_ids(&session),
+            BTreeSet::from([NodeId("grp-0".to_owned()), NodeId("grp-2".to_owned())])
+        );
+        assert_eq!(session.group_allocator().next_value(), 3);
+        assert!(
+            session
+                .snapshot()
+                .windows
+                .iter()
+                .any(|link| link.window.0 == "c"),
+            "newcomer tiles through fallback"
+        );
+        // Remove the fallback-admitted window and admit again: the repeat
+        // burns the next ordinary/fallback pair and never reissues grp-2.
+        alloc_remove_committed(&mut session, "c");
+        assert_eq!(
+            alloc_group_ids(&session),
+            BTreeSet::from([NodeId("grp-0".to_owned())])
+        );
+        alloc_admit_placed(&mut session, "c", "o", "w", placed, "c-alloc-4");
+        assert_eq!(
+            alloc_group_ids(&session),
+            BTreeSet::from([NodeId("grp-0".to_owned()), NodeId("grp-4".to_owned())]),
+            "repeat fallback never reissues removed grp-2"
+        );
+        assert_eq!(session.group_allocator().next_value(), 5);
+    }
+
+    #[test]
+    fn alloc_send_to_occupied_shares_counter() {
+        // Workspace-send family: sending onto an occupied destination wraps
+        // from the same generation counter as ordinary admission.
+        let ws2 = OutputDomain {
+            id: OutputId("out-1".to_owned()),
+            workspace: WorkspaceId("ws-2".to_owned()),
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 120,
+                h: 80,
+            },
+            gap: 0,
+            adjacent: BTreeMap::new(),
+        };
+        let mut session =
+            Session::new(owner(), generation(), 0, 7, vec![domain(), ws2]).expect("new");
+        let wide = Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 50,
+        };
+        alloc_admit_placed(&mut session, "a", "out-1", "ws-1", wide, "c-alloc-1");
+        alloc_admit_placed(&mut session, "b", "out-1", "ws-1", wide, "c-alloc-2");
+        alloc_admit_placed(&mut session, "d", "out-1", "ws-2", wide, "c-alloc-3");
+        assert_eq!(
+            alloc_group_ids(&session),
+            BTreeSet::from([NodeId("grp-0".to_owned())])
+        );
+        let key1 = DomainKey {
+            output: OutputId("out-1".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        assert!(session.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
+        let rev = session.accepted_revision();
+        let plan = session
+            .propose(
+                &SessionCommand::MoveToWorkspace {
+                    window: WindowId("b".to_owned()),
+                    target_output: OutputId("out-1".to_owned()),
+                    target_workspace: WorkspaceId("ws-2".to_owned()),
+                    follow: true,
+                },
+                &obs_for(&session),
+                &corr("corr-alloc-send"),
+                &LifecycleCapabilities::full(),
+            )
+            .expect("send proposes");
+        session
+            .acknowledge(&AdapterAck::new(
+                corr("corr-alloc-send"),
+                owner(),
+                generation(),
+                rev,
+                AckOutcome::Accepted,
+            ))
+            .expect("send ack");
+        session
+            .verify_lifecycle(&LifecyclePostObservation::new(
+                Observation::new(owner(), generation(), rev, 200 + rev),
+                corr("corr-alloc-send"),
+                true,
+                plan.dispatch.preconditions.clone(),
+                plan.dispatch.operation.clone(),
+            ))
+            .expect("send verify");
+        // Destination wrap continues the shared counter past grp-0; the
+        // collapsed source wrapper is gone, never reissued.
+        assert_eq!(
+            alloc_group_ids(&session),
+            BTreeSet::from([NodeId("grp-1".to_owned())])
+        );
+        assert_eq!(session.group_allocator().next_value(), 2);
+        let moved = session
+            .snapshot()
+            .windows
+            .iter()
+            .find(|link| link.window.0 == "b")
+            .expect("mover linked")
+            .clone();
+        assert_eq!(moved.workspace.0, "ws-2");
+    }
+
+    /// Workspace send through the full propose/acknowledge/verify cycle.
+    fn alloc_send_committed(
+        session: &mut Session,
+        window: &str,
+        output: &str,
+        workspace: &str,
+        follow: bool,
+        correlation: &str,
+    ) {
+        let rev = session.accepted_revision();
+        let plan = session
+            .propose(
+                &SessionCommand::MoveToWorkspace {
+                    window: WindowId(window.to_owned()),
+                    target_output: OutputId(output.to_owned()),
+                    target_workspace: WorkspaceId(workspace.to_owned()),
+                    follow,
+                },
+                &obs_for(session),
+                &corr(correlation),
+                &LifecycleCapabilities::full(),
+            )
+            .expect("send proposes");
+        let correlation = corr(correlation);
+        session
+            .acknowledge(&AdapterAck::new(
+                correlation.clone(),
+                owner(),
+                generation(),
+                rev,
+                AckOutcome::Accepted,
+            ))
+            .expect("send ack");
+        session
+            .verify_lifecycle(&LifecyclePostObservation::new(
+                Observation::new(owner(), generation(), rev, 200 + rev),
+                correlation,
+                true,
+                plan.dispatch.preconditions.clone(),
+                plan.dispatch.operation.clone(),
+            ))
+            .expect("send verify");
+    }
+
+    #[test]
+    fn alloc_send_fallback_burns_and_never_reissues_on_repeat() {
+        // Send-fallback family: destination 12x12 gap 4 holds H[a, V[b, c]]
+        // (a is 4x12; b and c are 4x4). The sent window's ordinary
+        // destination wrap of the remembered 4x4 leaf c fails (square ties
+        // vertical, splitting 0-height children), then the largest fallback
+        // splits a. Removing the sent window and sending again burns the
+        // next pair of serials and never reissues the removed fallback
+        // group.
+        let dest = OutputDomain {
+            id: OutputId("o".to_owned()),
+            workspace: WorkspaceId("ws-2".to_owned()),
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 12,
+                h: 12,
+            },
+            gap: 4,
+            adjacent: BTreeMap::new(),
+        };
+        let mut session = Session::new(
+            owner(),
+            generation(),
+            0,
+            7,
+            vec![
+                OutputDomain {
+                    id: OutputId("o".to_owned()),
+                    workspace: WorkspaceId("ws-1".to_owned()),
+                    bounds: Rect {
+                        x: 0,
+                        y: 0,
+                        w: 120,
+                        h: 80,
+                    },
+                    gap: 0,
+                    adjacent: BTreeMap::new(),
+                },
+                dest,
+            ],
+        )
+        .expect("new");
+        let wide = Rect {
+            x: 0,
+            y: 0,
+            w: 12,
+            h: 4,
+        };
+        let tall = Rect {
+            x: 0,
+            y: 0,
+            w: 4,
+            h: 12,
+        };
+        alloc_admit_placed(&mut session, "a", "o", "ws-2", wide, "c-alloc-s1");
+        alloc_admit_placed(&mut session, "b", "o", "ws-2", wide, "c-alloc-s2");
+        // Tall-placed newcomer wraps b vertically into 4x4 children that
+        // still project, so this stays on the ordinary path (grp-1 live).
+        alloc_admit_placed(&mut session, "c", "o", "ws-2", tall, "c-alloc-s3");
+        alloc_admit_placed(
+            &mut session,
+            "d",
+            "o",
+            "ws-1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            "c-alloc-s4",
+        );
+        assert_eq!(
+            alloc_group_ids(&session),
+            BTreeSet::from([NodeId("grp-0".to_owned()), NodeId("grp-1".to_owned())])
+        );
+        assert_eq!(session.group_allocator().next_value(), 2);
+        let key1 = DomainKey {
+            output: OutputId("o".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        assert!(session.sync_focus_from_window(&key1, &WindowId("d".to_owned())));
+        alloc_send_committed(&mut session, "d", "o", "ws-2", true, "corr-alloc-send-fb");
+        // Failed ordinary destination wrap of the remembered 4x4 leaf c
+        // burned grp-2; the largest fallback split of a minted grp-3.
+        assert_eq!(
+            alloc_group_ids(&session),
+            BTreeSet::from([
+                NodeId("grp-0".to_owned()),
+                NodeId("grp-1".to_owned()),
+                NodeId("grp-3".to_owned())
+            ])
+        );
+        assert_eq!(session.group_allocator().next_value(), 4);
+        // Fallback evidence: the newcomer nests with the largest leaf a,
+        // not with the remembered c of the failed ordinary wrap.
+        fn send_sibling(node: &Node, leaf: &NodeId) -> Option<NodeId> {
+            match node {
+                Node::Leaf { .. } => None,
+                Node::Group { children, .. } => {
+                    if children.len() == 2 && children.iter().any(|c| c.id() == leaf) {
+                        return children
+                            .iter()
+                            .find(|c| c.id() != leaf)
+                            .map(|c| c.id().clone());
+                    }
+                    children.iter().find_map(|c| send_sibling(c, leaf))
+                }
+            }
+        }
+        let dest_tree = session
+            .snapshot()
+            .domains
+            .into_iter()
+            .find(|d| d.workspace.0 == "ws-2")
+            .expect("dest domain")
+            .tree
+            .expect("dest tree");
+        assert_eq!(
+            send_sibling(&dest_tree, &NodeId("leaf-d".to_owned())),
+            Some(NodeId("leaf-a".to_owned())),
+            "fallback splits the largest leaf a, not the remembered c"
+        );
+        let sent = session
+            .snapshot()
+            .windows
+            .iter()
+            .find(|link| link.window.0 == "d")
+            .expect("mover linked")
+            .clone();
+        assert_eq!(sent.workspace.0, "ws-2");
+        // Remove the sent window (destination collapses to H[a, V[b, c]]),
+        // return it to the source, and send again: the repeat burns grp-4
+        // (ordinary) and grp-5 (fallback) and never reissues grp-3.
+        alloc_remove_committed(&mut session, "d");
+        assert_eq!(
+            alloc_group_ids(&session),
+            BTreeSet::from([NodeId("grp-0".to_owned()), NodeId("grp-1".to_owned())])
+        );
+        alloc_admit_placed(
+            &mut session,
+            "d",
+            "o",
+            "ws-1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            "c-alloc-s5",
+        );
+        // Restore the remembered destination anchor deterministically: the
+        // removal may have advanced destination last-active elsewhere.
+        let key2 = DomainKey {
+            output: OutputId("o".to_owned()),
+            workspace: WorkspaceId("ws-2".to_owned()),
+        };
+        assert!(session.sync_focus_from_window(&key2, &WindowId("c".to_owned())));
+        assert!(session.sync_focus_from_window(&key1, &WindowId("d".to_owned())));
+        alloc_send_committed(&mut session, "d", "o", "ws-2", true, "corr-alloc-send-fb2");
+        assert_eq!(
+            alloc_group_ids(&session),
+            BTreeSet::from([
+                NodeId("grp-0".to_owned()),
+                NodeId("grp-1".to_owned()),
+                NodeId("grp-5".to_owned())
+            ]),
+            "repeat fallback never reissues removed grp-3"
+        );
+        assert_eq!(session.group_allocator().next_value(), 6);
+        let dest_tree = session
+            .snapshot()
+            .domains
+            .into_iter()
+            .find(|d| d.workspace.0 == "ws-2")
+            .expect("dest domain")
+            .tree
+            .expect("dest tree");
+        assert_eq!(
+            send_sibling(&dest_tree, &NodeId("leaf-d".to_owned())),
+            Some(NodeId("leaf-a".to_owned())),
+            "repeat fallback splits the largest leaf a again"
+        );
+    }
+
+    #[test]
+    fn alloc_drag_wrap_mints_next_serial() {
+        // Drag family: the perpendicular wrap mints the next shared serial.
+        let mut session = session_three();
+        assert_eq!(session.group_allocator().next_value(), 2);
+        begin_focused(&mut session, "win-3");
+        let plan = drop_planned(&mut session, 20, 5, "corr-alloc-drag");
+        let new_group = plan
+            .dispatch
+            .operation
+            .new_group
+            .clone()
+            .expect("fresh group");
+        assert_eq!(new_group, NodeId("grp-2".to_owned()));
+        commit_drag(&mut session, &plan, "corr-alloc-drag");
+        assert!(alloc_group_ids(&session).contains(&NodeId("grp-2".to_owned())));
+        assert_eq!(session.group_allocator().next_value(), 3);
+        assert_tree_invariants(&session);
+        // Remove the wrapped mover and drop again: the repeat wrap mints
+        // the next serial, never the removed grp-2.
+        alloc_remove_committed(&mut session, "win-3");
+        assert!(!alloc_group_ids(&session).contains(&NodeId("grp-2".to_owned())));
+        begin_focused(&mut session, "win-2");
+        let preview = session.preview_drag(20, 5, &[]).expect("preview");
+        assert!(preview.wrap, "redrop still wraps perpendicularly");
+        let repeat = drop_planned(&mut session, 20, 5, "corr-alloc-drag-3");
+        // The preview above resolved through the shared allocator and burned
+        // grp-3, so the repeat drop mints grp-4, never the removed grp-2.
+        assert_eq!(
+            repeat.dispatch.operation.new_group,
+            Some(NodeId("grp-4".to_owned())),
+            "repeat wrap never reissues removed grp-2"
+        );
+        commit_drag(&mut session, &repeat, "corr-alloc-drag-3");
+        assert_eq!(session.group_allocator().next_value(), 5);
+        assert_tree_invariants(&session);
+    }
+
+    #[test]
+    fn alloc_discarded_session_trial_burns_serial() {
+        // Trial/rollback family: planning on a whole-session clone burns a
+        // serial even when the clone is discarded without committing.
+        let session = session_three();
+        assert_eq!(session.group_allocator().next_value(), 2);
+        let mut trial = session.clone();
+        begin_focused(&mut trial, "win-3");
+        let staged = drop_planned(&mut trial, 20, 5, "corr-alloc-trial");
+        assert_eq!(
+            staged.dispatch.operation.new_group,
+            Some(NodeId("grp-2".to_owned()))
+        );
+        drop(trial);
+        // The discarded trial burned grp-2 on the shared counter.
+        assert_eq!(session.group_allocator().next_value(), 3);
+        let mut live = session.clone();
+        begin_focused(&mut live, "win-3");
+        let plan = drop_planned(&mut live, 20, 5, "corr-alloc-drag-2");
+        assert_eq!(
+            plan.dispatch.operation.new_group,
+            Some(NodeId("grp-3".to_owned())),
+            "rolled-back trial serial is never reissued"
+        );
+    }
+
+    #[test]
+    fn alloc_drag_group_edge_wrap_burns_trial_and_live() {
+        // Group-edge-wrap family through the real preview/drop/commit path:
+        // a gap-point drop on the inner group wraps from the shared
+        // counter. Planning the same drop on a clone first burns a serial
+        // that the live drop never reissues.
+        let session = gap_session_nested();
+        assert_eq!(session.group_allocator().next_value(), 2);
+        let (inner, leaf_map) = inner_v_layout(&session);
+        let mut gy_opt = None;
+        for y in inner.rect.y..inner.rect.y + inner.rect.h {
+            if !leaf_map
+                .values()
+                .any(|r| contains_point(r, inner.rect.x + inner.rect.w / 2, y))
+            {
+                gy_opt = Some(y);
+                break;
+            }
+        }
+        let gy = gy_opt.expect("inner gap row");
+        let gx = inner.rect.x + 5;
+        let mut trial = session.clone();
+        begin_focused(&mut trial, "win-1");
+        let staged = drop_planned(&mut trial, gx, gy + 2, "corr-alloc-edge-trial");
+        assert!(staged.dispatch.operation.wrap);
+        assert_eq!(
+            staged.dispatch.operation.new_group,
+            Some(NodeId("grp-2".to_owned())),
+            "trial names its burned serial"
+        );
+        drop(trial);
+        assert_eq!(session.group_allocator().next_value(), 3);
+        let mut live = session.clone();
+        begin_focused(&mut live, "win-1");
+        let preview = live.preview_drag(gx, gy + 2, &[]).expect("preview");
+        assert!(preview.wrap);
+        let plan = drop_planned(&mut live, gx, gy + 2, "corr-alloc-edge");
+        // The preview above resolved through the shared allocator and burned
+        // grp-3, so the live drop mints grp-4, never the burned trial grp-2.
+        assert_eq!(
+            plan.dispatch.operation.new_group,
+            Some(NodeId("grp-4".to_owned())),
+            "live edge wrap never reissues the burned trial serial"
+        );
+        commit_drag(&mut live, &plan, "corr-alloc-edge");
+        assert_eq!(live.group_allocator().next_value(), 5);
+        assert_tree_invariants(&live);
+        // Committed removal/re-mint: remove the wrapped mover (the edge
+        // wrapper collapses), readmit it, and drop on the restored inner
+        // gap again. The repeat wrap mints a fresh group and never
+        // reissues the removed wrapper.
+        let old_wrapper = NodeId("grp-4".to_owned());
+        assert!(alloc_group_ids(&live).contains(&old_wrapper));
+        alloc_remove_committed(&mut live, "win-1");
+        assert!(
+            !alloc_group_ids(&live).contains(&old_wrapper),
+            "removing the mover collapses the committed edge wrapper"
+        );
+        alloc_admit_placed(
+            &mut live,
+            "win-1",
+            "out-1",
+            "ws-1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            "c-alloc-edge-readmit",
+        );
+        let (restored, restored_map) = inner_v_layout(&live);
+        let mut gy_opt = None;
+        for y in restored.rect.y..restored.rect.y + restored.rect.h {
+            if !restored_map
+                .values()
+                .any(|r| contains_point(r, restored.rect.x + restored.rect.w / 2, y))
+            {
+                gy_opt = Some(y);
+                break;
+            }
+        }
+        let gy = gy_opt.expect("restored inner gap row");
+        let gx = restored.rect.x + 5;
+        begin_focused(&mut live, "win-1");
+        let repeat = drop_planned(&mut live, gx, gy + 2, "corr-alloc-edge-remint");
+        assert!(
+            repeat.dispatch.operation.wrap,
+            "repeat drop still wraps the restored edge"
+        );
+        assert_eq!(
+            repeat.dispatch.operation.target_group, restored.id,
+            "repeat drop targets the restored inner group"
+        );
+        let remint = repeat
+            .dispatch
+            .operation
+            .new_group
+            .clone()
+            .expect("fresh group");
+        assert_ne!(
+            remint, old_wrapper,
+            "repeat edge wrap never reissues the removed wrapper"
+        );
+        commit_drag(&mut live, &repeat, "corr-alloc-edge-remint");
+        assert!(
+            !alloc_group_ids(&live).contains(&old_wrapper),
+            "removed edge wrapper stays absent after remint"
+        );
+        assert!(alloc_group_ids(&live).contains(&remint));
+        assert_tree_invariants(&live);
+    }
+
+    #[test]
+    fn alloc_move_wrap_mints_shared_serial() {
+        // Move family through the directional R4 path: source triple plus
+        // sole destination window; the cross-output wrap mints from the
+        // pair-shared counter, never reissuing admission serials.
+        let mut d1 = domain();
+        d1.adjacent
+            .insert(Direction::Right, OutputId("out-2".to_owned()));
+        let mut d2 = domain_two();
+        d2.adjacent
+            .insert(Direction::Left, OutputId("out-1".to_owned()));
+        let mut source = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        admit(&mut source, "win-1", true);
+        admit(&mut source, "win-2", true);
+        admit(&mut source, "win-3", true);
+        let mut dest = Session::new(owner(), generation(), 0, 7, vec![domain_two()]).expect("new");
+        alloc_admit_placed(
+            &mut dest,
+            "win-4",
+            "out-2",
+            "ws-1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            "corr-alloc-win-4",
+        );
+        let pre_groups = alloc_group_ids(&source);
+        assert_eq!(pre_groups.len(), 2);
+        let mut pair = Session::paired_from_canonical_for_send(&source, Some(&dest), vec![d1, d2])
+            .expect("pair");
+        let pre_next = pair.group_allocator().next_value();
+        let commit_move = |session: &mut Session,
+                           rev: u64,
+                           correlation: CorrelationId,
+                           pre: Vec<crate::directional::Precondition>,
+                           op: MoveOperation| {
+            session
+                .acknowledge(&AdapterAck::new(
+                    correlation.clone(),
+                    owner(),
+                    generation(),
+                    rev,
+                    AckOutcome::Accepted,
+                ))
+                .expect("ack");
+            session
+                .verify_move(&PostObservation::new(
+                    Observation::new(owner(), generation(), rev, 4242),
+                    correlation,
+                    true,
+                    pre,
+                    op,
+                ))
+                .expect("verify");
+        };
+        // Local R3 escape first, then the R4 cross-output wrap.
+        assert!(pair.sync_focus_from_window(&domain_key(), &WindowId("win-3".to_owned())));
+        let rev = pair.accepted_revision();
+        let flat = pair
+            .propose_move(
+                &domain_key(),
+                &WindowId("win-3".to_owned()),
+                Direction::Right,
+                &obs_for(&pair),
+                &corr("corr-alloc-flatten"),
+                &Capabilities::full(),
+            )
+            .expect("flatten proposes")
+            .expect_moved("flatten R3");
+        commit_move(
+            &mut pair,
+            rev,
+            corr("corr-alloc-flatten"),
+            flat.dispatch.preconditions.clone(),
+            flat.dispatch.operation.clone(),
+        );
+        let rev = pair.accepted_revision();
+        // Trial on a discarded clone first: the R4 proposal burns serials
+        // that the live proposal never reissues.
+        let mut trial = pair.clone();
+        let trial_plan = trial
+            .propose_move(
+                &domain_key(),
+                &WindowId("win-3".to_owned()),
+                Direction::Right,
+                &obs_for(&trial),
+                &corr("corr-alloc-r4-trial"),
+                &Capabilities::full(),
+            )
+            .expect("trial move proposes")
+            .expect_moved("trial R4");
+        let trial_groups = alloc_snapshot_group_ids(&trial_plan.desired_snapshot);
+        let trial_fresh: Vec<NodeId> = trial_groups.difference(&pre_groups).cloned().collect();
+        assert!(
+            !trial_fresh.is_empty(),
+            "trial names its burned wrap serials"
+        );
+        drop(trial);
+        let trial_next = pair.group_allocator().next_value();
+        assert!(trial_next > pre_next, "discarded trial burns serials");
+        let plan = pair
+            .propose_move(
+                &domain_key(),
+                &WindowId("win-3".to_owned()),
+                Direction::Right,
+                &obs_for(&pair),
+                &corr("corr-alloc-r4"),
+                &Capabilities::full(),
+            )
+            .expect("right move proposes")
+            .expect_moved("right R4");
+        commit_move(
+            &mut pair,
+            rev,
+            corr("corr-alloc-r4"),
+            plan.dispatch.preconditions.clone(),
+            plan.dispatch.operation.clone(),
+        );
+        let post_groups = alloc_group_ids(&pair);
+        assert!(pair.group_allocator().next_value() > trial_next);
+        let fresh: Vec<NodeId> = post_groups.difference(&pre_groups).cloned().collect();
+        assert!(
+            !fresh.is_empty(),
+            "cross-output wrap mints at least one fresh group"
+        );
+        for id in &fresh {
+            let serial = alloc_serial(id).expect("move wrap uses shared grp serials");
+            assert!(
+                serial >= trial_next,
+                "live wrap serial {serial} continues past burned trial {trial_next}"
+            );
+            assert!(
+                !trial_fresh.contains(id),
+                "live wrap never reissues trial-burned {id:?}"
+            );
+        }
+        let distinct: BTreeSet<_> = post_groups.iter().collect();
+        assert_eq!(distinct.len(), post_groups.len());
+        // Committed removal/re-mint: remove the moved window at the
+        // destination (the R4 wrapper collapses), re-admit it at the
+        // source, and move right until the R4 wrap fires again. The repeat
+        // wrap mints a fresh wrapper; the removed one never returns.
+        let old_wraps: Vec<NodeId> = fresh;
+        assert!(
+            !old_wraps.is_empty(),
+            "first R4 wrap named its committed wrapper"
+        );
+        alloc_remove_committed(&mut pair, "win-3");
+        for id in &old_wraps {
+            assert!(
+                !alloc_group_ids(&pair).contains(id),
+                "removal collapses the committed R4 wrapper {id:?}"
+            );
+        }
+        alloc_admit_placed(
+            &mut pair,
+            "win-3",
+            "out-1",
+            "ws-1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            "corr-alloc-win-3-readmit",
+        );
+        assert!(pair.sync_focus_from_window(&domain_key(), &WindowId("win-3".to_owned())));
+        let before_repeat = alloc_group_ids(&pair);
+        let mut wrapped = false;
+        for round in 0..3 {
+            let rev = pair.accepted_revision();
+            let step = pair
+                .propose_move(
+                    &domain_key(),
+                    &WindowId("win-3".to_owned()),
+                    Direction::Right,
+                    &obs_for(&pair),
+                    &corr(&format!("corr-alloc-r4-remint-{round}")),
+                    &Capabilities::full(),
+                )
+                .expect("repeat move proposes")
+                .expect_moved("repeat move");
+            let is_wrap = matches!(
+                step.dispatch.operation,
+                crate::directional::MoveOperation::CrossOutput { .. }
+            );
+            commit_move(
+                &mut pair,
+                rev,
+                corr(&format!("corr-alloc-r4-remint-{round}")),
+                step.dispatch.preconditions.clone(),
+                step.dispatch.operation.clone(),
+            );
+            if is_wrap {
+                wrapped = true;
+                break;
+            }
+        }
+        assert!(wrapped, "repeat move reaches the R4 cross-output wrap");
+        let post_repeat = alloc_group_ids(&pair);
+        for id in &old_wraps {
+            assert!(
+                !post_repeat.contains(id),
+                "repeat R4 wrap never reissues removed {id:?}"
+            );
+        }
+        let fresh_repeat: Vec<NodeId> = post_repeat.difference(&before_repeat).cloned().collect();
+        assert!(
+            !fresh_repeat.is_empty(),
+            "repeat R4 wrap mints at least one fresh wrapper"
+        );
+    }
+
+    #[test]
+    fn alloc_pair_split_uses_shared_counter_for_new_groups() {
+        // Pair/split family: the pair draws from the source allocator, split
+        // outputs keep sharing it, and truly new groups continue the shared
+        // sequence. Temporary pair-target remaps never escape the restore.
+        let mut source = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        admit(&mut source, "win-1", true);
+        admit(&mut source, "win-2", true);
+        let ws2 = OutputDomain {
+            id: OutputId("out-1".to_owned()),
+            workspace: WorkspaceId("ws-2".to_owned()),
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 120,
+                h: 80,
+            },
+            gap: 0,
+            adjacent: BTreeMap::new(),
+        };
+        let mut target = Session::new(owner(), generation(), 0, 7, vec![ws2]).expect("new");
+        alloc_admit_placed(
+            &mut target,
+            "win-t",
+            "out-1",
+            "ws-2",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            "corr-alloc-win-t",
+        );
+        let pair_domains = vec![
+            domain(),
+            OutputDomain {
+                id: OutputId("out-1".to_owned()),
+                workspace: WorkspaceId("ws-2".to_owned()),
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 120,
+                    h: 80,
+                },
+                gap: 0,
+                adjacent: BTreeMap::new(),
+            },
+        ];
+        let mut pair =
+            Session::paired_from_canonical(&source, Some(&target), pair_domains).expect("pair");
+        // Mint on the pair itself: wrapping the ws-1 focus continues the
+        // source sequence past grp-0.
+        alloc_admit_placed(
+            &mut pair,
+            "win-3",
+            "out-1",
+            "ws-1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            "corr-alloc-win-3",
+        );
+        assert_eq!(
+            alloc_group_ids(&pair),
+            BTreeSet::from([NodeId("grp-0".to_owned()), NodeId("grp-1".to_owned())])
+        );
+        let (mut split_source, split_target) = pair.split_canonical_pair().expect("split");
+        let split_target = split_target.expect("target output");
+        for session in [&split_source, &split_target] {
+            for id in alloc_all_ids(session) {
+                assert!(
+                    !id.0.starts_with("pair-target-"),
+                    "temporary pair-target id escaped: {id:?}"
+                );
+                assert!(
+                    !id.0.starts_with("pair-moved-"),
+                    "temporary pair-moved id escaped: {id:?}"
+                );
+            }
+        }
+        // Split outputs keep sharing the counter: the next mint continues.
+        alloc_admit_placed(
+            &mut split_source,
+            "win-4",
+            "out-1",
+            "ws-1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            "corr-alloc-win-4",
+        );
+        assert_eq!(
+            alloc_group_ids(&split_source),
+            BTreeSet::from([
+                NodeId("grp-0".to_owned()),
+                NodeId("grp-1".to_owned()),
+                NodeId("grp-2".to_owned())
+            ])
+        );
+        assert_eq!(split_source.group_allocator().next_value(), 3);
+        assert_eq!(split_target.group_allocator().next_value(), 3);
+    }
+
+    #[test]
+    fn alloc_exhausted_ordinary_refuses_instead_of_floating() {
+        // Exhaustion fail-closed: with no serial left, a second admission
+        // refuses as malformed topology instead of silently floating an
+        // empty-tree-shaped admission.
+        let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        admit(&mut session, "win-1", true);
+        session.set_group_allocator(GroupAllocator::test_with_next(u64::MAX));
+        let rev = session.accepted_revision();
+        let window_id = WindowId("win-2".to_owned());
+        let mut windows = obs_windows(&session);
+        windows.push(ObservedWindow {
+            window: window_id.clone(),
+            output: OutputId("out-1".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+            floating: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: crate::size_hints::WindowSizeHints::none(),
+        });
+        let err = session
+            .propose(
+                &SessionCommand::Admit {
+                    window: window_id,
+                    output: OutputId("out-1".to_owned()),
+                    workspace: WorkspaceId("ws-1".to_owned()),
+                    exceptions: ExceptionFlags::none(),
+                    exception_behavior: None,
+                    placement_bounds: Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 50,
+                    },
+                    suppress_fixed_float: false,
+                },
+                &alloc_obs_for(&session, windows, 100 + rev),
+                &corr("corr-alloc-exhausted"),
+                &LifecycleCapabilities::full(),
+            )
+            .expect_err("exhausted admission refuses");
+        assert!(
+            matches!(err, ProposeError::Refused(RefusalKind::MalformedTopology)),
+            "fail-closed refusal, got {err:?}"
+        );
+        assert!(
+            !session.is_capacity_float(&WindowId("win-2".to_owned())),
+            "exhausted window never silently floats"
+        );
+        assert_eq!(leaves_of(&session), vec![leaf("leaf-win-1")]);
+    }
+
+    #[test]
+    fn alloc_exhausted_converge_refuses_instead_of_floating() {
+        // Exhaustion fail-closed on the observation-convergence leg: a
+        // newcomer with no serial left refuses instead of silently
+        // capacity-floating.
+        let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        admit(&mut session, "win-1", true);
+        session.set_group_allocator(GroupAllocator::test_with_next(u64::MAX));
+        let windows = ["win-1", "win-2"]
+            .into_iter()
+            .map(|name| ObservedWindow {
+                window: WindowId(name.to_owned()),
+                output: OutputId("out-1".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+                floating: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            })
+            .collect();
+        let err = session
+            .converge_observation(
+                &alloc_obs_for(&session, windows, 301),
+                Some(&WindowId("win-1".to_owned())),
+            )
+            .expect_err("exhausted converge refuses");
+        assert!(
+            matches!(err, ProposeError::Refused(RefusalKind::MalformedTopology)),
+            "fail-closed refusal, got {err:?}"
+        );
+        assert!(
+            !session.is_capacity_float(&WindowId("win-2".to_owned())),
+            "exhausted newcomer never silently floats"
+        );
+        assert_eq!(leaves_of(&session), vec![leaf("leaf-win-1")]);
     }
 }

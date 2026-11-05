@@ -232,10 +232,10 @@ impl super::super::Session {
                 return Err(ProposeError::Refused(RefusalKind::PlannerRejected));
             }
         };
-        let base_revision = session_observation.observation.revision;
         let Some((desired_trees, desired_windows, desired_focus_domain, desired_focus_leaf)) =
             apply_move_operation(
                 self.policy(),
+                &self.group_alloc,
                 &self.trees,
                 &self.windows,
                 &self.domains,
@@ -243,7 +243,6 @@ impl super::super::Session {
                 &focused_leaf,
                 direction,
                 &plan,
-                base_revision,
             )
         else {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
@@ -584,23 +583,12 @@ pub(in crate::session) fn step_for_direction(direction: Direction) -> i32 {
 }
 
 pub(in crate::session) fn generate_move_group_id(
-    focused_leaf: &NodeId,
-    base_revision: u64,
-    rule: &str,
-    existing: &BTreeSet<NodeId>,
-) -> NodeId {
-    let base = format!("grp-{}-r{}-{}", focused_leaf.0, base_revision, rule);
-    if !existing.contains(&NodeId(base.clone())) {
-        return NodeId(base);
-    }
-    let mut n = 1u32;
-    loop {
-        let candidate = NodeId(format!("{base}-{n}"));
-        if !existing.contains(&candidate) {
-            return candidate;
-        }
-        n += 1;
-    }
+    alloc: &GroupAllocator,
+    existing: &mut BTreeSet<NodeId>,
+) -> Option<NodeId> {
+    let minted = alloc.mint(existing)?;
+    existing.insert(minted.clone());
+    Some(minted)
 }
 
 pub(in crate::session) fn find_group_id(tree: &Node, id: &NodeId) -> bool {
@@ -692,6 +680,7 @@ pub(in crate::session) type AppliedMove = (
 #[allow(clippy::too_many_arguments)]
 pub(in crate::session) fn apply_move_operation(
     policy: &dyn LayoutPolicy,
+    alloc: &GroupAllocator,
     trees: &BTreeMap<DomainKey, Option<Node>>,
     windows: &BTreeMap<WindowId, WindowLink>,
     domains: &[OutputDomain],
@@ -699,7 +688,6 @@ pub(in crate::session) fn apply_move_operation(
     focused_leaf: &NodeId,
     direction: Direction,
     plan: &MovePlan,
-    base_revision: u64,
 ) -> Option<AppliedMove> {
     use crate::directional::{EscapeContinuation, FocusedSide, Insertion, Rule};
     let operation = &plan.operation;
@@ -818,8 +806,7 @@ pub(in crate::session) fn apply_move_operation(
                 }
             };
             // W at the D end: negative first, positive last.
-            let new_id = generate_move_group_id(focused_leaf, base_revision, "r1", &node_ids);
-            node_ids.insert(new_id.clone());
+            let new_id = generate_move_group_id(alloc, &mut node_ids)?;
             let new_group = if step_for_direction(direction) == -1 {
                 Node::Group {
                     id: new_id,
@@ -1014,8 +1001,7 @@ pub(in crate::session) fn apply_move_operation(
             new_shares.remove(hi);
             new_children.remove(lo);
             new_shares.remove(lo);
-            let new_id = generate_move_group_id(focused_leaf, base_revision, "r2c", &node_ids);
-            node_ids.insert(new_id.clone());
+            let new_id = generate_move_group_id(alloc, &mut node_ids)?;
             let wrapper = if *focused_before_neighbor {
                 Node::Group {
                     id: new_id,
@@ -1205,8 +1191,7 @@ pub(in crate::session) fn apply_move_operation(
             }
             let victim = children[*target_child_index].clone();
             let victim_share = find_group_shares(&working, target_group)?[*target_child_index];
-            let new_id = generate_move_group_id(focused_leaf, base_revision, "r2b", &node_ids);
-            node_ids.insert(new_id.clone());
+            let new_id = generate_move_group_id(alloc, &mut node_ids)?;
             let split = match focused_side {
                 FocusedSide::First => Node::Group {
                     id: new_id,
@@ -1320,9 +1305,7 @@ pub(in crate::session) fn apply_move_operation(
                     if axis != direction_axis {
                         return None;
                     }
-                    let new_id =
-                        generate_move_group_id(focused_leaf, base_revision, "r3r1", &node_ids);
-                    node_ids.insert(new_id.clone());
+                    let new_id = generate_move_group_id(alloc, &mut node_ids)?;
                     let wrapped = if step_for_direction(direction) == -1 {
                         Node::Group {
                             id: new_id,
@@ -1432,9 +1415,7 @@ pub(in crate::session) fn apply_move_operation(
                     let existing = target_tree?;
                     let axis = Axis::for_direction(direction);
                     let mover_first = step_for_direction(direction) == 1;
-                    let new_id =
-                        generate_move_group_id(focused_leaf, base_revision, "r4", &node_ids);
-                    node_ids.insert(new_id.clone());
+                    let new_id = generate_move_group_id(alloc, &mut node_ids)?;
                     let combined = if mover_first {
                         Node::Group {
                             id: new_id,
@@ -1535,7 +1516,7 @@ mod tests {
     };
     use crate::geometry::Rect;
     use crate::policy::default_policy;
-    use crate::session::{DomainKey, OutputDomain};
+    use crate::session::{DomainKey, GroupAllocator, OutputDomain};
 
     use super::apply_move_operation;
 
@@ -1685,6 +1666,7 @@ mod tests {
             let policy = default_policy();
             let (desired_trees, _, focus_domain, focus_leaf) = apply_move_operation(
                 &*policy,
+                &GroupAllocator::new(),
                 &trees,
                 &windows,
                 &domains,
@@ -1692,7 +1674,6 @@ mod tests {
                 &NodeId::from(focused),
                 direction,
                 &plan,
-                7,
             )
             .unwrap_or_else(|| panic!("flat swap applies {focused:?} {direction:?}"));
             assert_eq!(focus_domain, key);
@@ -1720,6 +1701,7 @@ mod tests {
         let policy = default_policy();
         let (desired_trees, _, _, _) = apply_move_operation(
             &*policy,
+            &GroupAllocator::new(),
             &trees,
             &windows,
             &domains,
@@ -1727,7 +1709,6 @@ mod tests {
             &NodeId::from("B"),
             Direction::Right,
             &plan,
-            7,
         )
         .expect("wrap applies");
         let updated = desired_trees.get(&key).cloned().flatten().expect("tree");
@@ -1754,6 +1735,7 @@ mod tests {
         assert!(
             apply_move_operation(
                 &*policy,
+                &GroupAllocator::new(),
                 &trees,
                 &windows,
                 &domains,
@@ -1761,7 +1743,6 @@ mod tests {
                 &NodeId::from("B"),
                 Direction::Right,
                 &forged_wrap_mode,
-                7,
             )
             .is_none(),
             "R2c swap under GroupWithNeighbor must refuse"
@@ -1777,6 +1758,7 @@ mod tests {
         assert!(
             apply_move_operation(
                 &*policy,
+                &GroupAllocator::new(),
                 &trees,
                 &windows,
                 &domains,
@@ -1784,7 +1766,6 @@ mod tests {
                 &NodeId::from("B"),
                 Direction::Right,
                 &forged_flat_mode,
-                7,
             )
             .is_none(),
             "leaf-neighbor wrap under SwapWithNeighbor must refuse"
@@ -1799,6 +1780,7 @@ mod tests {
         assert!(
             apply_move_operation(
                 &*policy,
+                &GroupAllocator::new(),
                 &trees,
                 &windows,
                 &domains,
@@ -1806,7 +1788,6 @@ mod tests {
                 &NodeId::from("B"),
                 Direction::Right,
                 &forged_neighbor,
-                7,
             )
             .is_none(),
             "non-adjacent R2c swap must refuse"
@@ -1816,6 +1797,7 @@ mod tests {
         assert!(
             apply_move_operation(
                 &*policy,
+                &GroupAllocator::new(),
                 &trees,
                 &windows,
                 &domains,
@@ -1823,13 +1805,13 @@ mod tests {
                 &NodeId::from("B"),
                 Direction::Right,
                 &swap,
-                7,
             )
             .is_some()
         );
         assert!(
             apply_move_operation(
                 &*policy,
+                &GroupAllocator::new(),
                 &trees,
                 &windows,
                 &domains,
@@ -1837,7 +1819,6 @@ mod tests {
                 &NodeId::from("B"),
                 Direction::Right,
                 &wrap,
-                7,
             )
             .is_some()
         );
@@ -1872,6 +1853,7 @@ mod tests {
         let policy = default_policy();
         let (desired_trees, _, focus_domain, focus_leaf) = apply_move_operation(
             &*policy,
+            &GroupAllocator::new(),
             &trees,
             &windows,
             &domains,
@@ -1879,7 +1861,6 @@ mod tests {
             &NodeId::from("B"),
             Direction::Right,
             &plan,
-            7,
         )
         .expect("group-neighbor wrap applies");
         assert_eq!(focus_domain, key);
@@ -1945,6 +1926,7 @@ mod tests {
         assert!(
             apply_move_operation(
                 &*policy,
+                &GroupAllocator::new(),
                 &trees,
                 &windows,
                 &domains,
@@ -1952,7 +1934,6 @@ mod tests {
                 &NodeId::from("A"),
                 Direction::Right,
                 &forged,
-                7,
             )
             .is_none(),
             "binary R2c swap must refuse"
@@ -1983,6 +1964,7 @@ mod tests {
         assert!(
             apply_move_operation(
                 &*policy,
+                &GroupAllocator::new(),
                 &trees,
                 &windows,
                 &domains,
@@ -1990,7 +1972,6 @@ mod tests {
                 &NodeId::from("B"),
                 Direction::Right,
                 &flat_group_wrap,
-                7,
             )
             .is_some(),
             "group-neighbor wrap stays valid under SwapWithNeighbor"

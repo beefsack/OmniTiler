@@ -164,6 +164,8 @@ mod world_presentation_v4_tests;
 #[cfg(test)]
 mod world_rejected_accepted_tests;
 #[cfg(test)]
+mod world_renderer_input_v4_tests;
+#[cfg(test)]
 mod world_restored_routing_tests;
 #[cfg(test)]
 mod world_selection_await_tests;

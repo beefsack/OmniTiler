@@ -4,9 +4,11 @@
 //! transport, JSON, or platform imports. [`EngineWindow`] is the smallest
 //! coherent observation carrier (window/output/workspace identity plus the
 //! carried frame rectangle and fit flags). Ordering, revision-adjacent seed
-//! sequence identity (`fit-l{i}`/`fit-g0`), focus-last handling, and
-//! outer-gap handling (via the already-inset [`OutputDomain::bounds`]) match
-//! the planner protocol behavior exactly.
+//! sequence identity (`fit-l{i}` leaves, `grp-{serial}` groups), focus-last
+//! handling, and outer-gap handling (via the already-inset
+//! [`OutputDomain::bounds`]) match the planner protocol behavior exactly.
+
+use std::collections::BTreeSet;
 
 use crate::bounds::{rect_contained, valid_carried_rect};
 use crate::contract::{
@@ -92,6 +94,12 @@ impl FitDeclineReason {
 /// Collect all viable cuts on an axis into an N-ary group, then recurse on the
 /// orthogonal axis. Cuts allow at most `max(inner gap, 3% of domain extent)`
 /// crossing per window; the finished tree projects with configured gaps.
+///
+/// Standalone pure wrapper: group ids draw from a fresh per-call allocator
+/// (`grp-{serial}` from zero), so repeated identical calls return identical
+/// trees by construction. The Engine fits through
+/// [`try_recursive_cut_fit_with_centre_count_and_alloc`] with the
+/// generation-shared allocator so fitted groups never reissue serials.
 pub fn try_recursive_cut_fit(
     domain: &OutputDomain,
     windows: &[EngineWindow],
@@ -100,9 +108,27 @@ pub fn try_recursive_cut_fit(
 }
 
 /// Fit plus the committed centre-split count (0 for clean fits).
+/// Standalone pure wrapper; see [`try_recursive_cut_fit`].
 pub fn try_recursive_cut_fit_with_centre_count(
     domain: &OutputDomain,
     windows: &[EngineWindow],
+) -> Result<(Node, Vec<WindowLink>, usize), FitDeclineReason> {
+    try_recursive_cut_fit_with_centre_count_and_alloc(
+        domain,
+        windows,
+        &crate::session::GroupAllocator::new(),
+    )
+}
+
+/// Engine generation-shared fit: identical to
+/// [`try_recursive_cut_fit_with_centre_count`] except group ids draw from
+/// the generation-shared allocator, burning serials even when the fitted
+/// tree is discarded (declined or commit-failed) so removed ids are never
+/// reissued.
+pub(crate) fn try_recursive_cut_fit_with_centre_count_and_alloc(
+    domain: &OutputDomain,
+    windows: &[EngineWindow],
+    group_alloc: &crate::session::GroupAllocator,
 ) -> Result<(Node, Vec<WindowLink>, usize), FitDeclineReason> {
     if windows.len() < 2 {
         return Err(FitDeclineReason::SingleWindow);
@@ -162,8 +188,18 @@ pub fn try_recursive_cut_fit_with_centre_count(
     }
     struct Alloc {
         next_leaf: usize,
-        next_group: usize,
+        group_alloc: crate::session::GroupAllocator,
         centre_splits: usize,
+    }
+
+    fn mint_fit_group(alloc: &mut Alloc) -> Option<NodeId> {
+        // Fitted groups draw from the caller-supplied allocator (a fresh
+        // per-call allocator for the standalone pure wrappers, the
+        // generation-shared allocator on the Engine path), so serials
+        // burn even when the fitted tree is discarded and removed ids
+        // are never reissued. No live-id avoidance set is needed: the
+        // serial itself is generation-unique.
+        alloc.group_alloc.mint(&BTreeSet::new())
     }
     fn valid_cuts(members: &[(WindowId, Rect)], axis: Axis, tol: i64) -> Vec<usize> {
         let mut ordered: Vec<(WindowId, Rect)> = members.to_vec();
@@ -219,8 +255,7 @@ pub fn try_recursive_cut_fit_with_centre_count(
     ) -> Option<(Node, Vec<WindowLink>)> {
         let mut ordered: Vec<(WindowId, Rect)> = members.to_vec();
         sort_for_axis(&mut ordered, axis);
-        let group = NodeId(format!("fit-g{}", alloc.next_group));
-        alloc.next_group += 1;
+        let group = mint_fit_group(alloc)?;
         let mut boundaries: Vec<usize> = vec![0];
         boundaries.extend(cuts.iter().map(|c| c + 1));
         boundaries.push(ordered.len());
@@ -305,8 +340,7 @@ pub fn try_recursive_cut_fit_with_centre_count(
         if shares.iter().any(|s| *s <= 0) {
             return None;
         }
-        let group = NodeId(format!("fit-g{}", alloc.next_group));
-        alloc.next_group += 1;
+        let group = mint_fit_group(alloc)?;
         alloc.centre_splits += 1;
         let mut links = Vec::with_capacity(ordered.len());
         let mut children = Vec::with_capacity(2);
@@ -340,7 +374,7 @@ pub fn try_recursive_cut_fit_with_centre_count(
     }
     let mut alloc = Alloc {
         next_leaf: 0,
-        next_group: 0,
+        group_alloc: group_alloc.clone(),
         centre_splits: 0,
     };
     match build_region(domain, &items, Axis::Horizontal, &mut alloc) {
@@ -630,6 +664,11 @@ pub fn seed_session(
 /// sequence at `admission_floor` instead of zero. The Engine passes its
 /// Engine-wide floor so this fresh domain's serial legs order after every
 /// retained domain's sequences; leg order within the roster is unchanged.
+///
+/// Standalone wrapper: the seeded session carries a fresh generation
+/// allocator. The Engine seeds through
+/// [`seed_session_from_counter_with_alloc`] with the generation-shared
+/// allocator so seed burns never reissue serials.
 #[must_use]
 pub fn seed_session_from_counter(
     owner: &OwnerId,
@@ -639,6 +678,31 @@ pub fn seed_session_from_counter(
     seed_order: &[EngineWindow],
     admission_floor: u64,
 ) -> Option<Session> {
+    seed_session_from_counter_with_alloc(
+        owner,
+        generation,
+        fingerprint,
+        domain,
+        seed_order,
+        admission_floor,
+        &crate::session::GroupAllocator::new(),
+    )
+}
+
+/// Engine generation-shared seed: identical to
+/// [`seed_session_from_counter`] except the seeded session shares the
+/// generation allocator, so ordinary-admission groups minted while
+/// seeding burn generation serials even when seeding itself fails.
+#[must_use]
+pub(crate) fn seed_session_from_counter_with_alloc(
+    owner: &OwnerId,
+    generation: &GenerationId,
+    fingerprint: u64,
+    domain: &OutputDomain,
+    seed_order: &[EngineWindow],
+    admission_floor: u64,
+    group_alloc: &crate::session::GroupAllocator,
+) -> Option<Session> {
     let mut session = Session::new(
         owner.clone(),
         generation.clone(),
@@ -647,6 +711,7 @@ pub fn seed_session_from_counter(
         vec![domain.clone()],
     )
     .ok()?;
+    session.set_group_allocator(group_alloc.clone());
     session.sync_admission_counter(admission_floor);
     for (index, entry) in seed_order.iter().enumerate() {
         let base = session.accepted_revision();

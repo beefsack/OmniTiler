@@ -501,7 +501,6 @@ impl super::super::Session {
         // projection; minimum flags alone never disqualify (D1, B6 kept).
         let orientation = self.policy().admission_axis_for_rect(&placement_bounds);
         let mut node_ids = self.all_node_ids();
-        let base_revision = session_observation.observation.revision;
         let key = DomainKey {
             output: output.clone(),
             workspace: workspace.clone(),
@@ -525,6 +524,7 @@ impl super::super::Session {
             .unwrap_or(0);
         let leg = crate::session::capacity::plan_admission_leg(
             self.policy(),
+            &self.group_alloc,
             self.anchor_fallback,
             target_tree,
             domain_bounds,
@@ -532,13 +532,19 @@ impl super::super::Session {
             eligible_focus,
             orientation,
             window,
-            base_revision,
             &mut node_ids,
             &hints,
             &current_links,
         );
         let leaf_id = leg.leaf_id;
         let ordinary_tree = leg.ordinary_tree;
+        // Exhaustion fail-closed: an empty domain never mints (it admits
+        // the bare leaf), so a missing ordinary tree is allocator
+        // exhaustion or anchor mismatch, never an empty tree. Refuse
+        // instead of silently floating an empty-tree-shaped admission.
+        if ordinary_tree.is_none() && leg.selected.is_err() {
+            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        }
         let mut plan = match leg.selected {
             Ok(target) => self.stage_tiled_admission(
                 window,

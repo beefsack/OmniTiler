@@ -203,7 +203,6 @@ impl super::super::Session {
         else {
             return Err(ProposeError::Refused(RefusalKind::UnknownDomain));
         };
-        let base_revision = session_observation.observation.revision;
         // Source removal with recursive collapse.
         let source_tree = self.trees.get(&source_key).cloned().flatten();
         let source_before = describe_send_topology(source_tree.as_ref());
@@ -262,15 +261,15 @@ impl super::super::Session {
             }
         }
         let mut node_ids = self.all_node_ids();
+        let alloc = self.group_alloc.clone();
         let ordinary_target = insert_tiled(
             self.policy(),
+            &alloc,
             target_tree.clone(),
             remembered.as_ref(),
             link.leaf.clone(),
             axis,
             &mut node_ids,
-            window,
-            base_revision,
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !collect_leaves(&ordinary_target).contains(&link.leaf) {
@@ -345,18 +344,10 @@ impl super::super::Session {
                 }
                 None => BTreeMap::new(),
             };
-            let mut seq: u64 = 0;
             let mut group_ids = std::iter::from_fn(|| {
-                seq += 1;
-                let mut n = seq;
-                loop {
-                    let candidate = NodeId(format!("cap-send-{}-g{n}", window.0));
-                    if !node_ids.contains(&candidate) {
-                        node_ids.insert(candidate.clone());
-                        return Some(candidate);
-                    }
-                    n += 1;
-                }
+                let minted = alloc.mint(&node_ids)?;
+                node_ids.insert(minted.clone());
+                Some(minted)
             });
             match crate::session::capacity::select_admission_target(
                 self.anchor_fallback,

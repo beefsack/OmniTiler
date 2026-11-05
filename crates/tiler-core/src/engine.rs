@@ -141,6 +141,14 @@ pub(crate) struct Engine {
     /// world map on owner/generation change; never persisted across
     /// restart. Saturating arithmetic throughout: the bound never wraps.
     admission_seq_next: u64,
+    /// Generation-shared monotonic group allocator (see
+    /// [`crate::session::GroupAllocator`]): every group mint in every
+    /// session owned by this Engine draws from this one counter. Stored
+    /// and working sessions carry a clone of it, so discarded trials,
+    /// rolled-back placements, failed fits, and dropped staged clones
+    /// all burn serials that are never reissued. Reset with the world
+    /// map on owner/generation change; never persisted across restart.
+    group_alloc: crate::session::GroupAllocator,
     /// Last fixed-size admission report for protocol logging.
     ///
     /// Set when [`Engine::handle`] admitted fixed-size windows with the
@@ -458,6 +466,7 @@ impl Default for Engine {
             last_migration: None,
             last_drag_preview_stage: None,
             admission_seq_next: 0,
+            group_alloc: crate::session::GroupAllocator::new(),
         }
     }
 }
@@ -509,9 +518,21 @@ impl Engine {
             .as_ref()
             .is_none_or(|g| g.as_str() != generation.as_str());
         if owner_changed || generation_changed {
+            // A fresh generation restarts group serials, but only when a
+            // generation was previously bound and actually differs: the
+            // initial binding keeps its Arc (clones bound first would
+            // otherwise reissue), and an owner-only change at the same
+            // generation preserves the generation counter. World and
+            // admission state still clear on any binding change.
+            let generation_reset = generation_changed && self.generation.is_some();
             self.sessions.clear();
             self.outer_gaps.clear();
             self.admission_seq_next = 0;
+            if generation_reset {
+                // No retained tree survives to collide, and no burned
+                // serial may leak across generations.
+                self.group_alloc = crate::session::GroupAllocator::new();
+            }
             self.owner = Some(owner.clone());
             self.generation = Some(generation.clone());
         }
@@ -1176,6 +1197,9 @@ impl Engine {
         // Same-lifetime minimizes keep fixed markers; explicit closes
         // clear (same fencing as the single-domain path).
         self.sync_working_counter(session);
+        // Paired convergence shares the generation group counter so
+        // pair trials burn serials even when the pair is discarded.
+        session.set_group_allocator(self.group_alloc.clone());
         let hidden = Self::hidden_for_converge(session, &event.windows, &event.closed_windows);
         match session.converge_observation_with_hidden(&observation, focus, &hidden) {
             Ok(counts) => {
@@ -1251,6 +1275,9 @@ impl Engine {
         // no revision, divergence, pending, gap, or topology state is touched.
         session.set_policy(self.policy.clone());
         self.adopt_session_policy(&mut session);
+        // Retained sessions share the generation group counter so later
+        // mints never reissue serials burned by discarded trials.
+        session.set_group_allocator(self.group_alloc.clone());
         self.note_working_counter(&session);
         self.outer_gaps.insert(key.clone(), outer_gap);
         self.sessions.insert(key, session);
@@ -1286,6 +1313,9 @@ impl Engine {
         // The retained counter may predate other domains' admissions;
         // advance before any propose/commit work assigns sequences.
         working.sync_admission_counter(self.admission_seq_floor());
+        // Working planning shares the generation group counter so every
+        // trial burns serials even when this clone is discarded.
+        working.set_group_allocator(self.group_alloc.clone());
         Some(working)
     }
 
@@ -1304,6 +1334,9 @@ impl Engine {
         }
         session.set_policy(self.policy.clone());
         self.adopt_session_policy(&mut session);
+        // Retained sessions share the generation group counter so later
+        // mints never reissue serials burned by discarded trials.
+        session.set_group_allocator(self.group_alloc.clone());
         self.note_working_counter(&session);
         self.outer_gaps.insert(domain_key.clone(), outer_gap);
         self.sessions.insert(domain_key, session);
@@ -1390,6 +1423,9 @@ impl Engine {
             // Pair assembly keeps only the component max; advance to the
             // Engine-wide floor before convergence or planning assigns.
             pair.sync_admission_counter(self.admission_seq_floor());
+            // Paired planning shares the generation group counter so new
+            // groups burn serials even when the pair is discarded.
+            pair.set_group_allocator(self.group_alloc.clone());
             pair
         })
         .map_err(|error| match error {
@@ -1708,6 +1744,9 @@ impl Engine {
         };
         fresh.set_policy(self.policy.clone());
         self.adopt_session_policy(&mut fresh);
+        // Fresh convergence shares the generation group counter so
+        // admission trials burn serials even when this build is dropped.
+        fresh.set_group_allocator(self.group_alloc.clone());
         // Fresh domains start their counter at zero; advance to the
         // Engine-wide floor so serial legs order after retained domains.
         self.sync_working_counter(&mut fresh);
@@ -1824,9 +1863,10 @@ impl Engine {
             });
         }
         if fresh_attempt && !fixed_present {
-            match crate::seed::try_recursive_cut_fit_with_centre_count(
+            match crate::seed::try_recursive_cut_fit_with_centre_count_and_alloc(
                 &event.domain,
                 &event.windows,
+                &self.group_alloc,
             ) {
                 Ok((tree, links, centre_splits)) => {
                     let trace_inputs: Vec<StartupInput> = event
@@ -1904,6 +1944,11 @@ impl Engine {
                         ) {
                             fitted.set_policy(self.policy.clone());
                             self.adopt_session_policy(&mut fitted);
+                            // Fitted commits share the generation group
+                            // counter; the fit itself already burned its
+                            // groups from it (see the `_and_alloc` call
+                            // above), so commit or drop never reissues.
+                            fitted.set_group_allocator(self.group_alloc.clone());
                             // The clean-fit roster shares one sequence
                             // number; take it from the Engine-wide floor so
                             // independent domains never tie except by fit.
@@ -2239,6 +2284,9 @@ impl Engine {
         };
         seeded.set_policy(self.policy.clone());
         self.adopt_session_policy(&mut seeded);
+        // Seeded admissions share the generation group counter so seed
+        // trials burn serials even when this build is dropped.
+        seeded.set_group_allocator(self.group_alloc.clone());
         // Serial seed legs take successive sequences; start them at the
         // Engine-wide floor so successful legs order after retained
         // domains instead of replaying their counters.
@@ -3137,6 +3185,9 @@ impl Engine {
                 }
             };
             seeded.set_policy(self.policy.clone());
+            // First-time seeds share the generation group counter so
+            // seed trials burn serials even when this build is dropped.
+            seeded.set_group_allocator(self.group_alloc.clone());
             // First-time seeds join the Engine-wide sequence at the floor.
             self.sync_working_counter(&mut seeded);
             let seed_observation = crate::seed::session_observation_for(
@@ -3239,6 +3290,10 @@ impl Engine {
         // Engine-wide floor before convergence assigns serial-leg
         // sequences. The canonical store below records the result.
         self.sync_working_counter(&mut session);
+        // Belt and braces: the pair already inherits the source
+        // component's (generation-shared) allocator; re-pin it here so
+        // pair trials always burn generation serials.
+        session.set_group_allocator(self.group_alloc.clone());
         let base = session.accepted_revision();
         let combined = crate::seed::workspace_observation_for(
             &event.owner,
@@ -3963,13 +4018,14 @@ impl Engine {
             };
         };
         let floor = self.admission_seq_floor();
-        let Some(mut session) = crate::seed::seed_session_from_counter(
+        let Some(mut session) = crate::seed::seed_session_from_counter_with_alloc(
             &event.owner,
             &event.generation,
             event.fingerprint,
             &event.domain,
             &order,
             floor,
+            &self.group_alloc,
         ) else {
             return CoreReply::SnapshotInvalid {
                 message: OBSERVATION_MESSAGE,
@@ -5077,6 +5133,9 @@ impl Engine {
                 })
             })?;
             fresh.set_policy(self.policy.clone());
+            // Fresh drag domains share the generation group counter so
+            // drag trials burn serials even when this build is dropped.
+            fresh.set_group_allocator(self.group_alloc.clone());
             let observation = drag_observation_for(event, fresh.accepted_revision());
             // Fresh drag domains join the Engine-wide sequence at the floor.
             self.sync_working_counter(&mut fresh);
@@ -9940,5 +9999,433 @@ mod tests {
         let engine = Engine::new();
         assert!(engine.last_startup_fit_trace().is_none());
         assert!(engine.last_send_placement().is_none());
+    }
+
+    // ---- generation-shared group allocation acceptance (alloc_*) ----
+    //
+    // Retained sessions share one generation-owned monotonic counter:
+    // cross-domain mints never duplicate, discarded staged clones still
+    // burn, repeat bindings never reset, and fits burn even discarded.
+
+    fn alloc_engine_group_ids(session: &Session) -> std::collections::BTreeSet<String> {
+        fn walk(node: &Node, out: &mut std::collections::BTreeSet<String>) {
+            if let Node::Group { id, children, .. } = node {
+                out.insert(id.0.clone());
+                for child in children {
+                    walk(child, out);
+                }
+            }
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for d in session.snapshot().domains {
+            if let Some(tree) = d.tree {
+                walk(&tree, &mut ids);
+            }
+        }
+        ids
+    }
+
+    /// Admit through the full propose/acknowledge/verify cycle with an
+    /// observation covering the retained set plus the newcomer (the
+    /// fixed `admit_one` helper only covers empty sessions).
+    fn alloc_admit_covering(
+        session: &mut Session,
+        owner: &OwnerId,
+        gen_id: &GenerationId,
+        output: &str,
+        workspace: &str,
+        window: &str,
+    ) {
+        use crate::contract::{
+            AckOutcome, AdapterAck, LifecycleCapabilities, LifecyclePostObservation, Observation,
+        };
+        use crate::directional::WindowId;
+        use crate::ids::CorrelationId;
+        use crate::session::{ExceptionFlags, ObservedWindow, SessionCommand, SessionObservation};
+        let rev = session.accepted_revision();
+        let window_id = WindowId(window.to_owned());
+        let mut windows: Vec<ObservedWindow> = session
+            .snapshot()
+            .windows
+            .iter()
+            .map(|link| ObservedWindow {
+                window: link.window.clone(),
+                output: link.output.clone(),
+                workspace: link.workspace.clone(),
+                floating: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            })
+            .collect();
+        windows.extend(session.exception_observed());
+        windows.push(ObservedWindow {
+            window: window_id.clone(),
+            output: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+            floating: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: crate::size_hints::WindowSizeHints::none(),
+        });
+        let observation = SessionObservation {
+            observation: Observation::new(owner.clone(), gen_id.clone(), rev, 100 + rev),
+            windows,
+        };
+        let correlation = CorrelationId::parse(&format!("corr-alloc-{window}")).expect("valid");
+        let command = SessionCommand::Admit {
+            window: window_id,
+            output: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+            exceptions: ExceptionFlags::none(),
+            exception_behavior: None,
+            placement_bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            suppress_fixed_float: false,
+        };
+        let plan = session
+            .propose(
+                &command,
+                &observation,
+                &correlation,
+                &LifecycleCapabilities::full(),
+            )
+            .expect("admit propose");
+        session
+            .acknowledge(&AdapterAck::new(
+                correlation.clone(),
+                owner.clone(),
+                gen_id.clone(),
+                rev,
+                AckOutcome::Accepted,
+            ))
+            .expect("admit ack");
+        session
+            .verify_lifecycle(&LifecyclePostObservation::new(
+                Observation::new(owner.clone(), gen_id.clone(), rev, 200 + rev),
+                correlation,
+                true,
+                plan.dispatch.preconditions.clone(),
+                plan.dispatch.operation.clone(),
+            ))
+            .expect("admit verify");
+    }
+
+    #[test]
+    fn alloc_engine_retained_sessions_share_one_counter() {
+        // Cross-domain family: two retained domains draw from one engine
+        // counter, so group ids never duplicate across domains.
+        let mut engine = Engine::new();
+        let owner = OwnerId::parse("owner-a").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        engine.sync_binding(&owner, &gen_id);
+        let mut a = new_session(&owner, &gen_id, domain("out-a", "ws"));
+        a.set_group_allocator(engine.group_alloc.clone());
+        alloc_admit_covering(&mut a, &owner, &gen_id, "out-a", "ws", "win-a1");
+        alloc_admit_covering(&mut a, &owner, &gen_id, "out-a", "ws", "win-a2");
+        let key_a = domain("out-a", "ws").key();
+        engine.insert_raw(key_a.clone(), a, 0);
+        let mut b = new_session(&owner, &gen_id, domain("out-b", "ws"));
+        b.set_group_allocator(engine.group_alloc.clone());
+        alloc_admit_covering(&mut b, &owner, &gen_id, "out-b", "ws", "win-b1");
+        alloc_admit_covering(&mut b, &owner, &gen_id, "out-b", "ws", "win-b2");
+        let key_b = domain("out-b", "ws").key();
+        engine.insert_raw(key_b.clone(), b, 0);
+        assert_eq!(
+            alloc_engine_group_ids(engine.session(&key_a).expect("a")),
+            std::collections::BTreeSet::from(["grp-0".to_owned()])
+        );
+        assert_eq!(
+            alloc_engine_group_ids(engine.session(&key_b).expect("b")),
+            std::collections::BTreeSet::from(["grp-1".to_owned()])
+        );
+        assert_eq!(engine.group_alloc.next_value(), 2);
+        // A taken working session continues the same counter past both.
+        let mut working = engine
+            .take_usable_session(&key_a, &domain("out-a", "ws"))
+            .expect("take");
+        alloc_admit_covering(&mut working, &owner, &gen_id, "out-a", "ws", "win-a3");
+        assert_eq!(
+            alloc_engine_group_ids(&working),
+            std::collections::BTreeSet::from(["grp-0".to_owned(), "grp-2".to_owned()])
+        );
+        assert_eq!(engine.group_alloc.next_value(), 3);
+        engine.store_committed(key_a.clone(), working, 0);
+        assert_eq!(
+            alloc_engine_group_ids(engine.session(&key_a).expect("a")),
+            std::collections::BTreeSet::from(["grp-0".to_owned(), "grp-2".to_owned()])
+        );
+    }
+
+    #[test]
+    fn alloc_engine_discarded_clone_burns_serials() {
+        // Whole-engine-clone burn: a cloned engine plans an admission and
+        // is discarded without storing; the serial still burns on the
+        // shared counter and is never reissued.
+        let mut engine = Engine::new();
+        let owner = OwnerId::parse("owner-a").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        engine.sync_binding(&owner, &gen_id);
+        let mut a = new_session(&owner, &gen_id, domain("out-a", "ws"));
+        a.set_group_allocator(engine.group_alloc.clone());
+        alloc_admit_covering(&mut a, &owner, &gen_id, "out-a", "ws", "win-a1");
+        alloc_admit_covering(&mut a, &owner, &gen_id, "out-a", "ws", "win-a2");
+        let key_a = domain("out-a", "ws").key();
+        engine.insert_raw(key_a.clone(), a, 0);
+        assert_eq!(engine.group_alloc.next_value(), 1);
+        let mut staged = engine.clone();
+        {
+            let mut working = staged
+                .take_usable_session(&key_a, &domain("out-a", "ws"))
+                .expect("take");
+            alloc_admit_covering(&mut working, &owner, &gen_id, "out-a", "ws", "win-a3");
+            assert!(
+                alloc_engine_group_ids(&working).contains("grp-1"),
+                "staged clone mints the next serial"
+            );
+            // Working copy dropped without storing: a whole-clone rollback.
+        }
+        drop(staged);
+        assert_eq!(
+            engine.group_alloc.next_value(),
+            2,
+            "discarded clone still burns its serial"
+        );
+        let mut working = engine
+            .take_usable_session(&key_a, &domain("out-a", "ws"))
+            .expect("take");
+        alloc_admit_covering(&mut working, &owner, &gen_id, "out-a", "ws", "win-a3");
+        assert_eq!(
+            alloc_engine_group_ids(&working),
+            std::collections::BTreeSet::from(["grp-0".to_owned(), "grp-2".to_owned()]),
+            "burned grp-1 is never reissued"
+        );
+    }
+
+    #[test]
+    fn alloc_engine_sync_binding_repeats_never_reset_counter() {
+        // Binding sync resets the counter only on a real owner/generation
+        // change; repeated syncs with identical binding never reset shared
+        // state, so staged-clone-era serials keep burning forward.
+        let mut engine = Engine::new();
+        let owner = OwnerId::parse("owner-a").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        engine.sync_binding(&owner, &gen_id);
+        let mut a = new_session(&owner, &gen_id, domain("out-a", "ws"));
+        a.set_group_allocator(engine.group_alloc.clone());
+        alloc_admit_covering(&mut a, &owner, &gen_id, "out-a", "ws", "win-a1");
+        alloc_admit_covering(&mut a, &owner, &gen_id, "out-a", "ws", "win-a2");
+        let key_a = domain("out-a", "ws").key();
+        engine.insert_raw(key_a.clone(), a, 0);
+        assert_eq!(engine.group_alloc.next_value(), 1);
+        engine.sync_binding(&owner, &gen_id);
+        assert_eq!(engine.group_alloc.next_value(), 1);
+        let mut working = engine
+            .take_usable_session(&key_a, &domain("out-a", "ws"))
+            .expect("take");
+        alloc_admit_covering(&mut working, &owner, &gen_id, "out-a", "ws", "win-a3");
+        assert!(
+            alloc_engine_group_ids(&working).contains("grp-1"),
+            "repeat sync continues the counter"
+        );
+        engine.store_committed(key_a.clone(), working, 0);
+        engine.sync_binding(&owner, &gen_id);
+        let mut working = engine
+            .take_usable_session(&key_a, &domain("out-a", "ws"))
+            .expect("take");
+        alloc_admit_covering(&mut working, &owner, &gen_id, "out-a", "ws", "win-a4");
+        assert!(
+            alloc_engine_group_ids(&working).contains("grp-2"),
+            "second repeat sync still continues"
+        );
+        engine.store_committed(key_a.clone(), working, 0);
+        assert_eq!(engine.group_alloc.next_value(), 3);
+        // A real generation change clears retained state and restarts.
+        let gen_next = GenerationId::parse("gen-2").expect("valid");
+        engine.sync_binding(&owner, &gen_next);
+        assert_eq!(engine.retained_domains(), 0);
+        assert_eq!(engine.group_alloc.next_value(), 0);
+        let mut fresh = new_session(&owner, &gen_next, domain("out-a", "ws"));
+        fresh.set_group_allocator(engine.group_alloc.clone());
+        alloc_admit_covering(&mut fresh, &owner, &gen_next, "out-a", "ws", "win-b1");
+        alloc_admit_covering(&mut fresh, &owner, &gen_next, "out-a", "ws", "win-b2");
+        assert_eq!(
+            alloc_engine_group_ids(&fresh),
+            std::collections::BTreeSet::from(["grp-0".to_owned()])
+        );
+    }
+
+    #[test]
+    fn alloc_engine_fit_burns_serials_even_when_discarded() {
+        // Fit family through the production engine allocator: a fitted
+        // tree that is discarded still burns its serials, so a later
+        // admission never reissues them.
+        use crate::directional::WindowId;
+        use crate::seed::{EngineWindow, try_recursive_cut_fit_with_centre_count_and_alloc};
+        let mut engine = Engine::new();
+        let owner = OwnerId::parse("owner-a").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        engine.sync_binding(&owner, &gen_id);
+        let fit_domain = domain("out", "ws");
+        let windows = vec![
+            EngineWindow {
+                window: WindowId("win-a".to_owned()),
+                output: OutputId("out".to_owned()),
+                workspace: WorkspaceId("ws".to_owned()),
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 400,
+                    h: 600,
+                },
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            },
+            EngineWindow {
+                window: WindowId("win-b".to_owned()),
+                output: OutputId("out".to_owned()),
+                workspace: WorkspaceId("ws".to_owned()),
+                rect: Rect {
+                    x: 400,
+                    y: 0,
+                    w: 400,
+                    h: 600,
+                },
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            },
+        ];
+        let (tree, _links, centre_splits) = try_recursive_cut_fit_with_centre_count_and_alloc(
+            &fit_domain,
+            &windows,
+            &engine.group_alloc,
+        )
+        .expect("clean fit");
+        assert_eq!(centre_splits, 0);
+        assert_eq!(tree.id(), &NodeId::from("grp-0"));
+        drop(tree);
+        assert_eq!(engine.group_alloc.next_value(), 1);
+        // Refit after discarding (removal): the repeat fit mints the next
+        // serial, never the removed grp-0.
+        let (refit, _, _) = try_recursive_cut_fit_with_centre_count_and_alloc(
+            &fit_domain,
+            &windows,
+            &engine.group_alloc,
+        )
+        .expect("clean refit");
+        assert_eq!(refit.id(), &NodeId::from("grp-1"));
+        drop(refit);
+        assert_eq!(engine.group_alloc.next_value(), 2);
+        // A later pinned admission continues past both burned fit serials.
+        let mut session = new_session(&owner, &gen_id, domain("out", "ws"));
+        session.set_group_allocator(engine.group_alloc.clone());
+        alloc_admit_covering(&mut session, &owner, &gen_id, "out", "ws", "win-c");
+        alloc_admit_covering(&mut session, &owner, &gen_id, "out", "ws", "win-d");
+        assert_eq!(
+            alloc_engine_group_ids(&session),
+            std::collections::BTreeSet::from(["grp-2".to_owned()]),
+            "discarded fit serials are never reissued"
+        );
+        assert_eq!(engine.group_alloc.next_value(), 3);
+    }
+
+    #[test]
+    fn alloc_engine_initial_clone_bind_never_reissues() {
+        // One counter across the initial binding: an initially-unbound
+        // engine is cloned, the clone binds and mints, then is discarded.
+        // Binding the owner engine afterwards continues the same counter
+        // instead of reissuing the burned serial from a fresh Arc.
+        let owner = OwnerId::parse("owner-a").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        let engine = Engine::new();
+        let mut staged = engine.clone();
+        staged.sync_binding(&owner, &gen_id);
+        let mut s = new_session(&owner, &gen_id, domain("out-a", "ws"));
+        s.set_group_allocator(staged.group_alloc.clone());
+        alloc_admit_covering(&mut s, &owner, &gen_id, "out-a", "ws", "win-a1");
+        alloc_admit_covering(&mut s, &owner, &gen_id, "out-a", "ws", "win-a2");
+        assert_eq!(
+            alloc_engine_group_ids(&s),
+            std::collections::BTreeSet::from(["grp-0".to_owned()])
+        );
+        drop(s);
+        drop(staged);
+        let mut engine = engine;
+        engine.sync_binding(&owner, &gen_id);
+        assert_eq!(
+            engine.group_alloc.next_value(),
+            1,
+            "initial binding preserves the shared counter"
+        );
+        let mut fresh = new_session(&owner, &gen_id, domain("out-a", "ws"));
+        fresh.set_group_allocator(engine.group_alloc.clone());
+        alloc_admit_covering(&mut fresh, &owner, &gen_id, "out-a", "ws", "win-b1");
+        alloc_admit_covering(&mut fresh, &owner, &gen_id, "out-a", "ws", "win-b2");
+        assert_eq!(
+            alloc_engine_group_ids(&fresh),
+            std::collections::BTreeSet::from(["grp-1".to_owned()]),
+            "burned grp-0 is never reissued after initial binding"
+        );
+    }
+
+    #[test]
+    fn alloc_engine_owner_only_rebind_never_reissues() {
+        // Owner-only rebind at the same generation keeps the world-clear
+        // behavior but preserves the generation counter: later mints
+        // continue past burned serials instead of restarting.
+        let mut engine = Engine::new();
+        let owner_a = OwnerId::parse("owner-a").expect("valid");
+        let owner_b = OwnerId::parse("owner-b").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        engine.sync_binding(&owner_a, &gen_id);
+        let mut a = new_session(&owner_a, &gen_id, domain("out-a", "ws"));
+        a.set_group_allocator(engine.group_alloc.clone());
+        alloc_admit_covering(&mut a, &owner_a, &gen_id, "out-a", "ws", "win-a1");
+        alloc_admit_covering(&mut a, &owner_a, &gen_id, "out-a", "ws", "win-a2");
+        let key_a = domain("out-a", "ws").key();
+        engine.insert_raw(key_a.clone(), a, 0);
+        assert_eq!(engine.group_alloc.next_value(), 1);
+        engine.sync_binding(&owner_b, &gen_id);
+        assert_eq!(
+            engine.retained_domains(),
+            0,
+            "owner change still clears the world"
+        );
+        assert_eq!(
+            engine.group_alloc.next_value(),
+            1,
+            "owner-only rebind preserves the generation counter"
+        );
+        let mut fresh = new_session(&owner_b, &gen_id, domain("out-a", "ws"));
+        fresh.set_group_allocator(engine.group_alloc.clone());
+        alloc_admit_covering(&mut fresh, &owner_b, &gen_id, "out-a", "ws", "win-b1");
+        alloc_admit_covering(&mut fresh, &owner_b, &gen_id, "out-a", "ws", "win-b2");
+        assert_eq!(
+            alloc_engine_group_ids(&fresh),
+            std::collections::BTreeSet::from(["grp-1".to_owned()]),
+            "burned grp-0 is never reissued after owner-only rebind"
+        );
     }
 }

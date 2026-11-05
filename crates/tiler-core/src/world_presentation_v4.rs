@@ -8,8 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::active_group::describe_active_group_with_hints;
-use crate::directional::{NodeId, OutputId, WindowId};
+use crate::directional::{Node, NodeId, OutputId, WindowId};
 use crate::geometry::Rect;
+use crate::session::DomainKey;
 use crate::settings_catalog::{
     DEFAULT_CATALOG_BORDER_GAP, DEFAULT_CATALOG_BORDER_RADIUS, DEFAULT_CATALOG_BORDER_WIDTH,
     DEFAULT_CATALOG_UNDERLAY_EXTENSION, FIELD_BORDER_ENABLED, FIELD_BORDER_GAP,
@@ -24,8 +25,8 @@ use crate::world_presentation::{
     PresentationUnderlayFound, pager_workspace_label,
 };
 use crate::world_report::{
-    BorderHideReasonV4, BorderPresentationV4, HoldReason, PresentationIngressV4, PresentationRowV4,
-    WorldPresentationV4,
+    BorderHideReasonV4, BorderPresentationV4, CommandRejectKind, HoldReason, PresentationIngressV4,
+    PresentationRowV4, RenderTarget, RendererInput, WorldPresentationV4,
 };
 
 impl WorldEngine {
@@ -724,6 +725,75 @@ impl WorldEngine {
                 },
                 pager: self.presentation_pager_v4(suspended.as_ref()),
             },
+        }
+    }
+
+    /// Validate one staged v4 renderer input against current core
+    /// identity/home state (sub-7 command-handling gate, not a publish
+    /// hold). `latest_published_presentation_rev` is the latest PUBLISHED
+    /// presentation revision passed explicitly by the caller (sub-7 wires
+    /// the stamp and dispatch); the staged v4 producer revision stays a
+    /// placeholder and is never read here. `None` input is valid (an
+    /// ordinary command carries no renderer row). A drawn revision newer
+    /// than the latest published refuses as
+    /// [`CommandRejectKind::StaleRenderTarget`] even for an otherwise
+    /// exact row; older/equal rows proceed to the row check. Row equality
+    /// is identity only: a workspace is valid iff its id currently
+    /// belongs on the output, a window iff the exact lifetime is homed
+    /// there, a group iff the exact group id exists in the live session
+    /// tree there. No ordinal, trailing, binding, label, occupancy, or
+    /// member comparison, and no rendered-row history. Returns `None`
+    /// when valid, otherwise the rejection kind.
+    // allow(dead_code): pending sub-7 stamp+dispatch wiring; tests drive this.
+    #[allow(dead_code)]
+    pub(crate) fn validate_renderer_input_v4(
+        &self,
+        input: Option<&RendererInput>,
+        latest_published_presentation_rev: u64,
+    ) -> Option<CommandRejectKind> {
+        let input = input?;
+        if input.rev > latest_published_presentation_rev {
+            return Some(CommandRejectKind::StaleRenderTarget);
+        }
+        let valid = match &input.target {
+            RenderTarget::Workspace { out, ws } => self.known_workspace(out, &ws.0),
+            RenderTarget::Window { out, ws, win } => self
+                .core_homing(win)
+                .is_some_and(|home| home.output == *out && home.workspace == *ws),
+            RenderTarget::Group { out, ws, group } => {
+                if !self.known_workspace(out, &ws.0) {
+                    return Some(CommandRejectKind::StaleRenderTarget);
+                }
+                let key = DomainKey {
+                    output: out.clone(),
+                    workspace: ws.clone(),
+                };
+                self.engine
+                    .session(&key)
+                    .and_then(|session| session.tree_for(&key))
+                    .is_some_and(|tree| Self::tree_has_group_v4(tree, group))
+            }
+        };
+        if valid {
+            None
+        } else {
+            Some(CommandRejectKind::StaleRenderTarget)
+        }
+    }
+
+    /// Whether `id` names a live group node in `tree`. Leaves share the
+    /// id namespace but never count: only `Group` arms match.
+    fn tree_has_group_v4(tree: &Node, id: &NodeId) -> bool {
+        match tree {
+            Node::Leaf { .. } => false,
+            Node::Group {
+                id: gid, children, ..
+            } => {
+                gid == id
+                    || children
+                        .iter()
+                        .any(|child| Self::tree_has_group_v4(child, id))
+            }
         }
     }
 }

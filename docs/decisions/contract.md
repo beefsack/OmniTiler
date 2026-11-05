@@ -104,10 +104,10 @@
 - Evidence: [review R3, F7, F18](../changes/core-interface-review.md).
 
 ### Decorations
-- Decision: typed named decoration fields (border, underlay, pager; tabs own field at tab bump); one presentation revision plus foreground token and common staleness rule. Input from core-drawn decoration names exact core target and rendered revision; core refuses if target row changed. Adapters only map hit position to target.
+- Decision: typed named decoration fields (border, underlay, pager; tabs own field at tab bump); one presentation revision plus foreground token and common staleness rule. Input names the exact core target and rendered revision. A changed target row means changed identity/home: workspace on output, exact window lifetime in workspace on output, or exact group in workspace on output. Ordinal, trailing, binding, label, occupied and group members are not compared; no rendered-row history is retained. A revision above the latest published presentation revision refuses with `stale-render-target`; every published revision, however old, proceeds to the identity/home check. Refusal happens at command handling, not as a publication hold, and selected commands keep their normal gates. Group ids draw from one generation-scoped monotonic counter; trial and rolled-back placements burn numbers and removed ids are never minted again within that generation. Adapters only map hit position to target.
 - Why: adapters used different freshness rules for same pager click.
-- Rejected: generic decoration list, per-field freshness, adapter click verification, refusal on any revision change.
-- Assumes / revisit if: every target has stable core id and renderer carries rendered revision.
+- Rejected: generic decoration list, per-field freshness, adapter click verification, refusal on any revision change, payload-field comparison, rendered-row history, ignoring the revision, a new diagnostic/token or publication hold, retired-id sets or accepted group-id reuse.
+- Assumes / revisit if: every target has stable core id (including generation-monotonic group ids) and renderer carries rendered revision; the generation envelope fence remains required when counters reset on a new generation.
 - Status: active, 2026-10-30
 - Evidence: [review R8, F3, F16](../changes/core-interface-review.md).
 

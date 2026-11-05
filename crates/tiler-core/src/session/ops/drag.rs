@@ -276,6 +276,7 @@ impl super::super::Session {
         };
         let resolved = match resolve_drag_shared(
             self.policy(),
+            &self.group_alloc,
             &current,
             &domain,
             &self.windows,
@@ -457,6 +458,7 @@ impl super::super::Session {
         };
         let resolved = match resolve_drag_shared(
             self.policy(),
+            &self.group_alloc,
             &current,
             &domain,
             &self.windows,
@@ -756,6 +758,7 @@ impl super::super::Session {
         };
         let resolved = match resolve_drag_shared(
             self.policy(),
+            &self.group_alloc,
             &tree,
             &domain,
             &self.windows,
@@ -885,6 +888,7 @@ impl super::super::Session {
         };
         let resolved = match resolve_drag_shared(
             self.policy(),
+            &self.group_alloc,
             &tree,
             &domain,
             &self.windows,
@@ -1136,6 +1140,7 @@ pub(in crate::session) fn drag_capture_stale(session: &Session, capture: &DragSt
 #[allow(clippy::too_many_arguments)]
 pub(in crate::session) fn resolve_drag_shared(
     policy: &dyn LayoutPolicy,
+    alloc: &GroupAllocator,
     tree: &Node,
     domain: &OutputDomain,
     windows: &BTreeMap<WindowId, WindowLink>,
@@ -1225,11 +1230,11 @@ pub(in crate::session) fn resolve_drag_shared(
                 };
                 let placement = apply_group_edge_placement(
                     policy,
+                    alloc,
                     tree,
                     &capture.source_leaf,
                     &layout.id,
                     edge,
-                    capture.revision,
                 )
                 .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
                 return Ok(SharedDragResolved {
@@ -1321,15 +1326,9 @@ pub(in crate::session) fn resolve_drag_shared(
             let (Some(axis), Some(before)) = (side.axis(), side.before()) else {
                 return Err(ProposeError::Refused(RefusalKind::UnsupportedCapability));
             };
-            let placement = apply_drag_placement(
-                policy,
-                tree,
-                &capture.source_leaf,
-                id,
-                side,
-                capture.revision,
-            )
-            .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
+            let placement =
+                apply_drag_placement(policy, alloc, tree, &capture.source_leaf, id, side)
+                    .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
             Ok(SharedDragResolved {
                 target_leaf: id.clone(),
                 target_window,
@@ -1345,22 +1344,12 @@ pub(in crate::session) fn resolve_drag_shared(
 }
 
 pub(in crate::session) fn generate_drag_group_id(
-    source_leaf: &NodeId,
-    base_revision: u64,
-    existing: &BTreeSet<NodeId>,
-) -> NodeId {
-    let base = format!("grp-{}-r{}-drag", source_leaf.0, base_revision);
-    if !existing.contains(&NodeId(base.clone())) {
-        return NodeId(base);
-    }
-    let mut n = 1u32;
-    loop {
-        let candidate = NodeId(format!("{base}-{n}"));
-        if !existing.contains(&candidate) {
-            return candidate;
-        }
-        n += 1;
-    }
+    alloc: &GroupAllocator,
+    existing: &mut BTreeSet<NodeId>,
+) -> Option<NodeId> {
+    let minted = alloc.mint(existing)?;
+    existing.insert(minted.clone());
+    Some(minted)
 }
 
 /// Deterministically place `source_leaf` onto `target_leaf`'s edge `side`
@@ -1377,11 +1366,11 @@ pub(in crate::session) fn generate_drag_group_id(
 /// refuse no-op placements as unchanged.
 pub(in crate::session) fn apply_drag_placement(
     policy: &dyn LayoutPolicy,
+    alloc: &GroupAllocator,
     tree: &Node,
     source_leaf: &NodeId,
     target_leaf: &NodeId,
     side: DragSide,
-    base_revision: u64,
 ) -> Option<DragPlacement> {
     if source_leaf == target_leaf {
         return None;
@@ -1438,7 +1427,7 @@ pub(in crate::session) fn apply_drag_placement(
     // Perpendicular: wrap only the target subtree in a new 2-child split.
     // New-group shares come from the cosmic_v1 policy (equal-halves source
     // behavior adapted to N-ary integer shares).
-    let new_id = generate_drag_group_id(source_leaf, base_revision, &node_ids);
+    let new_id = generate_drag_group_id(alloc, &mut node_ids)?;
     let new_shares = policy.new_group_shares().to_vec();
     let wrapper = if before {
         Node::Group {
@@ -1609,11 +1598,11 @@ pub(in crate::session) fn group_rep_window(
 /// the whole group in a new smallest 2-child split ordered by side.
 pub(in crate::session) fn apply_group_edge_placement(
     policy: &dyn LayoutPolicy,
+    alloc: &GroupAllocator,
     tree: &Node,
     source_leaf: &NodeId,
     group_id: &NodeId,
     side: DragSide,
-    base_revision: u64,
 ) -> Option<DragPlacement> {
     let (Some(axis), Some(before)) = (side.axis(), side.before()) else {
         return None;
@@ -1656,7 +1645,7 @@ pub(in crate::session) fn apply_group_edge_placement(
         });
     }
     // Perpendicular: wrap the whole group, preserving its slot/share.
-    let new_id = generate_drag_group_id(source_leaf, base_revision, &node_ids);
+    let new_id = generate_drag_group_id(alloc, &mut node_ids)?;
     let new_shares = policy.new_group_shares().to_vec();
     let group_node = find_subtree(&working, group_id)?.clone();
     let wrapper = if before {

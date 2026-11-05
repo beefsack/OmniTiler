@@ -785,15 +785,16 @@
         5b-3, now verified; sub-increment 5 is finished. Its narrow unit-7 pull-forward adapts only
         the `world_stress.rs` simulated host's correlated visibility verdict
         emission; the remaining unit-7 stress integration stays with unit 7.
-    6. Genuine presentation producer plus `rendererInput` validation. The contract
-     settles the anchored descriptor shape, core-scaled style, unknown witness
+  6. Genuine presentation producer plus `rendererInput` validation, finished.
+     The contract settles the anchored descriptor shape, core-scaled style,
+     unknown witness
      disabling the border, and a stale target refusing the command with
      `stale-render-target` at command handling (not a publish hold). Scenarios
      `anchored-border`, `decorations-target-row`, `arrival-mismatch-*`. The
-      native witness-join proof stays an adapter-port gate.
-      Split into 6a genuine presentation production and 6b renderer-input
-      validation. The first piece does not select renderer revision/history or
-      target-row equality semantics; the question below blocks 6b only.
+     native witness-join proof stays an adapter-port gate.
+   - 6a produces genuine presentation; 6b validates renderer targets and makes
+     group minting generation-monotonic. Both have offline helper evidence below,
+     not v4 accepted-run or scenario execution. Dispatch/stamping remain with 7.
    7. `WorldReplyV4` publish assembly (transfers with an explicit command
      sequence, diagnostics, switch events) plus v4 bootstrap. The contract
      settles the transfer command sequence as the original command sequence,
@@ -1538,15 +1539,15 @@
   establish helper/producer behavior only, not v4 runtime/scenario or native K5
   witness evidence. No fixture, manifest, contract, public ingress, version,
   adapter, keyboard-step, resize-minimum or drop-zone scaling change is included.
-- Sub-increment 6b question: the common rule requires comparison of the exact
+- Resolved sub-increment 6b question: the common rule requires comparison of the exact
   rendered target row with its current row, while the wire carries a revision
   and typed identity only. The existing `decorations-target-row` scenario proves
   acceptance of an unchanged target at an older actually published revision and
   refusal of a removed window, not acceptance of an unissued revision or of a
   changed group/workspace payload under the same id. Current-identity existence
   alone does not establish that stronger comparison. Revision/history scope and
-  the fields constituting row equality need clarification before implementation;
-  no membership-only validator or new retained-history policy is accepted here.
+  the fields constituting row equality required clarification. The user decisions
+  below resolve the comparison without rendered-row history.
   The [minimal discriminator](../spec/reference-outcomes.md#rendered-decoration-target-equality)
   records same-id payload changes and an unissued revision separately; inspected
   Tier 1 current-target routing is not an equivalent receipt/history model.
@@ -1562,18 +1563,15 @@
   row-equality check. Sub-increment 6b must confirm revision behavior across
   generations and agree the latest-published source with sub-increment 7's
   stamping, wiring the check there if needed.
-- Sub-increment 6b blocker: source inspection finds reusable group `NodeId`s
+- Resolved sub-increment 6b blocker: source inspection found reusable group `NodeId`s
   within one generation. `Session::all_node_ids` collects only current trees
   (`session/world.rs`); admission fallback restarts its local sequence and mints
   `cap-{window}-g{n}` against that current set (`session/capacity.rs`), and send
   fallback similarly mints `cap-send-{window}-g{n}` (`session/ops/workspace.rs`).
   Removing a group releases its spelling for a later different group. A stale
   group target can therefore pass an existence/home-only check after reuse.
-  No validator or allocator change is implemented, and no behavioral regression
-  or verification gate has run for 6b. Sub-increments 6b and 6 remain unfinished.
-  Next: decide group identity non-reuse before implementation, then add the
-  validator/regressions, promote the settled equality/revision decisions and run
-  the required offline gates.
+  The approved monotonic allocator replaces those reusable spellings; the
+  implementation and verification outcome is recorded below.
   User decision 2026-11-05, group identity: group ids are monotonic, numbered from
   one counter that never resets within a generation, so a removed group's id is
   never minted again; rolled-back or trial placements must not issue a number
@@ -1588,6 +1586,27 @@
   required. The v4 producer currently returns unstamped `rev: 0`; sub-increment 7
   still owns actual publication/stamping. The planned validator takes the latest
   published presentation revision explicitly, not the pending reply's revision.
+- Sub-increment 6b implementation: a core-internal renderer validator takes
+  `Option<&RendererInput>` and the latest published presentation revision
+  explicitly. It returns the existing `StaleRenderTarget` refusal for a newer
+  revision or changed identity/home; ordinary commands without renderer input
+  remain eligible for their normal gates. Workspace checks read the current ring,
+  windows read retained logical homing, and groups require a group (never a leaf)
+  in the current workspace/output session tree. No payload/history state, dispatch
+  wiring, publication hold or public ingress is added. Sub-increment 7 must pass
+  the previously published revision at command handling, retain normal command
+  gates and stamp the resulting publication separately.
+  All group minting now draws `grp-{serial}` from one shared monotonic counter
+  across engine/session clones, ordinary admission, capacity/send fallbacks,
+  movement, both drag wraps, restore regrouping and clean/centre-split fitting.
+  Discarded trials and rollback burn numbers. Initial binding and owner-only
+  rebinding preserve the counter; a changed generation starts fresh. Pair remaps
+  preserve existing identities through canonical restoration, not new group mints.
+  Standalone pure fit wrappers retain deterministic per-call allocation; internal
+  generation fitting takes the shared allocator. No immutable fixture pins a
+  generated group spelling: v4 group ids are opaque shape witnesses, and stage5
+  recorded/synthetic presentation ids are not allocator expectations.
+  Independent source review and the required offline gates are recorded below.
 - Sub-increment 6a implementation: a parallel core-internal producer reads staged
   v4 presentation facts directly. Visible borders preserve the exact identity-
   joined witness and derive scaled width/radius and gap-plus-width outsets;
@@ -1633,9 +1652,47 @@
   whitespace, added ASCII, NUL and local-link checks. Only
   `workspace_unsafe_posture` is filtered; it is not evidence. Independent source
   review has no remaining serious producer finding. Sub-increment 6a is finished;
-  sub-increment 6 is unfinished while 6b is blocked. No immutable fixture,
+  its verification left 6 dependent on the now-completed 6b below. No immutable fixture,
   manifest, contract, Cargo feature, adapter, version or public ingress change is
   included; all eight OPEN/TBD gates remain unchanged. The phase note stays active.
+- Sub-increment 6b review/evidence: 14 validator regressions cover actual older
+  published/equal revisions, unissued higher revisions, removed and rehomed
+  windows/workspaces, removed/replaced groups, changed group membership under a
+  surviving id, and same-id ordinal/label, trailing/occupied and binding changes.
+  Most setup uses accepted legacy reports; ring reorder, native binding and
+  staged occupancy changes use explicitly labelled internal-state seeds. These
+  are core validator checks, not v4 runtime, scenario or native evidence. The
+  initial validator test run failed to compile because the helper did not exist;
+  this is not a preimplementation behavioral red.
+  Eighteen allocation regressions plus three primitive tests cover the audited
+  mint families, committed removal/remint, discarded fits/proposals/previews,
+  paired restoration, cross-domain sharing and whole-engine clone burns. Initial
+  binding and owner-only rebinding regressions reproduced counter resets before
+  correction; exhaustion regressions reproduced silent capacity floating before
+  the existing malformed-topology refusal was propagated. Most other regressions
+  were first run after implementation. Corrections to test setup distinguished
+  ordinary sends from genuine D2 fallback and accounted for preview burns; no
+  immutable fixture or unrelated oracle changed. Independent source review found
+  no blocking issue in the current generation-shared engine paths. Imported
+  opaque test trees and independently constructed standalone sessions are not a
+  new cross-engine allocation or restoration interface.
+  Direct final sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1840 core unit tests and every selected integration/protocol target),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`,
+  `devenv shell -- cargo fmt --all -- --check`, whitespace, added ASCII, NUL
+  and local-link checks. The first test-gate attempt timed out; a full rerun
+  passed. Formatting differences were mechanically corrected. Existing Unicode
+  in changed files is retained; added lines and new files are ASCII. Only
+  `workspace_unsafe_posture` is filtered and it is not evidence.
+  The three decisions are promoted in Decorations, the world contract and the
+  reference-outcome discriminators. Sub-increments 6b and 6 are finished; 7 is
+  not started. Its publication stamping, command handling and generation gate
+  must supply the validator's actual previous-publication revision. No public
+  ingress, adapter, fixture, manifest, Cargo feature, version or deferred scaling
+  change is included; all eight OPEN/TBD gates remain unchanged. The phase note
+  stays active.
 - Capability-held cursor grading repair plan: reproduce a valid v4 report whose
   native cursor hit names a newly capability-held window, then keep that window
   held instead of discarding the grading. Preserve the original hit and fact in

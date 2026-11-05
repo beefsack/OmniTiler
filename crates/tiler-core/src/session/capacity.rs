@@ -658,9 +658,13 @@ pub(super) struct PlannedLeg {
 /// `existing_ids` reserves the fresh leaf plus every tried fallback
 /// group id. Every candidate passes whole-tree strict plus hinted
 /// projection; minimum flags alone never disqualify (D1, B6 kept).
+/// Group ids draw from the generation-shared allocator: tried fallback
+/// ids burn even when their candidate fails projection, and removed ids
+/// are never reissued. Exhaustion fails the leg closed.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan_admission_leg(
     policy: &dyn crate::policy::LayoutPolicy,
+    alloc: &super::GroupAllocator,
     anchor_fallback: AnchorFallback,
     current: Option<Node>,
     bounds: Rect,
@@ -668,7 +672,6 @@ pub(super) fn plan_admission_leg(
     eligible: Option<NodeId>,
     orientation: Axis,
     window: &WindowId,
-    base_revision: u64,
     existing_ids: &mut BTreeSet<NodeId>,
     hints: &BTreeMap<WindowId, WindowSizeHints>,
     leaf_links: &BTreeMap<NodeId, WindowId>,
@@ -677,13 +680,12 @@ pub(super) fn plan_admission_leg(
     existing_ids.insert(leaf_id.clone());
     let ordinary_tree = super::insert_tiled(
         policy,
+        alloc,
         current.clone(),
         eligible.as_ref(),
         leaf_id.clone(),
         orientation,
         existing_ids,
-        window,
-        base_revision,
     );
     // Plain-projected allocations rank the largest fallback (D2). An
     // unprojectable retained tree yields no ranking: D7 repair owns
@@ -699,18 +701,10 @@ pub(super) fn plan_admission_leg(
             .unwrap_or_default(),
         None => BTreeMap::new(),
     };
-    let mut group_seq: u64 = 0;
     let mut group_ids = std::iter::from_fn(|| {
-        group_seq += 1;
-        let mut n = group_seq;
-        loop {
-            let candidate = NodeId(format!("cap-{}-g{n}", window.0));
-            if !existing_ids.contains(&candidate) {
-                existing_ids.insert(candidate.clone());
-                return Some(candidate);
-            }
-            n += 1;
-        }
+        let minted = alloc.mint(existing_ids)?;
+        existing_ids.insert(minted.clone());
+        Some(minted)
     });
     // Whole-tree oracle input: every candidate tree already contains
     // the fresh leaf, so the newcomer mapping rides along (its hints

@@ -1724,7 +1724,6 @@ impl super::Session {
         // window-id order through the existing normal-placement helper.
         // Successive admissions split the previous leaf; without eligible
         // focus, insertion wraps the root.
-        let base_revision = observation.observation.revision;
         let mut existing_ids: BTreeSet<NodeId> = BTreeSet::new();
         for tree in new_trees.values().flatten() {
             super::collect_node_ids(tree, &mut existing_ids);
@@ -1784,12 +1783,11 @@ impl super::Session {
                 Some(slot.tree.clone())
             } else {
                 super::best_effort_rejoin(
+                    &self.group_alloc,
                     &slot,
                     &current,
                     &new_windows,
                     &mut existing_ids,
-                    id,
-                    base_revision,
                 )
             };
             let Some(tree) = rejoined else {
@@ -1894,6 +1892,7 @@ impl super::Session {
                 .collect();
             let leg = super::capacity::plan_admission_leg(
                 self.policy(),
+                &self.group_alloc,
                 self.anchor_fallback,
                 current,
                 domain.bounds,
@@ -1901,13 +1900,19 @@ impl super::Session {
                 eligible,
                 orientation,
                 id,
-                base_revision,
                 &mut existing_ids,
                 &hints_all,
                 &leaf_links,
             );
             let leaf_id = leg.leaf_id;
             let ordinary = leg.ordinary_tree;
+            // Exhaustion fail-closed (same alias as the propose path):
+            // empty domains never mint, so a missing ordinary tree with no
+            // fallback target is exhaustion/mismatch, never an empty tree.
+            // Refuse instead of silently capacity-floating.
+            if ordinary.is_none() && leg.selected.is_err() {
+                return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+            }
             let admitted_tree: Option<Node> = match leg.selected {
                 Ok(target) => Some(target.tree),
                 Err(()) => None,

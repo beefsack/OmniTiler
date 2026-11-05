@@ -1209,9 +1209,18 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `group` | NodeId | only group arm | Exact core group. |
 
 - Renderer input must accompany its corresponding world command. Core compares
-  the exact target row as rendered to its current row; a changed target refuses,
-  an unrelated revision change does not. Adapter only maps hit position to target;
-  no local click-freshness policy. Named border/underlay/pager share this rule.
+  the target's identity and home with current core state: workspace on `out`,
+  exact window lifetime in `ws` on `out`, or exact group in `ws` on `out`.
+  A changed identity/home refuses the command with `stale-render-target`, not a
+  publication hold. Ordinal, trailing, native binding, label, occupied and group
+  members are not compared; no rendered-row history is retained. Group ids draw
+  from one generation-scoped monotonic counter, including trial and rolled-back
+  placements; a removed group's id is never minted again within that generation.
+  A rendered revision above the latest published presentation revision also
+  refuses with `stale-render-target`; every published revision, however old,
+  proceeds to the identity/home check. Selected commands retain their normal
+  gates. Adapter only maps hit position to target; no local click-freshness
+  policy. Named border/underlay/pager share this rule.
   [Decorations](../decisions/contract.md#decorations).
 - Apply an accepted border descriptor to the live native frame through existing
   native frame events, not stale absolute rectangles. Scale `width` and
