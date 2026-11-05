@@ -1055,6 +1055,19 @@ pub struct WorldEngine {
     /// lifetime from the latest accepted report (`None` when none or
     /// unmanaged). Presentation-only; the content gates it on retained homing.
     pub(crate) presentation_focused: Option<WindowId>,
+    /// Retained v4 pager presentation order: top-to-bottom native stacking
+    /// over admitted member lifetimes plus first-paint candidates, from the
+    /// v4 `pagerOrder`/`pagerFrames` rows only. Never shares the v3 order
+    /// maps; the v3 path stays untouched until cutover.
+    pub(crate) presentation_order_v4: Vec<WindowId>,
+    /// Retained v4 pager presentation live frames: last-known fresh frame
+    /// per roster lifetime, accumulated by every
+    /// [`WorldEngine::retain_pager_presentation_v4`] call. v4 keeps
+    /// live sources only: no float/tile fallback, never a guess.
+    pub(crate) presentation_live_v4: BTreeMap<WindowId, Rect>,
+    /// v4 pager presentation focus: the adapter-observed focused lifetime
+    /// from the latest staged v4 report.
+    pub(crate) presentation_focused_v4: Option<WindowId>,
     /// Canonical last-active identity per workspace (R-WS-09 memory):
     /// one slot per effective domain across sticky/link migration.
     /// Written by accepted command choices before native writes and by
@@ -1362,6 +1375,9 @@ impl WorldEngine {
             presentation_tile: BTreeMap::new(),
             presentation_order: Vec::new(),
             presentation_focused: None,
+            presentation_order_v4: Vec::new(),
+            presentation_live_v4: BTreeMap::new(),
+            presentation_focused_v4: None,
             last_active_window: BTreeMap::new(),
             focused_fullscreen_presentation_suspension: false,
         })
@@ -1600,6 +1616,28 @@ impl WorldEngine {
     pub(crate) fn scale_once(logical: i32, scale: f64) -> Option<i32> {
         let scaled = (f64::from(logical) * scale + 0.5).floor();
         if !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&scaled) {
+            return None;
+        }
+        Some(scaled as i32)
+    }
+
+    /// Scale one logical float style setting into physical adapter units
+    /// for one output: `floor(logical * scale + 0.5)`, checked. Same
+    /// nearest, halves-upward rule as [`Self::scale_once`], for the v4
+    /// float style settings (border width/gap/radius, underlay extension).
+    /// `None` on non-finite inputs, overflow, or a scaled value above the
+    /// existing [`crate::world_report::MAX_PRESENTATION_STYLE_PX`] cap
+    /// (1024 valid, 1025 holds); callers fail closed and the v4 stage
+    /// helper stages the narrow unreadable hold.
+    pub(crate) fn scale_float_once(logical: f64, scale: f64) -> Option<i32> {
+        if !logical.is_finite() || !scale.is_finite() {
+            return None;
+        }
+        let scaled = (logical * scale + 0.5).floor();
+        if !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&scaled) {
+            return None;
+        }
+        if scaled > f64::from(crate::world_report::MAX_PRESENTATION_STYLE_PX) {
             return None;
         }
         Some(scaled as i32)

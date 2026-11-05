@@ -96,6 +96,28 @@ counterpart. Those sources do not prove macOS delivery or the sequences below.
 | Disconnect the output holding the surviving focused window; relocate its workspace to a survivor; return the output. Supply visibility verdicts without a logical view echo | Commandless policy selection keeps its existing `op-dpv-*` parent, freezes focusless visibility accounting, and retires through the common completion with no invented `cmdSeq` or focus effect; native focus stays untouched | Exact external receipt-protocol counterparts and native disconnect/return terminal delivery TBD. Existing [aligned-output discriminators](#kde-dual-output-admission-and-workspace-scope-discriminators) cover visible policy, not equivalent receipts |
 | Select another workspace whose remembered focus resolves but fails arrival-route eligibility; report correlated visibility verdicts without a logical echo | Freeze no required focus target; common visibility completion reports focus `unproven`. Keep the direct focus effect and all eligibility gates unchanged | Native effect/visibility ordering and reference-WM external receipt counterparts TBD; [focusless completion](../decisions/workspaces.md#focusless-switch-completion) selects accounting, not new focus authority |
 
+### Rendered decoration target equality
+
+| Minimal action sequence | Established constraints | Unsupported outcome / decision needed |
+| --- | --- | --- |
+| Draw revision R for workspace W and group G; change only W's ordinal/trailing/binding or G's members while preserving its id; click with the original exact target and R. Separately reset, draw R and submit an unchanged target with an unissued R+1 | The [decoration rule](../decisions/contract.md#decorations) accepts unrelated revision changes and refuses changed targets. The immutable `decorations-target-row` scenario covers an actually published older unchanged workspace and a removed window, not these same-id or unissued-revision legs | Exact row-equality fields and unissued-revision handling TBD; no identity-only or retained-history implementation selected. Native/reference receipt outcomes TBD |
+
+- Tier 1 nearest source evidence is current-target routing, not an equivalent
+  rendered-revision receipt: i3 @ `903bcd518df32b0e055b17f5da3f988a0187fd3d`,
+  `src/workspace.c:438-519,573-574`; sway @
+  `1652c54b73f67df17b7b4ab0b0f7048204aa8104`,
+  `sway/commands/workspace.c:201-225`; COSMIC @
+  `3d55cba06c9cf6f27609cdefb520f7857dba20af`, `src/input/actions.rs:186-200`;
+  Hyprland @ `19fb395d45314960e6f79f17994a84094f1cd4f6`,
+  `src/config/shared/actions/ConfigActions.cpp:150-200`. These inspected paths
+  resolve current names/indices/objects and do not take a drawn-revision
+  receipt; this bounded source comparison establishes no external history rule.
+- Prior project behavior differs: the
+  [macOS pager](../changes/macos-core-trailing-pager.md) also verifies native
+  binding and effective unbound-spare status, while Windows's
+  `verify_output_scoped_select_keys` checks live output/workspace identities.
+  Neither is Tier 1 authority for the shared rule.
+
 ### Raw classification hold discriminators
 
 | Minimal action sequence | Current conservative core behavior | Unsupported outcome / remaining work |

@@ -50,6 +50,7 @@ pub mod world_native;
 pub mod world_observe;
 pub mod world_operations;
 pub mod world_presentation;
+pub(crate) mod world_presentation_v4;
 pub mod world_publish;
 pub mod world_report;
 pub mod world_report_v4_checks;
@@ -158,6 +159,8 @@ mod world_no_focus_tests;
 mod world_observe_capture_tests;
 #[cfg(test)]
 mod world_pager_presentation_tests;
+#[cfg(test)]
+mod world_presentation_v4_tests;
 #[cfg(test)]
 mod world_rejected_accepted_tests;
 #[cfg(test)]

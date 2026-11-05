@@ -785,12 +785,15 @@
         5b-3, now verified; sub-increment 5 is finished. Its narrow unit-7 pull-forward adapts only
         the `world_stress.rs` simulated host's correlated visibility verdict
         emission; the remaining unit-7 stress integration stays with unit 7.
-   6. Genuine presentation producer plus `rendererInput` validation. The contract
+    6. Genuine presentation producer plus `rendererInput` validation. The contract
      settles the anchored descriptor shape, core-scaled style, unknown witness
      disabling the border, and a stale target refusing the command with
      `stale-render-target` at command handling (not a publish hold). Scenarios
      `anchored-border`, `decorations-target-row`, `arrival-mismatch-*`. The
-     native witness-join proof stays an adapter-port gate.
+      native witness-join proof stays an adapter-port gate.
+      Split into 6a genuine presentation production and 6b renderer-input
+      validation. The first piece does not select renderer revision/history or
+      target-row equality semantics; the question below blocks 6b only.
    7. `WorldReplyV4` publish assembly (transfers with an explicit command
      sequence, diagnostics, switch events) plus v4 bootstrap. The contract
      settles the transfer command sequence as the original command sequence,
@@ -1523,7 +1526,78 @@
   public wire shape, Cargo feature or version change is included. The phase note
   remains active for presentation (6), run/finish and public assembly (7), and
   the remaining planned work. All eight OPEN/TBD gates remain unchanged.
-- Presentation-local style scaling only; keyboard-step, resize-minimum and
+- Sub-increment 6a plan: produce `WorldPresentationV4` directly from staged v4
+  presentation facts, retained core classification/membership and current settings.
+  Publish genuine joined anchored descriptors, nullable-fact fail-closed hides,
+  unconditional output-local focused-fullscreen suspension, scaled border styles
+  and underlay extension, and fresh/retained pager sources without legacy ingress
+  conversion. Internal publication helpers remain separate from sub-increment 7
+  run/finish assembly. Renderer-input validation remains 6b. Verify eligible
+  positive/negative joins, held/unknown/lifetime fences, scale changes and
+  output-local suspension. Tests
+  establish helper/producer behavior only, not v4 runtime/scenario or native K5
+  witness evidence. No fixture, manifest, contract, public ingress, version,
+  adapter, keyboard-step, resize-minimum or drop-zone scaling change is included.
+- Sub-increment 6b question: the common rule requires comparison of the exact
+  rendered target row with its current row, while the wire carries a revision
+  and typed identity only. The existing `decorations-target-row` scenario proves
+  acceptance of an unchanged target at an older actually published revision and
+  refusal of a removed window, not acceptance of an unissued revision or of a
+  changed group/workspace payload under the same id. Current-identity existence
+  alone does not establish that stronger comparison. Revision/history scope and
+  the fields constituting row equality need clarification before implementation;
+  no membership-only validator or new retained-history policy is accepted here.
+  The [minimal discriminator](../spec/reference-outcomes.md#rendered-decoration-target-equality)
+  records same-id payload changes and an unissued revision separately; inspected
+  Tier 1 current-target routing is not an equivalent receipt/history model.
+- Sub-increment 6a implementation: a parallel core-internal producer reads staged
+  v4 presentation facts directly. Visible borders preserve the exact identity-
+  joined witness and derive scaled width/radius and gap-plus-width outsets;
+  missing/non-joining witnesses and unknown eligibility fail closed without
+  fabricated subjects or witnesses. Native-maximize null remains unknown on the
+  native route; on the composed route valid null uses the existing owned overlay
+  bit instead of permanently hiding presentation. Fullscreen suspension is
+  unconditional and output-local, including unmanaged raw foreground output;
+  truthful managed fullscreen/output facts retain suspension even if the raw
+  presentation output disagrees. Conflicting output sources disable style-based
+  shapes rather than choosing a scale.
+  Underlay reuses retained group/hints projection and the shared any-negative
+  extension sentinel before checked scaling. The existing 1024 physical style
+  bound is enforced without a wire-decoder cap or saturation. An internal narrow
+  unreadable-output signal is provided; sub-increment 7 must apply it before
+  writes/publication, stamp the issuing presentation revision and call the pager
+  retention helper at the accepted-run boundary. No new wire diagnostic is
+  synthesized. The producer alone publishes no output authority.
+  V4 pager retention accumulates genuine last-known live frames, keeps raw/held
+  lifetime presence distinct from classified eligibility, and prunes explicit
+  closes/complete absence while preserving incomplete gaps. Held presentation
+  supplies no fresh foreground/style/witness facts and retains only actual pager
+  memory. All read-only producer helpers leave engine state and gesture lifecycle
+  unchanged; run/finish, bootstrap and replay assembly remain sub-increment 7.
+- Sub-increment 6a review/evidence: 33 new helper/producer regressions cover exact
+  descriptors/null hides, nullable and composed-maximize eligibility, fractional
+  rounding, same-engine scale change, the 1024/1024.5 style boundary, negative
+  extension sentinels, output-local managed/unmanaged fullscreen suspension,
+  retained pager frames, held screens/presentation, raw capability-held and
+  own-process presence, close/complete/incomplete fences and nonmutation.
+  Source reports are set before intake; retained membership/session seeds use
+  legacy accepted runs. These tests are not v4 accepted-run, runtime, complete
+  scenario or native K5 witness-join evidence. Review corrected a permanent hide
+  on the composed route, a contradictory raw-output suspension veto, uncapped
+  style scaling and classification-as-lifetime pruning. An initial membership-
+  only renderer check and unapproved style diagnostic were removed, not accepted
+  as conformance. New tests were first run after implementation, not established
+  as preimplementation behavioral reds. The first scoped clippy pass found two
+  new-test get-then-check lints, mechanically repaired before final verification.
+  Final direct sequential verification passes the exact filtered core/protocol
+  test gate (1805 core unit tests and every selected integration/protocol target),
+  scoped build, scoped all-target clippy with warnings denied, formatting,
+  whitespace, added ASCII, NUL and local-link checks. Only
+  `workspace_unsafe_posture` is filtered; it is not evidence. Independent source
+  review has no remaining serious producer finding. Sub-increment 6a is finished;
+  sub-increment 6 is unfinished while 6b is blocked. No immutable fixture,
+  manifest, contract, Cargo feature, adapter, version or public ingress change is
+  included; all eight OPEN/TBD gates remain unchanged. The phase note stays active.
 - Capability-held cursor grading repair plan: reproduce a valid v4 report whose
   native cursor hit names a newly capability-held window, then keep that window
   held instead of discarding the grading. Preserve the original hit and fact in
