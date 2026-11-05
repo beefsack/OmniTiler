@@ -56,9 +56,10 @@ use crate::workspace_scope::ScopeHistory;
 use crate::world_commands::CommandApplied;
 use crate::world_gesture::{GestureOutcome, RetainedGesture};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, FrameAttempt, HoldReason, TilingMode, TransferKind,
-    TransferTarget, WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
-    WorldCommand, WorldReply, WorldReport, encode_reply_canonical, grade_conflicting_windows,
+    AuthorityScope, CommandRejectKind, CommandResult, FrameAttempt, HoldReason, ScopeAuthority,
+    ScopeStatus, TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION,
+    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WindowDesire, WorkspaceDesire, WorldCommand,
+    WorldReply, WorldReport, encode_reply_canonical, grade_conflicting_windows,
     grade_invalid_screens, grade_invalid_windows, max_intent_rollback_bound, reply_estimate,
     reply_upper_bound, report_digest, report_estimate, validate_intent_writes_reason,
     validate_report_reason,
@@ -576,6 +577,63 @@ impl<'a> RawRouting<'a> {
     }
 }
 
+/// Retained prior-accepted observation/publication facts for shared lanes.
+///
+/// Previous raw global focus and the actually published controlled-empty
+/// workspace set. Written only at `finish` from the accepted candidate's
+/// staged observation and published rows. The default supplies no prior
+/// proof. Rejected candidates never reach the write, and the value clones
+/// and resets with the engine.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PriorAcceptedContext {
+    pub(crate) prev_focused_global: String,
+    pub(crate) empty_controlled: BTreeSet<DomainKey>,
+}
+
+impl PriorAcceptedContext {
+    /// Derive the context from one accepted publication: the staged raw
+    /// focus plus the workspace rows that published with a matching
+    /// controlled output-or-workspace scope and no homed window row of
+    /// any authority. Unknown rosters stay unproven by absence.
+    pub(crate) fn capture(
+        focused_global: &str,
+        workspaces: &[WorkspaceDesire],
+        scopes: &[ScopeStatus],
+        windows: &[WindowDesire],
+    ) -> Self {
+        let mut empty_controlled = BTreeSet::new();
+        for workspace in workspaces {
+            let key = DomainKey {
+                output: workspace.output.clone(),
+                workspace: WorkspaceId(workspace.id.clone()),
+            };
+            let controlled = scopes.iter().any(|status| {
+                status.authority == ScopeAuthority::Controlled
+                    && match &status.scope {
+                        AuthorityScope::Output(output) => output == &key.output,
+                        AuthorityScope::Workspace { output, workspace } => {
+                            output == &key.output && workspace.0 == key.workspace.0
+                        }
+                    }
+            });
+            if !controlled {
+                continue;
+            }
+            if windows
+                .iter()
+                .any(|window| window.output == key.output && window.workspace == key.workspace.0)
+            {
+                continue;
+            }
+            empty_controlled.insert(key);
+        }
+        Self {
+            prev_focused_global: focused_global.to_owned(),
+            empty_controlled,
+        }
+    }
+}
+
 /// Stateful world boundary around the retained [`Engine`].
 #[derive(Debug, Clone)]
 pub struct WorldEngine {
@@ -603,6 +661,12 @@ pub struct WorldEngine {
     pub(crate) last_report: Option<WorldReport>,
     last_observation_seq: u64,
     pub(crate) last_reply: Option<WorldReply>,
+    /// Retained prior-accepted observation/publication facts for shared
+    /// lanes: previous raw focus plus the actually published
+    /// controlled-empty workspace set. Written at `finish` from the
+    /// accepted candidate; cleared with every fresh engine, cloned with
+    /// every staged candidate, never touched by rejected candidates.
+    pub(crate) prior_context: PriorAcceptedContext,
     /// Monotonic command high-watermark per (incarnation, generation):
     /// any `command_seq` at or below it is already consumed, so eviction
     /// can never resurrect a sequence. Commandless reports never move it.
@@ -1299,6 +1363,7 @@ impl WorldEngine {
             last_report: None,
             last_observation_seq: 0,
             last_reply: None,
+            prior_context: PriorAcceptedContext::default(),
             command_highwater: None,
             retained: Vec::new(),
             retained_floats: Vec::new(),
@@ -3319,11 +3384,7 @@ impl WorldEngine {
         // information and never overwrite an unlanded command choice;
         // empty focus records nothing.
         {
-            let prev = self
-                .last_report
-                .as_ref()
-                .map(|last| last.focused_global.clone())
-                .unwrap_or_default();
+            let prev = self.prior_context.prev_focused_global.clone();
             let current_focused = self.staged.observation.focused_global.clone();
             if !current_focused.is_empty() && prev != current_focused {
                 let active = WindowId(current_focused);
@@ -3711,6 +3772,16 @@ impl WorldEngine {
         self.last_request_seq = report.request_seq;
         self.last_digest = digest;
         self.last_report = Some(report.clone());
+        // Retain the prior-accepted context from this accepted candidate:
+        // the staged raw focus plus the just-published common rows. Every
+        // publish path funnels through here, including consumed-command
+        // reports; rejected candidates never reach this boundary.
+        self.prior_context = PriorAcceptedContext::capture(
+            &self.staged.observation.focused_global,
+            &reply.workspaces,
+            &reply.scopes,
+            &reply.windows,
+        );
         // First accepted complete inventory establishes the startup set
         // (possibly empty). Later complete reports route newcomers.
         if report.inventory_complete {

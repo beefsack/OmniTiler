@@ -874,6 +874,73 @@
   that staged facts alone are insufficient: raw lifetime presence and observation
   watermarks must survive alongside classification, and intent ingestion and
   pre-observation routing must keep their existing order.
+- Sub-increment 7 internal plan (ordered dependency slices):
+  1. 7a retains the prior accepted observation/publication facts needed by shared
+     lanes: previous raw focus and the actually published controlled-empty
+     workspace set. Replace lane reads of legacy `last_report`/`last_reply`,
+     populate the context at legacy finish, and preserve full typed replay/cache
+     bookkeeping unchanged. Verify accepted legacy progression, refused reports,
+     bootstrap/reset, and direct v4 staged-context capture without claiming a v4
+     accepted run. This prerequisite has no unused parallel runtime fields.
+  2. 7b adapts remaining shared command/continuation helpers to explicit internal
+     correlation and staged inputs, then adds v4 pre-observation routing freezes.
+     Preserve original command sequences, commandless nulls and existing normal
+     command gates. Verify each adapted helper and freeze before assembly.
+  3. 7c assembles parallel v4 publication from retained/staged state, including
+     transfer correlation, diagnostics and switch events. Apply the producer's
+     narrow unreadable-output/style hold before authorizing writes, with no new
+     wire diagnostic; retain genuine v4 presentation rather than converting it.
+     Verify publication/hold behavior directly; no accepted-run claim follows.
+  4. 7d assembles internal v4 accepted-run/finish and command dispatch: capture,
+     ingest once, then classify; retain pager at the accepted-run boundary;
+     preserve settlement/sweep order, command rollback and prior-context capture.
+     Validate renderer input against the latest previously published presentation
+     revision at command handling, never the pending revision; stamp the resulting
+     presentation separately. Verify genuine internal v4 command/observation runs.
+  5. 7e adds internal v4 bootstrap, typed reply/replay bookkeeping and bounded
+     candidate adoption, including exact-size/revision/structural refusal gates.
+     Verify duplicate/consumed/reused/stale requests, exhaustion and rollback
+     without changing envelope admission or public `handle_report`.
+  6. 7f exercises the assembled internal path against the inventory's
+     `raw-attempt-settlement`, `visibility-*`, `window-state`, `persistent-above`
+     and `linked-selectors-warp` scenarios and remaining internal stress needs.
+     Count only actually executed end-to-end coverage, preserve immutable fixture
+     oracles, and distinguish internal runtime evidence from public cutover.
+  Each slice receives the filtered core/protocol tests, scoped build/clippy,
+  formatting and changed-file checks before the next slice begins. These are
+  implementation dependencies within unit 6, not a change to migration order.
+  Later unit 7 still owns public envelope admission/`handle_report`, broker,
+  service, handshake, version/legacy removal, harness switches and typed graders.
+- Sub-increment 7a outcome: shared focus/admission lanes now read a minimal
+  prior-accepted context (raw global focus and actually published controlled-empty
+  workspaces), captured at finish from staged observation and common reply rows.
+  The original predicate is preserved: exact workspace existence, a matching
+  controlled output/workspace scope, and no homed window row of any authority.
+  Replay equality, cached replies, admission and watermarks are unchanged.
+  Fourteen new tests cover legacy accepted progression, unchanged raw focus after
+  command focus, typed-cache independence, consumed publication refresh, refusal,
+  bootstrap/reset, the row-predicate matrix and direct staged-v4 context capture.
+  These are legacy accepted-run and helper/staging checks, not internal v4 runtime
+  or scenario execution. The controlled-empty cache-independence regression was
+  reported failing before implementation; a later temporary legacy-focus-reader
+  mutation was reported failing the unchanged-focus regression. Most other tests
+  were first run after implementation or are behavior-preservation controls.
+  Independent source review found no predicate bug; redundant replay-watermark
+  coupling was removed and coverage strengthened before acceptance. Test setup
+  corrections distinguished accepted command refusal from envelope refusal,
+  required the consumed command pair, and accounted for a trailing empty spare;
+  no product oracle changed. A temporary duplicate test-module declaration caused
+  a compile error and was removed before final verification. Direct sequential
+  verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1854 core unit tests and all selected core/protocol targets),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. An initial formatting check
+  required mechanical reflows; the final check passes. Changed-file whitespace,
+  added ASCII, NUL and local-link checks pass. No fixture, manifest, Cargo,
+  adapter, public-ingress or version change is included; the phase note remains
+  active. 7a is finished; 7b-7f and all eight OPEN/TBD gates remain.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and

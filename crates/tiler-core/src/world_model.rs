@@ -15,8 +15,8 @@ use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::world_engine::{RetainedTransfer, StagedDomain, WorldEngine, inset_world_domain};
 use crate::world_report::{
-    EffectCause, EffectKind, HeldScreenRow, HoldReason, OneShotEffect, ScopeAuthority,
-    ScreenReport, TilingMode, TransferKind, TransferTarget, WorldReport,
+    EffectCause, EffectKind, HeldScreenRow, HoldReason, OneShotEffect, ScreenReport, TilingMode,
+    TransferKind, TransferTarget, WorldReport,
 };
 
 impl WorldEngine {
@@ -1202,42 +1202,15 @@ impl WorldEngine {
         }]
     }
 
-    /// Prior-reply proof that `key` was a controlled, tiled, empty
-    /// logical workspace: the last accepted reply published the scope
-    /// controlled with no window rows homed there. Covers the first fresh
-    /// map into a previously empty workspace, which carries no retained
-    /// session to diff against. Anything else (no prior reply, prior
-    /// scope absent/held/untouched, prior roster non-empty) is not birth
-    /// evidence: truly unknown rosters never infer admission by absence.
-    /// Restart/incarnation resets clear the retained replies, so fresh
-    /// adoption stays quiet; disable/enable adoption replays a prior
-    /// untouched scope, never a controlled empty one.
+    /// Prior proof that `key` was a controlled, empty logical workspace:
+    /// the last accepted publication carried the scope controlled with
+    /// no window rows homed there. Read from the retained prior-accepted
+    /// context, never from the typed replay cache. Anything else (no
+    /// prior acceptance, prior scope absent/held/untouched, prior roster
+    /// non-empty) is not birth evidence: truly unknown rosters never
+    /// infer admission by absence.
     fn prior_empty_controlled(&self, key: &DomainKey) -> bool {
-        let Some(reply) = self.last_reply.as_ref() else {
-            return false;
-        };
-        if self.last_report.is_none() {
-            return false;
-        }
-        reply
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.output == key.output && workspace.id == key.workspace.0)
-            && reply.scopes.iter().any(|status| {
-                status.authority == ScopeAuthority::Controlled
-                    && match &status.scope {
-                        crate::world_report::AuthorityScope::Output(output) => {
-                            output == &key.output
-                        }
-                        crate::world_report::AuthorityScope::Workspace { output, workspace } => {
-                            output == &key.output && workspace.0 == key.workspace.0
-                        }
-                    }
-            })
-            && !reply
-                .windows
-                .iter()
-                .any(|window| window.output == key.output && window.workspace == key.workspace.0)
+        self.prior_context.empty_controlled.contains(key)
     }
 
     /// Reconcile one readable staged domain through the retained engine
@@ -1653,9 +1626,9 @@ impl WorldEngine {
 #[cfg(test)]
 mod prior_empty_scope_tests {
     use super::*;
-    use crate::world_directional::tests::{accepted, report, screen};
-    use crate::world_engine::WorldEngine;
-    use crate::world_report::{AuthorityScope, ScopeAuthority};
+    use crate::world_directional::tests::{accepted, fact, report, report_full, screen};
+    use crate::world_engine::{KIND_REUSED, WorldOutcome};
+    use crate::world_report::{AuthorityScope, ScopeAuthority, WorldCommand};
 
     #[test]
     fn output_control_requires_exact_prior_workspace_row_for_empty_proof() {
@@ -1680,6 +1653,122 @@ mod prior_empty_scope_tests {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId("newly-appearing".to_owned()),
         }));
+    }
+
+    #[test]
+    fn cleared_typed_cache_keeps_controlled_empty_proof() {
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        let initial = report(1, 1, vec![screen("out-a", 0)], Vec::new(), None, None);
+        let reply = accepted(&mut engine, &initial);
+        let known_empty = reply
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.output == OutputId("out-a".to_owned()))
+            .expect("published workspace row");
+        let key = DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(known_empty.id.clone()),
+        };
+        assert!(engine.prior_empty_controlled(&key));
+        // Test-only eviction of the typed replay cache: production keeps
+        // full typed equality and the cached reply for duplicate checks.
+        // The shared prior-context lane must not depend on those lanes.
+        engine.last_report = None;
+        engine.last_reply = None;
+        assert!(engine.prior_empty_controlled(&key));
+        assert!(!engine.prior_empty_controlled(&DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId("newly-appearing".to_owned()),
+        }));
+    }
+
+    #[test]
+    fn rejected_report_preserves_controlled_empty_proof() {
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        let initial = report(1, 1, vec![screen("out-a", 0)], Vec::new(), None, None);
+        let reply = accepted(&mut engine, &initial);
+        let known_empty = reply
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.output == OutputId("out-a".to_owned()))
+            .expect("published workspace row");
+        let key = DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(known_empty.id.clone()),
+        };
+        // Reused sequence with different input refuses without adopting a
+        // staged candidate, so prior accepted proof survives.
+        let reused = report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0)],
+            None,
+            None,
+        );
+        match engine.handle_report(&reused) {
+            WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
+            other => panic!("expected reused refusal, got {other:?}"),
+        }
+        assert!(engine.prior_empty_controlled(&key));
+    }
+
+    #[test]
+    fn consumed_command_report_refreshes_controlled_empty_proof() {
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        let refused_focus = WorldCommand::Focus {
+            window: WindowId("win-zzz".to_owned()),
+            direction: "left".to_owned(),
+        };
+        // Empty observation plus a refusing command: the refusal reply
+        // still publishes the controlled-empty workspace and consumes the
+        // command sequence.
+        let first = report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            Vec::new(),
+            Vec::new(),
+            "",
+            Some(1),
+            Some(refused_focus),
+        );
+        match engine.handle_report(&first) {
+            WorldOutcome::Accepted(reply) => match reply.command_result {
+                Some(crate::world_report::CommandResult::Rejected { kind, .. }) => {
+                    assert_eq!(kind, crate::world_report::CommandRejectKind::FocusUnknown)
+                }
+                other => panic!("expected focus refusal result, got {other:?}"),
+            },
+            other => panic!("expected accepted refusal reply, got {other:?}"),
+        }
+        // A redelivery reconciles observation only. The controlled-empty
+        // proof must refresh from the consumed report's own publication.
+        let redelivery = report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            Vec::new(),
+            Some(1),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-zzz".to_owned()),
+                direction: "left".to_owned(),
+            }),
+        );
+        match engine.handle_report(&redelivery) {
+            WorldOutcome::CommandConsumed(reply) => {
+                let known_empty = reply
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.output == OutputId("out-a".to_owned()))
+                    .expect("published workspace row");
+                assert!(engine.prior_empty_controlled(&DomainKey {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: WorkspaceId(known_empty.id.clone()),
+                }));
+            }
+            other => panic!("expected consumed command, got {other:?}"),
+        }
     }
 }
 
