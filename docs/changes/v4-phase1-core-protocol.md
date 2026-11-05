@@ -903,8 +903,17 @@
       helpers; pass the current command explicitly for clear supersession and
       retain typed event identity and original continuation sequences. Verify
       dual-intake sticky transitions, native followup/rollback, effective held-row
-      conservation, diagnostic order and exactly-once intent ingestion before
-      the common gate. Pre-observation freezes and publication remain later work.
+       conservation, diagnostic order and exactly-once intent ingestion before
+       the common gate. Pre-observation freezes and publication remain later work.
+       7b-3 implementation plan: extract the existing send/migration source
+       freezes behind explicit command and borrowed raw-routing inputs, with a
+       genuine v4 source constructor. Capture against prior retained homes/views
+       before observation ingestion or convergence; keep staged command gates
+       unchanged. Verify dual-intake freeze parity, retained-home precedence,
+       stale-source refusal without fallback, first-observation/new-view refusal
+       and retained-view invariance through convergence using direct v4 helpers.
+       Legacy accepted-run regressions remain the integration control; v4
+       accepted-run assembly and publication remain 7c-7f.
   3. 7c assembles parallel v4 publication from retained/staged state, including
      transfer correlation, diagnostics and switch events. Apply the producer's
      narrow unreadable-output/style hold before authorizing writes, with no new
@@ -1021,6 +1030,41 @@
   No new behavioral decision, fixture, manifest, Cargo, adapter, public-ingress
   or version change is included. 7b-2 is finished; the note remains active.
   7b-3 pre-observation freezes, 7c-7f and all eight OPEN/TBD gates remain.
+- Sub-increment 7b-3 outcome: send/migration source freezes now share an
+  explicit-command, borrowed-raw-routing helper. The v4 constructor borrows
+  genuine v4 fields directly; no legacy conversion or staging is involved.
+  The legacy accepted path calls the same helper before capture, intent
+  ingestion and convergence. Retained-home precedence, action fallback and
+  prior-view binding are unchanged, as are downstream staged command gates.
+  The v4 constructor remains narrowly dead-code-allowed until 7d assembly.
+  Eleven new tests cover dual-intake freeze parity, both implicit send variants,
+  explicit bypass, foreground/pointer/cache/registry precedence, stale and
+  missing sources, action-only migration and non-mutation. Genuine v4 staging
+  and shared convergence then demonstrate that a newly created source view
+  cannot authorize a frozen refusal and an unplugged frozen source refuses
+  at the staged topology gate without retargeting. Dual-intake staging also
+  preserves the send rehome mismatch refusal. These are direct helper/staged
+  command checks plus legacy accepted-run regression controls, not internal
+  v4 accepted-run, publication, scenario or native execution evidence.
+  No final regression was observed behaviorally failing against the old code:
+  the initial tests were reported compile-failing on the missing helper APIs.
+  An unplug test initially omitted live-topology retention from its direct
+  staging sequence and reached a later refusal gate; restoring that existing
+  accepted-path step corrected the setup without changing product behavior.
+  Independent source review found no behavior issue; same-report hotplug and
+  actual staging/convergence coverage were strengthened before acceptance.
+  Initial clippy rejected a nested test-helper return type; a test-local alias
+  resolves it. Direct sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1875 core unit tests and all selected core/protocol targets),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`.
+  Changed-file whitespace, added ASCII, NUL and relative Markdown link-file
+  checks pass; the only full-file non-ASCII text is unchanged in the engine
+  header. No new behavioral decision, fixture, manifest, Cargo, adapter,
+  public-ingress or version change is included. 7b-3 and 7b are finished;
+  the note remains active. 7c-7f and all eight OPEN/TBD gates remain.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and

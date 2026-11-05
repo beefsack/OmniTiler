@@ -134,6 +134,8 @@ mod world_frame_fixture_tests;
 #[cfg(test)]
 mod world_frame_policy_tests;
 #[cfg(test)]
+mod world_freeze_v4_tests;
+#[cfg(test)]
 mod world_fullscreen_tests;
 #[cfg(test)]
 mod world_gesture_tests;

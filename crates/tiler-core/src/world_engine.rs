@@ -59,7 +59,7 @@ use crate::world_report::{
     AuthorityScope, CommandRejectKind, CommandResult, FrameAttempt, HoldReason, ScopeAuthority,
     ScopeStatus, TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION,
     WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WindowDesire, WorkspaceDesire, WorldCommand,
-    WorldReply, WorldReport, encode_reply_canonical, grade_conflicting_windows,
+    WorldReply, WorldReport, WorldReportV4, encode_reply_canonical, grade_conflicting_windows,
     grade_invalid_screens, grade_invalid_windows, max_intent_rollback_bound, reply_estimate,
     reply_upper_bound, report_digest, report_estimate, validate_intent_writes_reason,
     validate_report_reason,
@@ -579,6 +579,67 @@ impl<'a> RawRouting<'a> {
             screens: staged.screens.as_slice(),
             held_screens: staged.held_screens.as_slice(),
         }
+    }
+
+    /// Genuine v4 routing constructor: the same borrowed raw lanes read
+    /// directly from the typed v4 report, never through a v4-to-legacy
+    /// conversion. The caller passes the original v4 rows so the freeze
+    /// below captures against prior retained state.
+    // allow(dead_code): pending 7d accepted-run assembly owns this
+    // constructor; tests drive it.
+    #[allow(dead_code)]
+    pub(crate) fn from_v4(report: &'a WorldReportV4) -> Self {
+        Self {
+            inventory_complete: report.inventory_complete,
+            cursor: report.cursor,
+            focused_global: report.focused_global.as_str(),
+            action_foreground: report.action_foreground.as_ref(),
+            action_cached: report.action_cached.as_ref(),
+            action_outputs: report.action_outputs.as_slice(),
+            primary_output: report.primary_output.as_ref(),
+            screens: report.screens.as_slice(),
+            held_screens: report.held_screens.as_slice(),
+        }
+    }
+}
+
+impl WorldEngine {
+    /// Freeze the pre-observation command sources against prior retained
+    /// state: the implicit send source (retained home else the action
+    /// context) and the direction-only migration source (action output plus
+    /// its retained view). Takes the command explicitly and the borrowed
+    /// raw routing built from the source report; reads retained homing and
+    /// views only. Never ingests intent, never stages observations, and
+    /// never touches downstream staged gates: call before capture/ingest
+    /// so first-tick admissions, staged rehoming, and same-report view
+    /// settlement cannot retarget the current intent. Explicit send
+    /// sources and report-only commands freeze nothing.
+    pub(crate) fn freeze_command_sources(
+        &self,
+        command: Option<&WorldCommand>,
+        routing: &RawRouting<'_>,
+    ) -> (Option<OutputId>, Option<(OutputId, String)>) {
+        let frozen_send_source = match command {
+            Some(WorldCommand::SendRelative { window, source, .. })
+            | Some(WorldCommand::SendNumbered { window, source, .. }) => match source {
+                crate::world_report::SendSource::Explicit(_) => None,
+                crate::world_report::SendSource::HomeThenAction => {
+                    self.resolve_home_then_action(routing, window)
+                }
+            },
+            _ => None,
+        };
+        let frozen_migration_source = match command {
+            Some(WorldCommand::MigrateDirectional { .. }) => {
+                let resolved = self.resolve_action_output(routing);
+                match resolved {
+                    Some(output) => self.logical_view(&output.0).map(|view| (output, view)),
+                    None => None,
+                }
+            }
+            _ => None,
+        };
+        (frozen_send_source, frozen_migration_source)
     }
 }
 
@@ -3096,34 +3157,15 @@ impl WorldEngine {
         // so first-tick admissions and rehomed movers keep the retired
         // adapter contract exactly (homed pre-tick output, never post-sweep
         // membership). Report-only fallback legs need no freeze.
-        let frozen_send_source: Option<OutputId> = match report.command.as_ref() {
-            Some(WorldCommand::SendRelative { window, source, .. })
-            | Some(WorldCommand::SendNumbered { window, source, .. }) => match source {
-                crate::world_report::SendSource::Explicit(_) => None,
-                crate::world_report::SendSource::HomeThenAction => {
-                    self.resolve_home_then_action(&RawRouting::from_source(report), window)
-                }
-            },
-            _ => None,
-        };
-        // Freeze the direction-only migration source (output plus its
-        // current view) from pre-observation retained state, same position
-        // as the send freeze: the old production route pinned the pre-tick
-        // retained view, so view settlement or bootstrap in this report
-        // must never retarget the current intent. First-tick
-        // unbootstrapped migration refuses; same-report created views
-        // never migrate. Retained topology target selection and all gates
-        // stay downstream on staged state.
-        let frozen_migration_source: Option<(OutputId, String)> = match report.command.as_ref() {
-            Some(WorldCommand::MigrateDirectional { .. }) => {
-                let resolved = self.resolve_action_output(&RawRouting::from_source(report));
-                match resolved {
-                    Some(output) => self.logical_view(&output.0).map(|view| (output, view)),
-                    None => None,
-                }
-            }
-            _ => None,
-        };
+        // Direction-only migration freezes here too: the old production
+        // route pinned the pre-tick retained view, so view settlement or
+        // bootstrap in this report must never retarget the current intent.
+        // First-tick unbootstrapped migration refuses; same-report created
+        // views never migrate. Retained topology target selection and all
+        // gates stay downstream on staged state.
+        let source_routing = RawRouting::from_source(report);
+        let (frozen_send_source, frozen_migration_source) =
+            self.freeze_command_sources(report.command.as_ref(), &source_routing);
         // Typed event identity for the command path below: the validated
         // owner/correlation pair, never a re-parse of the report.
         let issue = EventIssue {
