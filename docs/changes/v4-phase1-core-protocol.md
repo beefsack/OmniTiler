@@ -1562,6 +1562,32 @@
   row-equality check. Sub-increment 6b must confirm revision behavior across
   generations and agree the latest-published source with sub-increment 7's
   stamping, wiring the check there if needed.
+- Sub-increment 6b blocker: source inspection finds reusable group `NodeId`s
+  within one generation. `Session::all_node_ids` collects only current trees
+  (`session/world.rs`); admission fallback restarts its local sequence and mints
+  `cap-{window}-g{n}` against that current set (`session/capacity.rs`), and send
+  fallback similarly mints `cap-send-{window}-g{n}` (`session/ops/workspace.rs`).
+  Removing a group releases its spelling for a later different group. A stale
+  group target can therefore pass an existence/home-only check after reuse.
+  No validator or allocator change is implemented, and no behavioral regression
+  or verification gate has run for 6b. Sub-increments 6b and 6 remain unfinished.
+  Next: decide group identity non-reuse before implementation, then add the
+  validator/regressions, promote the settled equality/revision decisions and run
+  the required offline gates.
+  User decision 2026-11-05, group identity: group ids are monotonic, numbered from
+  one counter that never resets within a generation, so a removed group's id is
+  never minted again; rolled-back or trial placements must not issue a number
+  twice. A retired-id set and accepted reuse are rejected. The decision extends
+  into shared session allocation and covers every group-minting site.
+  The existing [Tier 1 routing comparison](../spec/reference-outcomes.md#rendered-decoration-target-equality)
+  establishes no equivalent rendered-revision lifetime fence.
+  Revision inspection confirms fresh `WorldEngine` starts `state_revision` at
+  zero; legacy `finish` increments it and stamps `presentation.rev` from the
+  reply revision. A leftover higher rendered revision therefore refuses under
+  the selected rule; the existing envelope generation gate is independently
+  required. The v4 producer currently returns unstamped `rev: 0`; sub-increment 7
+  still owns actual publication/stamping. The planned validator takes the latest
+  published presentation revision explicitly, not the pending reply's revision.
 - Sub-increment 6a implementation: a parallel core-internal producer reads staged
   v4 presentation facts directly. Visible borders preserve the exact identity-
   joined witness and derive scaled width/radius and gap-plus-width outsets;
