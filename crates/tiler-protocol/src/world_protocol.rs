@@ -6964,7 +6964,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
     let mut seen_workspaces = std::collections::BTreeSet::new();
     for item in workspace_items {
         let workspace = decode_workspace_desire(item)?;
-        if !seen_workspaces.insert(workspace.id.clone()) {
+        if !seen_workspaces.insert((workspace.output.0.clone(), workspace.id.clone())) {
             return Err(reply_snapshot("duplicate-workspace"));
         }
         workspaces.push(workspace);
@@ -7926,7 +7926,7 @@ pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
     }
     let mut seen_workspaces = std::collections::BTreeSet::new();
     for workspace in &reply.workspaces {
-        if !seen_workspaces.insert(workspace.id.clone()) {
+        if !seen_workspaces.insert((workspace.output.0.clone(), workspace.id.clone())) {
             return Err(reply_snapshot("duplicate-workspace"));
         }
     }

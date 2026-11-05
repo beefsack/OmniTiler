@@ -826,6 +826,12 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `cmdSeq` | Counter | yes | Non-null for explicit-command; null otherwise. |
 | | `awaitShown` | bool | no | Only explicit selection may grant arrival-ready focus. |
 
+- TENTATIVE: v4 `WorkspaceDesire` row uniqueness is keyed by `(out,id)` in both
+  reply codecs. Shared mode may repeat one logical id on different outputs;
+  repeating the same pair refuses with `duplicate-workspace`. This preserves
+  the shared ring without relabel/dedup; reference/native external row-identity
+  counterparts remain TBD. [Tentative resolution](../changes/v4-phase1-core-protocol.md).
+
 - StateTarget is native actuation only: maximized requires maximize=true, and
   sticky requires nativeSticky=true. Core-composed maximize uses the existing
   controlled frame lane, never a maximized target, attempt or projected native

@@ -1626,6 +1626,65 @@
   resolve public v4 workspace-row uniqueness,
   then add symmetric codec guards/round-trip coverage, enable the strict full
   run and rerun every scoped gate. No 7f-4 or later-unit work is included.
+- Sub-increment 7f-3c continuation plan (TENTATIVE codec resolution): key
+  workspace-row uniqueness by `(output,id)` symmetrically in v4 encode/decode,
+  retaining `duplicate-workspace` for a repeated pair. Effective shared mode
+  publishes one logical ring on each output, as the recorded shared-workspace
+  policy requires; workspace scopes already use output plus workspace. No
+  recorded decision or fixture selects global row uniqueness, while immutable
+  `linked-selectors-warp` requires shared rows. The existing same-id/same-output
+  decoder duplicate case must continue refusing unchanged. Alternatives are
+  bare-id uniqueness with producer relabel/dedup, or a fixture change; neither
+  is selected. This is a tentative external row-identity choice, not new Tier 1
+  or native evidence, and is not promoted to a durable decision.
+  Add symmetric cross-output acceptance/round-trip and repeated-pair refusal
+  tests, search other consumers for bare-id assumptions, then enable the strict
+  ten-step/16-assertion scenario without changing its immutable inputs/oracles.
+  Remove the superseded prefix/refusal diagnostics only when that full run
+  passes. Review the public-boundary diff and rerun all scoped verification.
+  Both persistent-above oracle conflicts remain parked; 7f-4 and later cutover
+  work remain out of scope. The phase note stays active.
+- Sub-increment 7f-3c continuation outcome: both public v4 workspace gates now
+  use `(output,id)`; the TENTATIVE resolution above supersedes the earlier
+  blocked status without accepting the discarded trial as evidence. Repeating
+  a pair still refuses `snapshot-invalid` / `duplicate-workspace`. Two new tests
+  cover cross-output same-id decode/encode/round-trip and repeated-pair refusal
+  in both directions. The implementation run observed the new cross-output
+  decoder regression failing before the fix; repeated-pair refusal already
+  passed. Encode acceptance was first reached after the fix, so no separate
+  encode red-first claim is made. The unchanged structural duplicate case also
+  passes in the full test gate.
+  The strict `linked-selectors-warp` test now passes without `#[ignore]`: all ten
+  ordered steps (two handshakes, two settings, five reports, one disconnect),
+  nine wire steps and 16 immutable literal assertions execute through genuine
+  codecs/internal v4 handling, with both generation seeds consumed and no
+  pending gate. The superseded two-step prefix and encoder-refusal diagnostic
+  are removed. No fixture, manifest or parallel engine policy change was needed.
+  Source review found no other global bare-id workspace-row uniqueness gate in
+  core/protocol. `PriorAcceptedContext::capture` keys `DomainKey` by output and
+  workspace; scope assignments/history are output-keyed, sizing/writers iterate
+  rows, and presentation rings nest under outputs. `world_stress.rs` deduplicates
+  ids only after filtering to one output; its remaining bare-id class lookups
+  belong to that single-output scenario. Shared logical-ring identity is not
+  global reply-row uniqueness. Repository Rust v4 decoder references are confined
+  to protocol code/tests. Review of the public-boundary diff found no blocker;
+  test-only bare-id lookups were sampled, not exhaustively audited.
+  Direct sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1947 core unit tests; runner sixteen pass and only the parked persistent-above
+  full scenario is ignored),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check` without a repair pass.
+  Changed-file whitespace, added ASCII, NUL and local Markdown link-file targets
+  pass; the outcome index's five pre-existing non-ASCII lines are unchanged.
+  Raw-attempt settlement still evaluates twelve steps/ten reports/fourteen
+  assertions; window-state still evaluates 28 steps/nineteen reports/56 assertions
+  with its native fullscreen gate OPEN. Persistent-above remains prefix/diagnostic
+  evidence only, not a full scenario pass; neither parked conflict is changed.
+  Reference/native row-identity outcomes remain TBD. 7f-3c is finished under the
+  tentative choice; the phase note stays active. Next: review 7f-4's existing
+  plan separately; no 7f-4 or unit 7 cutover work is included here.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and

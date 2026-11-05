@@ -11,8 +11,9 @@
 //! prefix test, an ignored full ordered run (parked blocker, not a pass), and
 //! labelled DIAGNOSTIC tests that record executed assertion outcomes without
 //! claiming any scenario pass.
-//! `linked-selectors-warp` retains a two-step passing prefix, ignored strict
-//! run and first-report diagnostic at the shared-workspace codec boundary.
+//! `linked-selectors-warp` runs its full strict ordered scenario: workspace
+//! row identity is the (output, id) pair, so shared rings repeat logical ids
+//! across outputs.
 
 use std::io::Write as _;
 use std::process::{Command, Stdio};
@@ -1233,7 +1234,6 @@ fn test_bridge_refuses_unbound_engine() {
 }
 
 #[test]
-#[ignore = "7f-3c codec boundary: genuine shared rows repeat logical ids across outputs, but v4 codecs require bare-id uniqueness; see docs/changes/v4-phase1-core-protocol.md"]
 fn linked_selectors_warp_runs_ordered_core_scenario() {
     let run = run_ordered_scenario("linked-selectors-warp");
     assert_eq!(
@@ -1252,85 +1252,5 @@ fn linked_selectors_warp_runs_ordered_core_scenario() {
     assert_eq!(run.reports, 5, "report step count");
     assert_eq!(run.events, 1, "event step count");
     assert_eq!(run.assertions, 16, "evaluated assertion count");
-    assert_eq!(run.pending, 0, "pending gate count");
-}
-
-#[test]
-fn linked_selectors_warp_shared_workspace_encode_boundary() {
-    // DIAGNOSTIC ONLY: the genuine first report produces one shared ring
-    // per output. The existing v4 encoder refuses its repeated logical ids;
-    // do not accommodate this public codec boundary in the internal runner.
-    let scenario = load_scenario_value("linked-selectors-warp");
-    let steps = scenario
-        .get("steps")
-        .and_then(serde_json::Value::as_array)
-        .expect("steps");
-    let message_of = |wanted: &str| {
-        steps
-            .iter()
-            .find(|step| step.get("id").and_then(serde_json::Value::as_str) == Some(wanted))
-            .expect("step present")
-            .get("input")
-            .expect("input")
-            .get("message")
-            .expect("message")
-            .clone()
-    };
-    let mut engine = WorldEngine::new("generation-a").expect("fresh engine seeds");
-    let handshake = decode_handshake_request(
-        &serde_json::to_string(&message_of("linked-no-warp")).expect("serializes"),
-    )
-    .expect("handshake decodes");
-    let _ = engine.handshake(&handshake);
-    let settings = decode_settings(
-        &serde_json::to_string(&message_of("requested-not-substituted")).expect("serializes"),
-    )
-    .expect("settings decodes");
-    let _ = engine
-        .handle_settings(&settings)
-        .expect("settings admitted");
-    let report = decode_report_v4(
-        &serde_json::to_string(&message_of("linked-observe")).expect("serializes"),
-    )
-    .expect("report decodes")
-    .report;
-    let reply = engine
-        .handle_report_v4_for_test(&report)
-        .expect("report accepted");
-    let rows: Vec<(String, String)> = reply
-        .workspaces
-        .iter()
-        .map(|row| (row.output.0.clone(), row.id.clone()))
-        .collect();
-    assert_eq!(
-        rows,
-        vec![
-            ("out-a".to_owned(), "ws-1".to_owned()),
-            ("out-a".to_owned(), "ws-2".to_owned()),
-            ("out-b".to_owned(), "ws-1".to_owned()),
-            ("out-b".to_owned(), "ws-2".to_owned()),
-        ],
-        "shared ring mirrors logical ids across outputs"
-    );
-    let wire_flags = ReplyWireOptionals {
-        suspended_output_present: reply.presentation.suspended_output.is_some(),
-    };
-    let error = encode_reply_v4(&DecodedReplyV4 {
-        reply,
-        wire: wire_flags,
-    })
-    .expect_err("shared logical ids hit the existing codec boundary");
-    assert_eq!(error.message, "duplicate-workspace", "exact encode refusal");
-}
-
-#[test]
-fn linked_selectors_warp_prefix_before_first_report_passes() {
-    let scenario = load_scenario_value("linked-selectors-warp");
-    let (run, _) = run_loaded_scenario(&scenario, "linked-selectors-warp", 2, false);
-    assert_eq!(run.steps, 2, "prefix step count");
-    assert_eq!(run.handshakes, 1, "handshake step count");
-    assert_eq!(run.settings, 1, "settings step count");
-    assert_eq!(run.reports, 0, "no report reply encodes in the prefix");
-    assert_eq!(run.assertions, 4, "four original literal assertions");
     assert_eq!(run.pending, 0, "pending gate count");
 }

@@ -38,7 +38,7 @@ trivially different start state.
 
 | Minimal action sequence | Existing core/codec evidence | Unsupported outcome / decision |
 | --- | --- | --- |
-| Handshake host-owned all-output selectors; request separate mode; observe two outputs with the same native workspace order; encode the first shared reply | Effective shared mode preserves one logical ring and publishes each member on both outputs. Existing v4 encoder refuses `duplicate-workspace` because it keys bare id, not `(output,id)`; the decoder has the same gate | Public codec boundary OPEN: no identity relabel/dedup or codec accommodation selected. Reference-WM external row-identity equivalents and native conformance TBD; [shared policy](../decisions/workspaces.md#workspace-scope-vocabulary), [phase finding](../changes/v4-phase1-core-protocol.md) |
+| Handshake host-owned all-output selectors; request separate mode; observe two outputs with the same native workspace order; encode and decode the shared reply; repeat one `(output,id)` pair | Effective shared mode preserves one logical ring and publishes each member on both outputs. Both v4 codecs accept repeated logical ids across outputs and refuse a repeated pair with `duplicate-workspace`; the strict linked scenario evaluates all ten steps and 16 immutable assertions | TENTATIVE: workspace-row identity is `(output,id)`, matching shared policy and output/workspace scopes. Alternatives are bare-id uniqueness with producer relabel/dedup, or a fixture change; neither selected. Reference-WM external row-identity equivalents and native conformance TBD; [shared policy](../decisions/workspaces.md#workspace-scope-vocabulary), [phase finding](../changes/v4-phase1-core-protocol.md) |
 
 ### Raw self-identity applicability
 

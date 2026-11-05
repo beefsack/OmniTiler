@@ -1238,3 +1238,52 @@ fn v4_reply_writer_refuses_unspellable() {
         assert_eq!(error.message, message, "message {case}");
     }
 }
+
+#[test]
+fn v4_reply_workspace_row_identity_cross_output_accepts() {
+    // Row identity is the (output, id) pair: the same logical id on
+    // different outputs is two rows, not a duplicate.
+    let mut document = valid_reply_value();
+    document["workspaces"] = serde_json::json!([
+        {"id":"ws-a","out":"out-a","bind":"","scope":{"kind":"output","out":"out-a"},"order":0,"mode":"tiled","exist":true,"hold":""},
+        {"id":"ws-a","out":"out-b","bind":"","scope":{"kind":"output","out":"out-b"},"order":0,"mode":"tiled","exist":true,"hold":""}
+    ]);
+    let decoded = decode_value(&document).expect("shared id across outputs decodes");
+    let pairs: Vec<(&str, &str)> = decoded
+        .reply
+        .workspaces
+        .iter()
+        .map(|row| (row.output.0.as_str(), row.id.as_str()))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![("out-a", "ws-a"), ("out-b", "ws-a")],
+        "both rows survive decode"
+    );
+    let encoded = encode_reply_v4(&decoded).expect("shared id across outputs encodes");
+    let back = decode_reply_v4(&encoded).expect("encoding re-decodes");
+    assert_eq!(back, decoded, "cross-output rows round-trip");
+}
+
+#[test]
+fn v4_reply_workspace_row_identity_exact_pair_refuses() {
+    // Repeating the full (output, id) pair still refuses on both paths.
+    let mut document = valid_reply_value();
+    let row = document["workspaces"][0].clone();
+    document["workspaces"]
+        .as_array_mut()
+        .expect("array")
+        .push(row);
+    let error = decode_value(&document).expect_err("repeated pair refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "duplicate-workspace");
+
+    let mut constructed = writer_base();
+    constructed
+        .reply
+        .workspaces
+        .push(constructed.reply.workspaces[0].clone());
+    let error = encode_reply_v4(&constructed).expect_err("repeated pair refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "duplicate-workspace");
+}
