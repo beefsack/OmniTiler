@@ -976,7 +976,15 @@
      reply-size disjunct can be isolated without violating conservative sizing.
      7f-2 adds ordered internal scenario execution, beginning with the entirely
      core-driven `raw-attempt-settlement`; keep the public entry unchanged and
-     preserve each immutable assertion. 7f-3 exercises `window-state`,
+     preserve each immutable assertion. Its implementation plan is a protocol
+     integration runner over one fresh engine: decode the declared handshake,
+     settings and ten reports in array order, execute the genuine internal v4
+     boundary through a narrowly documented test-support bridge, encode actual
+     replies and evaluate all fourteen original jq assertions without rewriting
+     their expressions. Reuse the declared generation seed and connection facts;
+     fail on unsupported step kinds rather than skipping them. No host events
+     or native evidence are needed for this scenario. Keep envelope admission
+     and the public report entry unchanged. 7f-3 exercises `window-state`,
      `persistent-above` and `linked-selectors-warp`, including their declared
      connection/storage events where an offline driver can faithfully execute
      them. 7f-4 exercises both `visibility-*` scenarios with an explicit offline
@@ -1304,6 +1312,44 @@
   No new behavioral decision, fixture, manifest, Cargo, adapter, public-ingress
   or version change is included. 7f-1 is finished; the phase note stays active.
   Sub-increment 7, unit 6, later unit 7 and all eight OPEN/TBD gates remain.
+- Sub-increment 7f-2 outcome: `raw-attempt-settlement` now executes in fixture
+  array order against one fresh engine through genuine handshake/settings/report
+  decoders, handshake/settings handling, the internal `handle_report_v4` boundary
+  and genuine reply encoders. All twelve steps, ten reports and fourteen original
+  jq assertions execute without rewriting or skipping an oracle. They establish
+  the exact handshake reply, accepted settings with no host actions, readiness,
+  float target correlation for `op-1`/`op-2`/`op-3`, accepted-but-not-arrived
+  non-settlement, proven unchanged refusal, immediate frame proof, spent-evidence
+  non-redelivery, commandless birth-clear correlation, and cleared tiled output
+  without a manufactured operation terminal. No host event or native execution
+  is needed for this core-driven scenario; this is internal runtime evidence,
+  not public envelope admission or public cutover evidence. The reserved second
+  generation seed is validated but not exercised.
+  A hidden test-support bridge supplies the already-bound owner and parsed
+  correlation without exposing internal outcome/issue types or changing the
+  public report entry. The runner pins adapter/generation binding before calling
+  it; the bridge does not implement envelope admission. A second test verifies
+  unbound refusal and subsequent initial handshake; absence of mutation at that
+  refusal is source-audited from its early return, not proved by the resetting
+  handshake. Literal assertion evaluation uses the existing development jq
+  dependency and requires exactly `true`, failing if jq is unavailable.
+  No scenario assertion was seen failing first and no runtime behavior fix was
+  needed: the first semantic run passed. Two initial test compilation errors
+  were corrected. Source review removed an unnecessary getter and an unbound
+  owner fallback from the new bridge, tightened metadata/binding preconditions,
+  and corrected documentation that overstated its admission checks. Independent
+  source review found no remaining blocking issue after the documentation fix.
+  Direct sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1947 core unit tests and all selected core/protocol targets, including both
+  new integration tests),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. Changed-file whitespace,
+  added ASCII, NUL and relative Markdown link-file checks pass.
+  No new behavioral or tentative decision, fixture, manifest, Cargo, adapter,
+  public-ingress or version change is included. 7f-2 is finished; the note stays
+  active. 7f-3 through 7f-5, later unit 7 and all eight OPEN/TBD gates remain.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and

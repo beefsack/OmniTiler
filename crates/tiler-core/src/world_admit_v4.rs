@@ -502,3 +502,38 @@ impl WorldEngine {
         }
     }
 }
+
+impl WorldEngine {
+    /// Test-support entry over already-admitted connection context: reuse
+    /// the bound owner and the report's decoder-validated correlation to
+    /// build the admitted issue, then run the internal
+    /// [`WorldEngine::handle_report_v4`] boundary. Bypasses public envelope
+    /// admission: the caller must establish adapter/generation binding.
+    /// Missing bound owner or invalid correlation refuses before execution.
+    /// Not a second public ingress: no
+    /// broker, service, adapter, or version wiring. Accepted, duplicate, and
+    /// command-consumed outcomes all return the typed reply for faithful
+    /// canonical encoding; refusals return their kind/message without
+    /// manufacturing output. Ordered protocol scenario tests use this to
+    /// execute immutable fixtures end to end.
+    #[doc(hidden)]
+    pub fn handle_report_v4_for_test(
+        &mut self,
+        report: &WorldReportV4,
+    ) -> Result<WorldReplyV4, (&'static str, &'static str)> {
+        let owner = match self.connection_owner.clone() {
+            Some(owner) => owner,
+            None => return Err((KIND_SNAPSHOT, "test-issue-unbound")),
+        };
+        let correlation = match CorrelationId::parse(&report.request_id) {
+            Some(correlation) => correlation,
+            None => return Err((KIND_SNAPSHOT, "test-issue-invalid")),
+        };
+        match self.handle_report_v4(report, &EventIssue { owner, correlation }) {
+            V4RunOutcome::Accepted(reply)
+            | V4RunOutcome::Duplicate(reply)
+            | V4RunOutcome::CommandConsumed(reply) => Ok(reply),
+            V4RunOutcome::Rejected { kind, message } => Err((kind, message)),
+        }
+    }
+}
