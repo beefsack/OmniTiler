@@ -951,11 +951,26 @@
      candidate adoption, including exact-size/revision/structural refusal gates.
      Verify duplicate/consumed/reused/stale requests, exhaustion and rollback
      without changing envelope admission or public `handle_report`.
+     Implementation plan: add a typed internal boundary supplied with already
+     admitted connection/correlation context. Keep v4 latest-input equality and
+     cached replies separate from the legacy cache; compare full typed values
+     after the digest precheck. Reconcile consumed commands without dispatch,
+     preserve commandless watermarks and reject stale/reused requests before
+     mutation. Stage pre-ready intent retention and ready runs on candidates,
+     adopting only after structural, conservative-size, revision, outbound-intent
+     and exact v4 reply-size checks. Bootstrap emits no authority or revision
+     advance. Verify cache identity, fresh observations, refusal atomicity,
+     exhaustion, reset and bootstrap-to-ready progression without public ingress.
+     Close the 7d partial-command rollback and ingestion-count gaps if reachable
+     with discriminating offline tests; otherwise retain them explicitly for 7f.
   6. 7f exercises the assembled internal path against the inventory's
      `raw-attempt-settlement`, `visibility-*`, `window-state`, `persistent-above`
      and `linked-selectors-warp` scenarios and remaining internal stress needs.
      Count only actually executed end-to-end coverage, preserve immutable fixture
      oracles, and distinguish internal runtime evidence from public cutover.
+     Retain the 7d evidence gap: command rollback restoration after partial
+     mutation remains source-audited only; add a discriminating reachable case
+     if available, without weakening command gates or inventing runtime hooks.
   Each slice receives the filtered core/protocol tests, scoped build/clippy,
   formatting and changed-file checks before the next slice begins. These are
   implementation dependencies within unit 6, not a change to migration order.
@@ -1179,6 +1194,56 @@
   decision, fixture, manifest, Cargo, adapter, public-ingress or version change
   is included. 7d is finished; the phase note remains active. 7e-7f, later unit 7
   and all eight OPEN/TBD gates remain.
+- Sub-increment 7e outcome: the parallel internal `handle_report_v4` boundary
+  now owns v4 pre-ready bootstrap, typed reply/replay bookkeeping and bounded
+  candidate adoption over already-admitted connection/correlation context.
+  Latest-request digest, full typed equality and cached v4 replies are separate
+  from legacy replay state. Original raw input governs equality, capture and
+  caching; the capability-graded image serves structural validation only before
+  the accepted run's existing raw-capture/ingest/classify sequence. No v4-to-legacy
+  conversion or public ingress wiring is used. Command highwater and global state
+  revision remain shared lifetime state; commandless reports do not consume a
+  sequence, and consumed commands reconcile without dispatch.
+  Pre-ready intent ingestion and complete/closed cleanup run on a candidate;
+  bootstrap explicitly emits empty authority/presentation without advancing the
+  revision, consuming a command or filling the ready replay cache. Both pre-ready
+  and ready candidates pass outbound intent/size gates before adoption. Ready
+  inputs also pass request structure, stale/reused request, observation, retained
+  publication/rollback/selection-terminal size reserves and revision gates before
+  running; creation exhaustion discards the candidate.
+  Twenty-two new tests cover bootstrap-to-ready progression, pending-intent
+  retention/pruning, duplicates/reused/stale/consumed requests, digest collision
+  discrimination, raw/effective conservation, commandless highwater, exhaustion,
+  reset through the existing handshake helper, separate legacy caches, explicit
+  empty bootstrap under contaminated staged state and nonzero policy-reserve
+  parity. Direct candidate-finalizer tests reject forged oversized and invalid
+  intent replies after a genuine staged run without adopting its mutations.
+  Their direct exact-byte assertion and combined size refusal do not isolate the
+  exact-size disjunct from the conservative estimate, nor demonstrate a genuine
+  producer overflow. Internal tests are not immutable-scenario, public cutover
+  or native execution evidence. The test-only per-engine ingestion counter closes
+  the 7d sticky-restaging count gap for the exercised adopted runs (three ingests
+  across three accepted entries); it does not count discarded trial clones.
+  Command rollback restoration after partial mutation remains source-only for 7f.
+  Source review found premature boundary grading that erased raw capture and
+  aliased distinct raw/pre-held inputs. The regression was reported behaviorally
+  failing under temporary restoration of that grading, then passing after the
+  raw/effective split. Most new tests first ran after implementation. Initial
+  test-code compile errors and an incorrect cleanup expectation were corrected
+  without changing product gates. Review also replaced retained-state bootstrap
+  presentation with an explicit empty image and strengthened late-refusal/reset
+  evidence; final source review found no remaining blocking issue.
+  Direct sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1945 core unit tests and every selected core/protocol target),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. The initial formatting check
+  required mechanical reflow; all four commands pass again after formatting.
+  Changed-file whitespace, added ASCII, NUL and relative Markdown link-file
+  checks pass. No new behavioral decision, fixture, manifest, Cargo, adapter,
+  public-ingress or version change is included. 7e is finished; the phase note
+  remains active. 7f, later unit 7 and all eight OPEN/TBD gates remain.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and

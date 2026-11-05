@@ -59,10 +59,10 @@ use crate::world_report::{
     AuthorityScope, CommandRejectKind, CommandResult, FrameAttempt, HoldReason, ScopeAuthority,
     ScopeStatus, TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION,
     WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WindowDesire, WorkspaceDesire, WorldCommand,
-    WorldReply, WorldReport, WorldReportV4, encode_reply_canonical, grade_conflicting_windows,
-    grade_invalid_screens, grade_invalid_windows, max_intent_rollback_bound, reply_estimate,
-    reply_upper_bound, report_digest, report_estimate, validate_intent_writes_reason,
-    validate_report_reason,
+    WorldReply, WorldReplyV4, WorldReport, WorldReportV4, encode_reply_canonical,
+    grade_conflicting_windows, grade_invalid_screens, grade_invalid_windows,
+    max_intent_rollback_bound, reply_estimate, reply_upper_bound, report_digest, report_estimate,
+    validate_intent_writes_reason, validate_report_reason,
 };
 
 pub(crate) const KIND_VERSION: &str = "unsupported-version";
@@ -721,8 +721,8 @@ pub struct WorldEngine {
     application_identity: Option<ApplicationIdentity>,
     capabilities: Option<HostCapabilities>,
     pub(crate) settings: crate::settings_state::SettingsState,
-    initial_settings_accepted: bool,
-    ready_latched: bool,
+    pub(crate) initial_settings_accepted: bool,
+    pub(crate) ready_latched: bool,
     pub(crate) state_revision: u64,
     has_last: bool,
     last_request_seq: u64,
@@ -734,6 +734,20 @@ pub struct WorldEngine {
     pub(crate) last_report: Option<WorldReport>,
     last_observation_seq: u64,
     pub(crate) last_reply: Option<WorldReply>,
+    /// Typed v4 replay bookkeeping, separate from the legacy
+    /// `last_report`/`last_reply` cache above: the latest accepted v4
+    /// report, its digest, and the cached v4 reply. The digest is only a
+    /// fast pre-check; full typed input equality decides duplicates.
+    /// Written only by the internal v4 admission boundary on accepted
+    /// candidates; cleared with every fresh engine, cloned with every
+    /// staged candidate, never touched by rejected candidates or the
+    /// legacy path.
+    pub(crate) has_last_v4: bool,
+    pub(crate) last_request_seq_v4: u64,
+    pub(crate) last_digest_v4: u64,
+    pub(crate) last_observation_seq_v4: u64,
+    pub(crate) last_report_v4: Option<WorldReportV4>,
+    pub(crate) last_reply_v4: Option<WorldReplyV4>,
     /// Retained prior-accepted observation/publication facts for shared
     /// lanes: previous raw focus plus the actually published
     /// controlled-empty workspace set. Written at `finish` from the
@@ -1211,6 +1225,12 @@ pub struct WorldEngine {
     /// stays a placeholder and is never read there); the stored value only
     /// becomes authoritative when 7e adopts the publication candidate.
     pub(crate) latest_published_presentation_rev_v4: u64,
+    /// Test-only count of [`Self::ingest_staged_intent`] executions on this
+    /// engine, including ingests whose rows the admitted latch then ignores.
+    /// Discriminates exactly-once ingestion from latch-ignored late imports
+    /// without global instrumentation.
+    #[cfg(test)]
+    pub(crate) ingest_calls: u64,
     /// Canonical last-active identity per workspace (R-WS-09 memory):
     /// one slot per effective domain across sticky/link migration.
     /// Written by accepted command choices before native writes and by
@@ -1442,6 +1462,12 @@ impl WorldEngine {
             last_report: None,
             last_observation_seq: 0,
             last_reply: None,
+            has_last_v4: false,
+            last_request_seq_v4: 0,
+            last_digest_v4: 0,
+            last_observation_seq_v4: 0,
+            last_report_v4: None,
+            last_reply_v4: None,
             prior_context: PriorAcceptedContext::default(),
             command_highwater: None,
             retained: Vec::new(),
@@ -1523,6 +1549,8 @@ impl WorldEngine {
             presentation_live_v4: BTreeMap::new(),
             presentation_focused_v4: None,
             latest_published_presentation_rev_v4: 0,
+            #[cfg(test)]
+            ingest_calls: 0,
             last_active_window: BTreeMap::new(),
             focused_fullscreen_presentation_suspension: false,
         })
@@ -2568,6 +2596,10 @@ impl WorldEngine {
     /// staging and command restages never ingest.
     pub(crate) fn ingest_staged_intent(&mut self, observation: &StagedObservation) {
         use std::collections::{BTreeMap, BTreeSet};
+        #[cfg(test)]
+        {
+            self.ingest_calls = self.ingest_calls.saturating_add(1);
+        }
         let closed: BTreeSet<&WindowId> = observation.closed.iter().collect();
         // Explicit closes end the lifetime: drop every ledger entry and
         // never store a closed subject.

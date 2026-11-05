@@ -1659,16 +1659,37 @@ impl WorldEngine {
     /// before convergence: returned origins' preserved workspaces plus
     /// removed outputs' ring ids. The focus/view filter and the per-output
     /// latest-wins carrier only reduce. Zero in shared mode (no
-    /// displacement) and when nothing moved.
+    /// displacement) and when nothing moved. The v4 report carries the
+    /// same screen lane, so [`Self::policy_terminal_reserve_v4`] shares
+    /// the input-only core below.
     pub(crate) fn policy_terminal_reserve(&self, report: &WorldReport) -> usize {
-        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
-            return 0;
-        }
         let live: BTreeSet<&str> = report
             .screens
             .iter()
             .map(|screen| screen.output.0.as_str())
             .collect();
+        self.policy_terminal_reserve_for_live(&live)
+    }
+
+    /// Pre-mutation upper bound over one v4 report: twin of
+    /// [`Self::policy_terminal_reserve`] over the v4 screen lane. Shares
+    /// the input-only live-output core; no legacy report is built.
+    pub(crate) fn policy_terminal_reserve_v4(
+        &self,
+        report: &crate::world_report::WorldReportV4,
+    ) -> usize {
+        let live: BTreeSet<&str> = report
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.as_str())
+            .collect();
+        self.policy_terminal_reserve_for_live(&live)
+    }
+
+    fn policy_terminal_reserve_for_live(&self, live: &BTreeSet<&str>) -> usize {
+        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
+            return 0;
+        }
         let mut bound: usize = 0;
         for (origin, entry) in &self.displaced {
             if live.contains(origin.as_str()) {

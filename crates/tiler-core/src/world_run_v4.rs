@@ -16,8 +16,8 @@
 //! neither re-execute nor re-validate.
 //!
 //! The caller owns admission: this entry exposes no public ingress, performs
-//! no candidate adoption, replay, budget, or envelope gates (7e owns those),
-//! and never touches the legacy replay cache. Run the entry on a staged
+//! no candidate adoption, replay, budget, or envelope gates (the admission
+//! boundary owns those), and never touches the legacy replay cache. Run the entry on a staged
 //! clone and discard the candidate when it returns
 //! [`V4RunOutcome::Rejected`], exactly like the legacy staged path.
 
@@ -46,6 +46,9 @@ use crate::world_report_v4_checks::grade_conflicting_windows_v4;
 #[allow(dead_code)]
 pub(crate) enum V4RunOutcome {
     Accepted(WorldReplyV4),
+    /// Identical latest duplicate: cached v4 reply, no new revision.
+    /// Only the admission boundary mints this; staged runs never do.
+    Duplicate(WorldReplyV4),
     CommandConsumed(WorldReplyV4),
     Rejected {
         kind: &'static str,
@@ -59,11 +62,9 @@ impl WorldEngine {
     /// only, never re-execute or re-validate); `issuing_revision` stamps
     /// the resulting presentation and reply. Admitted precondition: the
     /// caller supplies `issuing_revision == state_revision + 1` (the
-    /// next live revision; 7e admission owns the counter). Revision
+    /// next live revision; the admission boundary owns the counter). Revision
     /// exhaustion refuses before any mutation. The caller stages on a
     /// clone and discards it on [`V4RunOutcome::Rejected`].
-    // allow(dead_code): pending 7e admission wiring; tests drive this.
-    #[allow(dead_code)]
     pub(crate) fn run_accepted_v4(
         &mut self,
         report: &WorldReportV4,
@@ -487,7 +488,7 @@ impl WorldEngine {
     /// Finish one v4 accepted run: lifetime retention, membership and
     /// pager convergence, then the genuine v4 publication image. Mirrors
     /// the legacy finish tail without touching legacy replay, request, or
-    /// digest bookkeeping (7e owns those): no `last_report`/`last_reply`
+    /// digest bookkeeping (the admission boundary owns those): no `last_report`/`last_reply`
     /// writes, no duplicate or bounds checks.
     fn finish_v4(
         &mut self,

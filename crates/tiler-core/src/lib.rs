@@ -33,6 +33,7 @@ pub mod window_policy;
 pub mod workspace;
 pub mod workspace_scope;
 pub(crate) mod world_above;
+pub(crate) mod world_admit_v4;
 pub mod world_born;
 pub mod world_clear;
 pub mod world_commands;
@@ -107,6 +108,8 @@ mod session_observation_convergence_tests;
 mod size_hints_tests;
 #[cfg(test)]
 mod world_admission_close_stay_tests;
+#[cfg(test)]
+mod world_admit_v4_tests;
 #[cfg(test)]
 mod world_automatic_focus_identity_tests;
 #[cfg(test)]
