@@ -1027,8 +1027,17 @@
       report exact executed step/report/assertion counts, and retain any
       decision-conflicting oracle as a passing prefix, ignored strict full run
       and labelled diagnostic. Apply every scoped gate before completion.
-      7f-5 supplies internal v4 stress coverage without switching the
-     legacy public stress harness. Refine these later slices against source
+       7f-5 supplies internal v4 stress coverage without switching the
+      legacy public stress harness. Its implementation plan adds a test-only
+      genuine-v4 twin over the unchanged duo/trio case files and all three
+      schedules, retaining every checkpoint/final oracle and locked report
+      count. Reuse pure case/action/geometry helpers, not legacy runtime results
+      or report/reply conversion. Build native-free v4 reports directly, with
+      no logical view ingress or selector attempts; retain the existing truthful
+      blocked LastWrite receipt lane. Exercise internal adoption/replay through
+      the existing test bridge, pin actual v4 reply pairing and terminal spending,
+      and retain public envelope/harness integration for unit 7. Refine later
+      slices against source
      before execution; do not count staging censuses or skipped host steps as
      end-to-end scenario evidence. Unit 7 retains public/harness cutover and its
      remaining stress integration.
@@ -1773,6 +1782,124 @@
   parked show-evidence/oracle choice before enabling its strict run; 7f-5 and
   later unit 7 remain separate work, not started here. All eight native OPEN/TBD
   gates remain open.
+
+- Sub-increment 7f-5 outcome: a test-only `world_stress_v4.rs` twin executes
+  genuine `WorldReportV4`/`WorldReplyV4` through the existing internal test
+  bridge, sharing pure case/action/geometry helpers with the unchanged public
+  legacy driver. Both authored cases run all three schedules: duo reports
+  186/149/151 with 16 checkpoints each; trio 190/156/158 with 19 each. These
+  are 990 counted main-stream reports and 105 authored checkpoints, plus
+  bootstrap-binding and replay probes outside those counts. Every bootstrap,
+  checkpoint and final oracle reads actual v4 rows: roster/homing, independent
+  tile literals and coverage, authorities, output/ring, retained focus,
+  predicted foreground, pager and empty settled-transfer lanes.
+  The original action and receipt boundaries remain intact. The reordered
+  view-echo half becomes an observation without membership proofs at that
+  same boundary; it still samples any pending LastWrite desires. No logical
+  view ingress or native-only ViewAttempt is fabricated. A seventh test pins
+  blocked `not-called/scope-held` verdicts to actual issuing targets/revisions
+  and receipt-time raw facts, command withholding, a failures/unproven switch
+  terminal, then a second observation with no retry or terminal redelivery.
+  Replay probes pin full cached equality, stale/reused refusals and consumed
+  reconciliation at exactly one new revision with `command_consumed` set.
+- Stress development/review evidence: no product defect or production fix was
+  needed. New tests were not observed failing against an earlier product
+  implementation. Initial compilation errors were test authoring errors;
+  intermediate failures exposed a mistaken consumed-revision expectation and
+  an omitted reordered observation half, corrected against existing semantics
+  and the unchanged schedule. Independent source review confirmed oracle and
+  schedule fidelity; its stale comment and missing second-observation assertion
+  were corrected. The large test-only twin intentionally avoids report-engine
+  genericization and legacy conversion; future oracle maintenance must preserve
+  parity. Its direct typed reports do not establish wire/envelope admission,
+  public harness cutover, broker/service integration, native visibility/focus,
+  renderer paint or producer-overflow coverage. Exact-size-disjunct isolation
+  and genuine-producer overflow remain unit-7 sizing work.
+- Direct sequential 7f-5 verification passes:
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1947 core unit tests and all selected targets; protocol library 59 tests,
+  including seven internal-v4 stress tests; ordered runner 36 pass/two ignored),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. Changed-file whitespace,
+  ASCII, NUL and relative Markdown file-target checks pass. No fixture,
+  manifest, Cargo, adapter, public ingress/codec, version or behavioral decision
+  changes are included. The existing `(output,id)` workspace-row identity
+  choice remains TENTATIVE; all three oracle conflicts stay parked. 7f-5 is
+  finished. The phase note remains active; unit 7 is not implemented here.
+
+### Unit 6 and sub-increment 7 checkpoint
+
+| Scope | Finished internal work | Remaining acceptance/blocker |
+| --- | --- | --- |
+| Unit 6 sub-increments 1-6 | v4 pure checks/sizing, staging/grading, shared observation/command lanes, native-free proof migration, genuine presentation and renderer validation | Public typed invalid-row grader twins deliberately belong to unit 7; native acceptance remains open |
+| Sub-increment 7a-7e | Prior context, routing/correlation freezes, publication, run/finish, bootstrap, candidate adoption, replay and boundedness | No public envelope or handle-report switch claimed |
+| 7f-1/7f-2 | Reachable rollback and discarded-candidate ingestion regressions; strict raw-attempt scenario (10 reports/14 assertions) | Exact-size-disjunct isolation and producer-overflow stress carried to unit 7 |
+| 7f-3a/7f-3c | All window-state executable legs (19 reports/56 assertions); strict linked-selectors-warp (5 reports/16 assertions) | Window-state native fullscreen baseline OPEN; row-identity choice remains TENTATIVE |
+| 7f-3b | Strict 20-step persistent-above prefix, literal-oracle diagnostics and storage-model guards | Full scenario blocked on two parked choices: capacity versus D1 and workspace-mode `floating:true` |
+| 7f-4 | Strict cross-output driver scenario; strict order-failure prefix and labelled diagnostic | Full visibility-order-failure blocked on missing show LastWrite versus recorded completion rule |
+| 7f-5 | Six internal-v4 stress schedules and blocked-verdict regression | Public/wire stress and remaining sizing work belong to unit 7 |
+| Sub-increment 7 / unit 6 overall | All currently unblocked internal implementation/evidence slices finished | NOT fully accepted: three parked oracle conflicts prevent two strict full scenarios; eight native OPEN/TBD gates remain |
+
+### Unit 7 widened verification plan (not executed)
+
+- The widened Rust package set is `tiler-core`, `tiler-protocol`, `omnitiler`.
+  `omnitiler` owns `world_broker`, `world_service` and `planner_service`;
+  protocol tools are the three example targets below, not an adapter package.
+  The following are planned post-change commands, not current pass claims:
+
+```sh
+devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture
+devenv shell -- cargo build -q -p tiler-core -p tiler-protocol -p omnitiler
+devenv shell -- cargo build -q -p tiler-protocol --examples
+devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol -p omnitiler --all-targets -- -D warnings
+devenv shell -- cargo fmt --all -- --check
+devenv shell -- cargo run -q -p tiler-protocol --example world_acceptance -- test-fixtures/world-actions.json
+devenv shell -- cargo run -q -p tiler-protocol --example world_stress_acceptance -- test-fixtures/world-stress-home-away.json --schedule all
+devenv shell -- cargo run -q -p tiler-protocol --example world_stress_acceptance -- test-fixtures/world-stress-trio-churn.json --schedule all
+devenv shell -- cargo run -q -p tiler-protocol --example world_eval < "$V4_WORLD_EVAL_TRANSCRIPT"
+```
+
+- The test command includes every selected package's unit/integration/doc target,
+  including broker, service and planner authorization/private-bus tests. The
+  latter use an isolated bus, not the host session bus, but can silently return
+  early if its daemon cannot start: prove the private-bus legs actually execute
+  before citing transport/authentication evidence. Existing dependency routes
+  apply; do not turn a skip into a pass claim. Build covers the service binary;
+  the explicit examples build covers `world_eval`, `world_acceptance` and
+  `world_stress_acceptance`; all-target clippy covers their compilation too.
+  `V4_WORLD_EVAL_TRANSCRIPT` must name the v4 input transcript established by
+  the tool's cutover tests; it is not supplied or executed by this slice.
+  `world_eval` needs a post-switch line-delimited handshake,
+  settings/report, reconnect and stale/replay transcript smoke check through
+  stdin/stdout; define that v4 transcript with its harness change rather than
+  sending today's v3 envelopes or claiming compilation proves execution.
+- Keep `workspace_unsafe_posture` excluded and never cite it as evidence. Keep
+  the two parked strict full scenarios ignored until their decisions resolve;
+  prefixes/diagnostics are not scenario passes. Do not use `--ignored` or
+  `--include-ignored` to evade that boundary. Do not use workspace-wide Cargo
+  selection: Windows/macOS adapters (including deferred macOS build errors),
+  KDE exporter, live fixture and native KWin bundles/tests remain outside these
+  gates. No live service launch, host-bus activation or native test follows
+  from these offline commands. Preserve changed-file whitespace, added ASCII,
+  NUL and local-link checks. Widening these future checks does not change the
+  completed unit-6 gate or the platform-port acceptance order.
+
+### Proposed ordered unit 7 slices (not implemented)
+
+| Order | Bounded slice and dependency | Parked-conflict dependence |
+| --- | --- | --- |
+| 7-1 | Add typed invalid-screen/window grader twins and admitted-envelope validation, with codec/typed parity, correlation/capability fencing and pre-mutation refusal tests; retain internal/public separation until cutover | None for implementation |
+| 7-2 | Prepare broker/service handshake/settings and capture/queue/query integration against v4 types, plus v4 protocol/core harness/tool counterparts and transcript tests behind offline seams; preserve one public codec route, source/clock/replay fencing, requester-only results and no-actuation bootstrap | None for plumbing; scenario acceptance cannot bypass parked oracles |
+| 7-3 | Atomic public cutover after 7-1/7-2 prerequisites: public `handle_report`, version 4, broker/service encode/decode, handshake/negotiation, legacy envelope-key removal and active harness/tool switches together; no mixed-version intermediate route or dual decode | Implementation independent; full cutover acceptance still requires parked scenario resolutions |
+| 7-4 | Remove unreachable legacy codecs/report engine/caches and obsolete harness twins after public-path parity checks; audit remaining legacy references without removing immutable fixtures or migration records | None for dead-code removal; do not delete blocked tests or encode their failures as legacy-only |
+| 7-5 | Finish public ordered-scenario and stress integration, wire/envelope failure/replay tests, genuine-producer size stress and widened broker/service/tool gates; document exact-size-disjunct reachability honestly | Persistent-above strict run needs both parked classification choices; visibility-order-failure strict run needs parked LastWrite/completion choice |
+
+- The order is internal to later public-cutover unit 7, not a change to the
+  approved phase sequence. Revisit the existing TENTATIVE workspace-row identity
+  explicitly rather than silently promoting it. Native evidence gates, scaled
+  keyboard/resize/drop-zone work and later platform ports are not absorbed into
+  these slices. No new tentative product choice is introduced by this plan.
 
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and

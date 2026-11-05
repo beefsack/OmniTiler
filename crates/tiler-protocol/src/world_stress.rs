@@ -2348,6 +2348,10 @@ fn probe_completions(
 }
 
 #[cfg(test)]
+#[path = "world_stress_v4.rs"]
+mod stress_v4;
+
+#[cfg(test)]
 mod stress_tests {
     use super::*;
 
