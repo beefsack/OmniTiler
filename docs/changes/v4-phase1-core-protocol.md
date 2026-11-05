@@ -1015,8 +1015,19 @@
      and linked-selector run. Resolve those within the parallel internal path
      or report the contract boundary before changing public codec semantics.
      7f-4 exercises both `visibility-*` scenarios with an explicit offline
-     host-evidence driver, separating executable internal legs from native-only
-     evidence. 7f-5 supplies internal v4 stress coverage without switching the
+      host-evidence driver, separating executable internal legs from native-only
+      evidence. Its implementation plan reuses the ordered runner for every
+      wire/event step of both immutable scenarios: genuine reply decoding for
+      adapter-directed messages, genuine report decoding/internal v4 handling
+      for core-directed reports, and an explicit test-only native state model
+      for request pairing, show/arrival/focus/hide ordering, held callbacks,
+      refusals, authorization spending and late evidence. Preserve each literal
+      assertion; do not infer native acceptance from modeled events or fabricate
+      host facts for core reports. Pin driver safety rules with targeted tests,
+      report exact executed step/report/assertion counts, and retain any
+      decision-conflicting oracle as a passing prefix, ignored strict full run
+      and labelled diagnostic. Apply every scoped gate before completion.
+      7f-5 supplies internal v4 stress coverage without switching the
      legacy public stress harness. Refine these later slices against source
      before execution; do not count staging censuses or skipped host steps as
      end-to-end scenario evidence. Unit 7 retains public/harness cutover and its
@@ -1685,6 +1696,84 @@
   Reference/native row-identity outcomes remain TBD. 7f-3c is finished under the
   tentative choice; the phase note stays active. Next: review 7f-4's existing
   plan separately; no 7f-4 or unit 7 cutover work is included here.
+<a id="sub-increment-7f-4-visibility-evidence"></a>
+
+- Sub-increment 7f-4 status (scoped gates green; full order-failure scenario
+  BLOCKED):
+
+- The reused ordered runner now decodes adapter-directed replies and paired
+  prepare-request reports with genuine v4 codecs, while core reports still use
+  internal `handle_report_v4` and canonical reply encoding. The explicit offline
+  driver models the declared safe native facts, show-first application, frozen
+  post-show arrival brackets, focus callbacks/refusals, cross-output hide barrier,
+  per-authorization spending, supersession/ABA and late evidence. Pairing pins
+  request, adapter, generation and current observation; opaque effects retain
+  exact target/revision metadata, never id-spelling guesses. Unsupported safety
+  facts, event kinds/keys, stale authorizations and repeated focus grants fail
+  closed. Modeled native effects are not fed into authored core reports.
+- `visibility-cross-output-supersession` passes its strict full run: all 18 steps,
+  eight wire steps (handshake, settings and six adapter replies), six prepares,
+  four native events and 24 immutable literal assertions execute in array order.
+  There are zero core reports and zero pending fixture gates in this scenario;
+  it establishes offline driver behavior, not internal core settlement or native
+  conformance. Both fixtures consume only generation-a; generation-b is reserved.
+- `visibility-order-failure` is NOT accepted end to end. Its honest first-16-step
+  prefix passes all 24 literal assertions: handshake/settings, four adapter
+  replies, four prepares, two native changes and four internal core reports.
+  The strict 17-step full run is explicitly ignored with this section's phase
+  reference. DIAGNOSTIC ONLY: the unmodified full inputs execute all eleven wire
+  steps, five core reports and 26 literal assertions; exactly one assertion is
+  false, the final `accounting-arrival-focus-depart-proof` expectation of
+  `op-2` complete/proven with no failed members. Actual `switchSettled` is empty;
+  its companion `win-old` home assertion and the other 24 assertions pass.
+- New oracle conflict, PARKED: the selection freezes show(win-a,rev4) and
+  hide(win-old,rev4). The final report supplies the correlated hide LastWrite
+  and focus feedback for `fx-2`/win-a/rev4, but win-a has LastWrite=null in all
+  five core reports. `settle_selection_switch` requires each frozen member's
+  exact polarity/revision evidence; `selection_terminal` holds on a missing
+  member. This matches the [recorded accounting rule](#native-free-switch-accounting-evidence),
+  not a demonstrated internal v4 defect. The effect revision correlates;
+  revision mismatch is not the blocker. Missing show evidence is a necessary
+  blocker; no claim is made that supplying it alone proves every other predicate.
+  An immutable evidence/oracle amendment or a change to the recorded completion
+  rule needs resolution; neither is selected. No fixture/manifest exception,
+  core workaround or new TENTATIVE behavior is introduced. The
+  [minimal discriminator](../spec/reference-outcomes.md#selection-accounting-without-logical-echoes)
+  retains reference/native outcomes as TBD. Both persistent-above conflicts and
+  the existing TENTATIVE workspace-row identity choice are unchanged.
+- Development evidence: the strict order-failure assertion was observed failing
+  during implementation before parking. The first cross-output trial failed
+  on a driver bug parsing empty callbacks, then passed after correction. Source
+  review found request/effect correlation and safety/evidence gaps; targeted
+  regressions were reported failing before their guards. A later source check
+  caught reply-entry arrival samples taken before shows; two regressions were
+  reported failing before post-show sampling and frozen held snapshots replaced
+  them. Test authoring corrections fixed sample nesting and isolated a stale
+  target check from an earlier stale-observation guard. These are driver
+  regressions, not preimplementation core defects. Independent source review
+  found no remaining blocking issue for the immutable scenario legs; the driver
+  intentionally cannot model native output/frame changes or unsafe fact changes.
+  Native success/storage/ordering remain unverified. Initial scoped clippy found
+  two helper arity warnings, repaired by grouping their related inputs.
+- Direct strict reproduction after the driver corrections still fails the final
+  switch oracle with an empty event array using
+  `devenv shell -- cargo test -q -p tiler-protocol --test raw_attempt_settlement_v4 visibility_order_failure_runs_ordered_host_evidence -- --skip workspace_unsafe_posture --ignored --exact`.
+  Direct sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1947 core unit tests and all selected targets; runner 36 pass, two ignored),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. The two ignored tests are the
+  parked persistent-above and visibility-order-failure full runs, not scenario
+  passes. Changed-file whitespace, added ASCII, NUL and relative Markdown
+  link-file checks pass; the outcome index's five pre-existing non-ASCII lines
+  are unchanged.
+  No core, public codec, fixture, manifest, Cargo, adapter, public ingress
+  or version change is included. The note remains active. Next: resolve the
+  parked show-evidence/oracle choice before enabling its strict run; 7f-5 and
+  later unit 7 remain separate work, not started here. All eight native OPEN/TBD
+  gates remain open.
+
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and
