@@ -1099,7 +1099,6 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
     );
     let held = BTreeSet::new();
     match engine.execute_command(
-        &swap_report,
         &test_issue(&swap_report),
         12,
         swap_report.command.as_ref().expect("command"),

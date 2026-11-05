@@ -134,6 +134,7 @@ impl WorldEngine {
             held_attempts: effective.held_attempts.clone(),
             presentation_v4: Some(effective.presentation.clone()),
             renderer_input: effective.renderer_input.clone(),
+            effective_windows: effective.windows.clone(),
             ..StagedReport::default()
         };
         self.stage_window_facts(&effective.windows, &effective.closed, &mut staged);

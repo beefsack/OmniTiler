@@ -250,7 +250,6 @@ fn focus_command_effect_parity_with_unknown_refusal() {
         let probe = contra_report(90);
         let issue = test_issue(&probe);
         match engine.execute_command(
-            &probe,
             &issue,
             12,
             &focus_command("win-b"),
@@ -271,7 +270,6 @@ fn focus_command_effect_parity_with_unknown_refusal() {
         // Negative with the eligible control above: unknown lifetimes
         // refuse with the focus vocabulary on both intakes.
         match engine.execute_command(
-            &probe,
             &issue,
             13,
             &focus_command("win-zzz"),
@@ -286,12 +284,12 @@ fn focus_command_effect_parity_with_unknown_refusal() {
 }
 
 #[test]
-fn sticky_transition_uses_issue_owner_with_ownerless_connection_and_invalid_rid() {
+fn sticky_transition_uses_issue_owner_with_ownerless_connection() {
     // Event-owner authorization: the eligible native sticky transition
-    // authorizes from the explicit issue alone. The connection owner is
-    // absent and the passed report carries an invalid request id, so any
-    // connection/rereport-derived owner read would refuse or fail to
-    // parse; success plus the minted sticky binding proves issue ownership.
+    // authorizes from the explicit issue alone with no report passed at
+    // all. The connection owner is absent, so any connection-derived
+    // owner read would refuse; success plus the minted sticky binding
+    // proves issue ownership.
     for v4 in [false, true] {
         let mut engine = new_engine();
         let windows = vec![fact("win-a", "out-a", 0)];
@@ -327,23 +325,11 @@ fn sticky_transition_uses_issue_owner_with_ownerless_connection_and_invalid_rid(
         // planning joins; seed the retained homing/domain join post
         // staging, mirroring accepted-run assembly.
         seed_command_domain(&mut engine);
-        let mut probe = report_full(
-            90,
-            90,
-            vec![screen("out-a", 0)],
-            windows,
-            vec![("out-a", "ws-1")],
-            "win-other",
-            None,
-            None,
-        );
-        probe.request_id = "!!!invalid".to_owned();
         let issue = EventIssue {
             owner: OwnerId::parse("adapter-1").expect("owner"),
             correlation: CorrelationId::parse("req-7").expect("correlation"),
         };
         match engine.execute_sticky_command(
-            &probe,
             &issue,
             7,
             &WindowId("win-a".to_owned()),
@@ -371,11 +357,203 @@ fn sticky_transition_uses_issue_owner_with_ownerless_connection_and_invalid_rid(
     }
 }
 
+/// Toggle-float clear restage guard: the composed clear clones the engine,
+/// drops sticky provenance, and reclassifies from staged state with no
+/// report input at all. The staged restage converges on both intakes and
+/// adopts the tile-base save.
 #[test]
-fn local_toggle_orientation_uses_issue_owner_with_ownerless_connection_and_invalid_rid() {
+fn sticky_toggle_float_clear_restages_staged_facts_only() {
+    use crate::intent_data::IntentData;
+
+    for v4 in [false, true] {
+        let mut engine = WorldEngine::new_test_bound_with_capabilities(
+            "gen-1",
+            "adapter-1",
+            HostCapabilities {
+                birth_clear: true,
+                native_sticky: false,
+                window_suppression: true,
+                maximize: true,
+                fullscreen: true,
+                ..Default::default()
+            },
+        )
+        .expect("generation");
+        // Null sticky keeps the row live without the native capability;
+        // restored provenance below is what makes the clear eligible.
+        let mut staged_row = fact("win-a", "out-a", 0);
+        staged_row.sticky = None;
+        let windows = vec![staged_row];
+        let bootstrap = report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            windows.clone(),
+            vec![("out-a", "ws-1")],
+            "win-a",
+            None,
+            None,
+        );
+        accepted(&mut engine, &bootstrap);
+        let mut v4report = report_v4_simple(1, vec![screen("out-a", 0)]);
+        v4report.windows = windows.clone();
+        v4report.focused_global = "win-a".to_owned();
+        stage_either(&mut engine, v4, &bootstrap, &v4report);
+        let dest = DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(
+                engine
+                    .effective_view(&OutputId("out-a".to_owned()))
+                    .expect("staged view"),
+            ),
+        };
+        engine.floating_scopes.insert(dest.clone());
+        seed_command_domain(&mut engine);
+        let win = WindowId("win-a".to_owned());
+        engine.restored_sticky.insert(win.clone(), false);
+        engine
+            .pending_intent
+            .insert(win.clone(), IntentData::new(None, None));
+        // No report is ever passed to the helper: the explicit issue is
+        // the only identity input, staged state the only content input.
+        let issue = EventIssue {
+            owner: OwnerId::parse("adapter-1").expect("owner"),
+            correlation: CorrelationId::parse("req-7").expect("correlation"),
+        };
+        match engine.execute_sticky_toggle_float(&issue, 7, &win, &BTreeSet::new()) {
+            CommandApplied::NoEffect => {}
+            CommandApplied::Rejected { kind, message } => panic!(
+                "staged toggle-float clear must succeed with no report input, got {kind} {message} (v4={v4})"
+            ),
+            CommandApplied::Effect(_) => {
+                panic!("toggle-float clear mints no focus effect (v4={v4})")
+            }
+        }
+        assert!(
+            !engine.restored_sticky.contains_key(&win),
+            "clear drops sticky provenance (v4={v4})",
+        );
+        assert_eq!(
+            engine.sticky_saved.get(&win),
+            Some(&IntentData::new(Some(false), None)),
+            "tile-base save adopted from staged facts (v4={v4})",
+        );
+        assert!(
+            !engine.pending_intent.contains_key(&win),
+            "restaged adopt must not reingest cleared intent (v4={v4})",
+        );
+        assert_eq!(
+            engine.staged_homing(&win).as_ref(),
+            Some(&dest),
+            "restage converges at the destination (v4={v4})",
+        );
+    }
+}
+
+/// Staged-only restage guard: the composed sticky transition clones the
+/// engine, mutates the intent ledgers, and reclassifies from staged state
+/// with no report input at all. The staged restage converges on both
+/// intakes and adopts the ON save.
+#[test]
+fn sticky_composed_transition_restages_staged_facts_only() {
+    use crate::intent_data::IntentData;
+
+    for v4 in [false, true] {
+        let mut engine = WorldEngine::new_test_bound_with_capabilities(
+            "gen-1",
+            "adapter-1",
+            HostCapabilities {
+                birth_clear: true,
+                native_sticky: false,
+                window_suppression: true,
+                maximize: true,
+                fullscreen: true,
+                ..Default::default()
+            },
+        )
+        .expect("generation");
+        // Projected sticky values grade to held without the native
+        // capability, so the staged row carries null (same shape as the
+        // composed-route suites); the transition still records its save.
+        let mut staged_row = fact("win-a", "out-a", 0);
+        staged_row.sticky = None;
+        let windows = vec![staged_row];
+        let bootstrap = report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            windows.clone(),
+            vec![("out-a", "ws-1")],
+            "win-a",
+            None,
+            None,
+        );
+        accepted(&mut engine, &bootstrap);
+        let mut v4report = report_v4_simple(1, vec![screen("out-a", 0)]);
+        v4report.windows = windows.clone();
+        v4report.focused_global = "win-a".to_owned();
+        stage_either(&mut engine, v4, &bootstrap, &v4report);
+        // Destination floats so the eligible ON transition converges
+        // without an engine session; the sweep then runs under the issue
+        // owner with the restaged facts.
+        let dest = DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(
+                engine
+                    .effective_view(&OutputId("out-a".to_owned()))
+                    .expect("staged view"),
+            ),
+        };
+        engine.floating_scopes.insert(dest.clone());
+        // Staged intent-plus-facts staging does not rebuild the command
+        // planning joins; seed the retained homing/domain join post
+        // staging, mirroring accepted-run assembly.
+        seed_command_domain(&mut engine);
+        // A command-cleared import: the transition drops pending on its
+        // clone, and the restaged adopt must not resurrect it.
+        let win = WindowId("win-a".to_owned());
+        engine
+            .pending_intent
+            .insert(win.clone(), IntentData::new(None, None));
+        // No report is ever passed to the helper: the explicit issue is
+        // the only identity input, staged state the only content input.
+        let issue = EventIssue {
+            owner: OwnerId::parse("adapter-1").expect("owner"),
+            correlation: CorrelationId::parse("req-7").expect("correlation"),
+        };
+        match engine.execute_sticky_command(&issue, 7, &win, Some(true), &BTreeSet::new()) {
+            CommandApplied::NoEffect => {}
+            CommandApplied::Rejected { kind, message } => panic!(
+                "staged composed ON must succeed with no report input, got {kind} {message} (v4={v4})"
+            ),
+            CommandApplied::Effect(_) => panic!("sticky ON mints no focus effect (v4={v4})"),
+        }
+        assert_eq!(
+            engine.restored_sticky.get(&win),
+            Some(&false),
+            "tiled origin restores with a false prior (v4={v4})",
+        );
+        assert_eq!(
+            engine.sticky_saved.get(&win),
+            Some(&IntentData::new(Some(true), Some(false))),
+            "ON save adopted from staged facts (v4={v4})",
+        );
+        assert!(
+            engine.sticky_visible_rev.contains_key(&win),
+            "fresh ON marks the visibility revision (v4={v4})",
+        );
+        assert!(
+            !engine.pending_intent.contains_key(&win),
+            "restaged adopt must not reingest cleared intent (v4={v4})",
+        );
+    }
+}
+
+#[test]
+fn local_toggle_orientation_uses_issue_owner_with_ownerless_connection() {
     // Event-owner authorization for the event-constructing local route:
     // an eligible staged orientation flip succeeds with an ownerless
-    // connection and an invalid passed request id, while a wrong-owner
+    // connection and no report passed at all, while a wrong-owner
     // issue refuses via engine/session authorization without mutating.
     for v4 in [false, true] {
         for wrong_owner in [false, true] {
@@ -397,20 +575,9 @@ fn local_toggle_orientation_uses_issue_owner_with_ownerless_connection_and_inval
             v4report.focused_global = "win-a".to_owned();
             stage_either(&mut engine, v4, &bootstrap, &v4report);
             engine.connection_owner = None;
-            let mut probe = report_full(
-                90,
-                90,
-                vec![screen("out-a", 0)],
-                windows,
-                vec![("out-a", "ws-1")],
-                "win-a",
-                None,
-                None,
-            );
-            probe.request_id = "!!!invalid".to_owned();
             // Real domain join over the staged facts (classification
-            // only; the invalid request id never validates here),
-            // mirroring accepted-run assembly.
+            // only, from staged state with no report input), mirroring
+            // accepted-run assembly.
             engine.build_staged_domains();
             let issue = EventIssue {
                 owner: OwnerId::parse(if wrong_owner { "intruder" } else { "adapter-1" })
@@ -427,8 +594,7 @@ fn local_toggle_orientation_uses_issue_owner_with_ownerless_connection_and_inval
                 window: "win-a".to_owned(),
             };
             let revision_before = engine.state_revision;
-            match engine.run_local_operation(&probe, &issue, 7, &command, &by_id, &BTreeSet::new())
-            {
+            match engine.run_local_operation(&issue, 7, &command, &by_id, &BTreeSet::new()) {
                 CommandApplied::NoEffect => {
                     assert!(
                         !wrong_owner,
@@ -475,7 +641,6 @@ fn toggle_maximize_focus_gate_reads_staged_not_contra() {
         seed_command_domain(&mut engine);
         let probe = contra_report(90);
         match engine.execute_command(
-            &probe,
             &test_issue(&probe),
             12,
             &WorldCommand::ToggleMaximize {
@@ -535,7 +700,6 @@ fn toggle_maximize_focus_gate_reads_staged_not_contra() {
         let mut eligible_probe = contra_report(91);
         eligible_probe.focused_global = "win-a".to_owned();
         match refused_engine.execute_command(
-            &eligible_probe,
             &test_issue(&eligible_probe),
             12,
             &WorldCommand::ToggleMaximize {
@@ -560,7 +724,6 @@ fn toggle_maximize_focus_gate_reads_staged_not_contra() {
         held.insert(home_key_ws("out-a", "ws-1"));
         let held_probe = contra_report(92);
         match held_engine.execute_command(
-            &held_probe,
             &test_issue(&held_probe),
             12,
             &WorldCommand::ToggleMaximize {
@@ -620,7 +783,6 @@ fn composed_maximize_staged_inventory_and_barrier_gates() {
         seed_command_domain(&mut engine);
         let probe = contra_report(90);
         match engine.execute_command(
-            &probe,
             &test_issue(&probe),
             12,
             &WorldCommand::ToggleMaximize {
@@ -662,7 +824,6 @@ fn composed_maximize_staged_inventory_and_barrier_gates() {
         let mut complete_probe = contra_report(91);
         complete_probe.inventory_complete = true;
         match partial_engine.execute_command(
-            &complete_probe,
             &test_issue(&complete_probe),
             12,
             &WorldCommand::ToggleMaximize {
@@ -693,7 +854,6 @@ fn composed_maximize_staged_inventory_and_barrier_gates() {
         seed_command_domain(&mut barrier_engine);
         let barrier_probe = contra_report(92);
         match barrier_engine.execute_command(
-            &barrier_probe,
             &test_issue(&barrier_probe),
             12,
             &WorldCommand::ToggleMaximize {
@@ -756,7 +916,6 @@ fn move_float_destination_reads_staged_screens_not_contra() {
         let contra_default = rect(0, 0, 400, 560);
         let probe = contra_report(90);
         match engine.execute_command(
-            &probe,
             &test_issue(&probe),
             12,
             &WorldCommand::MoveDirectional {
@@ -827,7 +986,6 @@ fn move_float_destination_reads_staged_screens_not_contra() {
         let mut home_probe = contra_report(91);
         home_probe.screens = vec![screen("out-a", 0)];
         match missing_engine.execute_command(
-            &home_probe,
             &test_issue(&home_probe),
             12,
             &WorldCommand::MoveDirectional {
@@ -930,7 +1088,6 @@ fn shared_retain_view_fans_out_across_staged_screens_not_contra() {
             seed_command_domain(&mut engine);
             let probe = contra_report(90);
             match engine.execute_command(
-                &probe,
                 &test_issue(&probe),
                 12,
                 &WorldCommand::SwitchView {
@@ -1016,7 +1173,6 @@ fn global_unique_select_swap_gated_by_staged_inventory_not_contra() {
         stage_either(&mut engine, v4, &legacy, &v4report);
         let probe = contra_report(90);
         let applied = engine.execute_command(
-            &probe,
             &test_issue(&probe),
             12,
             &WorldCommand::SelectWorkspace {
@@ -1075,7 +1231,6 @@ fn global_unique_select_swap_gated_by_staged_inventory_not_contra() {
         let mut complete_probe = contra_report(91);
         complete_probe.inventory_complete = true;
         match held_engine.execute_command(
-            &complete_probe,
             &test_issue(&complete_probe),
             12,
             &WorldCommand::SelectWorkspace {
@@ -1166,7 +1321,6 @@ fn migrate_mode_and_inventory_gates_read_staged_not_contra() {
         seed_migrate_joins(&mut engine);
         let probe = contra_report(90);
         match engine.execute_command(
-            &probe,
             &test_issue(&probe),
             12,
             &migrate(),
@@ -1231,7 +1385,6 @@ fn migrate_mode_and_inventory_gates_read_staged_not_contra() {
         shared_engine.settings.workspace_mode = WorkspaceMode::Shared;
         let shared_probe = contra_report(90);
         match shared_engine.execute_command(
-            &shared_probe,
             &test_issue(&shared_probe),
             12,
             &migrate(),
@@ -1255,7 +1408,6 @@ fn migrate_mode_and_inventory_gates_read_staged_not_contra() {
         let mut complete_probe = contra_report(91);
         complete_probe.inventory_complete = true;
         match partial_engine.execute_command(
-            &complete_probe,
             &test_issue(&complete_probe),
             12,
             &migrate(),
@@ -1356,7 +1508,6 @@ fn send_source_freeze_prefers_retained_home_over_current_action() {
         // the frozen source resolves verbatim.
         let probe = contra_report(90);
         match engine.execute_command(
-            &probe,
             &test_issue(&probe),
             12,
             &WorldCommand::SendNumbered {
@@ -1557,7 +1708,6 @@ fn switch_view_command_moves_view_parity() {
             workspace: "ws-9".to_owned(),
         };
         let applied = engine.execute_command(
-            &probe,
             &test_issue(&probe),
             12,
             &command,

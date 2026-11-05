@@ -15,8 +15,9 @@ use crate::session::{DomainKey, OutputDomain};
 use crate::world_engine::{StagedDomain, StagedObservation, StagedReport, WorldEngine};
 use crate::world_operations::parse_direction_token;
 use crate::world_report::{
-    AuthorityScope, HeldScreenRow, HeldWindowRow, HoldReason, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, StateProperty, TransferKind, WindowFact, WorldReport, WorldReportV4,
+    AuthorityScope, HeldScreenRow, HeldWindowRow, HoldReason, PresentationRowV4, RowDiagnostic,
+    RowDiagnosticKind, RowDiagnosticLane, StateProperty, TransferKind, WindowFact, WorldReport,
+    WorldReportV4,
 };
 
 impl WorldEngine {
@@ -446,16 +447,17 @@ impl WorldEngine {
         }
     }
 
-    /// Index the raw observation for one accepted run: screens, view
-    /// echoes, facts, closes, and the gesture barrier. Homing and domains
-    /// follow in [`WorldEngine::build_staged_domains`], after rings/views
-    /// converge.
+    /// Test-only convenience for the legacy lane: index the raw
+    /// observation for one accepted run: screens, view echoes, facts,
+    /// closes, and the gesture barrier. Homing and domains follow in
+    /// [`WorldEngine::build_staged_domains`], after rings/views converge.
     ///
     /// Host-owned outputs are native-only: the core derives every view
     /// receipt from the native current map in
     /// [`WorldEngine::converge_native_pre`]. Native-free outputs stage no
     /// echoes: their views ride the frozen selection binding, and the
     /// report `views` lane is never staged or consulted.
+    #[cfg(test)]
     pub(crate) fn stage_facts(&mut self, report: &WorldReport) {
         // Classification-only restage: raw capture first, with no
         // retained mutation (the capture only clones report lanes), then
@@ -503,10 +505,86 @@ impl WorldEngine {
             held_windows: resolved_held,
             diagnostics: staged_diagnostics,
             gesture_barrier: report.gesture_barrier,
+            effective_windows: report.windows.clone(),
             ..StagedReport::default()
         };
         self.stage_window_facts(&report.windows, &report.closed, &mut staged);
         self.staged = staged;
+    }
+
+    /// Classification-only restage from already-captured inputs: the raw
+    /// observation capture (ingestion boundary, moved unchanged, never
+    /// re-ingested), the effective classified rows (capability-graded on
+    /// v4, verbatim on legacy), and the retained raw held/screens/v4-only
+    /// lanes. Re-resolves held scopes against prior staged homing,
+    /// rebuilds diagnostics in original lane order, re-runs the shared
+    /// per-window classification loop over the effective rows (raw rows
+    /// are never classified), and resets derived/homing/domain indexes.
+    /// Use-time scale diagnostics are not duplicated here: they are owned
+    /// by the next `build_staged_domains`, which guards repeats. Takes no
+    /// ledger action; callers own exactly-once ingestion.
+    pub(crate) fn restage_classification(&mut self) {
+        // Held scope resolution reads the previous homes, never the homes
+        // this restage is about to assign. Resolution preserves each raw
+        // output field and refreshes only its derived diagnostic scope.
+        let prior_homing = self.staged.homing.clone();
+        let resolved_held =
+            self.resolve_held_window_scopes(&self.staged.held_windows.clone(), &prior_homing);
+        let effective = self.staged.effective_windows.clone();
+        let state_offroute: Vec<RowDiagnostic> = self
+            .staged
+            .observation
+            .state_attempts
+            .iter()
+            .filter(|attempt| {
+                !crate::world_state::state_property_supported(self.capabilities(), attempt.property)
+            })
+            .filter_map(|attempt| {
+                self.state_offroute_diagnostic_for(
+                    &effective,
+                    &self.staged.held_windows,
+                    &attempt.window,
+                )
+            })
+            .collect();
+        let mut diagnostics =
+            Self::staged_screen_window_diagnostics(&self.staged.held_screens, &resolved_held);
+        diagnostics.extend(
+            self.staged
+                .held_native
+                .iter()
+                .map(|held| held.diagnostic.clone()),
+        );
+        diagnostics.extend(
+            self.staged
+                .held_attempts
+                .iter()
+                .filter_map(|held| held.diagnostic.clone()),
+        );
+        diagnostics.extend(state_offroute);
+        if let Some(PresentationRowV4::Held(held)) = &self.staged.presentation_v4
+            && let Some(diagnostic) = &held.diagnostic
+        {
+            diagnostics.push(diagnostic.clone());
+        }
+        let closed = self.staged.observation.closed.clone();
+        let mut restaged = StagedReport {
+            observation: self.staged.observation.clone(),
+            screens: self.staged.screens.clone(),
+            held_screens: self.staged.held_screens.clone(),
+            held_windows: resolved_held,
+            diagnostics,
+            gesture_barrier: self.staged.gesture_barrier,
+            held_native: self.staged.held_native.clone(),
+            held_attempts: self.staged.held_attempts.clone(),
+            presentation_v4: self.staged.presentation_v4.clone(),
+            renderer_input: self.staged.renderer_input.clone(),
+            effective_windows: effective,
+            ..StagedReport::default()
+        };
+        let effective = restaged.effective_windows.clone();
+        self.stage_window_facts(&effective, &closed, &mut restaged);
+        self.staged = restaged;
     }
 
     /// Occupied logical ids on one screen's ring: homed non-sticky

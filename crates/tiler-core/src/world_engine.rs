@@ -517,6 +517,11 @@ pub(crate) struct StagedReport {
     pub(crate) derived: BTreeMap<WindowId, crate::window_classify::ClassifiedWindow>,
     /// Raw explicit closes.
     pub(crate) closes: BTreeSet<WindowId>,
+    /// Effective classified window rows for this report: the
+    /// capability-graded rows on the v4 intake, the verbatim rows on the
+    /// legacy intake. Classification-only restages consume these, never
+    /// the raw capture; the raw capture stays the ingestion boundary.
+    pub(crate) effective_windows: Vec<crate::world_report::WindowFact>,
     /// Staged logical homing per window.
     pub(crate) homing: BTreeMap<WindowId, DomainKey>,
     /// Carried gesture barrier for the staged run.
@@ -3131,7 +3136,7 @@ impl WorldEngine {
         // capture, then stage from that same capture, so the classifier
         // sees pending first-admission wins this same report with no
         // second ingestion. Later command restages reuse the
-        // classification-only `stage_facts` and never reingest.
+        // classification-only `restage_classification` and never reingest.
         let observation = Self::capture_observation(report);
         self.ingest_staged_intent(&observation);
         self.stage_captured(report, observation);
@@ -3149,7 +3154,7 @@ impl WorldEngine {
         // and retain the session before settlement and the sweep, so both
         // converge with the shielded homing. Never commits; the act half
         // runs after the sweep.
-        self.gesture_bind(report, &BTreeSet::new());
+        self.gesture_bind(&BTreeSet::new());
         // Remaining flights (window, migration, floats) settle against the
         // staged homing and echoes. Settlement classifies against the
         // pre-settlement staged homing (raw observation versus the
@@ -3157,7 +3162,7 @@ impl WorldEngine {
         // roll back mapping/members/views/session ownership, so restage
         // afterwards: the sweep and publish below must use post-rollback
         // domains, never the pre-rollback ones.
-        self.settle_rest(report, &issue, consumed);
+        self.settle_rest(report.command.as_ref(), &issue, consumed);
         self.build_staged_domains();
         // State bindings settle against post-rollback staged domains: the
         // readability join must see the committed homing, and the raw capture
@@ -3329,7 +3334,7 @@ impl WorldEngine {
         // now that floating scopes are fresh and held scopes are staged,
         // before the ordinary sweep converges. Ambiguous proof never
         // retries.
-        self.run_native_sticky_followups(report, &issue, &held_scopes);
+        self.run_native_sticky_followups(&issue, &held_scopes);
         // Clone the staged domains for iteration: sweeps borrow `self`
         // mutably while reading staged homing.
         let domains = self.staged.domains.clone();
@@ -3417,7 +3422,7 @@ impl WorldEngine {
         // command: it runs even on consumed-command reports, and it never
         // consumes a sequence.
         self.command_result = None;
-        match self.gesture_act(report, &issue, &mut held_scopes) {
+        match self.gesture_act(&issue, &mut held_scopes) {
             GestureOutcome::Absent | GestureOutcome::Held => {}
             GestureOutcome::Settled { committed, result } => {
                 if committed {
@@ -3453,7 +3458,6 @@ impl WorldEngine {
             // pre-command observation effects stay published.
             let precommand = self.clone();
             match self.execute_command(
-                report,
                 &issue,
                 command_seq,
                 command,

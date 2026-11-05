@@ -1470,7 +1470,6 @@ fn local_move_direct_records_mover_without_sweep() {
     engine.stage_facts(&probe);
     engine.build_staged_domains();
     let applied = engine.execute_command(
-        &probe,
         &test_issue(&probe),
         12,
         &command,
@@ -1540,7 +1539,6 @@ fn swap_neighbor_move_direct_records_mover_without_sweep() {
     engine.stage_facts(&probe);
     engine.build_staged_domains();
     let applied = engine.execute_command(
-        &probe,
         &test_issue(&probe),
         12,
         &command,

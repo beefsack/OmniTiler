@@ -37,7 +37,7 @@ use crate::gesture::{
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, DragHoverPrior, OutputDomain};
 use crate::world_engine::{RetainedTransfer, WorldEngine};
-use crate::world_report::{CommandResult, TransferKind, TransferTarget, WorldReport};
+use crate::world_report::{CommandResult, TransferKind, TransferTarget};
 
 /// Retained gesture session: one open native move/size gesture bound to an
 /// exact window lifetime plus its stable adapter gesture id. `start_frame`
@@ -109,12 +109,7 @@ impl WorldEngine {
     ///   an old terminal that will never come.
     /// - A `Cancelled` phase with no retained session consumes its id
     ///   and records without binding (no shield for a dead gesture).
-    pub(crate) fn gesture_bind(
-        &mut self,
-        report: &WorldReport,
-        held_scopes: &BTreeSet<DomainKey>,
-    ) -> bool {
-        let _ = report;
+    pub(crate) fn gesture_bind(&mut self, held_scopes: &BTreeSet<DomainKey>) -> bool {
         let staged_seq = self.staged.observation.observation_seq;
         let ingress_owned = self.staged.observation.gesture.clone();
         let ingress = match ingress_owned.as_ref() {
@@ -235,7 +230,6 @@ impl WorldEngine {
     /// never a false close).
     pub(crate) fn gesture_act(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) -> GestureOutcome {
@@ -321,9 +315,7 @@ impl WorldEngine {
                     GesturePhase::Started | GesturePhase::Updated => {
                         self.gesture_updated(issue, &ingress, held_scopes)
                     }
-                    GesturePhase::Released => {
-                        self.gesture_released(report, issue, &ingress, held_scopes)
-                    }
+                    GesturePhase::Released => self.gesture_released(issue, &ingress, held_scopes),
                     GesturePhase::Cancelled => {
                         self.gesture = None;
                         self.record_gesture_terminal(retained.id, false);
@@ -635,7 +627,6 @@ impl WorldEngine {
     /// the focused-fullscreen game pause nothing commits.
     fn gesture_released(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         ingress: &GestureIngress,
         held_scopes: &mut BTreeSet<DomainKey>,
@@ -708,7 +699,7 @@ impl WorldEngine {
                 held_scopes,
             ),
             Some(GestureIntent::MoveDrop { .. }) | Some(GestureIntent::PointerResize { .. }) => {
-                self.gesture_float_release(report, issue, &retained, release_frame, held_scopes)
+                self.gesture_float_release(issue, &retained, release_frame, held_scopes)
             }
             None => {
                 // No change (or a cursor-less move): snap back with no
@@ -991,13 +982,11 @@ impl WorldEngine {
     /// frame already moved, so the commit only records it.
     fn gesture_float_release(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
         release_frame: crate::geometry::Rect,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) -> GestureOutcome {
-        let _ = report;
         if release_frame.w <= 0
             || release_frame.h <= 0
             || release_frame.x.checked_add(release_frame.w).is_none()

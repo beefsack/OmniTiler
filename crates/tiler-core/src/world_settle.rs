@@ -20,7 +20,7 @@ use crate::session::DomainKey;
 use crate::world_engine::{RetainedFloat, RetainedTransfer, WorldEngine};
 use crate::world_report::{
     AttemptOutcome, FrameSetter, MemberAttempt, TransferKind, ViewAttempt, WorkspaceRef,
-    WorldReport,
+    WorldCommand,
 };
 
 /// Exact-correlated raw membership evidence for one retained operation
@@ -676,7 +676,7 @@ impl WorldEngine {
     /// and before the sweep.
     pub(crate) fn settle_rest(
         &mut self,
-        report: &WorldReport,
+        current_command: Option<&WorldCommand>,
         issue: &crate::world_engine::EventIssue,
         consumed: bool,
     ) {
@@ -686,7 +686,7 @@ impl WorldEngine {
         // the continuation coherently in one reply. Born clears settle
         // next: a proven born clear retires before the sweep publishes the
         // next reply, so the desire drops exactly when proof lands.
-        self.settle_clears(report, issue, consumed);
+        self.settle_clears(current_command, issue, consumed);
         self.settle_born_clears();
         let mut keep: Vec<RetainedTransfer> = Vec::new();
         for mut retained in std::mem::take(&mut self.retained) {

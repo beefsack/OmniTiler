@@ -12,7 +12,7 @@ use crate::seed::EngineWindow;
 use crate::session::DomainKey;
 use crate::world_engine::{RetainedClear, RetainedFloat, WorldEngine};
 use crate::world_report::{
-    ClearAttempt, FrameSetter, OperationEvent, OperationOutcome, WorldReport,
+    ClearAttempt, FrameSetter, OperationEvent, OperationOutcome, WorldCommand,
 };
 
 /// Exact-correlated raw clear evidence for one retained clear operation.
@@ -113,7 +113,7 @@ impl WorldEngine {
     ///   with identities preserved and no weakening of authority.
     pub(crate) fn settle_clears(
         &mut self,
-        report: &WorldReport,
+        current_command: Option<&WorldCommand>,
         issue: &crate::world_engine::EventIssue,
         consumed: bool,
     ) {
@@ -129,10 +129,7 @@ impl WorldEngine {
         let supersede_window: Option<crate::directional::WindowId> = if consumed {
             None
         } else {
-            report
-                .command
-                .as_ref()
-                .and_then(crate::world_operations::command_window)
+            current_command.and_then(crate::world_operations::command_window)
         };
         for mut retained in std::mem::take(&mut self.retained_clears) {
             // Explicit close prunes even across gaps.
@@ -634,14 +631,7 @@ impl WorldEngine {
                         cross_output_transfer: false,
                         same_axis_move: retained.same_axis,
                     };
-                    self.run_local_operation(
-                        report,
-                        issue,
-                        command_seq,
-                        &command,
-                        &by_id,
-                        &held_scopes,
-                    )
+                    self.run_local_operation(issue, command_seq, &command, &by_id, &held_scopes)
                 };
                 // Fallible commands must not leak a stale directional
                 // result into this observation-only reply.

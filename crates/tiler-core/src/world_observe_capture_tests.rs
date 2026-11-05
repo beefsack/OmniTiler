@@ -239,8 +239,8 @@ fn tile_false() -> String {
 
 fn stage_ingested(engine: &mut WorldEngine, report: &WorldReport) {
     // Initial intake ordering: capture, ingest once, then classify.
-    // Restages below reuse classification-only `stage_facts` and must
-    // never ingest again.
+    // Restages below reuse classification-only `restage_classification`
+    // and must never ingest again.
     let observation = WorldEngine::capture_observation(report);
     engine.ingest_staged_intent(&observation);
     engine.stage_facts(report);
@@ -295,6 +295,127 @@ fn restage_after_command_mutation_does_not_reingest() {
             .expect("classified")
             .floating
     );
+}
+
+/// Classification-only restage parity: `restage_classification` rebuilds
+/// exactly what the intake staged (diagnostics, homing, facts, derived)
+/// from the retained effective rows, conserves the raw/effective
+/// distinction (raw keeps the original conflicted row, effective the
+/// capability-graded hold), and never reingests intent the command side
+/// already cleared. Managed-gated host so the v4 leg actually grades.
+#[test]
+fn restage_classification_matches_intake_and_conserves_effective() {
+    for v4 in [false, true] {
+        let mut engine = WorldEngine::new_test_bound_with_capabilities(
+            "gen-1",
+            "adapter-1",
+            HostCapabilities {
+                fullscreen: true,
+                maximize: true,
+                native_sticky: true,
+                above: true,
+                unavailable_facts: vec![crate::connection::FactName::Managed],
+                ..Default::default()
+            },
+        )
+        .expect("generation");
+        let (mut legacy, mut v4report) =
+            pair_reports(1, vec![fact("win-a", "out-a", 0)], Vec::new());
+        legacy.intent_records = vec![record("win-a", &float_true())];
+        v4report.intent_records = vec![record("win-a", &float_true())];
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        let win = WindowId("win-a".to_owned());
+        // Raw/effective conservation straight from intake.
+        assert_eq!(engine.staged.observation.raw_windows.len(), 1);
+        if v4 {
+            assert!(
+                engine.staged.effective_windows.is_empty(),
+                "graded conflict leaves no effective row (v4={v4})"
+            );
+            assert!(
+                engine
+                    .staged
+                    .held_windows
+                    .iter()
+                    .any(|held| held.window == win),
+                "graded conflict retained as held (v4={v4})"
+            );
+        } else {
+            assert_eq!(
+                engine.staged.effective_windows, engine.staged.observation.raw_windows,
+                "legacy classifies verbatim (v4={v4})"
+            );
+        }
+        // Exactly-once ingestion at intake.
+        assert!(engine.pending_intent.contains_key(&win));
+        let diagnostics = engine.staged.diagnostics.clone();
+        let homing = engine.staged.homing.clone();
+        let effective = engine.staged.effective_windows.clone();
+        let held_windows = engine.staged.held_windows.clone();
+        let facts = engine.staged.facts.clone();
+        let derived = engine.staged.derived.clone();
+        // Clean restage first: with untouched ledgers the rebuild must
+        // reproduce the intake exactly.
+        engine.restage_classification();
+        assert_eq!(
+            engine.staged.diagnostics, diagnostics,
+            "diagnostics parity (v4={v4})"
+        );
+        assert_eq!(engine.staged.homing, homing, "homing parity (v4={v4})");
+        assert_eq!(
+            engine.staged.effective_windows, effective,
+            "effective parity (v4={v4})"
+        );
+        assert_eq!(
+            engine.staged.held_windows, held_windows,
+            "held parity (v4={v4})"
+        );
+        assert_eq!(engine.staged.facts, facts, "facts parity (v4={v4})");
+        assert_eq!(engine.staged.derived, derived, "derived parity (v4={v4})");
+        assert!(
+            engine.pending_intent.contains_key(&win),
+            "clean restage keeps ingested intent (v4={v4})"
+        );
+        // Command-side mutation mirrors the sticky probes: clear the
+        // imported intent, record the command's own save. The restage
+        // must follow the cleared ledgers (no pending float classifies
+        // tiled) and must not resurrect the cleared import row.
+        engine.pending_intent.remove(&win);
+        engine.intent_conflicts.remove(&win);
+        let save = IntentData::new(Some(false), None);
+        engine.sticky_saved.insert(win.clone(), save);
+        engine.restage_classification();
+        if v4 {
+            assert!(
+                engine
+                    .staged
+                    .held_windows
+                    .iter()
+                    .any(|held| held.window == win),
+                "restage retains the graded hold (v4={v4})"
+            );
+            assert!(
+                !engine.staged.facts.contains_key(&win),
+                "held conflict stages no fact (v4={v4})"
+            );
+        } else {
+            assert!(
+                !engine
+                    .staged
+                    .derived
+                    .get(&win)
+                    .expect("classified")
+                    .floating,
+                "restage follows cleared ledgers (v4={v4})"
+            );
+        }
+        assert!(
+            !engine.pending_intent.contains_key(&win),
+            "restage must not reingest cleared intent (v4={v4})"
+        );
+        assert!(!engine.intent_conflicts.contains(&win));
+        assert_eq!(engine.sticky_saved.get(&win), Some(&save));
+    }
 }
 
 /// Every raw observation lane with at least two distinct rows per
@@ -805,6 +926,160 @@ fn v4_capture_conserves_raw_lanes_in_order() {
             .floating,
         "same-report pending float must classify floating on v4"
     );
+}
+
+/// Rich v4 restage: the full lane set survives `restage_classification`.
+/// One live row, one capability-graded hold, and one own-process row
+/// prove raw/effective separation; held/source lanes, v4-only rows, and
+/// the exact lane diagnostic order are retained; a clean restage reproduces
+/// the whole staged report; repeated build/restage/build never accumulates
+/// the use-time scale hold.
+#[test]
+fn v4_restage_conserves_rich_lanes_without_accumulating_scale_hold() {
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            native_sticky: true,
+            maximize: true,
+            above: true,
+            unavailable_facts: vec![crate::connection::FactName::Managed],
+            ..Default::default()
+        },
+    )
+    .expect("generation");
+    // win-a stays live, win-b grades to held on the managed conflict,
+    // win-own exercises the own-process drop with no grading conflict.
+    let mut windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)];
+    windows[0].managed = None;
+    let mut own = fact("win-own", "out-a", 400);
+    own.process_id = Some("test-own-pid".to_owned());
+    own.managed = None;
+    windows.insert(1, own);
+    let mut states = vec![
+        state_row("win-a", StateProperty::Sticky),
+        state_row("win-b", StateProperty::Maximized),
+    ];
+    // Fullscreen is unsupported under these caps, so this attempt stages
+    // the offroute diagnostic while the supported lanes stay silent.
+    states.push(state_row("win-a", StateProperty::Fullscreen));
+    let mut lanes = rich_lanes();
+    let expected = RichLanes {
+        windows: windows.clone(),
+        state: states.clone(),
+        ..rich_lanes()
+    };
+    lanes.windows = windows;
+    lanes.state = states;
+    let mut report = rich_v4(7, lanes);
+    report.screens[0].scale = 1e308;
+    stage_v4_ingested(&mut engine, &report);
+    let win_a = WindowId("win-a".to_owned());
+    let win_b = WindowId("win-b".to_owned());
+    let win_own = WindowId("win-own".to_owned());
+    // Raw capture keeps every row in source order.
+    assert_eq!(engine.staged.observation.raw_windows, expected.windows);
+    assert_eq!(engine.staged.observation.closed, expected.closed);
+    assert_eq!(engine.staged.observation.intent_records, expected.records);
+    // Effective rows keep source order minus the graded hold; the
+    // own-process row is dropped only at classification, never here.
+    assert_eq!(
+        engine
+            .staged
+            .effective_windows
+            .iter()
+            .map(|fact| fact.window.0.clone())
+            .collect::<Vec<_>>(),
+        vec!["win-a".to_owned(), "win-own".to_owned()]
+    );
+    // The graded row stays held with its conflict diagnostic.
+    let graded = engine
+        .staged
+        .held_windows
+        .iter()
+        .find(|held| held.window == win_b)
+        .expect("graded hold retained");
+    assert_eq!(graded.kind, RowDiagnosticKind::ConflictingFact);
+    assert_eq!(
+        graded.diagnostic.clone().expect("graded scope").id,
+        Some("win-b".to_owned())
+    );
+    // Classification drops the own-process row into the excluded set.
+    assert!(!engine.staged.facts.contains_key(&win_own));
+    assert!(engine.staged.excluded.contains(&win_own));
+    assert!(engine.staged.facts.contains_key(&win_a));
+    // Held/source lanes and v4-only rows stay verbatim.
+    assert_eq!(engine.staged.held_native, expected.held_native);
+    assert_eq!(engine.staged.held_attempts, expected.held_attempts);
+    assert_eq!(
+        engine.staged.presentation_v4,
+        Some(report.presentation.clone())
+    );
+    assert_eq!(engine.staged.renderer_input, report.renderer_input);
+    // Exact lane diagnostic order: screens, windows (source-held then
+    // graded), native, attempt with a diagnostic (the diagnostic-less
+    // frame row emits nothing), unsupported fullscreen attempt.
+    assert_eq!(
+        diagnostic_lanes(&engine.staged),
+        vec![
+            RowDiagnosticLane::Screen,
+            RowDiagnosticLane::Screen,
+            RowDiagnosticLane::Window,
+            RowDiagnosticLane::Window,
+            RowDiagnosticLane::Window,
+            RowDiagnosticLane::Native,
+            RowDiagnosticLane::Attempt,
+            RowDiagnosticLane::Attempt,
+        ]
+    );
+    // A clean restage reproduces the whole staged report.
+    let before = engine.staged.clone();
+    engine.restage_classification();
+    assert_eq!(engine.staged, before);
+    // A held singleton retains its row and appends its diagnostic last.
+    report.presentation = PresentationRowV4::Held(crate::world_report::HeldPresentationRow {
+        fields: Vec::new(),
+        kind: RowDiagnosticKind::InvalidFact,
+        diagnostic: Some(crate::world_report::RowDiagnostic {
+            scope: crate::world_report::AuthorityScope::Output(OutputId("out-a".to_owned())),
+            row: RowDiagnosticLane::Presentation,
+            id: None,
+            kind: RowDiagnosticKind::InvalidFact,
+        }),
+    });
+    stage_v4_ingested(&mut engine, &report);
+    let before = engine.staged.clone();
+    engine.restage_classification();
+    assert_eq!(engine.staged, before);
+    assert_eq!(
+        diagnostic_lanes(&engine.staged).last(),
+        Some(&RowDiagnosticLane::Presentation)
+    );
+    // Use-time scale hold: one overflowing output stages exactly one
+    // diagnostic across repeated build/restage/build cycles.
+    engine
+        .mapping
+        .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+    let scale_diags = |engine: &WorldEngine| {
+        engine
+            .staged
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.row == RowDiagnosticLane::Screen
+                    && diagnostic.kind == RowDiagnosticKind::Unreadable
+                    && diagnostic.id.as_deref() == Some("out-a")
+            })
+            .count()
+    };
+    engine.build_staged_domains();
+    assert_eq!(scale_diags(&engine), 1);
+    engine.build_staged_domains();
+    assert_eq!(scale_diags(&engine), 1);
+    engine.restage_classification();
+    assert_eq!(scale_diags(&engine), 0);
+    engine.build_staged_domains();
+    assert_eq!(scale_diags(&engine), 1);
 }
 
 #[test]
@@ -4485,7 +4760,7 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
         seed_join_4b2d(&mut engine, "win-a", "ws-1");
         seed_clear_4b2d(&mut engine, "op-1");
         engine.settle_clears(
-            &passed_report_4b2d(90),
+            passed_report_4b2d(90).command.as_ref(),
             &test_issue(&passed_report_4b2d(90)),
             false,
         );
@@ -4549,7 +4824,7 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
             seed_join_4b2d(&mut forged_engine, "win-a", "ws-1");
             seed_clear_4b2d(&mut forged_engine, "op-1");
             forged_engine.settle_clears(
-                &passed_report_4b2d(90),
+                passed_report_4b2d(90).command.as_ref(),
                 &test_issue(&passed_report_4b2d(90)),
                 false,
             );
@@ -4622,7 +4897,7 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
             seed_join_4b2d(&mut gated, "win-a", "ws-1");
             seed_clear_4b2d(&mut gated, "op-1");
             gated.settle_clears(
-                &passed_report_4b2d(90),
+                passed_report_4b2d(90).command.as_ref(),
                 &test_issue(&passed_report_4b2d(90)),
                 false,
             );
@@ -4663,7 +4938,7 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
             );
             seed_join_4b2d(&mut gated, "win-a", "ws-1");
             gated.settle_clears(
-                &passed_report_4b2d(91),
+                passed_report_4b2d(91).command.as_ref(),
                 &test_issue(&passed_report_4b2d(91)),
                 false,
             );
@@ -4912,7 +5187,7 @@ fn settle_transfer_uses_staged_member_lane_not_passed_report() {
         seed_join_4b2d(&mut engine, "win-a", "ws-9");
         seed_window_transfer_4b2d(&mut engine, "op-t");
         engine.settle_rest(
-            &passed_report_4b2d(90),
+            passed_report_4b2d(90).command.as_ref(),
             &test_issue(&passed_report_4b2d(90)),
             false,
         );
@@ -4978,7 +5253,7 @@ fn settle_transfer_uses_staged_member_lane_not_passed_report() {
             seed_join_4b2d(&mut forged_engine, "win-a", "ws-9");
             seed_window_transfer_4b2d(&mut forged_engine, "op-t");
             forged_engine.settle_rest(
-                &passed_report_4b2d(90),
+                passed_report_4b2d(90).command.as_ref(),
                 &test_issue(&passed_report_4b2d(90)),
                 false,
             );
@@ -5026,7 +5301,7 @@ fn settle_transfer_uses_staged_member_lane_not_passed_report() {
         seed_join_4b2d(&mut gated, "win-a", "ws-9");
         seed_window_transfer_4b2d(&mut gated, "op-t");
         gated.settle_rest(
-            &passed_report_4b2d(90),
+            passed_report_4b2d(90).command.as_ref(),
             &test_issue(&passed_report_4b2d(90)),
             false,
         );
@@ -5065,7 +5340,7 @@ fn settle_transfer_uses_staged_member_lane_not_passed_report() {
         );
         seed_join_4b2d(&mut gated, "win-a", "ws-9");
         gated.settle_rest(
-            &passed_report_4b2d(91),
+            passed_report_4b2d(91).command.as_ref(),
             &test_issue(&passed_report_4b2d(91)),
             false,
         );
@@ -5584,7 +5859,7 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
         seed_migration_4b2d(&mut engine, "op-m");
         home_migration_4b2d(&mut engine, "out-b", "ws-1");
         engine.settle_rest(
-            &passed_report_4b2d(90),
+            passed_report_4b2d(90).command.as_ref(),
             &test_issue(&passed_report_4b2d(90)),
             false,
         );
@@ -5653,7 +5928,7 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
             seed_migration_4b2d(&mut forged_engine, "op-m");
             home_migration_4b2d(&mut forged_engine, "out-a", "ws-1");
             forged_engine.settle_rest(
-                &passed_report_4b2d(90),
+                passed_report_4b2d(90).command.as_ref(),
                 &test_issue(&passed_report_4b2d(90)),
                 false,
             );
@@ -5699,7 +5974,7 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
         seed_migration_4b2d(&mut gated, "op-m");
         home_migration_4b2d(&mut gated, "out-b", "ws-1");
         gated.settle_rest(
-            &passed_report_4b2d(90),
+            passed_report_4b2d(90).command.as_ref(),
             &test_issue(&passed_report_4b2d(90)),
             false,
         );
@@ -5763,7 +6038,7 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
         );
         home_migration_4b2d(&mut gated, "out-b", "ws-1");
         gated.settle_rest(
-            &passed_report_4b2d(91),
+            passed_report_4b2d(91).command.as_ref(),
             &test_issue(&passed_report_4b2d(91)),
             false,
         );
@@ -5800,7 +6075,7 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
         );
         home_migration_4b2d(&mut gated, "out-b", "ws-1");
         gated.settle_rest(
-            &passed_report_4b2d(92),
+            passed_report_4b2d(92).command.as_ref(),
             &test_issue(&passed_report_4b2d(92)),
             false,
         );
@@ -5985,7 +6260,11 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
         seed_clear_4b2d(&mut engine, "op-1");
         let mut proving_focus = passed_report_4b2d(90);
         proving_focus.focused_global = "win-a".to_owned();
-        engine.settle_clears(&proving_focus, &test_issue(&proving_focus), false);
+        engine.settle_clears(
+            proving_focus.command.as_ref(),
+            &test_issue(&proving_focus),
+            false,
+        );
         assert!(
             engine.retained_clears.is_empty(),
             "staged focus divergence retires (v4={v4})",
@@ -6029,7 +6308,7 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
         }
         seed_clear_4b2d(&mut viewed, "op-1");
         viewed.settle_clears(
-            &passed_report_4b2d(90),
+            passed_report_4b2d(90).command.as_ref(),
             &test_issue(&passed_report_4b2d(90)),
             false,
         );
@@ -6091,7 +6370,7 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
         seed_join_4b2d(&mut homed, "win-a", "ws-9");
         seed_clear_4b2d(&mut homed, "op-1");
         homed.settle_clears(
-            &passed_report_4b2d(90),
+            passed_report_4b2d(90).command.as_ref(),
             &test_issue(&passed_report_4b2d(90)),
             false,
         );
@@ -6149,7 +6428,7 @@ fn settle_clear_float_continuation_uses_staged_geometry() {
         let mut crossed_screen = screen("out-a", 0);
         crossed_screen.work_area = Some(rect(0, 0, 400, 300));
         crossed.screens = vec![crossed_screen];
-        engine.settle_clears(&crossed, &test_issue(&crossed), false);
+        engine.settle_clears(crossed.command.as_ref(), &test_issue(&crossed), false);
         assert!(
             engine.retained_clears.is_empty(),
             "proven clear continues (v4={v4})",
@@ -6290,8 +6569,7 @@ fn settle_float_receipt_before_gap_with_empty_lane_recovery() {
 // 4b-2e: raw observation gates consume the staged capture on both intakes.
 // Each test sets raw lanes on BOTH independently constructed legacy/v4
 // reports BEFORE either intake, stages through the actual intake, then
-// drives the real consumer with a contradictory passed report: the staged
-// capture wins. Only retained joins are seeded after capture (homing,
+// drives the real consumer; the staged capture wins. Only retained joins are seeded after capture (homing,
 // domains, retained bindings, lifetime marks), explicitly TEST-ONLY, never
 // v4 runtime. Gesture preview authority comes from an explicit legacy
 // accepted() rig (Engine sessions, mapping, views); v4 iterations reuse
@@ -6392,11 +6670,11 @@ fn stage_gesture(
 }
 
 #[test]
-fn staged_gesture_bind_gates_win_over_passed_report() {
+fn staged_gesture_bind_gates_win_from_staged_only() {
     for v4 in [false, true] {
         let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
-        // Staged ingress binds with the staged watermark even when the
-        // passed report is seq-divergent, inventory-incomplete, and closed.
+        // Staged ingress binds with the staged watermark alone: no report
+        // input reaches the helper, so staged state alone explains the bind.
         let mut engine = gesture_rig();
         stage_gesture(
             &mut engine,
@@ -6407,11 +6685,8 @@ fn staged_gesture_bind_gates_win_over_passed_report() {
             true,
             Vec::new(),
         );
-        let mut contra = contra_legacy(99, windows());
-        contra.inventory_complete = false;
-        contra.closed = vec![WindowId("win-a".to_owned())];
         assert!(
-            engine.gesture_bind(&contra, &BTreeSet::new()),
+            engine.gesture_bind(&BTreeSet::new()),
             "staged ingress binds (v4={v4})"
         );
         let retained = engine.gesture.clone().expect("session retained");
@@ -6420,19 +6695,18 @@ fn staged_gesture_bind_gates_win_over_passed_report() {
             (7, 5),
             "identity from staged (v4={v4})"
         );
-        // Negative: staged absent never binds even when the passed report
-        // carries a live ingress on a complete inventory.
+        // Negative: staged absent never binds even with a live staged
+        // ingress shape on a complete inventory: binding reads staged
+        // state only.
         let mut engine = gesture_rig();
         stage_gesture(&mut engine, v4, 5, windows(), None, true, Vec::new());
-        let mut contra = contra_legacy(5, windows());
-        contra.gesture = Some(staged_ingress(7, GesturePhase::Started));
         assert!(
-            !engine.gesture_bind(&contra, &BTreeSet::new()),
+            !engine.gesture_bind(&BTreeSet::new()),
             "staged absent refuses (v4={v4})"
         );
         assert!(engine.gesture.is_none(), "no session (v4={v4})");
-        // Staged inventory gate: staged incomplete refuses despite a passed
-        // complete report carrying the same live ingress.
+        // Staged inventory gate: staged incomplete refuses with the same
+        // live ingress shape staged.
         let mut engine = gesture_rig();
         stage_gesture(
             &mut engine,
@@ -6443,15 +6717,13 @@ fn staged_gesture_bind_gates_win_over_passed_report() {
             false,
             Vec::new(),
         );
-        let mut contra = contra_legacy(5, windows());
-        contra.gesture = Some(staged_ingress(7, GesturePhase::Started));
         assert!(
-            !engine.gesture_bind(&contra, &BTreeSet::new()),
+            !engine.gesture_bind(&BTreeSet::new()),
             "staged gap refuses (v4={v4})"
         );
         assert!(engine.gesture.is_none(), "no session (v4={v4})");
-        // Staged close gate: staged explicit close refuses despite passed
-        // empty closes on a complete inventory.
+        // Staged close gate: staged explicit close refuses on a complete
+        // inventory.
         let mut engine = gesture_rig();
         stage_gesture(
             &mut engine,
@@ -6462,15 +6734,14 @@ fn staged_gesture_bind_gates_win_over_passed_report() {
             true,
             vec![WindowId("win-a".to_owned())],
         );
-        let contra = contra_legacy(5, windows());
         assert!(
-            !engine.gesture_bind(&contra, &BTreeSet::new()),
+            !engine.gesture_bind(&BTreeSet::new()),
             "staged close refuses (v4={v4})"
         );
         assert!(engine.gesture.is_none(), "no session (v4={v4})");
-        // Fresh staged id holds the old session under a staged gap (passed
-        // complete), then supersedes once the staged inventory completes
-        // (passed incomplete): the start gate, not the report, decides.
+        // Fresh staged id holds the old session under a staged gap, then
+        // supersedes once the staged inventory completes: the start gate,
+        // not any report input, decides.
         let mut engine = gesture_rig();
         stage_gesture(
             &mut engine,
@@ -6481,8 +6752,7 @@ fn staged_gesture_bind_gates_win_over_passed_report() {
             true,
             Vec::new(),
         );
-        let open = contra_legacy(5, windows());
-        assert!(engine.gesture_bind(&open, &BTreeSet::new()));
+        assert!(engine.gesture_bind(&BTreeSet::new()));
         stage_gesture(
             &mut engine,
             v4,
@@ -6493,7 +6763,7 @@ fn staged_gesture_bind_gates_win_over_passed_report() {
             Vec::new(),
         );
         assert!(
-            !engine.gesture_bind(&open, &BTreeSet::new()),
+            !engine.gesture_bind(&BTreeSet::new()),
             "staged gap holds old session (v4={v4})"
         );
         assert_eq!(
@@ -6510,10 +6780,8 @@ fn staged_gesture_bind_gates_win_over_passed_report() {
             true,
             Vec::new(),
         );
-        let mut gapped = contra_legacy(7, windows());
-        gapped.inventory_complete = false;
         assert!(
-            engine.gesture_bind(&gapped, &BTreeSet::new()),
+            engine.gesture_bind(&BTreeSet::new()),
             "staged complete supersedes (v4={v4})"
         );
         assert_eq!(
@@ -6527,8 +6795,8 @@ fn staged_gesture_bind_gates_win_over_passed_report() {
 #[test]
 fn staged_gesture_act_watermark_guard_drives_preview() {
     // Same Started ingress, only the staged watermark differs: seq 5 holds
-    // bind-only with no overlay, seq 6 previews. Passed reports are decoys
-    // shaped the other way, so only the staged watermark explains the pair.
+    // bind-only with no overlay, seq 6 previews. The helper takes no report
+    // input, so only the staged watermark explains the pair.
     for v4 in [false, true] {
         let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
         let mut engine = gesture_rig();
@@ -6541,17 +6809,10 @@ fn staged_gesture_act_watermark_guard_drives_preview() {
             true,
             Vec::new(),
         );
-        assert!(engine.gesture_bind(&contra_legacy(2, windows()), &BTreeSet::new()));
-        // Same staged watermark: bind-only hold, no overlay, no terminal,
-        // even though the passed report is an update at seq 99.
-        let mut contra_updated = contra_legacy(99, windows());
-        contra_updated.gesture = Some(GestureIngress {
-            phase: GesturePhase::Updated,
-            ..moved_started_ingress(7)
-        });
+        assert!(engine.gesture_bind(&BTreeSet::new()));
+        // Same staged watermark: bind-only hold, no overlay, no terminal.
         match engine.gesture_act(
-            &contra_updated,
-            &test_issue(&contra_updated),
+            &test_issue(&contra_legacy(99, windows())),
             &mut BTreeSet::new(),
         ) {
             GestureOutcome::Held => {}
@@ -6564,7 +6825,7 @@ fn staged_gesture_act_watermark_guard_drives_preview() {
             "no overlay, no terminal, session kept (v4={v4})"
         );
         // Next staged watermark, SAME Started ingress: the update path
-        // previews despite a guard-shaped passed report at seq 5.
+        // previews.
         stage_gesture(
             &mut engine,
             v4,
@@ -6574,11 +6835,8 @@ fn staged_gesture_act_watermark_guard_drives_preview() {
             true,
             Vec::new(),
         );
-        let mut contra_guard = contra_legacy(5, windows());
-        contra_guard.gesture = Some(moved_started_ingress(7));
         match engine.gesture_act(
-            &contra_guard,
-            &test_issue(&contra_guard),
+            &test_issue(&contra_legacy(5, windows())),
             &mut BTreeSet::new(),
         ) {
             GestureOutcome::Settled {
@@ -6597,16 +6855,15 @@ fn staged_gesture_act_watermark_guard_drives_preview() {
 #[test]
 fn staged_gesture_continue_fences_gate_update_and_release() {
     // Genuine continue-fence discrimination through the real consumer with
-    // Engine session authority: inventory comes from staged, never the
-    // passed report.
+    // Engine session authority: inventory comes from staged; no report
+    // input reaches the helper.
     for v4 in [false, true] {
         let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
         let updated = || GestureIngress {
             phase: GesturePhase::Updated,
             ..moved_started_ingress(7)
         };
-        // Updated under a staged gap holds with no preview despite a passed
-        // complete report.
+        // Updated under a staged gap holds with no preview.
         let mut engine = gesture_rig();
         stage_gesture(
             &mut engine,
@@ -6617,7 +6874,7 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
             true,
             Vec::new(),
         );
-        assert!(engine.gesture_bind(&contra_legacy(2, windows()), &BTreeSet::new()));
+        assert!(engine.gesture_bind(&BTreeSet::new()));
         stage_gesture(
             &mut engine,
             v4,
@@ -6628,7 +6885,6 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
             Vec::new(),
         );
         match engine.gesture_act(
-            &contra_legacy(6, windows()),
             &test_issue(&contra_legacy(6, windows())),
             &mut BTreeSet::new(),
         ) {
@@ -6639,7 +6895,7 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
             engine.gesture_terminal.is_none() && engine.gesture.is_some(),
             "no preview, no terminal, session kept (v4={v4})"
         );
-        // Staged complete previews despite a passed gapped report.
+        // Staged complete previews.
         stage_gesture(
             &mut engine,
             v4,
@@ -6649,11 +6905,8 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
             true,
             Vec::new(),
         );
-        let mut contra_gapped = contra_legacy(7, windows());
-        contra_gapped.inventory_complete = false;
         match engine.gesture_act(
-            &contra_gapped,
-            &test_issue(&contra_gapped),
+            &test_issue(&contra_legacy(7, windows())),
             &mut BTreeSet::new(),
         ) {
             GestureOutcome::Settled {
@@ -6662,8 +6915,8 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
             } if matches!(*boxed, CommandResult::DragPreview { .. }) => {}
             _ => panic!("staged complete previews (v4={v4})"),
         }
-        // Released under a staged gap records uncommitted with no commit
-        // despite a passed complete report, even with a moved release frame.
+        // Released under a staged gap records uncommitted with no commit,
+        // even with a moved release frame.
         let mut engine = gesture_rig();
         stage_gesture(
             &mut engine,
@@ -6674,7 +6927,7 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
             true,
             Vec::new(),
         );
-        assert!(engine.gesture_bind(&contra_legacy(2, windows()), &BTreeSet::new()));
+        assert!(engine.gesture_bind(&BTreeSet::new()));
         let moved_windows = || vec![fact("win-a", "out-a", 100), fact("win-b", "out-a", 100)];
         let released = || GestureIngress {
             phase: GesturePhase::Released,
@@ -6690,7 +6943,6 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
             Vec::new(),
         );
         match engine.gesture_act(
-            &contra_legacy(6, moved_windows()),
             &test_issue(&contra_legacy(6, moved_windows())),
             &mut BTreeSet::new(),
         ) {
@@ -6703,8 +6955,7 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
             engine.gesture.is_none() && engine.gesture_terminal.is_some(),
             "gap terminal clears and records uncommitted (v4={v4})"
         );
-        // Staged complete with the same moved frame commits despite a
-        // passed gapped report.
+        // Staged complete with the same moved frame commits.
         let mut engine = gesture_rig();
         stage_gesture(
             &mut engine,
@@ -6715,7 +6966,7 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
             true,
             Vec::new(),
         );
-        assert!(engine.gesture_bind(&contra_legacy(2, windows()), &BTreeSet::new()));
+        assert!(engine.gesture_bind(&BTreeSet::new()));
         stage_gesture(
             &mut engine,
             v4,
@@ -6725,11 +6976,8 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
             true,
             Vec::new(),
         );
-        let mut contra_gapped = contra_legacy(6, moved_windows());
-        contra_gapped.inventory_complete = false;
         match engine.gesture_act(
-            &contra_gapped,
-            &test_issue(&contra_gapped),
+            &test_issue(&contra_legacy(6, moved_windows())),
             &mut BTreeSet::new(),
         ) {
             GestureOutcome::Settled {
@@ -6748,8 +6996,8 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
 fn staged_gesture_act_close_follows_staged() {
     for v4 in [false, true] {
         let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
-        // Staged explicit close clears with no ingress despite passed empty
-        // closes.
+        // Staged explicit close clears with no ingress: staged closes
+        // decide.
         let mut engine = gesture_rig();
         stage_gesture(
             &mut engine,
@@ -6761,7 +7009,7 @@ fn staged_gesture_act_close_follows_staged() {
             Vec::new(),
         );
         let open = contra_legacy(5, windows());
-        assert!(engine.gesture_bind(&open, &BTreeSet::new()));
+        assert!(engine.gesture_bind(&BTreeSet::new()));
         stage_gesture(
             &mut engine,
             v4,
@@ -6771,14 +7019,14 @@ fn staged_gesture_act_close_follows_staged() {
             true,
             vec![WindowId("win-a".to_owned())],
         );
-        match engine.gesture_act(&open, &test_issue(&open), &mut BTreeSet::new()) {
+        match engine.gesture_act(&test_issue(&open), &mut BTreeSet::new()) {
             GestureOutcome::Settled {
                 committed: false, ..
             } => {}
             _ => panic!("staged close clears (v4={v4})"),
         }
         assert!(engine.gesture.is_none(), "closed session cleared (v4={v4})");
-        // A passed-only close preserves the session.
+        // Staged without ingress or close holds the session.
         let mut engine = gesture_rig();
         stage_gesture(
             &mut engine,
@@ -6789,18 +7037,14 @@ fn staged_gesture_act_close_follows_staged() {
             true,
             Vec::new(),
         );
-        let open = contra_legacy(5, windows());
-        assert!(engine.gesture_bind(&open, &BTreeSet::new()));
+        assert!(engine.gesture_bind(&BTreeSet::new()));
         stage_gesture(&mut engine, v4, 6, windows(), None, true, Vec::new());
-        let mut contra_closed = contra_legacy(6, windows());
-        contra_closed.closed = vec![WindowId("win-a".to_owned())];
         match engine.gesture_act(
-            &contra_closed,
-            &test_issue(&contra_closed),
+            &test_issue(&contra_legacy(6, windows())),
             &mut BTreeSet::new(),
         ) {
             GestureOutcome::Held => {}
-            _ => panic!("passed-only close preserves (v4={v4})"),
+            _ => panic!("no staged close holds (v4={v4})"),
         }
         assert!(engine.gesture.is_some(), "session held (v4={v4})");
     }
@@ -9370,12 +9614,11 @@ fn staged_above_health_fallback_holds_rows_over_contra() {
 }
 
 #[test]
-fn staged_native_sticky_followup_reads_staged_over_contra() {
+fn staged_native_sticky_followup_uses_staged_gates_and_original_seq() {
     for v4 in [false, true] {
         // Spent Applied off-binding awaiting its followup: the staged
-        // lanes decide completion even when the passed contra report
-        // disagrees. The binding is observation-only seeded (unrequested,
-        // unfinished) so only the followup asserts.
+        // lanes decide completion. The unfinished binding and prior
+        // sticky provenance stand in for an earlier OFF producer.
         let setup = |complete: bool, sticky: Option<bool>| {
             let mut engine = engine_settle();
             let mut window_fact = fact("win-a", "out-a", 0);
@@ -9387,6 +9630,18 @@ fn staged_native_sticky_followup_reads_staged_over_contra() {
             seed_readable_domain(&mut engine, "win-a");
             seed_member(&mut engine, "win-a");
             let home = home_key("out-a");
+            engine
+                .mapping
+                .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+            engine.floating_scopes.insert(home.clone());
+            engine
+                .restored_sticky
+                .insert(WindowId("win-a".to_owned()), false);
+            engine
+                .members
+                .get_mut(&WindowId("win-a".to_owned()))
+                .expect("member")
+                .floating = true;
             engine.retained_states.insert(
                 (WindowId("win-a".to_owned()), StateProperty::Sticky),
                 RetainedStateBinding {
@@ -9429,33 +9684,159 @@ fn staged_native_sticky_followup_reads_staged_over_contra() {
                 .expect("sticky meta")
                 .followup_done
         };
-        // Staged gap holds: the contra complete report must not finish it.
+        // Staged gap retains proof and sticky provenance.
         let (mut engine, legacy) = setup(false, Some(false));
-        let mut contra = legacy.clone();
-        contra.inventory_complete = true;
-        engine.run_native_sticky_followups(&contra, &test_issue(&contra), &BTreeSet::new());
-        assert!(
-            !done(&engine),
-            "staged gap holds despite complete contra (v4={v4})"
-        );
-        // Staged restick holds: the contra non-sticky proof must not
-        // finish it while the staged fact still reads sticky.
+        engine.run_native_sticky_followups(&test_issue(&legacy), &BTreeSet::new());
+        assert!(!done(&engine), "staged gap holds (v4={v4})");
+        // Staged restick retains proof while the current fact is sticky.
         let (mut engine, legacy) = setup(true, Some(true));
-        let mut contra = legacy.clone();
-        contra.windows[0].sticky = Some(false);
-        engine.run_native_sticky_followups(&contra, &test_issue(&contra), &BTreeSet::new());
-        assert!(
-            !done(&engine),
-            "staged restick holds despite contra proof (v4={v4})"
-        );
+        engine.run_native_sticky_followups(&test_issue(&legacy), &BTreeSet::new());
+        assert!(!done(&engine), "staged restick holds (v4={v4})");
         // Staged complete with a fresh non-sticky fact finishes the
         // followup (positive control).
         let (mut engine, legacy) = setup(true, Some(false));
-        engine.run_native_sticky_followups(&legacy, &test_issue(&legacy), &BTreeSet::new());
+        engine.run_native_sticky_followups(&test_issue(&legacy), &BTreeSet::new());
         assert!(
             done(&engine),
             "staged complete finishes the followup (v4={v4})"
         );
+        assert!(
+            !engine
+                .restored_sticky
+                .contains_key(&WindowId("win-a".to_owned()))
+        );
+        assert_eq!(engine.command_highwater, Some(7));
+        assert!(engine.sticky_command_save.is_none());
+        assert!(engine.command_result.is_none());
+        let binding = engine
+            .retained_states
+            .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
+            .expect("binding retained");
+        assert_eq!(binding.target.revision, 1);
+        assert_eq!(
+            binding
+                .sticky_meta
+                .as_ref()
+                .expect("sticky meta")
+                .command_seq,
+            7
+        );
+    }
+}
+
+/// v4-staged proven-refusal rollback: `run_native_sticky_followups` driven
+/// directly off a v4 capture restores the exact pre-command runtime, queues
+/// one null-clear write for a prior-less producer, and leaves the original
+/// producer seq/revision untouched under a distinct followup issue.
+/// Held scopes and incomplete inventory retain proof with no write.
+#[test]
+fn v4_staged_native_sticky_refused_proven_rolls_back_with_original_seq() {
+    for v4 in [false, true] {
+        let win = WindowId("win-a".to_owned());
+        let home = home_key("out-a");
+        let setup = || {
+            let mut engine = engine_settle();
+            let (legacy, v4report) = pair_reports(1, vec![fact("win-a", "out-a", 0)], Vec::new());
+            stage_either(&mut engine, v4, &legacy, &v4report);
+            engine
+                .mapping
+                .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+            seed_readable_domain(&mut engine, "win-a");
+            seed_member(&mut engine, "win-a");
+            // Runtime after an ON producer from a tiled base.
+            engine.restored_sticky.insert(win.clone(), false);
+            engine
+                .sticky_saved
+                .insert(win.clone(), IntentData::new(Some(true), Some(false)));
+            let member = engine.members.get_mut(&win).expect("member seeded");
+            member.floating = true;
+            engine.retained_states.insert(
+                (win.clone(), StateProperty::Sticky),
+                RetainedStateBinding {
+                    target: RetainedStateTarget {
+                        window: win.clone(),
+                        property: StateProperty::Sticky,
+                        value: true,
+                        revision: 1,
+                    },
+                    pending: None,
+                    spent: true,
+                    disposition: AttemptOutcome::RefusedProven,
+                    sticky_meta: Some(crate::world_state::NativeStickyMeta {
+                        command_seq: 7,
+                        prior_saved: None,
+                        prior_restored_sticky: None,
+                        prior_restored_floats: false,
+                        prior_float: false,
+                        home: home.clone(),
+                        dest: home.clone(),
+                        requested: true,
+                        requested_save: IntentData::new(Some(true), Some(false)),
+                        is_toggle_float_clear: false,
+                        followup_done: false,
+                    }),
+                    fullscreen_meta: None,
+                    maximize_meta: None,
+                    above_meta: None,
+                },
+            );
+            engine
+        };
+        let binding_of = |engine: &WorldEngine| {
+            engine
+                .retained_states
+                .get(&(win.clone(), StateProperty::Sticky))
+                .expect("binding retained")
+                .clone()
+        };
+        let issue = crate::world_engine::EventIssue {
+            owner: OwnerId::parse("adapter-1").expect("owner"),
+            correlation: CorrelationId::parse("req-9").expect("correlation"),
+        };
+        // Held home retains proof with no write and no runtime change.
+        let mut held_engine = setup();
+        let mut held = BTreeSet::new();
+        held.insert(home.clone());
+        held_engine.run_native_sticky_followups(&issue, &held);
+        let held_binding = binding_of(&held_engine);
+        assert!(!held_binding.sticky_meta.expect("meta").followup_done);
+        assert!(held_engine.sticky_rollback_saves.is_empty());
+        assert!(held_engine.restored_sticky.contains_key(&win));
+        // Incomplete inventory retains proof the same way.
+        let mut gapped_engine = setup();
+        gapped_engine.staged.observation.inventory_complete = false;
+        gapped_engine.run_native_sticky_followups(&issue, &BTreeSet::new());
+        let gapped_binding = binding_of(&gapped_engine);
+        assert!(!gapped_binding.sticky_meta.expect("meta").followup_done);
+        assert!(gapped_engine.sticky_rollback_saves.is_empty());
+        // Healthy run: prior runtime restored through fresh restage.
+        let mut engine = setup();
+        engine.run_native_sticky_followups(&issue, &BTreeSet::new());
+        let binding = binding_of(&engine);
+        let meta = binding.sticky_meta.expect("meta");
+        assert!(meta.followup_done);
+        assert!(!engine.restored_sticky.contains_key(&win));
+        assert!(!engine.restored_floats.contains(&win));
+        let member = engine.members.get(&win).expect("member");
+        assert_eq!(member.home, home);
+        assert!(!member.floating);
+        assert_eq!(engine.staged_homing(&win).as_ref(), Some(&home));
+        // Prior-less producer: save slot returns to absence with exactly
+        // one null-clear rollback write.
+        assert!(!engine.sticky_saved.contains_key(&win));
+        assert_eq!(
+            engine.sticky_rollback_saves.get(&win),
+            Some(&IntentWrite {
+                win: win.clone(),
+                data: None,
+            })
+        );
+        // Original producer identity untouched by the distinct issue.
+        assert_eq!(binding.target.revision, 1);
+        assert_eq!(meta.command_seq, 7);
+        // Exactly-once queue: a second run writes nothing new.
+        engine.run_native_sticky_followups(&issue, &BTreeSet::new());
+        assert_eq!(engine.sticky_rollback_saves.len(), 1);
     }
 }
 

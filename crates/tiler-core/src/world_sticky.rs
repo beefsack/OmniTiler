@@ -32,7 +32,7 @@ use crate::world_engine::{
 use crate::world_members::MemberState;
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, CommandResult, HoldReason, IntentWrite, ScopeAuthority,
-    StateProperty, StateTarget, TransferKind, VisibilityTarget, WindowDesire, WorldReport,
+    StateProperty, StateTarget, TransferKind, VisibilityTarget, WindowDesire,
 };
 use crate::world_state::{MAX_RETAINED_STATE_BINDINGS, NativeStickyMeta};
 
@@ -234,7 +234,6 @@ impl WorldEngine {
     /// `SetSticky`/`ToggleSticky`: `Some(value)` sets, `None` toggles.
     pub(crate) fn execute_sticky_command(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
@@ -273,7 +272,6 @@ impl WorldEngine {
         }
         if self.sticky_route() == StickyRoute::Native {
             return self.execute_native_sticky_command(
-                report,
                 issue,
                 command_seq,
                 window,
@@ -288,7 +286,6 @@ impl WorldEngine {
             None => !self.sticky_current(window).unwrap_or(false),
         };
         self.run_sticky_transition(
-            report,
             issue,
             command_seq,
             window,
@@ -302,7 +299,6 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     fn execute_native_sticky_command(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
@@ -341,7 +337,7 @@ impl WorldEngine {
             _ => {}
         }
         if desired {
-            self.run_native_sticky_on(report, issue, command_seq, window, src, dest, held_scopes)
+            self.run_native_sticky_on(issue, command_seq, window, src, dest, held_scopes)
         } else {
             self.run_native_sticky_off(command_seq, window, src, dest, false)
         }
@@ -392,7 +388,6 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     fn run_native_sticky_on(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
@@ -472,16 +467,8 @@ impl WorldEngine {
             self.note_command(command_seq);
             return CommandApplied::NoEffect;
         }
-        let applied = self.run_sticky_transition(
-            report,
-            issue,
-            command_seq,
-            window,
-            src,
-            dest,
-            true,
-            held_scopes,
-        );
+        let applied =
+            self.run_sticky_transition(issue, command_seq, window, src, dest, true, held_scopes);
         match (&applied, &self.command_result) {
             (CommandApplied::NoEffect, None) => {}
             _ => return applied,
@@ -625,7 +612,6 @@ impl WorldEngine {
     /// the actual native write. Unsupported route keeps StateUnsupported.
     pub(crate) fn execute_sticky_toggle_float(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
@@ -666,7 +652,7 @@ impl WorldEngine {
             Ok(found) => found,
             Err(rejected) => return rejected,
         };
-        self.run_sticky_toggle_float(report, issue, command_seq, window, &src, &dest, held_scopes)
+        self.run_sticky_toggle_float(issue, command_seq, window, &src, &dest, held_scopes)
     }
 
     /// Composed sticky clear-and-tile on the current workspace. Classification
@@ -685,7 +671,6 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     fn run_sticky_toggle_float(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
@@ -739,7 +724,7 @@ impl WorldEngine {
                 );
             }
         }
-        staged.stage_facts(report);
+        staged.restage_classification();
         staged.build_staged_domains();
         if staged.staged_homing(window).as_ref() != Some(dest) {
             return refused(KIND_OPERATION, MSG_OPERATION);
@@ -935,7 +920,6 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     fn run_sticky_transition(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
@@ -1029,7 +1013,7 @@ impl WorldEngine {
                 );
             }
         }
-        staged.stage_facts(report);
+        staged.restage_classification();
         staged.build_staged_domains();
         // Exact single homing: the window must stage at the destination,
         // never under two homings in one sweep.
@@ -1202,7 +1186,6 @@ impl WorldEngine {
         &mut self,
         key: &(WindowId, crate::world_report::StateProperty),
         meta: &NativeStickyMeta,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         held_scopes: &BTreeSet<DomainKey>,
     ) {
@@ -1321,7 +1304,7 @@ impl WorldEngine {
                 }
             }
         };
-        staged.stage_facts(report);
+        staged.restage_classification();
         staged.build_staged_domains();
         if staged.staged_homing(&window).as_ref() != Some(&home) {
             return;
@@ -1408,7 +1391,6 @@ impl WorldEngine {
     /// fresh save actually wins at publisher merge.
     pub(crate) fn run_native_sticky_followups(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         held_scopes: &BTreeSet<DomainKey>,
     ) {
@@ -1436,7 +1418,7 @@ impl WorldEngine {
                 continue;
             }
             if disposition == AttemptOutcome::RefusedProven {
-                self.run_native_sticky_rollback_for(&key, &meta, report, issue, held_scopes);
+                self.run_native_sticky_rollback_for(&key, &meta, issue, held_scopes);
                 continue;
             }
             if disposition != AttemptOutcome::Applied {
@@ -1518,7 +1500,6 @@ impl WorldEngine {
             let pre_result = staged.command_result.clone();
             let applied = if meta.is_toggle_float_clear {
                 staged.run_sticky_toggle_float(
-                    report,
                     issue,
                     meta.command_seq,
                     &window,
@@ -1528,7 +1509,6 @@ impl WorldEngine {
                 )
             } else {
                 staged.run_sticky_transition(
-                    report,
                     issue,
                     meta.command_seq,
                     &window,

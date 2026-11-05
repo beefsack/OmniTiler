@@ -28,7 +28,6 @@ use crate::world_engine::{
 };
 use crate::world_report::{
     CommandResult, OneShotEffect, SendSource, TransferKind, TransferTarget, WorldCommand,
-    WorldReport,
 };
 
 impl WorldEngine {
@@ -47,7 +46,6 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_command(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         command: &WorldCommand,
@@ -809,21 +807,14 @@ impl WorldEngine {
                 workspace,
                 held_scopes,
             ),
-            WorldCommand::FocusDirectional { window, direction } => self.focus_directional(
-                report,
-                issue,
-                command_seq,
-                window,
-                direction,
-                &by_id,
-                held_scopes,
-            ),
+            WorldCommand::FocusDirectional { window, direction } => {
+                self.focus_directional(issue, command_seq, window, direction, &by_id, held_scopes)
+            }
             WorldCommand::MoveDirectional {
                 window,
                 direction,
                 same_axis,
             } => self.move_directional(
-                report,
                 issue,
                 command_seq,
                 window,
@@ -872,16 +863,11 @@ impl WorldEngine {
             WorldCommand::ToggleMaximize { window } => {
                 self.toggle_maximize(command_seq, window, held_scopes)
             }
-            WorldCommand::SetSticky { window, value } => self.execute_sticky_command(
-                report,
-                issue,
-                command_seq,
-                window,
-                Some(*value),
-                held_scopes,
-            ),
+            WorldCommand::SetSticky { window, value } => {
+                self.execute_sticky_command(issue, command_seq, window, Some(*value), held_scopes)
+            }
             WorldCommand::ToggleSticky { window } => {
-                self.execute_sticky_command(report, issue, command_seq, window, None, held_scopes)
+                self.execute_sticky_command(issue, command_seq, window, None, held_scopes)
             }
             WorldCommand::SetFullscreen { window, value } => {
                 self.execute_fullscreen_command(command_seq, window, Some(*value), held_scopes)
@@ -890,7 +876,7 @@ impl WorldEngine {
                 self.execute_fullscreen_command(command_seq, window, None, held_scopes)
             }
             WorldCommand::Operation(command) => {
-                self.execute_operation(report, issue, command_seq, command, &by_id, held_scopes)
+                self.execute_operation(issue, command_seq, command, &by_id, held_scopes)
             }
         }
     }

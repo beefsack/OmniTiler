@@ -20,7 +20,7 @@ use crate::world_engine::{
     MSG_SEND_WINDOW, RetainedTransfer, WorldEngine,
 };
 use crate::world_report::{
-    CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldCommand, WorldReport,
+    CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldCommand,
 };
 
 use crate::world_commands::CommandApplied;
@@ -40,7 +40,6 @@ impl WorldEngine {
     /// mutation, never silently degrades.
     pub(crate) fn execute_operation(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         command: &CoreCommand,
@@ -117,7 +116,7 @@ impl WorldEngine {
             CoreCommand::DragDrop { source, .. } | CoreCommand::DragPreview { source, .. }
                 if source.is_some() =>
             {
-                self.operation_drag(report, issue, command_seq, command, by_id, held_scopes)
+                self.operation_drag(issue, command_seq, command, by_id, held_scopes)
             }
             CoreCommand::Reconcile
             | CoreCommand::UpdateGaps
@@ -129,7 +128,7 @@ impl WorldEngine {
             | CoreCommand::ToggleOrientation { .. }
             | CoreCommand::DragDrop { .. }
             | CoreCommand::DragPreview { .. } => {
-                self.run_local_operation(report, issue, command_seq, command, by_id, held_scopes)
+                self.run_local_operation(issue, command_seq, command, by_id, held_scopes)
             }
         }
     }
@@ -359,7 +358,6 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn focus_directional(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
@@ -632,14 +630,7 @@ impl WorldEngine {
             cross_output_transfer: false,
             float_subject: false,
         };
-        self.run_local_operation(
-            report,
-            issue,
-            command_seq,
-            &local_command,
-            by_id,
-            held_scopes,
-        )
+        self.run_local_operation(issue, command_seq, &local_command, by_id, held_scopes)
     }
 
     /// Direction-only focus with no focused window (empty window): start
@@ -788,7 +779,6 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn move_directional(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
@@ -1102,14 +1092,7 @@ impl WorldEngine {
                 cross_output_transfer: false,
                 same_axis_move: same_axis,
             };
-            self.run_local_operation(
-                report,
-                issue,
-                command_seq,
-                &local_command,
-                by_id,
-                held_scopes,
-            )
+            self.run_local_operation(issue, command_seq, &local_command, by_id, held_scopes)
         };
         if composed_overlay && matches!(applied, CommandApplied::Rejected { .. }) {
             self.composed_maximized.insert(window.clone());
@@ -1245,7 +1228,6 @@ impl WorldEngine {
     /// keeps the legacy singleton route below.
     pub(crate) fn operation_drag(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         command: &CoreCommand,
@@ -1276,14 +1258,7 @@ impl WorldEngine {
                 };
             };
             if source_key == domain_key {
-                return self.run_local_operation(
-                    report,
-                    issue,
-                    command_seq,
-                    command,
-                    by_id,
-                    held_scopes,
-                );
+                return self.run_local_operation(issue, command_seq, command, by_id, held_scopes);
             }
             return self.operation_drag_pair(
                 issue,
@@ -1309,24 +1284,10 @@ impl WorldEngine {
             }
         };
         let Some(source_key) = source else {
-            return self.run_local_operation(
-                report,
-                issue,
-                command_seq,
-                command,
-                by_id,
-                held_scopes,
-            );
+            return self.run_local_operation(issue, command_seq, command, by_id, held_scopes);
         };
         if source_key == domain_key {
-            return self.run_local_operation(
-                report,
-                issue,
-                command_seq,
-                command,
-                by_id,
-                held_scopes,
-            );
+            return self.run_local_operation(issue, command_seq, command, by_id, held_scopes);
         }
         self.operation_drag_pair(
             issue,
@@ -1586,7 +1547,6 @@ impl WorldEngine {
     /// topology turns to a gap under a flight).
     pub(crate) fn run_local_operation(
         &mut self,
-        report: &WorldReport,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         command: &CoreCommand,
@@ -1649,7 +1609,6 @@ impl WorldEngine {
                 // refusing here instead of partially transitioning.
                 if self.sticky_route() != crate::world_sticky::StickyRoute::Unsupported {
                     return self.execute_sticky_toggle_float(
-                        report,
                         issue,
                         command_seq,
                         &window_id,

@@ -895,7 +895,16 @@
      classification-only restaging, preserving raw/effective-row distinctions
      and exactly-once intent ingestion. Finally 7b-3 adds and verifies v4
      pre-observation send/migration freezes against prior retained homes/views.
-     None of these helper checks establishes a v4 accepted run.
+      None of these helper checks establishes a v4 accepted run.
+      7b-2 implementation plan: retain effective classification rows separately
+      from the original raw observation, and restage command/continuation clones
+      from those captured inputs without intent ingestion. Remove legacy-report
+      forwarding from command, operation, gesture and native-sticky continuation
+      helpers; pass the current command explicitly for clear supersession and
+      retain typed event identity and original continuation sequences. Verify
+      dual-intake sticky transitions, native followup/rollback, effective held-row
+      conservation, diagnostic order and exactly-once intent ingestion before
+      the common gate. Pre-observation freezes and publication remain later work.
   3. 7c assembles parallel v4 publication from retained/staged state, including
      transfer correlation, diagnostics and switch events. Apply the producer's
      narrow unreadable-output/style hold before authorizing writes, with no new
@@ -977,6 +986,41 @@
   public-ingress or version change is included. The note remains active;
   7b-2 correlation/restaging, 7b-3 pre-observation freezes, 7c-7f and all eight
   OPEN/TBD gates remain.
+- Sub-increment 7b-2 outcome: shared command, operation, gesture and
+  native-sticky continuation helpers no longer take a legacy report. Clear
+  supersession takes the current command explicitly; event identity and original
+  continuation command sequences remain explicit and unchanged. Three sticky
+  clone/restage paths now classify captured effective rows, separate from the
+  unchanged original raw observation, without ingesting intent again. Restaging
+  rebuilds scoped diagnostics and indexes while retaining held/v4-only lanes;
+  the legacy report convenience wrapper is now test-only.
+  Five new tests cover composed sticky ON and toggle-float clear, intake/restage
+  parity with command-cleared intent, rich v4 raw/effective and own-process
+  conservation, held presentation and diagnostic order, repeated scale holds,
+  and v4-staged proven-refusal rollback. Existing applied-OFF followup coverage
+  now exercises the actual clone/restage transition and checks the original
+  command sequence. These are legacy accepted-run regressions and direct
+  staged/helper checks, not v4 accepted-run, publication, scenario or native
+  execution evidence. No final new test was verified failing against the old
+  implementation: initial failures exposed an ineligible command rig and a
+  missing retained mapping, and an earlier attempted regression did not reach
+  the intended restage. Test setup was corrected without changing product gates.
+  Independent source review found no blocking behavior issue; unused imports,
+  stale descriptions and coverage gaps were corrected. Initial clippy found
+  the now-unused production convenience wrapper; making it test-only resolves
+  that failure. Mechanical formatting corrections resolve the initial format
+  check. Direct sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1864 core unit tests and all selected core/protocol targets),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`.
+  Changed-file whitespace, added ASCII, NUL and relative Markdown link-file
+  checks pass. Full-file non-ASCII text is unchanged in the engine header and
+  settlement comments.
+  No new behavioral decision, fixture, manifest, Cargo, adapter, public-ingress
+  or version change is included. 7b-2 is finished; the note remains active.
+  7b-3 pre-observation freezes, 7c-7f and all eight OPEN/TBD gates remain.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and
