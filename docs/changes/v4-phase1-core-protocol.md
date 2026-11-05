@@ -1003,6 +1003,14 @@
      `linked-observe` but canonical reply encoding refuses duplicate workspace
      ids across outputs. Neither failed scenario counts as end-to-end evidence.
      7f-3b retains the capacity-float investigation and stacking storage driver;
+     its plan is to first reproduce the immutable `capacity-float-acquire`
+     assertion on the reused ordered runner, trace the typed internal admission
+     path and correct any demonstrated core defect without a fixture-side
+     workaround. Restore the four lifetime-bound coupled-property storage
+     events, independently test persistence-before-write, failed-storage no-write
+     and exact-lifetime restore, then execute every `persistent-above` step and
+     literal assertion through genuine codecs/internal reports before the
+     scoped test/build/clippy/format and changed-file gates.
      7f-3c retains the shared-workspace producer/codec identity investigation
      and linked-selector run. Resolve those within the parallel internal path
      or report the contract boundary before changing public codec semantics.
@@ -1410,6 +1418,106 @@
   eight OPEN/TBD gates remain. Next: reproduce the capacity-float failure on
   the reused runner and investigate the parallel internal admission path
   before restoring the persistent-above scenario and storage-unit driver.
+- Sub-increment 7f-3b status (gates green; full scenario BLOCKED): the ordered
+  reproduction independently confirms `capacity-float-acquire` fails. Its sole
+  ordinary resizable newcomer has minimums 2000x1200 on work area 1920x1040;
+  the prior lifetime closes in the same report. Genuine v4 decoding, internal
+  `handle_report_v4` and canonical encoding produce a tiled window with
+  `floating:false`, empty `float_origin`, allocation 1904x1024 and no above
+  target. This is not demonstrated as a v4-specific defect: shared
+  `plan_admission_leg` calls `select_admission_target`/`tree_admits_candidate`,
+  which accept a geometrically valid sole leaf even when hinted projection
+  flags its minimum as overconstrained. `size_hints.rs` explicitly preserves
+  projection success for that case. The active
+  [best-effort admission decision](../decisions/layout-and-admission.md#best-effort-admission-fallback)
+  defines capacity as geometric exhaustion, not minimum infeasibility, and
+  says minimum-overconstraint does not refuse. The existing source-evidenced
+  [R-MIN-03 discriminator](../spec/reference-outcomes/minimum-size.md#r-min-03-backfill-oversized-sole-minimum-scrolling)
+  already covers opening an oversized-minimum ordinary window in an empty
+  tiled domain. It records COSMIC ordinary tiling/allocation and cropping,
+  Hyprland sole-leaf full-area tiling with size limits off by default (opt-in
+  clamp/recenter), and i3/sway ordinary tiling without minimum clamping. None
+  of those Tier 1 accounts automatically floats an ordinary sole newcomer
+  merely for an oversized minimum; fixed-size min==max is a separate exception.
+  These are existing documented source findings, not new runtime verification;
+  exact native sole-leaf frames/client settlement remain TBD. W1's union
+  policy governs windows already classified as floats; it does not replace
+  D1 admission. Minimum-driven capacity admission would reverse that decision.
+  The open user decision is PARKED: either amend the fixture step through a
+  new manifest exception so capacity arises geometrically while keeping D1,
+  or reverse D1 for minimum-infeasible newcomers. Neither route is selected;
+  no tentative choice, production/admission change, fixture/manifest edit or
+  test-side product workaround is included.
+  The follow-up plan was to preserve a strict passing prefix and an explicitly
+  ignored full run, finish storage guards, collect labelled continuation and
+  local-copy diagnostics, and apply every scoped gate. The passing prefix now
+  executes exactly twenty steps (one handshake, one settings, eighteen reports,
+  24 original literal assertions); it is NOT a scenario pass. The full ordered
+  test preserves all thirty steps, twenty-one reports and 41 literal assertions,
+  but is `#[ignore]`d with this blocker and phase note as its reason.
+  `persistent-above` is NOT passing or accepted end to end.
+  DIAGNOSTIC ONLY: the unmodified inputs now run all thirty steps through
+  genuine decoders, internal `handle_report_v4` and canonical encoders, recording
+  false assertions without inventing state. Exactly 39 of 41 literal assertions
+  pass: the capacity assertion and the next step's window-float/above assertion
+  fail. Expected failures are pinned to their exact step/expression; jq syntax,
+  runtime and non-boolean errors still fail the test. This diagnostic is not
+  scenario evidence. The post-capacity results are:
+
+  | Step | Literal assertion results | Dependence on capacity classification |
+  | --- | --- | --- |
+  | `workspace-mode-float-acquire` | Output floating mode passes; window floating/above fails | Unresolved; fails in both diagnostics below |
+  | `stacking-preimage-before-write` | Both pass | Independent storage model |
+  | `stacking-reused-lifetime-no-restore` | Pass | Independent storage model |
+  | `stacking-owned-coupled-restore` | Both pass | Independent storage model |
+  | `stacking-storage-failure-no-write` | Both pass | Independent storage model |
+  | `above-unsupported-reconnect` | Pass | Drops the complete engine |
+  | `above-unsupported` | Both pass | Fresh generation-b engine |
+  | `unsupported-settings` | Both pass | Fresh generation-b engine |
+  | `float-without-stacking-support` | Both pass | Fresh generation-b engine |
+
+  A retained PAIRED DIAGNOSTIC changes only the capacity step's test-local
+  message copy: full/work extents 32x32/25x25 leave positive 9x9 tiled bounds
+  after outer gaps; add an ordinary `win-anchor` before `win-capacity`, both
+  with 1x1 minimums and no maximums. A split needs gap 8 plus two positive
+  pixels, so the second admission genuinely exhausts geometry under D1. The
+  unchanged original capacity assertion passes, including capacity origin and
+  controlled above. All later immutable steps/assertions run unchanged: the
+  workspace-mode window assertion still fails, the other eight steps pass
+  (40/41 assertions overall). The extra anchor changes prior state, so this
+  is not a clean causal control: whether the workspace-mode failure depends
+  on the original capacity outcome remains TBD, not a proven cascade. An
+  earlier discarded local trial retained only an existing float and did not
+  exhaust geometry; no production repair was attempted in either diagnostic.
+  The test-only storage driver models acquire-true above writes only. It now
+  rejects non-above properties, non-controlled authority and false targets
+  before persistence/write; false is explicitly unsupported, not a fake
+  release/no-op. Seven passing independent tests cover persist-before-write,
+  failed storage with no write/saved slot, exact `(win, tag)` restore, the
+  three guard rejections and rejected-target non-persistence. These establish
+  offline model invariants, not native storage survival or complete adapter
+  release behavior. Four new guard tests were observed failing before the
+  guards were implemented; the original three storage tests were not red-first.
+  The capacity reproduction was observed red during implementation and on
+  independent rerun before the prefix/ignored split. Two v4-only workaround
+  ideas were source-rejected, not implemented failed repair attempts. Source
+  review of the final harness found no blocking issue.
+  Direct sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1947 core unit tests and all selected targets; this runner has thirteen
+  passing tests and the one explicitly ignored full scenario),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. Direct
+  `devenv shell -- cargo test -q -p tiler-protocol --test raw_attempt_settlement_v4 persistent_above_capacity -- --skip workspace_unsafe_posture --nocapture`
+  also passes both diagnostic tests with the outcomes above. Changed-file
+  whitespace, full-file ASCII, NUL and relative-link file-target checks pass. The
+  raw-attempt scenario's ten reports/fourteen assertions and window-state's
+  nineteen reports/56 assertions still pass; its native fullscreen gate stays
+  OPEN. No 7f-3c or later-unit work is included; the phase note stays active.
+  Next: obtain the parked user decision before resolving the capacity oracle;
+  investigate the separate workspace-mode failure without assuming causation,
+  then rerun the strict full scenario and every slice gate.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and
