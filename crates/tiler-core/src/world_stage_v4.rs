@@ -88,7 +88,11 @@ impl WorldEngine {
     /// v4-only rows, and the shared per-window classification loop. The
     /// raw capture moves into the new staged view unchanged. Takes no
     /// ledger action; callers own exactly-once ingestion.
-    fn stage_captured_v4(&mut self, effective: &WorldReportV4, observation: StagedObservation) {
+    pub(crate) fn stage_captured_v4(
+        &mut self,
+        effective: &WorldReportV4,
+        observation: StagedObservation,
+    ) {
         let prior_homing = self.staged.homing.clone();
         let resolved_held = self.resolve_held_window_scopes(&effective.held_windows, &prior_homing);
         let mut diagnostics =

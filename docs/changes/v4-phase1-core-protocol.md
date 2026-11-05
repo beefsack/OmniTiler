@@ -934,6 +934,19 @@
      Validate renderer input against the latest previously published presentation
      revision at command handling, never the pending revision; stamp the resulting
      presentation separately. Verify genuine internal v4 command/observation runs.
+     Implementation plan: add a parallel typed accepted-run entry on an already
+     admitted candidate, preserving the legacy settlement/sweep/gesture ordering
+     without a generic report engine or legacy conversion. Capture original raw
+     facts once, ingest intent before capability-graded classification, and reuse
+     classification-only command restaging. Validate renderer input immediately
+     before ordinary command dispatch against the prior publication token;
+     command refusal restores the post-observation image and consumes its sequence.
+     Finish membership/lifetime retention before pager retention and genuine v4
+     presentation recomputation, then capture prior accepted context from reply rows.
+     Verify first-admission intent, observation/command progression, consumed
+     reconciliation, rollback, source freezes, pager retention, stale/unissued
+     renderer targets and normal command gates. Candidate adoption, bootstrap,
+     replay caches and envelope/budget gates remain 7e.
   5. 7e adds internal v4 bootstrap, typed reply/replay bookkeeping and bounded
      candidate adoption, including exact-size/revision/structural refusal gates.
      Verify duplicate/consumed/reused/stale requests, exhaustion and rollback
@@ -1119,6 +1132,53 @@
   No new behavioral decision, fixture, manifest, Cargo, adapter, public-ingress
   or version change is included. 7c is finished; the phase note remains active.
   7d-7f, later unit 7 and all eight OPEN/TBD gates remain.
+- Sub-increment 7d outcome: `run_accepted_v4` runs an already-admitted internal
+  candidate through genuine typed v4 observation, command dispatch and finish.
+  Source routing freezes before raw capture; capture precedes exactly one initial
+  intent ingestion and capability-graded classification. Shared settlement,
+  sweep, gesture and command-restaging helpers retain legacy order. Refused
+  commands restore the post-observation image and consume their sequence;
+  creation/revision exhaustion remains an envelope refusal for candidate discard.
+  The supplied issuing revision must be the next state revision (debug-asserted);
+  shared producers mint against that same next revision. No legacy replay cache
+  is populated. Internal readiness seeds are not v4 bootstrap/replay evidence.
+  Finish reconciles lifetime/membership state, retains genuine pager facts,
+  recomputes and stamps presentation, and captures prior accepted context from
+  the actual published rows. Renderer validation reads the previous published
+  presentation revision before dispatch/publication; stale targets refuse only
+  the command, and unchanged targets retain ordinary command gates.
+  Bare v4 by-id focus now passes the shared dispatch gate; legacy report
+  validation still requires its legacy direction vocabulary.
+  Twenty-two new tests exercise internal v4 runs without legacy accepted seeds:
+  first-admission float import, bare focus and consumed reconciliation, preserved
+  observations on refusal, composed-sticky clear/restaging, old/equal/unissued
+  renderer revisions, actual target rehoming, hotplug source freezing, pager
+  fresh/held/incomplete/close/complete-absence retention, prior context and stamps,
+  and exhaustion propagation. These are internal runtime checks, not complete
+  immutable-scenario, public-ingress, adoption/bounds/replay or native evidence.
+  The sticky-clear test's late import is independently ignored by the admitted
+  latch; it does not prove ingestion call count. Exactly-once ordering is source
+  audited, with existing classification-only helper regressions as controls.
+  Rollback restores are source-audited, but tested refusals occur before command
+  mutation: temporary restore omissions left those tests green. Trailing-send
+  setup uses the pre-created spare; minimized unknown-sticky migration hits its
+  pre-commit gate. No post-partial-mutation rollback execution is claimed.
+  The bare-focus regression was reported behaviorally failing against the old
+  shared gate before correction. Other initial failures were missing-module
+  compilation or test-rig issues; most new checks first ran after implementation.
+  Independent source review found the focus mismatch and no remaining blocking
+  issue after correction. Mechanical formatting differences from narrow rustfmt
+  required correction to the workspace formatter's ordering/layout.
+  Direct sequential verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1923 core unit tests and every selected core/protocol target),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. Changed-file whitespace,
+  ASCII, NUL and relative Markdown link-file checks pass. No new behavioral
+  decision, fixture, manifest, Cargo, adapter, public-ingress or version change
+  is included. 7d is finished; the phase note remains active. 7e-7f, later unit 7
+  and all eight OPEN/TBD gates remain.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and

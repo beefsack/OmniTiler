@@ -263,6 +263,26 @@ impl WorldEngine {
         pre_known: &BTreeSet<WindowId>,
         pre_slotted: &BTreeSet<WindowId>,
     ) {
+        self.mint_born_clears_inner(report.presentation.paused, pre_known, pre_slotted);
+    }
+
+    /// Report-independent born-clear minting for the parallel v4 accepted
+    /// run: the same sweep-time admission pass with no game-lane pause (v4
+    /// carries no paused lane).
+    pub(crate) fn mint_born_clears_v4(
+        &mut self,
+        pre_known: &BTreeSet<WindowId>,
+        pre_slotted: &BTreeSet<WindowId>,
+    ) {
+        self.mint_born_clears_inner(false, pre_known, pre_slotted);
+    }
+
+    fn mint_born_clears_inner(
+        &mut self,
+        presentation_paused: bool,
+        pre_known: &BTreeSet<WindowId>,
+        pre_slotted: &BTreeSet<WindowId>,
+    ) {
         // Neutral opt-in: without the automatic birth-clear capability no
         // birth behavior mints, tracks, or publishes. Outstanding bindings
         // and lifetime marks drop outright so a rebind or an opt-out report
@@ -435,7 +455,7 @@ impl WorldEngine {
                 if fixed_exit {
                     continue;
                 }
-                if !self.born_clear_authorized(report.presentation.paused, &window, &home) {
+                if !self.born_clear_authorized(presentation_paused, &window, &home) {
                     continue;
                 }
                 let operation_id = self.mint_born_operation_id();
@@ -470,7 +490,7 @@ impl WorldEngine {
             if self.born_floating_first.contains(&window) {
                 continue;
             }
-            if !self.born_clear_authorized(report.presentation.paused, &window, &home) {
+            if !self.born_clear_authorized(presentation_paused, &window, &home) {
                 continue;
             }
             // R-MAX-06 latch at tiled-first evaluation under the live value:

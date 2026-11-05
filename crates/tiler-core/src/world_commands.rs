@@ -66,7 +66,13 @@ impl WorldEngine {
         }
         match command {
             WorldCommand::Focus { window, direction } => {
-                if !matches!(direction.as_str(), "left" | "right" | "up" | "down") {
+                // V4 by-id focus spells the removed direction as the
+                // empty string; the legacy envelope still refuses it
+                // through `valid_command`, so only this shared dispatch
+                // gate admits the bare shape.
+                if !(direction.is_empty()
+                    || matches!(direction.as_str(), "left" | "right" | "up" | "down"))
+                {
                     return CommandApplied::Rejected {
                         kind: KIND_DIRECTION,
                         message: MSG_DIRECTION,

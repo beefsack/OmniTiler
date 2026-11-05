@@ -55,6 +55,7 @@ pub mod world_publish;
 pub(crate) mod world_publish_v4;
 pub mod world_report;
 pub mod world_report_v4_checks;
+pub(crate) mod world_run_v4;
 pub(crate) mod world_selection;
 pub mod world_sends;
 pub mod world_settle;
@@ -174,6 +175,8 @@ mod world_rejected_accepted_tests;
 mod world_renderer_input_v4_tests;
 #[cfg(test)]
 mod world_restored_routing_tests;
+#[cfg(test)]
+mod world_run_v4_tests;
 #[cfg(test)]
 mod world_selection_await_tests;
 #[cfg(test)]
