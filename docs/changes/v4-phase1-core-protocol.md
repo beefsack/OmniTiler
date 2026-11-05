@@ -886,6 +886,16 @@
      correlation and staged inputs, then adds v4 pre-observation routing freezes.
      Preserve original command sequences, commandless nulls and existing normal
      command gates. Verify each adapted helper and freeze before assembly.
+     Split into 7b-1 staged routing/domain helpers: homing, domain construction,
+     logical pre-convergence and retile resweeps no longer require a legacy
+     report; post-capture fresh placement reads the captured routing lanes.
+     Verify legacy progression and direct v4-staged helper behavior, including
+     retained-home and fresh-placement gates. Then 7b-2 removes remaining
+     command/continuation report coupling with explicit correlation and
+     classification-only restaging, preserving raw/effective-row distinctions
+     and exactly-once intent ingestion. Finally 7b-3 adds and verifies v4
+     pre-observation send/migration freezes against prior retained homes/views.
+     None of these helper checks establishes a v4 accepted run.
   3. 7c assembles parallel v4 publication from retained/staged state, including
      transfer correlation, diagnostics and switch events. Apply the producer's
      narrow unreadable-output/style hold before authorizing writes, with no new
@@ -941,6 +951,32 @@
   added ASCII, NUL and local-link checks pass. No fixture, manifest, Cargo,
   adapter, public-ingress or version change is included; the phase note remains
   active. 7a is finished; 7b-7f and all eight OPEN/TBD gates remain.
+- Sub-increment 7b-1 outcome: logical homing, domain construction, logical
+  pre-convergence and retile resweeps no longer require a legacy report.
+  Post-capture fresh placement reads staged routing facts and preserves its
+  focused-leg trace and existing gates; pre-observation send/migration freezes
+  remain unchanged. Five new tests cover captured cursor routing, focused-policy
+  routing and trace, bootstrap/incomplete-inventory gates, retained-home
+  invariance, and genuine v4 staging through convergence/domain construction
+  and an occupied sessionless-domain resweep with explicit owner/correlation.
+  The cursor regression was reported failing before the refactor; the other
+  tests are post-implementation checks or behavior-preservation controls.
+  Independent source review found no blocking issue; focused-leg trace and
+  gate coverage were strengthened before acceptance. Legacy accepted-run
+  regression coverage and direct v4 helper checks pass; no v4 accepted-run,
+  publication, scenario or native evidence follows. Direct sequential
+  verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1859 core unit tests and all selected core/protocol targets),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. Changed-file whitespace,
+  added ASCII, NUL and local-link checks pass. The full-file ASCII scan finds
+  only unchanged pre-existing characters in the engine module header.
+  No fixture, manifest, Cargo, adapter,
+  public-ingress or version change is included. The note remains active;
+  7b-2 correlation/restaging, 7b-3 pre-observation freezes, 7c-7f and all eight
+  OPEN/TBD gates remain.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and

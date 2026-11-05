@@ -411,7 +411,7 @@ fn local_toggle_orientation_uses_issue_owner_with_ownerless_connection_and_inval
             // Real domain join over the staged facts (classification
             // only; the invalid request id never validates here),
             // mirroring accepted-run assembly.
-            engine.build_staged_domains(&probe);
+            engine.build_staged_domains();
             let issue = EventIssue {
                 owner: OwnerId::parse(if wrong_owner { "intruder" } else { "adapter-1" })
                     .expect("owner"),

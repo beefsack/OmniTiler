@@ -6387,7 +6387,7 @@ fn stage_gesture(
     legacy.inventory_complete = complete;
     v4report.inventory_complete = complete;
     stage_either(engine, v4, &legacy, &v4report);
-    engine.build_staged_domains(&legacy);
+    engine.build_staged_domains();
     engine.retain_live_topology();
 }
 
@@ -7318,19 +7318,9 @@ fn staged_live_order_and_designated_primary_win_over_contra() {
             vec!["out-a", "out-b", "out-c"],
             "staged valid+held merge (v4={v4})"
         );
-        // Divergent passed report: extra live screen, first-valid primary.
-        let mut contra = report_full(
-            1,
-            1,
-            vec![screen("out-a", 0), screen("out-z", 1600)],
-            Vec::new(),
-            Vec::new(),
-            "",
-            None,
-            None,
-        );
-        contra.primary_output = Some(OutputId("out-a".to_owned()));
-        engine.converge_logical_pre(&contra);
+        // No report parameter remains: convergence reads staged slices
+        // only, so a divergent source cannot retarget live-set or primary.
+        engine.converge_logical_pre();
         let mut keys: Vec<&str> = engine.output_facts.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(
@@ -7398,18 +7388,9 @@ fn staged_live_order_and_designated_primary_win_over_contra() {
             fallback.views.insert("out-c".to_owned(), "ws-2".to_owned());
             fallback.views.insert("out-x".to_owned(), "ws-9".to_owned());
             stage_either(&mut fallback, v4, &leg, &v4leg);
-            let mut contra_fallback = report_full(
-                1,
-                1,
-                vec![screen("out-a", 0), screen("out-c", 800)],
-                Vec::new(),
-                Vec::new(),
-                "",
-                None,
-                None,
-            );
-            contra_fallback.primary_output = Some(OutputId("out-c".to_owned()));
-            fallback.converge_logical_pre(&contra_fallback);
+            // No report parameter remains: the staged fallback (never a
+            // divergent source) owns displacement.
+            fallback.converge_logical_pre();
             assert_eq!(
                 fallback
                     .displaced
@@ -7484,7 +7465,7 @@ fn staged_logical_post_parity_pad_and_gap_hold() {
         legacy.inventory_complete = true;
         v4report.inventory_complete = true;
         stage_either(&mut engine, v4, &legacy, &v4report);
-        engine.build_staged_domains(&legacy);
+        engine.build_staged_domains();
         assert_eq!(
             engine.staged.homing.get(&WindowId("win-b".to_owned())),
             Some(&DomainKey {
@@ -7648,7 +7629,7 @@ fn staged_logical_post_parity_pad_and_gap_hold() {
             v4leg.inventory_complete = complete;
             v4leg.native = native;
             stage_either(&mut host, v4, &leg, &v4leg);
-            host.build_staged_domains(&leg);
+            host.build_staged_domains();
             host.converge_logical_post();
             if expect_pad {
                 assert_eq!(
@@ -7705,17 +7686,9 @@ fn staged_displacement_reads_staged_live_not_contra() {
         legacy.screens = vec![screen("out-b", 800)];
         v4report.screens = legacy.screens.clone();
         stage_either(&mut engine, v4, &legacy, &v4report);
-        let contra = report_full(
-            2,
-            2,
-            vec![screen("out-a", 0), screen("out-b", 800)],
-            Vec::new(),
-            Vec::new(),
-            "",
-            None,
-            None,
-        );
-        engine.converge_logical_pre(&contra);
+        // No report parameter remains: staged liveness (never a passed
+        // live claim) owns displacement.
+        engine.converge_logical_pre();
         assert_eq!(
             engine
                 .displaced
@@ -7772,7 +7745,7 @@ fn staged_displacement_reads_staged_live_not_contra() {
             stage_either(&mut focus_engine, v4, &fleg, &fv4);
             // Proof-only join: homing proves through retained residency,
             // the view transfer must come from the staged focus above.
-            focus_engine.converge_logical_pre(&contra_legacy(2, Vec::new()));
+            focus_engine.converge_logical_pre();
             let has_view = focus_engine.retained.iter().any(|retained| {
                 matches!(&retained.target.kind, TransferKind::View)
                     && retained.target.target_output == OutputId("out-b".to_owned())
@@ -7812,7 +7785,7 @@ fn staged_trailing_marker_reads_staged_gates_not_contra() {
         legacy.inventory_complete = true;
         v4report.inventory_complete = true;
         stage_either(&mut engine, v4, &legacy, &v4report);
-        engine.build_staged_domains(&legacy);
+        engine.build_staged_domains();
         let mut _contra = contra_legacy(2, vec![fact("win-a", "out-a", 0)]);
         _contra.inventory_complete = false;
         // views: retained ws-1 shows, ws-2 tail spare is unoccupied.
@@ -7828,7 +7801,7 @@ fn staged_trailing_marker_reads_staged_gates_not_contra() {
         gap_leg.inventory_complete = false;
         gap_v4.inventory_complete = false;
         stage_either(&mut engine, v4, &gap_leg, &gap_v4);
-        engine.build_staged_domains(&gap_leg);
+        engine.build_staged_domains();
         let _complete = contra_legacy(3, vec![fact("win-a", "out-a", 0)]);
         assert_eq!(
             engine.trailing_marked_id("out-a"),
@@ -7862,9 +7835,9 @@ fn staged_domain_focus_and_host_readability_win_over_contra() {
         legacy.focused_global = "win-a".to_owned();
         v4report.focused_global = "win-a".to_owned();
         stage_either(&mut engine, v4, &legacy, &v4report);
-        let mut contra = contra_legacy(2, vec![fact("win-a", "out-a", 0)]);
-        contra.focused_global = "win-ghost".to_owned();
-        engine.build_staged_domains(&contra);
+        // Staged focus wins with no report parameter: a ghost focus has
+        // no staged fact, so it can never surface as domain focus.
+        engine.build_staged_domains();
         let domain = engine
             .staged
             .domains
@@ -7904,7 +7877,7 @@ fn staged_domain_focus_and_host_readability_win_over_contra() {
         gap_leg.inventory_complete = false;
         gap_v4.inventory_complete = false;
         stage_either(&mut host, v4, &gap_leg, &gap_v4);
-        host.build_staged_domains(&contra_legacy(3, vec![fact("win-a", "out-a", 0)]));
+        host.build_staged_domains();
         let gap_domain = host
             .staged
             .domains
@@ -7933,7 +7906,7 @@ fn staged_domain_focus_and_host_readability_win_over_contra() {
         ok_leg.inventory_complete = true;
         ok_v4.inventory_complete = true;
         stage_either(&mut clear, v4, &ok_leg, &ok_v4);
-        clear.build_staged_domains(&ok_leg);
+        clear.build_staged_domains();
         let clear_domain = clear
             .staged
             .domains
@@ -7945,6 +7918,370 @@ fn staged_domain_focus_and_host_readability_win_over_contra() {
             "staged complete reads host domain (v4={v4})"
         );
     }
+}
+
+#[test]
+fn staged_routing_owns_post_capture_fresh_placement() {
+    for v4 in [false, true] {
+        // Fresh-placement routing must come from the captured staged
+        // observation even when the source report object changes
+        // afterward: the accepted caller boundary already captured.
+        let mut engine = engine_settle();
+        accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0), screen("out-b", 800)],
+                vec![fact("win-a", "out-a", 0)],
+                Vec::new(),
+                "",
+                None,
+                None,
+            ),
+        );
+        engine
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        engine
+            .mapping
+            .insert("out-b".to_owned(), vec!["ws-2".to_owned()]);
+        engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+        engine.views.insert("out-b".to_owned(), "ws-2".to_owned());
+        let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+        let (mut legacy, mut v4report) = pair_reports(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-new", "out-a", 0)],
+            Vec::new(),
+        );
+        legacy.screens = screens.clone();
+        v4report.screens = screens;
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        legacy.cursor = Some((900, 100));
+        v4report.cursor = Some((900, 100));
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        // Mutate the source objects after capture: staged routing owns
+        // post-capture fresh placement, never the mutated source.
+        legacy.cursor = Some((100, 100));
+        v4report.cursor = Some((100, 100));
+        engine.converge_logical_pre();
+        engine.build_staged_domains();
+        assert_eq!(
+            engine.staged.homing.get(&WindowId("win-new".to_owned())),
+            Some(&DomainKey {
+                output: OutputId("out-b".to_owned()),
+                workspace: WorkspaceId("ws-2".to_owned()),
+            }),
+            "captured routing owns fresh placement (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_focused_policy_owns_post_capture_routing_and_trace() {
+    for v4 in [false, true] {
+        // Focused-output placement ignores the cursor: the captured
+        // managed-focus leg must own fresh placement even when the
+        // source objects mutate afterward. Cursor sits on out-a while
+        // the focused resident lives on out-b, so policy (out-b) and
+        // native fallback (out-a) disagree.
+        let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+            "gen-1",
+            "adapter-1",
+            HostCapabilities {
+                fullscreen: true,
+                maximize: true,
+                native_sticky: true,
+                above: true,
+                ..Default::default()
+            },
+            vec![(
+                "freshPlacement".to_owned(),
+                RawSettingValue::String("focused-output-last-focused".to_owned()),
+            )],
+        )
+        .expect("generation");
+        accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0), screen("out-b", 800)],
+                vec![fact("win-focus", "out-b", 800)],
+                Vec::new(),
+                "",
+                None,
+                None,
+            ),
+        );
+        engine
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        engine
+            .mapping
+            .insert("out-b".to_owned(), vec!["ws-2".to_owned()]);
+        engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+        engine.views.insert("out-b".to_owned(), "ws-2".to_owned());
+        let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+        let (mut legacy, mut v4report) = pair_reports(
+            2,
+            vec![fact("win-focus", "out-b", 800), fact("win-new", "out-a", 0)],
+            Vec::new(),
+        );
+        legacy.screens = screens.clone();
+        v4report.screens = screens;
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        legacy.focused_global = "win-focus".to_owned();
+        v4report.focused_global = "win-focus".to_owned();
+        legacy.cursor = Some((100, 100));
+        v4report.cursor = Some((100, 100));
+        legacy.primary_output = Some(OutputId("out-b".to_owned()));
+        v4report.primary_output = Some(OutputId("out-b".to_owned()));
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        // Mutate the sources after capture: ghost focus, retargeted
+        // primary, cursor swung to the other output. Staged routing owns
+        // post-capture fresh placement, never the mutated source.
+        legacy.focused_global = "win-ghost".to_owned();
+        v4report.focused_global = "win-ghost".to_owned();
+        legacy.primary_output = Some(OutputId("out-a".to_owned()));
+        v4report.primary_output = Some(OutputId("out-a".to_owned()));
+        legacy.cursor = Some((900, 100));
+        v4report.cursor = Some((900, 100));
+        engine.converge_logical_pre();
+        engine.build_staged_domains();
+        let key = DomainKey {
+            output: OutputId("out-b".to_owned()),
+            workspace: WorkspaceId("ws-2".to_owned()),
+        };
+        assert_eq!(
+            engine.staged.homing.get(&WindowId("win-new".to_owned())),
+            Some(&key),
+            "captured focused leg owns fresh placement (v4={v4})"
+        );
+        assert!(
+            engine
+                .staged
+                .domains
+                .iter()
+                .any(|domain| domain.key == key && domain.readable),
+            "captured routing assembles a readable domain (v4={v4})"
+        );
+        let trace = &engine.fresh_focus.trace;
+        assert_eq!(
+            trace.basis,
+            crate::fresh_focus::FreshFocusBasis::Current,
+            "trace basis (v4={v4})"
+        );
+        assert_eq!(
+            trace.chosen,
+            Some(OutputId("out-b".to_owned())),
+            "trace chosen (v4={v4})"
+        );
+        assert_eq!(
+            trace.current,
+            Some(OutputId("out-b".to_owned())),
+            "trace current (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn staged_fresh_gate_holds_native_affinity_without_trace_update() {
+    // Gate matrix on staged-only homing: unbootstrapped or incomplete
+    // inventory keeps native affinity even with the cursor (and primary)
+    // on the competing output, and leaves a preseeded trace untouched.
+    for v4 in [false, true] {
+        for (bootstrapped, complete) in [(false, true), (true, false)] {
+            let mut engine = engine_settle();
+            if bootstrapped {
+                accepted(
+                    &mut engine,
+                    &report_full(
+                        1,
+                        1,
+                        vec![screen("out-a", 0), screen("out-b", 800)],
+                        vec![fact("win-a", "out-a", 0)],
+                        Vec::new(),
+                        "",
+                        None,
+                        None,
+                    ),
+                );
+            }
+            engine
+                .mapping
+                .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+            engine
+                .mapping
+                .insert("out-b".to_owned(), vec!["ws-2".to_owned()]);
+            engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+            engine.views.insert("out-b".to_owned(), "ws-2".to_owned());
+            let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+            let (mut legacy, mut v4report) = pair_reports(
+                2,
+                vec![fact("win-a", "out-a", 0), fact("win-new", "out-a", 0)],
+                Vec::new(),
+            );
+            legacy.screens = screens.clone();
+            v4report.screens = screens;
+            legacy.inventory_complete = complete;
+            v4report.inventory_complete = complete;
+            legacy.cursor = Some((900, 100));
+            v4report.cursor = Some((900, 100));
+            legacy.primary_output = Some(OutputId("out-b".to_owned()));
+            v4report.primary_output = Some(OutputId("out-b".to_owned()));
+            stage_either(&mut engine, v4, &legacy, &v4report);
+            engine.fresh_focus.trace = crate::fresh_focus::FreshFocusTrace {
+                current: Some(OutputId("out-z".to_owned())),
+                retained: Some(OutputId("out-a".to_owned())),
+                chosen: Some(OutputId("out-z".to_owned())),
+                basis: crate::fresh_focus::FreshFocusBasis::Current,
+            };
+            engine.converge_logical_pre();
+            engine.build_staged_domains();
+            assert_eq!(
+                engine.staged.homing.get(&WindowId("win-new".to_owned())),
+                Some(&DomainKey {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: WorkspaceId("ws-1".to_owned()),
+                }),
+                "gate holds native affinity (bootstrapped={bootstrapped}, complete={complete}, v4={v4})"
+            );
+            let trace = &engine.fresh_focus.trace;
+            assert_eq!(
+                (
+                    trace.current.clone(),
+                    trace.retained.clone(),
+                    trace.chosen.clone(),
+                    trace.basis
+                ),
+                (
+                    Some(OutputId("out-z".to_owned())),
+                    Some(OutputId("out-a".to_owned())),
+                    Some(OutputId("out-z".to_owned())),
+                    crate::fresh_focus::FreshFocusBasis::Current,
+                ),
+                "gate leaves the trace untouched (bootstrapped={bootstrapped}, complete={complete}, v4={v4})"
+            );
+        }
+    }
+}
+
+#[test]
+fn staged_retained_home_survives_mutated_source() {
+    for v4 in [false, true] {
+        // A resident keeps its retained homing even when the source
+        // report mutates after capture; routing is never consulted.
+        let mut engine = engine_settle();
+        accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0)],
+                Vec::new(),
+                "",
+                None,
+                None,
+            ),
+        );
+        engine
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+        let (mut legacy, mut v4report) =
+            pair_reports(2, vec![fact("win-a", "out-a", 0)], Vec::new());
+        legacy.inventory_complete = true;
+        v4report.inventory_complete = true;
+        stage_either(&mut engine, v4, &legacy, &v4report);
+        legacy.screens = vec![screen("out-z", 1600)];
+        legacy.focused_global = "win-ghost".to_owned();
+        v4report.screens = legacy.screens.clone();
+        v4report.focused_global = "win-ghost".to_owned();
+        engine.converge_logical_pre();
+        engine.build_staged_domains();
+        assert_eq!(
+            engine.staged.homing.get(&WindowId("win-a".to_owned())),
+            Some(&home_key("out-a")),
+            "retained home survives mutated source (v4={v4})"
+        );
+    }
+}
+
+#[test]
+fn v4_staging_drives_convergence_homing_and_resweep() {
+    // Genuine v4 intake with no legacy conversion: staging, logical
+    // convergence, domain assembly, homing, and a float-to-tiled
+    // resweep all run from the staged v4 capture.
+    let mut engine = engine_settle();
+    accepted(
+        &mut engine,
+        &report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 0)],
+            Vec::new(),
+            "",
+            None,
+            None,
+        ),
+    );
+    engine.mapping.insert(
+        "out-a".to_owned(),
+        vec!["ws-1".to_owned(), "ws-2".to_owned()],
+    );
+    engine.views.insert("out-a".to_owned(), "ws-2".to_owned());
+    let mut v4report = report_v4_simple(
+        2,
+        vec![screen("out-a", 0)],
+        Vec::new(),
+        vec![fact("win-a", "out-a", 0), fact("win-new", "out-a", 100)],
+        Vec::new(),
+        Vec::new(),
+    );
+    v4report.inventory_complete = true;
+    stage_v4_ingested(&mut engine, &v4report);
+    engine.converge_logical_pre();
+    engine.build_staged_domains();
+    let key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId("ws-2".to_owned()),
+    };
+    assert_eq!(
+        engine.staged.homing.get(&WindowId("win-new".to_owned())),
+        Some(&key),
+        "v4 capture homes the newcomer"
+    );
+    assert!(
+        engine
+            .staged
+            .domains
+            .iter()
+            .any(|domain| domain.key == key && domain.readable),
+        "v4 capture assembles a readable domain"
+    );
+    // Float-to-tiled resweep with explicit owner/correlation: the
+    // sessionless second workspace converges through the real sweep.
+    let owner = OwnerId::parse("adapter-1").expect("owner");
+    let correlation = CorrelationId::parse("req-2").expect("correlation");
+    let mut held_scopes = BTreeSet::new();
+    let mut was_floating = BTreeSet::new();
+    let spare = key.clone();
+    was_floating.insert(spare.clone());
+    assert!(
+        !engine.engine.contains(&spare),
+        "sessionless before resweep"
+    );
+    engine.resweep_retiled(&owner, &correlation, &mut held_scopes, &was_floating);
+    assert!(
+        engine.engine.contains(&spare),
+        "resweep converges the retiled domain"
+    );
+    assert!(held_scopes.is_empty(), "resweep holds nothing");
 }
 
 fn admission_known_before(engine: &WorldEngine) -> BTreeMap<DomainKey, BTreeSet<String>> {
@@ -8028,8 +8365,8 @@ fn staged_admission_focus_at_most_once_and_barrier_spend() {
         legacy.inventory_complete = true;
         v4report.inventory_complete = true;
         stage_either(&mut rig, v4, &legacy, &v4report);
-        rig.converge_logical_pre(&legacy);
-        rig.build_staged_domains(&legacy);
+        rig.converge_logical_pre();
+        rig.build_staged_domains();
         let known_before = admission_known_before(&rig);
         sweep_all(&mut rig);
         let held = BTreeSet::new();
@@ -8073,8 +8410,8 @@ fn staged_admission_focus_at_most_once_and_barrier_spend() {
         bar_leg.gesture_barrier = true;
         bar_v4.gesture_barrier = true;
         stage_either(&mut barred, v4, &bar_leg, &bar_v4);
-        barred.converge_logical_pre(&bar_leg);
-        barred.build_staged_domains(&bar_leg);
+        barred.converge_logical_pre();
+        barred.build_staged_domains();
         let bar_known = admission_known_before(&barred);
         sweep_all(&mut barred);
         assert!(
@@ -8093,8 +8430,8 @@ fn staged_admission_focus_at_most_once_and_barrier_spend() {
         clean_leg.inventory_complete = true;
         clean_v4.inventory_complete = true;
         stage_either(&mut barred, v4, &clean_leg, &clean_v4);
-        barred.converge_logical_pre(&clean_leg);
-        barred.build_staged_domains(&clean_leg);
+        barred.converge_logical_pre();
+        barred.build_staged_domains();
         let clean_known = admission_known_before(&barred);
         sweep_all(&mut barred);
         assert!(
@@ -8439,7 +8776,7 @@ fn staged_selection_visibility_gates_win_over_contra() {
             engine
                 .mapping
                 .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
-            engine.build_staged_domains(&legacy);
+            engine.build_staged_domains();
             seed_member(&mut engine, "win-a");
             engine.selection_targets.insert(
                 WindowId("win-a".to_owned()),
@@ -8534,7 +8871,7 @@ fn staged_sticky_visibility_gates_win_over_contra() {
             engine
                 .mapping
                 .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
-            engine.build_staged_domains(&legacy);
+            engine.build_staged_domains();
             seed_member(&mut engine, "win-a");
             engine
                 .restored_sticky
@@ -9209,7 +9546,7 @@ fn staged_frame_clock_drives_suppression_and_burst() {
             );
             // Rebuild domains against the converged mapping (same shape
             // as the accepted baseline) so `publish` resolves sessions.
-            engine.build_staged_domains(&legacy);
+            engine.build_staged_domains();
             legacy
         };
         // Staged 1200 sits 200ms after the seeded failure: inside the
@@ -9369,7 +9706,7 @@ fn staged_frame_clock_drives_suppression_and_burst() {
                 engine.staged.observation.monotonic_ms, clock,
                 "staged clock stages on both intakes (v4={v4})"
             );
-            engine.build_staged_domains(&legacy);
+            engine.build_staged_domains();
             legacy
         };
         let id = WindowId("win-c".to_owned());
@@ -9468,7 +9805,7 @@ fn staged_frame_clock_drives_suppression_and_burst() {
                 view: "ws-1".to_owned(),
             }];
             stage_either(engine, v4, &legacy, &v4report);
-            engine.build_staged_domains(&legacy);
+            engine.build_staged_domains();
             legacy
         };
         let legacy = stage_source(&mut engine, 1200);

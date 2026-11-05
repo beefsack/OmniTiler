@@ -3135,7 +3135,7 @@ impl WorldEngine {
         let observation = Self::capture_observation(report);
         self.ingest_staged_intent(&observation);
         self.stage_captured(report, observation);
-        self.converge_logical_pre(report);
+        self.converge_logical_pre();
         // View flights settle with staged native proof before staging:
         // host-owned confirms and external supersessions move core views,
         // so homing assigns against adapter truth, never a stale desire.
@@ -3144,7 +3144,7 @@ impl WorldEngine {
         self.settle_views_pre();
         // Stage the observation: homing plus one domain per known logical
         // workspace.
-        self.build_staged_domains(report);
+        self.build_staged_domains();
         // Stage-4a gesture bind (observation half): validate the ingress
         // and retain the session before settlement and the sweep, so both
         // converge with the shielded homing. Never commits; the act half
@@ -3158,7 +3158,7 @@ impl WorldEngine {
         // afterwards: the sweep and publish below must use post-rollback
         // domains, never the pre-rollback ones.
         self.settle_rest(report, &issue, consumed);
-        self.build_staged_domains(report);
+        self.build_staged_domains();
         // State bindings settle against post-rollback staged domains: the
         // readability join must see the committed homing, and the raw capture
         // runs before sweep holds. Once per accepted report, including
@@ -3422,14 +3422,8 @@ impl WorldEngine {
             GestureOutcome::Settled { committed, result } => {
                 if committed {
                     let was_floating = self.floating_scopes.clone();
-                    self.resweep_retiled(
-                        report,
-                        owner,
-                        correlation,
-                        &mut held_scopes,
-                        &was_floating,
-                    );
-                    self.build_staged_domains(report);
+                    self.resweep_retiled(owner, correlation, &mut held_scopes, &was_floating);
+                    self.build_staged_domains();
                     self.settle_intent_admissions();
                 }
                 self.command_result = result.map(|boxed| *boxed);
@@ -3468,19 +3462,13 @@ impl WorldEngine {
                 frozen_migration_source.clone(),
             ) {
                 CommandApplied::Effect(effect) => {
-                    self.resweep_retiled(
-                        report,
-                        owner,
-                        correlation,
-                        &mut held_scopes,
-                        &was_floating,
-                    );
+                    self.resweep_retiled(owner, correlation, &mut held_scopes, &was_floating);
                     let result = self.command_result.take();
                     // Commands move rings/views; restage so publishing
                     // assigns facts against the committed ownership.
                     // Homing stays truthful: echoes still gate views, and
                     // in-flight members home by raw screen.
-                    self.build_staged_domains(report);
+                    self.build_staged_domains();
                     self.settle_intent_admissions();
                     self.sync_toggle_float_command(command);
                     // Admission intent first: an explicit command
@@ -3500,15 +3488,9 @@ impl WorldEngine {
                     return self.finish(report, digest, reply);
                 }
                 CommandApplied::NoEffect => {
-                    self.resweep_retiled(
-                        report,
-                        owner,
-                        correlation,
-                        &mut held_scopes,
-                        &was_floating,
-                    );
+                    self.resweep_retiled(owner, correlation, &mut held_scopes, &was_floating);
                     // See above: restage against committed ownership.
-                    self.build_staged_domains(report);
+                    self.build_staged_domains();
                     self.settle_intent_admissions();
                     self.sync_toggle_float_command(command);
                     let result = self.command_result.take();

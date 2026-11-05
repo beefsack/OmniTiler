@@ -476,7 +476,7 @@ fn view_return_fallback_records_effect_target_not_remembered() {
         None,
     );
     engine.stage_facts(&probe);
-    engine.build_staged_domains(&probe);
+    engine.build_staged_domains();
     let held = BTreeSet::new();
     // Leg 1: retain some other view so the return below actually changes
     // the view. The empty index resolves no candidate there; the logical
@@ -1468,7 +1468,7 @@ fn local_move_direct_records_mover_without_sweep() {
         Some(command.clone()),
     );
     engine.stage_facts(&probe);
-    engine.build_staged_domains(&probe);
+    engine.build_staged_domains();
     let applied = engine.execute_command(
         &probe,
         &test_issue(&probe),
@@ -1538,7 +1538,7 @@ fn swap_neighbor_move_direct_records_mover_without_sweep() {
         Some(command.clone()),
     );
     engine.stage_facts(&probe);
-    engine.build_staged_domains(&probe);
+    engine.build_staged_domains();
     let applied = engine.execute_command(
         &probe,
         &test_issue(&probe),

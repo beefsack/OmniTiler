@@ -16,7 +16,7 @@ use crate::session::{DomainKey, OutputDomain};
 use crate::world_engine::{RetainedTransfer, StagedDomain, WorldEngine, inset_world_domain};
 use crate::world_report::{
     EffectCause, EffectKind, HeldScreenRow, HoldReason, OneShotEffect, ScreenReport, TilingMode,
-    TransferKind, TransferTarget, WorldReport,
+    TransferKind, TransferTarget,
 };
 
 impl WorldEngine {
@@ -423,7 +423,7 @@ impl WorldEngine {
     /// ring/view/history across all outputs (per-screen mappings mirror
     /// the shared order); it never displaces on disconnect and refuses
     /// whole-workspace migration.
-    pub(crate) fn converge_logical_pre(&mut self, report: &WorldReport) {
+    pub(crate) fn converge_logical_pre(&mut self) {
         use crate::workspace_scope::{DisplacedEntry, OutputFacts, SurvivorInfo, WorkspaceMode};
         let shared = self.workspace_mode_setting() == WorkspaceMode::Shared;
         let inventory_complete = self.staged.observation.inventory_complete;
@@ -824,7 +824,7 @@ impl WorldEngine {
         let epoch = self.state_revision;
         if !staged_focused.is_empty() {
             let active = WindowId(staged_focused.clone());
-            if let Some(homing) = self.logical_homing(report, &active) {
+            if let Some(homing) = self.logical_homing(&active) {
                 for (index, (output, workspace)) in fresh_views.into_iter().enumerate() {
                     if homing.workspace.0 == workspace
                         && self.effective_view(&output).as_deref() != Some(workspace.as_str())
@@ -1444,13 +1444,11 @@ impl WorldEngine {
     /// releases and ordinary failures are never resurrected.
     pub(crate) fn resweep_retiled(
         &mut self,
-        report: &WorldReport,
         owner: &OwnerId,
         correlation: &CorrelationId,
         held_scopes: &mut BTreeSet<DomainKey>,
         was_floating: &BTreeSet<DomainKey>,
     ) {
-        let _ = report;
         let domains = self.staged.domains.clone();
         for domain in &domains {
             if !domain.readable {

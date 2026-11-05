@@ -3090,7 +3090,7 @@ fn b9_held_scope_refusal_retains_cleared_bit() {
         None,
     );
     engine.stage_facts(&probe);
-    engine.build_staged_domains(&probe);
+    engine.build_staged_domains();
     match engine.execute_command(
         &probe,
         &test_issue(&probe),
@@ -3146,7 +3146,7 @@ fn composed_tiled_move_unreadable_topology_retains_bit() {
         None,
     );
     engine.stage_facts(&probe);
-    engine.build_staged_domains(&probe);
+    engine.build_staged_domains();
     engine.retain_live_topology();
     match engine.execute_command(
         &probe,

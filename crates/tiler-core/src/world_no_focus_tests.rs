@@ -1296,7 +1296,7 @@ fn no_focus_held_source_refuses_without_mutation() {
         None,
     );
     engine.stage_facts(&probe);
-    engine.build_staged_domains(&probe);
+    engine.build_staged_domains();
     let revision_before = engine.state_revision();
     match engine.focus_directional_no_focus(11, Direction::Right, &held, &by_id) {
         crate::world_commands::CommandApplied::Rejected { kind, .. } => {

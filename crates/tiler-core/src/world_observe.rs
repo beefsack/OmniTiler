@@ -636,14 +636,14 @@ impl WorldEngine {
     /// and project one [`StagedDomain`] per known logical id. Runs after
     /// ring/view convergence and view settlement, so homing assigns
     /// against adapter truth.
-    pub(crate) fn build_staged_domains(&mut self, report: &WorldReport) {
+    pub(crate) fn build_staged_domains(&mut self) {
         let mut homing: BTreeMap<WindowId, DomainKey> = BTreeMap::new();
         // Stage admitted facts only: own-process exclusion and known
         // safety exclusions never home (logical_homing enforces both).
         let mut staged_ids: Vec<WindowId> = self.staged.facts.keys().cloned().collect();
         staged_ids.sort_by(|a, b| a.0.cmp(&b.0));
         for window in &staged_ids {
-            if let Some(key) = self.logical_homing(report, window) {
+            if let Some(key) = self.logical_homing(window) {
                 homing.insert(window.clone(), key);
             }
         }
@@ -816,19 +816,17 @@ impl WorldEngine {
         self.core_homing(window)
     }
 
-    /// Logical homing for one observed window against the reported facts:
+    /// Logical homing for one observed window against the staged facts:
     /// minimized facts keep their retained session homing when known (else
     /// the screen's effective view); an in-flight window observed on its
     /// target screen homes to the target key (arrival); a resident whose
     /// retained output matches the observed screen keeps its homing (never
     /// yanked by a view change); anything else homes to the observed
     /// screen's effective view (external moves adopted, newcomers placed).
-    /// `None` when the window carries no fact on a known screen.
-    pub(crate) fn logical_homing(
-        &mut self,
-        report: &WorldReport,
-        window: &WindowId,
-    ) -> Option<DomainKey> {
+    /// Fresh placement routes from the captured staged observation, never
+    /// a later report. `None` when the window carries no fact on a known
+    /// screen.
+    pub(crate) fn logical_homing(&mut self, window: &WindowId) -> Option<DomainKey> {
         // Open gesture session: the mover homes at its START-validated
         // home until the release commits, exactly like an in-flight
         // transfer homes at its retained target. The native frame follows
@@ -1087,14 +1085,15 @@ impl WorldEngine {
         }
         if self.core_homing(window).is_none()
             && !self.engine_knows_window(window)
-            && self.fresh_placement_armed_for(&crate::world_engine::RawRouting::from_source(report))
+            && self.fresh_placement_armed_for(&crate::world_engine::RawRouting::from_staged(
+                &self.staged,
+            ))
             && !derived.floating
             && !derived.sticky
             && !derived.fixed_auto
             && !derived.fixed_suppress
             && fact.rect.is_some()
-            && let Some(key) =
-                self.resolve_fresh_key(&crate::world_engine::RawRouting::from_source(report))
+            && let Some(key) = self.resolve_fresh_key_staged()
         {
             return Some(key);
         }
@@ -1227,14 +1226,13 @@ impl WorldEngine {
     /// `None` when no output resolves or
     /// the resolved output owns no ring: the caller falls back to native
     /// affinity instead of inventing focus.
-    pub(crate) fn resolve_fresh_key(
-        &mut self,
-        ctx: &crate::world_engine::RawRouting<'_>,
-    ) -> Option<DomainKey> {
-        let cursor_output = self.fresh_cursor_output(ctx);
-        let (focused_output, trace) = self.fresh_focused_output(ctx);
+    /// Routing reads the captured staged observation.
+    pub(crate) fn resolve_fresh_key_staged(&mut self) -> Option<DomainKey> {
+        let ctx = crate::world_engine::RawRouting::from_staged(&self.staged);
+        let cursor_output = self.fresh_cursor_output(&ctx);
+        let (focused_output, trace) = self.fresh_focused_output(&ctx);
+        let primary_first = self.primary_first_outputs(&ctx);
         self.fresh_focus.trace = trace;
-        let primary_first = self.primary_first_outputs(ctx);
         let output = crate::cursor_targeting::resolve_fresh_output(
             self.fresh_placement_setting(),
             cursor_output.as_ref(),

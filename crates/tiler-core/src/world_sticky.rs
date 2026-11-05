@@ -740,7 +740,7 @@ impl WorldEngine {
             }
         }
         staged.stage_facts(report);
-        staged.build_staged_domains(report);
+        staged.build_staged_domains();
         if staged.staged_homing(window).as_ref() != Some(dest) {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
@@ -1030,7 +1030,7 @@ impl WorldEngine {
             }
         }
         staged.stage_facts(report);
-        staged.build_staged_domains(report);
+        staged.build_staged_domains();
         // Exact single homing: the window must stage at the destination,
         // never under two homings in one sweep.
         if staged.staged_homing(window).as_ref() != Some(dest) {
@@ -1322,7 +1322,7 @@ impl WorldEngine {
             }
         };
         staged.stage_facts(report);
-        staged.build_staged_domains(report);
+        staged.build_staged_domains();
         if staged.staged_homing(&window).as_ref() != Some(&home) {
             return;
         }

@@ -114,6 +114,7 @@ impl WorldEngine {
         report: &WorldReport,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> bool {
+        let _ = report;
         let staged_seq = self.staged.observation.observation_seq;
         let ingress_owned = self.staged.observation.gesture.clone();
         let ingress = match ingress_owned.as_ref() {
@@ -207,7 +208,7 @@ impl WorldEngine {
             home,
         });
         // Restage so settlement and the sweep read the shielded homing.
-        self.build_staged_domains(report);
+        self.build_staged_domains();
         true
     }
 
@@ -996,6 +997,7 @@ impl WorldEngine {
         release_frame: crate::geometry::Rect,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) -> GestureOutcome {
+        let _ = report;
         if release_frame.w <= 0
             || release_frame.h <= 0
             || release_frame.x.checked_add(release_frame.w).is_none()
@@ -1006,7 +1008,7 @@ impl WorldEngine {
                 result: None,
             };
         }
-        let Some(target_key) = self.logical_homing(report, &retained.window) else {
+        let Some(target_key) = self.logical_homing(&retained.window) else {
             return GestureOutcome::Settled {
                 committed: false,
                 result: None,
@@ -1058,7 +1060,7 @@ impl WorldEngine {
             // below converge the same unshielded staging the ordinary
             // refused-gesture path swept: no transfer, no membership
             // change from the gesture lane, no minted session.
-            self.build_staged_domains(report);
+            self.build_staged_domains();
             // Converge exactly the two scopes the shield diverged with
             // the existing sweep, mirroring the report sweep tail: the
             // stale home scope reconciles empty and the empty
