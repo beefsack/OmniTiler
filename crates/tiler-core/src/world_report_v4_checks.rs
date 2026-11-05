@@ -1,8 +1,9 @@
 //! Staged v4 report twins: pure-function counterparts of the legacy
 //! [`crate::world_report`] report gate, conflicting-fact grader, and digest
-//! over [`WorldReportV4`](crate::world_report::WorldReportV4). The engine,
-//! broker, service, adapters, and codec do not call these yet; no wiring
-//! changes meaning. Row-level helpers stay shared with v3.
+//! over [`WorldReportV4`](crate::world_report::WorldReportV4). The engine
+//! calls the composed [`graded_effective_v4`] twin on the typed path and the
+//! protocol codec mirrors the invalid twins on the wire path; row-level
+//! helpers stay shared with v3.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,8 +19,8 @@ use crate::world_report::{
     MAX_WORLD_SCREENS, MAX_WORLD_STATE_ATTEMPTS, MAX_WORLD_VIEW_ATTEMPTS, PresentationRowV4,
     RenderTarget, RowDiagnosticKind, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef,
     WorldCommand, WorldReportV4, check_screen_structure, check_window_structure,
-    conflicting_window, gradable_window, hidden_window_id_violation, retained_window_fields,
-    valid_command,
+    conflicting_window, gradable_screen, gradable_window, graded_held_row, graded_held_window_row,
+    hidden_window_id_violation, retained_window_fields, valid_command,
 };
 
 fn held_in_lane(report: &WorldReportV4, lane: crate::world_report::AttemptLaneV4) -> usize {
@@ -125,7 +126,14 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
         if report.cursor.is_none() {
             return Some("cursor-hit-without-cursor");
         }
-        if !report.windows.iter().any(|fact| fact.window == *hit) {
+        // A gradable invalid metadata/process row is not a readable
+        // reported window for hit membership: like the wire decoder after
+        // invalid row holding, the hit must name a surviving valid row.
+        if !report
+            .windows
+            .iter()
+            .any(|fact| fact.window == *hit && !gradable_window(fact))
+        {
             return Some("cursor-hit-unknown");
         }
     }
@@ -738,15 +746,169 @@ fn valid_attempt_workspace_ref(reference: &WorkspaceRef) -> bool {
     }
 }
 
+/// Staged v4 twin of [`grade_invalid_screens`](crate::world_report::grade_invalid_screens):
+/// identifiable invalid scale/identity rows become narrow `InvalidFact`
+/// holds with retained fields, mirroring the decoder. Structural
+/// violations refuse: prechecks cover every carried screen, and the
+/// normalized report must validate except for a still-pending window
+/// invalid lane (composed by the caller next).
+#[must_use]
+pub fn grade_invalid_screens_v4(report: &WorldReportV4) -> Option<WorldReportV4> {
+    if !matches!(
+        validate_report_v4_reason(report),
+        Some("screen-scale-invalid" | "screen-identity-invalid")
+    ) {
+        return None;
+    }
+    {
+        let mut seen = BTreeSet::new();
+        for screen in &report.screens {
+            if check_screen_structure(screen, &mut seen).is_some() {
+                return None;
+            }
+        }
+    }
+    let total = report
+        .screens
+        .len()
+        .saturating_add(report.held_screens.len());
+    let used: BTreeSet<usize> = report
+        .held_screens
+        .iter()
+        .map(|held| held.ordinal)
+        .collect();
+    let mut free = (0..total).filter(|slot| !used.contains(slot));
+    let mut screens = Vec::with_capacity(report.screens.len());
+    let mut graded = Vec::new();
+    for screen in &report.screens {
+        let slot = free.next()?;
+        if gradable_screen(screen) {
+            graded.push(graded_held_row(screen, slot));
+        } else {
+            screens.push(screen.clone());
+        }
+    }
+    if graded.is_empty() {
+        return None;
+    }
+    let mut normalized = report.clone();
+    normalized.screens = screens;
+    normalized.held_screens.extend(graded);
+    normalized.held_screens.sort_by_key(|held| held.ordinal);
+    match validate_report_v4_reason(&normalized) {
+        None => Some(normalized),
+        Some("window-metadata-invalid" | "window-identity-invalid") => Some(normalized),
+        Some(_) => None,
+    }
+}
+
+/// Staged v4 twin of [`grade_invalid_windows`](crate::world_report::grade_invalid_windows):
+/// identifiable invalid metadata/process rows become narrow `InvalidFact`
+/// holds with retained fields, mirroring the decoder. A `cursor_hit`
+/// naming a gradable row refuses at validation before grading (the row is
+/// not a readable reported window, exactly like the decoder after invalid
+/// row holding), so the twin never clears hits. Structural violations
+/// (ids, duplicates, geometry, closed overlap, hidden owner/parent/native,
+/// ordinals) refuse: prechecks cover every carried window and held id,
+/// and the normalized report must validate except for a still-pending
+/// screen invalid lane.
+#[must_use]
+pub fn grade_invalid_windows_v4(report: &WorldReportV4) -> Option<WorldReportV4> {
+    if !matches!(
+        validate_report_v4_reason(report),
+        Some("window-metadata-invalid" | "window-identity-invalid")
+    ) {
+        return None;
+    }
+    {
+        let mut seen = BTreeSet::new();
+        for fact in &report.windows {
+            if check_window_structure(fact, &mut seen).is_some() {
+                return None;
+            }
+            if hidden_window_id_violation(fact) {
+                return None;
+            }
+        }
+        for held in &report.held_windows {
+            if !is_opaque_id(&held.window.0) || !seen.insert(held.window.0.clone()) {
+                return None;
+            }
+        }
+    }
+    let total = report
+        .windows
+        .len()
+        .saturating_add(report.held_windows.len());
+    let used: BTreeSet<usize> = report
+        .held_windows
+        .iter()
+        .map(|held| held.ordinal)
+        .collect();
+    let mut free = (0..total).filter(|slot| !used.contains(slot));
+    let mut windows = Vec::with_capacity(report.windows.len());
+    let mut graded = Vec::new();
+    for fact in &report.windows {
+        let slot = free.next()?;
+        if gradable_window(fact) {
+            graded.push(graded_held_window_row(fact, slot));
+        } else {
+            windows.push(fact.clone());
+        }
+    }
+    if graded.is_empty() {
+        return None;
+    }
+    let mut normalized = report.clone();
+    normalized.windows = windows;
+    normalized.held_windows.extend(graded);
+    normalized.held_windows.sort_by_key(|held| held.ordinal);
+    match validate_report_v4_reason(&normalized) {
+        None => Some(normalized),
+        Some("screen-scale-invalid" | "screen-identity-invalid") => Some(normalized),
+        Some(_) => None,
+    }
+}
+
+/// Compose the typed v4 invalid and capability graders in legacy order:
+/// invalid screens, then invalid windows, then conflicting facts. Each
+/// step sees the previous step's effective rows so mixed screen/window
+/// invalidity and capability conflicts compose instead of masking each
+/// other; structural defects still refuse at the final validation owned
+/// by the caller. Returns the fully graded effective report, or `None`
+/// when no grading applies.
+#[must_use]
+pub(crate) fn graded_effective_v4(
+    report: &WorldReportV4,
+    unavailable: &[FactName],
+    native_sticky_supported: bool,
+    maximize_supported: bool,
+) -> Option<WorldReportV4> {
+    let mut current: Option<WorldReportV4> = None;
+    if let Some(graded) = grade_invalid_screens_v4(current.as_ref().unwrap_or(report)) {
+        current = Some(graded);
+    }
+    if let Some(graded) = grade_invalid_windows_v4(current.as_ref().unwrap_or(report)) {
+        current = Some(graded);
+    }
+    if let Some(graded) = grade_conflicting_windows_v4(
+        current.as_ref().unwrap_or(report),
+        unavailable,
+        native_sticky_supported,
+        maximize_supported,
+    ) {
+        current = Some(graded);
+    }
+    current
+}
+
 /// Staged v4 twin of
 /// [`grade_conflicting_windows`](crate::world_report::grade_conflicting_windows):
 /// unavailable-fact contradictions move to `held_windows` with a
 /// `ConflictingFact` diagnostic. A `cursor_hit` naming a newly graded window
 /// is cleared on the effective (normalized) rows; the input report is never
 /// mutated and every other normalized invalidity still refuses grading.
-/// No twins of the invalid-screen/window
-/// graders: the v4 decoder already holds invalid rows, and the unlikely
-/// typed-value path is reported, not built.
+/// Invalid-gradable rows belong to the invalid twins above, never double-held here.
 #[must_use]
 pub fn grade_conflicting_windows_v4(
     report: &WorldReportV4,

@@ -13,17 +13,18 @@ use crate::workspace_scope::DisplacedEntry;
 use crate::world_admit_v4::{V4Replay, classify_replay_v4};
 use crate::world_directional::tests::{fact, screen};
 use crate::world_engine::{
-    EventIssue, KIND_OBS_STALE, KIND_REPLY_SIZE, KIND_REUSED, KIND_REVISION_EXHAUSTED,
-    KIND_SNAPSHOT, KIND_SUPERSEDED, WorldEngine, WorldOutcome,
+    EventIssue, KIND_CORRELATION, KIND_GENERATION, KIND_OBS_STALE, KIND_OWNER, KIND_REPLY_SIZE,
+    KIND_REUSED, KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED, RawRouting, WorldEngine,
+    WorldOutcome,
 };
 use crate::world_report::{
-    AuthorityScope, CommandRejectKind, CommandResult, HeldWindowRow, IntentWrite,
-    PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
-    ScreenReport, SendSource, WORLD_CONTRACT_VERSION, WORLD_CONTRACT_VERSION_V4,
+    AttemptLaneV4, AuthorityScope, CommandRejectKind, CommandResult, HeldAttemptRow, HeldWindowRow,
+    IntentWrite, PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind,
+    RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION, WORLD_CONTRACT_VERSION_V4,
     WORLD_MAX_REPLY_BYTES, WindowFact, WorldCommand, WorldReport, WorldReportV4,
     retained_window_fields,
 };
-use crate::world_report_v4_checks::report_digest_v4;
+use crate::world_report_v4_checks::{graded_effective_v4, report_digest_v4};
 use crate::world_run_v4::V4RunOutcome;
 use crate::world_sizing::max_intent_rollback_bound;
 use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4};
@@ -1531,5 +1532,714 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
     assert_eq!(
         engine.command_highwater, saved_highwater,
         "duplicate consumes no sequence"
+    );
+}
+
+#[test]
+fn slice_7_1_invalid_screen_scale_held_no_authority() {
+    // An invalid-only first observation never readies: readiness keys on
+    // the effective graded report, so the invalid-held screen alone keeps
+    // the engine on the bootstrap path with no authority, no revision, and
+    // no command consumption.
+    let mut engine = engine();
+    let mut bad = screen("out-a", 0);
+    bad.scale = 0.0;
+    let mut invalid = observe(1, facts_pair(), "win-a");
+    invalid.screens = vec![bad];
+    let revision_before = engine.state_revision;
+    match admit(&mut engine, &invalid) {
+        V4RunOutcome::Accepted(reply) => {
+            assert!(
+                !reply.ready,
+                "invalid-only first observation stays bootstrap"
+            );
+            assert!(
+                reply.scopes.is_empty()
+                    && reply.workspaces.is_empty()
+                    && reply.outputs.is_empty()
+                    && reply.windows.is_empty(),
+                "bootstrap carries no authority"
+            );
+            assert!(!reply.command_consumed, "bootstrap consumes no command");
+        }
+        other => panic!("expected accepted invalid screen, got {other:?}"),
+    }
+    assert!(!engine.ready_latched, "invalid hold latches no readiness");
+    assert_eq!(
+        engine.state_revision, revision_before,
+        "bootstrap advances no revision"
+    );
+    assert!(
+        engine.command_highwater.is_none(),
+        "bootstrap consumes no sequence"
+    );
+    assert!(!engine.has_last_v4, "bootstrap caches no replay");
+    assert!(
+        engine.staged.screens.is_empty() && engine.staged.held_screens.is_empty(),
+        "bootstrap stages no screens or holds"
+    );
+    // A later valid observation readies and takes authority.
+    let ready = accepted_reply(2, admit(&mut engine, &observe(2, facts_pair(), "win-a")));
+    assert!(ready.ready, "valid observation readies");
+    assert!(engine.ready_latched);
+    assert_eq!(
+        engine.state_revision,
+        revision_before + 1,
+        "valid observation advances one revision"
+    );
+    assert_eq!(engine.staged.screens.len(), 1);
+    // The same invalid screen on the ready path holds narrowly with no
+    // staged screen authority.
+    let mut bad_again = screen("out-a", 0);
+    bad_again.scale = 0.0;
+    let mut third = observe(3, facts_pair(), "win-a");
+    third.screens = vec![bad_again];
+    match admit(&mut engine, &third) {
+        V4RunOutcome::Accepted(reply) => {
+            assert!(reply.ready, "ready path stays ready");
+        }
+        other => panic!("expected accepted invalid screen, got {other:?}"),
+    }
+    assert_eq!(
+        engine.staged.screens.len(),
+        0,
+        "bad screen stages no screen"
+    );
+    assert_eq!(engine.staged.held_screens.len(), 1, "bad screen held");
+    let held = &engine.staged.held_screens[0];
+    assert_eq!(held.output.0, "out-a");
+    assert_eq!(held.ordinal, 0);
+    assert_eq!(held.diagnostic.kind, RowDiagnosticKind::InvalidFact);
+    assert_eq!(held.diagnostic.row, RowDiagnosticLane::Screen);
+    assert!(engine.staged.diagnostics.iter().any(|diagnostic| {
+        diagnostic.kind == RowDiagnosticKind::InvalidFact
+            && diagnostic.row == RowDiagnosticLane::Screen
+    }));
+}
+
+#[test]
+fn slice_7_1_nonfinite_scale_retained_faithfully() {
+    let mut engine = engine();
+    accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
+    let mut bad = screen("out-a", 0);
+    bad.scale = f64::NAN;
+    let mut invalid = observe(2, facts_pair(), "win-a");
+    invalid.screens = vec![bad];
+    match admit(&mut engine, &invalid) {
+        V4RunOutcome::Accepted(_) => {}
+        other => panic!("expected accepted nonfinite screen, got {other:?}"),
+    }
+    let held = &engine.staged.held_screens[0];
+    let scale = held
+        .fields
+        .iter()
+        .find(|(key, _)| key == "scale")
+        .map(|(_, value)| value);
+    match scale {
+        Some(RawSettingValue::Number(value)) => {
+            assert!(!value.is_finite(), "nonfinite stays a held number");
+        }
+        other => panic!("scale must stay a held number, got {other:?}"),
+    }
+}
+
+#[test]
+fn slice_7_1_invalid_window_metadata_held_no_authority() {
+    let mut engine = engine();
+    let mut bad = fact("win-bad", "out-a", 0);
+    bad.title = Some("x".repeat(5000));
+    let invalid = observe(1, vec![fact("win-a", "out-a", 0), bad], "win-a");
+    match admit(&mut engine, &invalid) {
+        V4RunOutcome::Accepted(_) => {}
+        other => panic!("expected accepted invalid window, got {other:?}"),
+    }
+    assert!(
+        !engine
+            .staged
+            .facts
+            .contains_key(&WindowId("win-bad".to_owned())),
+        "bad window stages no fact"
+    );
+    assert!(
+        engine
+            .staged
+            .held_windows
+            .iter()
+            .any(|held| held.window.0 == "win-bad"),
+        "bad window held: {:?}",
+        engine.staged.held_windows
+    );
+    let held = engine
+        .staged
+        .held_windows
+        .iter()
+        .find(|held| held.window.0 == "win-bad")
+        .expect("held row");
+    assert_eq!(held.kind, RowDiagnosticKind::InvalidFact);
+    assert_eq!(
+        held.diagnostic.as_ref().expect("diagnostic").kind,
+        RowDiagnosticKind::InvalidFact
+    );
+    assert!(
+        engine
+            .staged
+            .observation
+            .raw_windows
+            .iter()
+            .any(|row| row.window.0 == "win-bad"),
+        "raw capture keeps the bad row verbatim"
+    );
+}
+
+#[test]
+fn slice_7_1_mixed_invalid_compose_with_conflict() {
+    let mut capped = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            maximize: true,
+            fullscreen: true,
+            native_sticky: false,
+            above: true,
+            window_suppression: true,
+            ..HostCapabilities::default()
+        },
+        Vec::<(String, RawSettingValue)>::new(),
+    )
+    .expect("generation");
+    let mut bad_screen = screen("out-a", 0);
+    bad_screen.scale = 0.0;
+    let mut bad_window = fact("win-bad", "out-a", 0);
+    bad_window.title = Some("y".repeat(5000));
+    let mut conflict = fact("win-c", "out-a", 100);
+    conflict.sticky = Some(true);
+    // Readiness first: the invalid-only screen lane alone bootstraps, so
+    // the composed holds below run on the ready path.
+    let baseline = observe(1, facts_pair(), "win-a");
+    match capped.handle_report_v4(&baseline, &issue(&baseline)) {
+        V4RunOutcome::Accepted(_) => {}
+        other => panic!("expected valid baseline, got {other:?}"),
+    }
+    let mut mixed = observe(
+        2,
+        vec![fact("win-a", "out-a", 0), bad_window, conflict],
+        "win-a",
+    );
+    mixed.screens = vec![bad_screen];
+    match capped.handle_report_v4(&mixed, &issue(&mixed)) {
+        V4RunOutcome::Accepted(_) => {}
+        other => panic!("expected composed invalid holds, got {other:?}"),
+    }
+    assert_eq!(capped.staged.held_screens.len(), 1, "screen invalid held");
+    let kinds: Vec<RowDiagnosticKind> = capped
+        .staged
+        .held_windows
+        .iter()
+        .map(|held| held.kind)
+        .collect();
+    assert!(
+        kinds.contains(&RowDiagnosticKind::InvalidFact),
+        "window invalid held: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&RowDiagnosticKind::ConflictingFact),
+        "conflict held alongside invalid: {kinds:?}"
+    );
+    assert!(
+        !capped
+            .staged
+            .facts
+            .contains_key(&WindowId("win-bad".to_owned()))
+    );
+    assert!(
+        !capped
+            .staged
+            .facts
+            .contains_key(&WindowId("win-c".to_owned()))
+    );
+}
+
+#[test]
+fn slice_7_1_structural_still_refuses_before_mutation() {
+    let mut engine = engine();
+    let mut duplicated = observe(1, facts_pair(), "win-a");
+    duplicated.windows.push(fact("win-a", "out-a", 0));
+    let revision_before = engine.state_revision;
+    let calls_before = engine.ingest_calls;
+    match admit(&mut engine, &duplicated) {
+        V4RunOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "duplicate-window");
+        }
+        other => panic!("expected duplicate refusal, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, revision_before);
+    assert_eq!(engine.ingest_calls, calls_before);
+    assert!(!engine.has_last_v4);
+
+    let mut hidden = observe(1, facts_pair(), "win-a");
+    hidden.windows[0].owner = Some(WindowId("bad owner".to_owned()));
+    hidden.windows[0].title = Some("z".repeat(5000));
+    match admit(&mut engine, &hidden) {
+        V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_SNAPSHOT),
+        other => panic!("expected hidden id refusal, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, revision_before);
+    assert!(!engine.has_last_v4);
+
+    let mut overlap = observe(1, facts_pair(), "win-a");
+    overlap.closed = vec![WindowId("win-a".to_owned())];
+    match admit(&mut engine, &overlap) {
+        V4RunOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "closed-overlaps-live");
+        }
+        other => panic!("expected closed overlap refusal, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, revision_before);
+    assert!(!engine.has_last_v4);
+}
+
+#[test]
+fn slice_7_1_envelope_fencing_refuses_before_mutation() {
+    let mut engine = engine();
+    let base = observe(1, facts_pair(), "win-a");
+    let revision_before = engine.state_revision;
+    let calls_before = engine.ingest_calls;
+
+    let mut bad_adapter = base.clone();
+    bad_adapter.adapter_incarnation = "adapter-other".to_owned();
+    match engine.handle_report_v4(&bad_adapter, &issue(&bad_adapter)) {
+        V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OWNER),
+        other => panic!("expected adapter refusal, got {other:?}"),
+    }
+
+    let mut bad_gen = base.clone();
+    bad_gen.core_generation = "gen-999".to_owned();
+    match engine.handle_report_v4(&bad_gen, &issue(&bad_gen)) {
+        V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_GENERATION),
+        other => panic!("expected generation refusal, got {other:?}"),
+    }
+
+    let wrong_owner = EventIssue {
+        owner: OwnerId::parse("adapter-other").expect("owner"),
+        correlation: CorrelationId::parse(&base.request_id).expect("correlation"),
+    };
+    match engine.handle_report_v4(&base, &wrong_owner) {
+        V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OWNER),
+        other => panic!("expected owner refusal, got {other:?}"),
+    }
+
+    let wrong_correlation = EventIssue {
+        owner: OwnerId::parse("adapter-1").expect("owner"),
+        correlation: CorrelationId::parse("req-999").expect("correlation"),
+    };
+    match engine.handle_report_v4(&base, &wrong_correlation) {
+        V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_CORRELATION),
+        other => panic!("expected correlation refusal, got {other:?}"),
+    }
+
+    assert_eq!(
+        engine.state_revision, revision_before,
+        "envelope refuses no revision"
+    );
+    assert_eq!(
+        engine.ingest_calls, calls_before,
+        "envelope refuses no ingest"
+    );
+    assert!(!engine.has_last_v4, "envelope refuses no cache");
+    assert!(engine.members.is_empty(), "envelope refuses no mutation");
+}
+
+#[test]
+fn slice_7_1_held_native_capability_fence() {
+    let mut engine = engine();
+    assert!(!engine.host_owned_workspace_domains());
+    let mut held_native = observe(1, facts_pair(), "win-a");
+    held_native.held_native = vec![crate::world_report::HeldNativeRow {
+        output: OutputId("out-a".to_owned()),
+        ordinal: 0,
+        fields: vec![(
+            "out".to_owned(),
+            RawSettingValue::String("out-a".to_owned()),
+        )],
+        diagnostic: RowDiagnostic {
+            scope: AuthorityScope::Output(OutputId("out-a".to_owned())),
+            row: RowDiagnosticLane::Native,
+            id: Some("out-a".to_owned()),
+            kind: RowDiagnosticKind::InvalidFact,
+        },
+    }];
+    let revision_before = engine.state_revision;
+    match admit(&mut engine, &held_native) {
+        V4RunOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "native-without-capability");
+        }
+        other => panic!("expected held native fence, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, revision_before);
+    assert!(!engine.has_last_v4);
+}
+
+#[test]
+fn slice_7_1_raw_invalid_never_aliases_preheld() {
+    let mut engine = engine();
+    let mut bad = fact("win-bad", "out-a", 0);
+    bad.title = Some("q".repeat(5000));
+    let raw = observe(1, vec![fact("win-a", "out-a", 0), bad.clone()], "win-a");
+    match admit(&mut engine, &raw) {
+        V4RunOutcome::Accepted(_) => {}
+        other => panic!("expected accepted raw invalid, got {other:?}"),
+    }
+    let mut preheld = observe(1, vec![fact("win-a", "out-a", 0)], "win-a");
+    preheld.held_windows = engine.staged.held_windows.clone();
+    match admit(&mut engine, &preheld) {
+        V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
+        other => panic!("expected reused raw mismatch, got {other:?}"),
+    }
+    assert_eq!(engine.last_report_v4.as_ref(), Some(&raw));
+}
+
+fn workspace_ref_value(native: bool) -> RawSettingValue {
+    RawSettingValue::Object(vec![
+        (
+            "kind".to_owned(),
+            RawSettingValue::String(if native {
+                "native".to_owned()
+            } else {
+                "logical".to_owned()
+            }),
+        ),
+        (
+            "out".to_owned(),
+            RawSettingValue::String("out-a".to_owned()),
+        ),
+        ("ws".to_owned(), RawSettingValue::String("ws-1".to_owned())),
+    ])
+}
+
+fn held_member_row(pre_native: bool, post_native: bool) -> HeldAttemptRow {
+    HeldAttemptRow {
+        lane: AttemptLaneV4::Member,
+        ordinal: 0,
+        identity: vec!["op-1".to_owned(), "win-a".to_owned()],
+        fields: vec![
+            ("op".to_owned(), RawSettingValue::String("op-1".to_owned())),
+            (
+                "win".to_owned(),
+                RawSettingValue::String("win-a".to_owned()),
+            ),
+            (
+                "out".to_owned(),
+                RawSettingValue::String("out-a".to_owned()),
+            ),
+            ("ws".to_owned(), RawSettingValue::String("ws-1".to_owned())),
+            (
+                "setter".to_owned(),
+                RawSettingValue::String("accepted".to_owned()),
+            ),
+            ("pre".to_owned(), workspace_ref_value(pre_native)),
+            ("post".to_owned(), workspace_ref_value(post_native)),
+            (
+                "attemptMs".to_owned(),
+                RawSettingValue::String("1".to_owned()),
+            ),
+        ],
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    }
+}
+
+fn held_view_row() -> HeldAttemptRow {
+    HeldAttemptRow {
+        lane: AttemptLaneV4::View,
+        ordinal: 0,
+        identity: vec!["op-v".to_owned()],
+        fields: vec![("op".to_owned(), RawSettingValue::String("op-v".to_owned()))],
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    }
+}
+
+#[test]
+fn slice_7_1_held_member_logical_accepted_native_refused() {
+    let mut engine = engine();
+    accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
+    // Logical-only held member rows stay admissible on logical hosts,
+    // matching the valid member-attempt gate.
+    let mut logical = observe(2, facts_pair(), "win-a");
+    logical.held_attempts = vec![held_member_row(false, false)];
+    match admit(&mut engine, &logical) {
+        V4RunOutcome::Accepted(_) => {}
+        other => panic!("expected accepted logical held member, got {other:?}"),
+    }
+    assert_eq!(
+        engine.staged.held_attempts.len(),
+        1,
+        "logical held member stages"
+    );
+    assert_eq!(engine.state_revision, 2);
+    // A held member row retaining a native `pre` reference is still
+    // native evidence and refuses without capability.
+    let mut native = observe(3, facts_pair(), "win-a");
+    native.held_attempts = vec![held_member_row(true, false)];
+    let revision_before = engine.state_revision;
+    let calls_before = engine.ingest_calls;
+    match admit(&mut engine, &native) {
+        V4RunOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "native-without-capability");
+        }
+        other => panic!("expected held native member fence, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, revision_before);
+    assert_eq!(engine.ingest_calls, calls_before);
+    assert_eq!(
+        engine.last_request_seq_v4, 2,
+        "refusal adopts no replay cache"
+    );
+    // Held view rows stay native-only: any held view attempt refuses.
+    let mut view = observe(3, facts_pair(), "win-a");
+    view.held_attempts = vec![held_view_row()];
+    match admit(&mut engine, &view) {
+        V4RunOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "native-without-capability");
+        }
+        other => panic!("expected held view fence, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, revision_before);
+}
+
+#[test]
+fn slice_7_1_invalid_screen_not_routing_authority() {
+    // Codec-equivalent invalid-held screens must not become command
+    // routing authority merely because the raw input carried them: the
+    // pre-observation freeze reads the effective graded rows.
+    let mut control_engine = engine();
+    let mut engine = engine();
+    let mut first = report_full(
+        1,
+        1,
+        vec![screen("out-a", 0), screen("out-b", 800)],
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+        "win-a",
+        PresentationRowV4::Valid(ingress("win-a")),
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        true,
+    );
+    first.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
+    accepted_reply(1, admit(&mut engine, &first));
+    // A newcomer with no retained home resolves its implicit send
+    // source from the action context: the cursor leg must not see the
+    // invalid-held screen.
+    let command = WorldCommand::SendRelative {
+        window: WindowId("win-new".to_owned()),
+        source: SendSource::HomeThenAction,
+        delta: 1,
+        follow: false,
+    };
+    let mut bad = screen("out-b", 800);
+    bad.scale = 0.0;
+    let mut invalid = report_full(
+        2,
+        2,
+        vec![screen("out-a", 0), bad],
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-b", 800),
+            fact("win-new", "out-a", 40),
+        ],
+        "win-a",
+        PresentationRowV4::Valid(ingress("win-a")),
+        Some(1),
+        Some(command.clone()),
+        Vec::new(),
+        Vec::new(),
+        true,
+    );
+    invalid.cursor = Some((900, 10));
+    invalid.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
+    // Mechanism check: raw routing maps the cursor onto the invalid
+    // screen while the effective routing does not, so the frozen send
+    // sources differ.
+    let raw_routing = RawRouting::from_v4(&invalid);
+    let graded = graded_effective_v4(&invalid, &[], true, true).expect("grades invalid screen");
+    let effective_routing = RawRouting::from_v4(&graded);
+    assert_ne!(
+        engine.freeze_command_sources(Some(&command), &raw_routing),
+        engine.freeze_command_sources(Some(&command), &effective_routing),
+        "raw invalid screen perturbs frozen sources"
+    );
+    // Wiring check: the admitted run matches the effective-equivalent
+    // control (valid screen plus the same pre-held invalid row), never
+    // the raw routing.
+    let mut control = report_full(
+        2,
+        2,
+        vec![screen("out-a", 0)],
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-b", 800),
+            fact("win-new", "out-a", 40),
+        ],
+        "win-a",
+        PresentationRowV4::Valid(ingress("win-a")),
+        Some(1),
+        Some(command),
+        Vec::new(),
+        Vec::new(),
+        true,
+    );
+    control.cursor = Some((900, 10));
+    control.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
+    control.held_screens = graded.held_screens.clone();
+    accepted_reply(1, control_engine.handle_report_v4(&first, &issue(&first)));
+    let reply = accepted_reply(2, admit(&mut engine, &invalid));
+    let control_reply = accepted_reply(
+        2,
+        control_engine.handle_report_v4(&control, &issue(&control)),
+    );
+    assert_eq!(
+        reply.command_result, control_reply.command_result,
+        "invalid screen freezes as its held equivalent"
+    );
+    assert_eq!(
+        engine.command_highwater, control_engine.command_highwater,
+        "invalid screen consumes as its held equivalent"
+    );
+}
+
+#[test]
+fn slice_7_1_mixed_invalid_structural_refused_atomically() {
+    // Mixed invalid+structural reports refuse transactionally on the
+    // ready path: rejection with no revision, ingest, replay-cache, or
+    // staged-hold adoption. Readiness comes from a valid first
+    // observation; the invalid lane alone would bootstrap instead.
+    let mut engine = engine();
+    accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
+    let calls_after_ready = engine.ingest_calls;
+    // Bad scale plus a duplicate window: grading bails on the
+    // structural defect, so the invalid lane names the refusal.
+    let mut bad = screen("out-a", 0);
+    bad.scale = 0.0;
+    let mut mixed = observe(2, facts_pair(), "win-a");
+    mixed.screens = vec![bad];
+    mixed.windows.push(fact("win-a", "out-a", 0));
+    match admit(&mut engine, &mixed) {
+        V4RunOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "screen-scale-invalid");
+        }
+        other => panic!("expected mixed refusal, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, 1);
+    assert_eq!(engine.ingest_calls, calls_after_ready);
+    assert_eq!(
+        engine.last_request_seq_v4, 1,
+        "mixed refusal caches nothing"
+    );
+    assert!(
+        engine.staged.held_screens.is_empty() && engine.staged.held_windows.is_empty(),
+        "mixed refusal stages no holds"
+    );
+    // Bad window metadata plus duplicate screens: structural refusal wins.
+    let mut bad_window = fact("win-bad", "out-a", 0);
+    bad_window.title = Some("y".repeat(5000));
+    let mut mixed_screens = observe(2, vec![fact("win-a", "out-a", 0), bad_window], "win-a");
+    mixed_screens.screens = vec![screen("out-a", 0), screen("out-a", 0)];
+    match admit(&mut engine, &mixed_screens) {
+        V4RunOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "duplicate-screen");
+        }
+        other => panic!("expected duplicate-screen refusal, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, 1);
+    assert_eq!(engine.ingest_calls, calls_after_ready);
+    assert_eq!(engine.last_request_seq_v4, 1);
+    // Out-of-range held ordinals refuse without adoption.
+    let mut ordinal = observe(2, facts_pair(), "win-a");
+    ordinal.held_windows = vec![HeldWindowRow {
+        window: WindowId("win-held".to_owned()),
+        ordinal: 99,
+        output: Some(OutputId("out-a".to_owned())),
+        fields: Vec::new(),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    }];
+    match admit(&mut engine, &ordinal) {
+        V4RunOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "held-ordinal-invalid");
+        }
+        other => panic!("expected held ordinal refusal, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, 1);
+    assert_eq!(engine.last_request_seq_v4, 1);
+}
+
+#[test]
+fn slice_7_1_invalid_version_and_unbound_owner_refused() {
+    let mut engine = engine();
+    let revision_before = engine.state_revision;
+    let mut version = observe(1, facts_pair(), "win-a");
+    version.contract_version = WORLD_CONTRACT_VERSION;
+    match admit(&mut engine, &version) {
+        V4RunOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "version-mismatch");
+        }
+        other => panic!("expected version refusal, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, revision_before);
+    assert!(!engine.has_last_v4);
+    let mut unbound = WorldEngine::new("gen-1").expect("generation");
+    let base = observe(1, facts_pair(), "win-a");
+    match unbound.handle_report_v4(
+        &base,
+        &EventIssue {
+            owner: OwnerId::parse("adapter-1").expect("owner"),
+            correlation: CorrelationId::parse(&base.request_id).expect("correlation"),
+        },
+    ) {
+        V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OWNER),
+        other => panic!("expected unbound owner refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn slice_7_1_invalid_window_hit_refused_atomically() {
+    // A cursor hit naming an identifiable invalid (gradable metadata)
+    // window fails closed with decoder-equivalent structural refusal:
+    // the gradable row is not a readable reported window for hit
+    // membership, so the report refuses before any grading, staging, or
+    // mutation. Ordinary invalid metadata without a hit still holds.
+    let mut engine = engine();
+    accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
+    let mut bad = fact("win-bad", "out-a", 0);
+    bad.title = Some("x".repeat(5000));
+    let mut invalid = observe(2, vec![fact("win-a", "out-a", 0), bad], "win-a");
+    invalid.cursor = Some((10, 20));
+    invalid.cursor_hit = Some(WindowId("win-bad".to_owned()));
+    let revision_before = engine.state_revision;
+    let calls_before = engine.ingest_calls;
+    match admit(&mut engine, &invalid) {
+        V4RunOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "cursor-hit-unknown");
+        }
+        other => panic!("expected cursor-hit refusal, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, revision_before);
+    assert_eq!(engine.ingest_calls, calls_before);
+    assert_eq!(engine.last_request_seq_v4, 1, "refusal caches nothing");
+    assert!(
+        engine.staged.held_windows.is_empty(),
+        "refusal stages no holds"
     );
 }

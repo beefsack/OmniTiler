@@ -19,7 +19,7 @@ use crate::world_engine::{StagedObservation, StagedReport, WorldEngine};
 use crate::world_report::{
     PresentationRowV4, RendererInput, RowDiagnostic, StateProperty, WorldReportV4,
 };
-use crate::world_report_v4_checks::grade_conflicting_windows_v4;
+use crate::world_report_v4_checks::graded_effective_v4;
 use crate::world_state::state_property_supported;
 
 /// Read-only staged census for protocol tests: counts and verbatim rows
@@ -60,7 +60,7 @@ impl WorldEngine {
     /// held presentation's diagnostic when it carries `Some`.
     pub(crate) fn stage_facts_v4(&mut self, report: &WorldReportV4) {
         // Classification-only restage from the original typed rows:
-        // capability grading may move conflicting windows into held rows
+        // invalid and capability grading may move rows into held rows
         // while the observation keeps the original facts. Like the legacy
         // restage, this never ingests intent.
         let observation = Self::capture_observation_v4(report);
@@ -72,7 +72,7 @@ impl WorldEngine {
             state_property_supported(self.capabilities(), StateProperty::Sticky);
         let maximize_supported =
             state_property_supported(self.capabilities(), StateProperty::Maximized);
-        let graded = grade_conflicting_windows_v4(
+        let graded = graded_effective_v4(
             report,
             unavailable,
             native_sticky_supported,

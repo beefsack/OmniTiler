@@ -1885,11 +1885,11 @@ devenv shell -- cargo run -q -p tiler-protocol --example world_eval < "$V4_WORLD
   NUL and local-link checks. Widening these future checks does not change the
   completed unit-6 gate or the platform-port acceptance order.
 
-### Proposed ordered unit 7 slices (not implemented)
+### Ordered unit 7 slices
 
 | Order | Bounded slice and dependency | Parked-conflict dependence |
 | --- | --- | --- |
-| 7-1 | Add typed invalid-screen/window grader twins and admitted-envelope validation, with codec/typed parity, correlation/capability fencing and pre-mutation refusal tests; retain internal/public separation until cutover | None for implementation |
+| 7-1 (finished) | Typed invalid-screen/window grader twins and admitted-envelope validation, with codec/typed parity, correlation/capability fencing and pre-mutation refusal tests; internal/public separation retained | No parked-conflict dependency |
 | 7-2 | Prepare broker/service handshake/settings and capture/queue/query integration against v4 types, plus v4 protocol/core harness/tool counterparts and transcript tests behind offline seams; preserve one public codec route, source/clock/replay fencing, requester-only results and no-actuation bootstrap | None for plumbing; scenario acceptance cannot bypass parked oracles |
 | 7-3 | Atomic public cutover after 7-1/7-2 prerequisites: public `handle_report`, version 4, broker/service encode/decode, handshake/negotiation, legacy envelope-key removal and active harness/tool switches together; no mixed-version intermediate route or dual decode | Implementation independent; full cutover acceptance still requires parked scenario resolutions |
 | 7-4 | Remove unreachable legacy codecs/report engine/caches and obsolete harness twins after public-path parity checks; audit remaining legacy references without removing immutable fixtures or migration records | None for dead-code removal; do not delete blocked tests or encode their failures as legacy-only |
@@ -1905,8 +1905,67 @@ devenv shell -- cargo run -q -p tiler-protocol --example world_eval < "$V4_WORLD
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and
   structural refusal. In-process hosts call `handle_report` directly, so every
-  host gets the same semantics. Unit 7 public cutover, which wires
-  `handle_report`, builds the twins.
+  host gets the same semantics. Slice 7-1 builds and verifies the twins on the
+  internal v4 path; slice 7-3 wires public `handle_report` at cutover.
+- Slice 7-1 plan: share the existing row retention/structure helpers with typed
+  v4 invalid-screen and invalid-window graders; compose invalid and capability
+  grading without letting one invalid lane mask structural refusal in another.
+  Validate the admitted adapter/generation and issue owner/correlation against
+  the bound connection before replay or mutation. Keep original typed content
+  for replay identity and raw observation capture, while effective held rows
+  govern authority. Verify codec/typed held-field and diagnostic parity, mixed
+  invalid lanes, carried ordinals, capability fences and transactional refusal.
+  Gate only core/protocol, with no public ingress, version, handshake, service,
+  broker, fixture or manifest changes. The three oracle conflicts stay parked;
+  `(output,id)` workspace-row uniqueness remains TENTATIVE.
+- Slice 7-1 outcome: the internal v4 path composes invalid-screen,
+  invalid-window and capability grading with shared row retention helpers.
+  Invalid rows retain canonical facts, ordinals and `InvalidFact` diagnostics;
+  nonfinite scale stays a held number, never a fabricated null. Structural
+  violations still refuse. Adapter/generation and admitted issue
+  owner/correlation must match the bound connection before mutation. Native
+  evidence fences include retained native rows/windows and native attempt
+  evidence; logical-only held member attempts remain admissible.
+  Readiness and pre-observation command routing read effective graded rows,
+  while raw capture, size estimation and replay identity keep original input.
+  Raw invalid rows cannot alias pre-held equivalents in the replay cache.
+- Thirteen new core regressions and five protocol parity tests cover narrow
+  holds, mixed invalid/capability lanes, held ordinals, nonfinite retention,
+  bootstrap-to-ready progression, routing, envelope/version/host fences,
+  replay distinction and transactional structural refusal. Fixture-derived
+  typed and decoded reports produce equal full screen bootstrap/ready and
+  ready-window-hold replies, with independent cached replays; pre-held screen
+  ordinals stay fixed. Screen/window fields and diagnostics match for sampled
+  invalid scale, identity, metadata and process-id values. A cursor hit naming an
+  invalid-held window refuses on both paths with `cursor-hit-unknown`;
+  existing capability-conflict-only hit clearing is unchanged. These checks
+  do not establish universal error-message precedence for multiply-invalid
+  reports, public ingress/service integration, native behavior or scenario
+  acceptance beyond the existing internal runners.
+- Development/review evidence: targeted development runs reported behavioral
+  reds for missing typed holds/envelope fencing and, during correction, raw
+  invalid screens incorrectly establishing readiness/routing authority,
+  logical-only held member rows being over-fenced, and typed invalid-window
+  hits being accepted instead of decoder-equivalent structural refusal.
+  Initial parity-test compilation failed on the not-yet-built twins; a
+  held-native test ordinal was corrected as a test-authoring error. Source
+  review identified fence-precision and coverage gaps; follow-up checks added
+  full-reply parity and mixed invalid/structural refusal coverage. The first
+  all-target clippy run failed on an unused test `mut`, removed before the
+  final gate. No new product decision or TENTATIVE choice is introduced.
+- Direct final slice 7-1 verification passes sequentially:
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1960 core unit tests and every selected target; five new protocol parity
+  tests; ordered runner 36 pass/two parked ignored),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. Changed-file whitespace,
+  added ASCII, NUL and relative Markdown file-target checks pass; existing
+  non-ASCII in `world_engine.rs` and `world_report.rs` is unchanged. No public
+  `handle_report`, version, codec, handshake, broker/service, adapter, Cargo,
+  fixture or manifest change is included. The note remains active. Slice 7-2
+  is next and has not started; 7-3 public cutover remains separate. All three
+  oracle conflicts and eight native OPEN/TBD gates remain open.
 - Sub-increment 3 plan: apply the existing v4 conflicting-window grader using
   the engine's bound capabilities before v4 staging; append unsupported state
   attempts' `conflicting-fact` diagnostics in the attempt lane, resolving scope

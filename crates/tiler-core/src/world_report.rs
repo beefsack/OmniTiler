@@ -3946,7 +3946,7 @@ pub fn check_screen_structure(
 
 /// True when a screens row is identifiable and its only violations are the
 /// gradable v4 scale/metadata values (see [`grade_invalid_screens`]).
-fn gradable_screen(screen: &ScreenReport) -> bool {
+pub(crate) fn gradable_screen(screen: &ScreenReport) -> bool {
     if !is_opaque_id(&screen.output.0) {
         return false;
     }
@@ -3966,7 +3966,7 @@ fn gradable_screen(screen: &ScreenReport) -> bool {
 
 /// Retain one directly constructed invalid screen row as a narrow hold,
 /// mirroring the protocol codec's retained fields and diagnostic.
-fn graded_held_row(screen: &ScreenReport, ordinal: usize) -> HeldScreenRow {
+pub(crate) fn graded_held_row(screen: &ScreenReport, ordinal: usize) -> HeldScreenRow {
     use crate::connection::RawSettingValue;
     fn rect_value(rect: Option<Rect>) -> RawSettingValue {
         rect.map_or(RawSettingValue::Null, |row| {
@@ -4167,7 +4167,7 @@ pub(crate) fn gradable_window(fact: &WindowFact) -> bool {
 /// mirroring the protocol codec's retained fields and diagnostic: a
 /// diagnostic only for the row's actual reported output, never a
 /// fabricated scope.
-fn graded_held_window_row(fact: &WindowFact, ordinal: usize) -> HeldWindowRow {
+pub(crate) fn graded_held_window_row(fact: &WindowFact, ordinal: usize) -> HeldWindowRow {
     HeldWindowRow {
         window: fact.window.clone(),
         ordinal,

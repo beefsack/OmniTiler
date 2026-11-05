@@ -6,11 +6,12 @@
 //! admission half of legacy [`WorldEngine::handle_report`](crate::world_engine::WorldEngine::handle_report):
 //! an internal boundary over an already admitted connection/correlation
 //! context. The caller supplies the [`EventIssue`](crate::world_engine::EventIssue)
-//! and performs no public envelope admission here: no owner, generation,
-//! or correlation parsing. Every cheap gate runs before any mutation:
-//! conflicting-window grading, request-size estimate, the structural v4
-//! validator, typed request replay (digest pre-check, full typed equality
-//! decides), observation ordering, the conservative reply upper bound with
+//! and this entry defends that admitted envelope (bound adapter,
+//! generation, owner, and request correlation) before any mutation. Every
+//! cheap gate runs before any mutation: admitted-envelope defense,
+//! invalid-screen/window plus conflicting-window grading, request-size
+//! estimate, the structural v4 validator, typed request replay (digest
+//! pre-check, full typed equality decides), observation ordering, the conservative reply upper bound with
 //! the retained-publication, rollback, and selection-terminal reserves,
 //! and revision exhaustion. Accepted inputs then run to completion on a
 //! staged clone via [`WorldEngine::run_accepted_v4`](crate::world_run_v4::WorldEngine::run_accepted_v4);
@@ -29,20 +30,22 @@
 
 use std::collections::BTreeSet;
 
+use crate::connection::RawSettingValue;
 use crate::ids::CorrelationId;
 use crate::world_engine::{
-    EventIssue, KIND_OBS_STALE, KIND_OVERSIZED, KIND_REPLY_SIZE, KIND_REUSED,
-    KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED, MSG_OBS_STALE, MSG_OVERSIZED,
-    MSG_REPLY_SIZE, MSG_REUSED, MSG_REVISION_EXHAUSTED, MSG_SUPERSEDED, WorldEngine,
+    EventIssue, KIND_CORRELATION, KIND_GENERATION, KIND_OBS_STALE, KIND_OVERSIZED, KIND_OWNER,
+    KIND_REPLY_SIZE, KIND_REUSED, KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED,
+    MSG_CORRELATION, MSG_GENERATION, MSG_OBS_STALE, MSG_OVERSIZED, MSG_OWNER, MSG_REPLY_SIZE,
+    MSG_REUSED, MSG_REVISION_EXHAUSTED, MSG_SUPERSEDED, WorldEngine,
 };
 use crate::world_presentation::{GroupHideReason, PresentationUnderlay};
 use crate::world_report::{
-    BorderPresentationV4, WORLD_CONTRACT_VERSION_V4, WORLD_MAX_REPLY_BYTES,
+    AttemptLaneV4, BorderPresentationV4, WORLD_CONTRACT_VERSION_V4, WORLD_MAX_REPLY_BYTES,
     WORLD_MAX_REQUEST_BYTES, WorldPresentationV4, WorldReplyV4, WorldReportV4,
     validate_intent_writes_reason,
 };
 use crate::world_report_v4_checks::{
-    grade_conflicting_windows_v4, report_digest_v4, validate_report_v4_reason,
+    graded_effective_v4, report_digest_v4, validate_report_v4_reason,
 };
 use crate::world_run_v4::V4RunOutcome;
 use crate::world_sizing::max_intent_rollback_bound;
@@ -108,10 +111,11 @@ fn usable_initial_observation_v4(report: &WorldReportV4) -> bool {
 
 impl WorldEngine {
     /// Accept one already-admitted v4 report and publish one globally
-    /// ordered v4 reply. Internal only: the caller owns admission and
-    /// supplies the admitted [`EventIssue`]; this entry performs no public
-    /// envelope owner/generation/version admission and never touches the
-    /// public ingress, adapters, brokers, or services.
+    /// ordered v4 reply. Internal only: the caller supplies the admitted
+    /// [`EventIssue`]; this entry defends the already-admitted envelope
+    /// (bound adapter/generation plus issue owner/correlation) before any
+    /// mutation and never touches the public ingress, adapters, brokers,
+    /// or services.
     ///
     /// Transactional: every cheap gate runs before any mutation. Refused
     /// reports leave the engine (including intent ledgers, revision, and
@@ -128,11 +132,45 @@ impl WorldEngine {
         report: &WorldReportV4,
         issue: &EventIssue,
     ) -> V4RunOutcome {
-        // Core-owned grading for the typed path: unavailable-fact
-        // contradictions become narrow holds like their protocol-decoded
-        // twins before any estimate, validation, or mutation. No
-        // invalid-screen/window twins: the v4 decoder already holds invalid
-        // rows, and the typed-value path stays unit 7 work.
+        // Internal admitted-envelope defense: the bound adapter, generation,
+        // owner, and request correlation must match before any estimate,
+        // grading, validation, or mutation. The caller owns public
+        // admission; this internal boundary re-checks the already-admitted
+        // context so a stale or foreign envelope never reaches the run.
+        if self.adapter.as_deref() != Some(report.adapter_incarnation.as_str()) {
+            return V4RunOutcome::Rejected {
+                kind: KIND_OWNER,
+                message: MSG_OWNER,
+            };
+        }
+        if report.core_generation != self.core_generation_str {
+            return V4RunOutcome::Rejected {
+                kind: KIND_GENERATION,
+                message: MSG_GENERATION,
+            };
+        }
+        let Some(bound_owner) = self.connection_owner.clone() else {
+            return V4RunOutcome::Rejected {
+                kind: KIND_OWNER,
+                message: MSG_OWNER,
+            };
+        };
+        if issue.owner != bound_owner {
+            return V4RunOutcome::Rejected {
+                kind: KIND_OWNER,
+                message: MSG_OWNER,
+            };
+        }
+        if issue.correlation.as_str() != report.request_id {
+            return V4RunOutcome::Rejected {
+                kind: KIND_CORRELATION,
+                message: MSG_CORRELATION,
+            };
+        }
+        // Core-owned grading for the typed path: invalid scale/identity and
+        // metadata/process rows become narrow holds like their
+        // protocol-decoded twins, then unavailable-fact contradictions hold,
+        // before any estimate, validation, or mutation.
         let unavailable: &[crate::connection::FactName] = self
             .capabilities()
             .map(|capabilities| capabilities.unavailable_facts.as_slice())
@@ -145,21 +183,43 @@ impl WorldEngine {
             self.capabilities(),
             crate::world_report::StateProperty::Maximized,
         );
-        let graded_conflicting = grade_conflicting_windows_v4(
+        let graded_effective = graded_effective_v4(
             report,
             unavailable,
             native_sticky_supported,
             maximize_supported,
         );
-        // The graded copy serves structural validation only. Digest,
-        // equality, size, caching, and the accepted run all stay on the
-        // original typed input: raw conflicting rows must never alias
-        // equivalent pre-held input as duplicates.
-        let effective = graded_conflicting.as_ref().map_or(report, |owned| owned);
+        // The graded copy supplies validation and initial readiness. Digest,
+        // equality, size, caching, and the accepted run keep the original
+        // typed input; the run grades its effective authority rows separately.
+        // Raw rows must never alias equivalent pre-held input as duplicates.
+        let effective = graded_effective.as_ref().map_or(report, |owned| owned);
         // Fail-closed capability gates, mirroring the legacy admission
         // order: native evidence rides only on host-owned hosts, and the
         // readiness-bracket arm matches the host kind. Checked before any
-        // adoption, even when the location lanes are null.
+        // adoption, even when the location lanes are null. Already-held
+        // native evidence counts conservatively: a held native row, a held
+        // window retaining a non-empty native workspace, or a held
+        // view/creation attempt is still native evidence, while a held
+        // member attempt counts only when a retained `pre`/`post` field
+        // carries the native reference kind.
+        let held_native_evidence = !report.held_native.is_empty()
+            || report.held_windows.iter().any(|held| {
+                held.fields.iter().any(|(key, value)| {
+                    key == "nativeWs"
+                        && matches!(value, crate::connection::RawSettingValue::String(id) if !id.is_empty())
+                })
+            })
+            || report.held_attempts.iter().any(|held| match held.lane {
+                AttemptLaneV4::Member => held.fields.iter().any(|(key, value)| {
+                    (key == "pre" || key == "post")
+                        && matches!(value, RawSettingValue::Object(entries)
+                            if entries.iter().any(|(key, kind)| key == "kind"
+                                && matches!(kind, RawSettingValue::String(kind) if kind == "native")))
+                }),
+                AttemptLaneV4::View | AttemptLaneV4::Creation => true,
+                _ => false,
+            });
         let native_evidence = !report.native.is_empty()
             || report
                 .windows
@@ -175,7 +235,8 @@ impl WorldEngine {
                 )
             })
             || !report.view_attempts.is_empty()
-            || !report.creation_attempts.is_empty();
+            || !report.creation_attempts.is_empty()
+            || held_native_evidence;
         if native_evidence && !self.host_owned_workspace_domains() {
             return V4RunOutcome::Rejected {
                 kind: KIND_SNAPSHOT,
@@ -311,7 +372,9 @@ impl WorldEngine {
             }
             (None, None) => false,
         };
-        let usable_initial_observation = usable_initial_observation_v4(report);
+        // Readiness keys on the effective graded report, never the raw
+        // input: an invalid-held screen alone is not a usable screen.
+        let usable_initial_observation = usable_initial_observation_v4(effective);
         if !self.initial_settings_accepted || (!self.ready_latched && !usable_initial_observation) {
             // Bootstrap still ingests validated intent rows on a staged
             // candidate so records delivered in incomplete pre-ready
@@ -507,9 +570,11 @@ impl WorldEngine {
     /// Test-support entry over already-admitted connection context: reuse
     /// the bound owner and the report's decoder-validated correlation to
     /// build the admitted issue, then run the internal
-    /// [`WorldEngine::handle_report_v4`] boundary. Bypasses public envelope
-    /// admission: the caller must establish adapter/generation binding.
-    /// Missing bound owner or invalid correlation refuses before execution.
+    /// [`WorldEngine::handle_report_v4`] boundary. Bypasses public ingress
+    /// only: the caller must establish adapter/generation binding, and the
+    /// internal boundary still defends the bound adapter, generation,
+    /// owner, and correlation before any mutation. Missing bound owner or
+    /// invalid correlation refuses before execution.
     /// Not a second public ingress: no
     /// broker, service, adapter, or version wiring. Accepted, duplicate, and
     /// command-consumed outcomes all return the typed reply for faithful

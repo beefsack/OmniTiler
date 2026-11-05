@@ -716,7 +716,7 @@ pub struct WorldEngine {
     generation_seed: String,
     connection_number: u64,
     config: WorldEngineConfig,
-    adapter: Option<String>,
+    pub(crate) adapter: Option<String>,
     pub(crate) connection_owner: Option<OwnerId>,
     application_identity: Option<ApplicationIdentity>,
     capabilities: Option<HostCapabilities>,

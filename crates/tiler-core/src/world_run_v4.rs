@@ -36,7 +36,7 @@ use crate::world_report::{
     CommandRejectKind, CommandResult, HoldReason, TilingMode, TransferKind, WorldReplyV4,
     WorldReportV4,
 };
-use crate::world_report_v4_checks::grade_conflicting_windows_v4;
+use crate::world_report_v4_checks::graded_effective_v4;
 
 /// Internal outcome of one v4 accepted run: the genuine v4 reply on
 /// observation/command progression, or the envelope refusal kind when
@@ -91,18 +91,11 @@ impl WorldEngine {
         // The frozen explicit output is the only source the command below
         // may use. Direction-only migration freezes here too: the frozen
         // pre-observation source view applies verbatim, so view settlement
-        // in this report never retargets the current intent.
-        let source_routing = RawRouting::from_v4(report);
-        let (frozen_send_source, frozen_migration_source) =
-            self.freeze_command_sources(report.command.as_ref(), &source_routing);
-        // Exactly-once initial ingestion: capture the original raw facts,
-        // ingest intent from that capture, then stage the capability-graded
-        // effective rows from the same capture, so the classifier sees
-        // pending first-admission wins this same report with no second
-        // ingestion. Later command restages reuse the classification-only
-        // `restage_classification` and never reingest.
-        let observation = Self::capture_observation_v4(report);
-        self.ingest_staged_intent(&observation);
+        // in this report never retargets the current intent. The freeze
+        // reads the invalid- and capability-graded effective rows, so an
+        // invalid-held screen can never become command routing authority
+        // merely because the raw input carried it; raw capture and replay
+        // below stay verbatim.
         let unavailable: &[crate::connection::FactName] = self
             .capabilities()
             .map(|capabilities| capabilities.unavailable_facts.as_slice())
@@ -115,13 +108,24 @@ impl WorldEngine {
             self.capabilities(),
             crate::world_report::StateProperty::Maximized,
         );
-        let graded = grade_conflicting_windows_v4(
+        let graded = graded_effective_v4(
             report,
             unavailable,
             native_sticky_supported,
             maximize_supported,
         );
         let effective = graded.as_ref().unwrap_or(report);
+        let source_routing = RawRouting::from_v4(effective);
+        let (frozen_send_source, frozen_migration_source) =
+            self.freeze_command_sources(report.command.as_ref(), &source_routing);
+        // Exactly-once initial ingestion: capture the original raw facts,
+        // ingest intent from that capture, then stage the invalid- and
+        // capability-graded effective rows from the same capture, so the
+        // classifier sees pending first-admission wins this same report
+        // with no second ingestion. Later command restages reuse the
+        // classification-only `restage_classification` and never reingest.
+        let observation = Self::capture_observation_v4(report);
+        self.ingest_staged_intent(&observation);
         self.stage_captured_v4(effective, observation);
         self.converge_logical_pre();
         self.settle_views_pre();
