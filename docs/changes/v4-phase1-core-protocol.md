@@ -987,7 +987,26 @@
      and the public report entry unchanged. 7f-3 exercises `window-state`,
      `persistent-above` and `linked-selectors-warp`, including their declared
      connection/storage events where an offline driver can faithfully execute
-     them. 7f-4 exercises both `visibility-*` scenarios with an explicit offline
+     them. Reuse the 7f-2 runner for all three: execute 19/21/5 reports through
+     genuine codecs and the internal boundary, reset connection state using the
+     declared generation sequence on disconnect, and execute the four stacking
+     storage events with a lifetime-bound coupled-property preimage model.
+     Preserve literal jq assertions and expose actual encoded reply bytes.
+     Record the `window-state` fullscreen baseline gate as OPEN without
+     inventing native evidence; passing its executable legs is not full scenario
+     acceptance. Verify persistence-before-write, failed-storage no-write and
+     matching-lifetime-only restore independently of core stacking eligibility.
+     Execution split: 7f-3a gates `window-state` and the reusable connection
+     driver first. Initial ordered runs exposed two separate follow-ups:
+     `persistent-above` reaches `capacity-float-acquire` without classifying
+     the oversized subject as a capacity float; `linked-selectors-warp` reaches
+     `linked-observe` but canonical reply encoding refuses duplicate workspace
+     ids across outputs. Neither failed scenario counts as end-to-end evidence.
+     7f-3b retains the capacity-float investigation and stacking storage driver;
+     7f-3c retains the shared-workspace producer/codec identity investigation
+     and linked-selector run. Resolve those within the parallel internal path
+     or report the contract boundary before changing public codec semantics.
+     7f-4 exercises both `visibility-*` scenarios with an explicit offline
      host-evidence driver, separating executable internal legs from native-only
      evidence. 7f-5 supplies internal v4 stress coverage without switching the
      legacy public stress harness. Refine these later slices against source
@@ -1350,6 +1369,47 @@
   No new behavioral or tentative decision, fixture, manifest, Cargo, adapter,
   public-ingress or version change is included. 7f-2 is finished; the note stays
   active. 7f-3 through 7f-5, later unit 7 and all eight OPEN/TBD gates remain.
+- Sub-increment 7f-3a outcome: the reused 7f-2 runner now executes every
+  `window-state` wire step in fixture array order through genuine decoders,
+  handshake/settings handling, internal `handle_report_v4` and reply encoders.
+  All 28 steps are accounted for: three handshakes, three settings, nineteen
+  reports, two disconnects and one explicitly pending native evidence gate.
+  All 56 original jq assertions execute literally. They establish maximize,
+  unknown/known/nonexitable fullscreen handling, composed sticky visibility
+  across workspace selection, prior float/tile preservation and intent saves,
+  float-on-sticky tiling, unsupported sticky refusal after reconnect, and
+  native-sticky target/readback without attempt diagnostics. Disconnect drops
+  the complete engine; subsequent handshakes consume generation-b then
+  generation-c, with adapter/generation binding pinned before internal reports.
+  Core output exposes real encoded bytes and completed-step history without
+  applying reply policy to any fake native world. Unknown input/event kinds,
+  duplicate step ids, missing assertion arrays and settled evidence gates fail.
+  The `windows-app-owned-fullscreen-exit` gate remains OPEN with no invented
+  outcome: executable internal legs pass, but this is not full scenario/native
+  acceptance or public-ingress evidence. The existing raw-attempt scenario's
+  ten reports and fourteen assertions still pass through the same runner.
+  The first window-state semantic run passed; no behavior fix or red-first
+  regression is claimed. Initial development runs of `persistent-above` and
+  `linked-selectors-warp` failed at `capacity-float-acquire` and canonical
+  encoding of `linked-observe`, respectively. Their trial tests and storage
+  model are not retained or accepted as coverage; the split and unresolved
+  diagnoses above define 7f-3b/7f-3c. Neither scenario ran end to end.
+  Source review confirmed fixture counts, literal oracles, connection resets
+  and pending-gate handling with no blocking finding. Direct sequential
+  verification passes
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1947 core unit tests and all selected core/protocol targets, including all
+  three runner integration tests),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. Changed-file whitespace,
+  added ASCII, NUL and relative Markdown link-file checks pass.
+  No production behavior, tentative decision, fixture, manifest, Cargo,
+  adapter, public-ingress or version change is included. 7f-3a is finished;
+  the phase note stays active. 7f-3b/7f-3c, 7f-4/7f-5, later unit 7 and all
+  eight OPEN/TBD gates remain. Next: reproduce the capacity-float failure on
+  the reused runner and investigate the parallel internal admission path
+  before restoring the persistent-above scenario and storage-unit driver.
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and
   invalid-window graders with the decoder's hold, `InvalidFact` diagnostic and
