@@ -1,4 +1,7 @@
-// Aligned whole-workspace migration through the production apply path:
+// Aligned whole-workspace migration through the production apply path
+// (strict v4: the base envelope is the genuine real-core
+// MIGRATE_DRAIN.reply.json capture; the aligned grid below reshapes its
+// scenario rows in-test with v4-shaped rows, never a v3 conversion):
 // the shared native grid repeats one native id per output with a distinct
 // logical each. The reply (migration transfer op-61 to the destination
 // trailing plus the explicit core refill op-61-refill, D5 reading B) moves
@@ -14,11 +17,21 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { applyWorldReply } from "../src/world-apply";
 import { WorldAdapterState } from "../src/world-state";
-import { parseWorldReply, isWorldRejection, type WorldReply } from "../src/world-report";
+import { parseWorldReply, isWorldRejection, isCoreWorldReply, type WorldReply, type WorldReplyResult, type WorldAuthorityScope, type WorldHoldReason } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
 
-const FIXTURE = path.resolve("..", "test-fixtures", "world-wire", "reply-migrate.json");
+const FIXTURE = path.resolve("..", "test-fixtures", "kde-v4", "migration", "MIGRATE_DRAIN.reply.json");
 const NATIVES = ["ws-1", "ws-2", "ws-3", "ws-4"];
+
+// Correlated terminal take result for the aligned scenario (take lane,
+// requester-only): both members leave out-a/ws-1 for the out-b trailing
+// under the stable core LOGICAL target id. The actuator-lane reply carries
+// result null; this rides takeResult at each call site only.
+const ALIGNED_TAKE: WorldReplyResult = {
+    op: "migrate-workspace", direction: "right",
+    sourceOut: "out-a", sourceWs: "ws-1", targetOut: "out-b", targetWs: "al-1",
+    members: ["win-a", "win-c"], floats: 0,
+};
 
 function loadReply(): WorldReply {
     const parsed = parseWorldReply(fs.readFileSync(FIXTURE, "utf8"));
@@ -26,13 +39,19 @@ function loadReply(): WorldReply {
     return parsed as WorldReply;
 }
 
-// Aligned reshape of the disjoint fixture: out-a/ws-1 (win-a, win-c)
-// migrates to the out-b trailing ws-3; the source refills to the
+// Aligned reshape of the genuine v4 drain capture: out-a/ws-1 (win-a,
+// win-c) migrates to the out-b trailing ws-3; the source refills to the
 // core-chosen ws-4 (moved ws-1 and its fresh replacement excluded).
 function loadAlignedReply(): WorldReply {
     const reply = loadReply();
-    const wsRow = (logical: string, out: string, bind: string, order: number): WorldReply["workspaces"][number] => ({
-        id: logical, out, bind, scope: { kind: "output", out }, order, mode: "tiled", exist: true, hold: "", trailing: false,
+    // Wire rows omit `trailing` when false (present-but-false refuses
+    // strict parse); the parser fills false and apply never reads the key.
+    // The widened annotation keeps the single downcast at assignment legal.
+    const wsRow = (logical: string, out: string, bind: string, order: number): {
+        id: string; out: string; bind: string; scope: WorldAuthorityScope;
+        order: number; mode: "tiled" | "floating"; exist: boolean; hold: WorldHoldReason;
+    } => ({
+        id: logical, out, bind, scope: { kind: "output", out }, order, mode: "tiled", exist: true, hold: "",
     });
     reply.workspaces = [
         wsRow("al-1", "out-a", "ws-1", 0),
@@ -43,14 +62,14 @@ function loadAlignedReply(): WorldReply {
         wsRow("al-6", "out-b", "ws-2", 1),
         wsRow("al-7", "out-b", "ws-1", 0),
         wsRow("al-8", "out-b", "ws-4", 3),
-    ];
+    ] as WorldReply["workspaces"];
     reply.outputs = [
         { out: "out-a", view: "ws-1", mode: "tiled", hold: "" },
         { out: "out-b", view: "ws-2", mode: "tiled", hold: "" },
     ];
     const winRow = (win: string, out: string, ws: string): WorldReply["windows"][number] => ({
         win, out, ws, alloc: null, frame: null,
-        frame_auth: "hold", frame_hold: "", member_auth: "controlled", member_hold: "",
+        frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
         frame_op: "", clear_op: "", floating: false, float_origin: "",
         cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
     });
@@ -72,12 +91,35 @@ function loadAlignedReply(): WorldReply {
         { op: "op-61", kind: "migration", win: "", out: "out-b", ws: "al-1", follow: false, held: false, cmdSeq: null },
         { op: "op-61-refill", kind: "view", win: "", out: "out-a", ws: "al-4", follow: false, held: false, cmdSeq: null },
     ];
-    reply.result = {
-        op: "migrate-workspace", direction: "right",
-        sourceOut: "out-a", sourceWs: "ws-1", targetOut: "out-b", targetWs: "al-1",
-        members: ["win-a", "win-c"], floats: 0,
-    };
+    // Actuator-lane result stays null (terminal results ride the take lane
+    // only); the correlated outcome rides takeResult at each call site.
+    reply.result = null;
     reply.effects = [];
+    // The reshaped scenario must strict-parse as v4, not just the base
+    // envelope: validates the authored bindings, transfers, and scopes
+    // above through the real parser. The projection strips ONLY the
+    // parser-inserted defaults the real parser fills on read
+    // (`suspendedOutput: null`, pager `trailing: false`): the wire omits
+    // them and present-but-false/null refuses.
+    const { suspendedOutput, ...presentationRest } = reply.presentation;
+    const wire = {
+        ...reply,
+        v: 4,
+        presentation: {
+            ...presentationRest,
+            ...(suspendedOutput === null ? {} : { suspendedOutput }),
+            pager: reply.presentation.pager.map((p) => ({
+                ...p,
+                workspaces: p.workspaces.map((w) => {
+                    if (w.trailing) return { ...w };
+                    const { id, ordinal, label, current, occupied, containsFocused, windows } = w;
+                    return { id, ordinal, label, current, occupied, containsFocused, windows };
+                }),
+            })),
+        },
+    };
+    const reparsed = parseWorldReply(JSON.stringify(wire));
+    assert.ok(reparsed !== null && isCoreWorldReply(reparsed), "reshaped reply stays strict v4");
     return reply;
 }
 
@@ -203,11 +245,15 @@ function makeEnv(state: WorldAdapterState, world: FakeWorld) {
 }
 
 function freshState(reply: WorldReply): WorldAdapterState {
-    const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1", "adapter-1");
-    state.invalidate();
-    state.invalidate();
-    reply.obs = state.currentInvalid;
+    // Bind the actual recorded receipt: producer adapter, serving
+    // generation, broker-stamped source correlation, and the capture
+    // watermark, mirroring the typed v4 apply harness. Never mutates the
+    // broker-owned reply.obs sequencing lane.
+    const state = new WorldAdapterState(reply.adapter, "owner-a");
+    assert.equal(state.onDiscovery(reply.gen, reply.adapter, "disc-1", "disc-1"), true);
+    const flight = state.beginCapture(reply.source, null);
+    assert.ok(flight !== null);
+    assert.deepEqual(state.acceptReply(reply, reply.source, flight.watermark), { applied: true, reason: "accepted" });
     return state;
 }
 
@@ -229,7 +275,7 @@ describe("world aligned migration apply", () => {
         const reply = loadAlignedReply();
         const world = baseWorld();
         const state = freshState(reply);
-        const applied = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
+        const applied = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: ALIGNED_TAKE,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -251,7 +297,7 @@ describe("world aligned migration apply", () => {
         assert.ok(applied.membershipWrites >= 2);
         assert.ok(applied.viewWrites >= 2);
         // Converged repeat settles with no new native calls.
-        const settled = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
+        const settled = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: ALIGNED_TAKE,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -267,7 +313,7 @@ describe("world aligned migration apply", () => {
         const world = baseWorld();
         world.lieMembership = true;
         const state = freshState(reply);
-        const first = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
+        const first = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: ALIGNED_TAKE,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -278,7 +324,7 @@ describe("world aligned migration apply", () => {
         void first;
         // win-a lands externally; win-c still delayed: still no views.
         world.homing.set("win-a", { out: "out-b", ws: "ws-3" });
-        const partial = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
+        const partial = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: ALIGNED_TAKE,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -290,7 +336,7 @@ describe("world aligned migration apply", () => {
         // Full arrival: both views switch exactly once, then settle.
         world.homing.set("win-c", { out: "out-b", ws: "ws-3" });
         world.lieMembership = false;
-        const second = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
+        const second = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: ALIGNED_TAKE,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -302,7 +348,7 @@ describe("world aligned migration apply", () => {
         );
         assert.ok(second.viewWrites >= 2);
         void second;
-        const third = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
+        const third = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: ALIGNED_TAKE,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -320,7 +366,7 @@ describe("world aligned migration apply", () => {
         // win-c closes mid-flight: absent from every domain.
         world.homing.delete("win-c");
         const state = freshState(reply);
-        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
+        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: ALIGNED_TAKE,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -349,7 +395,7 @@ describe("world aligned migration apply", () => {
                 return world.homing.get(id) ?? null;
             },
         };
-        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result, ...lying, observation: makeObservation(world), reply });
+        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: ALIGNED_TAKE, ...lying, observation: makeObservation(world), reply });
         assert.ok(out.held >= 1, "unreadable arrival holds");
         assert.equal(world.switchViewCalls.length, 0, "no views on unreadable proof");
         void out;
@@ -370,7 +416,7 @@ describe("world aligned migration apply", () => {
         const state = freshState(reply);
         const env = makeEnv(state, world);
         let removed = 0;
-        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
+        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...env,
             removeDesktop: () => {
                 removed += 1;

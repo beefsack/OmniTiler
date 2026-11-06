@@ -478,3 +478,14 @@
   The current full adapter gate executes 980 tests: 634 pass, 346 fail, none skip.
   Remaining stale corpus failures, widened gates and integrated review keep K1
   incomplete; these offline passes add no native migration or rendering claim.
+- Three more mechanical apply harnesses now strict-parse v4 receipts: aligned
+  migration, retained float placement and logical-to-native resolution. Aligned
+  rows reshape the genuine migration counterpart; float and logical-resolution
+  rows are explicitly synthetic, not new real-core captures. Later float snapshots
+  advance revision through a newly correlated capture on the same state, retaining
+  spent operations and keeping broker observation sequence independent of the
+  local native fence. All 21 tests and strict TypeScript pass, including partial
+  arrival, lost-result recovery, stale refusal, manual supersession and no-replay.
+  The initial strict round-trip check exposed the parser's omitted version tag
+  and inserted optional defaults; explicit wire projections corrected that test
+  plumbing without changing the production decoder or scenario assertions.

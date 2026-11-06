@@ -1,7 +1,10 @@
 // Explicit retained float placement through the production apply path:
-// the Rust-engine reply (reply-float.json: the window row carries the
-// stable core property token `frame_op`, plus the correlated `result`
-// provenance) writes the exact native frame once per operation, spends
+// STRICT V4 SYNTHETIC reply (hand-authored inline for mechanical apply
+// only and validated below through the real parseWorldReply; scenario
+// tokens mirror the retired v3 reply-float.json fixture without converting
+// it, and these bytes are not real-core output): the window row carries the stable
+// core property token `frame_op`, plus the correlated take-lane `result`
+// provenance: the apply writes the exact native frame once per operation, spends
 // before the setter so duplicates never re-place, settles applied only on
 // read-back proof, and never lets unrelated later replies steal the native
 // float frame. A lost result reply still recovers through the retained row
@@ -9,17 +12,12 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { applyWorldReply } from "../src/world-apply";
 import { WorldAdapterState } from "../src/world-state";
-import { parseWorldReply, isWorldRejection, type WorldReply } from "../src/world-report";
+import { parseWorldReply, isWorldRejection, isCoreWorldReply, type WorldReply } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
-
-const FIXTURE = path.resolve("..", "test-fixtures", "world-wire", "reply-float.json");
-// Stable core property operation identity for the float command that
-// produced the shared fixture (the broker command sequence of the
-// fixture-generation session).
+// Stable core property operation identity for the retained float token
+// (the explicit frame_op the core would publish for this placement).
 const OP = "op-1";
 // Centered 60% float placement in the outer-inset work area (800x600 inset
 // by outer 4 gives 792x592 at (4,4); 60% is 475x355 centered at
@@ -27,10 +25,57 @@ const OP = "op-1";
 const TARGET = { x: 162, y: 122, w: 475, h: 355 };
 
 function loadReply(): WorldReply {
-    const parsed = parseWorldReply(fs.readFileSync(FIXTURE, "utf8"));
+    // Hand-authored strict v4 bytes for the retained-float scenario (single
+    // output "out", tiled win-b plus floating win-a under the explicit
+    // frame_op token). Validated through the real parser, never a v3
+    // conversion: scenario tokens (win ids, frame rect, op) mirror the
+    // retired reply-float.json fixture.
+    const parsed = parseWorldReply(JSON.stringify({
+        v: 4, adapter: "broker-1", gen: "gen-1", req: "req-2",
+        obs: "1", rev: "1", ready: true, consumed: false,
+        source: "req-2", nativeInvalid: "1", clock: "0", gestureAssoc: null,
+        scopes: [
+            { scope: { kind: "workspace", out: "out", ws: "ws-1" }, auth: "controlled", reason: "" },
+            { scope: { kind: "workspace", out: "out", ws: "ws-2" }, auth: "controlled", reason: "" },
+        ],
+        workspaces: [
+            { id: "ws-1", out: "out", bind: "ws", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+            { id: "ws-2", out: "out", bind: "", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "", trailing: true },
+        ],
+        outputs: [{ out: "out", view: "ws-1", mode: "tiled", hold: "" }],
+        windows: [
+            {
+                win: "win-a", out: "out", ws: "ws-1", alloc: null, frame: [162, 122, 475, 355],
+                frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "",
+                frame_op: "op-1", floating: true, float_origin: "", clear_op: "", cmdSeq: null,
+                visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
+            },
+            {
+                win: "win-b", out: "out", ws: "ws-1", alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592],
+                frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "",
+                frame_op: "", floating: false, float_origin: "", clear_op: "", cmdSeq: null,
+                visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
+            },
+        ],
+        transfers: [], effects: [], result: null,
+        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        presentation: {
+            foreground: "win-a", rev: "1",
+            border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null },
+            underlay: { status: "hidden", reason: "disabled", baseRev: null },
+            pager: [{
+                out: "out",
+                workspaces: [
+                    { id: "ws-1", ordinal: 1, label: "1", current: true, occupied: true, containsFocused: true, windows: [{ win: "win-a", frame: [162, 122, 475, 355] }] },
+                    { id: "ws-2", ordinal: 2, label: "2", current: false, occupied: false, containsFocused: false, trailing: true, windows: [] },
+                ],
+            }],
+        },
+        intentWrites: [], switchSettled: [], diagnostics: [],
+    }));
     assert.ok(parsed !== null && !isWorldRejection(parsed));
     const reply = parsed as WorldReply;
-    // v2 capture lane always carries result null; the terminal toggle-float
+    // v4 capture lane always carries result null; the terminal toggle-float
     // result rides TakeCommandResult (tested in command-result). Float
     // placement here uses the retained frame_op token.
     assert.equal(reply.result, null);
@@ -130,11 +175,14 @@ function makeEnv(state: WorldAdapterState, world: FakeWorld, opts: EnvOpts = {})
 }
 
 function freshState(reply: WorldReply): WorldAdapterState {
-    const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1", "broker-1");
-    while (state.currentInvalid !== reply.obs) {
-        state.invalidate();
-    }
+    // Bind the actual synthetic receipt: producer adapter, serving
+    // generation, source correlation, and the capture watermark, mirroring
+    // the typed v4 apply harness. Never mutates the reply.obs lane.
+    const state = new WorldAdapterState(reply.adapter, "owner-a");
+    assert.equal(state.onDiscovery(reply.gen, reply.adapter, "disc-1", "disc-1"), true);
+    const flight = state.beginCapture(reply.source, null);
+    assert.ok(flight !== null);
+    assert.deepEqual(state.acceptReply(reply, reply.source, flight.watermark), { applied: true, reason: "accepted" });
     return state;
 }
 
@@ -143,6 +191,60 @@ function freshState(reply: WorldReply): WorldAdapterState {
 // attempt rows plus fresh facts are the settlement evidence the core owns.
 function heldAmbiguous(state: WorldAdapterState, op: string): boolean {
     return state.isDispatched(op);
+}
+
+// Accept a genuinely newer correlated capture on the SAME state (never a
+// freshState: spent dispatches and retained tokens survive): fresh native
+// fence, exact new source correlation, an independent later obs "2" (never
+// derived from the local fence), rev "3", and the bound receipt's
+// nativeInvalid watermark plus a monotonic clock, all strict-validated
+// through the real parser before acceptReply, exactly like the typed v4
+// binding harness (world-v4-binding-apply.test.ts re-captures under
+// "src-b"). Returns the actually parsed shape, never unchecked edits.
+function acceptLater(state: WorldAdapterState, reply: WorldReply, source: string): WorldReply {
+    state.invalidate();
+    const flight = state.beginCapture(source, null);
+    assert.ok(flight !== null);
+    // The wire projection strips ONLY the parser-inserted defaults the real
+    // parser fills on read (workspace `trailing: false`, pager
+    // `trailing: false`, `suspendedOutput: null`): the wire omits them and
+    // present-but-false/null refuses.
+    const { suspendedOutput, ...presentationRest } = reply.presentation;
+    const wire = {
+        ...reply,
+        v: 4,
+        req: source,
+        source,
+        rev: "3",
+        obs: "2",
+        nativeInvalid: flight.watermark,
+        clock: "1",
+        workspaces: reply.workspaces.map((w) => {
+            if (w.trailing) return { ...w };
+            const { id, out, bind, scope, order, mode, exist, hold } = w;
+            return { id, out, bind, scope, order, mode, exist, hold };
+        }),
+        presentation: {
+            ...presentationRest,
+            ...(suspendedOutput === null ? {} : { suspendedOutput }),
+            pager: reply.presentation.pager.map((p) => ({
+                ...p,
+                workspaces: p.workspaces.map((w) => {
+                    if (w.trailing) return { ...w };
+                    const { id, ordinal, label, current, occupied, containsFocused, windows } = w;
+                    return { id, ordinal, label, current, occupied, containsFocused, windows };
+                }),
+            })),
+        },
+    };
+    const parsed = parseWorldReply(JSON.stringify(wire));
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "later capture stays strict v4");
+    if (!isCoreWorldReply(parsed)) {
+        throw new Error("later capture must parse as a core reply");
+    }
+    assert.deepEqual(state.acceptReply(parsed, source, flight.watermark), { applied: true, reason: "accepted" });
+    assert.equal(state.lastAcceptedRev, "3");
+    return parsed;
 }
 
 describe("world float placement", () => {
@@ -203,8 +305,12 @@ describe("world float placement", () => {
         // adapter setter: nothing applies and nothing is spent.
         assert.equal(state.floatSpent.size, 0);
         // The next unrelated snapshot carries no result but retains the
-        // same explicit operation token with the same target.
-        const later: WorldReply = { ...reply, rev: "3", result: null };
+        // same explicit operation token with the same target. It arrives as
+        // a genuinely accepted correlated capture at rev "3" on the same
+        // state; the dropped first reply spent nothing, so this apply does
+        // the work.
+        assert.equal(state.isDispatched(OP), false, "dropped first reply dispatched nothing");
+        const later = acceptLater(state, reply, "req-3");
         const applied = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
@@ -278,15 +384,18 @@ describe("world float placement", () => {
         applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...makeEnv(state, world), observation: makeObservation(world), reply });
         assert.deepEqual(world.frames.get("win-a"), TARGET);
         // An unrelated later reply without the token and without a result:
-        // the native frame stands untouched.
-        const later: WorldReply = {
+        // the native frame stands untouched. The tokenless later wire is
+        // genuinely accepted on the same state at rev "3"; the spent
+        // dispatch survives the re-accept, so the zero writes below prove
+        // token absence.
+        const tokenless: WorldReply = {
             ...reply,
-            rev: "3",
-            result: null,
             windows: reply.windows.map((w) =>
                 w.win === "win-a" ? { ...w, frame_op: "" } : w,
             ),
         };
+        const later = acceptLater(state, tokenless, "req-3");
+        assert.equal(state.isDispatched(OP), true, "re-accept preserves the spent float dispatch");
         const again = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
@@ -445,10 +554,12 @@ describe("world float placement", () => {
         // The user moves the float elsewhere; the retained token still rides
         // a later reply (the core has not settled yet).
         world.frames.set("win-a", { x: 300, y: 300, w: 200, h: 150 });
+        const later = acceptLater(state, reply, "req-3");
+        assert.equal(state.isDispatched(OP), true, "re-accept preserves the spent float dispatch");
         const moved = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
-            reply: { ...reply, rev: "3", result: null },
+            reply: later,
         });
         assert.equal(moved.geometryWrites, 0);
         assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);

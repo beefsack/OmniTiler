@@ -4,7 +4,10 @@
 // ids. The adapter resolves through the accepted reply's own workspace
 // rows for the exact output, never by ordinal or native string equality.
 // Unbound or unknown targets hold with no writes. Native ids here are
-// UUID-shaped and never equal the logical tokens by construction.
+// UUID-shaped and never equal the logical tokens by construction. Strict
+// v4 synthetic replies throughout (hand-authored inline, validated through
+// the real parseWorldReply); logical-resolution scenario only, not the
+// genuine migration real-core capture.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -50,16 +53,19 @@ function acceptEnv(
     observation: ApplyEnv["observation"],
     envOverrides: Partial<ApplyEnv> = {},
 ): { result: ReturnType<typeof applyWorldReply>; state: WorldAdapterState } {
-    const state = new WorldAdapterState("test-adapter", "owner-a");
-    state.onDiscovery("gen-1", "broker-1");
-    const flight = state.beginCapture("req-1", null);
-    assert.ok(flight !== null);
+    // Parse first, then bind the actual synthetic receipt: producer
+    // adapter, serving generation, source correlation, and the capture
+    // watermark, mirroring the typed v4 apply harness.
     const parsed = parseWorldReply(JSON.stringify(replyJson));
     assert.ok(parsed !== null && isCoreWorldReply(parsed));
     if (!isCoreWorldReply(parsed)) {
         throw new Error("fixture must parse as a core reply");
     }
-    const verdict = state.acceptReply(parsed, "req-1", flight.watermark);
+    const state = new WorldAdapterState(parsed.adapter, "owner-a");
+    assert.equal(state.onDiscovery(parsed.gen, parsed.adapter, "disc-1", "disc-1"), true);
+    const flight = state.beginCapture(parsed.source, null);
+    assert.ok(flight !== null);
+    const verdict = state.acceptReply(parsed, parsed.source, flight.watermark);
     assert.deepEqual(verdict, { applied: true, reason: "accepted" });
     const env = directEnv({ state, observation, reply: parsed, ...envOverrides });
     return { result: applyWorldReply(env), state };
@@ -97,16 +103,24 @@ function observationFor(homeWs: string, ref: object): ApplyEnv["observation"] {
     };
 }
 
-const PRESENTATION = { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] };
+const PRESENTATION = {
+    foreground: "", rev: "1",
+    border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null },
+    underlay: { status: "hidden", reason: "disabled", baseRev: null },
+    pager: [{
+        out: "out-1",
+        workspaces: [{ id: "wl-1", ordinal: 1, label: "1", current: true, occupied: true, containsFocused: false, windows: [] }],
+    }],
+};
 
 function coreReply(workspaces: Array<Record<string, unknown>>, transfers: Array<Record<string, unknown>>): Record<string, unknown> {
     return {
-        v: 3, adapter: "broker-1", gen: "gen-1", req: "req-1",
+        v: 4, adapter: "broker-1", gen: "gen-1", req: "req-1",
         obs: "1", rev: "1", ready: true, consumed: false,
-        source: "req-1", nativeInvalid: "1", clock: "0",
-        gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        source: "req-1", nativeInvalid: "1", clock: "0", gestureAssoc: null,
+        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: PRESENTATION,
-        scopes: [{ scope: "out-1/wl-1", auth: "controlled", reason: "" }],
+        scopes: [{ scope: { kind: "output", out: "out-1" }, auth: "controlled", reason: "" }],
         workspaces,
         outputs: [{ out: "out-1", view: "wl-1", mode: "tiled", hold: "" }],
         windows: [{
@@ -114,18 +128,21 @@ function coreReply(workspaces: Array<Record<string, unknown>>, transfers: Array<
             alloc: null, frame: null,
             frame_auth: "controlled", frame_hold: "",
             member_auth: "controlled", member_hold: "",
-            frame_op: "", clear_op: "",
-            floating: false, float_origin: "",
+            frame_op: "", floating: false, float_origin: "",
+            clear_op: "", cmdSeq: null,
+            visibility: null, visibility_auth: "untouched", visibility_hold: "",
+            state: [],
         }],
-        transfers,
+        transfers: transfers.map((t) => ({ ...t, cmdSeq: null })),
         effects: [],
         result: null,
+        intentWrites: [], switchSettled: [], diagnostics: [],
     };
 }
 
 const WORKSPACES = [
-    { id: "wl-1", out: "out-1", bind: NATIVE_A, scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" },
-    { id: "wl-2", out: "out-1", bind: NATIVE_B, scope: "out-1", order: 1, mode: "tiled", exist: true, hold: "" },
+    { id: "wl-1", out: "out-1", bind: NATIVE_A, scope: { kind: "output", out: "out-1" }, order: 0, mode: "tiled", exist: true, hold: "" },
+    { id: "wl-2", out: "out-1", bind: NATIVE_B, scope: { kind: "output", out: "out-1" }, order: 1, mode: "tiled", exist: true, hold: "" },
 ];
 
 describe("world logical workspace resolution in actuation", () => {
@@ -216,7 +233,7 @@ describe("world logical workspace resolution in actuation", () => {
         const ref = {};
         const withUnbound = [
             ...WORKSPACES,
-            { id: "wl-3", out: "out-1", bind: "", scope: "out-1", order: 2, mode: "tiled", exist: true, hold: "" },
+            { id: "wl-3", out: "out-1", bind: "", scope: { kind: "output", out: "out-1" }, order: 2, mode: "tiled", exist: true, hold: "" },
         ];
         const { result } = acceptEnv(
             coreReply(withUnbound, [
