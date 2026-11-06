@@ -7,29 +7,48 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createWorldPresentationSubscriber } from "../src/world-presentation";
+import { isWorldPresentationReply, parseWorldReply } from "../src/world-report";
 
 const GEN = "gen-1";
+
+// STRICT V4 SYNTHETIC projection (hand-authored inline, never real-core
+// output): causal coverage plus renderer hides. K1 settled-hidden border:
+// the wire carries a valid hidden anchored descriptor (never absolute
+// inner/outer); the native formatter projects it hidden. Underlay/preview
+// retained; native proof never claimed here.
+const HIDDEN_BORDER = {
+    visible: false, reason: "disabled", subject: null, outsets: null,
+    width: null, radius: null, witness: null,
+};
+
+function winRow(): Record<string, unknown> {
+    return {
+        win: "win-a", out: "out", ws: "ws",
+        alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592],
+        frame_auth: "controlled", frame_hold: "",
+        member_auth: "controlled", member_hold: "",
+        floating: false, float_origin: "", cmdSeq: null,
+        visibility: { shown: true, rev: "1", fallback: false },
+        visibility_auth: "controlled", visibility_hold: "",
+        state: [],
+    };
+}
 
 function projection(
     req: string, rev: string, obs: string,
     extra?: Record<string, unknown>, gen: string = GEN,
 ): string {
-    return JSON.stringify({
-        v: 3, outcome: "presentation", gen, req, rev, obs,
+    const text = JSON.stringify({
+        v: 4, outcome: "presentation", gen, req, rev, obs,
         coveredInstance: "effect-1", coveredInvalid: "0",
-        scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
-        workspaces: [{ id: "ws", out: "out", bind: "ws", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" }],
+        scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
+        workspaces: [{ id: "ws", out: "out", bind: "ws", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
         outputs: [{ out: "out", view: "ws", mode: "tiled", hold: "" }],
-        windows: [{
-            win: "win-a", out: "out", ws: "ws",
-            alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592],
-            frame_auth: "controlled", frame_hold: "",
-            member_auth: "controlled", member_hold: "",
-            floating: false, float_origin: "",
-        }],
+        windows: [winRow()],
         presentation: {
             foreground: "win-a",
-            border: { visible: true, reason: "", inner: [10, 10, 300, 300], outer: [8, 8, 304, 304] },
+            rev,
+            border: HIDDEN_BORDER,
             underlay: {
                 status: "found", reason: "", baseRev: "11",
                 homeOut: "out", homeWs: "ws", group: "grp-1", leaf: "leaf-a", win: "win-a",
@@ -44,6 +63,9 @@ function projection(
         preview: null,
         ...(extra ?? {}),
     });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isWorldPresentationReply(parsed), "authored projection binds strict v4");
+    return text;
 }
 
 interface Call { payload: string; callback: (reply: unknown) => void }

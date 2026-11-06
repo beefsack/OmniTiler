@@ -32,14 +32,39 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { isCoreWorldReply, isWorldPresentationReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface Render { method: string; args: ReadonlyArray<unknown> }
 interface Call { method: string; payload: string; callback: (reply: unknown) => void }
 interface Timer { delay: number; cb: () => void }
 
 const GEN = "gen-1";
-const BROKER = "broker-1";
+const ADAPTER = "test-adapter";
 const EFFECT = "effect-1";
+
+// STRICT V4 SYNTHETIC projection (hand-authored inline, never real-core
+// output): causal coverage plus renderer hides. K1 settled-hidden border:
+// the wire carries a valid hidden anchored descriptor (never absolute
+// inner/outer); the native formatter projects it hidden. Underlay/preview
+// retained; native proof never claimed here.
+const HIDDEN_BORDER = {
+    visible: false, reason: "disabled", subject: null, outsets: null,
+    width: null, radius: null, witness: null,
+};
+
+function winProjRow(): Record<string, unknown> {
+    return {
+        win: "win-a", out: "out-1", ws: "ws1",
+        alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592],
+        frame_auth: "controlled", frame_hold: "",
+        member_auth: "controlled", member_hold: "",
+        floating: false, float_origin: "", cmdSeq: null,
+        visibility: { shown: true, rev: "1", fallback: false },
+        visibility_auth: "controlled", visibility_hold: "",
+        state: [],
+    };
+}
 
 function projection(
     req: string, rev: string, obs: string,
@@ -50,23 +75,18 @@ function projection(
         coveredInvalid?: string | null;
     },
 ): string {
-    return JSON.stringify({
-        v: 3, outcome: "presentation", gen: GEN, req, rev, obs,
+    const text = JSON.stringify({
+        v: 4, outcome: "presentation", gen: GEN, req, rev, obs,
         coveredInstance: opts.coveredInstance === undefined ? EFFECT : opts.coveredInstance,
         coveredInvalid: opts.coveredInvalid === undefined ? "0" : opts.coveredInvalid,
-        scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
-        workspaces: [{ id: "ws1", out: "out-1", bind: "ws1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" }],
+        scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws1" }, auth: "controlled", reason: "" }],
+        workspaces: [{ id: "ws1", out: "out-1", bind: "ws1", scope: { kind: "output", out: "out-1" }, order: 0, mode: "tiled", exist: true, hold: "" }],
         outputs: [{ out: "out-1", view: "ws1", mode: "tiled", hold: "" }],
-        windows: [{
-            win: "win-a", out: "out-1", ws: "ws1",
-            alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592],
-            frame_auth: "controlled", frame_hold: "",
-            member_auth: "controlled", member_hold: "",
-            floating: false, float_origin: "",
-        }],
+        windows: [winProjRow()],
         presentation: {
             foreground: opts.foreground,
-            border: { visible: true, reason: "", inner: [10, 10, 300, 300], outer: [8, 8, 304, 304] },
+            rev,
+            border: HIDDEN_BORDER,
             underlay: {
                 status: "found", reason: "", baseRev: "11",
                 homeOut: "out-1", homeWs: "ws1", group: "grp-1", leaf: "leaf-a", win: "win-a",
@@ -80,6 +100,9 @@ function projection(
         },
         preview: opts.preview,
     });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isWorldPresentationReply(parsed), "authored projection binds strict v4");
+    return text;
 }
 
 interface FakeWin {
@@ -210,15 +233,23 @@ function setup(onLog?: (message: string) => void): Harness {
         const report = (JSON.parse(call.payload) as { report: Record<string, unknown> }).report;
         const assoc = assocFor(report);
         const settled = h.settledHook?.(report) ?? null;
-        call.callback(JSON.stringify({
-            v: 3, adapter: BROKER, gen: GEN, req: body.source, obs: String(rev), rev: String(rev),
+        // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
+        // output): producer adapter, serving generation, source correlation,
+        // native watermark; K1 settled-hidden presentation; terminal results
+        // stay requester-only on the take lane (null here).
+        const text = JSON.stringify({
+            v: 4, adapter: ADAPTER, gen: GEN, req: body.source, obs: String(rev), rev: String(rev),
             ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
             windows: [], transfers: [], effects: [], result: null,
             gestureSettled: settled, gestureAssoc: assoc,
             operationSettled: [], nativeCreations: [], warpCursor: null,
+            intentWrites: [], presentation: DISABLED_PRESENTATION,
+            switchSettled: [], diagnostics: [],
             source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        }));
+        });
+        const parsed = parseWorldReply(text);
+        assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored capture accept binds strict v4");
+        call.callback(text);
     };
     const handle = startWorldAdapterEntry({
         workspace: {
@@ -251,16 +282,6 @@ function setup(onLog?: (message: string) => void): Harness {
         adapter: "test-adapter",
         callDbus: (_s, _p, _i, method, payload, callback) => {
             calls.push({ method, payload, callback });
-            if (method === "DiscoverWorld") {
-                const body = JSON.parse(payload) as { req: string };
-                callback(JSON.stringify({
-                    v: 3, adapter: BROKER, gen: GEN, req: body.req, obs: "0", rev: "0",
-                    ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-                    windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
-                    operationSettled: [], nativeCreations: [], warpCursor: null,
-                    presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-                }));
-            }
         },
         effectCallDbus: (_s, _p, _i, method, payload, callback) => {
             effectCalls.push({ method, payload, callback });
@@ -308,6 +329,42 @@ function setup(onLog?: (message: string) => void): Harness {
         }
     };
     h.answerDiscovery = (): void => {
+        // Genuine v4 connection bootstrap: the handshake reply echoes the
+        // producer adapter lifetime and mints the serving generation; the
+        // revisioned settings snapshot must read accepted before the first
+        // report flies.
+        const handshake = [...calls].reverse().find((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+            } catch {
+                return false;
+            }
+        });
+        assert.ok(handshake !== undefined, "expected DiscoverWorld/handshake");
+        const hsReq = (JSON.parse(handshake.payload) as Record<string, unknown>)["req"] as string;
+        handshake.callback(JSON.stringify({
+            type: "handshake-reply", v: 4, adapter: ADAPTER, req: hsReq,
+            ready: false, kind: "", gen: GEN,
+        }));
+        const settings = [...calls].reverse().find((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+            } catch {
+                return false;
+            }
+        });
+        assert.ok(settings !== undefined, "expected DiscoverWorld/settings");
+        const stBody = JSON.parse(settings.payload) as Record<string, unknown>;
+        settings.callback(JSON.stringify({
+            type: "settings-reply", v: 4, adapter: ADAPTER, gen: GEN,
+            req: stBody["req"], rev: stBody["rev"], status: "accepted", diagnostics: [],
+        }));
         h.fireDelay(120);
     };
     h.answerDescribes = (): void => {

@@ -536,3 +536,11 @@
   Native creation causality, retained receipts, distinct friendly names, no-replay
   and the synthetic array-like frame/view apply scenario remain covered. No new
   native or later-slice acceptance is implied.
+- Effect-facts ingress and entry/subscriber freshness harnesses now use strict
+  v4 receipts and hidden anchored-border shapes while retaining underlay/preview
+  coverage and producer-identity discriminators. Retired style facts are absent;
+  current chord and native-invalidation witness carriage proves known/unknown
+  transitions. Persistent malformed facts publish one known-to-unknown capture,
+  then no already-unknown captures, matching the settled idle-noise suppression.
+  All 52 tests across these three suites and genuine stage5 byte comparisons
+  pass, as does strict TypeScript. No native rendering claim is added.

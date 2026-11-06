@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 
 import { startWorldAdapterEntry } from "../src/world-entry";
 import { EFFECT_FACTS_LEASE_MS } from "../src/world-entry";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface CapturedCall {
     method: string;
@@ -33,6 +35,12 @@ const SNAP_A = {
     width: 3.0,
     extension: -1.0,
 };
+
+// Current v4 carriage of the SNAP_A facts (world-report
+// encodeV4Presentation + top-level nativeInvalidWitness): style lanes
+// retire (the adapter never projects border style; the core hides on
+// unknown), while chord and the causal witness ride as observed.
+const WITNESS_A = { instance: "effect-1", counter: "7" };
 
 function makeHarness() {
     const ws1 = { id: "ws-1", name: "Workspace 1" };
@@ -74,6 +82,10 @@ function makeHarness() {
     const logs: string[] = [];
     const effectCalls: CapturedCall[] = [];
     let describeRev = 0;
+    // Independent scripted broker observation epoch (never derived from
+    // the request watermark): advances with rev, one fresh value per
+    // accepted capture, like the entry-intent harness obs:rev pattern.
+    let replyObs = 0;
     let gen = "gen-1";
     let describeBehavior: ((call: CapturedCall) => void) | null = null;
     let effectBehavior: (call: CapturedCall) => void = () => undefined;
@@ -84,14 +96,22 @@ function makeHarness() {
         callDbus: (_s, _p, _i, method, payload, callback) => {
             calls.push({ method, payload, callback, service: _s, path: _p, iface: _i });
             if (method === "DiscoverWorld") {
-                const body = JSON.parse(payload) as { req: string };
-                callback(JSON.stringify({
-                    v: 3, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
-                    ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-                    windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
-                    operationSettled: [], nativeCreations: [], warpCursor: null,
-                    presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-                }));
+                const body = JSON.parse(payload) as { type?: string; req: string; rev?: string };
+                if (body.type === "handshake") {
+                    callback(JSON.stringify({
+                        type: "handshake-reply", v: 4, adapter: "test-adapter", req: body.req,
+                        ready: false, kind: "", gen,
+                    }));
+                    return;
+                }
+                if (body.type === "settings") {
+                    callback(JSON.stringify({
+                        type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+                        req: body.req, rev: body.rev, status: "accepted", diagnostics: [],
+                    }));
+                    return;
+                }
+                return;
             } else if (method === "DescribeWorld") {
                 const call = calls[calls.length - 1] as CapturedCall;
                 if (describeBehavior !== null) {
@@ -101,18 +121,26 @@ function makeHarness() {
                 // Production-shaped service: every capture is answered, so
                 // no flight ever sticks and dispatches keep flowing. Tests
                 // assert on the sent payloads (facts ingress), never on
-                // reply control.
+                // reply control. STRICT V4 SYNTHETIC accept (hand-authored
+                // inline, never real-core output): producer adapter, serving
+                // generation, source correlation, native watermark; K1
+                // settled-hidden presentation.
                 const body = JSON.parse(payload) as { source: string; nativeInvalid: string };
                 describeRev += 1;
-                callback(JSON.stringify({
-                    v: 3, adapter: "broker-1", gen, req: body.source, obs: body.nativeInvalid, rev: String(describeRev),
+                replyObs += 1;
+                const text = JSON.stringify({
+                    v: 4, adapter: "test-adapter", gen, req: body.source, obs: String(replyObs), rev: String(describeRev),
                     ready: true, consumed: false,
                     source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                     gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-                    presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-                    scopes: [{ scope: "out-1/ws-1", auth: "controlled", reason: "" }],
+                    intentWrites: [], presentation: DISABLED_PRESENTATION,
+                    switchSettled: [], diagnostics: [],
+                    scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws-1" }, auth: "controlled", reason: "" }],
                     workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
-                }));
+                });
+                const parsed = parseWorldReply(text);
+                assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored capture accept binds strict v4");
+                callback(text);
             }
         },
         effectCallDbus: (service, path, iface, method, payload, callback) => {
@@ -242,13 +270,15 @@ describe("native effect presentation-facts waiter", () => {
         // The changed reply invalidates and dispatches; the fake service
         // answers inline, so the fresh facts precede their observation.
         h.runTimers();
-        const presentation = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(presentation["borderEnabled"], true);
-        assert.equal(presentation["underlayEnabled"], true);
-        assert.equal(presentation["borderGap"], 0);
-        assert.equal(presentation["borderWidth"], 3);
-        // Sentinel -1 resolves to the border width before rounding.
-        assert.equal(presentation["underlayExtension"], 3);
+        const report = h.lastReport();
+        // Current v4 carriage: the causal witness proves the capture
+        // observed the live facts; chord rides as observed; style lanes
+        // retire (never projected, never defaulted).
+        assert.deepEqual(report["nativeInvalidWitness"], WITNESS_A);
+        const presentation = report["presentation"] as Record<string, unknown>;
+        for (const key of ["borderEnabled", "underlayEnabled", "borderGap", "borderWidth", "underlayExtension"]) {
+            assert.ok(!(key in presentation), `retired style lane ${key} is absent`);
+        }
         assert.equal(presentation["chordHeld"], false);
         h.handle.stop();
     });
@@ -299,15 +329,18 @@ describe("native effect presentation-facts waiter", () => {
         h.runTimers();
         const first = h.effectCalls[0];
         assert.ok(first !== undefined);
-        // Host kills the held call: the 25 s watchdog fires unknown and
-        // re-arms with the same identity (one fire only; the re-armed
-        // waiter parks without further timers). The watchdog's own
-        // invalidate+dispatch carries the hidden presentation.
+        // Host kills the held call: the 25 s watchdog fires while already
+        // unknown, so per the content gate (world-entry.ts, watchdog arm)
+        // nothing dispatches; the waiter re-arms silently for enabled-later
+        // recovery at the same host cadence (one fire only; the re-armed
+        // waiter parks without further timers). The last report stays the
+        // startup capture, which carries no drawable coverage.
         h.runTimers(25000, 1);
         assert.equal(h.effectCalls.length, 2, "watchdog re-arms the waiter");
         h.runTimers();
-        const presentation = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(presentation["borderEnabled"], false, "unknown facts hide instead of guessing");
+        const report = h.lastReport();
+        assert.equal(report["nativeInvalidWitness"], null, "unknown facts carry no coverage instead of guessing");
+        assert.equal((report["presentation"] as Record<string, unknown>)["chordHeld"], false);
         // The late original reply fences on its settled transport slot and
         // never dispatches, silently: a lost acknowledgement is not work.
         const describesBefore = h.describeCount();
@@ -333,23 +366,27 @@ describe("native effect presentation-facts waiter", () => {
             if (!mismatched) {
                 mismatched = true;
                 call.callback(JSON.stringify({
-                    v: 3, outcome: "rejected", kind: "generation-mismatch", message: "superseded",
-                    gen: "gen-1", source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
+                    v: 4, outcome: "rejected", kind: "generation-mismatch", message: "superseded",
+                    gen: "gen-1", source: body.source, nativeInvalid: body.nativeInvalid, clock: "1", gestureAssoc: null,
                 }));
                 return;
             }
             h.setDescribeBehavior(null);
             // Fall through to a production-shaped accept for this call.
             const rev = String(100 + h.describeCount());
-            call.callback(JSON.stringify({
-                v: 3, adapter: "broker-1", gen: "gen-2", req: body.source, obs: body.nativeInvalid, rev,
+            const text = JSON.stringify({
+                v: 4, adapter: "test-adapter", gen: "gen-2", req: body.source, obs: rev, rev,
                 ready: true, consumed: false,
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-                presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-                scopes: [{ scope: "out-1/ws-1", auth: "controlled", reason: "" }],
+                intentWrites: [], presentation: DISABLED_PRESENTATION,
+                switchSettled: [], diagnostics: [],
+                scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws-1" }, auth: "controlled", reason: "" }],
                 workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
-            }));
+            });
+            const parsed = parseWorldReply(text);
+            assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored capture accept binds strict v4");
+            call.callback(text);
         });
         // Trigger a dispatch carrying the new facts; the mismatch reply
         // rotates the generation and parks a fresh waiter.
@@ -372,8 +409,9 @@ describe("native effect presentation-facts waiter", () => {
         h.runTimers();
         assert.equal(h.describeCount(), describesBefore);
         assert.ok(h.logs.some((l) => l.includes("effect-facts-stale")));
-        const presentation = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(presentation["borderEnabled"], false, "rotated generation hides until fresh facts");
+        const rotated = h.lastReport();
+        assert.equal(rotated["nativeInvalidWitness"], null, "rotated generation carries no coverage until fresh facts");
+        assert.equal((rotated["presentation"] as Record<string, unknown>)["chordHeld"], false);
         h.handle.stop();
     });
 
@@ -393,22 +431,26 @@ describe("native effect presentation-facts waiter", () => {
             if (!mismatched) {
                 mismatched = true;
                 call.callback(JSON.stringify({
-                    v: 3, outcome: "rejected", kind: "generation-mismatch", message: "superseded",
-                    gen: "gen-1", source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
+                    v: 4, outcome: "rejected", kind: "generation-mismatch", message: "superseded",
+                    gen: "gen-1", source: body.source, nativeInvalid: body.nativeInvalid, clock: "1", gestureAssoc: null,
                 }));
                 return;
             }
             h.setDescribeBehavior(null);
             const rev = String(100 + h.describeCount());
-            call.callback(JSON.stringify({
-                v: 3, adapter: "broker-1", gen: "gen-2", req: body.source, obs: body.nativeInvalid, rev,
+            const text = JSON.stringify({
+                v: 4, adapter: "test-adapter", gen: "gen-2", req: body.source, obs: rev, rev,
                 ready: true, consumed: false,
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-                presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-                scopes: [{ scope: "out-1/ws-1", auth: "controlled", reason: "" }],
+                intentWrites: [], presentation: DISABLED_PRESENTATION,
+                switchSettled: [], diagnostics: [],
+                scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws-1" }, auth: "controlled", reason: "" }],
                 workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
-            }));
+            });
+            const parsed = parseWorldReply(text);
+            assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored capture accept binds strict v4");
+            call.callback(text);
         });
         h.answerEffect(1, factsReply({ ...SNAP_A, rev: "4", chord: 1, changed: 1 }));
         h.runTimers();
@@ -432,12 +474,12 @@ describe("native effect presentation-facts waiter", () => {
         h.answerEffect(0, factsReply({ ...SNAP_A, changed: 1 }));
         h.runTimers();
         const describesBefore = h.describeCount();
-        const presentationBefore = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(presentationBefore["borderWidth"], 3);
+        const known = h.lastReport();
+        assert.deepEqual(known["nativeInvalidWitness"], WITNESS_A);
         assert.equal(h.effectCalls.length, 2);
         // One malformed payload: the snapshot clears to unknown with one
-        // follow-up capture (hide), then the lane stands down instead of
-        // re-arming immediately.
+        // follow-up capture (the known->unknown hide), then the lane stands
+        // down instead of re-arming immediately.
         h.answerEffect(1, JSON.stringify({ v: 1, bogus: true }));
         h.runTimers();
         assert.equal(h.effectCalls.length, 2, "malformed reply never re-arms immediately");
@@ -446,26 +488,48 @@ describe("native effect presentation-facts waiter", () => {
             describesBefore + 1,
             "exactly one follow-up capture publishes the hide",
         );
-        const presentation = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(presentation["borderEnabled"], false, "unknown facts hide instead of guessing");
-        assert.equal(presentation["borderWidth"], 0);
+        const unknown = h.lastReport();
+        assert.equal(unknown["nativeInvalidWitness"], null, "unknown facts carry no coverage instead of guessing");
+        assert.equal((unknown["presentation"] as Record<string, unknown>)["chordHeld"], false);
         assert.ok(h.logs.some((l) => l.includes("effect-facts-malformed")));
         // Valid recovery resets through the host deadline, not a hot loop.
         assert.ok(h.fireLastHostTimer(), "recovery chain armed");
         assert.equal(h.effectCalls.length, 3, "recovery re-arms once per host deadline");
         h.answerEffect(2, factsReply({ ...SNAP_A, changed: 1 }));
         h.runTimers();
-        const recovered = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(recovered["borderWidth"], 3, "valid recovery restores facts");
+        const recovered = h.lastReport();
+        assert.deepEqual(recovered["nativeInvalidWitness"], WITNESS_A, "valid recovery restores facts");
         h.handle.stop();
     });
 
     it("bounds a persistently malformed source to host-deadline cadence, never a storm", () => {
         const h = makeHarness();
         h.runTimers();
-        // Every armed waiter gets a malformed answer, answered explicitly
-        // (no auto-answer hot loop possible: one reply per arm).
+        // Seed known facts first: the content gate (world-entry.ts
+        // onEffectFactsReply; docs/changes/v4-phase2-kde-port.md) publishes
+        // only a known->unknown transition once, while an already-unknown
+        // lane stands down silently with zero captures.
+        h.answerEffect(0, factsReply({ ...SNAP_A, changed: 1 }));
+        h.runTimers();
         const malformed = JSON.stringify({ v: 1, bogus: true });
+        // Known->unknown: exactly one hide capture, then one recovery re-arm
+        // per host deadline.
+        const knownCalls = h.effectCalls.length;
+        const knownDescribes = h.describeCount();
+        h.answerEffect(h.effectCalls.length - 1, malformed);
+        h.runTimers();
+        assert.ok(h.fireLastHostTimer(), "known->unknown: recovery chain armed");
+        h.runTimers();
+        assert.equal(h.describeCount() - knownDescribes, 1, "known->unknown publishes exactly one hide");
+        assert.ok(
+            h.effectCalls.length - knownCalls >= 1 && h.effectCalls.length - knownCalls <= 2,
+            "known->unknown: bounded calls",
+        );
+        assert.equal(h.lastReport()["nativeInvalidWitness"], null, "stays without coverage");
+        const malformedLogs = h.logs.filter((l) => l.includes("effect-facts-malformed")).length;
+        // Every further malformed answer lands already-unknown: no-change
+        // suppression (zero captures, silent), one re-arm per deadline.
+        // (No auto-answer hot loop possible: one reply per arm.)
         for (let round = 0; round < 3; round += 1) {
             const callsBefore = h.effectCalls.length;
             const describesBefore = h.describeCount();
@@ -478,10 +542,14 @@ describe("native effect presentation-facts waiter", () => {
             const newCalls = h.effectCalls.length - callsBefore;
             const newDescribes = h.describeCount() - describesBefore;
             assert.ok(newCalls >= 1 && newCalls <= 2, `round ${round}: bounded calls, got ${newCalls}`);
-            assert.ok(newDescribes >= 1 && newDescribes <= 2, `round ${round}: bounded captures, got ${newDescribes}`);
-            const presentation = h.lastReport()["presentation"] as Record<string, unknown>;
-            assert.equal(presentation["borderEnabled"], false, `round ${round}: stays hidden`);
+            assert.equal(newDescribes, 0, `round ${round}: already-unknown publishes nothing`);
+            assert.equal(h.lastReport()["nativeInvalidWitness"], null, `round ${round}: stays without coverage`);
         }
+        assert.equal(
+            h.logs.filter((l) => l.includes("effect-facts-malformed")).length,
+            malformedLogs,
+            "already-unknown rounds stand down silently",
+        );
         // Between deadlines nothing re-arms: short-timer passes are quiet.
         const idleCalls = h.effectCalls.length;
         h.runTimers();
@@ -496,13 +564,15 @@ describe("native effect presentation-facts waiter", () => {
         h.effectCalls[0]?.callback(factsReply({ ...SNAP_A, changed: 1 }));
         h.runTimers();
         assert.equal(h.effectCalls.length, 2);
+        const describesBefore = h.describeCount();
         h.effectCalls[1]?.callback(JSON.stringify({ v: 1, instance: "effect-1", rev: "x".repeat(5000) }));
         h.runTimers();
-        // Oversize (over the reply bound) refuses like malformed: hidden
-        // unknown plus host-deadline recovery, no immediate re-arm.
+        // Oversize (over the reply bound) refuses like malformed: the
+        // known->unknown hide publishes once with no coverage, plus
+        // host-deadline recovery, no immediate re-arm.
         assert.equal(h.effectCalls.length, 2, "oversize reply never re-arms immediately");
-        const presentation = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(presentation["borderEnabled"], false);
+        assert.equal(h.describeCount(), describesBefore + 1, "oversize publishes exactly one hide");
+        assert.equal(h.lastReport()["nativeInvalidWitness"], null);
         h.handle.stop();
     });
 
@@ -521,8 +591,9 @@ describe("native effect presentation-facts waiter", () => {
         assert.equal(h.effectCalls.length, 2, "superseded never re-arms immediately");
         assert.equal(h.describeCount(), describesBefore, "superseded never dispatches");
         assert.ok(h.logs.some((l) => l.includes("effect-facts-superseded")));
-        const kept = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(kept["borderWidth"], 3, "supersession keeps the snapshot");
+        const kept = h.lastReport();
+        assert.deepEqual(kept["nativeInvalidWitness"], WITNESS_A, "supersession keeps the snapshot");
+        assert.equal((kept["presentation"] as Record<string, unknown>)["chordHeld"], false);
         assert.ok(h.fireLastHostTimer(), "stand-down arms one host-deadline retry");
         assert.equal(h.effectCalls.length, 3, "stand-down re-arms on the host deadline");
         h.handle.stop();
@@ -532,9 +603,9 @@ describe("native effect presentation-facts waiter", () => {
         const h = makeHarness();
         h.setEffectBehavior(() => undefined);
         h.runTimers();
-        const presentation = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(presentation["borderEnabled"], false);
-        assert.equal(presentation["chordHeld"], false);
+        const report = h.lastReport();
+        assert.equal(report["nativeInvalidWitness"], null);
+        assert.equal((report["presentation"] as Record<string, unknown>)["chordHeld"], false);
         h.handle.stop();
     });
 
@@ -543,8 +614,7 @@ describe("native effect presentation-facts waiter", () => {
         h.runTimers();
         h.answerEffect(0, factsReply({ ...SNAP_A, changed: 1 }));
         h.runTimers();
-        const shown = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(shown["borderWidth"], 3);
+        assert.deepEqual(h.lastReport()["nativeInvalidWitness"], WITNESS_A);
         assert.equal(h.effectCalls.length, 2);
         // The next native send throws synchronously: the retained snapshot
         // is dropped with one follow-up capture (hide), then the lane
@@ -554,15 +624,13 @@ describe("native effect presentation-facts waiter", () => {
         h.answerEffect(1, factsReply({ ...SNAP_A, changed: 1 }));
         h.runTimers();
         assert.equal(h.effectCalls.length, 3, "throw records the attempt but holds no waiter");
-        const hidden = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(hidden["borderEnabled"], false, "throw drops the snapshot to unknown");
+        assert.equal(h.lastReport()["nativeInvalidWitness"], null, "throw drops the snapshot to unknown");
         assert.ok(h.logs.some((l) => l.includes("effect-facts-transport")));
         assert.ok(h.fireLastHostTimer(), "throw stands down to the host deadline");
         assert.equal(h.effectCalls.length, 4, "host deadline re-arms once");
         h.answerEffect(3, factsReply({ ...SNAP_A, changed: 1 }));
         h.runTimers();
-        const recovered = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(recovered["borderWidth"], 3, "valid answer after the throw restores facts");
+        assert.deepEqual(h.lastReport()["nativeInvalidWitness"], WITNESS_A, "valid answer after the throw restores facts");
         h.handle.stop();
     });
 
@@ -578,16 +646,15 @@ describe("native effect presentation-facts waiter", () => {
         h.answerEffect(1, factsReply({ ...SNAP_A, chord: 1, chordKnown: 0, changed: 1 }));
         h.runTimers();
         assert.equal(h.effectCalls.length, 2, "contradictory chord never re-arms immediately");
-        const hidden = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(hidden["borderEnabled"], false);
+        assert.equal(h.lastReport()["nativeInvalidWitness"], null);
         assert.ok(h.logs.some((l) => l.includes("effect-facts-malformed")));
         // Unknown chord with no claim rides false, never a guess.
         assert.ok(h.fireLastHostTimer());
         h.answerEffect(2, factsReply({ ...SNAP_A, chord: 0, chordKnown: 0, changed: 1 }));
         h.runTimers();
-        const shown = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(shown["borderEnabled"], true);
-        assert.equal(shown["chordHeld"], false, "unknown chord folds to false");
+        const shown = h.lastReport();
+        assert.deepEqual(shown["nativeInvalidWitness"], WITNESS_A);
+        assert.equal((shown["presentation"] as Record<string, unknown>)["chordHeld"], false, "unknown chord folds to false");
         h.handle.stop();
     });
 
@@ -596,20 +663,19 @@ describe("native effect presentation-facts waiter", () => {
         h.runTimers();
         h.answerEffect(0, factsReply({ ...SNAP_A, changed: 1 }));
         h.runTimers();
-        assert.equal((h.lastReport()["presentation"] as Record<string, unknown>)["borderEnabled"], true);
+        assert.deepEqual(h.lastReport()["nativeInvalidWitness"], WITNESS_A);
         // The effect reports its own teardown: unlike a superseded waiter
         // (kept snapshot), an unavailable endpoint hides immediately.
         h.answerEffect(1, factsReply({ ...SNAP_A, changed: 0, available: 0 }));
         h.runTimers();
         assert.equal(h.effectCalls.length, 2, "unavailable never re-arms immediately");
-        const hidden = h.lastReport()["presentation"] as Record<string, unknown>;
-        assert.equal(hidden["borderEnabled"], false, "unavailable hides, never stale");
+        assert.equal(h.lastReport()["nativeInvalidWitness"], null, "unavailable hides, never stale");
         assert.ok(h.logs.some((l) => l.includes("effect-facts-unavailable")));
         assert.ok(h.fireLastHostTimer(), "unavailable stands down to the host deadline");
         assert.equal(h.effectCalls.length, 3);
         h.answerEffect(2, factsReply({ ...SNAP_A, changed: 1 }));
         h.runTimers();
-        assert.equal((h.lastReport()["presentation"] as Record<string, unknown>)["borderEnabled"], true, "fresh endpoint restores facts");
+        assert.deepEqual(h.lastReport()["nativeInvalidWitness"], WITNESS_A, "fresh endpoint restores facts");
         h.handle.stop();
     });
 });
