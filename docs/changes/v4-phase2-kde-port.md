@@ -134,8 +134,9 @@
 - Executable identity is unavailable in the current script capture path:
   declare it unavailable and use null own/window executable, never substitute
   appId/resourceClass. Own appId remains null without a truthful native source.
-- Native PID reads, actual candidate-boundary enumeration and token exclusion
-  remain unproved; the
+- Native internal PID reads, the owned outline's candidate boundary and captured
+  token exclusion are proved below; other internal surfaces and unreadable native
+  PID outcomes remain outside that evidence. The
   [minimal broker discriminator](../spec/reference-outcomes.md#v4-broker-connection-discriminator)
   retains TBD native outcomes.
 
@@ -407,3 +408,23 @@
   tests and all 13 entry-persistence tests pass. Independent read-only review
   found no defect in these fixes. Other stale harnesses and the integrated
   migration review remain open; K1 is incomplete.
+
+## Captured internal-window exclusion
+
+- A separate read-only helper ran the production capture and v4 encoder inside
+  nested KWin while its owned outline existed. The complete capture retained the
+  normalized native UUID, normal/managed predicates, empty resource class,
+  `pid=-1` mapped to `kwin-internal`, and genuine sticky membership with an empty
+  desktop list. The outline crosses the unscoped normal-window boundary but not
+  the fixture-class boundary. No controller actuated it.
+- The exact encoded row passed the strict v4 decoder and production classifier
+  offline under the KDE capability declarations. Actual own identity produced
+  `own_excluded=true,excluded=true,hold=false`; changing only the offline
+  connection identity produced `own_excluded=false,excluded=false,hold=false`.
+  Thus exclusion is the own-process gate, not fixture omission or an unreadable
+  hold. Other internal surfaces and native unreadable/zero-PID cases remain TBD.
+- An earlier whole-engine counterfactual returned no window desire under either
+  identity and could not identify the exclusion gate. The direct classifier
+  comparison above proves classification only, not downstream admission of that
+  sticky internal surface. Native isolation, helper unloads, private config use
+  and TERM-only process/socket cleanup passed. K1's remaining gates stay open.
