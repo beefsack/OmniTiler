@@ -51,12 +51,18 @@ function makeObservation(opts: {
     homeWs: string;
     viewNative: string;
     topologyCurrent: string;
+    fitExcluded?: boolean;
+    fullscreen?: boolean;
+    maximized?: boolean;
+    sticky?: boolean;
 }): WorldObservation {
     const win = {
         win: "win-a", ref: { id: "win-a" }, out: "out-a", ws: opts.homeWs,
         rect: { ...opts.rect },
-        floating: opts.floating, fitExcluded: false, fullscreen: false,
-        maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false,
+        floating: opts.floating, fitExcluded: opts.fitExcluded ?? false,
+        fullscreen: opts.fullscreen ?? false,
+        maximized: opts.maximized ?? false, sticky: opts.sticky ?? false,
+        fixedAuto: false, fixedSuppress: false,
         hints: { minW: null, minH: null, maxW: null, maxH: null },
         minimized: false, nativeWs: null,
     };
@@ -204,6 +210,85 @@ describe("world v4 producer binding and ordinary apply", () => {
         assert.deepEqual(attempts[0]?.target, [8, 8, 800, 600]);
         assert.equal(attempts[0]?.setter, "accepted");
         assert.deepEqual(attempts[0]?.readback, [8, 8, 800, 600]);
+    });
+
+    it("local inferred floating/fitExcluded carrier still writes when the accepted row is tiled", () => {
+        const { state, flightWatermark } = freshBound();
+        const reply = parseBound("reply-observe.json", "src-a");
+        const row = reply.windows.find((w) => w.win === "win-a");
+        assert.ok(row !== undefined && row.floating === false);
+        assert.equal(row.frame_op, "");
+        assert.deepEqual(state.acceptReply(reply, "src-a", flightWatermark), { applied: true, reason: "accepted" });
+        const live = { rect: { x: 0, y: 0, w: 100, h: 100 }, homeWs: "ws-a", viewNative: "native-1" };
+        const calls: FakeCalls = { geometry: [], membership: [], view: [], focus: [] };
+        const result = applyWorldReply({
+            ...makeEnv(state, live, calls),
+            observation: makeObservation({
+                rect: live.rect, floating: true, fitExcluded: true,
+                homeWs: "ws-a", viewNative: "native-1", topologyCurrent: "native-1",
+            }),
+            reply,
+            dispatchWatermark: flightWatermark,
+            takeResult: null,
+        });
+        assert.equal(result.geometryWrites, 1);
+        assert.deepEqual(calls.geometry, ["win-a@8,8,800,600"]);
+        const attempts = state.framesForReport().filter((a) => a.win === "win-a");
+        assert.equal(attempts.length, 1);
+        assert.deepEqual(attempts[0]?.target, [8, 8, 800, 600]);
+        assert.equal(attempts[0]?.setter, "accepted");
+        assert.deepEqual(attempts[0]?.readback, [8, 8, 800, 600]);
+    });
+
+    it("same local carrier with accepted floating row takes no ordinary frame write", () => {
+        const { state, flightWatermark } = freshBound();
+        const body = doc("reply-observe.json");
+        const windows = (body.windows as Array<Record<string, unknown>>).map((w) => ({ ...w, floating: true }));
+        const floatReply = parseBoundDoc({ ...body, windows }, "src-a");
+        const row = floatReply.windows.find((w) => w.win === "win-a");
+        assert.ok(row !== undefined && row.floating === true);
+        assert.equal(row.frame_op, "");
+        assert.deepEqual(state.acceptReply(floatReply, "src-a", flightWatermark), { applied: true, reason: "accepted" });
+        const live = { rect: { x: 0, y: 0, w: 100, h: 100 }, homeWs: "ws-a", viewNative: "native-1" };
+        const calls: FakeCalls = { geometry: [], membership: [], view: [], focus: [] };
+        const result = applyWorldReply({
+            ...makeEnv(state, live, calls),
+            observation: makeObservation({
+                rect: live.rect, floating: true, fitExcluded: true,
+                homeWs: "ws-a", viewNative: "native-1", topologyCurrent: "native-1",
+            }),
+            reply: floatReply,
+            dispatchWatermark: flightWatermark,
+            takeResult: null,
+        });
+        assert.equal(result.geometryWrites, 0);
+        assert.ok(result.held >= 1);
+        assert.deepEqual(calls.geometry, []);
+        assert.equal(state.framesForReport().filter((a) => a.win === "win-a").length, 0);
+    });
+
+    it("raw fullscreen/maximized/sticky still veto the ordinary frame write", () => {
+        for (const flag of ["fullscreen", "maximized", "sticky"] as const) {
+            const { state, flightWatermark } = freshBound();
+            const reply = parseBound("reply-observe.json", "src-a");
+            assert.deepEqual(state.acceptReply(reply, "src-a", flightWatermark), { applied: true, reason: "accepted" });
+            const live = { rect: { x: 0, y: 0, w: 100, h: 100 }, homeWs: "ws-a", viewNative: "native-1" };
+            const calls: FakeCalls = { geometry: [], membership: [], view: [], focus: [] };
+            const result = applyWorldReply({
+                ...makeEnv(state, live, calls),
+                observation: makeObservation({
+                    rect: live.rect, floating: false, homeWs: "ws-a",
+                    viewNative: "native-1", topologyCurrent: "native-1", [flag]: true,
+                }),
+                reply,
+                dispatchWatermark: flightWatermark,
+                takeResult: null,
+            });
+            assert.equal(result.geometryWrites, 0, flag);
+            assert.ok(result.held >= 1, flag);
+            assert.deepEqual(calls.geometry, [], flag);
+            assert.equal(state.framesForReport().filter((a) => a.win === "win-a").length, 0, flag);
+        }
     });
 
     it("wrong generation, stale revision, and unknown window apply no native effects", () => {

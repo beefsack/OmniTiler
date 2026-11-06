@@ -14,8 +14,9 @@ import { createContext, runInContext } from "node:vm";
 import { startWorldAdapterEntry, mintAdapterIncarnation } from "../src/world-entry";
 import { captureWorldObservation } from "../src/world-observe";
 import { isSeparateWorkspaceMode } from "../src/workspace-native";
-import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
+import { createMiniBroker, DISABLED_PRESENTATION, type MiniBroker } from "./world-wire-harness";
 import { isOpaqueId } from "../src/world-seq";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
 
 interface FakeDesktop {
     id: string;
@@ -32,6 +33,9 @@ interface FakeWindow {
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
+    // Truthful undecorated client rect (KWin `clientGeometry` Q_PROPERTY):
+    // the fake carries no decoration, so the client mirrors the frame.
+    clientGeometry: { x: number; y: number; width: number; height: number } | null;
     output: { name: string };
     desktops: FakeDesktop[];
     minimized: boolean;
@@ -76,6 +80,11 @@ const win = (id: string, out: string, ws: FakeDesktop, x = 0): FakeWindow => {
         internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         frameGeometry: { x, y: 0, width: 200, height: 200 },
+        // Truthful undecorated client rect (world-observe client-to-decorated
+        // delta): the fake carries no decoration, so the client mirrors the
+        // frame exactly (delta 0); a missing client would null converted hint
+        // bounds instead of mixing spaces.
+        clientGeometry: { x, y: 0, width: 200, height: 200 },
         output: { name: out },
         desktops: [ws],
         minimized: false,
@@ -232,6 +241,9 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
             get: () => frame,
             set: (rect: { x: number; y: number; width: number; height: number }) => {
                 frame = rect;
+                // Keep the truthful undecorated client tracking the frame so
+                // no capture pairs a fresh frame with a stale client.
+                (w as unknown as Record<string, unknown>)["clientGeometry"] = { ...rect };
                 world.geometryWrites.push(`${w.internalId}@${rect.x},${rect.y},${rect.width},${rect.height}`);
                 return true;
             },
@@ -255,15 +267,19 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
-                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+                const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"],
+                    globalCmd: String(calls.filter((q) => q.method === "QueueWorldCommand").length) }));
             } else if (method === "TakeCommandResult") {
+                const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 4, outcome: "ready", gen: takeGen, globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
                 }
             }
         },
@@ -309,36 +325,125 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
     };
 }
 
-const BOOTSTRAP = (gen: string, req: string): string => JSON.stringify({
-    v: 3, adapter: "broker-1", gen, req, obs: "0", rev: "0",
-    ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-    windows: [], transfers: [], effects: [], result: null,
-    gestureSettled: null,  operationSettled: [], nativeCreations: [], warpCursor: null,
-    presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-});
+function answerHandshake(h: { calls: CapturedCall[] }, gen = "gen-1"): void {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/handshake");
+    const req = (JSON.parse((found as CapturedCall).payload) as Record<string, unknown>)["req"] as string;
+    (found as CapturedCall).callback(JSON.stringify({
+        type: "handshake-reply", v: 4, adapter: "test-adapter", req,
+        ready: false, kind: "", gen,
+    }));
+}
+
+function answerSettings(h: { calls: CapturedCall[] }, gen = "gen-1"): void {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/settings");
+    const body = JSON.parse((found as CapturedCall).payload) as Record<string, unknown>;
+    (found as CapturedCall).callback(JSON.stringify({
+        type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+        req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+    }));
+}
+
+function settingsValues(h: { calls: CapturedCall[] }): Record<string, unknown> {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/settings");
+    return (JSON.parse((found as CapturedCall).payload) as Record<string, unknown>)["values"] as Record<string, unknown>;
+}
+
+function handshakeBody(h: { calls: CapturedCall[] }): Record<string, unknown> {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/handshake");
+    return JSON.parse((found as CapturedCall).payload) as Record<string, unknown>;
+}
+
+function handshakeCount(h: { calls: CapturedCall[] }): number {
+    // The handshake and the revisioned settings snapshot share the
+    // DiscoverWorld method (world-entry.ts discover/sendSettings, dispatched
+    // by type server-side): count actual handshakes, not all route calls.
+    return h.calls.filter((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
+    }).length;
+}
 
 function discover(h: Harness, gen = "gen-1"): void {
-    const call = h.lastCall("DiscoverWorld");
-    const body = JSON.parse(call.payload);
-    call.callback(BOOTSTRAP(gen, body.req));
+    // Genuine v4 connection bootstrap: the handshake reply echoes the
+    // producer adapter lifetime and mints the serving generation; the
+    // revisioned settings snapshot must read accepted before the first
+    // report flies.
+    answerHandshake(h, gen);
+    answerSettings(h, gen);
+    h.runTimers();
     // Settle the discovery-triggered observation report first: the entry
     // auto-dispatches one observation-only DescribeWorld on bind, and a
     // command issued while it is in flight queues in FIFO order behind it.
     // Replying here leaves the flight idle for the test body.
     const auto = h.lastCall("DescribeWorld");
     const autoBody = JSON.parse(auto.payload);
+    assert.equal(autoBody["command"], undefined, "captures never carry an inline command");
     assert.equal((autoBody["report"] as Record<string, unknown>)["command"], undefined, "inner reports never carry a command");
     auto.callback(acceptedReply(gen, autoBody["source"] as string, autoBody["nativeInvalid"] as string, "0"));
 }
 
 function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string {
-    return JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req: source, obs: rev, rev,
+    // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
+    // output): the producer adapter lifetime, the serving generation, the
+    // capture source correlation and native watermark. This scripted
+    // harness advances broker obs and revision together; terminal results
+    // stay requester-only on the take lane.
+    const text = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
-        gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
+        gestureSettled: null, gestureAssoc: null,
+        operationSettled: [], nativeCreations: [],
+        warpCursor: null,
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: DISABLED_PRESENTATION,
+        scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [],
         outputs: [],
         windows: [],
@@ -347,6 +452,9 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         result: null,
         ...extra,
     });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+    return text;
 }
 
 function requestOf(h: Harness): Record<string, unknown> {
@@ -375,24 +483,50 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         const req = requestOf(h);
-        assert.equal(req["v"], 3);
+        assert.equal(req["v"], 4);
         assert.equal(req["gen"], "gen-1");
+        assert.equal(req["adapter"], "test-adapter");
+        assert.ok(typeof req["source"] === "string" && (req["source"] as string).length > 0);
+        assert.ok(typeof req["sourceSeq"] === "string" && (req["sourceSeq"] as string).length > 0);
+        assert.equal(req["command"], undefined, "captures never carry an inline command");
         const inner = req["report"] as Record<string, unknown>;
-        assert.equal(inner["mode"], "per-output-local");
-        for (const key of ["owner", "adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs"]) {
+        assert.equal(inner["v"], 4);
+        for (const key of ["owner", "adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs", "mode", "views", "hostOwned", "equalCount", "predicate", "refill", "defaultTiled"]) {
             assert.ok(!(key in inner), `inner report carries no ${key}`);
         }
+        // Retired host-truth lanes ride the handshake capabilities now:
+        // the producer declares host-owned natives with equal counts,
+        // plus the exact core-minted application identity (null app and
+        // executable, opaque process token).
+        const hs = handshakeBody(h);
+        const caps = hs["capabilities"] as Record<string, unknown>;
+        assert.equal(caps["hostOwned"], true, "handshake carries the host-owned capability");
+        assert.equal(caps["equalCount"], true, "handshake carries the equal-count capability");
+        const ident = hs["applicationIdentity"] as Record<string, unknown>;
+        assert.equal(ident["appId"], null, "handshake carries the null app identity");
+        assert.equal(ident["executable"], null, "handshake carries the null executable identity");
+        assert.ok(isOpaqueId(ident["processId"]), "handshake carries the opaque process identity");
+        // Workspace mode rides the revisioned settings snapshot, never the
+        // report lane.
+        assert.equal(settingsValues(h)["mode"], "per-output-local");
         const screens = inner["screens"] as Array<Record<string, unknown>>;
         assert.equal(screens.length, 1);
         assert.deepEqual(screens[0]?.["full"], [0, 0, 1920, 1080]);
         assert.deepEqual(screens[0]?.["work"], [0, 0, 800, 600]);
+        assert.equal(screens[0]?.["complete"], true);
+        assert.equal(settingsValues(h)["gap"], 8);
         const wins = inner["windows"] as Array<Record<string, unknown>>;
         assert.equal(wins.length, 2);
         assert.equal((inner["native"] as Array<Record<string, unknown>>)[0]?.["current"], "ws1");
-        assert.equal(screens[0]?.["gap"], 8);
         const first = (wins[0] as Record<string, unknown>);
-        assert.deepEqual(first["desktops"], ["ws1"], "truthful native membership evidence");
-        assert.ok(!("nativeWs" in first) && !("observedWs" in first) && !("hints" in first), "no projected identity verdicts");
+        assert.equal(first["nativeWs"], "ws1", "truthful native membership evidence");
+        assert.deepEqual(first["rect"], [0, 0, 200, 200]);
+        assert.deepEqual(first["hints"], { minW: null, minH: null, maxW: null, maxH: null });
+        assert.equal(first["fullscreen"], false);
+        assert.equal(first["maximized"], false);
+        assert.equal(first["sticky"], false);
+        assert.equal(first["minimized"], false);
+        assert.ok(!("observedWs" in first) && !("fitExcluded" in first) && !("floating" in first), "no projected identity verdicts");
         const filed = JSON.parse(queueOf(h)) as Record<string, unknown>;
         assert.ok(typeof filed["clientCmd"] === "string");
         assert.deepEqual((filed["command"] as Record<string, unknown>)["op"], "select-relative");
@@ -416,7 +550,7 @@ describe("world entry discovery and observation", () => {
             discover(h);
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
-            assert.equal(reportOf(h)["mode"], mode);
+            assert.equal(settingsValues(h)["mode"], mode);
             assert.ok(
                 !h.logs.some((l) => l.includes("workspace-mode-fallback")),
                 `no fallback for ${mode}`,
@@ -429,14 +563,14 @@ describe("world entry discovery and observation", () => {
         // Backfill default: reports true and the snapshot seeds tiled.
         const backfill = makeHarness("per-output-local", false);
         discover(backfill);
-        assert.equal(reportOf(backfill)["defaultTiled"], true);
+        assert.equal(settingsValues(backfill)["defaultTiled"], true);
         assert.equal(backfill.handle?.getWorkspaceTilingSnapshot().defaultTiled, true);
         backfill.handle?.stop();
         // Saved false: reports false and the pre-reply snapshot seeds
         // floating; the entry keeps no per-workspace flag of its own.
         const floating = makeHarness("per-output-local", false, false);
         discover(floating);
-        assert.equal(reportOf(floating)["defaultTiled"], false);
+        assert.equal(settingsValues(floating)["defaultTiled"], false);
         const snapshot = floating.handle?.getWorkspaceTilingSnapshot();
         assert.equal(snapshot?.defaultTiled, false);
         assert.equal(snapshot?.tiled, false);
@@ -456,7 +590,7 @@ describe("world entry discovery and observation", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "", clear_op: "",
-                floating: false, float_origin: "",
+                floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         });
         h.lastCall("DescribeWorld").callback(reply);
@@ -518,7 +652,7 @@ describe("world entry discovery and observation", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "", clear_op: "",
-                floating: false, float_origin: "",
+                floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         }));
         assert.equal(h.world.geometryWrites.length, 0);
@@ -561,26 +695,37 @@ describe("world entry discovery and observation", () => {
         const wins = req["windows"] as Array<Record<string, unknown>>;
         const minimized = wins.filter((w) => w["minimized"] === true);
         assert.ok(minimized.some((m) => m["win"] === "win-b" && m["out"] === "out" &&
-            ((m["desktops"] as Array<unknown>) ?? []).includes("ws2")));
+            (m["nativeWs"] as unknown) === "ws2"));
         const tiled = wins.filter((w) => w["minimized"] !== true);
         assert.ok(!tiled.some((w) => (w as Record<string, unknown>)["win"] === "win-b"));
-        assert.equal(req["predicate"], "both-axes-fixed");
-        assert.equal(req["refill"], "last-remaining-workspace");
+        assert.equal(settingsValues(h)["predicate"], "both-axes-fixed");
+        assert.equal(settingsValues(h)["refill"], "last-remaining-workspace");
     });
 
     it("carries the validated refill token live per report", () => {
         let refill: unknown = "most-recently-used-workspace";
-        const h = makeHarness("per-output-local", false, true, () => refill);
+        const configChanged = fakeSignal();
+        const h = makeHarness("per-output-local", false, true, () => refill, { configChanged: configChanged.signal });
         discover(h);
-        assert.equal(reportOf(h)["refill"], "most-recently-used-workspace");
-        // A setting change applies to the next report only: invalid values
-        // fall back to the default without touching committed state.
+        assert.equal(settingsValues(h)["refill"], "most-recently-used-workspace");
+        // Revisioned settings (world-entry.ts sendSettings/onConfigChanged):
+        // a setting change resends on the deliberate configChanged edge with
+        // a bumped revision, and the new snapshot rides only after the
+        // accepted settings reply. Invalid values fall back to the default
+        // without touching committed state.
         refill = "bogus";
         const before = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        for (const handler of [...configChanged.handlers]) {
+            (handler as () => void)();
+        }
+        // The edge synchronously resends the revisioned snapshot carrying
+        // the validated fallback.
+        assert.equal(settingsValues(h)["refill"], "last-remaining-workspace");
+        answerSettings(h);
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         assert.equal(h.calls.filter((c) => c.method === "DescribeWorld").length, before + 1);
-        assert.equal(reportOf(h)["refill"], "last-remaining-workspace");
+        assert.equal(settingsValues(h)["refill"], "last-remaining-workspace");
     });
 
     it("rediscovers on generation mismatch without replaying the command", () => {
@@ -590,15 +735,16 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         const callsBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
         h.lastCall("DescribeWorld").callback(JSON.stringify({
-            v: 3, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
-            source: "", nativeInvalid: "0", clock: "0",
+            v: 4, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
         }));
         // A fresh discovery goes out; the dropped command is NOT redispatched
-        // as a DescribeWorld (only the new DiscoverWorld).
-        assert.equal(h.calls.filter((c) => c.method === "DiscoverWorld").length, 2);
+        // as a DescribeWorld (only the new DiscoverWorld handshake; the
+        // revisioned settings snapshot shares the same method).
+        assert.equal(handshakeCount(h), 2);
         assert.equal(h.calls.filter((c) => c.method === "DescribeWorld").length, callsBefore);
-        const second = h.calls.filter((c) => c.method === "DiscoverWorld").pop() as CapturedCall;
-        second.callback(BOOTSTRAP("gen-2", JSON.parse(second.payload).req));
+        answerHandshake(h, "gen-2");
+        answerSettings(h, "gen-2");
         // Settle the rebind-triggered observation report before commanding.
         {
             const auto = h.lastCall("DescribeWorld");
@@ -618,14 +764,14 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         const req = requestOf(h);
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
-            scopes: [{ scope: "out/ws2", auth: "hold", reason: "unreadable" }],
+            scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws2" }, auth: "hold", reason: "unreadable" }],
             windows: [{
                 win: "win-b", out: "out", ws: "ws2",
                 alloc: [0, 0, 100, 100], frame: [0, 0, 100, 100],
                 frame_auth: "hold", frame_hold: "unreadable",
                 member_auth: "hold", member_hold: "unreadable",
                 frame_op: "", clear_op: "",
-                floating: false, float_origin: "",
+                floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         }));
         assert.equal(h.world.geometryWrites.length, 0);
@@ -639,7 +785,7 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         const req = requestOf(h);
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
-            effects: [{ id: "fx-1", kind: "focus", target: "win-b", rev: "1" }],
+            effects: [{ id: "fx-1", kind: "focus", target: "win-b", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false }],
         }));
         assert.equal(h.world.focused.length, 1);
         // A repeated identical effect id on a later reply never reapplies.
@@ -647,7 +793,7 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         const req2 = requestOf(h);
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req2["source"] as string, req2["nativeInvalid"] as string, "2", {
-            effects: [{ id: "fx-1", kind: "focus", target: "win-b", rev: "1" }],
+            effects: [{ id: "fx-1", kind: "focus", target: "win-b", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false }],
         }));
         assert.equal(h.world.focused.length, 1);
     });
@@ -667,7 +813,7 @@ describe("world entry discovery and observation", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "hold", member_hold: "refused-target",
                 frame_op: "", clear_op: "",
-                floating: false, float_origin: "",
+                floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         }));
         // Refused membership performs no native move.
@@ -682,10 +828,10 @@ describe("world entry discovery and observation", () => {
         const req = requestOf(h);
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
             workspaces: [
-                { id: "ws1", out: "out", bind: "ws1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-1", out: "out", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out", bind: "", scope: { kind: "output", out: "out" }, order: 2, mode: "tiled", exist: true, hold: "" },
                 // Desired-absent but occupied: the fresh occupancy gate keeps it.
-                { id: "ws2", out: "out", bind: "ws2", scope: "out", order: 1, mode: "tiled", exist: false, hold: "" },
+                { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: false, hold: "" },
             ],
             nativeCreations: [{ op: "op-native-1", ws: "wl-1", out: "out" }],
         }));
@@ -699,7 +845,8 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         h.lastCall("DescribeWorld").callback(JSON.stringify({
-            v: 1, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
+            v: 4, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
         }));
         // No timer-driven retry was scheduled beyond the debounce/timeout
         // pair: recovery waits for the next native event (dirty flag set).
@@ -726,7 +873,7 @@ describe("world entry discovery and observation", () => {
                     frame_auth: "controlled", frame_hold: "",
                     member_auth: "controlled", member_hold: "",
                     frame_op: "", clear_op: "",
-                    floating: false, float_origin: "",
+                    floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 },
                 {
                     win: "win-b", out: "out", ws: "ws2",
@@ -734,7 +881,7 @@ describe("world entry discovery and observation", () => {
                     frame_auth: "hold", frame_hold: "gesture-barrier",
                     member_auth: "controlled", member_hold: "",
                     frame_op: "", clear_op: "",
-                    floating: false, float_origin: "",
+                    floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 },
             ],
         }));
@@ -755,12 +902,13 @@ describe("world entry discovery and observation", () => {
         const wins = req["windows"] as Array<Record<string, unknown>>;
         const row = wins.find((w) => w["win"] === "win-a");
         assert.ok(row !== undefined);
-        // Raw client extents ride verbatim; classification is broker-owned
-        // (the Rust raw tests pin the equal-nonzero fixed verdict and its
-        // automatic float under the default both-axes predicate).
-        assert.deepEqual(row["minSize"], { width: 400, height: 300 });
-        assert.deepEqual(row["maxSize"], { width: 400, height: 300 });
-        assert.ok(!("fixedAuto" in row) && !("floating" in row) && !("hints" in row), "no wire verdicts");
+        // Raw client extents ride verbatim on the hints lane; classification
+        // is broker-owned (the Rust raw tests pin the equal-nonzero fixed
+        // verdict and its automatic float under the default both-axes
+        // predicate, which rides the settings snapshot).
+        assert.deepEqual(row["hints"], { minW: 400, minH: 300, maxW: 400, maxH: 300 });
+        assert.deepEqual(row["rect"], [0, 0, 200, 200]);
+        assert.ok(!("fixedAuto" in row) && !("floating" in row) && !("fitExcluded" in row), "no wire verdicts");
     });
 
     it("sends append-and-stay as one core-resolved send-numbered with no view switch", () => {
@@ -779,11 +927,11 @@ describe("world entry discovery and observation", () => {
         assert.equal(cmd["follow"], false);
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", first["source"] as string, first["nativeInvalid"] as string, "1", {
             workspaces: [
-                { id: "ws1", out: "out", bind: "ws1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "ws2", out: "out", bind: "ws2", scope: "out", order: 1, mode: "tiled", exist: true, hold: "" },
+                { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
             ],
             outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         }));
         // No chained view traffic: the flight settles with no further
         // switch-view/restore dispatch.
@@ -862,7 +1010,7 @@ describe("world entry discovery and observation", () => {
                 frame_auth: "untouched", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "", clear_op: "",
-                floating: true, float_origin: "",
+                floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         }));
         const target = h.world.wins.find((w) => w.internalId === "win-a");
@@ -882,14 +1030,20 @@ describe("world entry discovery and observation", () => {
                 frame_auth: "untouched", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "", clear_op: "",
-                floating: true, float_origin: "",
+                floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         }));
         h.runTimers();
         req = requestOf(h);
         const filed = JSON.parse(queueOf(h)) as Record<string, unknown>;
         const cmd = filed["command"] as Record<string, unknown>;
-        assert.deepEqual(cmd, { op: "toggle-float", win: "win-a", rect: null });
+        // B9 maximized-unfloat continuation (world-native 407-426: the
+        // settlement reads the settled live frame; 721-740: unfloat carries
+        // the live rect): the deferred command carries the genuine settled
+        // frame, derived here from the target's current frame for explicit
+        // genuine-input equality.
+        const frame = (target as FakeWindow).frameGeometry;
+        assert.deepEqual(cmd, { op: "toggle-float", win: "win-a", rect: [frame.x, frame.y, frame.width, frame.height] });
         assert.equal((target as FakeWindow).maximizeMode, 0);
         assert.ok(h.logs.some((l) => l.includes("outcome=observed-cleared")));
     });
@@ -1002,8 +1156,8 @@ describe("world entry rapid directional FIFO", () => {
         // Core busy: the filed head ends without replay.
         h.handle?.requestFocus("right");
         h.lastCall("DescribeWorld").callback(JSON.stringify({
-            v: 3, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
-            source: "", nativeInvalid: "0", clock: "0",
+            v: 4, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
         }));
         // No native event and no new press: the terminal failure alone
         // schedules an observation-only catchup first.
@@ -1068,11 +1222,11 @@ describe("world entry rapid directional FIFO", () => {
         // Poison while one head flies and two tails wait: the whole queue
         // belongs to the dead generation.
         h.lastCall("DescribeWorld").callback(JSON.stringify({
-            v: 3, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
-            source: "", nativeInvalid: "0", clock: "0",
+            v: 4, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
         }));
         assert.ok(h.logs.some((l) => l.includes("queue-dropped reason=generation-mismatch depth=2")));
-        assert.equal(h.calls.filter((c) => c.method === "DiscoverWorld").length, 2);
+        assert.equal(handshakeCount(h), 2);
         const cmdsBefore = sentCmdSeqs(h).length;
         // Only the native debounce elapses here: expiring the fresh
         // discovery round instead would wedge the rebind it is about to
@@ -1082,8 +1236,8 @@ describe("world entry rapid directional FIFO", () => {
         // The discovery gate holds while unbound: nothing dispatches, and
         // no command ever replays.
         assert.deepEqual(sentCmdSeqs(h).length, cmdsBefore);
-        const second = h.calls.filter((c) => c.method === "DiscoverWorld").pop() as CapturedCall;
-        second.callback(BOOTSTRAP("gen-2", JSON.parse(second.payload).req));
+        answerHandshake(h, "gen-2");
+        answerSettings(h, "gen-2");
         {
             const auto = h.lastCall("DescribeWorld");
             const autoBody = JSON.parse(auto.payload);
@@ -1149,7 +1303,7 @@ describe("world entry aligned bindings", () => {
         const first = h.lastCall("DescribeWorld");
         const firstBody = JSON.parse(first.payload);
         const wsRow = (id: string, out: string, bind: string, order: number) => ({
-            id, out, bind, scope: out, order, mode: "tiled", exist: true, hold: "",
+            id, out, bind, scope: { kind: "output", out }, order, mode: "tiled", exist: true, hold: "",
         });
         first.callback(acceptedReply("gen-1", firstBody.source as string, firstBody.nativeInvalid as string, "1", {
             workspaces: [
@@ -1165,11 +1319,10 @@ describe("world entry aligned bindings", () => {
         }
         h.runTimers();
         const second = reportOf(h);
-        // Host-owned adapters omit logical views: the core derives receipts
-        // from native order/current. The converged binding proof rides
-        // native[] (live order plus current), never the views lane.
-        const views = second["views"] as Array<Record<string, unknown>>;
-        assert.ok(views.every((v) => v["view"] === ""), "host-owned adapters omit logical views");
+        // Host-owned adapters carry no logical views lane: the core derives
+        // receipts from native order/current. The converged binding proof
+        // rides native[] (live order plus current), never a views lane.
+        assert.ok(!("views" in second), "v4 carries no logical views lane");
         const native = second["native"] as Array<{ out: string; order: string[]; current: string }>;
         const row = native.find((n) => n.out === "out");
         assert.ok(row !== undefined);
@@ -1181,13 +1334,13 @@ describe("world entry aligned bindings", () => {
         const h = makeHarness("per-output-local");
         h.world.screens.push({ name: "out-2", geometry: { x: 1920, y: 0, width: 1920, height: 1080 } });
         discover(h);
-        assert.equal(reportOf(h)["mode"], "per-output-local");
+        assert.equal(settingsValues(h)["mode"], "per-output-local");
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         const first = h.lastCall("DescribeWorld");
         const firstBody = JSON.parse(first.payload);
         const wsRow = (id: string, out: string, bind: string, order: number) => ({
-            id, out, bind, scope: out, order, mode: "tiled", exist: true, hold: "",
+            id, out, bind, scope: { kind: "output", out }, order, mode: "tiled", exist: true, hold: "",
         });
         first.callback(acceptedReply("gen-1", firstBody.source as string, firstBody.nativeInvalid as string, "1", {
             workspaces: [
@@ -1202,11 +1355,8 @@ describe("world entry aligned bindings", () => {
         const second = reportOf(h);
         // One native order/current per output (the same global native list
         // projects per output); the logical binding stays core-owned and
-        // the views lane stays empty under host ownership.
-        assert.deepEqual(second["views"], [
-            { out: "out", view: "" },
-            { out: "out-2", view: "" },
-        ]);
+        // v4 carries no logical views lane.
+        assert.ok(!("views" in second), "v4 carries no logical views lane");
         assert.deepEqual(second["native"], [
             { out: "out", order: ["ws1", "ws2"], current: "ws1", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 1 }] },
             { out: "out-2", order: ["ws1", "ws2"], current: "ws1", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 1 }] },
@@ -1220,10 +1370,10 @@ describe("world entry aligned bindings", () => {
         h.runTimers();
         const first = h.lastCall("DescribeWorld");
         const firstBody = JSON.parse(first.payload);
-        assert.equal((firstBody["report"] as Record<string, unknown>)["mode"], "shared");
+        assert.equal(settingsValues(h)["mode"], "shared");
         first.callback(acceptedReply("gen-1", firstBody.source, firstBody.nativeInvalid, "1", {
             workspaces: [
-                { id: "sh-1", out: "out", bind: "ws1", scope: "shared", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "sh-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         for (const handler of (h.signals.desktopsChanged as FakeSignal).handlers) {
@@ -1232,8 +1382,8 @@ describe("world entry aligned bindings", () => {
         h.runTimers();
         const second = reportOf(h);
         // Shared is unchanged: one native order/current row, and the
-        // logical binding stays core-owned with the views lane empty.
-        assert.deepEqual(second["views"], [{ out: "out", view: "" }]);
+        // logical binding stays core-owned with no views lane on the wire.
+        assert.ok(!("views" in second), "v4 carries no logical views lane");
         assert.deepEqual(second["native"], [{ out: "out", order: ["ws1", "ws2"], current: "ws1", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 1 }] }]);
     });
 });
@@ -1351,10 +1501,14 @@ describe("world entry all-mode native coverage", () => {
                 calls.push({ method, payload, callback });
                 if (method === "QueueWorldCommand") {
                     const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                    callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
-                        client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+                    const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                    callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
+                        client: queueBody["client"], clientCmd: queueBody["clientCmd"],
+                        globalCmd: String(calls.filter((q) => q.method === "QueueWorldCommand").length) }));
                 } else if (method === "TakeCommandResult") {
-                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                    const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                    const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
+                    callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
                 }
             },
             scheduleOnce: (delay, cb) => {
@@ -1426,27 +1580,23 @@ describe("world entry all-mode native coverage", () => {
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             const report = reportOf(h);
-            assert.equal(report["mode"], mode);
+            assert.equal(settingsValues(h)["mode"], mode);
             // The global native desktop list projects per output with an
             // independent current each; every order has the same length.
             assert.deepEqual(report["native"], [
                 { out: "out-A", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws1", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 0 }, { native: "ws3", count: 0 }, { native: "ws4", count: 1 }] },
                 { out: "out-B", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws4", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 0 }, { native: "ws3", count: 0 }, { native: "ws4", count: 1 }] },
             ]);
-            assert.equal(report["equalCount"], true);
-            assert.equal(report["hostOwned"], true);
-            // Host-owned adapters omit logical views: the core derives
-            // receipts from the native current map.
-            assert.deepEqual(report["views"], [
-                { out: "out-A", view: "" },
-                { out: "out-B", view: "" },
-            ]);
+            // Host-owned adapters carry no logical views lane: the core
+            // derives receipts from the native current map.
+            assert.ok(!("views" in report), "v4 carries no logical views lane");
             // Membership truth: out-B/ws4 occupied, ws1-3 empty on B.
             const wins = report["windows"] as Array<Record<string, unknown>>;
             const homed = wins.find((w) => w["win"] === "win-b4");
             assert.ok(homed !== undefined, "ws4 member observed");
             assert.equal(homed["out"], "out-B");
-            assert.deepEqual(homed["desktops"], ["ws4"]);
+            assert.equal(homed["nativeWs"], "ws4");
+            assert.deepEqual(homed["rect"], [1920, 0, 200, 200]);
             assert.ok(
                 !wins.some((w) => w["win"] !== "win-b4" && w["out"] === "out-B"),
                 "ws1-3 empty on out-B",
@@ -1461,14 +1611,14 @@ describe("world entry all-mode native coverage", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         const report = reportOf(h);
-        assert.equal(report["mode"], "shared");
+        assert.equal(settingsValues(h)["mode"], "shared");
         assert.deepEqual((report["native"] as Array<Record<string, unknown>>)[1], {
             out: "out-B", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws4",
             occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 0 }, { native: "ws3", count: 0 }, { native: "ws4", count: 1 }],
         });
-        assert.equal(report["equalCount"], true);
+        assert.ok(!("views" in report), "v4 carries no logical views lane");
         const wins = report["windows"] as Array<Record<string, unknown>>;
-        assert.deepEqual(wins.find((w) => w["win"] === "win-b4")?.["desktops"], ["ws4"]);
+        assert.equal(wins.find((w) => w["win"] === "win-b4")?.["nativeWs"], "ws4");
         h.handle?.stop();
     });
 
@@ -1480,14 +1630,16 @@ describe("world entry all-mode native coverage", () => {
             h.runTimers();
             const report = reportOf(h);
             // The observer resolves the effective mode: per-output
-            // requests degrade predictably where the API is absent.
-            assert.equal(report["mode"], "shared");
-            // The shared currentDesktop is current on every output.
+            // requests degrade predictably where the API is absent. The
+            // requested mode still rides the settings snapshot verbatim.
+            assert.equal(settingsValues(h)["mode"], mode);
+            // The shared currentDesktop is current on every output: linked
+            // currents prove the degraded shared effective mode.
             assert.deepEqual(report["native"], [
                 { out: "out-A", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws2", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 0 }, { native: "ws3", count: 0 }, { native: "ws4", count: 1 }] },
                 { out: "out-B", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws2", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 0 }, { native: "ws3", count: 0 }, { native: "ws4", count: 1 }] },
             ]);
-            assert.equal(report["equalCount"], true);
+            assert.ok(!("views" in report), "v4 carries no logical views lane");
             h.handle?.stop();
         });
     }
@@ -1588,7 +1740,10 @@ describe("world entry all-mode native coverage", () => {
         discover(legacy);
         captureRound(legacy, "1");
         assert.deepEqual(warnsOf(legacy), []);
-        assert.equal(reportOf(legacy)["mode"], "shared");
+        // A 6.6 host degrades to linked shared currents on the native lane.
+        const legacyNative = reportOf(legacy)["native"] as Array<Record<string, unknown>>;
+        assert.ok(legacyNative.length >= 1);
+        assert.ok(legacyNative.every((n) => n["current"] === legacyNative[0]?.["current"]), "degraded linked currents");
         legacy.handle?.stop();
         off.handle?.stop();
     });
@@ -1614,6 +1769,13 @@ describe("world entry all-mode native coverage", () => {
         h.handle?.stop();
     });
 });
+
+// Exact core-minted schema1 opaque intent bytes (proven by the service
+// roundtrip plus the explicit float/tile restore coverage): float=true
+// floats, float=false is the tile override. The service store carries them
+// inside schema2 records; the entry never interprets them.
+const FLOAT_DATA = "{\"v\":1,\"float\":true,\"stickyPrior\":null}";
+const TILE_DATA = "{\"v\":1,\"float\":false,\"stickyPrior\":null}";
 
 describe("world entry restart float-intent preservation", () => {
     for (const holdMode of ["scoped", "global"] as const) {
@@ -1722,6 +1884,28 @@ describe("world entry restart float-intent preservation", () => {
             { name: "out-b", geometry: { x: 800, y: 0, width: 800, height: 600 } },
         ];
         const currents = new Map([["out-a", "ws1"], ["out-b", "ws2"]]);
+        // Genuine native carrier facts (mirroring the migrated engine
+        // harnesses): truthful PID, identity texts, resizable state, and a
+        // client rect tracking the frame, so the core never holds rows for
+        // missing facts on the asserted paths.
+        const setFrame = (w: FakeWindow, rect: { x: number; y: number; width: number; height: number }): void => {
+            (w as unknown as Record<string, unknown>)["frameGeometry"] = { ...rect };
+            (w as unknown as Record<string, unknown>)["clientGeometry"] = {
+                x: rect.x + 2, y: rect.y + 21,
+                width: Math.max(1, rect.width - 4), height: Math.max(1, rect.height - 22),
+            };
+        };
+        for (const w of [w1, w2]) {
+            const rec = w as unknown as Record<string, unknown>;
+            rec["pid"] = 1234;
+            rec["resourceClass"] = "Example";
+            rec["caption"] = "Window";
+            rec["windowRole"] = "normal";
+            rec["desktopFileName"] = "example.app";
+            rec["resizeable"] = true;
+        }
+        setFrame(w1, w1.frameGeometry);
+        setFrame(w2, w2.frameGeometry);
         // Genuine native unreadability while heldFirst is true.
         // Scoped: the ws-1 work area reads as null, so the dispatched
         // report holds out-a/ws-1 as unreadable. Global: one live rect
@@ -1750,7 +1934,7 @@ describe("world entry restart float-intent preservation", () => {
                     // Poison one live rect: the observer marks the whole
                     // inventory unreadable and empties every domain's
                     // windows (global hold, still a non-null report).
-                    (w1 as unknown as Record<string, unknown>)["frameGeometry"] = { x: 0, y: 0, width: 0, height: 200 };
+                    setFrame(w1, { x: 0, y: 0, width: 0, height: 200 });
                 }
                 return [w1, w2];
             },
@@ -1789,27 +1973,34 @@ describe("world entry restart float-intent preservation", () => {
             floatIntent: true,
             callDbus: (_service, _path, _iface, method, payload, callback) => {
                 if (method === "ReadFloatIntent") {
-                    // Real persisted-store read shape
+                    // Exact schema2 persisted-store read shape
                     // (float_intent_store read_ok_reply): ok outcome with
-                    // members/stored/returned plus tile/tile_stored/
-                    // tile_returned. Seeded before the first dispatch, so the
-                    // first native capture already floats win-a.
+                    // opaque records plus matching stored/returned counts,
+                    // seeded before the first dispatch so the first native
+                    // capture already floats win-a.
                     const body = JSON.parse(payload) as Record<string, unknown>;
                     callback(JSON.stringify({
-                        v: 1,
+                        v: 2,
                         correlation_id: body["correlation_id"],
                         outcome: "ok",
-                        members: ["win-a"],
-                        stored: 1,
-                        returned: 1,
-                        tile: ["win-b"],
-                        tile_stored: 1,
-                        tile_returned: 1,
+                        records: [
+                            { win: "win-a", data: FLOAT_DATA },
+                            { win: "win-b", data: TILE_DATA },
+                        ],
+                        stored: 2,
+                        returned: 2,
                     }));
                     return;
                 }
                 if (method === "WriteFloatIntent") {
                     writes.push(payload);
+                    const body = JSON.parse(payload) as Record<string, unknown>;
+                    callback(JSON.stringify({
+                        v: 2,
+                        correlation_id: body["correlation_id"],
+                        outcome: "stored",
+                        stored: (body["records"] as Array<unknown>).length,
+                    }));
                     return;
                 }
                 if (method === "DiscoverWorld" || method === "DescribeWorld") {
@@ -1864,10 +2055,63 @@ describe("world entry restart float-intent preservation", () => {
             return { req: JSON.parse(calls[at]!.payload) as Record<string, unknown>, reply: JSON.parse(rawReply) as Record<string, unknown>, rawReply };
         };
         try {
-            const discAt = calls.findIndex((c) => c.method === "DiscoverWorld");
-            assert.ok(discAt >= 0, "entry discovers on start");
-            const engineBootstrap = await engineSend("DiscoverWorld", calls[discAt]!.payload);
-            calls[discAt]!.callback(broker.bindDiscovery(engineBootstrap));
+            // Authentic v4 connection pump through the real engine: the
+            // handshake binds the producer adapter lifetime and mints the
+            // serving generation, then the actual revisioned settings ride
+            // to the engine and must read accepted before any capture
+            // flows (never a scripted settings reply on the engine path).
+            const hsAt = calls.findIndex((c) => {
+                if (c.method !== "DiscoverWorld") {
+                    return false;
+                }
+                try {
+                    return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+                } catch {
+                    return false;
+                }
+            });
+            assert.ok(hsAt >= 0, "entry discovers on start");
+            const hsBody = JSON.parse(calls[hsAt]!.payload) as Record<string, unknown>;
+            assert.equal(hsBody["adapter"], "test-adapter", "handshake carries the producer adapter");
+            const engineHs = await engineSend("DiscoverWorld", calls[hsAt]!.payload);
+            const hsReply = JSON.parse(engineHs) as Record<string, unknown>;
+            assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
+            assert.equal(hsReply["ready"], false, "accepted handshake carries ready:false");
+            assert.equal(hsReply["adapter"], "test-adapter", "handshake retains the producer adapter, never a broker incarnation");
+            assert.equal(hsReply["req"], hsBody["req"], "handshake echoes the request correlation");
+            assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string) !== "", "handshake mints the serving generation");
+            const gen = hsReply["gen"] as string;
+            calls[hsAt]!.callback(broker.bindDiscovery(engineHs));
+            assert.equal(broker.gen, gen, "harness records the actual serving generation");
+            const setAt = calls.findIndex((c, i) => {
+                if (i <= hsAt || c.method !== "DiscoverWorld") {
+                    return false;
+                }
+                try {
+                    return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+                } catch {
+                    return false;
+                }
+            });
+            assert.ok(setAt >= 0, "revisioned settings follow the handshake");
+            const setBody = JSON.parse(calls[setAt]!.payload) as Record<string, unknown>;
+            assert.equal(setBody["type"], "settings", "second discovery is the revisioned settings snapshot");
+            assert.equal(setBody["adapter"], "test-adapter", "settings carry the producer adapter");
+            assert.equal(setBody["gen"], gen, "settings bind the serving generation");
+            const engineSet = await engineSend("DiscoverWorld", calls[setAt]!.payload);
+            const setReply = JSON.parse(engineSet) as Record<string, unknown>;
+            assert.equal(setReply["type"], "settings-reply", "engine answers settings");
+            assert.equal(setReply["status"], "accepted", `settings accepted, got ${engineSet.slice(0, 300)}`);
+            assert.equal(setReply["adapter"], "test-adapter", "settings reply retains the producer adapter");
+            assert.equal(setReply["gen"], gen, "settings reply binds the serving generation");
+            assert.equal(setReply["req"], setBody["req"], "settings reply echoes the request correlation");
+            assert.equal(setReply["rev"], setBody["rev"], "settings reply binds the sent revision");
+            calls[setAt]!.callback(engineSet);
+            assert.deepEqual(
+                calls.slice(0, setAt + 1).map((c) => c.method),
+                ["DiscoverWorld", "DiscoverWorld"],
+                "no report precedes the accepted settings",
+            );
             // First accepted observation: the auto observation-only dispatch
             // after discovery, with the hold applied. No commands.
             const first = await flushNextDescribe();
@@ -1913,7 +2157,7 @@ describe("world entry restart float-intent preservation", () => {
             // live identities completely.
             heldFirst = false;
             if (holdMode === "global") {
-                (w1 as unknown as Record<string, unknown>)["frameGeometry"] = { x: 0, y: 0, width: 200, height: 200 };
+                setFrame(w1, { x: 0, y: 0, width: 200, height: 200 });
             }
             for (const handler of [...(signals.desktopsChanged as FakeSignal).handlers]) {
                 handler();
@@ -1926,29 +2170,45 @@ describe("world entry restart float-intent preservation", () => {
                 secondScreens.every((s) => s["complete"] === true),
                 `second dispatched request is complete: ${JSON.stringify(secondScreens)}`,
             );
-            // No uncommanded settled float loss: every durable snapshot
-            // retains win-a, keeps win-b on the tile side only (disjoint),
-            // and never overlaps sides.
-            const settled = writes.map((w) => JSON.parse(w) as Record<string, unknown>);
-            assert.ok(settled.length >= 1, `expected settled writes, got ${settled.length}`);
-            for (const w of settled) {
-                const members = w["members"] as Array<string>;
-                const tile = (w["tile"] as Array<string> | undefined) ?? [];
-                assert.ok(members.includes("win-a"), `held first reply must not drop settled float: ${JSON.stringify(w)}`);
-                assert.ok(tile.includes("win-b"), `tile override must survive: ${JSON.stringify(w)}`);
-                assert.ok(!members.includes("win-b"), `fixed tile override is not a float: ${JSON.stringify(w)}`);
-                assert.ok(!tile.includes("win-a"), `float side stays disjoint: ${JSON.stringify(w)}`);
-            }
+            // No uncommanded settled float loss: the settled snapshot needs
+            // no churn (the core issues no save/clear decisions on
+            // observation-only captures in this increment), and the second
+            // dispatched observation still rides the seeded records
+            // live-joined with exact core-minted bytes, disjoint per side.
+            assert.equal(writes.length, 0, "settled snapshot needs no churn across the held first reply");
             // The second dispatched observation still reports the seeded
-            // float via the intent lane (broker-classified): the raw row
-            // carries native facts only, floatIntent carries the membership.
+            // float via the opaque intent lane: the raw row carries native
+            // facts only, intentRecords carries the membership.
             const secondWins = (secondReport["windows"] as Array<Record<string, unknown>>);
             const rowA = secondWins.find((w) => w["win"] === "win-a");
             assert.ok(rowA !== undefined, "seeded win-a still observed");
             assert.ok(!("floating" in rowA), "no wire verdicts on raw rows");
+            const secondRecs = ((secondReport["intentRecords"] as Array<{ win: string; data: string }>) ?? []);
+            const secondRecA = secondRecs.find((r) => r.win === "win-a");
+            const secondRecB = secondRecs.find((r) => r.win === "win-b");
             assert.ok(
-                ((secondReport["floatIntent"] as Array<unknown>) ?? []).includes("win-a"),
-                `second dispatched observation still floats seeded win-a: ${JSON.stringify(rowA)}`,
+                secondRecA !== undefined && secondRecA.data === FLOAT_DATA,
+                `second dispatched observation still floats seeded win-a: ${JSON.stringify(secondRecs)}`,
+            );
+            assert.ok(
+                secondRecB !== undefined && secondRecB.data === TILE_DATA,
+                `tile override survives the held first reply: ${JSON.stringify(secondRecs)}`,
+            );
+            assert.ok(
+                !secondRecs.some((r) => r.win === "win-b" && (JSON.parse(r.data) as Record<string, unknown>)["float"] === true),
+                `fixed tile override is not a float: ${JSON.stringify(secondRecs)}`,
+            );
+            assert.ok(
+                !secondRecs.some((r) => r.win === "win-a" && (JSON.parse(r.data) as Record<string, unknown>)["float"] === false),
+                `float side stays disjoint: ${JSON.stringify(secondRecs)}`,
+            );
+            // The genuine engine applies the retained float once the hold
+            // lifts (plain windows float from opaque intent records).
+            const secondReplyWins = (second.reply["windows"] as Array<Record<string, unknown>>);
+            assert.equal(
+                secondReplyWins.find((w) => w["win"] === "win-a")?.["floating"],
+                true,
+                "engine applies the retained float after the hold lifts",
             );
         } finally {
             try {
@@ -2111,14 +2371,42 @@ describe("world entry script-restart sequence handover", () => {
         const geometryWrites: string[] = [];
         const membershipWrites: string[] = [];
         for (const w of [w1, w2, w3]) {
+            // Genuine native carrier facts (mirroring the migrated engine
+            // harnesses): truthful PID, identity texts, and resizable
+            // state, so the core never holds rows for missing facts.
+            const rec = w as unknown as Record<string, unknown>;
+            rec["pid"] = 1234;
+            rec["resourceClass"] = "Example";
+            rec["caption"] = "Window";
+            rec["windowRole"] = "normal";
+            rec["desktopFileName"] = "example.app";
+            rec["resizeable"] = true;
             let frame = w.frameGeometry;
+            // Truthful native decoration: every native frame write keeps
+            // the client rect tracking the frame with the same insets, so
+            // no capture ever pairs a fresh frame with a stale client.
+            let liveClient = {
+                x: frame.x + 2, y: frame.y + 21,
+                width: Math.max(1, frame.width - 4), height: Math.max(1, frame.height - 22),
+            };
             Object.defineProperty(w, "frameGeometry", {
                 configurable: true,
                 get: () => frame,
                 set: (rect: { x: number; y: number; width: number; height: number }) => {
                     frame = rect;
+                    liveClient = {
+                        x: rect.x + 2, y: rect.y + 21,
+                        width: Math.max(1, rect.width - 4), height: Math.max(1, rect.height - 22),
+                    };
                     geometryWrites.push(`${w.internalId}@${rect.x},${rect.y},${rect.width},${rect.height}`);
                     return true;
+                },
+            });
+            Object.defineProperty(w, "clientGeometry", {
+                configurable: true,
+                get: () => liveClient,
+                set: (rect: { x: number; y: number; width: number; height: number }) => {
+                    liveClient = rect;
                 },
             });
         }
@@ -2197,22 +2485,32 @@ describe("world entry script-restart sequence handover", () => {
                 floatIntent: true,
                 callDbus: (_service, _path, _iface, method, payload, callback) => {
                     if (method === "ReadFloatIntent") {
+                        // Exact schema2 seed: the settled float plus the
+                        // disjoint tile override with exact core-minted
+                        // bytes, shared across the restart lifetimes.
                         const body = JSON.parse(payload) as Record<string, unknown>;
                         callback(JSON.stringify({
-                            v: 1,
+                            v: 2,
                             correlation_id: body["correlation_id"],
                             outcome: "ok",
-                            members: ["win-a"],
-                            stored: 1,
-                            returned: 1,
-                            tile: ["win-b"],
-                            tile_stored: 1,
-                            tile_returned: 1,
+                            records: [
+                                { win: "win-a", data: FLOAT_DATA },
+                                { win: "win-b", data: TILE_DATA },
+                            ],
+                            stored: 2,
+                            returned: 2,
                         }));
                         return;
                     }
                     if (method === "WriteFloatIntent") {
                         writes.push(payload);
+                        const body = JSON.parse(payload) as Record<string, unknown>;
+                        callback(JSON.stringify({
+                            v: 2,
+                            correlation_id: body["correlation_id"],
+                            outcome: "stored",
+                            stored: (body["records"] as Array<unknown>).length,
+                        }));
                         return;
                     }
                     calls.push({ method, payload, callback });
@@ -2267,17 +2565,75 @@ describe("world entry script-restart sequence handover", () => {
                 stampedText: stamped,
             };
         };
-        const assertStoreSettled = (writes: string[], label: string): void => {
-            assert.ok(writes.length >= 1, `${label}: expected store writes`);
-            for (const payload of writes) {
-                const body = JSON.parse(payload) as Record<string, unknown>;
-                const members = body["members"] as Array<string>;
-                const tile = (body["tile"] as Array<string> | undefined) ?? [];
-                assert.ok(members.includes("win-a"), `${label}: float identity retained: ${payload}`);
-                assert.ok(tile.includes("win-b"), `${label}: tile override retained: ${payload}`);
-                assert.ok(!members.includes("win-b"), `${label}: sides disjoint: ${payload}`);
-                assert.ok(!tile.includes("win-a"), `${label}: sides disjoint: ${payload}`);
-            }
+        const assertIntentSettled = (writes: string[], req: Record<string, unknown>, label: string): void => {
+            // Schema2 exact opaque persistence: the settled snapshot needs
+            // no churn when the core issues no save/clear decisions in this
+            // increment, and the dispatched report still rides the seeded
+            // records live-joined with exact core-minted bytes, disjoint
+            // per side (float stays float, tile stays tile).
+            assert.equal(writes.length, 0, `${label}: settled snapshot needs no churn (no core decisions this increment)`);
+            const recs = (((req["report"] as Record<string, unknown>)["intentRecords"] as Array<{ win: string; data: string }>) ?? []);
+            const recA = recs.find((r) => r.win === "win-a");
+            const recB = recs.find((r) => r.win === "win-b");
+            assert.ok(recA !== undefined && recA.data === FLOAT_DATA, `${label}: float identity retained: ${JSON.stringify(recs)}`);
+            assert.ok(recB !== undefined && recB.data === TILE_DATA, `${label}: tile override retained: ${JSON.stringify(recs)}`);
+            assert.equal((JSON.parse(recA!.data) as Record<string, unknown>)["float"], true, `${label}: float side stays float`);
+            assert.equal((JSON.parse(recB!.data) as Record<string, unknown>)["float"], false, `${label}: tile side stays tile`);
+            assert.ok(!recs.some((r) => r.win === "win-b" && (JSON.parse(r.data) as Record<string, unknown>)["float"] === true), `${label}: sides disjoint: ${JSON.stringify(recs)}`);
+            assert.ok(!recs.some((r) => r.win === "win-a" && (JSON.parse(r.data) as Record<string, unknown>)["float"] === false), `${label}: sides disjoint: ${JSON.stringify(recs)}`);
+        };
+        // Authentic two-step discovery through the real engine for one
+        // producer lifetime: the handshake binds the minted adapter
+        // lifetime and mints the serving generation, then the actual
+        // revisioned settings ride to the engine and must read accepted
+        // before any capture flows (never a scripted settings reply on
+        // the engine path).
+        const bindProducerDiscovery = async (p: Producer, adapter: string, label: string): Promise<string> => {
+            const hsIndex = p.calls.findIndex((c) => {
+                if (c.method !== "DiscoverWorld") {
+                    return false;
+                }
+                try {
+                    return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+                } catch {
+                    return false;
+                }
+            });
+            assert.ok(hsIndex >= 0, `${label} discovers on start`);
+            assert.equal((JSON.parse(p.calls[hsIndex]!.payload) as Record<string, unknown>)["adapter"], adapter, `${label} handshake carries the producer adapter`);
+            const hsRaw = await engineSend("DiscoverWorld", p.calls[hsIndex]!.payload);
+            const hsReply = JSON.parse(hsRaw) as Record<string, unknown>;
+            assert.equal(hsReply["type"], "handshake-reply", `${label} engine answers the handshake`);
+            assert.equal(hsReply["ready"], false, `${label} accepted handshake carries ready:false`);
+            assert.equal(hsReply["adapter"], adapter, `${label} handshake retains the producer adapter, never a broker incarnation`);
+            assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string) !== "", `${label} handshake mints the serving generation`);
+            const gen = hsReply["gen"] as string;
+            p.calls[hsIndex]!.callback(p.broker.bindDiscovery(hsRaw));
+            assert.equal(p.broker.gen, gen, `${label} harness records the actual serving generation`);
+            const setIndex = p.calls.findIndex((c, i) => {
+                if (i <= hsIndex || c.method !== "DiscoverWorld") {
+                    return false;
+                }
+                try {
+                    return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+                } catch {
+                    return false;
+                }
+            });
+            assert.ok(setIndex >= 0, `${label} revisioned settings follow the handshake`);
+            const setBody = JSON.parse(p.calls[setIndex]!.payload) as Record<string, unknown>;
+            assert.equal(setBody["adapter"], adapter, `${label} settings carry the producer adapter`);
+            assert.equal(setBody["gen"], gen, `${label} settings bind the serving generation`);
+            const setRaw = await engineSend("DiscoverWorld", p.calls[setIndex]!.payload);
+            const setReply = JSON.parse(setRaw) as Record<string, unknown>;
+            assert.equal(setReply["type"], "settings-reply", `${label} engine answers settings`);
+            assert.equal(setReply["status"], "accepted", `${label} settings accepted, got ${setRaw.slice(0, 300)}`);
+            assert.equal(setReply["adapter"], adapter, `${label} settings reply retains the producer adapter`);
+            assert.equal(setReply["gen"], gen, `${label} settings reply binds the serving generation`);
+            assert.equal(setReply["req"], setBody["req"], `${label} settings reply echoes the request correlation`);
+            assert.equal(setReply["rev"], setBody["rev"], `${label} settings reply binds the sent revision`);
+            p.calls[setIndex]!.callback(setRaw);
+            return gen;
         };
         let p1: Producer | null = null;
         let p2: Producer | null = null;
@@ -2293,15 +2649,8 @@ describe("world entry script-restart sequence handover", () => {
             const adapter1 = mintAdapterIncarnation();
             assert.ok(isOpaqueId(adapter1) && adapter1.startsWith("kwin-world-adapter-"));
             p1 = startProducer(adapter1, "p1", broker1);
-            const disc1 = [...p1.calls].reverse().find((c) => c.method === "DiscoverWorld");
-            assert.ok(disc1 !== undefined, "producer1 discovers on start");
-            assert.equal((JSON.parse(disc1.payload) as Record<string, unknown>)["adapter"], adapter1);
-            const bootRaw = await engineSend("DiscoverWorld", disc1.payload);
-            const bootBound = broker1.bindDiscovery(bootRaw);
-            const boot = JSON.parse(bootBound) as Record<string, unknown>;
-            const gen = boot["gen"] as string;
+            const gen = await bindProducerDiscovery(p1, adapter1, "producer1");
             assert.ok(typeof gen === "string" && gen.length > 0, "first generation bound");
-            disc1.callback(bootBound);
             const first = await flushNext(p1);
             assert.equal(first.reply["ready"], true, `first observation accepted: ${JSON.stringify(first.reply)}`);
             for (let round = 0; round < 2; round += 1) {
@@ -2342,11 +2691,13 @@ describe("world entry script-restart sequence handover", () => {
             lastReqSeq = toggledB.stamped["reqSeq"] as string;
             const reportedB = findWin(toggledB.req, "win-b");
             // Fixed-size pins ride raw and the tile override rides the
-            // intent lane (broker-classified): the raw row carries the
-            // native extents only, never verdicts.
+            // opaque intent lane: the raw row carries the native extents
+            // only, never verdicts.
+            const toggleRecs = (((toggledB.req["report"] as Record<string, unknown>)["intentRecords"] as Array<{ win: string; data: string }>) ?? []);
+            const toggleTile = toggleRecs.find((r) => r.win === "win-b");
             assert.ok(
-                (((toggledB.req["report"] as Record<string, unknown>)["tileIntent"] as Array<unknown>) ?? []).includes("win-b"),
-                "tile override rides the intent lane",
+                toggleTile !== undefined && (JSON.parse(toggleTile.data) as Record<string, unknown>)["float"] === false,
+                `tile override rides the opaque intent lane: ${JSON.stringify(toggleRecs)}`,
             );
             assert.ok(
                 !("fixedOrigins" in (toggledB.req["report"] as Record<string, unknown>)),
@@ -2354,15 +2705,24 @@ describe("world entry script-restart sequence handover", () => {
             );
             assert.ok(reportedB !== undefined && !("floating" in reportedB) && !("fixedAuto" in reportedB), "raw row carries no verdicts");
             const replyScopesB = toggledB.reply["scopes"] as Array<Record<string, unknown>>;
-            // v2: scope ids name the core logical; the controlled out-b
-            // scope must bind the out-b current native (ws2).
-            const controlledB = replyScopesB.find((s) => (s["scope"] as string).startsWith("out-b/") && s["auth"] === "controlled");
-            assert.ok(controlledB !== undefined, `out-b has a controlled scope: ${JSON.stringify(replyScopesB)}`);
-            const scopeLogical = (controlledB["scope"] as string).split("/")[1] as string;
-            const scopeRow = ((toggledB.reply["workspaces"] as Array<Record<string, unknown>>) ?? []).find(
-                (w) => w["out"] === "out-b" && w["id"] === scopeLogical,
-            );
-            assert.equal(scopeRow?.["bind"], "ws2", "controlled scope binds the out-b current native");
+            const replyWsB = ((toggledB.reply["workspaces"] as Array<Record<string, unknown>>) ?? []);
+            // v4: scopes ride the tagged union (never retired composite
+            // strings); the out-b current native (ws2) stays bound under a
+            // controlled covering scope.
+            const boundB = replyWsB.find((w) => w["out"] === "out-b" && w["bind"] === "ws2");
+            assert.ok(boundB !== undefined, `out-b current native ws2 stays bound: ${JSON.stringify(replyWsB)}`);
+            const logicalB = boundB["id"] as string;
+            const coveredB = replyScopesB.some((s) => {
+                const sc = s["scope"] as Record<string, unknown> | null;
+                if (typeof sc !== "object" || sc === null || s["auth"] !== "controlled") {
+                    return false;
+                }
+                if (sc["kind"] === "workspace") {
+                    return sc["out"] === "out-b" && sc["ws"] === logicalB;
+                }
+                return sc["kind"] === "output" && sc["out"] === "out-b";
+            });
+            assert.ok(coveredB, `controlled scope covers the out-b binding: ${JSON.stringify(replyScopesB)}`);
             const replyRowsB = toggledB.reply["windows"] as Array<Record<string, unknown>>;
             const rowB = replyRowsB.find((w) => w["win"] === "win-b");
             assert.equal(rowB?.["frame_auth"], "controlled", "fixed tile under controlled frame authority");
@@ -2377,7 +2737,7 @@ describe("world entry script-restart sequence handover", () => {
             assert.equal(p1.handle.getWorkspaceTilingSnapshot().tiled, true, "out-b override tiled before restart");
             focus.screen = "out-a";
             focus.window = w1;
-            assertStoreSettled(p1.writes, "producer1");
+            assertIntentSettled(p1.writes, toggledB.req, "producer1");
             const nativeBefore = nativeSnapshot();
             const floatTileBefore = floatTileWriteCount();
             const memberBefore = membershipWrites.length;
@@ -2391,24 +2751,41 @@ describe("world entry script-restart sequence handover", () => {
             assert.notEqual(adapter2, adapter1, "restart mints a fresh stream");
             const broker2: MiniBroker = createMiniBroker();
             p2 = startProducer(adapter2, "p2", broker2);
-            const disc2 = [...p2.calls].reverse().find((c) => c.method === "DiscoverWorld");
-            assert.ok(disc2 !== undefined, "producer2 discovers on start");
-            const bootRaw2 = await engineSend("DiscoverWorld", disc2.payload);
-            const bootBound2 = broker2.bindDiscovery(bootRaw2);
-            disc2.callback(bootBound2);
-            const boot2 = JSON.parse(bootBound2) as Record<string, unknown>;
-            const gen2 = broker2.gen;
+            const gen2 = await bindProducerDiscovery(p2, adapter2, "producer2");
             assert.ok(typeof gen2 === "string" && gen2.length > 0, "rotated generation bound");
             assert.notEqual(gen2, gen, "new lifetime rotates the generation");
-            assert.equal(boot2["gen"], gen2, "bootstrap names the rotated generation");
             // The dead world is gone: a retained first-generation capture
-            // refuses outright and can never apply again.
+            // refuses outright and can never apply again. The stamped
+            // envelope still names the dead adapter AND the dead generation;
+            // world_admit_v4.rs 140-150 checks the bound adapter before the
+            // generation, so the original byte replay refuses owner-invalid.
+            const staleBody = JSON.parse(toggledB.stampedText) as Record<string, unknown>;
+            assert.notEqual(staleBody["adapter"], adapter2, "stale envelope names the dead adapter");
+            assert.notEqual(staleBody["gen"], gen2, "stale envelope names the dead generation");
             const staleGen = JSON.parse(await engineSend("DescribeWorld", toggledB.stampedText)) as Record<string, unknown>;
             assert.equal(staleGen["outcome"], "rejected");
             assert.equal(
                 staleGen["kind"],
+                "owner-invalid",
+                "dead adapter+generation capture refuses on the adapter fence first",
+            );
+            // Fence discrimination (test-only counterfactual, offline only):
+            // the same dead generation under the current adapter reaches the
+            // generation fence and refuses generation-mismatch. This proves
+            // the old-generation protection is distinct from the adapter
+            // fence; the original byte replay above is unchanged.
+            const counterfactual = JSON.stringify({ ...staleBody, adapter: adapter2 });
+            assert.equal(
+                (JSON.parse(counterfactual) as Record<string, unknown>)["gen"],
+                staleBody["gen"],
+                "counterfactual keeps the dead generation",
+            );
+            const staleGenOnly = JSON.parse(await engineSend("DescribeWorld", counterfactual)) as Record<string, unknown>;
+            assert.equal(staleGenOnly["outcome"], "rejected");
+            assert.equal(
+                staleGenOnly["kind"],
                 "generation-mismatch",
-                "old-generation capture refuses after rotation",
+                "dead generation under the current adapter refuses on the generation fence",
             );
             const restarted = await flushNext(p2);
             assert.equal(restarted.req["adapter"], adapter2);
@@ -2435,7 +2812,7 @@ describe("world entry script-restart sequence handover", () => {
             assert.equal(settled.reply["rev"], "2", "rotated engine advances from rev 1");
             lastRev = settled.reply["rev"] as string;
             lastReqSeq = settled.stamped["reqSeq"] as string;
-            assertStoreSettled(p2.writes, "producer2");
+            assertIntentSettled(p2.writes, settled.req, "producer2");
             // REQ-CTL-04: per-workspace overrides reset on restart; the saved
             // default (false) reseeds BOTH scopes and native state is untouched.
             const snapA = p2.handle.getWorkspaceTilingSnapshot();
@@ -2489,7 +2866,7 @@ describe("world entry script-restart sequence handover", () => {
             // The accepted reply still floats win-a explicitly and carries
             // the fixed tile under controlled authority with desired
             // geometry; the native fixed frame matches the accepted frame
-            // and the store keeps both sides.
+            // and the seeded intent snapshot still rides every report.
             const rows = retiled.reply["windows"] as Array<Record<string, unknown>>;
             assert.equal(rows.find((w) => w["win"] === "win-a")?.["floating"], true, "float persists in accepted reply");
             const rowFixed = rows.find((w) => w["win"] === "win-b");
@@ -2502,7 +2879,7 @@ describe("world entry script-restart sequence handover", () => {
                 rowFixed?.["frame"],
                 `native fixed frame matches accepted frame: ${JSON.stringify(nativeFixed)} vs ${JSON.stringify(rowFixed?.["frame"])}`,
             );
-            assertStoreSettled(p2.writes, "producer2 retiled");
+            assertIntentSettled(p2.writes, retiled.req, "producer2 retiled");
             assert.equal(nativeSnapshot(), nativeBefore, "frames converge back to pre-restart geometry");
             p2.handle.stop();
             p2 = null;
@@ -2615,22 +2992,31 @@ describe("world entry float-intent reconcile controls", () => {
             floatIntent: true,
             callDbus: (_service, _path, _iface, method, payload, callback) => {
                 if (method === "ReadFloatIntent") {
+                    // Exact schema2 seed: the settled float plus the
+                    // disjoint tile override with exact core-minted bytes.
                     const body = JSON.parse(payload) as Record<string, unknown>;
                     callback(JSON.stringify({
-                        v: 1,
+                        v: 2,
                         correlation_id: body["correlation_id"],
                         outcome: "ok",
-                        members: ["win-a"],
-                        stored: 1,
-                        returned: 1,
-                        tile: ["win-b"],
-                        tile_stored: 1,
-                        tile_returned: 1,
+                        records: [
+                            { win: "win-a", data: FLOAT_DATA },
+                            { win: "win-b", data: TILE_DATA },
+                        ],
+                        stored: 2,
+                        returned: 2,
                     }));
                     return;
                 }
                 if (method === "WriteFloatIntent") {
                     writes.push(payload);
+                    const body = JSON.parse(payload) as Record<string, unknown>;
+                    callback(JSON.stringify({
+                        v: 2,
+                        correlation_id: body["correlation_id"],
+                        outcome: "stored",
+                        stored: (body["records"] as Array<unknown>).length,
+                    }));
                     return;
                 }
                 if (method === "DiscoverWorld" || method === "DescribeWorld") {
@@ -2640,18 +3026,22 @@ describe("world entry float-intent reconcile controls", () => {
                 if (method === "QueueWorldCommand") {
                     calls.push({ method, payload, callback });
                     const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                    callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
-                        client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+                    const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                    callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
+                        client: queueBody["client"], clientCmd: queueBody["clientCmd"],
+                        globalCmd: String(calls.filter((q) => q.method === "QueueWorldCommand").length) }));
                     return;
                 }
                 if (method === "TakeCommandResult") {
                     calls.push({ method, payload, callback });
+                    const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                    const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
                     const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                     if (stagedTake !== undefined) {
                         delete (globalThis as Record<string, unknown>)["__takeResult"];
-                        callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                        callback(JSON.stringify({ v: 4, outcome: "ready", gen: takeGen, globalCmd: "1", result: stagedTake }));
                     } else {
-                        callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                        callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
                     }
                     return;
                 }
@@ -2686,9 +3076,8 @@ describe("world entry float-intent reconcile controls", () => {
             },
         };
         // Settle discovery plus the auto observation-only dispatch.
-        const disc = h.lastCall("DiscoverWorld");
-        const discBody = JSON.parse(disc.payload);
-        disc.callback(BOOTSTRAP("gen-1", discBody.req));
+        answerHandshake(h);
+        answerSettings(h);
         const auto = h.lastCall("DescribeWorld");
         const autoBody = JSON.parse(auto.payload);
         h.rev.count += 1;
@@ -2702,7 +3091,7 @@ describe("world entry float-intent reconcile controls", () => {
         frame_auth: "untouched", frame_hold: "",
         member_auth: "controlled", member_hold: "",
         frame_op: "", clear_op: "",
-        floating: true, float_origin: "",
+        floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
         ...extra,
     });
 
@@ -2712,7 +3101,7 @@ describe("world entry float-intent reconcile controls", () => {
         frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
         frame_op: "", clear_op: "",
-        floating: false, float_origin: "",
+        floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
         ...extra,
     });
 
@@ -2732,13 +3121,44 @@ describe("world entry float-intent reconcile controls", () => {
     const lastWrite = (h: FloatHarness): Record<string, unknown> =>
         JSON.parse(h.writes[h.writes.length - 1] as string) as Record<string, unknown>;
 
+    const floatFlagOf = (data: string): unknown => {
+        try {
+            return (JSON.parse(data) as Record<string, unknown>)["float"];
+        } catch {
+            return undefined;
+        }
+    };
+
+    function followupIntentRecords(h: FloatHarness): Array<{ win: string; data: string }> {
+        for (const handler of [...(h.signals.desktopsChanged as FakeSignal).handlers]) {
+            handler();
+        }
+        h.runTimers();
+        const follow = JSON.parse(h.lastCall("DescribeWorld").payload) as Record<string, unknown>;
+        return (((follow["report"] as Record<string, unknown>)["intentRecords"] as Array<{ win: string; data: string }>) ?? []);
+    }
+
+    function assertRetained(h: FloatHarness, label: string): void {
+        // The retained snapshot needs no churn (the core issues no
+        // save/clear decisions here), and the followup report still rides
+        // the seeded records live-joined with exact core-minted bytes,
+        // disjoint per side.
+        assert.equal(h.writes.length, 0, `${label}: retained snapshot needs no churn`);
+        const recs = followupIntentRecords(h);
+        const recA = recs.find((r) => r.win === "win-a");
+        const recB = recs.find((r) => r.win === "win-b");
+        assert.ok(recA !== undefined && recA.data === FLOAT_DATA, `${label}: float retained: ${JSON.stringify(recs)}`);
+        assert.ok(recB !== undefined && recB.data === TILE_DATA, `${label}: tile override retained: ${JSON.stringify(recs)}`);
+        assert.ok(!recs.some((r) => r.win === "win-a" && floatFlagOf(r.data) === false), `${label}: float side stays disjoint`);
+        assert.ok(!recs.some((r) => r.win === "win-b" && floatFlagOf(r.data) === true), `${label}: tile side stays disjoint`);
+    }
+
     it("untouched floating-false rows never unfloat (overlay shape)", () => {
         const h = makeFloatHarness();
         // Fullscreen-overlay tiled shape: floating false with untouched
         // frame authority and no hold. Must retain the settled float.
         acceptHead(h, { windows: [tileRow(h.w1, { frame_auth: "untouched", floating: false })] });
-        const members = lastWrite(h)["members"] as Array<string>;
-        assert.ok(members.includes("win-a"), `overlay row must not unfloat: ${JSON.stringify(lastWrite(h))}`);
+        assertRetained(h, "overlay row must not unfloat");
         h.handle?.stop();
     });
 
@@ -2746,11 +3166,15 @@ describe("world entry float-intent reconcile controls", () => {
         const cleared = makeFloatHarness();
         acceptHead(cleared, {
             windows: [],
+            intentWrites: [{ win: "win-a", data: TILE_DATA }],
             result: { op: "toggle-float", win: "win-a", rect: null },
         });
         const done = lastWrite(cleared);
-        assert.ok(!(done["members"] as Array<string>).includes("win-a"), `explicit unfloat clears: ${JSON.stringify(done)}`);
-        assert.ok((done["tile"] as Array<string>).includes("win-a"), `explicit unfloat records tile: ${JSON.stringify(done)}`);
+        assert.equal(done["v"], 2, `store write rides schema2: ${JSON.stringify(done).slice(0, 200)}`);
+        const doneRecs = done["records"] as Array<{ win: string; data: string }>;
+        assert.ok(!doneRecs.some((r) => r.win === "win-a" && floatFlagOf(r.data) === true), `explicit unfloat clears: ${JSON.stringify(done)}`);
+        const doneA = doneRecs.find((r) => r.win === "win-a");
+        assert.ok(doneA !== undefined && floatFlagOf(doneA.data) === false, `explicit unfloat records tile: ${JSON.stringify(done)}`);
         cleared.handle?.stop();
         // No-space retry keeps the float and records no tile override.
         const held = makeFloatHarness();
@@ -2758,9 +3182,7 @@ describe("world entry float-intent reconcile controls", () => {
             windows: [],
             result: { op: "toggle-float", win: "win-a", rect: null, noSpace: true },
         });
-        const kept = lastWrite(held);
-        assert.ok((kept["members"] as Array<string>).includes("win-a"), `noSpace retains float: ${JSON.stringify(kept)}`);
-        assert.ok(!(kept["tile"] as Array<string>).includes("win-a"), `noSpace records no tile: ${JSON.stringify(kept)}`);
+        assertRetained(held, "noSpace retains float");
         held.handle?.stop();
     });
 
@@ -2770,10 +3192,13 @@ describe("world entry float-intent reconcile controls", () => {
             (handler as (payload?: unknown) => void)(h.w1);
         }
         h.live.splice(h.live.indexOf(h.w1), 1);
-        acceptHead(h, { windows: [] });
+        acceptHead(h, { windows: [], intentWrites: [{ win: "win-a", data: null }] });
         const done = lastWrite(h);
-        assert.ok(!(done["members"] as Array<string>).includes("win-a"), `departed float prunes: ${JSON.stringify(done)}`);
-        assert.ok((done["tile"] as Array<string>).includes("win-b"), `tile override survives departure: ${JSON.stringify(done)}`);
+        assert.equal(done["v"], 2, `store write rides schema2: ${JSON.stringify(done).slice(0, 200)}`);
+        const doneRecs = done["records"] as Array<{ win: string; data: string }>;
+        assert.ok(!doneRecs.some((r) => r.win === "win-a"), `departed float prunes: ${JSON.stringify(done)}`);
+        const doneB = doneRecs.find((r) => r.win === "win-b");
+        assert.ok(doneB !== undefined && floatFlagOf(doneB.data) === false, `tile override survives departure: ${JSON.stringify(done)}`);
         h.handle?.stop();
     });
 
@@ -2781,8 +3206,7 @@ describe("world entry float-intent reconcile controls", () => {
         const h = makeFloatHarness();
         h.w1.minimized = true;
         acceptHead(h, { windows: [tileRow(h.w1)] });
-        const members = lastWrite(h)["members"] as Array<string>;
-        assert.ok(members.includes("win-a"), `minimized float holds: ${JSON.stringify(lastWrite(h))}`);
+        assertRetained(h, "minimized float holds");
         h.handle?.stop();
     });
 
@@ -2794,10 +3218,7 @@ describe("world entry float-intent reconcile controls", () => {
                 tileRow(h.w2),
             ],
         });
-        const done = lastWrite(h);
-        assert.ok((done["members"] as Array<string>).includes("win-a"), `capacity float converges: ${JSON.stringify(done)}`);
-        assert.ok((done["tile"] as Array<string>).includes("win-b"), `tile override survives: ${JSON.stringify(done)}`);
-        assert.ok(!(done["members"] as Array<string>).includes("win-b"), `tile side stays disjoint: ${JSON.stringify(done)}`);
+        assertRetained(h, "capacity float converges");
         h.handle?.stop();
     });
 
@@ -2806,8 +3227,7 @@ describe("world entry float-intent reconcile controls", () => {
         // Same id named at another scope with full tile proof: not the live
         // scope, so the settled float holds.
         acceptHead(h, { windows: [tileRow(h.w1, { ws: "ws2" })] });
-        const members = lastWrite(h)["members"] as Array<string>;
-        assert.ok(members.includes("win-a"), `cross-scope row must not clear: ${JSON.stringify(lastWrite(h))}`);
+        assertRetained(h, "cross-scope row must not clear");
         h.handle?.stop();
     });
 });
@@ -2898,7 +3318,7 @@ describe("world entry trace probe", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "", clear_op: "",
-                floating: false, float_origin: "",
+                floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         }));
     }
@@ -2989,7 +3409,7 @@ describe("world entry trace probe", () => {
             frame_auth: "controlled", frame_hold: "",
             member_auth: "controlled", member_hold: "",
             frame_op: "", clear_op: "",
-            floating: false, float_origin: "",
+            floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
         };
     }
 

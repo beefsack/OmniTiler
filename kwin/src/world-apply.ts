@@ -696,9 +696,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.held += 1;
             continue;
         }
-        // Game/excluded/overlay guard: fit-excluded, fullscreen, and sticky
-        // all-desktop rows never take automatic frame writes.
-        const overlayGuarded = observed.fitExcluded || observed.fullscreen || observed.sticky;
+        // Core owns float classification; local inference cannot veto a
+        // tiled reply. Raw native overlays retain their safety veto.
+        const coreFloating = row.floating === true;
+        const safetyGuarded = observed.fullscreen || observed.maximized || observed.sticky;
         const frameControlled = row.frame_auth === "controlled" && row.frame_hold === "";
         const memberControlled = row.member_auth === "controlled" && row.member_hold === "";
         const targetFrame = row.frame ?? row.alloc;
@@ -716,7 +717,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         if (arrivalPending) {
             // Fall through to the membership path below without a frame
             // write; never hold-count a correctly deferred frame.
-        } else if (targetFrame !== null && frameControlled && !overlayGuarded && !observed.floating) {
+        } else if (targetFrame !== null && frameControlled && !safetyGuarded && !coreFloating) {
             let liveRect: { x: number; y: number; w: number; h: number } | null = null;
             try {
                 liveRect = env.readLiveRect(observed.ref);
@@ -795,7 +796,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             } else {
                 result.held += 1;
             }
-        } else if (targetFrame !== null && frameControlled && (overlayGuarded || observed.floating)) {
+        } else if (targetFrame !== null && frameControlled && (safetyGuarded || coreFloating)) {
             result.held += 1;
         }
         // Membership: only under a retained core window transfer naming this

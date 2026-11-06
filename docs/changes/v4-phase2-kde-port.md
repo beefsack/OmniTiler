@@ -508,3 +508,17 @@
   its pre-flip observation, rather than the entry's intentional fresh recapture;
   a paired control proves already-observed minimized membership still relocates
   without unminimizing or writing geometry. No production policy changed.
+- The main entry harness now uses strict v4 handshake/settings, tagged authority,
+  requester-only results and opaque intent records. Genuine engine restart tests
+  retain exact float/tile bytes, held-first-reply preservation, reset workspace
+  overrides and distinct adapter/generation replay fences. Schema2 persistence
+  writes occur only for accepted core intent decisions, not inferred reply flags.
+- Retiling exposed a local-classification veto in ordinary frame apply: stale
+  inferred floating/fit-excluded state blocked a core-tiled row. Ordinary apply now
+  uses the accepted row's classification while retaining raw fullscreen, maximized
+  and sticky safety vetoes. Paired regression tests prove tiled writes, ordinary
+  float refusal and each raw safety veto. Static review found no blocking defect.
+  Strict TypeScript and all 124 tests across entry, v4 binding/apply, actuation,
+  safety and the ordinary real-engine carrier pass. The fresh full adapter build
+  succeeds and executes 984 tests: 781 pass, 203 fail, none skip. Remaining corpus
+  migration, widened gates and integrated review keep K1 incomplete.
