@@ -522,3 +522,9 @@
   safety and the ordinary real-engine carrier pass. The fresh full adapter build
   succeeds and executes 984 tests: 781 pass, 203 fail, none skip. Remaining corpus
   migration, widened gates and integrated review keep K1 incomplete.
+- Directional crossing, stale-capture catchup and stale queue/take harnesses now
+  use strict v4 connection and receipts while retaining exact envelope keys,
+  requester-only results, generation isolation, FIFO and no-replay checks. The
+  first targeted run exposed a timer pump expiring transport deadlines during
+  debounce settlement; limiting that pump to native debounce restores the
+  original directional assertions. All 13 tests and strict TypeScript pass.

@@ -1,25 +1,25 @@
-// Stale queue/take lane regression (strict v2, sole broker): a delayed
+// Stale queue/take lane regression (strict v4, sole broker): a delayed
 // old-generation QueueWorldCommand/TakeCommandResult reply after a
 // lifetime rotation must no-op. It never files, never drains, never clears
 // newer undecided state, and never applies stale actuation or terminal
 // results. Offline only: scripted in-memory transport, no D-Bus, no KWin.
+//
+// STRICT V4 SYNTHETIC replies (hand-authored inline, never real-core
+// output): the handshake/settings bootstrap binds the producer adapter
+// lifetime, captures echo source correlation with an independent broker
+// obs, and the terminal result rides TakeCommandResult requester-only.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface FakeDesktop {
     id: string;
 }
 
 const desk = (id: string): FakeDesktop => ({ id });
-
-const DISABLED_PRESENTATION = {
-    foreground: "",
-    border: { visible: false, reason: "disabled", inner: null, outer: null },
-    underlay: { status: "hidden", reason: "disabled", baseRev: null },
-    pager: [],
-};
 
 function windowRow(frame: [number, number, number, number]): Record<string, unknown> {
     return {
@@ -29,6 +29,9 @@ function windowRow(frame: [number, number, number, number]): Record<string, unkn
         member_auth: "controlled", member_hold: "",
         frame_op: "", clear_op: "",
         floating: false, float_origin: "",
+        cmdSeq: null,
+        visibility: null, visibility_auth: "untouched", visibility_hold: "",
+        state: [],
     };
 }
 
@@ -145,15 +148,42 @@ function runTimers(flow: ReturnType<typeof startFlow>): void {
     }
 }
 
-function bootstrap(gen: string, req: string): string {
-    return JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req,
-        obs: "0", rev: "0", ready: false, consumed: false,
-        scopes: [], workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [], result: null,
-        gestureSettled: null,  operationSettled: [], nativeCreations: [], warpCursor: null,
-        presentation: DISABLED_PRESENTATION,
+function answerHandshake(flow: ReturnType<typeof startFlow>, gen: string): void {
+    const disc = [...flow.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
     });
+    assert.ok(disc !== undefined, "expected DiscoverWorld/handshake");
+    const req = (JSON.parse(disc.payload) as Record<string, unknown>)["req"] as string;
+    disc.callback(JSON.stringify({
+        type: "handshake-reply", v: 4, adapter: "test-adapter", req,
+        ready: false, kind: "", gen,
+    }));
+}
+
+function answerSettings(flow: ReturnType<typeof startFlow>, gen: string): void {
+    const found = [...flow.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/settings");
+    const body = JSON.parse(found.payload) as Record<string, unknown>;
+    found.callback(JSON.stringify({
+        type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+        req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+    }));
 }
 
 function acceptCapture(
@@ -162,30 +192,44 @@ function acceptCapture(
     rev: string,
     frame: [number, number, number, number] = [10, 10, 300, 300],
 ): string {
-    return JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req: envelope["source"], obs: rev, rev,
+    // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
+    // output): the producer adapter lifetime, the serving generation, the
+    // capture source correlation and native watermark. Scripted broker obs
+    // advances with rev; the terminal result stays null (requester-only
+    // via take).
+    const text = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen, req: envelope["source"], obs: rev, rev,
         ready: true, consumed: false,
-        scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
+        scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [], outputs: [],
         windows: [windowRow(frame)],
         transfers: [], effects: [], result: null,
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        intentWrites: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
     });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+    return text;
 }
 
 function generationMismatch(gen: string): string {
     return JSON.stringify({
-        v: 3, outcome: "rejected", kind: "generation-mismatch",
+        v: 4, outcome: "rejected", kind: "generation-mismatch",
         message: "generation mismatch", gen, source: "", nativeInvalid: "0", clock: "1",
+        gestureAssoc: null,
     });
 }
 
 function discoverFlow(flow: ReturnType<typeof startFlow>, gen: string): void {
-    const disc = lastCall(flow.calls, "DiscoverWorld");
-    const bootReq = (JSON.parse(disc.payload) as Record<string, unknown>)["req"] as string;
-    disc.callback(bootstrap(gen, bootReq));
+    // Genuine v4 connection bootstrap: the handshake reply echoes the
+    // producer adapter lifetime and mints the serving generation; the
+    // revisioned settings snapshot must read accepted before the first
+    // report flies. The caller settles the auto capture.
+    answerHandshake(flow, gen);
+    answerSettings(flow, gen);
+    runTimers(flow);
 }
 
 function queueOk(flow: ReturnType<typeof startFlow>, gen: string, globalCmd: string): Call {
@@ -193,7 +237,7 @@ function queueOk(flow: ReturnType<typeof startFlow>, gen: string, globalCmd: str
     const filed = JSON.parse(queue.payload) as Record<string, unknown>;
     assert.equal(filed["gen"], gen, "queue binds the serving generation");
     queue.callback(JSON.stringify({
-        v: 3, outcome: "queued", gen,
+        v: 4, outcome: "queued", gen,
         client: filed["client"], clientCmd: filed["clientCmd"], globalCmd,
     }));
     return queue;
@@ -203,6 +247,7 @@ function acceptDrain(flow: ReturnType<typeof startFlow>, gen: string, rev: strin
     const drained = lastCall(flow.calls, "DescribeWorld");
     const body = JSON.parse(drained.payload) as Record<string, unknown>;
     assert.equal(body["gen"], gen, "drain binds the serving generation");
+    assert.equal(body["command"], undefined, "captures never carry an inline command");
     drained.callback(acceptCapture(gen, body, rev));
     return drained;
 }
@@ -211,7 +256,7 @@ function takeReady(flow: ReturnType<typeof startFlow>, gen: string, globalCmd: s
     const take = lastCall(flow.calls, "TakeCommandResult");
     const body = JSON.parse(take.payload) as Record<string, unknown>;
     assert.equal(body["gen"], gen, "take binds the serving generation");
-    take.callback(JSON.stringify({ v: 3, outcome: "ready", gen, globalCmd, result: null }));
+    take.callback(JSON.stringify({ v: 4, outcome: "ready", gen, globalCmd, result: null }));
     return take;
 }
 
@@ -257,7 +302,7 @@ describe("stale queue/take lanes after a lifetime rotation", () => {
         // The delayed Q1 success (gen-1) arrives after the reset: no-op.
         // It never drains, never clears newer undecided state, never wedges.
         q1.callback(JSON.stringify({
-            v: 3, outcome: "queued", gen: "gen-1",
+            v: 4, outcome: "queued", gen: "gen-1",
             client: (JSON.parse(q1.payload) as Record<string, unknown>)["client"],
             clientCmd: q1client, globalCmd: "9",
         }));
@@ -314,7 +359,7 @@ describe("stale queue/take lanes after a lifetime rotation", () => {
         const applied = flow.logs.filter((l) => l.startsWith("omnitiler:world:applied")).length;
         // The delayed T1 terminal result (gen-1) arrives after the reset:
         // it never applies stale actuation and never wedges the stream.
-        t1.callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: null }));
+        t1.callback(JSON.stringify({ v: 4, outcome: "ready", gen: "gen-1", globalCmd: "1", result: null }));
         assert.equal(flow.world.geometryWrites.length, writes, "stale take reply applies nothing");
         assert.equal(
             flow.calls.filter((c) => c.method === "DescribeWorld").length,

@@ -6,6 +6,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface FakeDesktop {
     id: string;
@@ -114,15 +116,18 @@ function makeHarness(wins: FakeWindow[], screens: Array<{ name: string; geometry
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
+                const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
+                const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 4, outcome: "ready", gen: takeGen, globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
                 }            }
         },
         scheduleOnce: (delay, cb) => {
@@ -138,15 +143,15 @@ function makeHarness(wins: FakeWindow[], screens: Array<{ name: string; geometry
         readWorkspaceModeFn: () => "per-output-local",
     });
     assert.ok(handle !== null);
+    // Bounded mock-time: fire only debounce timers (<=120ms, see
+    // WORLD_DEBOUNCE_MS), never the 2000ms transport timeouts
+    // (WORLD_TIMEOUT_MS) or the 25s host-deadline chain: firing a flight
+    // timeout offline would kill the capture under test and wedge the
+    // entry, so directional intents would never file.
     const runTimers = (): void => {
         for (let i = 0; i < timers.length; i += 1) {
             const t = timers[i] as { delay: number; cb: () => void };
-            // Host-deadline timers (25 s verified host call deadline, see
-            // WAIT_HOST_DEADLINE_MS) never fire in these offline flows: the
-            // production wait/discovery chains re-arm them host-causally,
-            // and flushing them would collapse production cadence into a
-            // sync loop. Debounce/timeout timers flush normally.
-            if (t.delay >= 25000) {
+            if (t.delay > 120) {
                 continue;
             }
             timers.splice(i, 1);
@@ -157,36 +162,79 @@ function makeHarness(wins: FakeWindow[], screens: Array<{ name: string; geometry
     return { calls, timers, shortcuts, handle, runTimers };
 }
 
-const BOOTSTRAP = (gen: string, req: string): string => JSON.stringify({
-    v: 3, adapter: "broker-1", gen, req, obs: "0", rev: "0",
-    ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-    gestureSettled: null,
-    operationSettled: [], nativeCreations: [],
-    warpCursor: null,
-    presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-    windows: [], transfers: [], effects: [], result: null,
-});
+function answerHandshake(h: Harness, gen = "gen-1"): void {
+    const disc = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(disc !== undefined, "expected DiscoverWorld/handshake");
+    const req = (JSON.parse((disc as CapturedCall).payload) as Record<string, unknown>)["req"] as string;
+    (disc as CapturedCall).callback(JSON.stringify({
+        type: "handshake-reply", v: 4, adapter: "test-adapter", req,
+        ready: false, kind: "", gen,
+    }));
+}
 
-function discover(h: Harness, gen = "gen-1"): void {
-    const disc = [...h.calls].reverse().find((c) => c.method === "DiscoverWorld");
-    assert.ok(disc !== undefined);
-    const body = JSON.parse(disc.payload);
-    disc.callback(BOOTSTRAP(gen, body.req));
-    const auto = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
-    assert.ok(auto !== undefined);
-    const autoBody = JSON.parse(auto.payload);
-    auto.callback(JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req: autoBody.source, obs: "1", rev: "1",
+function answerSettings(h: Harness, gen = "gen-1"): void {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/settings");
+    const body = JSON.parse((found as CapturedCall).payload) as Record<string, unknown>;
+    (found as CapturedCall).callback(JSON.stringify({
+        type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+        req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+    }));
+}
+
+function acceptedAutoReply(gen: string, source: string, nativeInvalid: string, rev: string): string {
+    // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
+    // output): the producer adapter lifetime, the serving generation, the
+    // capture source correlation and native watermark. Scripted broker obs
+    // advances with rev; the terminal result stays null (requester-only
+    // via take).
+    const text = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
-        source: autoBody.source,
-        nativeInvalid: autoBody.nativeInvalid,
-        clock: "0",
+        source, nativeInvalid, clock: "0",
         gestureSettled: null, gestureAssoc: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: DISABLED_PRESENTATION,
         scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
-    }));
+    });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+    return text;
+}
+
+function discover(h: Harness, gen = "gen-1"): void {
+    // Genuine v4 connection bootstrap: the handshake reply echoes the
+    // producer adapter lifetime and mints the serving generation; the
+    // revisioned settings snapshot must read accepted before the first
+    // report flies.
+    answerHandshake(h, gen);
+    answerSettings(h, gen);
+    h.runTimers();
+    const auto = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
+    assert.ok(auto !== undefined, "expected DescribeWorld after settings accept");
+    const autoBody = JSON.parse((auto as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(autoBody["command"], undefined, "captures never carry an inline command");
+    (auto as CapturedCall).callback(acceptedAutoReply(gen, autoBody["source"] as string, autoBody["nativeInvalid"] as string, "1"));
 }
 
 function lastCommand(h: Harness): Record<string, unknown> | null {
@@ -364,15 +412,18 @@ describe("world directional intent (core-owned crossing)", () => {
                 calls.push({ method, payload, callback });
                 if (method === "QueueWorldCommand") {
                     const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                    callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
+                    const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                    callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
                         client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
                 } else if (method === "TakeCommandResult") {
+                    const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                    const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
                     const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                     if (stagedTake !== undefined) {
                         delete (globalThis as Record<string, unknown>)["__takeResult"];
-                        callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                        callback(JSON.stringify({ v: 4, outcome: "ready", gen: takeGen, globalCmd: "1", result: stagedTake }));
                     } else {
-                        callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                        callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
                     }                }
             },
             scheduleOnce: (delay, cb) => {
@@ -393,13 +444,9 @@ describe("world directional intent (core-owned crossing)", () => {
             runTimers: () => {
                 for (let i = 0; i < timers.length; i += 1) {
                     const t = timers[i] as { delay: number; cb: () => void };
-                    // Host-deadline timers (25 s verified host call
-                    // deadline, see WAIT_HOST_DEADLINE_MS) never fire in
-                    // these offline flows: the production wait/discovery
-                    // chains re-arm them host-causally, and flushing them
-                    // would collapse production cadence into a sync loop.
-                    // Debounce/timeout timers flush normally.
-                    if (t.delay >= 25000) {
+                    // Bounded mock-time (see above): debounce timers only,
+                    // never transport timeouts or the host-deadline chain.
+                    if (t.delay > 120) {
                         continue;
                     }
                     timers.splice(i, 1);

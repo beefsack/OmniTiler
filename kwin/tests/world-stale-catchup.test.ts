@@ -8,6 +8,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface FakeDesktop {
     id: string;
@@ -194,15 +196,18 @@ function makeHarness(): Harness {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
+                const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
+                const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 4, outcome: "ready", gen: takeGen, globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
                 }            }
         },
         scheduleOnce: (delay, cb) => {
@@ -251,29 +256,69 @@ function describeCount(h: Harness): number {
     return h.calls.filter((c) => c.method === "DescribeWorld").length;
 }
 
-function discover(h: Harness, gen = "gen-1"): void {
-    const disc = h.calls.find((c) => c.method === "DiscoverWorld");
-    assert.ok(disc !== undefined);
-    const req = (JSON.parse(disc.payload) as Record<string, unknown>)["req"];
-    disc.callback(JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req,
-        obs: "0", rev: "0", ready: false, consumed: false,
-        gestureSettled: null,
-        operationSettled: [], nativeCreations: [],
-        warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        scopes: [], workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [], result: null,
+function answerHandshake(h: Harness, gen = "gen-1"): void {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/handshake");
+    const req = (JSON.parse((found as CapturedCall).payload) as Record<string, unknown>)["req"] as string;
+    (found as CapturedCall).callback(JSON.stringify({
+        type: "handshake-reply", v: 4, adapter: "test-adapter", req,
+        ready: false, kind: "", gen,
     }));
+}
+
+function answerSettings(h: Harness, gen = "gen-1"): void {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/settings");
+    const body = JSON.parse((found as CapturedCall).payload) as Record<string, unknown>;
+    (found as CapturedCall).callback(JSON.stringify({
+        type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+        req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+    }));
+}
+
+function discover(h: Harness, gen = "gen-1"): void {
+    // Genuine v4 connection bootstrap: the handshake reply echoes the
+    // producer adapter lifetime and mints the serving generation; the
+    // revisioned settings snapshot must read accepted before the first
+    // report flies.
+    answerHandshake(h, gen);
+    answerSettings(h, gen);
+    h.runDueTimers();
     const auto = lastDescribe(h);
+    // Exact v4 capture envelope (world-report.ts buildCaptureEnvelope,
+    // sent at world-entry.ts dispatch): v/adapter/gen/source/sourceSeq/
+    // nativeInvalid/report, never an inline command lane.
     assert.deepEqual([...Object.keys(auto.payload)].sort(), ["adapter","gen","nativeInvalid","report","source","sourceSeq","v"].sort());
-    assert.ok(!("command" in (auto.payload["report"] as Record<string, unknown>)));
+    assert.ok(!("command" in (auto.payload["report"] as Record<string, unknown>)), "inner reports never carry a command");
     auto.callback(acceptedReply(gen, auto.payload, "1"));
 }
 
 function acceptedReply(gen: string, dispatched: Record<string, unknown>, rev: string, extra: Record<string, unknown> = {}): string {
-    return JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req: dispatched["source"], obs: rev, rev,
+    // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
+    // output): the producer adapter lifetime, the serving generation, the
+    // capture source correlation and native watermark. This scripted
+    // harness advances broker obs together with rev; terminal results stay
+    // requester-only on the take lane.
+    const text = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen, req: dispatched["source"], obs: rev, rev,
         ready: true, consumed: false,
         source: dispatched["source"],
         nativeInvalid: dispatched["nativeInvalid"],
@@ -281,20 +326,27 @@ function acceptedReply(gen: string, dispatched: Record<string, unknown>, rev: st
         gestureSettled: null, gestureAssoc: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
-        workspaces: [{ id: "ws1", out: "out", bind: "ws1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" }],
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: DISABLED_PRESENTATION,
+        scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
+        workspaces: [{ id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
         outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
         windows: [], transfers: [], effects: [], result: null,
         ...extra,
     });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+    return text;
 }
 
 // A stale reply carrying desired rows that WOULD actuate if applied: a
 // differing controlled frame, a view transfer, and a focus effect.
 function staleReply(gen: string, dispatched: Record<string, unknown>, rev: string, overrides: Record<string, unknown> = {}): string {
-    return JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req: dispatched["source"], obs: rev, rev,
+    // Genuine v4 18-key window row plus the retained write tokens; the
+    // effect names its automatic cause with a null seq. Scripted broker
+    // obs advances with rev here.
+    const text = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen, req: dispatched["source"], obs: rev, rev,
         ready: true, consumed: false,
         source: dispatched["source"],
         nativeInvalid: dispatched["nativeInvalid"],
@@ -302,7 +354,8 @@ function staleReply(gen: string, dispatched: Record<string, unknown>, rev: strin
         gestureSettled: null, gestureAssoc: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: DISABLED_PRESENTATION,
         scopes: [],
         workspaces: [],
         outputs: [],
@@ -315,11 +368,17 @@ function staleReply(gen: string, dispatched: Record<string, unknown>, rev: strin
             frame_op: "",
             clear_op: "",
             floating: false, float_origin: "",
+            cmdSeq: null,
+            visibility: null, visibility_auth: "untouched", visibility_hold: "",
+            state: [],
         }],
-        transfers: [{ op: "op-9", kind: "view", win: "", out: "out", ws: "ws1", follow: false, held: false }],
-        effects: [{ id: "fx-9", kind: "focus", target: "win-a", rev }],
+        transfers: [{ op: "op-9", kind: "view", win: "", out: "out", ws: "ws1", follow: false, held: false, cmdSeq: null }],
+        effects: [{ id: "fx-9", kind: "focus", target: "win-a", rev, cause: "automatic-admission", cmdSeq: null, awaitShown: false }],
         ...overrides,
     });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored stale binds strict v4");
+    return text;
 }
 
 function settersFired(h: Harness): string[] {
