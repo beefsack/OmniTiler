@@ -499,3 +499,12 @@
   envelope expectations were replaced by their exact v4 counterparts. Fixed
   client hints are asserted in decorated-frame space; zero/unbounded hints remain
   unchanged. These are offline carriers, not new native or later-slice acceptance.
+- The scripted actuation and overlay-safety harnesses now strict-parse authored
+  v4 replies and use handshake/settings, tagged authority and requester-only
+  terminal results. All 48 tests and strict TypeScript pass, retaining native
+  setter/readback, creation, ambiguous-write, supersession, hotplug and no-replay
+  checks. Empty creation-attempt lanes are omitted by the v4 producer; populated
+  receipt assertions remain exact. The minimized-flip test now applies against
+  its pre-flip observation, rather than the entry's intentional fresh recapture;
+  a paired control proves already-observed minimized membership still relocates
+  without unminimizing or writing geometry. No production policy changed.

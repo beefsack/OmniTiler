@@ -10,6 +10,13 @@
 // core desires execute (at most once per stable op), the same-turn
 // before/after delta proves the created id, and receipts persist until the
 // core incorporates them. Unbound rows never authorize.
+//
+// STRICT V4 SYNTHETIC replies (hand-authored inline for mechanical apply
+// only and validated below through the real parseWorldReply; these bytes
+// are not real-core output): the handshake/settings bootstrap binds the
+// producer adapter lifetime, captures echo source correlation with an
+// independent broker obs, and the terminal result rides TakeCommandResult
+// requester-only.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -17,6 +24,7 @@ import { startWorldAdapterEntry } from "../src/world-entry";
 import { applyWorldReply, type ApplyEnv } from "../src/world-apply";
 import { WorldAdapterState } from "../src/world-state";
 import { parseWorldReply, isCoreWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface FakeDesktop {
     id: string;
@@ -313,15 +321,19 @@ function makeHarness(mode: unknown = "per-output-local"): Harness {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
-                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+                const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"],
+                    globalCmd: String(calls.filter((q) => q.method === "QueueWorldCommand").length) }));
             } else if (method === "TakeCommandResult") {
+                const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 4, outcome: "ready", gen: takeGen, globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
                 }            }
         },
         scheduleOnce: (delay, cb) => {
@@ -361,31 +373,62 @@ function makeHarness(mode: unknown = "per-output-local"): Harness {
     };
 }
 
-const DISABLED_PRESENTATION = {
-    foreground: "",
-    border: { visible: false, reason: "disabled", inner: null, outer: null },
-    underlay: { status: "hidden", reason: "disabled", baseRev: null },
-    pager: [],
-};
+function answerHandshake(h: Harness, gen = "gen-1"): void {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/handshake");
+    const req = (JSON.parse((found as CapturedCall).payload) as Record<string, unknown>)["req"] as string;
+    (found as CapturedCall).callback(JSON.stringify({
+        type: "handshake-reply", v: 4, adapter: "test-adapter", req,
+        ready: false, kind: "", gen,
+    }));
+}
 
-const BOOTSTRAP = (gen: string, req: string): string => JSON.stringify({
-    v: 3, adapter: "broker-1", gen, req, obs: "0", rev: "0",
-    ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-    windows: [], transfers: [], effects: [], result: null,
-    gestureSettled: null,  operationSettled: [], nativeCreations: [], warpCursor: null,
-    presentation: DISABLED_PRESENTATION,
-});
+function answerSettings(h: Harness, gen = "gen-1"): void {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/settings");
+    const body = JSON.parse((found as CapturedCall).payload) as Record<string, unknown>;
+    (found as CapturedCall).callback(JSON.stringify({
+        type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+        req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+    }));
+}
 
 function discover(h: Harness, gen = "gen-1"): void {
-    const call = h.calls.filter((c) => c.method === "DiscoverWorld").pop() as CapturedCall;
-    const body = JSON.parse(call.payload);
-    call.callback(BOOTSTRAP(gen, body.req));
-    const auto = h.calls.filter((c) => c.method === "DescribeWorld").pop() as CapturedCall;
+    // Genuine v4 connection bootstrap: the handshake reply echoes the
+    // producer adapter lifetime and mints the serving generation; the
+    // revisioned settings snapshot must read accepted before the first
+    // report flies. The idle first capture then accepts quietly so every
+    // leg below starts from a settled flight.
+    answerHandshake(h, gen);
+    answerSettings(h, gen);
+    h.runTimers();
+    const auto = h.calls.filter((c) => c.method === "DescribeWorld").pop() as CapturedCall | undefined;
+    assert.ok(auto !== undefined, "expected DescribeWorld after settings accept");
     const autoBody = JSON.parse(auto.payload) as Record<string, unknown>;
+    assert.equal(autoBody["command"], undefined, "captures never carry an inline command");
     const report = autoBody["report"] as Record<string, unknown>;
     assert.equal(report["command"], undefined, "inner reports never carry a command");
     auto.callback(acceptedReply(gen, autoBody["source"] as string, autoBody["nativeInvalid"] as string, "0"));
     answerTake(h, null);
+    h.runTimers();
 }
 
 // The broker files every queued command; the fake transport answers queued
@@ -399,9 +442,11 @@ function answerQueue(h: Harness): void {
         }
         marked.answered = true;
         const body = JSON.parse(c.payload) as Record<string, unknown>;
+        const queueGen = typeof body["gen"] === "string" ? (body["gen"] as string) : "gen-1";
         c.callback(JSON.stringify({
-            v: 3, outcome: "queued", gen: "gen-1",
-            client: body["client"], clientCmd: body["clientCmd"], globalCmd: "1",
+            v: 4, outcome: "queued", gen: queueGen,
+            client: body["client"], clientCmd: body["clientCmd"],
+            globalCmd: String(h.calls.filter((q) => q.method === "QueueWorldCommand").length),
         }));
     }
 }
@@ -415,9 +460,11 @@ function answerTake(h: Harness, result: Record<string, unknown> | null): void {
     if (take === undefined) {
         return;
     }
+    const takeBody = JSON.parse(take.payload) as Record<string, unknown>;
+    const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
     take.callback(JSON.stringify(result === null
-        ? { v: 3, outcome: "pending", gen: "gen-1" }
-        : { v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result }));
+        ? { v: 4, outcome: "pending", gen: takeGen }
+        : { v: 4, outcome: "ready", gen: takeGen, globalCmd: "1", result }));
 }
 
 function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string {
@@ -426,18 +473,24 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
     // falls back to native string equality. Tests with a second output
     // resolve its fused row the same way.
     const fused = (id: string, out: string, order: number): Record<string, unknown> => (
-        { id, out, bind: id, scope: out, order, mode: "tiled", exist: true, hold: "" }
+        { id, out, bind: id, scope: { kind: "output", out }, order, mode: "tiled", exist: true, hold: "" }
     );
     const workspaces = [fused("ws1", "out", 0), fused("ws2", "out", 1), fused("ws3", "out", 2), fused("ws2", "out-2", 0)];
-    return JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req: source, obs: rev, rev,
+    // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
+    // output): the producer adapter lifetime, the serving generation, the
+    // capture source correlation, the native watermark, and an
+    // independent broker obs; the terminal result stays null (the take
+    // lane serves it requester-only).
+    const text = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
-        source, nativeInvalid, clock: "0",
+        source, nativeInvalid, clock: "1",
         gestureSettled: null, gestureAssoc: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
+        intentWrites: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
-        scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
+        scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces,
         outputs: [],
         windows: [],
@@ -446,6 +499,9 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         result: null,
         ...extra,
     });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+    return text;
 }
 
 function lastDescribe(h: Harness): CapturedCall {
@@ -490,6 +546,7 @@ const KNOWN_OPS = new Set([
 function noInventedQueueOps(h: Harness): void {
     for (const c of h.calls.filter((c) => c.method === "QueueWorldCommand")) {
         const body = JSON.parse(c.payload) as Record<string, unknown>;
+        assert.equal(body["v"], 4, "queue lane is versioned v4");
         const command = body["command"] as Record<string, unknown>;
         assert.ok(KNOWN_OPS.has(command["op"] as string), `unknown queue op ${command["op"]}`);
         assert.ok(!("floatSubject" in command), "no local routing key on the wire");
@@ -505,6 +562,9 @@ const winRow = (winId: string, ws: string): Record<string, unknown> => ({
     frame_op: "",
     clear_op: "",
     floating: false, float_origin: "",
+    cmdSeq: null,
+    visibility: null, visibility_auth: "untouched", visibility_hold: "",
+    state: [],
 });
 
 // Floating-workspace boundary row: membership-only at the target homing,
@@ -517,6 +577,9 @@ const boundaryRow = (winId: string, ws: string): Record<string, unknown> => ({
     frame_op: "",
     clear_op: "",
     floating: false, float_origin: "",
+    cmdSeq: null,
+    visibility: null, visibility_auth: "untouched", visibility_hold: "",
+    state: [],
 });
 
 // Explicit untouched floating lifetime: authorizes nothing.
@@ -528,6 +591,9 @@ const untouchedRow = (winId: string, ws: string): Record<string, unknown> => ({
     frame_op: "",
     clear_op: "",
     floating: false, float_origin: "",
+    cmdSeq: null,
+    visibility: null, visibility_auth: "untouched", visibility_hold: "",
+    state: [],
 });
 
 // Explicit native creation desires (Stage 1b contract): the core authorizes
@@ -535,18 +601,21 @@ const untouchedRow = (winId: string, ws: string): Record<string, unknown> => ({
 // without a desire row authorizes nothing.
 const desire = (op: string, ws: string, out = "out"): Record<string, unknown> => ({ op, ws, out });
 const unboundRow = (id: string, out = "out", order = 3): Record<string, unknown> => (
-    { id, out, bind: "", scope: out, order, mode: "tiled", exist: true, hold: "" }
+    { id, out, bind: "", scope: { kind: "output", out }, order, mode: "tiled", exist: true, hold: "" }
 );
 const boundRow = (id: string, bind: string, out = "out", order = 3): Record<string, unknown> => (
-    { id, out, bind, scope: out, order, mode: "tiled", exist: true, hold: "" }
+    { id, out, bind, scope: { kind: "output", out }, order, mode: "tiled", exist: true, hold: "" }
 );
 // Retained creation receipts riding the last dispatched report lane.
 function lastCreationAttempts(h: Harness): Array<Record<string, unknown>> {
     const call = lastDescribe(h);
     const body = JSON.parse(call.payload) as Record<string, unknown>;
     const report = (body["report"] ?? body) as Record<string, unknown>;
-    const attempts = report["creationAttempts"];
-    assert.ok(Array.isArray(attempts), "report carries the creation lane");
+    // v4 attempt lanes ride only when populated; an omitted lane backfills
+    // the observation-only default (empty), never a missing receipt. A
+    // present lane must still be an array: retained receipts ride verbatim.
+    const attempts = report["creationAttempts"] ?? [];
+    assert.ok(Array.isArray(attempts), "populated creation lane rides an array");
     return attempts as Array<Record<string, unknown>>;
 }
 
@@ -558,7 +627,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "one native membership attempt");
         // The native side applied synchronously, so read-back proof settles
@@ -572,7 +641,7 @@ describe("world actuation identity and proof", () => {
         // with read-back proof and issues no second setter call.
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "confirmed without repeating the setter");
         h.runTimers();
@@ -592,11 +661,11 @@ describe("world actuation identity and proof", () => {
         // target under the stable transfer op.
         dispatchAndReply(h, rev, {
             scopes: [
-                { scope: "out/ws1", auth: "controlled", reason: "" },
-                { scope: "out/ws2", auth: "untouched", reason: "" },
+                { scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" },
+                { scope: { kind: "workspace", out: "out", ws: "ws2" }, auth: "untouched", reason: "" },
             ],
             windows: [boundaryRow("win-a", "ws2"), untouchedRow("win-b", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "boundary membership actuates natively");
         assert.equal(h.world.geometryWrites.length, 0, "no frame writes on the floating side");
@@ -606,8 +675,8 @@ describe("world actuation identity and proof", () => {
         // transfer stays completely quiet.
         dispatchAndReply(h, rev, {
             scopes: [
-                { scope: "out/ws1", auth: "controlled", reason: "" },
-                { scope: "out/ws2", auth: "untouched", reason: "" },
+                { scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" },
+                { scope: { kind: "workspace", out: "out", ws: "ws2" }, auth: "untouched", reason: "" },
             ],
             windows: [untouchedRow("win-a", "ws2"), untouchedRow("win-b", "ws2")],
         });
@@ -624,11 +693,11 @@ describe("world actuation identity and proof", () => {
         // membership-only row at the target under the stable transfer.
         dispatchAndReply(h, rev, {
             scopes: [
-                { scope: "out/ws1", auth: "untouched", reason: "" },
-                { scope: "out/ws2", auth: "untouched", reason: "" },
+                { scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "untouched", reason: "" },
+                { scope: { kind: "workspace", out: "out", ws: "ws2" }, auth: "untouched", reason: "" },
             ],
             windows: [boundaryRow("win-a", "ws2"), untouchedRow("win-b", "ws2")],
-            transfers: [{ op: "op-9", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: true, held: false }],
+            transfers: [{ op: "op-9", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: true, held: false, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "both-floating membership actuates natively");
         assert.equal(h.world.geometryWrites.length, 0, "both-floating writes no frames");
@@ -644,13 +713,13 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1);
         // Live still shows the source: the retry flight must not re-attempt.
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws1")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "ambiguous op never repeats");
         h.runTimers();
@@ -664,7 +733,7 @@ describe("world actuation identity and proof", () => {
         h.fire("windowActivated");
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "late proof confirms without a second attempt");
         h.runTimers();
@@ -679,7 +748,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1);
         h.runTimers();
@@ -689,7 +758,7 @@ describe("world actuation identity and proof", () => {
         // No repeat while ambiguous.
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws1")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1);
         // The fault clears but nothing converged natively: the ambiguous
@@ -698,7 +767,7 @@ describe("world actuation identity and proof", () => {
         h.fire("windowActivated");
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws1")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "ambiguous op never repeats");
         h.runTimers();
@@ -710,7 +779,7 @@ describe("world actuation identity and proof", () => {
         h.fire("windowActivated");
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "proof confirms without a second attempt");
         h.runTimers();
@@ -723,7 +792,7 @@ describe("world actuation identity and proof", () => {
         h2.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h2, rev2, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         });
         h2.runTimers();
         // Read-back proof wins over the throw (no new attempt above);
@@ -737,7 +806,7 @@ describe("world actuation identity and proof", () => {
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         const viewTransfer = (held: boolean): Record<string, unknown> => ({
-            op: "op-1", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held,
+            op: "op-1", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held, cmdSeq: null,
         });
         dispatchAndReply(h, rev, {
             outputs: [{ out: "out", view: "ws2", mode: "tiled", hold: "" }],
@@ -765,7 +834,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: true, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: true, held: false, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1);
         assert.deepEqual(h.world.viewSwitches, ["ws2"], "follow switches under the same op");
@@ -783,7 +852,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelative(1);
         dispatchAndReply(h, rev, {
             windows: [{ ...winRow("win-a", "ws2"), out: "out-2" }],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out-2", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         });
         assert.deepEqual(h.world.outputWrites, ["win-a=>out-2"], "output send ran first");
         assert.equal(h.world.membershipCalls.length, 1, "desktop set ran second");
@@ -792,7 +861,7 @@ describe("world actuation identity and proof", () => {
         // No repeat once homed across outputs.
         dispatchAndReply(h, rev, {
             windows: [{ ...winRow("win-a", "ws2"), out: "out-2" }],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out-2", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         });
         assert.deepEqual(h.world.outputWrites, ["win-a=>out-2"], "cross-output target never re-actuates");
     });
@@ -804,19 +873,19 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "confirmation issues no new attempt");
         // A distinct newer operation back to ws1 is a new actuation.
         h.handle?.requestWorkspaceRelativeMove(-1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws1")],
-            transfers: [{ op: "op-2", kind: "window", win: "win-a", out: "out", ws: "ws1", follow: false, held: false }],
+            transfers: [{ op: "op-2", kind: "window", win: "win-a", out: "out", ws: "ws1", follow: false, held: false, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 2, "fresh distinct op actuates");
     });
@@ -828,7 +897,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1);
         // The user drags win-a to a third workspace outside the operation
@@ -839,7 +908,7 @@ describe("world actuation identity and proof", () => {
         const callsBefore = h.world.membershipCalls.length;
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
         });
         assert.equal(h.world.membershipCalls.length, callsBefore, "external input is never fought");
         h.runTimers();
@@ -864,8 +933,8 @@ describe("world actuation identity and proof", () => {
         both.callback(acceptedReply("gen-1", body["source"] as string, body["nativeInvalid"] as string, String(rev.n), {
             windows: [winRow("win-a", "ws2"), winRow("win-b", "ws1")],
             transfers: [
-                { op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false },
-                { op: "op-2", kind: "window", win: "win-b", out: "out", ws: "ws1", follow: false, held: false },
+                { op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null },
+                { op: "op-2", kind: "window", win: "win-b", out: "out", ws: "ws1", follow: false, held: false, cmdSeq: null },
             ],
         }));
         assert.equal(h.world.membershipCalls.length, callsBefore + 2, "self feedback never stops sibling work");
@@ -883,6 +952,9 @@ describe("world actuation identity and proof", () => {
             frame_op: "",
             clear_op: "",
             floating: false, float_origin: "",
+            cmdSeq: null,
+            visibility: null, visibility_auth: "untouched", visibility_hold: "",
+            state: [],
         });
         dispatchAndReply(h2, rev2, { windows: [geom("win-a", 11), geom("win-b", 22)] });
         assert.ok(h2.world.geometryWrites.some((w) => w.startsWith("win-a@11,11")), "first geometry applies");
@@ -1208,7 +1280,7 @@ describe("world actuation identity and proof", () => {
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         const absent = (id: string): Record<string, unknown> => ({
-            id, out: "out", bind: id, scope: "out", order: 2, mode: "tiled", exist: false, hold: "",
+            id, out: "out", bind: id, scope: { kind: "output", out: "out" }, order: 2, mode: "tiled", exist: false, hold: "",
         });
         dispatchAndReply(h, rev, {
             windows: [winRow("win-b", "ws2")],
@@ -1225,8 +1297,8 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelative(1);
         dispatchAndReply(h, rev, {
             effects: [
-                { id: "fx-9", kind: "raise", target: "win-b", rev: "1" },
-                { id: "fx-10", kind: "stack", target: "win-b", rev: "1" },
+                { id: "fx-9", kind: "raise", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: false },
+                { id: "fx-10", kind: "stack", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: false },
             ],
         });
         assert.equal(h.world.focused.length, 0, "raise/stack never steer focus");
@@ -1240,7 +1312,7 @@ describe("world actuation identity and proof", () => {
         // then drains after the acceptance.
         h.handle?.requestWorkspaceRelative(-1);
         dispatchAndReply(h, rev, {
-            effects: [{ id: "fx-11", kind: "focus", target: "win-b", rev: "2" }],
+            effects: [{ id: "fx-11", kind: "focus", target: "win-b", rev: "2", cause: "explicit-command", cmdSeq: "1", awaitShown: false }],
         });
         assert.deepEqual(h.world.focused, ["win-b"], "focus applies once with proof");
         h.runTimers();
@@ -1281,22 +1353,23 @@ describe("world apply safety reads", () => {
 
     it("holds narrowly on unreadable safety instead of writing", () => {
         const state = new WorldAdapterState("test-adapter", "owner-a");
-        state.onDiscovery("gen-1", "broker-1");
+        state.onDiscovery("gen-1", "test-adapter");
         state.invalidate();
         const flight = state.beginCapture("req-1", null);
         assert.ok(flight !== null);
         const dispatchObs = flight.watermark;
         const text = JSON.stringify({
-            v: 3, adapter: "broker-1", gen: "gen-1", req: "req-1",
-            obs: dispatchObs, rev: "1", ready: true, consumed: false,
+            v: 4, adapter: "test-adapter", gen: "gen-1", req: "req-1",
+            obs: "1", rev: "1", ready: true, consumed: false,
             source: "req-1",
-            nativeInvalid: "1",
-            clock: "0",
+            nativeInvalid: dispatchObs,
+            clock: "1",
             gestureSettled: null, gestureAssoc: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
+            intentWrites: [], switchSettled: [], diagnostics: [],
+            presentation: DISABLED_PRESENTATION,
+            scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
             workspaces: [], outputs: [],
             windows: [{
                 win: "win-a", out: "out", ws: "ws1",
@@ -1306,6 +1379,9 @@ describe("world apply safety reads", () => {
                 frame_op: "",
                 clear_op: "",
                 floating: false, float_origin: "",
+                cmdSeq: null,
+                visibility: null, visibility_auth: "untouched", visibility_hold: "",
+                state: [],
             }],
             transfers: [], effects: [], result: null,
         });
@@ -1356,9 +1432,12 @@ describe("world apply safety reads", () => {
 
 describe("world hotplug displacement production", () => {
     const wsRow = (id: string, out: string, order: number): Record<string, unknown> => ({
-        id, out, bind: id, scope: out, order, mode: "tiled", exist: true, hold: "",
+        id, out, bind: id, scope: { kind: "output", out }, order, mode: "tiled", exist: true, hold: "",
     });
-    const scopeRow = (scope: string, auth: string): Record<string, unknown> => ({ scope, auth, reason: "" });
+    const scopeRow = (scope: string, auth: string): Record<string, unknown> => {
+        const sep = scope.indexOf("/");
+        return { scope: { kind: "workspace", out: scope.slice(0, sep), ws: scope.slice(sep + 1) }, auth, reason: "" };
+    };
     const outRow = (out: string, view: string): Record<string, unknown> => ({ out, view, mode: "tiled", hold: "" });
     // Membership-only row at the target homing, exactly as core publishes
     // for hotplug policy transfers (frame untouched, never geometry).
@@ -1369,6 +1448,9 @@ describe("world hotplug displacement production", () => {
         frame_op: "",
         clear_op: "",
         floating: false, float_origin: "",
+        cmdSeq: null,
+        visibility: null, visibility_auth: "untouched", visibility_hold: "",
+        state: [],
     });
 
     for (const mode of ["per-output-local", "global-unique", "shared"]) {
@@ -1403,7 +1485,7 @@ describe("world hotplug displacement production", () => {
                     outputs: [outRow("out", "ws2")],
                     windows: [memberRow("win-b", "out", "ws2")],
                     transfers: [
-                        { op: "op-disp-out-ws2", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false },
+                        { op: "op-disp-out-ws2", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null },
                     ],
                 });
                 assert.deepEqual(h.world.viewSwitches.slice(viewsBefore), ["ws2"], "displaced view actuates natively");
@@ -1447,8 +1529,8 @@ describe("world hotplug displacement production", () => {
                     outputs: [outRow("out", "ws1"), outRow("out-2", "ws2")],
                     windows: [memberRow("win-b", "out-2", "ws2")],
                     transfers: [
-                        { op: "op-hp-win-b", kind: "window", win: "win-b", out: "out-2", ws: "ws2", follow: false, held: false },
-                        { op: "op-disp-out-2-ws2", kind: "view", win: "", out: "out-2", ws: "ws2", follow: false, held: false },
+                        { op: "op-hp-win-b", kind: "window", win: "win-b", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null },
+                        { op: "op-disp-out-2-ws2", kind: "view", win: "", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null },
                     ],
                 });
                 assert.ok(
@@ -1487,8 +1569,8 @@ describe("world hotplug displacement production", () => {
                     outputs: [outRow("out", "ws1"), outRow("out-2", "ws2")],
                     windows: [memberRow("win-b", "out-2", "ws2")],
                     transfers: [
-                        { op: "op-hp-win-b", kind: "window", win: "win-b", out: "out-2", ws: "ws2", follow: false, held: false },
-                        { op: "op-disp-out-2-ws2", kind: "view", win: "", out: "out-2", ws: "ws2", follow: false, held: false },
+                        { op: "op-hp-win-b", kind: "window", win: "win-b", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null },
+                        { op: "op-disp-out-2-ws2", kind: "view", win: "", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null },
                     ],
                 });
                 assert.equal(h.world.membershipCalls.length, callsAfter, "confirmed member never repeats");
@@ -1535,22 +1617,23 @@ describe("world admission focus on settled floats", () => {
         },
     ): AdmissionSetup {
         const state = new WorldAdapterState("test-adapter", "owner-a");
-        state.onDiscovery("gen-1", "broker-1");
+        state.onDiscovery("gen-1", "test-adapter");
         state.invalidate();
         const flight = state.beginCapture("req-1", null);
         assert.ok(flight !== null);
         const dispatchObs = flight.watermark;
         const text = JSON.stringify({
-            v: 3, adapter: "broker-1", gen: "gen-1", req: "req-1",
-            obs: dispatchObs, rev: "1", ready: true, consumed: false,
+            v: 4, adapter: "test-adapter", gen: "gen-1", req: "req-1",
+            obs: "1", rev: "1", ready: true, consumed: false,
             source: "req-1",
-            nativeInvalid: "1",
-            clock: "0",
+            nativeInvalid: dispatchObs,
+            clock: "1",
             gestureSettled: null, gestureAssoc: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
+            intentWrites: [], switchSettled: [], diagnostics: [],
+            presentation: DISABLED_PRESENTATION,
+            scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
             workspaces: [], outputs: [],
             windows: [{
                 win: "win-b", out: "out", ws: "ws1",
@@ -1560,9 +1643,14 @@ describe("world admission focus on settled floats", () => {
                 frame_op: "",
                 clear_op: "",
                 floating: opts?.replyFloating ?? true, float_origin: floatOrigin,
+                cmdSeq: null,
+                visibility: null, visibility_auth: "untouched", visibility_hold: "",
+                state: [],
             }],
             transfers: [],
-            effects: [{ id: effectId, kind: "focus", target: "win-b", rev: "1" }], result: null,
+            effects: [effectId.startsWith("af-")
+                ? { id: effectId, kind: "focus", target: "win-b", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false }
+                : { id: effectId, kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: false }], result: null,
         });
         const parsed = parseWorldReply(text);
         assert.ok(parsed !== null && isCoreWorldReply(parsed));
