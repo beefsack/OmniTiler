@@ -10,6 +10,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 const WS_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const WS_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
@@ -159,15 +161,18 @@ function makeHarness(mode: ClearMode) {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
+                const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
+                const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 4, outcome: "ready", gen: takeGen, globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
                 }            }
         },
         scheduleOnce: (delay, cb) => {
@@ -205,41 +210,79 @@ function makeHarness(mode: ClearMode) {
         rev: string,
         extra: Record<string, unknown> = {},
     ): string => {
+        // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
+        // output): the producer adapter lifetime, the serving generation,
+        // the capture source correlation and native watermark. This
+        // scripted harness advances broker obs and revision together.
         // Terminal results ride the take lane requester-only, never the
         // capture reply.
         const { result, ...snapshot } = extra;
         if (result !== undefined) {
             (globalThis as Record<string, unknown>)["__takeResult"] = result;
         }
-        return JSON.stringify({
-            v: 3, adapter: "broker-1", gen, req: source, obs: rev, rev,
+        const text = JSON.stringify({
+            v: 4, adapter: "test-adapter", gen, req: source, obs: rev, rev,
             ready: true, consumed: false,
             source,
             nativeInvalid,
-            clock: "0",
+            clock: "1",
             gestureSettled: null, gestureAssoc: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            scopes: [{ scope: `${OUT}/${WS_A}`, auth: "controlled", reason: "" }],
+            intentWrites: [], switchSettled: [], diagnostics: [],
+            presentation: DISABLED_PRESENTATION,
+            scopes: [{ scope: { kind: "workspace", out: OUT, ws: WS_A }, auth: "controlled", reason: "" }],
             workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
             ...snapshot,
         });
+        const parsed = parseWorldReply(text);
+        assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+        return text;
     };
     const discover = (gen = "gen-1"): void => {
-        const call = lastCall("DiscoverWorld");
-        const body = JSON.parse(call.payload);
-        call.callback(JSON.stringify({
-            v: 3, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
-            ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-            gestureSettled: null,
-            operationSettled: [], nativeCreations: [],
-            warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            windows: [], transfers: [], effects: [], result: null,
+        // Genuine v4 connection bootstrap: the handshake reply echoes the
+        // producer adapter lifetime and mints the serving generation; the
+        // revisioned settings snapshot must read accepted before the first
+        // report flies.
+        const handshake = [...calls].reverse().find((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+            } catch {
+                return false;
+            }
+        });
+        assert.ok(handshake !== undefined, "expected DiscoverWorld/handshake");
+        const handshakeBody = JSON.parse(handshake.payload) as Record<string, unknown>;
+        handshake.callback(JSON.stringify({
+            type: "handshake-reply", v: 4, adapter: "test-adapter", req: handshakeBody["req"],
+            ready: false, kind: "", gen,
         }));
+        const settings = [...calls].reverse().find((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+            } catch {
+                return false;
+            }
+        });
+        assert.ok(settings !== undefined, "expected DiscoverWorld/settings");
+        const settingsBody = JSON.parse(settings.payload) as Record<string, unknown>;
+        settings.callback(JSON.stringify({
+            type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+            req: settingsBody["req"], rev: settingsBody["rev"], status: "accepted", diagnostics: [],
+        }));
+        runTimers();
+        // Settle the discovery-triggered observation report first: the
+        // entry auto-dispatches one observation-only DescribeWorld on bind.
+        // Replying here leaves the flight idle for the test body.
         const auto = lastCall("DescribeWorld");
         const autoBody = JSON.parse(auto.payload);
+        assert.equal(autoBody["command"], undefined, "captures never carry an inline command");
         auto.callback(accepted(gen, autoBody.source, autoBody.nativeInvalid, "0"));
     };
     const winRow = (
@@ -255,6 +298,9 @@ function makeHarness(mode: ClearMode) {
         frame_op: "",
         clear_op: "",
         floating: auth === "untouched", float_origin: "",
+        cmdSeq: null,
+        visibility: null, visibility_auth: "untouched", visibility_hold: "",
+        state: [],
         ...extra,
     });
     const settleAsync = (): void => {
@@ -280,7 +326,7 @@ function makeHarness(mode: ClearMode) {
         const placed = live.get(WIN_A);
         assert.ok(placed !== undefined);
         placed.frame = { x: FLOAT_A[0], y: FLOAT_A[1], width: FLOAT_A[2], height: FLOAT_A[3] };
-        return String((JSON.parse(call.payload) as Record<string, unknown>)["req"]);
+        return String((JSON.parse(call.payload) as Record<string, unknown>)["source"]);
     };
     return {
         calls, logs, geometryWrites, handle: handle as NonNullable<typeof handle>,
@@ -504,25 +550,46 @@ describe("world B9 deferred maximized unfloat", () => {
         // Poison generation: the attempt terminates, discovery rebinds,
         // and no toggle-float rides any generation.
         call.callback(JSON.stringify({
-            v: 3, outcome: "rejected", kind: "generation-mismatch", message: "poison", gen: "gen-2",
-            source: (JSON.parse(call.payload) as Record<string, unknown>)["source"],
-            nativeInvalid: (JSON.parse(call.payload) as Record<string, unknown>)["nativeInvalid"],
-            clock: "0",
+            v: 4, outcome: "rejected", kind: "generation-mismatch", message: "poison", gen: "gen-2",
+            source: "",
+            nativeInvalid: "0",
+            clock: "0", gestureAssoc: null,
         }));
         assert.ok(h.logs.some((l) => l.includes("generation-mismatch")));
         assert.ok(h.logs.some((l) => l.includes("float-refused-maximize-clear") && l.includes("cause=generation-mismatch")));
         assert.equal(toggleCount(h), 1, "no replay across rebind");
         // The rebind handshake completes cleanly with no pending attempt.
-        const disc = h.lastCall("DiscoverWorld");
-        const discBody = JSON.parse(disc.payload);
-        disc.callback(JSON.stringify({
-            v: 3, adapter: "broker-1", gen: "gen-2", req: discBody.req, obs: "0", rev: "0",
-            ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-            gestureSettled: null,
-            operationSettled: [], nativeCreations: [],
-            warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            windows: [], transfers: [], effects: [], result: null,
+        const reDisc = [...h.calls].reverse().find((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+            } catch {
+                return false;
+            }
+        });
+        assert.ok(reDisc !== undefined, "expected DiscoverWorld/handshake");
+        const discBody = JSON.parse(reDisc.payload) as Record<string, unknown>;
+        reDisc.callback(JSON.stringify({
+            type: "handshake-reply", v: 4, adapter: "test-adapter", req: discBody["req"],
+            ready: false, kind: "", gen: "gen-2",
+        }));
+        const reSettings = [...h.calls].reverse().find((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+            } catch {
+                return false;
+            }
+        });
+        assert.ok(reSettings !== undefined, "expected DiscoverWorld/settings");
+        const reSettingsBody = JSON.parse(reSettings.payload) as Record<string, unknown>;
+        reSettings.callback(JSON.stringify({
+            type: "settings-reply", v: 4, adapter: "test-adapter", gen: "gen-2",
+            req: reSettingsBody["req"], rev: reSettingsBody["rev"], status: "accepted", diagnostics: [],
         }));
         h.runTimers();
         const auto = h.lastCall("DescribeWorld");

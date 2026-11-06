@@ -12,6 +12,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 const WS_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const WIN_A = "11111111-1111-1111-1111-111111111111";
@@ -274,15 +276,15 @@ function makeHarness(initial: LiveSpec[]) {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 3, outcome: "queued", gen: queueGen,
+                callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: queueGen, globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 4, outcome: "ready", gen: queueGen, globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: queueGen }));
+                    callback(JSON.stringify({ v: 4, outcome: "pending", gen: queueGen }));
                 }
             }
         },
@@ -321,39 +323,79 @@ function makeHarness(initial: LiveSpec[]) {
         rev: string,
         extra: Record<string, unknown> = {},
     ): string => {
+        // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
+        // output): the producer adapter lifetime, the serving generation,
+        // the capture source correlation and native watermark. This
+        // scripted harness advances broker obs and revision together.
+        // Terminal results ride the take lane requester-only, never the
+        // capture reply.
         const { result, ...snapshot } = extra;
         if (result !== undefined) {
             (globalThis as Record<string, unknown>)["__takeResult"] = result;
         }
-        return JSON.stringify({
-            v: 3, adapter: "broker-1", gen, req: source, obs: rev, rev,
+        const text = JSON.stringify({
+            v: 4, adapter: "test-adapter", gen, req: source, obs: rev, rev,
             ready: true, consumed: false,
             source,
             nativeInvalid,
-            clock: "0",
+            clock: "1",
             gestureSettled: null, gestureAssoc: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            scopes: [{ scope: `${OUT}/${WS_A}`, auth: "controlled", reason: "" }],
+            intentWrites: [], switchSettled: [], diagnostics: [],
+            presentation: DISABLED_PRESENTATION,
+            scopes: [{ scope: { kind: "workspace", out: OUT, ws: WS_A }, auth: "controlled", reason: "" }],
             workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
             ...snapshot,
         });
+        const parsed = parseWorldReply(text);
+        assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+        return text;
     };
     const discover = (gen = "gen-1"): void => {
-        const call = lastCall("DiscoverWorld");
-        const body = JSON.parse(call.payload);
-        call.callback(JSON.stringify({
-            v: 3, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
-            ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-            gestureSettled: null,
-            operationSettled: [], nativeCreations: [],
-            warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            windows: [], transfers: [], effects: [], result: null,
+        // Genuine v4 connection bootstrap: the handshake reply echoes the
+        // producer adapter lifetime and mints the serving generation; the
+        // revisioned settings snapshot must read accepted before the first
+        // report flies.
+        const handshake = [...calls].reverse().find((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+            } catch {
+                return false;
+            }
+        });
+        assert.ok(handshake !== undefined, "expected DiscoverWorld/handshake");
+        const handshakeBody = JSON.parse(handshake.payload) as Record<string, unknown>;
+        handshake.callback(JSON.stringify({
+            type: "handshake-reply", v: 4, adapter: "test-adapter", req: handshakeBody["req"],
+            ready: false, kind: "", gen,
         }));
+        const settings = [...calls].reverse().find((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+            } catch {
+                return false;
+            }
+        });
+        assert.ok(settings !== undefined, "expected DiscoverWorld/settings");
+        const settingsBody = JSON.parse(settings.payload) as Record<string, unknown>;
+        settings.callback(JSON.stringify({
+            type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+            req: settingsBody["req"], rev: settingsBody["rev"], status: "accepted", diagnostics: [],
+        }));
+        runTimers();
+        // Settle the discovery-triggered observation report first: the
+        // entry auto-dispatches one observation-only DescribeWorld on bind.
+        // Replying here leaves the flight idle for the test body.
         const auto = lastCall("DescribeWorld");
         const autoBody = JSON.parse(auto.payload);
+        assert.equal(autoBody["command"], undefined, "captures never carry an inline command");
         auto.callback(accepted(gen, autoBody.source, autoBody.nativeInvalid, "0"));
     };
     const fire = (name: keyof typeof signals, payload?: unknown): void => {
@@ -431,6 +473,9 @@ const winRow = (
     frame_op: "",
     clear_op: "",
     floating: false, float_origin: "",
+    cmdSeq: null,
+    visibility: null, visibility_auth: "untouched", visibility_hold: "",
+    state: [],
     ...extra,
 });
 
@@ -1126,10 +1171,6 @@ describe("world native pending settlement", () => {
         termSpec(WIN_A, { x: 0, y: 0, width: 400, height: 600 }),
         termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
     ];
-    const BOOTSTRAP_PRESENTATION = {
-        foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null },
-        underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [],
-    };
 
     it("delayed ordinary maximize confirms at the next boundary, then restore confirms", () => {
         const h = makeHarness(tiledPair());
@@ -1275,8 +1316,8 @@ describe("world native pending settlement", () => {
         h.fire("windowActivated");
         h.runTimers();
         h.lastCall("DescribeWorld").callback(JSON.stringify({
-            v: 3, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
-            source: "", nativeInvalid: "0", clock: "0",
+            v: 4, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
         }));
         assert.ok(h.logs.some((l) => l.includes("maximize-refused") && l.includes("reason=busy")), "busy kills the pending attempt");
         assert.ok(h.logs.some((l) => l.includes("shortcut-failed") && l.includes("maximize")), "caller label failed once");
@@ -1330,23 +1371,61 @@ describe("world native pending settlement", () => {
         h.fire("windowActivated");
         h.runTimers();
         h.lastCall("DescribeWorld").callback(JSON.stringify({
-            v: 3, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
-            source: "", nativeInvalid: "0", clock: "0",
+            v: 4, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
         }));
         assert.ok(h.logs.some((l) => l.includes("generation-mismatch recovery=rediscover")), "mismatch rediscovers");
         assert.ok(h.logs.some((l) => l.includes("maximize-refused") && l.includes("generation-mismatch")), "pending killed");
         assert.ok(h.logs.some((l) => l.includes("shortcut-failed") && l.includes("maximize")), "caller label failed once");
-        assert.equal(h.calls.filter((c) => c.method === "DiscoverWorld").length, 2, "fresh handshake issued");
-        const redisc = h.calls.filter((c) => c.method === "DiscoverWorld").pop() as { payload: string; callback: (reply: unknown) => void };
-        const rediscBody = JSON.parse(redisc.payload) as Record<string, unknown>;
-        redisc.callback(JSON.stringify({
-            v: 3, adapter: "broker-1", gen: "gen-2", req: rediscBody["req"], obs: "0", rev: "0",
-            ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-            gestureSettled: null,
-            operationSettled: [], nativeCreations: [],
-            warpCursor: null,
-            presentation: BOOTSTRAP_PRESENTATION,
-            windows: [], transfers: [], effects: [], result: null,
+        // The v4 rebind resends the connection pair (handshake then
+        // revisioned settings) on the shared DiscoverWorld route: the
+        // settings resend waits on the handshake accept, so pre-answer the
+        // route carries exactly two handshakes and one settings snapshot.
+        const handshakeCalls = h.calls.filter((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse((c as { payload: string }).payload) as Record<string, unknown>)["type"] === "handshake";
+            } catch {
+                return false;
+            }
+        });
+        const settingsCalls = h.calls.filter((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse((c as { payload: string }).payload) as Record<string, unknown>)["type"] === "settings";
+            } catch {
+                return false;
+            }
+        });
+        assert.equal(handshakeCalls.length, 2, "fresh handshake issued");
+        assert.equal(settingsCalls.length, 1, "settings resend waits on the handshake accept");
+        const reHandshake = handshakeCalls.pop() as { payload: string; callback: (reply: unknown) => void };
+        const reHandshakeBody = JSON.parse(reHandshake.payload) as Record<string, unknown>;
+        reHandshake.callback(JSON.stringify({
+            type: "handshake-reply", v: 4, adapter: "test-adapter", req: reHandshakeBody["req"],
+            ready: false, kind: "", gen: "gen-2",
+        }));
+        // The handshake accept releases the settings resend: the pair
+        // counts four on the shared route.
+        assert.equal(h.calls.filter((c) => c.method === "DiscoverWorld").length, 4, "rebind pair complete after handshake accept");
+        const reSettings = h.calls.filter((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse((c as { payload: string }).payload) as Record<string, unknown>)["type"] === "settings";
+            } catch {
+                return false;
+            }
+        }).pop() as { payload: string; callback: (reply: unknown) => void };
+        const reSettingsBody = JSON.parse(reSettings.payload) as Record<string, unknown>;
+        reSettings.callback(JSON.stringify({
+            type: "settings-reply", v: 4, adapter: "test-adapter", gen: "gen-2",
+            req: reSettingsBody["req"], rev: reSettingsBody["rev"], status: "accepted", diagnostics: [],
         }));
         {
             const auto = h.lastCall("DescribeWorld");

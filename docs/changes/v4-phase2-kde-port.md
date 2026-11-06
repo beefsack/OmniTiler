@@ -544,3 +544,12 @@
   then no already-unknown captures, matching the settled idle-noise suppression.
   All 52 tests across these three suites and genuine stage5 byte comparisons
   pass, as does strict TypeScript. No native rendering claim is added.
+- Float-directional routing, deferred maximized unfloat, fullscreen float/native
+  pending settlement and immediate retile harnesses now use strict v4 connection
+  and requester-only results. All 51 tests and strict TypeScript pass, retaining
+  native safety, exact opaque float seed bytes, stale-preimage refusal, delayed
+  settlement, generation rebind and no-replay assertions. Reconnect assertions
+  distinguish a sent handshake from its subsequently released settings request.
+  The latest full adapter build succeeds and executes 984 tests: 902 pass, 82
+  fail, none skip. Those remaining failures, widened gates and integrated review
+  still keep K1 incomplete; scripted settlement is not later-slice native proof.
