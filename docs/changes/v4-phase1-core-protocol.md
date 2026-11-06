@@ -1646,6 +1646,143 @@
   resolve public v4 workspace-row uniqueness,
   then add symmetric codec guards/round-trip coverage, enable the strict full
   run and rerun every scoped gate. No 7f-4 or later-unit work is included.
+- User decision 2026-11-06, workspace-row identity: v4 workspace-row uniqueness
+  stays keyed by `(output,id)` in both codecs, refusing a repeated pair with
+  `duplicate-workspace`. This approves the choice marked TENTATIVE in this note.
+  Bare-id uniqueness with producer relabel/dedup and a fixture change are
+  rejected. Reference/native row-identity counterparts remain TBD.
+- User decision 2026-11-06, capacity float oracle: minimum infeasibility alone
+  does not make a capacity float; the
+  [best-effort admission decision](../decisions/layout-and-admission.md#best-effort-admission-fallback)
+  stands on re-examination, not by precedent. A new manifest exception is
+  approved to amend only the `capacity-float-acquire` step input of
+  `persistent-above` so capacity arises from geometric exhaustion, keeping its
+  assertion. The amended input needs its own check; the test-local copy added an
+  anchor window.
+- User decision 2026-11-06, floating-mode occupants: rows of a floating-mode
+  workspace publish `floating:true` with an empty `float_origin`, so core changes
+  and the `workspace-mode-float-acquire` oracle stands with no manifest exception.
+  Earlier parking of this as an oracle conflict assumed the code was right. W1
+  already names these windows floats, COSMIC R-FLT-04 converts them to floating,
+  and this removes the "not tiled but not floating" concept. Consumers of
+  `row.floating` need an audit, including each adapter's v4 port: KDE
+  `floatingIds` classification must not leave windows floating after a toggle
+  back to tiled. Full unification into per-window floats is not selected.
+- User decision 2026-11-06, selection accounting evidence: the per-member
+  accounting rule stands and arrival does not substitute for a missing show
+  verdict. A new manifest exception is approved to amend only the input of the
+  final `accounting-arrival-focus-depart-proof` step of
+  `visibility-order-failure`, adding `win-a`'s show LastWrite (target true,
+  revision 4, path staged, setter accepted) and keeping its assertions. The report
+  shows a transition only the show write explains, and the contract requires its
+  evidence. Whether this alone satisfies every completion predicate is unverified.
+- User direction 2026-11-06, rearchitecture goal: this work questions older
+  decisions rather than carrying them forward by precedent. Besides correctness,
+  quality and consistency with the Tier 1 WMs, it aims to reduce special cases
+  and logic branches where simpler, broader decisions let logic consolidate.
+
+### 2026-11-06 decision implementation plan
+
+1. Apply floating-mode publication to ordinary and minimized occupants; audit
+   core consumers, staged homing and all scenario classification assertions.
+2. Amend only the two approved scenario inputs, independently check geometric
+   exhaustion and truthful show evidence, and execute the strict full runs.
+   Stop if later persistent-above inputs depend on the capacity amendment or
+   another selection completion predicate blocks the final accounting step.
+3. Remove superseded diagnostics/prefixes after strict acceptance. Promote all
+   four decisions, record both manifest exceptions and reconcile fixture metadata,
+   reference outcomes, migration guidance and point-of-use adapter audit duties.
+4. Review the public classification/fixture changes independently, then run the
+   sequential core/protocol test, build, clippy and formatting gates plus changed-
+   file whitespace, added-ASCII, NUL and local-link checks. Add a resolution and
+   exact evidence here without rewriting historical TENTATIVE/PARKED entries.
+
+### 2026-11-06 decision resolution
+
+- This resolution supersedes the earlier TENTATIVE workspace-row choice and
+  three PARKED oracle conflicts, including the historical checkpoint below.
+  All four decisions are promoted in [workspaces](../decisions/workspaces.md)
+  and [layout/admission](../decisions/layout-and-admission.md#best-effort-admission-fallback).
+  The phase note remains active; public cutover and native acceptance are not
+  established by these internal runs.
+- Workspace-row uniqueness remains `(output,id)` with repeated-pair refusal;
+  no codec implementation or fixture changes were needed for that decision.
+- Floating-mode publication now marks ordinary and minimized occupants
+  `floating:true` with empty origin. Frame/membership authority is unchanged;
+  minimized occupants retain their hold and acquire no controlled above.
+  Newcomer and minimized regressions cover both shared publication arms.
+  Full conversion to per-window float intent is not selected.
+- Approved manifest exception 1: only `persistent-above`'s
+  `capacity-float-acquire` input changes. Full/work bounds become 32x32/25x25;
+  `win-anchor` then `win-capacity` have 1x1 minima, no maxima and small matching
+  observed/pager/witness frames. Outer gap 8 leaves positive 9x9 bounds;
+  gap 8 plus two positive pixels needs extent 10. Minimum infeasibility is not
+  the cause. Its own actual-input regression checks settings/geometry/hints and
+  runs the original first 21 steps/19 reports/25 assertions strictly.
+  The next input restores the standard screen and closes `win-capacity`;
+  later storage events and reconnect inputs are independent and unchanged.
+- Approved manifest exception 2: only the final
+  `accounting-arrival-focus-depart-proof` input in `visibility-order-failure`
+  changes, adding `win-a`'s show LastWrite: true, revision 4, staged, setter
+  accepted, empty reason; pre obs 5 hidden/project-suppressed, post obs 6
+  shown/not suppressed, lifetime-matched and not minimized/host-hidden.
+  This matches the preceding hidden observation and final shown facts. The
+  single added verdict suffices; no other completion predicate blocks, and
+  the per-member accounting rule is unchanged.
+- Both exceptions are also recorded in the
+  [migration fixture record](v4-migration.md#approved-scenario-input-exceptions-2026-11-06).
+  Assertions, all other inputs and the manifest are unchanged. The manifest
+  records 30/17 steps and no per-file hashes; counts require no edits.
+  Strict `persistent-above` now executes 30 steps/21 reports/41 assertions;
+  strict `visibility-order-failure` executes 17 steps/5 core reports/26
+  assertions, including its four modeled adapter replies. Neither test is
+  ignored, both have zero pending scenario gates. Native-only model evidence
+  remains distinct from core proof; all eight native OPEN/TBD gates stay open.
+- Removed the replaced seven prefix/diagnostic tests and dead diagnostic
+  recording mode; every remaining runner assertion is strict. Storage-model
+  guards remain. The new capacity-input check is not a parked-scenario prefix.
+- Consumer audit: `world_above` is the sole core policy consumer of published
+  `WindowDesire.floating`; encoders and size estimators only serialize/count it.
+  `world_operations`'s `source_row`/`by_id` use observed `EngineWindow`, not a
+  reply row; directional/session/seed classification is unaffected. Retain
+  `desire.floating || floating_scopes(home)`: staged homing can still name the
+  floating source while a mover's published row names its target with
+  `floating:false`. Removing the scope arm would discard that union member.
+  No scenario asserts `floating:false` for a floating-mode occupant; only
+  `persistent-above` exercises that mode. Each platform's point-of-use port
+  notes now names its affected readers, especially KDE's `floatingIds`
+  feedback/toggle-back risk. Adapter code is unchanged and unverified here.
+- Review corrected a synthetic capacity regression that used two reports
+  rather than the actual fixture sequence: it is removed in favor of the
+  actual-input check above. Its initial fresh-pair setup floated both windows;
+  no anchor-tiled claim is made for the fixture. Review also removed stale
+  runner parking prose. These were test-fidelity corrections, not product
+  repairs or additional fixture exceptions. Initial formatting required three
+  mechanical reflows; no clippy semantic correction was needed.
+- Simplification evidence: scope occupants no longer need an unclassified
+  non-tile concept, and the obsolete diagnostic branch/record type is gone.
+  A broader future single-source float classification could remove the above
+  scope union only after resolving staged-versus-published homing; it is not
+  selected here. Arrival and per-member write evidence still prove different
+  obligations, so no alternate accounting path is introduced.
+- Direct final verification passes sequentially:
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1961 core unit tests and every selected target; ordered runner 32 pass,
+  zero ignored),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. Tests/build/clippy passed
+  before the initial formatting failure and again after its mechanical repair.
+  Changed-file whitespace, added-ASCII, NUL and 714 local Markdown link paths
+  pass, as do new resolution anchors, all 22 manifest scenario step counts and
+  an input-subtree-only comparison of both fixture diffs. The initial link
+  checker misread an inline code example as a link; excluding code spans fixes
+  the checker without changing that example.
+  No public ingress, codec implementation, broker/service, adapter, Cargo,
+  version or deferred scaling changes are included. Next: return to the
+  separately planned unit 7 public-cutover slices; native and platform-port
+  evidence remains open.
+
 - Sub-increment 7f-3c continuation plan (TENTATIVE codec resolution): key
   workspace-row uniqueness by `(output,id)` symmetrically in v4 encode/decode,
   retaining `duplicate-workspace` for a repeated pair. Effective shared mode
@@ -1835,11 +1972,11 @@
 | Unit 6 sub-increments 1-6 | v4 pure checks/sizing, staging/grading, shared observation/command lanes, native-free proof migration, genuine presentation and renderer validation | Public typed invalid-row grader twins deliberately belong to unit 7; native acceptance remains open |
 | Sub-increment 7a-7e | Prior context, routing/correlation freezes, publication, run/finish, bootstrap, candidate adoption, replay and boundedness | No public envelope or handle-report switch claimed |
 | 7f-1/7f-2 | Reachable rollback and discarded-candidate ingestion regressions; strict raw-attempt scenario (10 reports/14 assertions) | Exact-size-disjunct isolation and producer-overflow stress carried to unit 7 |
-| 7f-3a/7f-3c | All window-state executable legs (19 reports/56 assertions); strict linked-selectors-warp (5 reports/16 assertions) | Window-state native fullscreen baseline OPEN; row-identity choice remains TENTATIVE |
-| 7f-3b | Strict 20-step persistent-above prefix, literal-oracle diagnostics and storage-model guards | Full scenario blocked on two parked choices: capacity versus D1 and workspace-mode `floating:true` |
-| 7f-4 | Strict cross-output driver scenario; strict order-failure prefix and labelled diagnostic | Full visibility-order-failure blocked on missing show LastWrite versus recorded completion rule |
+| 7f-3a/7f-3c | All window-state executable legs (19 reports/56 assertions); strict linked-selectors-warp (5 reports/16 assertions) | Window-state native fullscreen baseline OPEN; `(output,id)` row identity approved |
+| 7f-3b | Strict full persistent-above (30 steps/21 reports/41 assertions), capacity-input check and storage-model guards | Oracle choices resolved; strict run enabled and passing |
+| 7f-4 | Strict cross-output driver scenario and full visibility-order-failure (17 steps/5 core reports/26 assertions) | Show-evidence amendment accepted; strict run enabled and passing; native evidence remains separate |
 | 7f-5 | Six internal-v4 stress schedules and blocked-verdict regression | Public/wire stress and remaining sizing work belong to unit 7 |
-| Sub-increment 7 / unit 6 overall | All currently unblocked internal implementation/evidence slices finished | NOT fully accepted: three parked oracle conflicts prevent two strict full scenarios; eight native OPEN/TBD gates remain |
+| Sub-increment 7 / unit 6 overall | Internal implementation/evidence slices and both formerly blocked strict full scenarios finished | Eight native OPEN/TBD gates remain; public cutover acceptance is separate |
 
 ### Unit 7 widened verification plan (not executed)
 
@@ -1874,10 +2011,10 @@ devenv shell -- cargo run -q -p tiler-protocol --example world_eval < "$V4_WORLD
   settings/report, reconnect and stale/replay transcript smoke check through
   stdin/stdout; define that v4 transcript with its harness change rather than
   sending today's v3 envelopes or claiming compilation proves execution.
-- Keep `workspace_unsafe_posture` excluded and never cite it as evidence. Keep
-  the two parked strict full scenarios ignored until their decisions resolve;
-  prefixes/diagnostics are not scenario passes. Do not use `--ignored` or
-  `--include-ignored` to evade that boundary. Do not use workspace-wide Cargo
+- Keep `workspace_unsafe_posture` excluded and never cite it as evidence. Both
+  formerly parked strict full scenarios are enabled and passing after the
+  [decision resolution](#2026-11-06-decision-resolution); keep them enabled.
+  Do not use `--ignored` or `--include-ignored`. Do not use workspace-wide Cargo
   selection: Windows/macOS adapters (including deferred macOS build errors),
   KDE exporter, live fixture and native KWin bundles/tests remain outside these
   gates. No live service launch, host-bus activation or native test follows
@@ -1887,19 +2024,337 @@ devenv shell -- cargo run -q -p tiler-protocol --example world_eval < "$V4_WORLD
 
 ### Ordered unit 7 slices
 
-| Order | Bounded slice and dependency | Parked-conflict dependence |
+| Order | Bounded slice and dependency | Remaining acceptance dependence |
 | --- | --- | --- |
-| 7-1 (finished) | Typed invalid-screen/window grader twins and admitted-envelope validation, with codec/typed parity, correlation/capability fencing and pre-mutation refusal tests; internal/public separation retained | No parked-conflict dependency |
-| 7-2 | Prepare broker/service handshake/settings and capture/queue/query integration against v4 types, plus v4 protocol/core harness/tool counterparts and transcript tests behind offline seams; preserve one public codec route, source/clock/replay fencing, requester-only results and no-actuation bootstrap | None for plumbing; scenario acceptance cannot bypass parked oracles |
-| 7-3 | Atomic public cutover after 7-1/7-2 prerequisites: public `handle_report`, version 4, broker/service encode/decode, handshake/negotiation, legacy envelope-key removal and active harness/tool switches together; no mixed-version intermediate route or dual decode | Implementation independent; full cutover acceptance still requires parked scenario resolutions |
-| 7-4 | Remove unreachable legacy codecs/report engine/caches and obsolete harness twins after public-path parity checks; audit remaining legacy references without removing immutable fixtures or migration records | None for dead-code removal; do not delete blocked tests or encode their failures as legacy-only |
-| 7-5 | Finish public ordered-scenario and stress integration, wire/envelope failure/replay tests, genuine-producer size stress and widened broker/service/tool gates; document exact-size-disjunct reachability honestly | Persistent-above strict run needs both parked classification choices; visibility-order-failure strict run needs parked LastWrite/completion choice |
+| 7-1 (finished) | Typed invalid-screen/window grader twins and admitted-envelope validation, with codec/typed parity, correlation/capability fencing and pre-mutation refusal tests; internal/public separation retained | Public ingress switches only in 7-3 |
+| 7-2 (delivered) | Protocol/core harness counterparts and transcript tests are delivered; remaining broker/service preparation was folded into 7-3 rather than adding a temporary route | Strict scenarios remain enabled |
+| 7-3 (delivered with named proof gap) | Public `handle_report`, version 4, sole active codecs, broker/service connection and active harness/tool cutover delivered together; no dual decode | Enabled widened offline gate passes; the two recorded stage5 production-route proofs defer to KDE v4 re-recording, not a pass |
+| 7-4 | Remove unreachable legacy codecs/report engine/caches and obsolete harness twins after public-path parity checks; audit remaining legacy references without removing immutable fixtures or migration records | None for dead-code removal; retain strict scenario coverage |
+| 7-5 | Finish public ordered-scenario and stress integration, wire/envelope failure/replay tests, genuine-producer size stress and widened broker/service/tool gates; document exact-size-disjunct reachability honestly | Exact-size disjunct is not isolated: it requires an estimator undercount; document reachability rather than claiming existing rollback tests isolate it |
 
 - The order is internal to later public-cutover unit 7, not a change to the
-  approved phase sequence. Revisit the existing TENTATIVE workspace-row identity
-  explicitly rather than silently promoting it. Native evidence gates, scaled
+  approved phase sequence. The approved `(output,id)` workspace-row identity and
+  resolved oracle choices are recorded above. Native evidence gates, scaled
   keyboard/resize/drop-zone work and later platform ports are not absorbed into
   these slices. No new tentative product choice is introduced by this plan.
+
+- Slice 7-2 preparation plan: first establish a bounded offline v4 connection
+  transcript regression over the existing handshake/settings router, genuine
+  report codecs and internal admitted-report test bridge. Exercise initial
+  settings/readiness, no-actuation bootstrap, replay/reuse/staleness and fresh
+  connection fencing without switching the active tools or public ingress.
+  Keep the transcript driver private to tests rather than adding a second
+  broker or temporary production decoder route. Then inspect the broker/service
+  boundary for reusable capture/queue/query preparation; any missing transport
+  contract or need for a parallel broker route is a blocker, not permission to
+  invent one. Protocol-only preparation uses the existing core/protocol gate;
+  any broker/service implementation widens verification as specified above.
+  This is a sub-increment, not completion of all 7-2 prerequisites. Preserve
+  the exact-size-disjunct limitation for 7-5 and keep the phase note active.
+- Slice 7-2 protocol-only sub-increment outcome: new
+  `connection_transcript_v4.rs` runs an in-memory ordered message transcript
+  using the existing connection router, genuine v4 report/reply codecs and
+  internal admitted-report test bridge. Caller-selected family boundaries are
+  explicit: this is not unified ingress, line-delimited stdin or `world_eval`
+  execution. The transcript pins handshake correlation/capabilities, exact
+  empty bootstrap fields in two lifetimes, settings/readiness progression,
+  byte-identical replay, request reuse/supersession, stale observation and
+  old-generation report/settings refusal after reconnect. Two command-bearing
+  fixture messages exercise the later sequence checks. Report refusals remain
+  typed kind checks, not report-error wire acceptance.
+- Review corrected overstated line-delimited routing comments and expanded
+  both bootstrap oracles to all reply/presentation fields. Invalid version/type
+  checks use structured input mutation and exact existing router errors.
+  Targeted development tests passed after implementation and after review;
+  no preimplementation behavioral failure is claimed. Single-scenario coverage
+  is not universal command, gesture, native or host-owned transport acceptance.
+- Direct sequential verification of this sub-increment passes:
+  `devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -- --skip workspace_unsafe_posture`
+  (1961 core unit tests, new transcript and every selected target; ordered
+  runner 32 pass, zero ignored),
+  `devenv shell -- cargo build -q -p tiler-core -p tiler-protocol`,
+  `devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol --all-targets -- -D warnings`
+  and `devenv shell -- cargo fmt --all -- --check`. The new test file was
+  formatted before this gate; no clippy repair was needed. Changed-file
+  whitespace, added ASCII, NUL and local Markdown file-target checks pass.
+- Remaining 7-2 broker/service preparation is BLOCKED on the v4 transport
+  mapping. `WorldBroker::discovery_body` binds a producer lifetime but returns
+  its own broker incarnation; `stamp_inner` stamps that incarnation and the
+  legacy owner, while the existing v4 handshake binds one adapter plus fixed
+  application identity/capabilities. The reviewed contract and KDE port notes
+  establish one logical adapter/sequencer, but do not settle the broker-mediated
+  handshake/settings entry or identity translation. This is not evidence that
+  broker generation seeding contradicts core generation ownership. The
+  [minimal discriminator](../spec/reference-outcomes.md#v4-broker-connection-discriminator)
+  leaves unsupported behavior TBD. No second broker, test-bridge broker wiring
+  or guessed interface has been added. Broker/service capture, queue/query,
+  source/clock fencing and requester-only integration remain unverified for v4.
+- Simplification option: settle one logical connection-family mapping and keep
+  the existing broker's sequencing/replay/result ownership, then cut its sole
+  codec route over atomically in 7-3. This avoids a temporary parallel broker
+  or service route to remove in 7-4; the private transcript assertions can stay.
+  Alternative: approve a separate offline broker seam before preparing those
+  paths, with its contract and deletion cost made explicit. Neither option is
+  selected here. Next: resolve that mapping before further broker/service work;
+  7-2 overall is incomplete, 7-3 remains untouched and the phase note stays active.
+- User decision 2026-11-06, broker identity: the KDE producer lifetime is the v4
+  `adapter`. KWin sends the real v4 handshake on the existing discovery route; the
+  broker forwards it to core and stamps that lifetime on reports. The broker
+  incarnation is removed: it is minted only with the generation, so it adds no
+  fencing. The broker keeps sequencing, replay, requester-only results and queue
+  ownership, and the engine binds at handshake. A separate offline seam and a
+  broker-synthesised handshake are rejected.
+- User decision 2026-11-06, repeat handshakes: every handshake reaches core and
+  starts fresh, so the broker's same-lifetime rebind is removed. KWin handshakes
+  only when unbound or after `generation-mismatch`; a bound host-deadline timeout
+  only re-arms the wait, which detects a restarted service through
+  `generation-mismatch`. The broker half belongs to 7-3 and the KWin half to the
+  KDE port, which owes a live check of that recovery path because of the earlier
+  [watchdog stalls](kde-world-v2-port.md). This replaces the KDE v2 rule that
+  same-lifetime rediscovery rebinds without reset.
+- User decision 2026-11-06, settings transport: v4 handshake and settings share
+  the authenticated `DiscoverWorld` route, dispatched by `type` through
+  `route_connection_request`. Only the handshake resets; settings keep their
+  revision rules. A dedicated settings method and capture-attached settings are
+  rejected.
+- User decision 2026-11-06, return focus after admission: `world-actions.json` is
+  stale, not core. An accepted admission focus records in the workspace slot under
+  the [memory decision](../decisions/focus.md#workspace-active-window-memory), so
+  returning focuses C. Update its `af-win-c` and `fx-12` literals and the matching
+  note; core does not change.
+- User decision 2026-11-06, stage5 recorded proof: migration defers to the KDE
+  vertical slice, because v4 bytes can only come from a ported KDE producer. The
+  two production-route tests in `stage5-fixture-route.rs` are ignored with a reason
+  naming that slice, the fixtures stay, and `world_wire_fixtures` stays unrun. This
+  is the one named gap in the 7-3 gate, reported as an exception, not a pass.
+- Open for the KDE port, not 7-2/7-3: which `applicationIdentity.processId` KDE
+  reports, or whether it declares `processId` unavailable. The broker only forwards
+  the handshake, and KWin capture carries no process facts today.
+
+### Slice 7-2 remainder and 7-3 execution plan
+
+- Inspect the existing settings entry, broker discovery/wait routes and connection
+  router first. Stop before implementation if v4 settings delivery needs an
+  unselected contract or interface; retain the existing public route meanwhile.
+- Fold remaining broker/service preparation into the atomic 7-3 cutover rather
+  than adding a temporary parallel broker or offline seam. Forward the producer's
+  real handshake, bind the engine there, remove broker incarnation and repeat
+  handshake rebind, and preserve stale-generation-first wait recovery.
+- Promote the selected producer identity and fresh-handshake decisions, update
+  the broker discriminator and KDE port guidance, leaving native outcomes and
+  KDE process identity open.
+- Switch public report handling, version, sole report/reply codecs, connection
+  negotiation, broker/service and active offline harnesses/tools together. Define
+  the v4 line-delimited world_eval transcript with that harness change. Preserve
+  queue/source/clock/replay fences and requester-only command results.
+- Review the integrated public contract, run the widened sequential offline gate
+  above and changed-file checks, and record exact results and any boundary failure.
+  Dead-code cleanup (7-4), broader public scenarios/stress acceptance (7-5), adapter
+  ports and native proof remain separate. The phase note stays active.
+
+- Settings transport blocker: the service currently exposes no settings entry.
+  `parse_discovery_request` accepts only the v3 `{v,adapter,req}` body;
+  `DiscoverWorld` calls that parser and the broker's discovery bootstrap. No
+  daemon caller reaches `handle_settings` or the connection-family router.
+  The v4 contract requires an independent settings snapshot and accepted initial
+  settings before readiness; forwarding the handshake alone cannot complete
+  startup. Core already owns revision idempotence, diagnostics, readiness and
+  fresh-handshake reset, so those semantics need no new policy.
+- Unselected interface: where the adapter sends the existing v4 `Settings` message
+  and receives `SettingsReply`. Recommended option: let the existing authenticated
+  discovery route dispatch separate handshake/settings messages by `type`, using
+  the existing connection-family router semantics; only handshake resets state.
+  Alternative: add a dedicated authenticated settings method. Embedding settings
+  in captures would couple independent revision and capture-replay lanes and is
+  not recommended. No route is selected or implemented here; the choice touches
+  the approved discovery-handshake mapping and separate revisioned settings family.
+- Source inspection confirms `wait_immediate` checks generation mismatch before
+  producer identity, and parked `WorldWait::poll` checks generation before waiter
+  supersession/lease expiry after collecting a delivered wake. This is source
+  evidence only, not a transport or recovery test. Implementation and widened
+  execution are stopped at the settings interface question. Public cutover is
+  untouched, not half-switched; 7-2 remains incomplete and 7-3 has not started.
+
+- Settings transport is now selected by the decision above. Pre-cutover size
+  verification confirms the strict connection decoder and authenticated discovery
+  route both permit at most 4 MiB. The exact-boundary regression
+  `maximum_v4_settings_snapshot_fits_discovery_request_bound` decodes a settings
+  message of exactly that size and rejects one byte more; its targeted omnitiler
+  test passes. No request bound change is required. Proceed with decision
+  promotion and the atomic cutover; the historical interface blocker is resolved.
+
+### Slice 7-3 implementation checkpoint (incomplete)
+
+- The public core report entry and protocol request/reply entry points now use
+  genuine v4 types, and public version constants are 4. Explicitly named legacy
+  implementations and their mechanically renamed regressions remain for 7-4;
+  no compatibility decode is added to the public request entry.
+- Broker discovery now routes handshake/settings through
+  `route_connection_request`; producer lifetime stamps reports, broker incarnation
+  is removed, and successful handshakes reset ancillary broker state. Service and
+  planner routing compile in targeted development checks. Their integration
+  fixtures/tests are only partially migrated: stale v3 captures and assertions
+  remain. The old raw-window normalization call is no longer on the v4 broker
+  path; its module remains unchanged pending cleanup and the KDE port.
+- Active world_eval and stress examples now use v4 public handling. The new
+  `crates/tiler-protocol/tests/data/world_eval_v4.jsonl` transcript and
+  `world_eval_v4.rs` regression cover handshake/settings/readiness, replay/reuse,
+  reconnect and stale-generation messages. Targeted development runs report the
+  transcript test passing and 12 stdout replies from the example, plus passing
+  duo stress schedules and one batched stress regression. These are not a fresh
+  widened acceptance gate or independent review.
+- The active world_acceptance harness is migrated to v4 but its old fixture
+  does not pass. Direct execution of
+  `devenv shell -- cargo run -q -p tiler-protocol --example world_acceptance -- test-fixtures/world-actions.json`
+  exits 1 with:
+
+```text
+REJECT: admit-c: effects != expected one-shot set: got [("af-2", "focus", "win-c")] want [("af-win-c", "focus", "win-c")]
+```
+
+- The compact automatic id is already established by the earlier identity-bound
+  increment. A temporary one-line correction of that old literal exposed a
+  separate target mismatch, then was removed; the fixture is unchanged:
+
+```text
+REJECT: select-previous: effects != expected one-shot set: got [("fx-12", "focus", "win-c")] want [("fx-12", "focus", "win-a")]
+```
+
+- Stop at this unresolved return-focus oracle, rather than weakening the target
+  assertion or changing policy to make the harness pass. Establish whether the
+  authored target remains required before changing its fixture or core behavior.
+  The harness supplies empty raw foreground and no focus feedback; no native
+  focus result is established. Decision promotion, discriminator/KDE guidance,
+  complete broker-test migration, independent review, clippy reconciliation and
+  the widened sequential gate remain outstanding. The tree is partially switched
+  and unverified, not an accepted atomic 7-3 cutover. The phase note stays active.
+
+### Slice 7-3 follow-up checkpoint
+
+- Applied only the two approved world-actions literals and the matching return-
+  focus note. Direct world_acceptance execution now passes all six checkpoints;
+  no further fixture mismatch appeared. The workspace memory decision explicitly
+  includes admission newcomers; core focus policy is unchanged.
+- Promoted producer identity, shared discovery/settings transport and fresh-
+  handshake recovery into contract decisions. Updated the KDE port obligations
+  and both connection/return-focus discriminators, retaining native outcomes TBD
+  and KDE process identity open.
+- Independent source review found no blocking public-routing/security defect,
+  but identified stale comments and retained legacy test boundaries. Subsequent
+  source inspection corrected an initial-handshake broker reset omission: the
+  first core handshake keeps its seed generation, so generation comparison cannot
+  decide whether to reset ancillary state. All successful handshakes now use one
+  reset path and bind the validated reply's adapter, removing redundant request
+  peeking; a prebinding-queue regression is included.
+- Direct private-bus runs of
+  `private_bus_world_broker_splits_capture_and_query_roles` and
+  `private_bus_wait_wake_end_to_end_does_not_block_queue` pass with nocapture.
+  Their emitted discovery/settings/capture/queue/take/read/wake and authorization
+  lines prove execution beyond the early-return paths; no SKIP occurred.
+- Gesture transport and causal-freshness inputs are migrated to v4 with targeted
+  development passes. The retired operation-wrapped drag-preview queue leg now
+  pins its strict refusal, not a fabricated v4 command. The service suspension
+  test passes directly after declaring the native capabilities its boolean facts
+  require; previous gesture-phase variations had missed those capability holds.
+- The latest direct widened test run passes all 205 omnitiler unit tests, then
+  fails N5 retention (5 passed, 8 failed). The first exact failure is:
+
+```text
+n5_hidden_ordinary_retained_without_layout:
+win-h retained: []
+```
+
+- N5's migrated facts distinguish hostHidden=true from minimized=false. Hidden
+  rows disappear while minimized and visible-dialog controls pass. The retired
+  KDE normalizer conflated hidden eligibility with minimized before ingress;
+  determine the intended shared v4 hidden-newcomer retention from source before
+  repairing core or changing test facts. No such repair or oracle change is made.
+  Normal broker-flow helpers are migrated, but remaining raw/born/preview tests,
+  the recorded stage5 route and the fixture-generation example still need audit.
+- Direct scoped package build and protocol examples build pass. Clippy passes
+  after redundant-guard, Copy-clone and documentation-list fixes, before the
+  latest test migrations. The initial format check failed mechanical layout;
+  formatting and a fresh format check now pass. All these remain partial evidence:
+  finish the full widened sequential gate after resolving outstanding regressions,
+  rerun review for the final reset correction, and complete changed-file checks.
+  Public runtime entry points are switched, but 7-3 acceptance remains incomplete.
+
+### Slice 7-3 retained-membership and recorded-fixture findings
+
+- The active [membership and immediate eligibility decision](../decisions/world-rendering.md#membership-and-immediate-eligibility)
+  already selects separate host-hidden facts through the minimized-member lane.
+  Classification and observation derive that lane from minimized OR host-hidden,
+  but member refresh and two publication filters still inspect minimized alone.
+  The targeted N5 hidden-newcomer test reproduces the missing retained row. No
+  repair has been applied; raw host-hidden and minimized facts remain distinct.
+- The stage5 production-route test still feeds recorded v3 JS producer bytes into
+  the now-v4 service. Direct execution of
+  `cargo test -q -p omnitiler --test stage5-fixture-route` fails both route tests
+  on `envelope-p5.json` with `kind: unsupported-version`; the static witness-chain
+  test passes (1 passed, 2 failed). This is a real acceptance boundary, not a
+  successful v4 replay. The recorded fixtures are unchanged.
+- `world_wire_fixtures` separately reads and rewrites legacy fixtures directly
+  under `test-fixtures/world-wire`, not the immutable `world-wire/v4` directory.
+  Its discovery helper is v4 but its capture, reply-shape and broker-incarnation
+  assertions remain v3. It has not been executed or used to regenerate fixtures.
+- At audit time, migration decisions allowed temporarily broken adapters, but did not
+  select migration, retirement or an acceptance exception for these recorded
+  producer proofs. The subsequent stage5 decision above selects deferral to the
+  KDE vertical slice; the final outcome below retains that explicit proof gap.
+
+### Slice 7-2 remainder and 7-3 outcome
+
+- The selected hidden-member policy is implemented consistently: member refresh,
+  publication and workspace migration use the existing derived hidden lane
+  (minimized OR host-hidden), without changing either raw fact. N5 pins distinct
+  `hostHidden:true` and `minimized:false` input plus no allocation/frame/clear
+  authority. Its migration regression also covers target homing for both lanes.
+- Broker requester settlement now recognizes typed `CommandResult::Rejected`
+  inside an accepted v4 reply. The observation remains incorporated, the command
+  settles failed with its rejection kind, and no second observation dispatch is
+  introduced. The previous ready-versus-failed failures now pass unchanged.
+- The migration-drain failure was not size exhaustion: checked encoding rejected
+  an empty workspace id after a raw-minimized-only member filter omitted the
+  host-hidden mover. Using the same derived hidden lane fixes the member set and
+  target homing; the codec and reply budget remain unchanged.
+- Service-flow tests now use genuine v4 capabilities, settings, native membership,
+  hints, opaque intent and explicit close facts. Born-clear settlement uses its
+  actual attempt lane. Native gestures drive preview lifecycle; retired command
+  wrappers pin strict refusal. Homed non-normal kinds assert held/no-actuation
+  rows, not disappearance caused by missing membership evidence. Active public
+  broker/service/protocol comments match v4. Targeted source review found no
+  blocking issue in these corrections or the first-handshake reset.
+- Direct sequential execution of the widened commands listed above succeeds for
+  all enabled tests, both scoped builds and all-target clippy with warnings denied.
+  The test run includes 205 omnitiler unit tests, 13 N5 tests, 61 service-flow tests,
+  1961 core unit tests and every selected integration/doc target. Formatting first
+  required mechanical reconciliation; the fresh format check passes.
+- Named gate exception, not a pass: only
+  `stage5_fixture_route_matches_recorded_projections` and
+  `stage5_fixture_route_same_source_serial_b` are ignored, each with reason
+  `KDE vertical slice must re-record v4 producer bytes`. Their fixture bytes are
+  unchanged and the static witness-chain test still runs. **7-3 acceptance carries
+  this deferred producer-proof gap.** `world_wire_fixtures` remains unrun.
+- Direct `world_acceptance` passes 6/6. Both stress examples pass ordered, batched
+  and reordered schedules: home-away uses 186/149/151 reports with 16 checkpoints
+  each; trio-churn uses 190/156/158 reports with 19 checkpoints each. These are
+  offline harness results, not native actuation proof or completion of slice 7-5.
+- Direct `world_eval` stdin/stdout execution over
+  `crates/tiler-protocol/tests/data/world_eval_v4.jsonl` emits 12 v4 replies.
+  Assertions check handshake/settings/readiness, exact replay, mutated request
+  refusal, reconnect, stale-generation report/settings refusal and fresh readiness;
+  replay lines compare byte-identically. The regression test separately drives
+  mirrored dispatch in-process, not a subprocess.
+- Both private-bus authorization and wait/wake tests pass again with emitted
+  discovery/settings/capture/queue/take/read/wake evidence, without an early skip.
+  Changed-file whitespace, added ASCII, full-content NUL and relative local-link
+  checks pass. No adapter, dependency or stage5 fixture changes are included;
+  existing approved v4 fixture exceptions remain untouched by this cutover.
+- Simplification: one producer identity, one connection-family route, one
+  successful-handshake reset and one shared derived hidden lane replace the
+  broker incarnation/rebind and hidden-as-minimized normalization assumptions.
+  Slice 7-4 legacy removal, slice 7-5 broader public scenario/size acceptance and
+  sequential adapter/native proof remain outstanding. The phase note stays active.
 
 - Typed-ingress decision (user 2026-11-05): core holds invalid rows in typed
   v4 reports that bypass the codec, through v4 twins of the invalid-screen and

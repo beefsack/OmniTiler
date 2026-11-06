@@ -792,6 +792,13 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   [Desired-state baseline](world-contract-v3.md#4-desired-world-state-what-the-reply-authorizes),
   [state-centric decision](../decisions/contract.md#state-centric-contract).
 
+- Occupants of a floating-mode workspace, including minimized occupants,
+  publish `floating:true` with empty `float_origin`. This describes the scope's
+  classification, not per-window float intent or frame/membership write
+  authority; minimized holds remain. Retiling must not feed this classification
+  back as retained explicit float intent. See the
+  [workspace-mode decision](../decisions/workspaces.md#per-workspace-tiling-floating-and-bindings).
+
 ### Changed desired rows
 
 | Record | Key | Type | Null/absence | Meaning |
@@ -826,11 +833,11 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `cmdSeq` | Counter | yes | Non-null for explicit-command; null otherwise. |
 | | `awaitShown` | bool | no | Only explicit selection may grant arrival-ready focus. |
 
-- TENTATIVE: v4 `WorkspaceDesire` row uniqueness is keyed by `(out,id)` in both
+- V4 `WorkspaceDesire` row uniqueness is keyed by `(out,id)` in both
   reply codecs. Shared mode may repeat one logical id on different outputs;
   repeating the same pair refuses with `duplicate-workspace`. This preserves
   the shared ring without relabel/dedup; reference/native external row-identity
-  counterparts remain TBD. [Tentative resolution](../changes/v4-phase1-core-protocol.md).
+  counterparts remain TBD. [Decision](../decisions/workspaces.md#workspace-scope-vocabulary).
 
 - StateTarget is native actuation only: maximized requires maximize=true, and
   sticky requires nativeSticky=true. Core-composed maximize uses the existing
@@ -1098,7 +1105,10 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 
 - Core freezes switch target sets internally, derives each member's
   confirmed/refused/ambiguous/blocked state, and emits SwitchEvent only when
-  every member has a verdict. Later admissions enter the next target revision,
+  every member has a correlated verdict. Arrival and proven focus never replace
+  a missing show LastWrite; the member stays pending, with no SwitchEvent.
+  [Per-member decision](../decisions/workspaces.md#selection-visibility-accounting).
+  Later admissions enter the next target revision,
   not the old switch silently. There are no visibility work/group ids,
   visibilityResults/selectionProofs/visibilitySettled rows, timers or polling.
   [Ordering and accounting](../changes/windows-workspace-return-focus.md#normative-apply-rule-contract-text),

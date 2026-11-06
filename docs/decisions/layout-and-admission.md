@@ -149,10 +149,10 @@
 
 ### Best-effort admission fallback
 - Decision: Capacity means geometric exhaustion (whole-tree projection cannot give every tile positive extent after gaps), not minimum infeasibility. Try ordinary anchor first. Fallback default chooses largest-splittable-window by plain area descending, child-order DFS then lifetime ID; alternatives closest-splittable-relative (ancestor rings, sibling distance then DFS) and no-search. Require strict and normal hinted projection; minimum-overconstraint does not refuse. Wrap selected leaf old/new equally on plain long edge (square vertical); no short-axis retry, ancestor wrap, rebalance, automatic other workspace/output search or spill.
-- Why: not recorded.
+- Why: geometric exhaustion and minimum-overconstraint are different problems. An ordinary sole newcomer with an oversized minimum still tiles; Tier 1 source accounts do not automatically float it merely for that minimum. Minimum infeasibility alone does not make a capacity float.
 - Assumes / revisit if: D1/D2 fallback ordering and geometric splittability above are active; B6 minimum infeasibility remains independent.
 - Status: active, 2026-10-18
-- Evidence: [implementation and live re-check](../changes/archive/best-effort-admission.md).
+- Evidence: [implementation and live re-check](../changes/archive/best-effort-admission.md), [oversized sole minimum](../spec/reference-outcomes/minimum-size.md#r-min-03-backfill-oversized-sole-minimum-scrolling); re-examined and retained 2026-11-06, exact native frames/client settlement TBD.
 
 ### Best-effort D3-D4: no-space result and focus
 - Decision: Default no-space result is float; explicit alternative is allow-overlap. Capacity float has no tile slot/frame authority and retains opening frame; eviction retains last live frame. It remains ordinary float for navigation, decoration, movement and explicit tiling; `capacity` origin is diagnostic only, distinct from automatic fixed-size admission. Focus fresh newcomer, whether tiled or floated, never alternate anchor; ordinary activation/game/overlay/gesture/at-most-once fences apply. Repair/eviction never issues focus setter.

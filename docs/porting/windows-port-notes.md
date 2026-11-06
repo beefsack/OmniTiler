@@ -129,6 +129,22 @@ not v4 acceptance evidence.
 
 ## State and persistent above (W1, K3)
 
+- V4 floating-workspace rows publish `floating:true` with empty `float_origin`,
+  no tile allocation and unchanged authority/holds. Audit these existing
+  `crates/tiler-windows/src/tiling_sys/` readers during the port:
+  - `world_reads.rs:218` float-token classification and `admission.rs:35` D2
+    ordinary/tiled pin: scope classification must not become retained explicit
+    float intent or reclassify retained admission on retile.
+  - `world_native.rs:2535` arrival proof and
+    `directional_resolution.rs:85,101`: the float branch skips tiled frame
+    checks; preserve output/home evidence and use v4 arrival brackets, never
+    treat the bit or untouched authority as proof or frame-write permission.
+  - `world_sequencer.rs:946` cross-output float transfer gate and the float
+    consumers in `capacity_floats.rs`/`world_tick.rs`: verify scope-only and
+    placement-bearing floats, minimized recovery and toggle-back to tiled
+    without retaining a false per-window override.
+  Adapter changes and native verification remain port work;
+  [decision](../decisions/workspaces.md#per-workspace-tiling-floating-and-bindings).
 - Approved 2026-11-02, option c (union) plus capacity: every float
   (automatic, explicit float/sticky, capacity, workspace-mode even
   with no tiles) acquires supported persistent above under one

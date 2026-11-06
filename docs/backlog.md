@@ -25,7 +25,7 @@ Prioritise by return toward these goals
 ## Open work
 
 - v4 phase 1 (in progress) | Implement core and protocol from the approved [v4 contract](porting/world-contract.md) and `test-fixtures/world-wire/v4/`; remove v3 at cutover and accept temporarily broken adapters. [progress](changes/v4-phase1-core-protocol.md), [decision](decisions/contract.md#v4-world-contract-phase-0c-approval)
-- v4 phase 2 | Port KDE; after this phase, perform R21 KDE effect Rust steps 0-2. [decision](decisions/contract.md#contract-authority-and-v4-migration)
+- v4 phase 2 | Port KDE in slices that each leave a build the user can dogfood, from the report/reply loop onward; live-check handshake and watchdog recovery, re-record the stage5 producer proof against v4 bytes, and port the native anchored-border consumer in the focus-feedback slice; after this phase, perform R21 KDE effect Rust steps 0-2. [decision](decisions/contract.md#contract-authority-and-v4-migration)
 - v4 phase 3 | Port Windows, including the R14 fullscreen baseline. [decision](decisions/contract.md#contract-authority-and-v4-migration)
 - v4 phase 4 | Port macOS. [decision](decisions/contract.md#contract-authority-and-v4-migration)
 - P1 | macOS post-v4 session lifecycle | Test the packaged tiler and recovery helpers across lock/unlock, sleep/wake and logout/login with normal relaunch; verify native access recovery, session fencing and no stranded windows/input. Observed stale desktop access is confined to a surviving development-tool service so far, not a demonstrated tiler defect. [risk and checks](changes/macos-v4-platform-fit.md#gui-session-lifecycle-risk-and-post-port-follow-up)
@@ -253,7 +253,7 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
 - Sticky adoption restart/re-enable | Verify intentional and unknown-origin sticky behavior across restart/re-enable, separately from Windows restart preservation. | [detail](changes/pending-live-checks.md#original-backlog-lines-2666-2669)
 - Non-visible workspace tiling | Verify hidden startup/open/move leave native focus and desktop unchanged without claiming rendered-state behavior. | [detail](changes/pending-live-checks.md#original-backlog-lines-2670-2672)
 - Reliability gates | Run fullscreen residual-cost/gaming-cost and work-area projection/restoration gates. | [detail](changes/pending-live-checks.md#original-backlog-lines-2673-2677)
-- Custom Tile manual runtime check | Run the separately authorized runtime check with exact restoration. | [detail](changes/pending-live-checks.md#original-backlog-lines-2678-2680)
+- Custom Tile manual runtime check | Run the runtime check under the crash-class rules, restoring project-owned resources. | [detail](changes/pending-live-checks.md#original-backlog-lines-2678-2680)
 - Nested placement visual smoke | Check occupied-leaf whole-rectangle preview and nested split placement. | [detail](changes/pending-live-checks.md#original-backlog-lines-2681-2683)
 - Tray live/release acceptance | Verify KWin-owner snapshots, watcher ordering, update/rollback, and packaged login/autostart behavior. | [detail](changes/pending-live-checks.md#original-backlog-lines-2684-2687)
 - Drag-oracle post-fix proof | Rebuild and verify committed resizes, 8 px gaps, one planned-applied result, and no immediate reconcile. | [detail](changes/pending-live-checks.md#original-backlog-lines-2688-2690)

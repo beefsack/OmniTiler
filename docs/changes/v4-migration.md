@@ -426,6 +426,34 @@
   coverage and explicit presence/null/empty/omission assertions. Context does
   not imply an ordered engine setup or native proof.
 
+#### Approved scenario input exceptions (2026-11-06)
+
+- `scenarios/persistent-above.json`, `capacity-float-acquire` input only:
+  use positive 9x9 tiled bounds (25x25 work area, outer gap 8), two ordinary
+  1x1-minimum newcomers `win-anchor`/`win-capacity`, and matching raw
+  presentation samples. With inner gap 8, two positive leaves need extent 10;
+  capacity therefore arises geometrically, not from an infeasible minimum.
+  The assertion and all later inputs are unchanged. An independent actual-input
+  regression checks the geometry/hints and original ordered prefix.
+- `scenarios/visibility-order-failure.json`, final
+  `accounting-arrival-focus-depart-proof` input only: add `win-a` show LastWrite,
+  target true, revision 4, staged, setter accepted, empty reason, pre obs 5
+  hidden/project-suppressed and post obs 6 shown/not suppressed. Assertions
+  are unchanged; arrival does not replace per-member visibility accounting.
+- No other fixture changes are authorized by these exceptions. Scenario counts,
+  step counts and assertion totals are unchanged; the manifest has no per-file
+  hashes to update. The strict runs evaluate 41 and 26 assertions respectively.
+  All eight native OPEN/TBD gates remain open. These exceptions do not alter
+  the contract or establish native evidence.
+- Durable decisions: [capacity](../decisions/layout-and-admission.md#best-effort-admission-fallback),
+  [scope classification](../decisions/workspaces.md#per-workspace-tiling-floating-and-bindings),
+  [per-member accounting](../decisions/workspaces.md#selection-visibility-accounting),
+  [workspace-row identity](../decisions/workspaces.md#workspace-scope-vocabulary).
+  Floating-mode rows publish `floating:true` with empty origin without a
+  fixture exception; each platform port must audit classification feedback
+  separately from native actuation authority. Workspace rows use `(output,id)`
+  uniqueness, not bare-id uniqueness or producer relabeling.
+
 | File(s) | Coverage |
 | --- | --- |
 | `manifest.json` | One metadata file; all paths, directions, expectations, 7 message families, 24 verbs, 70 records, 65 closed catalogs/342 arms and 57 sentinel/presence assertions after K1-K4 reconciliation. |

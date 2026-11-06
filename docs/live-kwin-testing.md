@@ -8,18 +8,34 @@ grant authorization beyond [Current Decisions](./decisions/kde.md#live-test-evid
 
 ## Safety Boundary
 
-- Preserve real windows, desktops, outputs, Krohnkite state, and unrelated
-  configuration. Touch only identified project resources. Never use broad
-  cleanup.
-- Reversible, project-scoped live host tests may run under this guide and
-  `docs/decisions.md` when exact restoration is verifiable. The user performs
-  physical or manual observations and every session boundary.
-- Stop on an ownership, parser, diagnostic, baseline, or restoration surprise.
-- Do not use `sudo`, system plugin paths, Home Manager-managed files, external
-  dotfiles, unrelated environment entries, unrelated host mutation,
-  irreversible cleanup, or ambiguous-residue deletion.
+- Durable default (user 2026-11-06, supersedes nested-only and exact-baseline
+  rules): n is the max occupied workspace ordinal across the relevant inventory,
+  inventoried fresh each run and never hardcoded; occupancy counts non-fixture
+  native windows too, but that is occupancy only, never a full protected-window
+  inventory; run tests on workspaces >n; use `tiler-live-fixture` with the
+  exact platform filter so only fixture windows are managed. All-desktop/sticky
+  membership is recorded as observed, never fabricated; unsupported outcomes
+  stay TBD. The user accepts incidental stray effects on existing windows, so
+  there is no routine baseline capture/compare, exact-restoration proof,
+  protected-window inventory, or stop-on-baseline surprise.
+- Live work needs user authorization, which may be standing for the session.
+  This guide grants none. Never record session grants, input grants, or other
+  session controls in repository records.
+- Stop on a KWin crash or crash-class surprise, a filter failure causing
+  repeated non-fixture actuation, or a real product/contract decision. The
+  evaluated readiness gate below is retained as cheap evidence.
+- Loading an ABI-bound native effect, and any crash-class or forced-crash
+  probe, uses nested KWin, not the real session. The Custom Tile Safety
+  Findings bans below remain in force in the real session.
+- Hygiene: no `sudo`, no Home Manager or system paths, no broad cleanup, no
+  unrelated configuration, never no-arg `queryWindowInfo`. Teardown is
+  `just dev-off` plus exact project-owned items.
 
 ## Nested KWin Isolation
+
+Applies only to crash-class legs (forced-crash/recovery probes, ABI-bound
+native effect loading). Routine legs run in the real session under the durable
+default above.
 
 - A nested `kwin_wayland` run must use fresh private `XDG_CONFIG_HOME`,
   `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, and
@@ -149,8 +165,9 @@ startup:
 ## Live Evidence
 
 - A transport reply, process exit status, missing error, or visual appearance
-  alone is not feature evidence. Record the relevant authoritative state before
-  and after a mutation and preserve raw machine responses that gate it.
+  alone is not feature evidence. Record the relevant authoritative native
+  state before and after a mutation and preserve raw machine responses that
+  gate it.
 - Never call no-argument `org.kde.KWin.queryWindowInfo`: it starts an interactive
   window picker and can leave a crosshair after the caller times out; Escape
   dismisses it. Prior occurrences in the archived
@@ -169,29 +186,24 @@ startup:
   delivery. Manual journeys require physical input and matching state evidence.
 - The trailing-empty workspace proof is a separate executable procedure at
   [live oscillation verification](live-oscillation-verification.md).
-- Before startup, preserve the actual runtime float-intent store, including
-  absence, plus kwinrc, project configuration, exact shortcut tuples and loaded
-  effects. Record complete protected-window frames, states, memberships,
-  outputs and views. See the store implementation rather than guessing its path.
-- Capture these inventories freshly for every leg. Shortcut/effect counts,
-  active effects alone, and a prior leg's baseline cannot establish restoration:
-  retain all shortcut component tuples, loaded and active effects, store/config
-  bytes and modes, pointer, and complete protected-window state. Compare the
-  actual inventories afterward and retain the capture commands and nonempty
-  correlated reply bodies, not placeholder extracts.
-- The test-only checker at `kwin/tests/baseline-check/` is accepted for complete
-  baseline capture/compare (2026-10-28): 28/28 hermetic tests and a fresh
+- Before each run, inventory occupied workspaces through n fresh (never
+  hardcode n); run tests on workspaces >n. See the store implementation
+  rather than guessing its path. No routine full baseline capture/compare,
+  protected-window inventory, or exact-restoration proof.
+- The evaluated readiness gate above is the routine cheap evidence. No prior
+  leg's capture establishes later state.
+- The test-only checker at `kwin/tests/baseline-check/` remains available and
+  unchanged as an optional tool (2026-10-28): 28/28 hermetic tests and a fresh
   capture/capture/compare dry run pass, with zero inventory mismatches, exact
   helper absence and unchanged loaded/active effects and scripting introspection.
   The rejected `live-audit/` draft has been removed. The shortcut destination is
   service `org.kde.kglobalaccel`, distinct from the root interface
   `org.kde.KGlobalAccel` at `/kglobalaccel`; component replies use
   `org.kde.kglobalaccel.Component` at the enumerated object paths. It uses one
-  nonce-named read-only script, runs only the collision-checked
-  returned object, unloads by name once and verifies name/object absence against
+  nonce-named read-only script, runs only the collision-checked returned
+  object, unloads by name once and verifies name/object absence against
   the original KWin owner. Any unexpected reply stops the capture without retry.
-  A later leg must not start without a complete passing capture from an accepted
-  checker. Fixture attribution is a separate gate.
+  Checker use is optional, never a per-leg gate.
 - Checker interface (from the repository root, with fresh output directories
   outside the checkout):
   `devenv shell --impure -- node kwin/tests/baseline-check/baseline.mjs capture BASE_DIR`,
@@ -205,12 +217,13 @@ startup:
   differences, exits nonzero on mismatch and never repairs state. There is no
   standalone `validate` CLI command: `compare` validates both captures, and
   `validateDir` is an exported function for offline artifact inspection.
-- Fixture attribution at `kwin/tests/fixture-attribution/` now joins each exact
-  fixture sentinel and PID one-to-one to a native KWin UUID/frame. Missing,
-  duplicate or ambiguous joins fail closed; UUID uniqueness is checked across
-  the full native roster. It reuses baseline validation and introspection parsing
-  and follows the checker's nonce-named, collision-checked, single-unload helper
-  lifecycle. Independent read-only review accepts the offline tool; direct
+- Fixture/native joins are required evidence: each exact fixture sentinel and
+  PID joined one-to-one to a native KWin UUID/frame. Missing, duplicate or
+  ambiguous joins fail closed; UUID uniqueness is checked across the full
+  native roster. The attribution tool at `kwin/tests/fixture-attribution/` is
+  optional, never a routine mandatory gate; it is baseline-dependent and reuses
+  baseline validation and introspection parsing, following the checker's
+  nonce-named, collision-checked, single-unload helper lifecycle. Independent read-only review accepts the offline tool; direct
   hermetic checks pass **11/11**:
   `node --test kwin/tests/fixture-attribution/tests/run-tests.mjs`.
   A live dry run passed both exact joins, helper teardown and full baseline
@@ -231,8 +244,10 @@ startup:
   read. The existing `kwin/tests/visibility-probe/` remains unchanged for later
   hide/reveal work; accepted hide/reveal compositor evidence is not withdrawn.
 - Enable correlated complete request/reply capture before each leg and prove
-  capture with a positive marker. At the first unexpected refusal or baseline
-  mismatch, stop the leg, retain its gating evidence and restore before retrying.
+  capture with a positive marker; it remains the evidence requirement for
+  protocol claims. At the first crash-class surprise or repeated non-fixture
+  actuation from a filter failure, stop the leg and retain its gating evidence.
+  Baseline drift alone never stops a leg.
 - An interface-only `dbus-monitor` filter omits method returns, which lack the
   call's interface header. Capture calls destined for the planner and returns
   from its exact unique sender, correlating reply serials; interface-filtered
@@ -244,7 +259,8 @@ startup:
   not prove a window is shown on the current desktop/activity. Membership
   exclusion is not independent compositor hide/reveal evidence; retain that
   outcome as TBD without a shown observer.
-- Prefer existing desktops. Use disposable kwrite, kcalc or kolourpaint clients;
+- Prefer workspaces >n for test windows (n inventoried fresh each run, never
+  hardcoded). Use disposable kwrite, kcalc or kolourpaint clients;
   use a genuine fixed-size Qt client when fixed-size behavior is required.
   Fixture choice grants no additional mutation authorization.
 - Preserve normal desktop retirement/appending as documented lifecycle churn,
@@ -252,7 +268,8 @@ startup:
 
 ## Fixture-First Live Tests
 
-- Agent live legs test fixture windows only, scoped fixture-only. Start the
+- Agent live legs test fixture windows only, scoped fixture-only, on
+  workspaces >n (n inventoried fresh each run, never hardcoded). Start the
   fixture (`tiler-live-fixture serve`), then scope the tiler to its identity
   before any mutation: `just dev-on --scope-class OmniTilerTestWindow`
   (teardown with `just dev-off`); agent-driven runs stay scoped so only

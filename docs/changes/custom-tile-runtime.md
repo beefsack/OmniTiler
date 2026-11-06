@@ -49,7 +49,7 @@ floating, fullscreen, maximize, and workspace behavior on KWin.
 
 ## Acceptance
 
-- On disposable, project-owned topology with exact restoration, Custom Tile
+- On disposable, project-owned topology with exact restoration of owned resources, Custom Tile
   structure remains stable through window add/remove, drag/reflow, floating,
   fullscreen, maximize, and workspace journeys.
 - Live runtime acceptance requires user-performed physical or manual
@@ -106,7 +106,7 @@ floating, fullscreen, maximize, and workspace behavior on KWin.
   immediate MVP critical path, and no recovery action or successful carrier
   smoke is claimed.
 - The residual gate remains a separately authorized, user-performed manual/live
-  Custom Tile check with exact restoration. No Custom Tile runtime journey has
+  Custom Tile check with exact restoration of owned resources. No Custom Tile runtime journey has
   occurred.
 
 ## Verification
@@ -132,6 +132,6 @@ floating, fullscreen, maximize, and workspace behavior on KWin.
 - Keep exhaustive stale-harness recovery out of the immediate MVP critical path;
   do not invent recovery, remove ambiguous residue, or claim a carrier smoke.
 - Retain the residual gate for a separately authorized, user-performed manual
-  Custom Tile live check with exact restoration; no journey has occurred.
+  Custom Tile live check with exact restoration of owned resources; no journey has occurred.
 - Continue to treat `authoritative_ready` as false unless a supported direct
   evaluated-memory source proof is established.

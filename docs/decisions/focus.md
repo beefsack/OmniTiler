@@ -9,7 +9,7 @@
 - Evidence: [review R5, F10](../changes/core-interface-review.md).
 
 ### Workspace active-window memory
-- Decision: core remembers lifetime-bound floating, sticky and tiled identities in one workspace slot. Restore eligible remembered target first without float/tile preference, then existing tiled MRU/layout fallback. Accepted focus choices record before native effects; exception observations use tiled-observation safeguards. Sticky focus records only in workspace selected/observed focused, not every view where visible.
+- Decision: core remembers lifetime-bound floating, sticky and tiled identities in one workspace slot. Restore eligible remembered target first without float/tile preference, then existing tiled MRU/layout fallback. Accepted focus choices, including admission newcomers, record before native effects; exception observations use tiled-observation safeguards. Sticky focus records only in workspace selected/observed focused, not every view where visible.
 - Why: not recorded.
 - Assumes / revisit if: unattributed foreground changes may replace intended memory even after unfinished arrival; this residual remains with unknown-foreground policy. Windows dispatching sticky away from home requires fresh lifetime/visibility proof and controlled home/shown scopes on same output; native homing/foreground vetoes remain authoritative.
 - Status: active, 2026-10-28

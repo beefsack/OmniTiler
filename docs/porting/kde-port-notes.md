@@ -34,6 +34,36 @@ Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
   Core logical-size scaling is separately defined in the
   [v4 contract](world-contract.md#scale-and-rounding).
 
+## V4 connection and recovery
+
+- The producer lifetime is v4 `adapter`; there is no separate broker incarnation.
+  KWin sends its real handshake and separate revisioned settings messages through
+  authenticated `DiscoverWorld`, dispatched by `type` through
+  `route_connection_request`. Core binds at handshake; the broker forwards
+  application identity and capabilities without synthesising them. KDE supports
+  `processId`: own identity is the fixed opaque token `kwin-internal`; a window's
+  native `pid` exactly `-1` maps to the same token, positive client PIDs to decimal
+  Id text, and zero/other non-positive/unreadable values to null under the existing
+  dependent-classification hold. KWin internal windows inherit the base `pid=-1`,
+  not the compositor's OS PID. A D-Bus OS-PID lookup would match no internal
+  window; declaring processId unavailable would lose their own-process exclusion.
+  No asynchronous identity lookup or core/contract change is needed. Native
+  sentinel reads, candidate filtering and token exclusion still require live proof.
+- Every handshake starts fresh, even for the same producer lifetime. Handshake
+  only when unbound or after `generation-mismatch`; a bound host-deadline timeout
+  only re-arms `WaitWorldWake`. Stale generation must reject before identity or
+  supersession. The port owes live restart and watchdog recovery checks because
+  of the earlier [stalls](../changes/kde-world-v2-port.md); offline tests do not
+  establish native recovery. This replaces the old same-lifetime rebind rule.
+- Send initial settings before readiness and re-send on change under their
+  independent revision rules. Settings never reset the connection. No dedicated
+  settings method, capture-attached settings or broker-generated handshake exists.
+- The vertical slice must re-record v4 producer bytes for
+  `stage5_fixture_route_matches_recorded_projections` and
+  `stage5_fixture_route_same_source_serial_b`. Both are explicitly ignored in the
+  phase-1 core gate, not passing v4 proof; preserve `test-fixtures/stage5` until
+  that migration. The legacy `world_wire_fixtures` generator remains unrun.
+
 ## Recommended topology
 
 - The external Rust service (`crates/omnitiler/src/`, planner) extends
@@ -46,12 +76,12 @@ Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
 - A future pager widget/plasmoid consumes cached presentation plus
   notifications with its own client ids; it never invents authority.
 - The service side is one logical adapter/broker, not transparent
-  multi-client RPC: sole report identity and sequencer, one complete
-  stream, one request/observation namespace and one monotonic clock.
+  multi-client RPC: producer lifetime is the sole report identity; the broker
+  owns sequencing, one complete stream, one request/observation namespace and
+  one monotonic clock.
   Fold other clients' cursor, gesture and presentation facts into the
   coherent report, preserving invalidation, lifetime and one gesture
-  identity. Independent counters collide; an incarnation reset clears
-  state.
+  identity. Independent counters collide; every handshake clears state.
 - Core command dedup is one high-watermark; retained operations use
   `op-<command_seq>`. The broker maps its client id to globally
   ordered commands. Native work is actuator only: route transient
@@ -360,6 +390,15 @@ all-mode and actual page-opening checks remain TBD; see the
 
 ## Approved core changes this port must deliver
 
+- V4 floating-workspace publication is `floating:true` with empty
+  `float_origin`, including minimized rows under their existing hold. Audit
+  `kwin/src/world-entry.ts:3287` (`floatingIds.add`) and `:3162-3211`
+  (positive tiled proof before deletion): scope classification must not become
+  retained per-window intent. In particular, test floating-to-tiled toggle,
+  newcomer/minimized recovery and homing drift so a `floatingIds` feedback loop
+  cannot keep occupants floating after retile. Untouched authority never grants
+  writes. This is a v4 port obligation, not an adapter fix or native evidence;
+  [decision](../decisions/workspaces.md#per-workspace-tiling-floating-and-bindings).
 - Host-owned native adoption (user-approved 2026-10-24, implemented
   in core; native acceptance TBD): a fresh core generation adopts native
   desktops/Spaces in native order for each display with native window

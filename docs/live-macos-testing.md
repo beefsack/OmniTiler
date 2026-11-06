@@ -3,8 +3,8 @@
 Read this guide before planning or running live macOS work. It is the
 repository's safety and operational contract; it does not grant mutation
 authorization. No build, successful preflight, or prior authorization on
-another platform grants live macOS scope. Each experiment class needs its
-own separate user authorization.
+another platform grants live macOS scope. Live work needs user authorization,
+which may be standing for the session.
 
 For native tools, permissions, signing identity, and sandbox limitations,
 use the [macOS development environment](macos-dev-environment.md). Product
@@ -14,14 +14,28 @@ selected route; Dock injection and SIP reduction are out of scope.
 
 ## Safety Boundary
 
-- The user authorizes each experiment class separately: AX observation and
-  window movement/resizing, event-tap or hotkey interception, desktop
-  overlays and borders, native-Space moves and focus changes, TCC consent
-  and reset flows, and intentional process loss. Record the permitted
+- Live work needs user authorization, which may be standing for the session.
+  Record the permitted
   environment, resources, operations, and end condition before execution in
   ephemeral operational notes; repository records contain work and evidence,
-  never session permissions or controls.
+  never session permissions, grants, or other session controls.
   KWin and Windows authorization do not carry over.
+- Durable default (user 2026-11-06): n is the max occupied Space ordinal across
+  the relevant inventory, inventoried fresh each run and never hardcoded;
+  occupancy counts non-fixture native windows too, but that is occupancy only,
+  never a full protected-window inventory; run tests on Spaces >n; use the live
+  fixture with the exact platform scope so only fixture windows are managed.
+  All-desktop/sticky membership is recorded as observed, never fabricated;
+  unsupported outcomes stay TBD. The user accepts incidental stray effects on
+  existing windows, so no routine baseline capture/compare, exact-restoration
+  proof, protected-window inventory, or stop-on-baseline surprise. Stop on a
+  crash-class surprise, a filter failure causing repeated non-fixture actuation,
+  a real product/contract decision, or inability to safely establish ownership
+  or clean only exact owned resources. Baseline drift alone never stops a leg.
+- Crash-class probes (forced-crash/recovery) stay bounded to exact verified
+  owned resources with the independently proven restore path first; no
+  virtualized macOS isolation is claimed. TCC, secure-desktop, elevation, lock-state
+  and hook rules below are not weakened.
 - Agent tests use identified, owned disposable test windows and Spaces
   only. Ordinary application acceptance is user-run dogfooding. An event
   tap is a session-wide effect even when testing one window; approval must
@@ -72,14 +86,10 @@ selected route; Dock injection and SIP reduction are out of scope.
    command without that Child must freshly match the helper's nonce title
    (CG, or bounded AX when trusted), as well as its executable and PID;
    caller-to-record nonce equality alone does not prevent PID reuse.
-- Capture the relevant baseline: display topology and separate-Spaces
-  mode, Space membership of affected displays, and for each owned test
-  window its owning PID, AX identity join (`_AXUIElementGetWindow`), CG
-  window ID, geometry, visibility, Space, and focus state. Record exact
-  preimages (including absence) of every state the experiment may change:
-  window geometry, Space assignment, focus, overlay presence, and only the
-  owned settings changed. Capture only the state needed to restore the
-  approved resources.
+- Capture only the owned test-window state needed to restore the approved
+  resources (owning PID, AX/CG identity join, geometry, Space, focus, and
+  only the owned settings changed). No routine full baseline capture/compare
+  or protected-window inventory.
 - Prove an accessible graceful-stop and exact-identity kill path first,
   using a non-tapping, non-hiding test process. Keep user mouse, keyboard,
   Force Quit, and Activity Monitor access available, plus an out-of-tap
@@ -114,7 +124,7 @@ selected route; Dock injection and SIP reduction are out of scope.
 
 1. Request graceful stop of the verified experiment owner. Check that taps
    and overlays are released and affected owned windows return to
-   baseline geometry, Space, visibility, and focus.
+   recorded owned geometry, Space, visibility, and focus.
 2. If unresponsive, recheck executable, bundle ID, PID, start, and session
    identity and terminate only that exact authorized test process. Never
    kill by broad name or guess.
@@ -128,7 +138,7 @@ selected route; Dock injection and SIP reduction are out of scope.
    Space or display). Do not autonomously log off, restart, or claim that
    an OS attention path itself restores windows.
 
-Verify the relevant baseline after recovery. On uncertain ownership or
+Verify owned resources after recovery. On uncertain ownership or
 failed restoration, preserve evidence and residue and report the exact
 remaining state; do not broaden cleanup or repeatedly restart the
 experiment.
@@ -193,7 +203,8 @@ experiment.
 
 ## Fixture-First Live Tests
 
-- Agent live legs test fixture windows only. Start the fixture
+- Agent live legs test fixture windows only, on Spaces >n (n inventoried
+  fresh each run, never hardcoded). Start the fixture
   (`tiler-live-fixture serve`, Unix-socket announcement) and drive it over
   its control socket. Full protocol, flags, fields and limits are in the
   [fixture README](../crates/tiler-live-fixture/README.md).
@@ -223,14 +234,14 @@ experiment.
    fixture-aware ownership contract in the diagnostic harness. Socket focus and
    resize, or a clean tap lifetime without deliveries, do not prove those actions.
 - The development-only `fixture-leg` controller is the guarded automation
-  entrypoint; standalone `fixture-post`/`fixture-focus` refuse. It persists
-  all required baseline categories before setup, owns the signed fixture and
-  product launches, and checks restoration after stopping the primary product.
+  entrypoint; standalone `fixture-post`/`fixture-focus` refuse. It records
+  owned preimages before setup, owns the signed fixture and
+  product launches, and checks owned restoration after stopping the primary product.
   Space-mutating legs must first execute the owned away/return probe. Native
   product destinations are restricted to controller-created Spaces; creation
   is refused in the gated product and cleanup remains controller-owned.
   An offline-accepted controller still needs its first native proof. A missing
-  baseline, probe failure, permission shortfall, residue or mismatch stops the
+  owned preimage, probe failure, permission shortfall, residue or mismatch stops the
   leg; never remove a pending receipt merely to retry.
 - Foreign (non-fixture) applications are only for application-specific
   investigations after first trying the fixture, with the approved scope
@@ -246,7 +257,7 @@ experiment.
   owner-PID join; never the hosting terminal); read back (AX/CG/Space membership,
   never dispatch returns alone); clean up (fixture `shutdown`, remove only
   owned socket/run dir, stop only leg-started PIDs by exact PID, verify
-  restored baseline and remaining residue).
+  owned resources and remaining residue).
 
 ## TCC, Signing, And Permission Experiments
 
@@ -295,14 +306,14 @@ experiment.
 - Record the date, supported release family when relevant, physical versus VM
   test conditions (without the development host's OS version),
   source and artifact identity (including bundle ID and signing
-  requirement), relevant baselines and preimages, bounded operations,
-  stop and crash outcome, and restoration readbacks. Keep resource
+  requirement), relevant owned preimages, bounded operations,
+  stop and crash outcome, and owned-restoration readbacks. Keep resource
   identifiers in the scoped test record; omit titles, application content,
   secrets, raw input logs, session-control details, and machine-specific
   paths or hardware details.
 - An API return, exit status, missing error, or visual appearance alone is
   not feature evidence. Distinguish requested actions, observed effects
-  (with AX, CG, and Space-membership readback), exact restoration, and
+  (with AX, CG, and Space-membership readback), owned restoration, and
   uncertainty; retain the machine responses that gate them.
 - Owned AppKit helpers must complete `finishLaunching()` and pump AppKit events
   as well as their run loop. CG-visible windows alone do not prove an AX
@@ -317,6 +328,9 @@ experiment.
   upstream source text are not substitutes. Fullscreen, elevation, and
   anti-cheat journeys need a later separately approved procedure, not an
   expansion of this initial protocol.
-- Stop and report on authority, identity, baseline, diagnostic, unexpected
-  effect, or restoration ambiguity. Revise the protocol from accepted
+- Stop the leg on a crash-class surprise, repeated non-fixture actuation from
+  filter failure, a real product/contract decision, or inability to safely
+  establish ownership/identity or clean only exact owned resources; never
+  broaden cleanup to compensate. Baseline drift alone never stops a leg.
+  Revise the protocol from accepted
   Phase 0 findings before relying on newly discovered behavior.

@@ -94,6 +94,15 @@ with the fixture-first rules and the signed bundle in
 
 ## Approved core changes and deferred questions
 
+- V4 floating-workspace occupants publish `floating:true` with empty
+  `float_origin` and unchanged authority/holds, not new per-window float intent.
+  Audit `crates/tiler-macos/src/runtime_core.rs:60-61`: `KnownState::of_reply`
+  maps the bit to `exception`, but its float echo requires `placed` too. Verify
+  placement-less scope rows do not become retained intentional-float exceptions,
+  including minimized recovery and floating-to-tiled toggles. Preserve truthful
+  facts and require explicit property authority for writes. No adapter change
+  or native acceptance is claimed here;
+  [decision](../decisions/workspaces.md#per-workspace-tiling-floating-and-bindings).
 - Shared-core directional crossing now ranks entry-edge tiled leaves by
   candidate history, then perpendicular overlap and DFS layout order
   ([D1/D2 policy](../decisions/focus.md#cross-output-directional-focus), offline

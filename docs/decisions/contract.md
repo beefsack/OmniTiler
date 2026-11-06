@@ -14,7 +14,7 @@
 - Principles (User 2026-11-04): core quality and correctness remain the priority; KDE platform work must not cut corners. KDE work tests and validates core ideas and designs on a real host. Any core contract/interface design problem starts a discussion aimed at a sensible solution for the core and all platforms, never a KDE-specific workaround.
 - Why: early read-only platform-fit review finds host mismatches without concurrent core edits; one exact cutover prevents dual shapes; keeping post-0.1 protocol bumps few keeps the contract coherent.
 - Rejected: parallel platform ports during concurrent core/contract churn; several separate pre-0.1 bumps.
-- Assumes / revisit if: each platform can review the draft read-only and sequentially port against the shared fixtures; phase findings return to the draft before approval/merge.
+- Assumes / revisit if: each platform can review the draft read-only and sequentially port against the shared fixtures; phase findings return to the draft before approval/merge. The phase-1 core public gate carries a named exception for the two recorded stage5 production-route tests until the KDE vertical slice re-records v4 producer bytes. This is deferred proof, not a passing v4 replay; preserve the recorded fixtures and leave the legacy `world_wire_fixtures` generator unrun.
 - Status: active, 2026-11-01; amended 2026-11-04
 - Evidence: User 2026-11-04; [v3/v4 authority rule](../porting/world-contract.md#contract-authority-rule), [Windows visibility decision](windows.md#state-centric-v4-visibility), [R14 baseline](../changes/windows-fullscreen-exit-baseline.md), [R21](engine.md#kde-effect-rust-migration-sequence-r21).
 
@@ -47,6 +47,22 @@
 - Assumes / revisit if: no hard capability changes often while running; if one does, report it as a fact. Output-shared workspace is capability example, not KDE option.
 - Status: active, 2026-10-30
 - Evidence: [review F1, F12, F19, P4](../changes/core-interface-review.md).
+
+### Broker-mediated v4 connection
+- Decision: the KDE producer lifetime is the sole v4 `adapter`. KWin sends the real handshake through authenticated `DiscoverWorld`; the broker forwards it through `route_connection_request`, and core binds there. Reports carry that producer lifetime, not a broker incarnation. The same route dispatches separate handshake and settings messages by `type`; only handshake resets, while settings retain their independent revision and reply rules. Broker sequencing, replay, queue ownership and requester-only results remain broker-owned.
+- Why: one connection identity and one connection-family route avoid redundant fencing and temporary translation paths.
+- Rejected: broker incarnation, broker-synthesised handshake, separate offline seam, dedicated settings method and capture-attached settings.
+- Assumes / revisit if: KDE supports processId with fixed own token `kwin-internal`, maps native window pid exactly -1 to that token and positive client PIDs to decimal Id text; zero/other non-positive/unreadable values remain null. Internal windows inherit KWin's -1 sentinel, so resolving the compositor's OS PID would match none, while declaring processId unavailable would lose own-process exclusion. The broker only forwards identity. Native transport, candidate filtering and token-exclusion outcomes remain unproved.
+- Status: approved, 2026-11-06
+- Evidence: [connection discriminator](../spec/reference-outcomes.md#v4-broker-connection-discriminator), [KDE port obligations](../porting/kde-port-notes.md#v4-connection-and-recovery).
+
+### Fresh handshake and wait recovery
+- Decision: every handshake reaches core and starts fresh, including the same producer lifetime. Remove same-lifetime broker rebind. KWin handshakes only when unbound or after `generation-mismatch`; a bound host-deadline timeout only re-arms the wait. Wait rejects stale generation before producer identity or supersession so a restarted service triggers reconnect.
+- Why: core handshake is the sole lifetime reset, and an idle watchdog timeout is not a new connection.
+- Rejected: same-lifetime rediscovery without reset and resetting on every bound wait timeout.
+- Assumes / revisit if: the KDE port must prove restart/watchdog recovery live; no offline result establishes native recovery.
+- Status: approved, 2026-11-06
+- Evidence: [KDE recovery obligation](../porting/kde-port-notes.md#v4-connection-and-recovery), [earlier watchdog stalls](../changes/kde-world-v2-port.md).
 
 ### Own-process UI and ordinary Settings
 - Decision: Settings is an ordinary window on every platform, using normal resizable/fixed-size/dialog classification. Only the tiler's own native process UI is identity-excluded; another process with the same executable or bundle is not. Compare nullable window processId with fixed handshake applicationIdentity.processId, under unavailableFacts semantics; no platform selector or Settings-class predicate. Generic-dialog and generic-XAML rules stay unchanged.

@@ -21,6 +21,13 @@
 - Status: active, 2026-11-04
 - Evidence: [contract](../porting/world-contract.md#visibility-and-focus-ordering), [discriminator](../spec/reference-outcomes.md#empty-workspace-focus-across-outputs).
 
+### Selection visibility accounting
+- Decision: Every frozen visibility member needs its own correlated LastWrite verdict before switch completion. Arrival and proven focus do not substitute for a missing show verdict; that member remains pending and no SwitchEvent is emitted. Supplying the matching show evidence permits the common completion predicate to proceed, without a special arrival-as-accounting path.
+- Why: arrival readiness and visibility-write accounting prove different obligations; one per-member rule covers shows and hides.
+- Assumes / revisit if: native delivery and equivalent reference-WM receipt protocols remain TBD.
+- Status: active, 2026-11-06
+- Evidence: [discriminator](../spec/reference-outcomes.md#selection-accounting-without-logical-echoes), [contract](../porting/world-contract.md#normative-apply-rule).
+
 ### Capacity hold and best-effort policy
 - Decision: Preserve topology when projection cannot allocate positive extents after gaps, using narrow recoverable `constraint-clamp` hold with complete held-lifetime rows; unaffected domains continue. Keep classification in one replaceable core policy location. No admission fallback is implied by this hold; see [layout and admission](layout-and-admission.md).
 - Why: not recorded.
@@ -30,10 +37,11 @@
 
 ### Workspace scope vocabulary
 - Decision: `shared` means linked views, all displays show/switch same workspace (COSMIC Global). `per-output-local` and `global-unique` are separate views (COSMIC OutputBound); `equal_workspace_count` is a host limitation with equal lengths but independent views, never "shared". KDE default is per-output-local; separate modes require per-output desktop setting; warn if disabled, no warning for shared. Native global list can require empty padding; do not add lifecycle beyond existing rules.
+- V4 workspace reply rows are unique by `(output,id)`: one logical id may repeat across outputs, but a repeated pair refuses `duplicate-workspace` in both codecs. Preserve shared-ring identity without producer relabeling/deduplication or a fixture change.
 - Why: not recorded.
 - Assumes / revisit if: all three modes remain valid across platforms; no new setting. Windows stored `shared` token remains unchanged.
 - Status: active, 2026-10-24
-- Evidence: [workspace mode outcome](../changes/kde-world-v2-port.md#stage-7-workspace-modes-outcome-2026-10-28).
+- Evidence: [workspace mode outcome](../changes/kde-world-v2-port.md#stage-7-workspace-modes-outcome-2026-10-28), [row-identity discriminator](../spec/reference-outcomes.md#shared-workspace-reply-identity); row identity approved 2026-11-06, external reference/native counterparts TBD.
 
 ### Separate-view labels
 - Decision: Use `Displays have separate workspaces - own set per display` for per-output-local and `Displays have separate workspaces - swap across displays` for global-unique; `shared` remains `Workspaces span displays`. KDE adopts these labels; Windows distinct existing labels need no follow-up; macOS unchanged.
@@ -93,10 +101,11 @@
 
 ### Per-workspace tiling, floating and bindings
 - Decision: Tiled/floating mode is session-local per managed workspace; startup seeds saved default true, live default changes affect subsequently created workspaces only, overrides reset at owner restart, no binding for default itself. Floating preserves native frame, membership and hide/reveal while disabling domain tiling/navigation/group underlay/drop preview; active border is independent. Retile releases Engine domain without writes, then clean/tolerance-valid recursive fit or sequential long-edge seed, no center inference; preserve exact-lifetime float intent and cancel stale gesture effects on mode flip.
-- Why: not recorded.
+- Floating-mode occupants, including minimized occupants, publish `floating:true` with empty `float_origin`. This is scope classification, not per-window float intent or write authority; existing minimized holds remain. Full conversion into retained per-window floats is not selected.
+- Why: removes the "not tiled but not floating" classification and aligns the W1 float union with COSMIC's workspace-floating conversion without adding per-window intent.
 - Assumes / revisit if: COSMIC matches for unpinned workspaces; pinned/persistent workspaces are future scope grouped with shared restart store. Intentional float/sticky and maximize/fullscreen exceptions unchanged.
 - Status: active, 2026-10-10
-- Evidence: [workspace decisions](../spec/functional-spec.md#workspaces).
+- Evidence: [workspace decisions](../spec/functional-spec.md#workspaces), [classification discriminator](../spec/reference-outcomes.md#workspace-floating-classification-diagnostic); classification approved 2026-11-06. Exact native/reference diagnostic counterparts remain TBD.
 
 ### Workspace selection keys
 - Decision: Meta/Win+1..9 selects an existing workspace without creation; 0 reuses or creates trailing empty. Register US shifted aliases (`Meta+!` through `Meta+)`, and Win equivalents, alongside digit sends while preserving foreign shortcut records.

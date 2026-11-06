@@ -13,11 +13,31 @@ remains in [Windows decisions](./decisions/platforms.md#platform-scope).
 
 ## Safety Boundary
 
-- The user authorizes each experiment class separately: input hooks,
-  window movement/hiding/restyling, desktop overlays, registry/policy changes
-  and intentional process loss. Record the permitted environment, resources,
-  operations and end condition before execution. KWin authorization does not
+- Live work needs user authorization, which may be standing for the session.
+  Note the permitted environment, resources,
+  operations and end condition in ephemeral operational notes before execution.
+  This guide grants no live
+  scope; KWin authorization does not
   carry over; a build, successful preflight or this guide grants no live scope.
+  Repository records contain work and evidence, never session grants, permissions,
+  or other session controls.
+- Durable default (user 2026-11-06): n is the max occupied workspace ordinal
+  across the relevant inventory, inventoried fresh each run and never hardcoded;
+  occupancy counts non-fixture native windows too, but that is occupancy only,
+  never a full protected-window inventory; run tests on workspaces >n; use the live
+  fixture with the exact platform filter so only fixture windows are managed.
+  All-desktop/sticky membership is recorded as observed, never fabricated;
+  unsupported outcomes stay TBD. The user accepts incidental stray effects on
+  existing windows, so no routine baseline capture/compare, exact-restoration
+  proof, protected-window inventory, or stop-on-baseline surprise. Stop on a
+  crash-class surprise, a filter failure causing repeated non-fixture actuation,
+  a real product/contract decision, or inability to safely establish ownership
+  or clean only exact owned resources. Baseline drift alone never stops a leg.
+- Crash-class probes (forced-crash/recovery, ABI-bound native loading where
+  applicable) use an isolated environment (Sandbox/disposable session) where
+  supported; otherwise they stay bounded to exact verified owned resources with
+  the independently proven restore path first. Containment alone is not
+  restoration proof.
 - Agent tests use identified, owned disposable test windows only. Ordinary
   application acceptance is user-run dogfooding (user decision 2026-10-01). A
   global hook is a session-wide effect even when testing only one window;
@@ -45,10 +65,9 @@ remains in [Windows decisions](./decisions/platforms.md#platform-scope).
   and SHA-256, launch arguments, user/session and integrity. Bind the launched
   process to its executable and PID/start identity; a PID or filename alone
   is not ownership proof. Recheck identity before stop/kill or restoration.
-- Capture the relevant display baseline: Windows identities, primary display,
-  coordinates, scale and work areas. Identify the owned test windows and their
-  process/instance, geometry, visibility and styles affected by the experiment.
-  Capture only the state needed to restore the approved resources.
+- Capture only the owned test-window state needed to restore the approved
+  resources (identities, geometry, visibility, styles). No routine full
+  baseline capture/compare or protected-window inventory.
 - Prove an accessible graceful-stop and exact-identity kill path first, using
   a non-hooking/non-hiding test process. Keep user mouse/Task Manager access
   and an out-of-hook recovery route available. Disable project dev autostart
@@ -69,7 +88,8 @@ payload pointer. Dev/test actors use Explorer's desktop broker, not the
 protected Terminal tree.
 
 1. Request graceful stop of the verified experiment owner. Check that hooks
-   and overlays are released and affected owned windows return to baseline.
+   and overlays are released and affected owned windows return to recorded
+   owned state.
 2. If unresponsive, recheck executable/PID/start/session identity and terminate
    only that exact authorized test process. Never kill by broad name or guess.
 3. Run the independently proven restore path. Revalidate window/process
@@ -81,7 +101,7 @@ protected Terminal tree.
    replace that security path. Do not autonomously log off/reboot or claim
    that secure attention itself restores windows.
 
-Verify the relevant baseline after recovery. On uncertain ownership or failed
+Verify owned resources after recovery. On uncertain ownership or failed
 restoration, preserve evidence/residue and report the exact remaining state;
 do not broaden cleanup or repeatedly restart the experiment.
 
@@ -261,7 +281,8 @@ do not broaden cleanup or repeatedly restart the experiment.
 
 ## Fixture-First Live Tests
 
-- Agent live legs test fixture windows only, scoped fixture-only. Start the
+- Agent live legs test fixture windows only, scoped fixture-only, on
+  workspaces >n (n inventoried fresh each run, never hardcoded). Start the
   fixture (`tiler-live-fixture serve`, pipe announcement), then scope the
   tiler before any mutation, e.g.
   `mise exec -- just tile --user-start --scope-exe tiler-live-fixture.exe ...`
@@ -296,7 +317,7 @@ do not broaden cleanup or repeatedly restart the experiment.
   fixture caller ids, no Terminal/operator windows in scope); read back
   (`get` observed predicates, never accepted-setter echoes); clean up
   (`shutdown`, remove only the owned run dir -- the pipe endpoint is
-  kernel-namespace, no file to delete -- `just stop`, verify restored baseline
+  kernel-namespace, no file to delete -- `just stop`, verify owned resources
   and clean ledger).
 
 ## Sandbox Registry And Policy Experiments (deferred to Phase 4)
@@ -323,19 +344,23 @@ do not broaden cleanup or repeatedly restart the experiment.
 
 ## Live Evidence
 
-- Record authorization, date/OS build, physical host versus Sandbox, source
-  and artifact identity, relevant baselines, bounded operations, stop/crash
-  outcome and restoration readbacks. Keep resource identifiers in the scoped
-  test record; omit titles, application content, secrets and raw input logs.
+- Record date/OS build, physical host versus Sandbox, source
+  and artifact identity, relevant owned preimages, bounded operations, stop/crash
+  outcome and owned-restoration readbacks. Keep resource identifiers in the scoped
+  test record; omit titles, application content, secrets, raw input logs, and
+  session-control details.
 - An API return, exit status, missing error or visual appearance alone is not
-  feature evidence. Distinguish requested actions, observed effects, exact
+  feature evidence. Distinguish requested actions, observed effects, owned
   restoration and uncertainty; retain the machine responses that gate them.
 - Physical shortcut/display/game acceptance remains user-owned. Record what
   was actually observed; Sandbox, synthetic input and hosted CI are not
   substitutes. Game/elevation/secure-desktop journeys need a later separately
   approved procedure, not an expansion of this initial protocol.
-- Stop and report on authority, identity, baseline, diagnostic, unexpected
-  effect or restoration ambiguity. Revise the protocol from accepted Phase 1
+- Stop the leg on a crash-class surprise, repeated non-fixture actuation from
+  filter failure, a real product/contract decision, or inability to safely
+  establish ownership/identity or clean only exact owned resources; never
+  broaden cleanup to compensate. Baseline drift alone never stops a leg.
+  Revise the protocol from accepted Phase 1
   findings before relying on newly discovered behavior.
 - Use a unique evidence directory per journey; reused screenshot filenames
   overwrite prior journey evidence.
