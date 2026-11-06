@@ -40,7 +40,6 @@ export interface WorldNativeEnv {
     submitSettledCommand: (command: WorldCommand, label: string) => boolean;
     invalidate: () => void;
     scheduleDispatch: () => void;
-    persistFloatIntent: () => void;
     // Live frame read for the unfloat capture: a user-moved/resized float
     // carries its live rect so the next float restores it. Null (unreadable)
     // fails the unfloat closed.
@@ -793,7 +792,6 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
                 if (invoked && readSticky(readProp, ref) === true) {
                     env.noteFloating(id);
                     env.scheduleDispatch();
-                    env.persistFloatIntent();
                     log(`omnitiler:world:sticky-applied window=${token(id)} target=sticky outcome=applied`);
                     return true;
                 }
@@ -837,7 +835,6 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
                 env.clearFloating(id);
             }
             env.scheduleDispatch();
-            env.persistFloatIntent();
             log(`omnitiler:world:sticky-applied window=${token(id)} target=unsticky outcome=applied`);
             return true;
         } catch (error) {

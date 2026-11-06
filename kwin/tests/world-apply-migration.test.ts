@@ -166,7 +166,7 @@ function makeEnv(state: WorldAdapterState, world: FakeWorld) {
 
 function freshState(reply: WorldReply): WorldAdapterState {
     const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1", "broker-1");
+    state.onDiscovery("gen-1", "adapter-1");
     state.invalidate();
     state.invalidate();
     reply.obs = state.currentInvalid;
@@ -289,7 +289,7 @@ describe("world migration apply", () => {
         }
         reply.workspaces.push({
             id: "wa0", out: "out-a", bind: "wa0",
-            scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
+            scope: { kind: "output", out: "out-a" }, order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
         });
         const world: FakeWorld = {
             homing: new Map([
@@ -351,7 +351,7 @@ describe("world migration apply", () => {
         // the exact target output still settles, because only the exact
         // target output proves. Any-output visibility alone never settles.
         reply.transfers = [
-            { op: "op-view-9", kind: "view", win: "", out: "out-b", ws: "ws-2", follow: false, held: false },
+            { op: "op-view-9", kind: "view", win: "", out: "out-b", ws: "ws-2", follow: false, held: false, cmdSeq: null },
         ];
         reply.windows = [];
         const world: FakeWorld = {
@@ -378,7 +378,7 @@ describe("world migration apply", () => {
         // switch lies (records but never shows), and wb1 stays visible
         // nowhere: any-output visibility must not settle applied.
         reply.transfers = [
-            { op: "op-view-1", kind: "view", win: "", out: "out-b", ws: "ws-2", follow: false, held: false },
+            { op: "op-view-1", kind: "view", win: "", out: "out-b", ws: "ws-2", follow: false, held: false, cmdSeq: null },
         ];
         reply.windows = [];
         const world: FakeWorld = {
@@ -408,7 +408,7 @@ describe("world migration apply", () => {
         reply.transfers = [];
         reply.windows = [];
         reply.workspaces = [
-            { id: "ws-gone", out: "out-a", bind: "ws-gone", scope: "out-a", order: 9, mode: "tiled", exist: false, hold: "", trailing: false },
+            { id: "ws-gone", out: "out-a", bind: "ws-gone", scope: { kind: "output", out: "out-a" }, order: 9, mode: "tiled", exist: false, hold: "", trailing: false },
         ];
         const world: FakeWorld = {
             homing: new Map(),
@@ -450,7 +450,7 @@ describe("world migration refill gating", () => {
         }
         reply.workspaces.push({
             id: "wa0", out: "out-a", bind: "wa0",
-            scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
+            scope: { kind: "output", out: "out-a" }, order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
         });
         return reply;
     }
@@ -473,7 +473,7 @@ describe("world migration refill gating", () => {
         // exact pairing rejects it, so the rows can never refill there.
         reply.transfers.push({
             op: "op-9", kind: "view", win: "", out: "out-a",
-            ws: "ws-gone", follow: false, held: true,
+            ws: "ws-gone", follow: false, held: true, cmdSeq: null,
         });
         const world = pairedWorld();
         const state = freshState(reply);

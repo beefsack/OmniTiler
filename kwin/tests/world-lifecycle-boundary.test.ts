@@ -169,6 +169,18 @@ describe("lifecycle boundary report carriage", () => {
             onAllDesktops: false,
             minimized: false,
             hidden: false,
+            rectV4: { x: 0, y: 0, w: 200, h: 200 },
+            hintsV4: { minW: null, minH: null, maxW: null, maxH: null },
+            nativeWsV4: "ws-1",
+            resizable: null,
+            above: null,
+            below: null,
+            role: null,
+            appId: null,
+            processId: null,
+            class: null,
+            title: null,
+            windowType: "normal",
         };
         const json = buildWorldInnerReportJson({
             observation: { ...obs, windowFacts: [row] },

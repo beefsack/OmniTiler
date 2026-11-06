@@ -28,12 +28,7 @@ import {
     type WorldPresentationSubscriber,
 } from "./world-presentation";
 
-// Float-intent method names mirror the Planner1 interface (same values as
-// the legacy plan adapter's intent route): one bounded read before first
-// dispatch seeds membership, settled changes persist via write. Native
-// membership transport only, never workspace policy.
-const INTENT_READ_METHOD = "ReadFloatIntent";
-const INTENT_WRITE_METHOD = "WriteFloatIntent";
+import { createWorldIntentStore } from "./world-intent-store";
 
 // Compile-time source identity (retired source-rev module inlined here so
 // the installed bundle keeps baking it): the installed KWin bundle build
@@ -85,6 +80,7 @@ function resolveSourceRev(): string {
 import {
     WORLD_MAX_REPLY_BYTES,
     WORLD_MAX_REQUEST_BYTES,
+    compareU64,
     incrementU64,
     isCanonicalU64,
     isOpaqueId,
@@ -92,11 +88,10 @@ import {
 } from "./world-seq";
 import {
     buildCaptureEnvelope,
-    buildDiscoveryRequest,
     buildQueueRequest,
     buildTakeRequest,
     buildWaitRequest,
-    buildWorldInnerReportJson,
+    buildWorldReportV4InnerJson,
     cmdFocusDirectional,
     cmdMigrateDirectional,
     cmdMoveDirectional,
@@ -114,7 +109,6 @@ import {
     isWorldQueueReply,
     isWorldRejection,
     isWorldWaitReply,
-    parseDiscoveryReply,
     parseWorldReply,
     type WorldCommand,
     type WorldReply,
@@ -141,9 +135,18 @@ import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
 import { readNativeAlias } from "./native-alias";
 import { createWorldCloseTracker } from "./world-close-tracker";
-import { isSeparateWorkspaceMode, readPerOutputVirtualDesktopsFlag } from "./workspace-native";
+import { isSeparateWorkspaceMode, readPerOutputVirtualDesktopsFlag, supportsPerOutputDesktops } from "./workspace-native";
 import { createWorldCommandContext } from "./world-command-context";
 import { createWorldSettingsLive } from "./world-settings-live";
+import {
+    buildHandshakeRequest,
+    buildSettingsRequest,
+    defaultKwinCapabilities,
+    ownApplicationIdentity,
+    parseConnectionError,
+    parseHandshakeReply,
+    parseSettingsReply,
+} from "./world-connection";
 import { normalizeScopeClassList, readBakedScopeClass, windowMatchesScopeClass } from "./scope-class";
 
 export const WORLD_DBUS_SERVICE = "com.omnitiler.Planner";
@@ -276,11 +279,12 @@ export interface WorldEntryOverrides {
     // pass `scopeClass` directly.
     readonly scopeClass?: string | readonly string[];
     readonly readScopeClassFn?: () => unknown;
-    // Compatibility seams accepted from the production entry and ignored or
-    // honored without policy: generation is superseded by authenticated
-    // discovery (never used as the core generation); floatIntent is accepted
-    // and ignored (float membership rides the full observation); the tiling
-    // callback fires after each applied reply with the live snapshot.
+    // Compatibility seams accepted from the production entry: generation is
+    // superseded by authenticated discovery (never used as the core
+    // generation); floatIntent enables opaque intent persistence (bounded
+    // seed before the first admissible report, accepted core writes
+    // persisted verbatim); the tiling callback fires after each applied
+    // reply with the live snapshot.
     readonly generation?: unknown;
     readonly floatIntent?: boolean;
     readonly onWorkspaceTilingChanged?: (snapshot: { scope: string; tiled: boolean; defaultTiled: boolean }) => void;
@@ -747,12 +751,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
     // Adapter-owned intentional-float membership (observation input only):
     // converged from accepted Planner exception rows, pruned to live ids.
-    // Seeded once from the Rust-owned runtime store (ReadFloatIntent) when
-    // floatIntent is enabled, persisted on settled change (WriteFloatIntent).
+    // Opaque core intent rides the intent store below; these sets never
+    // touch the store.
     const floatingIds = new Set<string>();
-    let floatSeeded = false;
-    // Tile-override membership (native only): fixed-window tile intent from
-    // the Rust-owned store (ReadFloatIntent `tile`), disjoint from floats.
+    // Tile-override membership (native only): fixed-window tile intent,
+    // disjoint from floats. Observation input only, like floats.
     const tileIds = new Set<string>();
     // Authoritative native gesture lifecycle (effect-owned, read-only):
     // the latest versioned snapshot the held gesture waiter delivered for
@@ -970,6 +973,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return value;
         }
         return "unknown";
+    };
+
+    // v4 bound generation-mismatch on a v3 lane: the broker binds every
+    // rejection (including generation mismatches) with source/watermark/
+    // clock, which the v3 lane parser refuses. Recognize exactly that case
+    // so a rotated broker still reconnects the entry; every other v4
+    // shape stays malformed-class on v3 lanes until the K1b cutover.
+    const isGenerationMismatch = (reply: string): boolean => {
+        const failure = parseConnectionError(reply);
+        return failure !== null && failure.kind === "generation-mismatch";
     };
 
     // Event-driven scheduling only: synchronous invalidation first, then one
@@ -1215,7 +1228,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (stopped) {
             return false;
         }
-        if (state.boundGen === null || state.brokerIncarnation === null) {
+        if (state.boundGen === null) {
             log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=undiscovered`);
             return false;
         }
@@ -1271,7 +1284,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (stopped) {
             return false;
         }
-        if (state.boundGen === null || state.brokerIncarnation === null) {
+        if (state.boundGen === null) {
             log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=undiscovered`);
             return false;
         }
@@ -1353,76 +1366,42 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
-    // Float/tile intent persistence (native membership only, never policy):
-    // one bounded ReadFloatIntent before first dispatch seeds
-    // intentional-float membership plus fixed-window tile overrides
-    // (`tile`, disjoint from floats); settled changes persist both via
-    // WriteFloatIntent. Omitted unless floatIntent is enabled. Same Planner
+    // Opaque core-intent persistence (native membership transport only,
+    // never policy): one bounded ReadFloatIntent before the first admissible
+    // report hydrates the map; every accepted core `intentWrites` row applies
+    // verbatim (string replaces, null deletes) and a change persists the
+    // full snapshot via WriteFloatIntent. Enabled only when floatIntent is
+    // set; offline harnesses bypass with an empty hydrated map. Same Planner
     // service, intent methods.
-    const seedFloatIntent = (): void => {
-        if (overrides.floatIntent !== true || floatSeeded) {
-            return;
-        }
-        floatSeeded = true;
-        try {
-            (callDbus as NonNullable<WorldEntryOverrides["callDbus"]>)(
-                WORLD_DBUS_SERVICE, WORLD_DBUS_OBJECT, WORLD_DBUS_INTERFACE,
-                INTENT_READ_METHOD, `{"v":1,"correlation_id":"float-seed"}`, (reply: unknown) => {
-                    try {
-                        if (typeof reply !== "string") {
-                            return;
-                        }
-                        const parsed = JSON.parse(reply) as { members?: unknown; floating?: unknown; tile?: unknown };
-                        const members = Array.isArray(parsed.members)
-                            ? parsed.members
-                            : Array.isArray(parsed.floating)
-                                ? parsed.floating
-                                : null;
-                        if (members === null) {
-                            return;
-                        }
-                        for (const id of members) {
-                            if (isOpaqueId(id)) {
-                                floatingIds.add(id as string);
-                            }
-                        }
-                        // Fixed-window tile overrides ride the same store,
-                        // disjoint from floats; absent `tile` reads as empty.
-                        if (Array.isArray(parsed.tile)) {
-                            for (const id of parsed.tile) {
-                                if (isOpaqueId(id) && !floatingIds.has(id as string)) {
-                                    tileIds.add(id as string);
-                                }
-                            }
-                        }
-                        state.invalidate();
-                        scheduleDispatch();
-                    } catch (error) {
-                        void error;
-                    }
-                },
-            );
-        } catch (error) {
-            void error;
-        }
-    };
-
-    const persistFloatIntent = (): void => {
-        if (overrides.floatIntent !== true || !floatSeeded) {
-            return;
-        }
-        try {
-            const members = [...floatingIds].filter((id) => isOpaqueId(id)).slice(0, 1024);
-            const tile = [...tileIds].filter((id) => isOpaqueId(id) && !floatingIds.has(id)).slice(0, 1024);
-            const payload = `{"v":1,"correlation_id":"float-settled","members":${JSON.stringify(members)},"tile":${JSON.stringify(tile)}}`;
-            (callDbus as NonNullable<WorldEntryOverrides["callDbus"]>)(
-                WORLD_DBUS_SERVICE, WORLD_DBUS_OBJECT, WORLD_DBUS_INTERFACE,
-                INTENT_WRITE_METHOD, payload, () => undefined,
-            );
-        } catch (error) {
-            void error;
-        }
-    };
+    const intentStore = createWorldIntentStore(
+        {
+            route: {
+                service: WORLD_DBUS_SERVICE,
+                object: WORLD_DBUS_OBJECT,
+                iface: WORLD_DBUS_INTERFACE,
+            },
+            callDbus: (service, path, iface, method, payload, callback) => {
+                try {
+                    (callDbus as NonNullable<WorldEntryOverrides["callDbus"]>)(
+                        service, path, iface, method, payload, callback,
+                    );
+                } catch (error) {
+                    void error;
+                }
+            },
+            scheduleOnce,
+            log,
+            isStopped: () => stopped,
+            getGeneration: () => state.boundGen,
+            // Single hydration kick: one redispatch, never a poll or retry.
+            onHydrated: () => {
+                if (!stopped) {
+                    scheduleDispatch();
+                }
+            },
+        },
+        overrides.floatIntent === true,
+    );
 
     // Native effect renderer calls (never workspace policy): the presentation
     // subscriber paints accepted core shapes only (border, underlay, drop
@@ -1515,18 +1494,54 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         },
     });
 
-    // Authenticated discovery (strict v2): binds the serving generation
-    // plus the broker incarnation (the reply adapter). A changed generation
-    // cancels flights, ordering, the queue-client namespace, and desired
-    // caches (never native wins); the adapter re-observes and command
-    // issuers re-establish with fresh per-client command ids.
+    // Revisioned connection settings (strict v4, same discovery method):
+    // the independent per-lifetime settings revision, starting at "1" per
+    // producer lifetime and never reset except on generation rotation. The
+    // settings message precedes the first report on the wire AND the first
+    // report waits for the accepted settings reply, so initial reports are
+    // authoritative: accepted settings (correlated by generation, request,
+    // and revision) gate dispatch; the core owns revision rules
+    // (stale/revision-reused never reset here). Steady-state resends ride
+    // configChanged edges only, never polling. A send already outstanding
+    // for the bound generation owns the wire: overlapping changes coalesce
+    // into one dirty retry after it settles. Equal content never bumps the
+    // revision: a lost send retries the same revision, and only changed
+    // content advances it.
+    let settingsRev = "0";
+    let lastSettingsValuesKey: string | null = null;
+    let settingsDirty = false;
+    let settingsCounter = 0;
+    // Outstanding settings send for the bound generation (fences every
+    // callback and timeout: a stale completion never clears newer state,
+    // never marks a replacement generation dirty, and never triggers a
+    // duplicate handshake), plus the generation whose settings the broker
+    // accepted (dispatch stays gated until this equals the bound
+    // generation). Both reset on generation rotation and on stop.
+    let pendingSettings: { gen: string; req: string; rev: string } | null = null;
+    let settingsAcceptedGen: string | null = null;
+    let settingsAcceptedRev: string | null = null;
+    let settingsTimeoutCancel: (() => void) | null = null;
+
+    // Authenticated discovery (strict v4 handshake): the handshake binds
+    // the sole adapter producer lifetime and the serving core generation.
+    // A changed generation cancels flights, ordering, the queue-client
+    // namespace, and desired caches (never native wins); the adapter
+    // re-observes and command issuers re-establish with fresh per-client
+    // command ids. The handshake and the settings snapshot share the
+    // discovery method, dispatched by type server-side; no second route.
     const discover = (): void => {
         if (stopped) {
             return;
         }
         discCounter += 1;
         const reqId = `disc-${discCounter}`;
-        const payload = buildDiscoveryRequest(adapter, reqId);
+        const payload = buildHandshakeRequest(adapter, reqId, ownApplicationIdentity(), defaultKwinCapabilities(supportsPerOutputDesktops(surface)));
+        if (payload === null) {
+            log("omnitiler:world:discover-invalid recovery=rearm");
+            cancelDiscoverChain();
+            armWait();
+            return;
+        }
         let settled = false;
         discoverOutstanding = true;
         discoverChainActive = true;
@@ -1580,26 +1595,39 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         armWait();
                         return;
                     }
-                    const parsed = parseDiscoveryReply(reply);
-                    if (parsed === null || isWorldRejection(parsed)) {
+                    const parsed = parseHandshakeReply(reply);
+                    if (parsed === null) {
+                        const failure = parseConnectionError(reply);
+                        if (failure !== null) {
+                            log(`omnitiler:world:discover-rejected kind=${token(failure.kind)} recovery=rearm`);
+                        } else {
+                            log("omnitiler:world:discover-malformed recovery=rearm");
+                        }
+                        cancelDiscoverChain();
+                        armWait();
+                        return;
+                    }
+                    // Authenticated discovery: the handshake reply must be
+                    // an accepted (ready:false, empty kind) generation grant
+                    // echoing this adapter lifetime plus the exact
+                    // outstanding handshake req. Anything else binds nothing
+                    // and resets nothing.
+                    if (
+                        parsed.ready !== false || parsed.kind !== "" ||
+                        parsed.gen === null || parsed.adapter !== adapter || parsed.req !== reqId
+                    ) {
                         log("omnitiler:world:discover-rejected recovery=rearm");
                         cancelDiscoverChain();
                         armWait();
                         return;
                     }
-                    // Authenticated discovery: the bootstrap reply must be a
-                    // non-ready core reply naming the broker incarnation
-                    // (never this adapter) plus the exact outstanding
-                    // discovery req. Anything else binds nothing and resets
-                    // nothing.
-                    if (parsed.ready !== false || parsed.adapter === adapter || parsed.req !== reqId) {
-                        log("omnitiler:world:discover-rejected recovery=rearm");
-                        cancelDiscoverChain();
-                        armWait();
-                        return;
-                    }
-                    const changed = state.onDiscovery(parsed.gen, parsed.adapter, adapter, parsed.req, reqId);
+                    const changed = state.onDiscovery(parsed.gen, adapter, parsed.req, reqId);
                     if (changed) {
+                        // New generation owns a fresh intent snapshot: reseed
+                        // the map before the post-discovery dispatch so the
+                        // first admissible report carries it. The superseded
+                        // round (if any) fences on its nonce.
+                        intentStore.seed(parsed.gen);
                         // New generation: queued intents belong to the dead
                         // generation and drop with one diagnostic; the
                         // binding snapshot and one-shot native effects
@@ -1609,6 +1637,24 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // (reconnect seed, never a stale repaint).
                         dropDeadGenerationIntents();
                         logicalOfNative.clear();
+                        // Fresh generation owns a fresh settings revision
+                        // namespace: the post-discovery snapshot below
+                        // re-proves every setting from rev 1. The outstanding
+                        // send (if any) belongs to the dead generation and
+                        // its fenced callbacks can no longer settle or dirty
+                        // the replacement.
+                        settingsRev = "0";
+                        lastSettingsValuesKey = null;
+                        settingsDirty = false;
+                        pendingSettings = null;
+                        settingsAcceptedGen = null;
+                        settingsAcceptedRev = null;
+                        try {
+                            settingsTimeoutCancel?.();
+                        } catch (error) {
+                            void error;
+                        }
+                        settingsTimeoutCancel = null;
                         try {
                             presentationSubscriber.notifyGeneration(parsed.gen);
                         } catch (error) {
@@ -1683,6 +1729,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         gestureWatchdogCancel = null;
                         cancelGestureRecovery();
                     }
+                    void sendSettings("discover", true);
                     void dispatch(false);
                     armEffectWaiter();
                     armGestureWaiter();
@@ -1695,6 +1742,212 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             cancelDiscoverChain();
             discoverOutstanding = false;
             log("omnitiler:world:discover-transport recovery=on-next-event");
+        }
+    };
+
+    // Send one revisioned settings snapshot on the discovery method
+    // (same method as the handshake, dispatched by type server-side). The
+    // message precedes the first report on the wire AND the first report
+    // waits for the accepted reply (dispatch stays gated until the broker
+    // accepts this generation's settings), so initial reports become
+    // authoritative. Equal content reuses the revision (idempotent across
+    // same-generation rebinds and lost-send retries, which resend the same
+    // revision); only changed content bumps it. A send already outstanding
+    // for the bound generation owns the wire: overlapping changes coalesce
+    // into one dirty retry after it settles. Every callback and timeout is
+    // fenced by the pending (generation, request, revision) identity: a
+    // stale completion never clears newer state, never dirties a
+    // replacement generation, and never triggers a duplicate handshake. A
+    // generation-mismatch refusal re-enters discovery only when still
+    // bound to that generation (the sole bound-handshake trigger). Never
+    // sends while unbound; never resets the revision except on generation
+    // rotation; a revision-exhausted counter only marks retry (same safe
+    // failure convention as every other settings loss), never a handshake.
+    const sendSettings = (reason: string, force: boolean): void => {
+        if (stopped || state.boundGen === null) {
+            return;
+        }
+        const gen = state.boundGen;
+        let values: Array<[string, unknown]>;
+        try {
+            values = settings.snapshotConnectionValues();
+        } catch (error) {
+            void error;
+            return;
+        }
+        let valuesKey = "";
+        try {
+            valuesKey = JSON.stringify(values);
+        } catch (error) {
+            void error;
+            return;
+        }
+        if (!force && valuesKey === lastSettingsValuesKey) {
+            return;
+        }
+        // An outstanding send for this generation owns the wire: changed
+        // content coalesces into one dirty retry after it settles, while
+        // equal content is already covered by the flight.
+        if (pendingSettings !== null && pendingSettings.gen === gen) {
+            if (valuesKey !== lastSettingsValuesKey) {
+                settingsDirty = true;
+            }
+            return;
+        }
+        if (valuesKey !== lastSettingsValuesKey) {
+            const next = incrementU64(settingsRev);
+            if (next === null) {
+                log("omnitiler:world:settings-rev-exhausted recovery=on-next-event");
+                settingsDirty = true;
+                return;
+            }
+            settingsRev = next;
+            lastSettingsValuesKey = valuesKey;
+        }
+        const sentRev = settingsRev;
+        settingsCounter += 1;
+        const reqId = `set-${settingsCounter}`;
+        const payload = buildSettingsRequest(adapter, gen, reqId, sentRev, values);
+        if (payload === null) {
+            log("omnitiler:world:settings-invalid recovery=on-next-event");
+            settingsDirty = true;
+            return;
+        }
+        let settled = false;
+        pendingSettings = { gen, req: reqId, rev: sentRev };
+        try {
+            settingsTimeoutCancel?.();
+        } catch (error) {
+            void error;
+        }
+        settingsTimeoutCancel = null;
+        const timeoutCancel = scheduleOnce(WORLD_TIMEOUT_MS, () => {
+            if (!settled) {
+                settled = true;
+                // Fenced: only the still-current send marks retry; a
+                // superseded timeout never clears newer content or rev.
+                if (
+                    pendingSettings !== null && pendingSettings.gen === gen &&
+                    pendingSettings.req === reqId && state.boundGen === gen
+                ) {
+                    pendingSettings = null;
+                    settingsTimeoutCancel = null;
+                    log("omnitiler:world:settings-timeout recovery=on-next-event");
+                    settingsDirty = true;
+                }
+            }
+        });
+        settingsTimeoutCancel = timeoutCancel;
+        try {
+            (callDbus as NonNullable<WorldEntryOverrides["callDbus"]>)(
+                WORLD_DBUS_SERVICE, WORLD_DBUS_OBJECT, WORLD_DBUS_INTERFACE,
+                WORLD_DISCOVERY_METHOD, payload, (reply: unknown) => {
+                    if (settled) {
+                        return;
+                    }
+                    // Fenced: a superseded or replaced send's late reply is
+                    // a no-op that never settles a newer flight, never
+                    // dirties the replacement, and never rediscovers.
+                    if (
+                        pendingSettings === null || pendingSettings.gen !== gen ||
+                        pendingSettings.req !== reqId || pendingSettings.rev !== sentRev ||
+                        state.boundGen !== gen
+                    ) {
+                        log("omnitiler:world:settings-stale recovery=ignore");
+                        return;
+                    }
+                    // Correlation precedes settlement: a well-formed reply
+                    // for another request must not consume this flight. The
+                    // timeout stays armed and the correlated accept still
+                    // lands; transport-level failures below still settle
+                    // with retry as before.
+                    if (typeof reply === "string" && utf8ByteLength(reply) <= WORLD_MAX_REPLY_BYTES) {
+                        const probe = parseSettingsReply(reply);
+                        if (
+                            probe !== null &&
+                            (probe.adapter !== adapter || probe.gen !== gen ||
+                                probe.req !== reqId || probe.rev !== sentRev)
+                        ) {
+                            log("omnitiler:world:settings-stale recovery=ignore");
+                            return;
+                        }
+                    }
+                    settled = true;
+                    timeoutCancel();
+                    settingsTimeoutCancel = null;
+                    if (typeof reply !== "string") {
+                        log("omnitiler:world:settings-transport recovery=on-next-event");
+                        pendingSettings = null;
+                        settingsDirty = true;
+                        return;
+                    }
+                    if (utf8ByteLength(reply) > WORLD_MAX_REPLY_BYTES) {
+                        log("omnitiler:world:settings-oversize recovery=on-next-event");
+                        pendingSettings = null;
+                        settingsDirty = true;
+                        return;
+                    }
+                    const parsed = parseSettingsReply(reply);
+                    if (parsed === null) {
+                        const failure = parseConnectionError(reply);
+                        if (failure !== null && failure.kind === "generation-mismatch") {
+                            pendingSettings = null;
+                            if (state.boundGen === gen) {
+                                dropDeadGenerationIntents();
+                                killPending("generation-mismatch");
+                                waitHoldForDiscovery = true;
+                                wakePendingCapture = false;
+                                log("omnitiler:world:generation-mismatch recovery=rediscover");
+                                discover();
+                            } else {
+                                log("omnitiler:world:settings-stale recovery=on-next-event");
+                            }
+                            return;
+                        }
+                        log("omnitiler:world:settings-malformed recovery=on-next-event");
+                        pendingSettings = null;
+                        settingsDirty = true;
+                        return;
+                    }
+                    if (
+                        parsed.adapter !== adapter || parsed.gen !== gen ||
+                        parsed.req !== reqId || parsed.rev !== sentRev
+                    ) {
+                        log("omnitiler:world:settings-stale recovery=ignore");
+                        return;
+                    }
+                    // Correlated definitive reply: this generation's settings
+                    // are accepted (or definitively disposed as stale /
+                    // revision-reused), so dispatch is authoritative from
+                    // here. The content key and revision are retained: an
+                    // equal-content retry resends the same revision.
+                    pendingSettings = null;
+                    settingsAcceptedGen = gen;
+                    settingsAcceptedRev = sentRev;
+                    const diag = parsed.diagnostics
+                        .map((d) => `${d.key}:${d.kind}`)
+                        .join(",");
+                    log(`omnitiler:world:settings status=${token(parsed.status)} rev=${token(parsed.rev)} reason=${token(reason)}` +
+                        (diag === "" ? "" : ` diagnostics=${token(diag)}`));
+                    if (!stopped) {
+                        void dispatch(false);
+                    }
+                },
+            );
+        } catch (error) {
+            void error;
+            timeoutCancel();
+            settingsTimeoutCancel = null;
+            // A synchronous transport throw owns no flight: only clear a
+            // still-current pending so the next event retries the same rev.
+            if (
+                pendingSettings !== null && pendingSettings.gen === gen &&
+                pendingSettings.req === reqId && state.boundGen === gen
+            ) {
+                pendingSettings = null;
+                log("omnitiler:world:settings-transport recovery=on-next-event");
+                settingsDirty = true;
+            }
         }
     };
 
@@ -2041,7 +2294,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (stopped || effectWaiterOutstanding) {
             return;
         }
-        if (state.boundGen === null || state.brokerIncarnation === null || discoverOutstanding) {
+        if (state.boundGen === null || discoverOutstanding) {
             return;
         }
         // The facts lane is opt-in transport: without the effect seam the
@@ -2070,10 +2323,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             effectWaiterOutstanding = false;
             effectWaiterGen = null;
             effectWatchdogCancel = null;
-            log("omnitiler:world:effect-facts-host-timeout recovery=rearm-unknown");
+            // Content-gated unknown transition: the snapshot clear is
+            // mandatory (stale facts must never ride another capture) but
+            // the follow-up capture publishes only a known->unknown
+            // transition. An already-unknown watchdog re-arms silently for
+            // enabled-later recovery at the same host cadence.
+            const hadEffectFacts = effectSnapshot !== null;
+            if (hadEffectFacts) {
+                log("omnitiler:world:effect-facts-host-timeout recovery=rearm-unknown");
+            }
             setEffectSnapshot(null);
-            state.invalidate();
-            scheduleDispatch();
+            if (hadEffectFacts) {
+                state.invalidate();
+                scheduleDispatch();
+            }
             armEffectWaiter();
         });
         try {
@@ -2157,24 +2420,37 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (parsed === null) {
             // Malformed/oversize/invalid: unknown supersedes any retained
             // snapshot (a stale chord or style must never ride another
-            // capture), one follow-up capture publishes the hide, and the
-            // lane stands down to the single host-deadline recovery chain.
-            log("omnitiler:world:effect-facts-malformed recovery=host-deadline-unknown");
+            // capture). Content-gated publish: only a known->unknown
+            // transition dispatches; an already-unknown lane stands down
+            // silently to the single host-deadline recovery chain.
+            const hadEffectFacts = effectSnapshot !== null;
+            if (hadEffectFacts) {
+                log("omnitiler:world:effect-facts-malformed recovery=host-deadline-unknown");
+            }
             setEffectSnapshot(null);
-            state.invalidate();
-            scheduleDispatch();
+            if (hadEffectFacts) {
+                state.invalidate();
+                scheduleDispatch();
+            }
             scheduleEffectRecovery();
             return;
         }
         if (!parsed.available) {
             // Explicit endpoint teardown: same unknown treatment as
-            // malformed, with its own reason. The next waiter (after a
-            // restart) re-binds a fresh instance; a stale one never applies
-            // here because generation fencing already dropped it.
-            log("omnitiler:world:effect-facts-unavailable recovery=host-deadline-unknown");
+            // malformed, with its own reason. Content-gated publish: only
+            // a known->unknown transition dispatches. The next waiter
+            // (after a restart) re-binds a fresh instance; a stale one
+            // never applies here because generation fencing already
+            // dropped it.
+            const hadEffectFacts = effectSnapshot !== null;
+            if (hadEffectFacts) {
+                log("omnitiler:world:effect-facts-unavailable recovery=host-deadline-unknown");
+            }
             setEffectSnapshot(null);
-            state.invalidate();
-            scheduleDispatch();
+            if (hadEffectFacts) {
+                state.invalidate();
+                scheduleDispatch();
+            }
             scheduleEffectRecovery();
             return;
         }
@@ -2288,7 +2564,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (gestureTerminalPending !== null) {
             return;
         }
-        if (state.boundGen === null || state.brokerIncarnation === null || discoverOutstanding) {
+        if (state.boundGen === null || discoverOutstanding) {
             return;
         }
         const gestureCall = resolveGestureCallDbus();
@@ -2315,10 +2591,19 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             gestureWaiterOutstanding = false;
             gestureWaiterGen = null;
             gestureWatchdogCancel = null;
-            log("omnitiler:world:gesture-facts-host-timeout recovery=rearm-unknown");
+            // Content-gated unknown transition: the snapshot clear is
+            // mandatory but the follow-up capture publishes only a
+            // known->unknown transition. An already-unknown watchdog
+            // re-arms silently for enabled-later recovery.
+            const hadGestureFacts = gestureSnapshot !== null;
+            if (hadGestureFacts) {
+                log("omnitiler:world:gesture-facts-host-timeout recovery=rearm-unknown");
+            }
             gestureSnapshot = null;
-            state.invalidate();
-            scheduleDispatch();
+            if (hadGestureFacts) {
+                state.invalidate();
+                scheduleDispatch();
+            }
             armGestureWaiter();
         });
         try {
@@ -2380,20 +2665,30 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         const parsed = parseNativeGesture(reply);
         if (parsed === null) {
-            log("omnitiler:world:gesture-facts-malformed recovery=host-deadline-unknown");
+            const hadGestureFacts = gestureSnapshot !== null;
+            if (hadGestureFacts) {
+                log("omnitiler:world:gesture-facts-malformed recovery=host-deadline-unknown");
+            }
             gestureSnapshot = null;
-            state.invalidate();
-            scheduleDispatch();
+            if (hadGestureFacts) {
+                state.invalidate();
+                scheduleDispatch();
+            }
             scheduleGestureRecovery();
             return;
         }
         if (!parsed.available) {
-            log("omnitiler:world:gesture-facts-unavailable recovery=host-deadline-unknown");
+            // Terminal bookkeeping clears unconditionally; publish only a
+            // known->unknown (or pending-terminal->unknown) transition.
+            const hadGestureFacts = gestureSnapshot !== null || gestureTerminalPending !== null;
             gestureSnapshot = null;
             gestureTerminalPending = null;
             clearTerminalCaptureRetry();
-            state.invalidate();
-            scheduleDispatch();
+            if (hadGestureFacts) {
+                log("omnitiler:world:gesture-facts-unavailable recovery=host-deadline-unknown");
+                state.invalidate();
+                scheduleDispatch();
+            }
             scheduleGestureRecovery();
             return;
         }
@@ -2722,8 +3017,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         isTerminalSettlementOwedFor(flight.gesture);
 
     // Ack-only settlement discharge, split from snapshot freshness: proves
-    // the broker's bound response settles THIS pending terminal (current
-    // generation, current broker incarnation, response source/nativeInvalid
+    // the core's bound response settles THIS pending terminal (current
+    // generation, producer adapter, response source/nativeInvalid
     // equal the flight's original envelope bindings, settled id equals the
     // bound association core id, association and flight native pairs equal
     // the pending terminal) and arms the exact native ack. Applies no
@@ -2738,7 +3033,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (state.boundGen === null || parsed.gen !== state.boundGen) {
             return false;
         }
-        if (state.brokerIncarnation === null || parsed.adapter !== state.brokerIncarnation) {
+        if (parsed.adapter !== state.adapter) {
             return false;
         }
         if (parsed.req !== flight.source || parsed.source !== flight.source) {
@@ -2842,6 +3137,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     const parsed = parseWorldReply(reply);
                     if (parsed === null) {
+                        if (isGenerationMismatch(reply)) {
+                            if (state.boundGen === takeGen) {
+                                dropDeadGenerationIntents();
+                                killPending("generation-mismatch");
+                                waitHoldForDiscovery = true;
+                                wakePendingCapture = false;
+                                log("omnitiler:world:generation-mismatch recovery=rediscover");
+                                discover();
+                            } else {
+                                log("omnitiler:world:take-stale recovery=on-next-event");
+                            }
+                            done(null);
+                            return;
+                        }
                         log("omnitiler:world:take-malformed recovery=on-next-event");
                         done(null);
                         return;
@@ -3018,6 +3327,153 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         dropFollowup = { serial: g.serial, instance: g.instance, win: g.win, remaining: 2 };
     };
 
+    // Serial intent-write persistence: full snapshots must hit disk in
+    // accept order, so at most one WriteFloatIntent flies at a time and
+    // overlapping accepts queue behind it (coalesced per accept, never a
+    // generic retry: each waiter carries its own freshness and apply).
+    // Dependent native writes run only after the correlated persist success
+    // plus a generation/settings/report/window freshness recheck; a failed
+    // persist authorizes nothing and applies nothing.
+    let intentPersistBusy = false;
+    // Owed durability: true while the live map holds accepted core writes
+    // not yet confirmed durable. Set on incorporate-change, cleared only
+    // when a persist covering every change succeeds. No immediate
+    // auto-retry: the next acceptance drives the covering write.
+    let intentNondurable = false;
+    let intentChangedDuringPersist = false;
+    interface IntentPersistWaiter {
+        readonly run: () => void;
+        readonly gen: string;
+        readonly watermark: string;
+        readonly rev: string;
+        readonly settingsRev: string | null;
+        // True when this accept changed the map and owes a full-snapshot
+        // write; false waits only for ordering behind an owed write.
+        // Ordering waits upgrade to a covering write while owed.
+        readonly persist: boolean;
+    }
+    const intentPersistWaiters: IntentPersistWaiter[] = [];
+    // Freshness gate shared by the persist and ordering waits: revalidate
+    // before any dependent native write runs. False drops the waiter (with
+    // the same catchup recovery the accept path uses); true runs it.
+    const gatePersistWaiter = (next: IntentPersistWaiter, whileWaiting: string): boolean => {
+        if (stopped) {
+            return false;
+        }
+        if (state.boundGen === null || next.gen !== state.boundGen) {
+            log("omnitiler:world:take-stale recovery=catchup");
+            if (state.dirty || pendingQueue.length > 0) {
+                scheduleDispatch();
+            }
+            wakeFollowup();
+            return false;
+        }
+        if (settingsAcceptedGen !== state.boundGen) {
+            // Settings rotated while waiting: dependent writes wait for
+            // the accepted settings of the current generation.
+            scheduleDispatch();
+            wakeFollowup();
+            return false;
+        }
+        if (pendingSettings !== null && pendingSettings.gen === state.boundGen) {
+            // Settings sent but not yet accepted on this generation:
+            // dependent writes wait for the accepted settings, never the
+            // merely sent revision.
+            scheduleDispatch();
+            wakeFollowup();
+            return false;
+        }
+        if (next.settingsRev !== settingsAcceptedRev) {
+            // Accepted settings rotated since this waiter queued: the
+            // accepted snapshot it depends on is superseded.
+            scheduleDispatch();
+            wakeFollowup();
+            return false;
+        }
+        if (compareU64(next.rev, state.lastAcceptedRev) < 0) {
+            // A newer accepted reply supersedes this waiter even when the
+            // generation and watermark still match.
+            log(`omnitiler:world:stale reason=superseded-during-${whileWaiting} recovery=catchup`);
+            try {
+                presentationSubscriber.notifyInvalidated();
+            } catch (error) {
+                void error;
+            }
+            if (state.dirty || pendingQueue.length > 0) {
+                scheduleDispatch();
+            }
+            wakeFollowup();
+            return false;
+        }
+        if (state.currentInvalid !== next.watermark) {
+            // Native input landed while waiting: the accepted snapshot is
+            // superseded, so no setters run on it. Follow-up observes the
+            // newer watermark (dirty is set).
+            log(`omnitiler:world:stale reason=superseded-during-${whileWaiting} recovery=catchup`);
+            try {
+                presentationSubscriber.notifyInvalidated();
+            } catch (error) {
+                void error;
+            }
+            if (state.dirty || pendingQueue.length > 0) {
+                scheduleDispatch();
+            }
+            wakeFollowup();
+            return false;
+        }
+        return true;
+    };
+    const pumpIntentPersistQueue = (): void => {
+        if (intentPersistBusy || stopped) {
+            if (stopped) {
+                intentPersistWaiters.length = 0;
+            }
+            return;
+        }
+        const next = intentPersistWaiters.shift();
+        if (next === undefined) {
+            return;
+        }
+        const needsPersist = next.persist || intentNondurable;
+        if (!needsPersist) {
+            // Ordering wait only with nothing owed: no bus write, just
+            // preserve accept order behind the owed snapshot.
+            if (gatePersistWaiter(next, "queue")) {
+                next.run();
+            }
+            pumpIntentPersistQueue();
+            return;
+        }
+        intentPersistBusy = true;
+        intentStore.persist((ok) => {
+            intentPersistBusy = false;
+            if (!ok) {
+                // Failed persistence never authorizes the dependent native
+                // writes below: report once, keep the map and the owed
+                // status, and let the next acceptance drive the covering
+                // write. No failure ack effects run here. The
+                // during-flight flag resets: the next covering write
+                // snapshots every owed change.
+                log("omnitiler:world:intent-write-failed recovery=on-next-change");
+                intentChangedDuringPersist = false;
+                pumpIntentPersistQueue();
+                return;
+            }
+            if (intentChangedDuringPersist) {
+                // Changes landed mid-flight: keep the owed status for the
+                // queued covering write.
+                intentChangedDuringPersist = false;
+            } else {
+                intentNondurable = false;
+            }
+            // Success continuation gate: revalidate freshness before any
+            // dependent native write runs.
+            if (gatePersistWaiter(next, "persist")) {
+                next.run();
+            }
+            pumpIntentPersistQueue();
+        });
+    };
     // Post-accept capture handling with the requester-only terminal result:
     // binding convergence, close/float convergence, safe actuation,
     // native toggles, and drain scheduling. Runs after the
@@ -3027,6 +3483,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         flight: CaptureFlight,
         takeResult: WorldReplyResult | null,
     ): void => {
+                    const runApply = (): void => {
                     // Proven bound association (broker-only): every accepted
                     // reply carrying one refreshes the read-only identity,
                     // open or terminal, so the NEXT package exposes the
@@ -3320,7 +3777,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     // Withdraw re-float tile overrides after capture, keeping
                     // fixed-size clients tile-classified for explicit float
-                    // placement. Both sets persist through WriteFloatIntent.
+                    // placement. Observation input only; opaque core intent
+                    // persists through the intent store.
                     try {
                         if (
                             takeResult !== null && takeResult.op === "toggle-float" &&
@@ -3439,10 +3897,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     } catch (error) {
                         void error;
                     }
-                    // Persist settled intentional-float membership (native
-                    // only): the accepted exception rows already converged
-                    // floatingIds above; a change writes through.
-                    persistFloatIntent();
                     log(`omnitiler:world:applied rev=${token(parsed.rev)} geom=${applied.geometryWrites} member=${applied.membershipWrites} views=${applied.viewWrites} mk=${applied.creations} rm=${applied.removals} fx=${applied.effects} held=${applied.held}`);
                     // B9 single-observation boundary: the first accepted
                     // full-state report after the issued clear decides the
@@ -3474,6 +3928,34 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         scheduleDispatch();
                     }
                     wakeFollowup();
+                    };
+                    // Accepted core intent writes (opaque session records,
+                    // never policy): only this lane updates persistence.
+                    // String replaces, null deletes; a change persists the
+                    // full snapshot (out-of-scope records retained) through
+                    // the serial queue above, and the dependent native
+                    // writes in runApply run only after the correlated
+                    // persist success plus the freshness recheck.
+                    if (intentStore.incorporateWrites(parsed.intentWrites)) {
+                        intentNondurable = true;
+                        if (intentPersistBusy) {
+                            intentChangedDuringPersist = true;
+                        }
+                        intentPersistWaiters.push({ run: runApply, gen: parsed.gen, watermark: flight.watermark, rev: parsed.rev, settingsRev: settingsAcceptedRev, persist: true });
+                        pumpIntentPersistQueue();
+                        return;
+                    }
+                    if (intentPersistBusy || intentPersistWaiters.length > 0 || intentNondurable) {
+                        // Unchanged map but persistence is owed or in flight:
+                        // hold accept order so a newer snapshot never applies
+                        // before the older one it supersedes. While owed the
+                        // pump upgrades this waiter to a covering write;
+                        // otherwise it is ordering-only.
+                        intentPersistWaiters.push({ run: runApply, gen: parsed.gen, watermark: flight.watermark, rev: parsed.rev, settingsRev: settingsAcceptedRev, persist: false });
+                        pumpIntentPersistQueue();
+                        return;
+                    }
+                    runApply();
     };
 
     // Bounded same-envelope terminal capture retry (finding A): a
@@ -3529,9 +4011,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // One capture flight: the inner report is ALWAYS commandless (the broker
     // stamps the drained queued command itself). Fresh-source correlation
     // and the CURRENT local watermark bind the envelope; the callback binds
-    // generation/incarnation/source/watermark before any setter.
+    // generation/source/watermark before any setter.
     const sendCapture = (observation: WorldObservation, headOp: string | null, clientCmd: string | null): void => {
-        if (state.boundGen === null || state.brokerIncarnation === null) {
+        if (state.boundGen === null) {
             return;
         }
         // Flush deferred creation evidence first: a spent desire whose
@@ -3551,19 +4033,35 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 state.completeDeferredCreations(order.map((d) => d.id));
             }
         }
-        const inner = buildWorldInnerReportJson({
+        // v4 inner report: the commandless native-fact snapshot. The broker
+        // stamps the owned namespace (adapter/gen/obs/reqSeq/req/cmdSeq/
+        // command/monotonicMs) onto the envelope. intentRecords rides the
+        // live-joined opaque snapshot: only records whose subject is in the
+        // captured native set ride (exact native-id join, never PID/title
+        // inference); out-of-scope records stay stored for later reports.
+        // stateAttempts/focusFeedback ride empty until the actuator/record
+        // slices land (K1b2: native state writes and focus correlation are
+        // not yet recorded).
+        const liveIntentWins = new Set<string>();
+        for (const fact of observation.windowFacts) {
+            liveIntentWins.add(fact.win);
+        }
+        const inner = buildWorldReportV4InnerJson({
             observation,
-            defaultTiled: settings.readDefaultTiled(),
-            refill: settings.readRefillLive(),
-            bornMaximized: settings.readBornMaximizedLive(),
-            anchorFallback: settings.readAnchorFallbackLive(),
-            noSpaceResult: settings.readNoSpaceResultLive(),
             creationAttempts: state.creationAttemptsForReport(),
             frameAttempts: state.framesForReport(),
             memberAttempts: state.memberAttemptsForReport(),
             viewAttempts: state.viewAttemptsForReport(),
             clearAttempts: state.clearAttemptsForReport(),
+            intentRecords: intentStore.recordsForReport(liveIntentWins),
         });
+        if (inner === null) {
+            log("omnitiler:world:report-invalid op=observe reason=encode-failed");
+            state.noteRejectedOrTransportError();
+            killPending("rejected");
+            drainAfterFailure({ clientCmd });
+            return;
+        }
         const source = mintSource();
         const seq = mintSourceSeq();
         if (seq === null) {
@@ -3791,7 +4289,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // full DescribeWorld reply handling. Shared by fresh sends and by the
     // bounded same-envelope terminal retry above.
     const transmitCapture = (envelope: string, flight: CaptureFlight, headOp: string | null, observation: WorldObservation | null): void => {
-        if (stopped || state.boundGen === null || state.brokerIncarnation === null) {
+        if (stopped || state.boundGen === null) {
             return;
         }
         // A fresh capture consumes any owed wake: it drains at most one
@@ -3849,6 +4347,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     const parsed = parseWorldReply(reply);
                     if (parsed === null) {
+                        if (isGenerationMismatch(reply)) {
+                            lastResolvedCaptureSource = flight.source;
+                            dropDeadGenerationIntents();
+                            log("omnitiler:world:generation-mismatch recovery=rediscover");
+                            state.inFlight = null;
+                            killPending("generation-mismatch");
+                            waitHoldForDiscovery = true;
+                            wakePendingCapture = false;
+                            discover();
+                            return;
+                        }
                         log("omnitiler:world:reply-malformed recovery=on-next-event");
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
@@ -4174,10 +4683,35 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
 
     const dispatch = (isCatchup: boolean): void => {
         void isCatchup;
-        if (stopped || state.boundGen === null || state.brokerIncarnation === null || discoverOutstanding) {
+        if (stopped || state.boundGen === null || discoverOutstanding) {
             return;
         }
         if (state.inFlight !== null) {
+            return;
+        }
+        // Accepted initial settings gate every report: the first capture
+        // must not precede the broker's accepted settings for this
+        // generation. A send already outstanding owns the wire; otherwise
+        // send now and wait for the correlated reply.
+        if (settingsAcceptedGen !== state.boundGen) {
+            if (pendingSettings === null || pendingSettings.gen !== state.boundGen) {
+                sendSettings("await-settings", true);
+            }
+            return;
+        }
+        // A lost settings send retries here (next event-driven dispatch):
+        // equal content resends the same revision, so the retry is a
+        // harmless duplicate under the revision rules.
+        if (settingsDirty && !stopped) {
+            settingsDirty = false;
+            sendSettings("retry", true);
+        }
+        // Opaque intent hydration gates the first admissible report: the
+        // imported snapshot must ride in/before it. A missing, degraded, or
+        // timed-out store degrades empty (store-owned); the dispatch resumes
+        // on the single hydration kick, never a poll or retry.
+        if (!intentStore.isHydrated(state.boundGen)) {
+            intentStore.seed(state.boundGen);
             return;
         }
         const observation = capture();
@@ -4249,14 +4783,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // Re-arm FIRST on every terminal wait reply (before dispatching): the
     // server parks the new waiter (no epoch advance yet), then the capture
     // drains and the epoch wakes it again if work remains. The 25 s host
-    // watchdog rediscovers and re-arms with the SAME cursor when the host
-    // kills the call without a callback (errors never call back), so an
-    // external command wakes the adapter with zero native events.
+    // watchdog re-arms with the SAME cursor when the host kills a bound
+    // call without a callback (errors never call back), so an external
+    // command wakes the adapter with zero native events and a bound
+    // deadline never triggers a handshake; only an unbound generation
+    // rediscovers from the watchdog (a held generation stands down).
     const armWait = (): void => {
         if (stopped || waitOutstanding || waitHoldForDiscovery) {
             return;
         }
-        if (state.boundGen === null || state.brokerIncarnation === null || discoverOutstanding) {
+        if (state.boundGen === null || discoverOutstanding) {
             return;
         }
         const gen = state.boundGen;
@@ -4286,10 +4822,31 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             settled = true;
             waitOutstanding = false;
             waitWatchdogCancel = null;
-            log("omnitiler:world:wait-host-timeout recovery=rediscover");
-            if (!discoverOutstanding) {
-                discover();
+            if (state.boundGen === null) {
+                // Unbound: no wait to re-arm, rediscover instead
+                // (guarded against a duplicate in-flight discover).
+                log("omnitiler:world:wait-host-timeout recovery=rediscover");
+                if (!discoverOutstanding) {
+                    discover();
+                }
+                armWait();
+                return;
             }
+            if (waitHoldForDiscovery) {
+                // Held for a superseded generation without fresh mismatch
+                // proof: a held flag alone never authorizes a bound
+                // handshake, so the wait stands down. The outstanding
+                // discovery round (or a future mismatch proof on another
+                // lane) owns recovery; event-driven captures still prove a
+                // rotation through their own mismatch path.
+                log("omnitiler:world:wait-host-timeout recovery=held-stand-down");
+                return;
+            }
+            // Bound host deadline: the generation still holds, so the wait
+            // ONLY re-arms with the same cursor. A bound wait timeout is
+            // transport silence, never a handshake trigger: handshakes send
+            // only while unbound or on generation-mismatch.
+            log("omnitiler:world:wait-host-timeout recovery=rearm");
             armWait();
         });
         log(`omnitiler:world:wait nonce=${token(nonce)} nwinv=${state.currentInvalid} cursor=${token(waitCursor)}`);
@@ -4328,10 +4885,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
 
     // Single host-bound wait recovery chain: at most one live 25 s
     // timer; scheduling while one lives keeps the original deadline (never
-    // overwritten). On fire, an unbound or held generation rediscovers
-    // (guarded against a duplicate in-flight discover); otherwise the wait
-    // re-arms. Discovery success clears the hold and arms the wait, so the
-    // chain always terminates host-deadline causally.
+    // overwritten). On fire, only an unbound generation rediscovers
+    // (guarded against a duplicate in-flight discover); a held generation
+    // stands down without a bound handshake (a held flag alone never
+    // authorizes one); otherwise the wait re-arms. Discovery success clears
+    // the hold and arms the wait, so the chain always terminates
+    // host-deadline causally.
     const cancelWaitRecovery = (): void => {
         try {
             waitRetryCancel?.();
@@ -4349,10 +4908,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             if (stopped || waitOutstanding) {
                 return;
             }
-            if (state.boundGen === null || waitHoldForDiscovery) {
+            if (state.boundGen === null) {
                 if (!discoverOutstanding) {
                     discover();
                 }
+                return;
+            }
+            if (waitHoldForDiscovery) {
+                log("omnitiler:world:wait-recovery-held recovery=stand-down");
                 return;
             }
             armWait();
@@ -4385,6 +4948,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         const parsed = parseWorldReply(reply);
         if (parsed === null) {
+            if (isGenerationMismatch(reply)) {
+                if (state.boundGen === gen) {
+                    dropDeadGenerationIntents();
+                    killPending("generation-mismatch");
+                    waitHoldForDiscovery = true;
+                    wakePendingCapture = false;
+                    log("omnitiler:world:generation-mismatch recovery=rediscover");
+                    discover();
+                } else {
+                    log("omnitiler:world:wait-stale recovery=rearm");
+                    armWait();
+                }
+                return;
+            }
             log("omnitiler:world:wait-malformed recovery=host-deadline");
             scheduleWaitRecovery();
             return;
@@ -4675,6 +5252,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 } catch (error) {
                     void error;
                 }
+                // Steady-state settings: changed live values bump the
+                // revision and ride the discovery method; unchanged
+                // snapshots (including restart-only drift, which is never
+                // adopted) send nothing.
+                try {
+                    sendSettings("config-changed", false);
+                } catch (error) {
+                    void error;
+                }
                 onNativeInvalidation();
             };
             const detach = connectSignal(readSignal(optionsGlobal as object, "configChanged"), onConfigChanged);
@@ -4752,9 +5338,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
 
     // Authenticated generation discovery on start; restart/poison paths
-    // re-enter through the generation-mismatch branch above. Float
-    // membership seeds from the runtime store before the first dispatch.
-    seedFloatIntent();
+    // re-enter through the generation-mismatch branch above. Opaque intent
+    // seeds from the runtime store before the first dispatch when enabled.
+    intentStore.seed(state.boundGen);
     discover();
     log(`omnitiler:world:ready ${state.describeForLog()} source=${resolveSourceRev()}`);
 
@@ -4782,7 +5368,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             state.invalidate();
         },
         scheduleDispatch,
-        persistFloatIntent,
         isWorldBusy: () => state.inFlight !== null || pendingQueue.length > 0,
         isFloating: (win) => floatingIds.has(win),
         noteFloating: (win) => {
@@ -4852,12 +5437,32 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     return {
         stop: () => {
             stopped = true;
+            // Intent store teardown: drop seed/write rounds so late
+            // callbacks no-op on the fence; the map itself needs no I/O.
+            try {
+                intentStore.stop();
+            } catch (error) {
+                void error;
+            }
             // Wait teardown: cancel the host watchdog and any
             // host-deadline retry, drop the owed wake, and release the
             // outstanding slot so late callbacks no-op on the fence.
             waitOutstanding = false;
             waitHoldForDiscovery = false;
             wakePendingCapture = false;
+            // Settings teardown: drop the outstanding send and its timer so
+            // late callbacks and timeouts no-op on the fence; nothing after
+            // stop may settle, dirty, or redispatch settings.
+            settingsDirty = false;
+            pendingSettings = null;
+            settingsAcceptedGen = null;
+            settingsAcceptedRev = null;
+            try {
+                settingsTimeoutCancel?.();
+            } catch (error) {
+                void error;
+            }
+            settingsTimeoutCancel = null;
             try {
                 waitWatchdogCancel?.();
             } catch (error) {

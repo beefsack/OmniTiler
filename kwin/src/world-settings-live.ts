@@ -215,6 +215,7 @@ export interface WorldSettingsLiveOverrides {
     readonly readBornMaximizedFn?: () => unknown;
     readonly readAnchorFallbackFn?: () => unknown;
     readonly readNoSpaceResultFn?: () => unknown;
+    readonly readFixedPredicateFn?: () => unknown;
 }
 
 export interface WorldSettingsLive {
@@ -249,6 +250,13 @@ export interface WorldSettingsLive {
     // Drifted startup-consumed keys since activation, for the
     // restart-required log. Never adopted here.
     checkStartupDrift: () => string[];
+    // Raw v4 settings snapshot for the connection lane (K1a): the exact
+    // adapter-sourced key/value pairs in canonical settings order. Keys
+    // the adapter never sources (output targeting, cursor, border/underlay
+    // presentation) are omitted: the core backfills defaults at startup.
+    // `mode` carries the startup-consumed value (restart-only, never
+    // live); every other key re-resolves live per snapshot.
+    snapshotConnectionValues: () => Array<[string, unknown]>;
 }
 
 export function createWorldSettingsLive(
@@ -419,6 +427,23 @@ export function createWorldSettingsLive(
         }
         return drifted;
     };
+    // Raw v4 settings snapshot: adapter-sourced values only, canonical
+    // settings order. Types ride raw (core validates); no clamp/default
+    // beyond each reader's own normalization. `mode` is the
+    // startup-consumed adoption (restart-only); live drift against it is
+    // reported through checkStartupDrift and never adopted here.
+    const snapshotConnectionValues = (): Array<[string, unknown]> => [
+        ["gap", readGapLive()],
+        ["outer", readOuterGapLive()],
+        ["defaultTiled", readDefaultTiled()],
+        ["mode", startupWorkspaceMode],
+        ["sameAxis", readSameAxisLive()],
+        ["bornMaximized", readBornMaximizedLive()],
+        ["predicate", readFixedSizePredicateValue(overrides.readFixedPredicateFn)],
+        ["anchorFallback", readAnchorFallbackLive()],
+        ["noSpaceResult", readNoSpaceResultLive()],
+        ["refill", readRefillLive()],
+    ];
     return {
         startupProfile,
         startupWorkspaceMode,
@@ -433,5 +458,6 @@ export function createWorldSettingsLive(
         readAnchorFallbackLive,
         readNoSpaceResultLive,
         checkStartupDrift,
+        snapshotConnectionValues,
     };
 }

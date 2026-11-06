@@ -31,8 +31,8 @@ function loadReply(): WorldReply {
 // core-chosen ws-4 (moved ws-1 and its fresh replacement excluded).
 function loadAlignedReply(): WorldReply {
     const reply = loadReply();
-    const wsRow = (logical: string, out: string, bind: string, order: number) => ({
-        id: logical, out, bind, scope: out, order, mode: "tiled", exist: true, hold: "", trailing: false,
+    const wsRow = (logical: string, out: string, bind: string, order: number): WorldReply["workspaces"][number] => ({
+        id: logical, out, bind, scope: { kind: "output", out }, order, mode: "tiled", exist: true, hold: "", trailing: false,
     });
     reply.workspaces = [
         wsRow("al-1", "out-a", "ws-1", 0),
@@ -48,10 +48,11 @@ function loadAlignedReply(): WorldReply {
         { out: "out-a", view: "ws-1", mode: "tiled", hold: "" },
         { out: "out-b", view: "ws-2", mode: "tiled", hold: "" },
     ];
-    const winRow = (win: string, out: string, ws: string) => ({
+    const winRow = (win: string, out: string, ws: string): WorldReply["windows"][number] => ({
         win, out, ws, alloc: null, frame: null,
         frame_auth: "hold", frame_hold: "", member_auth: "controlled", member_hold: "",
         frame_op: "", clear_op: "", floating: false, float_origin: "",
+        cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
     });
     // Transfer and member rows name the stable core LOGICAL workspace id
     // (resolved adapter-side through the accepted rows above, never by
@@ -65,11 +66,11 @@ function loadAlignedReply(): WorldReply {
     // Core-published actuation scope for the migration target cell: the
     // adapter actuates members and views only under a controlled scope.
     reply.scopes = [
-        { scope: "out-b/al-1", auth: "controlled", reason: "" },
+        { scope: { kind: "workspace", out: "out-b", ws: "al-1" }, auth: "controlled", reason: "" },
     ];
     reply.transfers = [
-        { op: "op-61", kind: "migration", win: "", out: "out-b", ws: "al-1", follow: false, held: false },
-        { op: "op-61-refill", kind: "view", win: "", out: "out-a", ws: "al-4", follow: false, held: false },
+        { op: "op-61", kind: "migration", win: "", out: "out-b", ws: "al-1", follow: false, held: false, cmdSeq: null },
+        { op: "op-61-refill", kind: "view", win: "", out: "out-a", ws: "al-4", follow: false, held: false, cmdSeq: null },
     ];
     reply.result = {
         op: "migrate-workspace", direction: "right",
@@ -203,7 +204,7 @@ function makeEnv(state: WorldAdapterState, world: FakeWorld) {
 
 function freshState(reply: WorldReply): WorldAdapterState {
     const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1", "broker-1");
+    state.onDiscovery("gen-1", "adapter-1");
     state.invalidate();
     state.invalidate();
     reply.obs = state.currentInvalid;

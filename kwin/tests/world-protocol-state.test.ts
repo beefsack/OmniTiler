@@ -1,5 +1,5 @@
 // Offline unit coverage for the world decimal/parse/state boundary
-// (strict v3, sole broker): bounded decimal strings (no Number precision),
+// (strict v4, sole adapter): bounded decimal strings (no Number precision),
 // strict envelope/reply parsing, the broker wire codec, and the adapter
 // lifetime state machine (transport fences, dirty/ack, creation, ambiguous
 // holds). The broker owns ALL sequencing; the adapter owns only the
@@ -39,7 +39,8 @@ import { WorldAdapterState } from "../src/world-state";
 
 const DISABLED_PRESENTATION = {
     foreground: "",
-    border: { visible: false, reason: "disabled", inner: null, outer: null },
+    rev: "7",
+    border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null },
     underlay: { status: "hidden", reason: "disabled", baseRev: null },
     pager: [],
 };
@@ -47,15 +48,15 @@ const DISABLED_PRESENTATION = {
 const ACCEPTED = (
     overrides: Record<string, unknown> = {},
 ): string => JSON.stringify({
-    v: 3,
-    adapter: "broker-1",
+    v: 4,
+    adapter: "test-adapter",
     gen: "gen-1",
     req: "req-1",
     obs: "3",
     rev: "7",
     ready: true,
     consumed: false,
-    scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
+    scopes: [{ scope: { kind: "output", out: "out" }, auth: "controlled", reason: "" }],
     workspaces: [],
     outputs: [],
     windows: [],
@@ -66,6 +67,7 @@ const ACCEPTED = (
     operationSettled: [], nativeCreations: [],
     warpCursor: null,
     presentation: DISABLED_PRESENTATION,
+    intentWrites: [], switchSettled: [], diagnostics: [],
     source: "req-1",
     nativeInvalid: "1",
     clock: "0",
@@ -138,11 +140,11 @@ describe("world-report commands and reply parsing", () => {
             assert.equal(parsed.clock, "0");
             assert.equal(parsed.result, null);
         }
-        const rejection = parseWorldReply('{"v":3,"outcome":"rejected","kind":"busy","message":"busy","gen":"gen-1","source":"","nativeInvalid":"0","clock":"0"}');
+        const rejection = parseWorldReply('{"v":4,"outcome":"rejected","kind":"busy","message":"busy","gen":"gen-1","source":"","nativeInvalid":"0","clock":"0","gestureAssoc":null}');
         assert.ok(isWorldRejection(rejection));
         // v1 and v2 refuse: no compatibility route.
-        assert.equal(parseWorldReply(ACCEPTED().replace('"v":3', '"v":1')), null);
-        assert.equal(parseWorldReply(ACCEPTED().replace('"v":3', '"v":2')), null);
+        assert.equal(parseWorldReply(ACCEPTED().replace('"v":4', '"v":1')), null);
+        assert.equal(parseWorldReply(ACCEPTED().replace('"v":4', '"v":2')), null);
         // Actuator lane with a terminal result refuses.
         assert.equal(parseWorldReply(ACCEPTED({ result: { op: "no-group", reason: "pending", rev: null } })), null);
         // Bare-number counters refuse: no f64 precision-loss path.
@@ -151,18 +153,18 @@ describe("world-report commands and reply parsing", () => {
         assert.equal(parseWorldReply("not json"), null);
     });
 
-    it("builds strict v3 envelopes with no broker keys inside the report", () => {
-        const inner = buildCaptureEnvelope("a-1", "gen-1", "src-1", "1", "4", '{"v":3}');
+    it("builds strict v4 envelopes with no broker keys inside the report", () => {
+        const inner = buildCaptureEnvelope("a-1", "gen-1", "src-1", "1", "4", '{"v":4}');
         assert.deepEqual(JSON.parse(inner), {
-            v: 3, adapter: "a-1", gen: "gen-1", source: "src-1", sourceSeq: "1", nativeInvalid: "4", report: { v: 3 },
+            v: 4, adapter: "a-1", gen: "gen-1", source: "src-1", sourceSeq: "1", nativeInvalid: "4", report: { v: 4 },
         });
-        assert.deepEqual(JSON.parse(buildDiscoveryRequest("a-1", "disc-9")), { v: 3, adapter: "a-1", req: "disc-9" });
+        assert.deepEqual(JSON.parse(buildDiscoveryRequest("a-1", "disc-9")), { v: 4, adapter: "a-1", req: "disc-9" });
         assert.deepEqual(
             JSON.parse(buildQueueRequest("panel-1", "gen-1", "3", { op: "select-trailing", out: null })),
-            { v: 3, gen: "gen-1", client: "panel-1", clientCmd: "3", command: { op: "select-trailing", out: null } },
+            { v: 4, gen: "gen-1", client: "panel-1", clientCmd: "3", command: { op: "select-trailing", out: null } },
         );
-        assert.deepEqual(JSON.parse(buildTakeRequest("panel-1", "gen-1", "3")), { v: 3, gen: "gen-1", client: "panel-1", clientCmd: "3" });
-        const queued = parseWorldReply('{"v":3,"outcome":"queued","gen":"gen-1","client":"panel-1","clientCmd":"3","globalCmd":"9"}');
+        assert.deepEqual(JSON.parse(buildTakeRequest("panel-1", "gen-1", "3")), { v: 4, gen: "gen-1", client: "panel-1", clientCmd: "3" });
+        const queued = parseWorldReply('{"v":4,"outcome":"queued","gen":"gen-1","client":"panel-1","clientCmd":"3","globalCmd":"9"}');
         assert.ok(isWorldQueueReply(queued));
     });
 });
@@ -170,7 +172,7 @@ describe("world-report commands and reply parsing", () => {
 describe("world adapter lifetime state", () => {
     const bound = (): WorldAdapterState => {
         const state = new WorldAdapterState("test-adapter", "owner-a");
-        state.onDiscovery("gen-1", "broker-1");
+        state.onDiscovery("gen-1", "test-adapter");
         return state;
     };
 
@@ -195,11 +197,11 @@ describe("world adapter lifetime state", () => {
         assert.equal(state.mintClientCmd(), "2");
         assert.equal(state.nextClientCmd, "3");
         // A fresh generation restarts the namespace at 1.
-        state.onDiscovery("gen-2", "broker-2");
+        state.onDiscovery("gen-2", "test-adapter");
         assert.equal(state.mintClientCmd(), "1");
     });
 
-    it("accepts only bound-generation incarnation source-correlated replies", () => {
+    it("accepts only bound-generation adapter source-correlated replies", () => {
         const state = bound();
         state.invalidate();
         state.invalidate();
@@ -302,7 +304,7 @@ describe("world adapter lifetime state", () => {
         }), true);
         assert.equal(state.completeDeferredCreations(["ws1", "native-4"]), 1);
         assert.equal(state.creationAttemptsForReport().length, 1);
-        const changed = state.onDiscovery("gen-2", "broker-2");
+        const changed = state.onDiscovery("gen-2", "test-adapter");
         assert.equal(changed, true);
         assert.equal(state.completeDeferredCreations(["ws1", "native-4"]), 0);
         assert.equal(state.creationAttemptsForReport().length, 0);
@@ -327,28 +329,27 @@ describe("world adapter lifetime state", () => {
         state.mintClientCmd();
         const flight = state.beginCapture("src-1", "1");
         assert.ok(flight !== null && state.inFlight !== null);
-        const changed = state.onDiscovery("gen-2", "broker-2");
+        const changed = state.onDiscovery("gen-2", "test-adapter");
         assert.equal(changed, true);
         assert.equal(state.boundGen, "gen-2");
-        assert.equal(state.brokerIncarnation, "broker-2");
         assert.equal(state.inFlight, null);
         assert.equal(state.hasAccepted, false);
         assert.equal(state.nextClientCmd, "1");
     });
 
-    it("rejects delayed arbitrary replies by incarnation and exact source without setters or ack", () => {
+    it("rejects delayed arbitrary replies by adapter and exact source without setters or ack", () => {
         const state = bound();
         state.invalidate();
         const flight = state.beginCapture("src-7", null);
         assert.ok(flight !== null);
         const watermark = flight.watermark;
         state.noteClosed("gone-9");
-        // Same gen/newer rev but a different broker incarnation: no
+        // Same gen/newer rev but a different adapter: no
         // setters, no ack, catchup only.
         const foreign = parseWorldReply(ACCEPTED({ adapter: "broker-x", req: "src-7", source: "src-7", rev: "5" }));
         assert.ok(foreign !== null && isCoreWorldReply(foreign));
         if (isCoreWorldReply(foreign)) {
-            // The foreign incarnation was never discovered, so binding
+            // The foreign adapter was never discovered, so binding
             // holds the discovered one: adapter-mismatch.
             assert.deepEqual(state.acceptReply(foreign, "src-7", watermark), { applied: false, reason: "adapter-mismatch" });
         }
@@ -377,20 +378,23 @@ describe("world adapter lifetime state", () => {
         const flight = state.beginCapture("src-1", null);
         assert.ok(flight !== null && state.inFlight !== null);
         // Wrong adapter: binds nothing, resets nothing.
-        state.onDiscovery("gen-9", "broker-9", "other-adapter", "disc-1", "disc-1");
+        state.onDiscovery("gen-9", "other-adapter", "disc-1", "disc-1");
         assert.equal(state.boundGen, "gen-1");
         assert.ok(state.inFlight !== null);
         // Wrong req: binds nothing, resets nothing.
-        state.onDiscovery("gen-9", "broker-9", "test-adapter", "disc-2", "disc-1");
+        state.onDiscovery("gen-9", "test-adapter", "disc-2", "disc-1");
         assert.equal(state.boundGen, "gen-1");
         assert.ok(state.inFlight !== null);
         // Exact match binds and cancels flights.
-        const changed = state.onDiscovery("gen-9", "broker-9", "test-adapter", "disc-1", "disc-1");
+        const changed = state.onDiscovery("gen-9", "test-adapter", "disc-1", "disc-1");
         assert.equal(changed, true);
         assert.equal(state.boundGen, "gen-9");
-        assert.equal(state.brokerIncarnation, "broker-9");
         assert.equal(state.inFlight, null);
-        // Same generation rediscovery is not a change.
-        assert.equal(state.onDiscovery("gen-9", "broker-9", "test-adapter", "disc-2", "disc-2"), false);
+        // Every authenticated handshake resets, even a repeat equal gen:
+        // the queue-client namespace restarts and spent state clears.
+        state.markDispatched("op-9");
+        assert.equal(state.onDiscovery("gen-9", "test-adapter", "disc-2", "disc-2"), true);
+        assert.equal(state.isDispatched("op-9"), false, "repeat-gen handshake resets spent state");
+        assert.equal(state.nextClientCmd, "1");
     });
 });

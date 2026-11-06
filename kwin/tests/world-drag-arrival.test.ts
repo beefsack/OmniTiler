@@ -22,17 +22,17 @@ function arrivalReply(): WorldReply {
         gestureSettled: null, gestureAssoc: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        presentation: { foreground: "", rev: "9", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [
-            { scope: "out-a/wa1", auth: "controlled", reason: "" },
-            { scope: "out-b/wb1", auth: "controlled", reason: "" },
+            { scope: { kind: "workspace", out: "out-a", ws: "wa1" }, auth: "controlled", reason: "" },
+            { scope: { kind: "workspace", out: "out-b", ws: "wb1" }, auth: "controlled", reason: "" },
         ],
         // Bound rows the broker always ships alongside transfers (fused
         // here, matching the fake natives): adapter-side resolution never
         // falls back to native string equality.
         workspaces: [
-            { id: "wa1", out: "out-a", bind: "wa1", scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
-            { id: "wb1", out: "out-b", bind: "wb1", scope: "out-b", order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
+            { id: "wa1", out: "out-a", bind: "wa1", scope: { kind: "output", out: "out-a" }, order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
+            { id: "wb1", out: "out-b", bind: "wb1", scope: { kind: "output", out: "out-b" }, order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
         ],
         outputs: [],
         windows: [
@@ -44,6 +44,7 @@ function arrivalReply(): WorldReply {
                 frame_op: "",
                 clear_op: "",
                 floating: false, float_origin: "",
+                cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
             {
                 win: "win-b", out: "out-b", ws: "wb1",
@@ -53,13 +54,17 @@ function arrivalReply(): WorldReply {
                 frame_op: "",
                 clear_op: "",
                 floating: false, float_origin: "",
+                cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
         ],
         transfers: [
-            { op: "op-87", kind: "window", win: "win-a", out: "out-b", ws: "wb1", follow: false, held: false },
+            { op: "op-87", kind: "window", win: "win-a", out: "out-b", ws: "wb1", follow: false, held: false, cmdSeq: null },
         ],
         effects: [],
         result: null,
+        intentWrites: [],
+        switchSettled: [],
+        diagnostics: [],
     };
 }
 
@@ -170,7 +175,7 @@ function makeEnv(state: WorldAdapterState, world: FakeWorld) {
 
 function freshState(reply: WorldReply): WorldAdapterState {
     const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1", "broker-1");
+    state.onDiscovery("gen-1", "adapter-1");
     while (state.currentInvalid !== reply.obs) {
         state.invalidate();
     }

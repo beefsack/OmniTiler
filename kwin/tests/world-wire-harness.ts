@@ -1,25 +1,56 @@
-// Entry-test adapter for real-Engine integration tests (strict v2). NOT an
-// exact broker: the production entry speaks the broker wire (envelopes,
-// queue/take); `raw_world_eval` speaks the stamped raw capture report
-// (real-Rust kde_raw normalization inside the bridge). This helper only
-// performs the broker-shaped stamping the tests need: discovery binds the
-// broker incarnation plus the serving generation, captures stamp the
-// broker-owned sequencing namespace around the raw inner report
-// (draining at most one queued command), and capture replies bind the
-// source correlation, the native watermark, and the dispatch clock with
-// the terminal result nulled (requester-only via take). Queue/take
-// answers are per-command correlated (monotonic global seq, one terminal
-// settlement per filed command): pending only while nothing drained,
-// ready (possibly null) once settled, never a stale last result reused.
+// Strict v4 broker-transport shim for real-Engine integration tests.
+//
+// The production broker owns one sequencing namespace plus the bound
+// response correlation; `raw_world_eval` is a retained strict `WorldEngine`
+// with no broker in front of it, so this file performs exactly the
+// broker-owned transport stamping the tests need and nothing else:
+//
+//   DiscoverWorld carries the v4 connection family (`handshake` then
+//   revisioned `settings`, dispatched by `type` through
+//   `route_connection_request`): the handshake reply echoes the producer
+//   adapter lifetime verbatim (never a broker incarnation) and mints the
+//   serving generation; settings never reset the lifetime.
+//   DescribeWorld carries the v4 capture envelope
+//   (`{v,adapter,gen,source,sourceSeq,nativeInvalid,report}`): captures
+//   stamp the broker-owned sequencing namespace (`adapter` is the envelope's
+//   own producer lifetime, `gen` the serving generation, `obs`/`reqSeq` fresh
+//   per-capture sequences, `req` the capture source, `cmdSeq`/`command` the
+//   at-most-one drained head, `monotonicMs` the advancing dispatch clock)
+//   around the raw inner report with at most one queued command drained, and
+//   capture replies bind the source correlation, the native watermark, and
+//   the dispatch clock with the terminal result nulled (requester-only via
+//   take). Queue/take answers are per-command correlated (monotonic global
+//   seq, one terminal settlement per filed command): pending only while
+//   nothing drained, ready (possibly null) once settled, never a stale last
+//   result reused. `gestureAssoc` stays null here (the seam carries no
+//   broker gesture map; never a fabricated binding).
+//
+// The inner report arrives as genuine v4 producer bytes (strict codec owned
+// shapes including `rendererInput`, `views` refused, no v3 conversion, no
+// classifier verdicts). The broker-owned capture-only lanes
+// (`nativeGesture`, `cursorWindow`, `nativeInvalidWitness`) are stripped
+// before the strict core decode exactly like the production broker
+// (`world_broker.rs`); absent keys pass through. Every other inner key
+// rides verbatim: this file carries no classifier copy and never
+// normalizes or reconstructs producer facts. Carrying any broker-owned
+// sequencing key inside the inner report throws (production refuses it as
+// `unknown-field`).
+//
 // Broker auth/replay/duplicate/eviction semantics live in the Rust broker
 // tests; this file duplicates none of that. No D-Bus, no KWin.
 
+// Retired: production discovery binds the producer adapter lifetime, never
+// a broker incarnation, and stamps no `owner` key. Kept only so existing
+// imports keep compiling; new code must not use them.
 export const BROKER_INCARNATION = "broker-1";
 export const BROKER_OWNER = "omnitiler-broker";
 
+// Honest v4 disabled presentation (mirrors the strict `parsePresentation`
+// shape): hidden border/underlay, empty pager, rev 0, no suspended output.
 export const DISABLED_PRESENTATION = {
     foreground: "",
-    border: { visible: false, reason: "disabled", inner: null, outer: null },
+    rev: "0",
+    border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null },
     underlay: { status: "hidden", reason: "disabled", baseRev: null },
     pager: [],
 };
@@ -51,10 +82,9 @@ function increment(text: string): string {
 }
 
 
-// Raw captures are normalized by the real Rust broker lane
-// (crates/omnitiler/src/kde_raw.rs) inside the test-only
-// `raw_world_eval` bridge: this file performs transport stamping only
-// and carries no classifier copy.
+// The inner report carries genuine v4 producer facts only: the strict
+// broker-owned sequencing namespace is stamped here, never normalized
+// there. This file carries no classifier copy.
 
 interface TerminalSettlement {
     client: unknown;
@@ -73,11 +103,13 @@ export interface MiniBroker {
     lastResult: unknown;
     /** Filed commands drained by captures so far, in drain order. */
     readonly drained: Array<{ client: unknown; clientCmd: unknown; globalCmd: string }>;
-    // Rewrite a raw engine bootstrap (echoes the caller adapter) into the
-    // broker discovery binding (broker incarnation). Records gen.
+    // Pass one engine handshake reply through verbatim (the producer
+    // adapter lifetime echoes back untouched). Records the serving gen.
     bindDiscovery(engineBootstrapReply: string): string;
-    // Stamp one capture envelope into the exact core report the broker
-    // would dispatch: broker namespace plus at most one queued command.
+    // Stamp one capture envelope into the exact strict v4 report the sole
+    // broker would dispatch: the envelope's own producer adapter and
+    // serving generation, fresh broker sequences, the capture source, and
+    // at most one queued command, with the capture-only lanes stripped.
     stampCapture(envelopePayload: string): string;
     // Bind one core reply for the actuator lane: source/watermark/clock
     // plus a nulled terminal result. Records the core result for take.
@@ -95,11 +127,15 @@ export interface MiniBroker {
 }
 
 export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
+    // `incarnation` is retained for call compatibility only: production
+    // discovery binds the producer adapter lifetime, so nothing here
+    // rewrites to it.
     let gen = "";
     let obs = "0";
     let reqSeq = "0";
     let cmdSeq = "0";
     let globalSeq = "0";
+    let clock = "0";
     const queued: Array<{ client: unknown; clientCmd: unknown; command: unknown; globalCmd: string }> = [];
     const drained: Array<{ client: unknown; clientCmd: unknown; globalCmd: string }> = [];
     const settlements: TerminalSettlement[] = [];
@@ -118,18 +154,35 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
             return drained;
         },
         bindDiscovery(engineBootstrapReply: string): string {
+            // The handshake reply echoes the producer adapter lifetime the
+            // entry bound at discovery: pass it through verbatim and record
+            // the serving generation it mints. Never rewritten.
             const parsed = JSON.parse(engineBootstrapReply) as Record<string, unknown>;
             gen = parsed["gen"] as string;
-            return JSON.stringify({ ...parsed, adapter: incarnation });
+            return JSON.stringify(parsed);
         },
         stampCapture(envelopePayload: string): string {
             const envelope = JSON.parse(envelopePayload) as Record<string, unknown>;
-            // Transport stamping only: the raw KWin-shaped `report` rides
-            // through untouched; the `raw_world_eval` bridge normalizes it
-            // with the real Rust broker lane before the strict core decode.
-            const inner = { ...(envelope["report"] as Record<string, unknown>) };
+            if (envelope["v"] !== 4) {
+                throw new Error(`expected a v4 capture envelope, got ${JSON.stringify(envelope["v"])}`);
+            }
+            // Genuine producer bytes ride verbatim (never normalized or
+            // reconstructed); only the broker-owned capture-only lanes are
+            // stripped before the strict core decode, exactly like the
+            // production broker. Absent keys pass through.
+            const raw = envelope["report"] as Record<string, unknown>;
+            for (const brokerKey of ["adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs"]) {
+                if (brokerKey in raw) {
+                    throw new Error(`inner report must not carry broker-owned ${brokerKey}`);
+                }
+            }
+            const inner = { ...raw };
+            delete inner["nativeGesture"];
+            delete inner["cursorWindow"];
+            delete inner["nativeInvalidWitness"];
             obs = increment(obs);
             reqSeq = increment(reqSeq);
+            clock = increment(clock);
             const next = queued.length > 0 ? (queued.shift() as { client: unknown; clientCmd: unknown; command: unknown; globalCmd: string }) : null;
             const command = next?.command ?? null;
             let cmdSeqValue: string | null = null;
@@ -142,15 +195,14 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
             }
             return JSON.stringify({
                 ...inner,
-                owner: BROKER_OWNER,
-                adapter: incarnation,
-                gen,
+                adapter: envelope["adapter"],
+                gen: envelope["gen"],
                 obs,
                 reqSeq,
                 req: envelope["source"],
                 cmdSeq: cmdSeqValue,
                 command: command ?? null,
-                monotonicMs: "1",
+                monotonicMs: clock,
             });
         },
         bindReply(coreReplyJson: string, envelopePayload: string): string {
@@ -166,13 +218,14 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
                     break;
                 }
             }
+            clock = increment(clock);
             return JSON.stringify({
                 ...core,
                 result: null,
                 gestureAssoc: null,
                 source: envelope["source"],
                 nativeInvalid: envelope["nativeInvalid"],
-                clock: "1",
+                clock,
             });
         },
         answerQueue(queuePayload: string): string {
@@ -180,10 +233,11 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
             if (body["gen"] !== gen) {
                 // Stale generation files nothing: the serving generation
                 // refuses before any high-water or queue access.
+                clock = increment(clock);
                 return JSON.stringify({
-                    v: 3, outcome: "rejected", kind: "generation-mismatch",
+                    v: 4, outcome: "rejected", kind: "generation-mismatch",
                     message: "generation mismatch", gen, source: "",
-                    nativeInvalid: "0", clock: "1",
+                    nativeInvalid: "0", clock, gestureAssoc: null,
                 });
             }
             const key = queueKey(body["client"], body["clientCmd"]);
@@ -191,7 +245,7 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
             if (known !== undefined) {
                 // Duplicate file under the same identity: never re-executes.
                 return JSON.stringify({
-                    v: 3, outcome: "duplicate", gen,
+                    v: 4, outcome: "duplicate", gen,
                     client: body["client"], clientCmd: body["clientCmd"], globalCmd: known,
                 });
             }
@@ -199,7 +253,7 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
             filedGlobal.set(key, globalSeq);
             queued.push({ client: body["client"], clientCmd: body["clientCmd"], command: body["command"], globalCmd: globalSeq });
             return JSON.stringify({
-                v: 3, outcome: "queued", gen,
+                v: 4, outcome: "queued", gen,
                 client: body["client"], clientCmd: body["clientCmd"], globalCmd: globalSeq,
             });
         },
@@ -211,18 +265,19 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
             if (body["gen"] !== gen) {
                 // Stale generation collects nothing: the serving generation
                 // refuses before any settlement or high-water access.
+                clock = increment(clock);
                 return JSON.stringify({
-                    v: 3, outcome: "rejected", kind: "generation-mismatch",
+                    v: 4, outcome: "rejected", kind: "generation-mismatch",
                     message: "generation mismatch", gen, source: "",
-                    nativeInvalid: "0", clock: "1",
+                    nativeInvalid: "0", clock, gestureAssoc: null,
                 });
             }
             const open = settlements.find((s) => !s.collected && s.settled);
             if (open === undefined) {
-                return JSON.stringify({ v: 3, outcome: "pending", gen });
+                return JSON.stringify({ v: 4, outcome: "pending", gen });
             }
             open.collected = true;
-            return JSON.stringify({ v: 3, outcome: "ready", gen, globalCmd: open.globalCmd, result: open.result });
+            return JSON.stringify({ v: 4, outcome: "ready", gen, globalCmd: open.globalCmd, result: open.result });
         },
     };
 }

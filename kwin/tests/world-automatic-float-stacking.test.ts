@@ -124,7 +124,6 @@ function makeNativeHarness(qmlLists = false): NativeHarness {
         submitSettledCommand: () => true,
         invalidate: () => undefined,
         scheduleDispatch: () => undefined,
-        persistFloatIntent: () => undefined,
         readLiveRect: () => ({ x: 0, y: 0, w: 640, h: 480 }),
         isWorldBusy: () => false,
         isFloating: () => false,

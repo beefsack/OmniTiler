@@ -199,7 +199,7 @@ function observe(surf: ReturnType<typeof makeSurface>): WorldObservation {
 
 function freshState(reply: WorldReply): WorldAdapterState {
     const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1", "broker-1");
+    state.onDiscovery("gen-1", "adapter-1");
     state.invalidate();
     state.invalidate();
     reply.obs = state.currentInvalid;
@@ -210,9 +210,10 @@ function windowRow(win: string, out: string, ws: string): WorldReply["windows"][
     return {
         win, out, ws,
         alloc: null, frame: null,
-        frame_auth: "", frame_hold: "",
+        frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
         frame_op: "", clear_op: "", floating: false, float_origin: "",
+        cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
     };
 }
 
@@ -227,12 +228,15 @@ function conversionCreationReply(): WorldReply {
         operationSettled: [],
         nativeCreations: [{ op: "op-native-1", ws: TOKEN, out: OUT_2 }],
         warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        intentWrites: [],
+        switchSettled: [],
+        diagnostics: [],
+        presentation: { foreground: "", rev: "1", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [],
         workspaces: [
             {
                 id: TOKEN, out: OUT_2, bind: "",
-                scope: OUT_2, order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
+                scope: { kind: "output", out: OUT_2 }, order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
             },
         ],
         outputs: [],
@@ -261,6 +265,7 @@ function conversionMoveReply(): WorldReply {
         frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
         frame_op: "", clear_op: "", floating: false, float_origin: "",
+        cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
     });
     return {
         adapter: "test-adapter", gen: "gen-1", req: "req-2", obs: "", rev: "2",
@@ -271,12 +276,15 @@ function conversionMoveReply(): WorldReply {
         gestureSettled: null, gestureAssoc: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        intentWrites: [],
+        switchSettled: [],
+        diagnostics: [],
+        presentation: { foreground: "", rev: "2", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [],
         workspaces: [
             {
                 id: TOKEN, out: OUT_2, bind: WS_NEW,
-                scope: OUT_2, order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
+                scope: { kind: "output", out: OUT_2 }, order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
             },
         ],
         outputs: [],
@@ -288,6 +296,7 @@ function conversionMoveReply(): WorldReply {
                 frame_auth: "untouched", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "", clear_op: "", floating: true, float_origin: "",
+                cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
             tiledRow("win-m"),
             tiledRow("win-FS"),
@@ -297,6 +306,7 @@ function conversionMoveReply(): WorldReply {
                 frame_auth: "hold", frame_hold: "minimized",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "", clear_op: "", floating: false, float_origin: "",
+                cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
             {
                 win: "win-ys", out: OUT_2, ws: WS_1,
@@ -304,15 +314,16 @@ function conversionMoveReply(): WorldReply {
                 frame_auth: "hold", frame_hold: "minimized",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "", clear_op: "", floating: false, float_origin: "",
+                cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
         ],
         transfers: [
-            { op: "op-scm-1-0", kind: "window", win: "win-b", out: OUT_2, ws: TOKEN, follow: false, held: false },
-            { op: "op-scm-1-1", kind: "window", win: "win-f", out: OUT_2, ws: TOKEN, follow: false, held: false },
-            { op: "op-scm-1-2", kind: "window", win: "win-m", out: OUT_2, ws: TOKEN, follow: false, held: false },
-            { op: "op-scm-1-3", kind: "window", win: "win-FS", out: OUT_2, ws: TOKEN, follow: false, held: false },
-            { op: "op-scm-1-4", kind: "window", win: "win-z", out: OUT_2, ws: TOKEN, follow: false, held: false },
-            { op: "op-scv-1-0", kind: "view", win: "", out: OUT_2, ws: TOKEN, follow: false, held: false },
+            { op: "op-scm-1-0", kind: "window", win: "win-b", out: OUT_2, ws: TOKEN, follow: false, held: false, cmdSeq: null },
+            { op: "op-scm-1-1", kind: "window", win: "win-f", out: OUT_2, ws: TOKEN, follow: false, held: false, cmdSeq: null },
+            { op: "op-scm-1-2", kind: "window", win: "win-m", out: OUT_2, ws: TOKEN, follow: false, held: false, cmdSeq: null },
+            { op: "op-scm-1-3", kind: "window", win: "win-FS", out: OUT_2, ws: TOKEN, follow: false, held: false, cmdSeq: null },
+            { op: "op-scm-1-4", kind: "window", win: "win-z", out: OUT_2, ws: TOKEN, follow: false, held: false, cmdSeq: null },
+            { op: "op-scv-1-0", kind: "view", win: "", out: OUT_2, ws: TOKEN, follow: false, held: false, cmdSeq: null },
         ],
         effects: [],
         result: null,
@@ -401,13 +412,16 @@ describe("world startup conversion actuation", () => {
             gestureSettled: null, gestureAssoc: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+            intentWrites: [],
+            switchSettled: [],
+            diagnostics: [],
+            presentation: { foreground: "", rev: "3", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [],
             workspaces: [],
             outputs: [],
             windows: [windowRow("win-b", OUT_2, WS_1)],
             transfers: [
-                { op: "op-scm-1-0", kind: "window", win: "win-b", out: OUT_2, ws: TOKEN, follow: false, held: false },
+                { op: "op-scm-1-0", kind: "window", win: "win-b", out: OUT_2, ws: TOKEN, follow: false, held: false, cmdSeq: null },
             ],
             effects: [],
             result: null,

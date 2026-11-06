@@ -1785,7 +1785,9 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // active gesture authorize no write and no retirement: holds with
         // no view, never missing-equals-empty. No member/frame authority
         // bypass: the row gates below keep their own Controlled checks.
-        const scopeAuthority = reply.scopes.find((s) => s.scope === `${t.out}/${t.ws}`)?.auth;
+        const scopeAuthority = reply.scopes.find((s) =>
+            s.scope.kind === "workspace" && s.scope.out === t.out && s.scope.ws === t.ws,
+        )?.auth;
         const outputUnheld = reply.outputs.some((o) => o.out === t.out && o.hold === "");
         const scopeActuatable = scopeAuthority === "controlled" ||
             (scopeAuthority === "untouched" && outputUnheld && !observation.gesture);

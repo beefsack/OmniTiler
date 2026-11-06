@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
 import { WorldAdapterState } from "../src/world-state";
 import { applyWorldReply } from "../src/world-apply";
+import type { WorldReplyScope } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
 
 interface FakeDesktop {
@@ -142,7 +143,7 @@ function startFlow(): Flow {
         callDbus: (_s, _p, _i, method, payload, callback) => {
             base.calls.push({ method, payload, callback });
             if (method === "TakeCommandResult") {
-                callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                callback(JSON.stringify({ v: 4, outcome: "pending", gen: "gen-1" }));
             }
         },
         scheduleOnce: (delay, cb) => {
@@ -190,17 +191,21 @@ function runTimers(flow: Flow): void {
 }
 
 const PRESENTATION = {
-    foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null },
+    foreground: "",
+    rev: "1",
+    suspendedOutput: null,
+    border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null },
     underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [],
 };
 
 function bootstrap(gen: string, req: string): Record<string, unknown> {
     return {
-        v: 3, adapter: "broker-1", gen, req, obs: "0", rev: "0",
+        v: 4, adapter: "test-adapter", gen, req, obs: "0", rev: "0",
         ready: false, consumed: false,
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
-        gestureSettled: null,  operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        intentWrites: [], switchSettled: [], diagnostics: [],
         presentation: PRESENTATION,
     };
 }
@@ -212,15 +217,16 @@ function accept(
 ): void {
     const payload = JSON.parse(lastPayload(flow, "DescribeWorld")) as Record<string, unknown>;
     const reply: Record<string, unknown> = {
-        v: 3, adapter: "broker-1", gen: "gen-1", req: payload["source"],
+        v: 4, adapter: "test-adapter", gen: "gen-1", req: payload["source"],
         obs: rev, rev, ready: true, consumed: false,
         source: payload["source"], nativeInvalid: payload["nativeInvalid"], clock: "1",
         scopes: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        intentWrites: [], switchSettled: [], diagnostics: [],
         presentation: PRESENTATION,
         workspaces: [
-            { id: "w1", out: "out-1", bind: "d1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" },
-            { id: "w2", out: "out-2", bind: "d2", scope: "out-2", order: 0, mode: "tiled", exist: true, hold: "" },
+            { id: "w1", out: "out-1", bind: "d1", scope: { kind: "output", out: "out-1" }, order: 0, mode: "tiled", exist: true, hold: "" },
+            { id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" },
         ],
     };
     mutate(reply);
@@ -240,9 +246,9 @@ describe("world raw mechanical attempts", () => {
                     { out: "out-2", view: "w2", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
-                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "" },
-                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "" },
-                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [10, 10, 100, 100], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: true, float_origin: "" },
+                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [10, 10, 100, 100], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
             });
             // Round 2: one tiled frame correction (win-b), one member move
@@ -262,14 +268,14 @@ describe("world raw mechanical attempts", () => {
                     { out: "out-2", view: "w2", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
-                    { win: "win-a", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "" },
-                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 400, 300], frame: [800, 0, 400, 300], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "op-clear-1", floating: false, float_origin: "" },
-                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [300, 200, 250, 180], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "op-float-1", clear_op: "", floating: true, float_origin: "" },
-                    { win: "win-d", out: "out-1", ws: "w1", alloc: [100, 100, 50, 50], frame: [100, 100, 50, 50], frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "", frame_op: "", clear_op: "op-clear-2", floating: false, float_origin: "" },
+                    { win: "win-a", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 400, 300], frame: [800, 0, 400, 300], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "op-clear-1", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [300, 200, 250, 180], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "op-float-1", clear_op: "", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-d", out: "out-1", ws: "w1", alloc: [100, 100, 50, 50], frame: [100, 100, 50, 50], frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "", frame_op: "", clear_op: "op-clear-2", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
-                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false },
-                    { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false },
+                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null },
+                    { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null },
                 ];
             });
             // The member move landed (output + desktop setters ran on the
@@ -350,9 +356,9 @@ describe("world raw mechanical attempts", () => {
                     { out: "out-2", view: "w2", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
-                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "" },
-                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "" },
-                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [10, 10, 100, 100], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: true, float_origin: "" },
+                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [10, 10, 100, 100], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
             });
             flow.fire("desktopsChanged");
@@ -363,14 +369,14 @@ describe("world raw mechanical attempts", () => {
                     { out: "out-2", view: "w2", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
-                    { win: "win-a", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "" },
-                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 400, 300], frame: [800, 0, 400, 300], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "op-clear-1", floating: false, float_origin: "" },
-                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [300, 200, 250, 180], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "op-float-1", clear_op: "", floating: true, float_origin: "" },
-                    { win: "win-d", out: "out-1", ws: "w1", alloc: null, frame: null, frame_auth: "hold", frame_hold: "unreadable", member_auth: "hold", member_hold: "unreadable", frame_op: "", clear_op: "op-clear-2", floating: false, float_origin: "" },
+                    { win: "win-a", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 400, 300], frame: [800, 0, 400, 300], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "op-clear-1", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [300, 200, 250, 180], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "op-float-1", clear_op: "", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-d", out: "out-1", ws: "w1", alloc: null, frame: null, frame_auth: "hold", frame_hold: "unreadable", member_auth: "hold", member_hold: "unreadable", frame_op: "", clear_op: "op-clear-2", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
-                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false },
-                    { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false },
+                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null },
+                    { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null },
                 ];
             });
             flow.fire("desktopsChanged");
@@ -435,7 +441,7 @@ describe("world attempt retention", () => {
         assert.equal(state.memberAttemptsForReport().length, 0);
         assert.equal(state.viewAttemptsForReport().length, 0);
         // Generation rotation clears every retained attempt.
-        state.onDiscovery("gen-2", "broker-1");
+        state.onDiscovery("gen-2", "adapter-a");
         assert.equal(state.framesForReport().length, 0);
     });
 });
@@ -467,25 +473,26 @@ describe("world empty migration controlled scope", () => {
     // rows, the bound target backing, and the paired source refill. The
     // scope row varies per case; everything else is identical.
     const emptyReply = (
-        scopes: Array<{ scope: string; auth: string; reason: string }>,
+        scopes: WorldReplyScope[],
         outputs: Array<{ out: string; view: string; mode: string; hold: string }> = [
             { out: "out-b", view: "w9", mode: "tiled", hold: "" },
         ],
     ): Record<string, unknown> => ({
-        adapter: "broker-1", gen: "gen-1", req: "src-1", obs: "1", rev: "1",
+        adapter: "adapter-a", gen: "gen-1", req: "src-1", obs: "1", rev: "1",
         ready: true, consumed: false, scopes,
         workspaces: [
-            { id: "w1", out: "out-b", bind: "wb1", scope: "out-b", order: 0, mode: "tiled", exist: true, hold: "" },
-            { id: "wr", out: "out-a", bind: "wra", scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "" },
+            { id: "w1", out: "out-b", bind: "wb1", scope: { kind: "output", out: "out-b" }, order: 0, mode: "tiled", exist: true, hold: "" },
+            { id: "wr", out: "out-a", bind: "wra", scope: { kind: "output", out: "out-a" }, order: 0, mode: "tiled", exist: true, hold: "" },
         ],
         outputs,
         windows: [], transfers: [
-            { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false },
-            { op: "op-1-refill", kind: "view", win: "", out: "out-a", ws: "wr", follow: false, held: false },
+            { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null },
+            { op: "op-1-refill", kind: "view", win: "", out: "out-a", ws: "wr", follow: false, held: false, cmdSeq: null },
         ],
         effects: [], result: null, gestureSettled: null, gestureAssoc: null, operationSettled: [],
         nativeCreations: [], warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: { foreground: "", rev: "1", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         source: "src-1", nativeInvalid: "0", clock: "1",
     });
     const emptyEnv = (reply: Record<string, unknown>, takeResult: unknown, switched: string[], currentViews: Map<string, string>, gesture = false) => {
@@ -531,7 +538,7 @@ describe("world empty migration controlled scope", () => {
         const switched: string[] = [];
         const currentViews = new Map([["out-b", "wb9"], ["out-a", "wq"]]);
         const env = emptyEnv(
-            emptyReply([{ scope: "out-b/w1", auth: "controlled", reason: "" }]),
+            emptyReply([{ scope: { kind: "workspace", out: "out-b", ws: "w1" }, auth: "controlled", reason: "" }]),
             null, switched, currentViews,
         );
         const out = applyWorldReply(env);
@@ -546,7 +553,7 @@ describe("world empty migration controlled scope", () => {
         const switched: string[] = [];
         const currentViews = new Map([["out-b", "wb9"], ["out-a", "wq"]]);
         const env = emptyEnv(
-            emptyReply([{ scope: "out-b/w1", auth: "untouched", reason: "" }]),
+            emptyReply([{ scope: { kind: "workspace", out: "out-b", ws: "w1" }, auth: "untouched", reason: "" }]),
             null, switched, currentViews,
         );
         const out = applyWorldReply(env);
@@ -560,11 +567,12 @@ describe("world empty migration controlled scope", () => {
         const switched: string[] = [];
         const currentViews = new Map([["out-b", "wb9"], ["out-a", "wq"]]);
         let memberSetters = 0;
-        const reply = emptyReply([{ scope: "out-b/w1", auth: "untouched", reason: "" }]);
+        const reply = emptyReply([{ scope: { kind: "workspace", out: "out-b", ws: "w1" }, auth: "untouched", reason: "" }]);
         (reply.windows as Array<Record<string, unknown>>).push({
             win: "win-m", out: "out-b", ws: "w1", alloc: null, frame: null,
             frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
             frame_op: "", clear_op: "", floating: false, float_origin: "",
+            cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
         });
         const state = new WorldAdapterState("adapter-a", "owner-a");
         state.boundGen = "gen-1";
@@ -617,7 +625,7 @@ describe("world empty migration controlled scope", () => {
             const switched: string[] = [];
             const currentViews = new Map([["out-b", "wb9"], ["out-a", "wq"]]);
             const env = emptyEnv(
-                emptyReply([{ scope: "out-b/w1", auth: "untouched", reason: "" }], c.outputs),
+                emptyReply([{ scope: { kind: "workspace", out: "out-b", ws: "w1" }, auth: "untouched", reason: "" }], c.outputs),
                 null, switched, currentViews, c.gesture,
             );
             const out = applyWorldReply(env);
@@ -627,10 +635,11 @@ describe("world empty migration controlled scope", () => {
         }
     });
     it("holds with no view for held and missing scopes, ignoring unrelated terminals", () => {
-        for (const scopes of [
-            [{ scope: "out-b/w1", auth: "hold", reason: "x" }],
+        const cases: WorldReplyScope[][] = [
+            [{ scope: { kind: "workspace", out: "out-b", ws: "w1" }, auth: "hold", reason: "refused-target" }],
             [],
-        ]) {
+        ];
+        for (const scopes of cases) {
             const switched: string[] = [];
             const currentViews = new Map([["out-b", "wb9"], ["out-a", "wq"]]);
             // Unrelated terminal naming a different target with an
@@ -653,7 +662,6 @@ describe("world attempt acknowledgement", () => {
     it("retains delivered attempts on malformed/stale replies, consumes on valid", () => {
         const state = new WorldAdapterState("adapter-a", "owner-a");
         state.boundGen = "gen-1";
-        state.brokerIncarnation = "broker-1";
         state.recordClock("9");
         assert.equal(state.recordFrameAttempt({
             win: "win-a", target: [0, 0, 1, 1], setter: "accepted", readback: null,
@@ -664,7 +672,7 @@ describe("world attempt acknowledgement", () => {
             setter: "accepted", pre: null, post: null, attemptMs: "9",
         }), true);
         const reply = (rev: string, obs: string, src = "src-1"): never => ({
-            adapter: "broker-1", gen: "gen-1", req: src, source: src,
+            adapter: "adapter-a", gen: "gen-1", req: src, source: src,
             ready: true, consumed: false, rev, obs, clock: "9",
         } as never);
         const flight = state.beginCapture("src-1", null);
@@ -718,12 +726,13 @@ function setterReply(
     scopes: Array<Record<string, unknown>> = [],
 ): never {
     return {
-        adapter: "broker-1", gen: "gen-1", req: "src-1", obs: "1", rev: "1",
+        adapter: "adapter-a", gen: "gen-1", req: "src-1", obs: "1", rev: "1",
         ready: true, consumed: false, scopes, workspaces,
         outputs: [], windows, transfers,
         effects: [], result: null, gestureSettled: null, gestureAssoc: null, operationSettled: [],
         nativeCreations: [], warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: { foreground: "", rev: "1", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         source: "src-1", nativeInvalid: "0", clock: "9",
     } as never;
 }
@@ -747,10 +756,11 @@ describe("world setter attempt correspondence", () => {
                 [{
                     win: "win-a", out: "out-1", ws: "w1", alloc: null, frame: null,
                     frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                    frame_op: "", clear_op: "", floating: false,
+                    frame_op: "", clear_op: "", floating: false, float_origin: "",
+                    cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
-                [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false }],
-                [{ id: "w2", out: "out-2", bind: "d2", scope: "out-2", order: 0, mode: "tiled", exist: true, hold: "" }],
+                [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null }],
+                [{ id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" }],
             ),
             dispatchWatermark: "0",
             takeResult: null,
@@ -815,25 +825,27 @@ describe("world setter attempt correspondence", () => {
                     {
                         win: "win-m", out: "out-b", ws: "w1", alloc: null, frame: null,
                         frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                        frame_op: "", clear_op: "", floating: false,
+                        frame_op: "", clear_op: "", floating: false, float_origin: "",
+                        cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                     },
                     {
                         win: "win-n", out: "out-b", ws: "w9", alloc: null, frame: null,
                         frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                        frame_op: "", clear_op: "", floating: false,
+                        frame_op: "", clear_op: "", floating: false, float_origin: "",
+                        cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                     },
                 ],
                 [
-                    { op: "op-7", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false },
-                    { op: "op-8", kind: "migration", win: "", out: "out-b", ws: "w9", follow: false, held: false },
+                    { op: "op-7", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null },
+                    { op: "op-8", kind: "migration", win: "", out: "out-b", ws: "w9", follow: false, held: false, cmdSeq: null },
                 ],
                 [
-                    { id: "w1", out: "out-b", bind: "wb1", scope: "out-b", order: 0, mode: "tiled", exist: true, hold: "" },
-                    { id: "w9", out: "out-b", bind: "wbX", scope: "out-b", order: 1, mode: "tiled", exist: true, hold: "" },
+                    { id: "w1", out: "out-b", bind: "wb1", scope: { kind: "output", out: "out-b" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "w9", out: "out-b", bind: "wbX", scope: { kind: "output", out: "out-b" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 [
-                    { scope: "out-b/w1", auth: "controlled", reason: "" },
-                    { scope: "out-b/w9", auth: "controlled", reason: "" },
+                    { scope: { kind: "workspace", out: "out-b", ws: "w1" }, auth: "controlled", reason: "" },
+                    { scope: { kind: "workspace", out: "out-b", ws: "w9" }, auth: "controlled", reason: "" },
                 ],
             ),
             dispatchWatermark: "0",
@@ -882,10 +894,11 @@ describe("world setter attempt correspondence", () => {
                 [{
                     win: "win-a", out: "out-1", ws: "w1", alloc: null, frame: null,
                     frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                    frame_op: "", clear_op: "", floating: false,
+                    frame_op: "", clear_op: "", floating: false, float_origin: "",
+                    cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
-                [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false }],
-                [{ id: "w2", out: "out-2", bind: "d2", scope: "out-2", order: 0, mode: "tiled", exist: true, hold: "" }],
+                [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null }],
+                [{ id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" }],
             ),
             dispatchWatermark: "0",
             takeResult: null,
@@ -939,11 +952,12 @@ describe("world setter attempt correspondence", () => {
                 [{
                     win: "win-q", out: "out-b", ws: "w1", alloc: null, frame: null,
                     frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                    frame_op: "", clear_op: "", floating: false,
+                    frame_op: "", clear_op: "", floating: false, float_origin: "",
+                    cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
-                [{ op: "op-10", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false }],
-                [{ id: "w1", out: "out-b", bind: "wb1", scope: "out-b", order: 0, mode: "tiled", exist: true, hold: "" }],
-                [{ scope: "out-b/w1", auth: "controlled", reason: "" }],
+                [{ op: "op-10", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null }],
+                [{ id: "w1", out: "out-b", bind: "wb1", scope: { kind: "output", out: "out-b" }, order: 0, mode: "tiled", exist: true, hold: "" }],
+                [{ scope: { kind: "workspace", out: "out-b", ws: "w1" }, auth: "controlled", reason: "" }],
             ),
             dispatchWatermark: "0",
             takeResult: null,
@@ -1023,7 +1037,8 @@ describe("world clear attempt correspondence", () => {
                 [{
                     win: "win-c", out: "out-1", ws: "w1", alloc: null, frame: null,
                     frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "",
-                    frame_op: "", clear_op: "op-clear-1", floating: false,
+                    frame_op: "", clear_op: "op-clear-1", floating: false, float_origin: "",
+                    cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
                 [],
                 [],
@@ -1242,7 +1257,7 @@ describe("world clear attempt correspondence", () => {
         const first = clearEnv(state, { maximized: true, clear: "accept" });
         applyWorldReply(first.env);
         assert.equal(first.calls(), 1);
-        state.onDiscovery("gen-2", "broker-1");
+        state.onDiscovery("gen-2", "adapter-a");
         assert.ok(!state.clearSpent.has("op-clear-1"), "rotation clears the spent set");
         assert.ok(!state.isDispatched("op-clear-1"), "rotation clears the dispatch record");
         const second = clearEnv(state, { maximized: true, clear: "accept" });

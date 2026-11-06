@@ -119,7 +119,6 @@ function setup(win: FakeWin, order: string[], readLiveRect?: () => { x: number; 
             order.push("invalidate");
         },
         scheduleDispatch: () => undefined,
-        persistFloatIntent: () => undefined,
         isWorldBusy: () => busy,
         isFloating: () => floating,
         noteFloating: () => undefined,

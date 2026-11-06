@@ -10,7 +10,7 @@ import {
     createWorldPresentationSubscriber,
     PRESENTATION_READ_METHOD,
 } from "../src/world-presentation";
-import { isWorldPresentationReply, parseWorldReply } from "../src/world-report";
+import { isWorldPresentationReply, isWorldRejection, parseWorldReply } from "../src/world-report";
 
 const GEN = "gen-1";
 
@@ -19,10 +19,13 @@ function projection(
     extra?: Record<string, unknown>, gen: string = GEN,
 ): string {
     return JSON.stringify({
-        v: 3, outcome: "presentation", gen, req, rev, obs,
+        v: 4, outcome: "presentation", gen, req, rev, obs,
         coveredInstance: "effect-1", coveredInvalid: "5",
-        scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
-        workspaces: [{ id: "ws", out: "out", bind: "ws", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" }],
+        scopes: [{ scope: { kind: "output", out: "out" }, auth: "controlled", reason: "" }],
+        workspaces: [{
+            id: "ws", out: "out", bind: "", scope: { kind: "output", out: "out" },
+            order: 0, mode: "tiled", exist: true, hold: "",
+        }],
         outputs: [{ out: "out", view: "ws", mode: "tiled", hold: "" }],
         windows: [{
             win: "win-a", out: "out", ws: "ws",
@@ -30,10 +33,17 @@ function projection(
             frame_auth: "controlled", frame_hold: "",
             member_auth: "controlled", member_hold: "",
             floating: false, float_origin: "",
+            cmdSeq: null, visibility: null,
+            visibility_auth: "controlled", visibility_hold: "",
+            state: [],
         }],
         presentation: {
             foreground: "win-a",
-            border: { visible: true, reason: "", inner: [10, 10, 300, 300], outer: [8, 8, 304, 304] },
+            rev,
+            border: {
+                visible: false, reason: "no-target", subject: null,
+                outsets: null, width: null, radius: null, witness: null,
+            },
             underlay: {
                 status: "found", reason: "", baseRev: "11",
                 homeOut: "out", homeWs: "ws", group: "grp-1", leaf: "leaf-a", win: "win-a",
@@ -153,7 +163,9 @@ describe("world presentation subscriber", () => {
         // fences it too.
         assert.equal(painted["coveredInstance"], "effect-1");
         assert.equal(painted["coveredInvalid"], "5");
-        assert.deepEqual(painted["border"], { visible: 1, inner: [10, 10, 300, 300], outer: [8, 8, 304, 304] });
+        // K1 shows no OmniTiler active border: every accepted row projects
+        // to visible:0 with null rects (no drawable geometry).
+        assert.deepEqual(painted["border"], { visible: 0, inner: null, outer: null });
         // Underlay anchoring inputs ride verbatim: the held member id list
         // plus the already-verbatim core outer rect. Member rects never
         // cross; the native anchor matches ids in stacking order.
@@ -255,7 +267,7 @@ describe("world presentation subscriber", () => {
         assert.equal(h.paints.length, 0);
         // A queued-lane reply on the read hides too.
         h.sub.notifyInvalidated();
-        h.answerAll(() => JSON.stringify({ v: 3, outcome: "queued", gen: GEN, client: "c", clientCmd: "1", globalCmd: "1" }));
+        h.answerAll(() => JSON.stringify({ v: 4, outcome: "queued", gen: GEN, client: "client-1", clientCmd: "1", globalCmd: "1" }));
         assert.equal(h.paints.length, 0);
         // A mismatched correlation hides instead of painting.
         h.sub.notifyInvalidated();
@@ -269,6 +281,89 @@ describe("world presentation subscriber", () => {
         h.sub.notifyInvalidated();
         h.answerAll((r) => projection(r, "12", "12"));
         assert.equal(h.paints.length, 1, "equal retransmit after a hide never resends");
+    });
+
+    it("treats the genuine v4 not-ready rejection as pre-ready, not malformed", () => {
+        // Genuine broker bytes (world_broker.rs `bind_response`): the core
+        // 5-key error plus source/clock bindings and a null gestureAssoc.
+        const notReady = JSON.stringify({
+            v: 4, outcome: "rejected", kind: "not-ready", message: "no accepted capture",
+            gen: GEN, source: "", nativeInvalid: "0", clock: "7", gestureAssoc: null,
+        });
+        const parsed = parseWorldReply(notReady);
+        assert.ok(parsed !== null && isWorldRejection(parsed));
+        // The legacy 8-key shape without the broker binding refuses.
+        assert.equal(parseWorldReply(JSON.stringify({
+            v: 4, outcome: "rejected", kind: "not-ready", message: "no accepted capture",
+            gen: GEN, source: "", nativeInvalid: "0", clock: "7",
+        })), null);
+        // A non-null broker binding on a rejection refuses: rejections
+        // never carry an association.
+        assert.equal(parseWorldReply(JSON.stringify({
+            v: 4, outcome: "rejected", kind: "not-ready", message: "no accepted capture",
+            gen: GEN, source: "", nativeInvalid: "0", clock: "7",
+            gestureAssoc: { instance: "gesture-1", serial: "1", coreId: "1" },
+        })), null);
+        const h = setup();
+        h.sub.notifyGeneration(GEN);
+        assert.equal(h.calls.length, 1);
+        h.answerAll(() => notReady);
+        assert.equal(h.paints.length, 0);
+        assert.equal(h.hides, 0, "nothing painted yet, so no hide call to the effect endpoint");
+        assert.ok(h.logs.some((l) => l.includes("presentation-not-ready")), h.logs.join("\n"));
+        assert.ok(!h.logs.some((l) => l.includes("presentation-malformed")), h.logs.join("\n"));
+        // Stays dirty: the next event (the covering capture) retries.
+        assert.equal(h.calls.length, 0);
+        h.sub.notifyInvalidated();
+        assert.equal(h.calls.length, 1, "next event retries after not-ready");
+    });
+
+    it("hides fail-closed on an unexpected rejection kind after a paint", () => {
+        const h = setup();
+        h.sub.notifyGeneration(GEN);
+        h.answerAll((r) => projection(r, "12", "12"));
+        assert.equal(h.paints.length, 1);
+        const hidesBefore = h.hides;
+        // A genuine bound-generation rejection of any other kind is not
+        // pre-ready: the held paint cannot remain, so the display hides
+        // and the next event retries.
+        const unexpected = JSON.stringify({
+            v: 4, outcome: "rejected", kind: "malformed", message: "request is malformed",
+            gen: GEN, source: "", nativeInvalid: "0", clock: "8", gestureAssoc: null,
+        });
+        assert.ok(parseWorldReply(unexpected) !== null && isWorldRejection(parseWorldReply(unexpected)));
+        h.sub.notifyInvalidated();
+        h.answerAll(() => unexpected);
+        assert.equal(h.paints.length, 1, "unexpected rejection paints nothing");
+        assert.ok(h.hides > hidesBefore, "unexpected rejection hides the held paint");
+        assert.ok(!h.logs.some((l) => l.includes("presentation-not-ready")), h.logs.join("\n"));
+        h.sub.notifyInvalidated();
+        assert.equal(h.calls.length, 1, "next event retries after the rejection");
+        h.answerAll((r) => projection(r, "13", "13"));
+        assert.equal(h.paints.length, 2, "covering paint renders after the rejection");
+    });
+
+    it("hides fail-closed on a foreign-generation rejection", () => {
+        const h = setup();
+        h.sub.notifyGeneration(GEN);
+        h.answerAll((r) => projection(r, "12", "12"));
+        assert.equal(h.paints.length, 1);
+        const hidesBefore = h.hides;
+        // A rejection bound to another generation never applies to this
+        // stream, but the held paint cannot remain on an unexpected
+        // answer: hide display-only and retry on the next event.
+        const foreign = JSON.stringify({
+            v: 4, outcome: "rejected", kind: "not-ready", message: "no accepted capture",
+            gen: "gen-2", source: "", nativeInvalid: "0", clock: "9", gestureAssoc: null,
+        });
+        h.sub.notifyInvalidated();
+        h.answerAll(() => foreign);
+        assert.equal(h.paints.length, 1, "foreign rejection paints nothing");
+        assert.ok(h.hides > hidesBefore, "foreign rejection hides fail-closed");
+        assert.ok(!h.logs.some((l) => l.includes("presentation-not-ready")), h.logs.join("\n"));
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "13", "13"));
+        assert.equal(h.paints.length, 2, "covering paint renders after the foreign rejection");
     });
 
     it("publishes and clears the drop preview without one-shot authority", () => {

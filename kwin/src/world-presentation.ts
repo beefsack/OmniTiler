@@ -46,6 +46,7 @@
 import {
     buildPresentationReadRequest,
     isWorldPresentationReply,
+    isWorldRejection,
     parseWorldReply,
     type WorldPresentationReply,
 } from "./world-report";
@@ -141,6 +142,18 @@ export interface WorldPresentationSubscriber {
 //    underlay:{status:"found",win,outer:[x,y,w,h],members:[win,...]}|
 //             {status:"hidden"},
 //    preview:{rect,sourceOut,sourceWs,win,producerInstance,producerSerial}|null}
+// V4 anchored border: the wire carries
+// `visible,reason,subject,outsets,width,radius,witness`, never absolute
+// `inner`/`outer`. K1 shows no OmniTiler active border (the native
+// anchored-descriptor consumer port moves to the focus-feedback slice;
+// KWin's own focus indication stands in until then): every accepted row,
+// hidden or visible, projects to `visible:0` with null rects (no drawable
+// geometry, nothing to resolve). Resolving `inner`/`outer` in script from
+// a live read would fabricate geometry outside the native
+// lifetime/freshness floors, and the DTO carries no
+// subject/outsets/width/radius channel for the native side to resolve
+// itself, so a visible anchored row never paints a border here: it sends
+// the same honest hidden shape instead of failing the whole projection.
 // Member rects never cross: anchoring matches member window ids in native
 // stacking order against the already-verbatim core outer rect. `preview.win`
 // is the insertion neighbor, never the mover identity; the producer
@@ -162,11 +175,13 @@ export function formatPresentationPayload(reply: WorldPresentationReply, include
         if (reply.coveredInstance === null || reply.coveredInvalid === null) {
             return null;
         }
-        const border = reply.presentation.border;
+        // K1 disabled border: visible anchored rows project to the same
+        // honest hidden shape (no active border), preserving the
+        // underlay/preview gates below on their own proof.
         const borderOut = {
-            visible: border.visible ? 1 : 0,
-            inner: border.inner === null ? null : [...border.inner],
-            outer: border.outer === null ? null : [...border.outer],
+            visible: 0,
+            inner: null as null,
+            outer: null as null,
         };
         const underlay = reply.presentation.underlay;
         const underlayOut = underlay.status === "found"
@@ -442,9 +457,28 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
             return;
         }
         const parsed = parseWorldReply(reply);
+        if (parsed !== null && isWorldRejection(parsed)) {
+            // Expected pre-ready path only for the genuine bound-generation
+            // `not-ready` (no accepted capture yet, per the
+            // ReadWorldPresentation contract): never a malformed lane.
+            // Nothing can have painted yet on a generation with no accepted
+            // capture, so the display-only hide is skipped (it would call
+            // the possibly-absent effect endpoint for nothing); the painted
+            // guard below covers the impossible-but-unsafe case. Every
+            // other rejection (foreign generation, unexpected kind) falls
+            // through to the fail-closed hide so no prior paint can remain.
+            if (parsed.gen === boundGen && parsed.kind === "not-ready") {
+                env.log(`omnitiler:world:presentation-not-ready kind=${token(parsed.kind)} recovery=on-next-event`);
+                if (painted !== null) {
+                    hideRendered();
+                }
+                dirty = true;
+                return;
+            }
+        }
         if (parsed === null || !isWorldPresentationReply(parsed) || parsed.gen !== boundGen || parsed.req !== req) {
-            // Malformed, foreign-lane, rotated-generation, or mismatched
-            // correlation: hide display-only instead of painting anything
+            // Malformed, foreign-lane, unexpected-rejection,
+            // rotated-generation, or mismatched correlation: hide display-only instead of painting anything
             // stale, then stand down to the next event (no self re-arm,
             // no polling; the armed watchdog was already cancelled above).
             // The last painted-or-hidden point is retained, so a stale

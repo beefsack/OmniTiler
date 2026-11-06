@@ -1,5 +1,5 @@
-// World adapter lifetime state (broker era): generation/broker binding,
-// transport fences, and dirty/ack retention. The sole broker owns ALL
+// World adapter lifetime state (v4 producer era): sole-adapter generation
+// binding, transport fences, and dirty/ack retention. The core owns ALL
 // sequencing (obs/reqSeq/cmdSeq/cmdSeq) and its own clock: this adapter
 // owns only two transport fences - the per-capture source correlation and
 // the local native-invalidation watermark - plus the queue-client command
@@ -106,9 +106,6 @@ export class WorldAdapterState {
     // D-Bus unique name server-side).
     readonly client: string;
     boundGen: string | null = null;
-    // Broker incarnation from authenticated discovery (the reply adapter):
-    // authority stays with the broker; callbacks bind it before setters.
-    brokerIncarnation: string | null = null;
     // LOCAL native-invalidation watermark (canonical u64): advanced
     // synchronously on every native invalidation, including during flight
     // and gestures, before any debounce. A pure transport fence echoed in
@@ -650,12 +647,12 @@ export class WorldAdapterState {
         return id;
     }
 
-    // Freshness acceptance: only a bound-generation, broker-incarnation,
+    // Freshness acceptance: only a bound-generation, producer-adapter,
     // source-correlated reply whose watermark names the CURRENT local fence
     // mismatch-or-match applies setters. Anything else is observation-only
     // catchup with no setters. Single-flight alone never authenticates: a
-    // delayed arbitrary reply (different incarnation or wrong source, even
-    // with the same gen) applies nothing and acks nothing. A watermark
+    // delayed arbitrary reply (wrong adapter or wrong source, even with
+    // the same gen) applies nothing and acks nothing. A watermark
     // advance since dispatch (native input landed during flight) still
     // applies, then schedules follow-up via dirty.
     acceptReply(reply: WorldReply, dispatchSource: string, dispatchWatermark: string): { applied: boolean; reason: string } {
@@ -664,7 +661,7 @@ export class WorldAdapterState {
             this.dirty = true;
             return { applied: false, reason: "generation-mismatch" };
         }
-        if (this.brokerIncarnation === null || reply.adapter !== this.brokerIncarnation) {
+        if (reply.adapter !== this.adapter) {
             this.observationOnlyCatchup = true;
             this.dirty = true;
             return { applied: false, reason: "adapter-mismatch" };
@@ -766,47 +763,43 @@ export class WorldAdapterState {
         return flight;
     }
 
-    onDiscovery(gen: string, incarnation: string, adapter?: string, req?: string, expectedReq?: string): boolean {
-        // Authenticated discovery binds the generation plus the broker
-        // incarnation only for the exact adapter namespace and the exact
-        // outstanding discovery req. A delayed arbitrary reply (different
-        // adapter or wrong req) binds nothing and resets nothing.
+    onDiscovery(gen: string, adapter?: string, req?: string, expectedReq?: string): boolean {
+        // Authenticated discovery binds the sole adapter producer lifetime
+        // plus the serving core generation, for the exact adapter namespace
+        // and the exact outstanding discovery req. A delayed arbitrary reply
+        // (different adapter or wrong req) binds nothing and resets nothing.
         if (adapter !== undefined && adapter !== this.adapter) {
             return false;
         }
         if (expectedReq !== undefined && req !== expectedReq) {
             return false;
         }
-        // Authenticated discovery binds the generation; a changed generation
-        // cancels flights, ordering, and desired caches, never native wins.
-        // The queue-client namespace restarts at 1: commands queued under a
+        // Every actual handshake resets (the core resets on every handshake),
+        // even a repeat equal gen: an authenticated fresh handshake rotates
+        // flights, ordering, and desired caches, never native wins. The
+        // queue-client namespace restarts at 1: commands queued under a
         // dead generation settle there and are uncollectible here.
-        if (this.boundGen !== gen || this.brokerIncarnation !== incarnation) {
-            this.boundGen = gen;
-            this.brokerIncarnation = incarnation;
-            this.inFlight = null;
-            this.lastReply = null;
-            this.lastTakeResult = null;
-            this.hasAccepted = false;
-            this.lastAcceptedRev = "0";
-            this.nextClientCmd = "1";
-            this.dispatchedOps.clear();
-            this.spentEffects.clear();
-            this.floatSpent.clear();
-            this.clearSpent.clear();
-            this.appliedWindowTarget.clear();
-            this.appliedViewTarget.clear();
-            this.creationSpent.clear();
-            this.creationAttempts.clear();
-            this.creationPending.clear();
-            this.frameAttempts.clear();
-            this.memberAttempts.clear();
-            this.viewAttempts.clear();
-            this.clearAttempts.clear();
-            return true;
-        }
-        this.dirty = true;
-        return false;
+        this.boundGen = gen;
+        this.inFlight = null;
+        this.lastReply = null;
+        this.lastTakeResult = null;
+        this.hasAccepted = false;
+        this.lastAcceptedRev = "0";
+        this.nextClientCmd = "1";
+        this.dispatchedOps.clear();
+        this.spentEffects.clear();
+        this.floatSpent.clear();
+        this.clearSpent.clear();
+        this.appliedWindowTarget.clear();
+        this.appliedViewTarget.clear();
+        this.creationSpent.clear();
+        this.creationAttempts.clear();
+        this.creationPending.clear();
+        this.frameAttempts.clear();
+        this.memberAttempts.clear();
+        this.viewAttempts.clear();
+        this.clearAttempts.clear();
+        return true;
     }
 
     describeForLog(): string {

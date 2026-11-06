@@ -54,7 +54,8 @@ import {
     resolveEffectiveWorkspaceMode,
     type WorkspaceMode,
 } from "./workspace-native";
-import { isOpaqueId } from "./world-seq";
+import { isOpaqueId, utf8ByteLength } from "./world-seq";
+import { mapNativePid } from "./world-connection";
 
 // Documented core bounds (tiler-core world_report): outputs 16, total
 // native inventory 16*256, windows/closed/minimized 10000, bindings 4096,
@@ -134,6 +135,26 @@ export interface RawWindowFact {
     // isHidden NOTIFY hiddenChanged)` at pinned v6.7.4, distinct from
     // `m_hiddenByShowDesktop`, off-desktop, Activity, or minimized state).
     hidden: boolean;
+    // v4 native-fact projection (mechanical reads, never verdicts). The
+    // strict v4 report carries these directly; absent/unreadable string
+    // and pid facts ride null (supported-but-unreadable), never invented
+    // values. resizable/above/below ride null when unreadable so
+    // incomplete fakes hold narrowly instead of clearing the lane.
+    rectV4: { x: number; y: number; w: number; h: number };
+    hintsV4: { minW: number | null; minH: number | null; maxW: number | null; maxH: number | null };
+    // Single enumerated homing desktop id, or null when the membership is
+    // not exactly one desktop (the v4 builder omits the key then; the
+    // hostOwned gate applies at build time, never here).
+    nativeWsV4: string | null;
+    resizable: boolean | null;
+    above: boolean | null;
+    below: boolean | null;
+    role: string | null;
+    appId: string | null;
+    processId: string | null;
+    class: string | null;
+    title: string | null;
+    windowType: string;
 }
 
 export interface ObservedScreenFact {
@@ -981,6 +1002,61 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 windowsReadable = false;
                 continue;
             }
+            // v4 native-fact projection (mechanical, never verdicts). Text
+            // facts ride null when absent/unreadable/overbound (bounded
+            // UTF-8 <=4096 bytes, matching MAX_METADATA_TEXT_BYTES);
+            // resizable/above/below ride null when unreadable so an
+            // incomplete source holds narrowly instead of clearing the
+            // lane. The candidate boundary above guarantees normalWindow
+            // or dialog is a readable true, so the kind mapping below
+            // never yields null for a pushed row.
+            const boundedText = (value: unknown): string | null => {
+                if (typeof value !== "string") {
+                    return null;
+                }
+                return utf8ByteLength(value) <= 4096 ? value : null;
+            };
+            const roleV4 = boundedText(readProp(ref, "windowRole"));
+            const appIdV4 = boundedText(readProp(ref, "desktopFileName"));
+            const classV4 = boundedText(readProp(ref, "resourceClass"));
+            const titleV4 = boundedText(readProp(ref, "caption"));
+            const processIdV4 = mapNativePid(readProp(ref, "pid"));
+            const lenientBool = (value: unknown): boolean | null =>
+                (typeof value === "boolean" ? value : null);
+            const resizableV4 = lenientBool(readProp(ref, "resizeable"));
+            const aboveV4 = lenientBool(readProp(ref, "keepAbove"));
+            const belowV4 = lenientBool(readProp(ref, "keepBelow"));
+            const kindFlag = (property: string): boolean => readProp(ref, property) === true;
+            let windowTypeV4 = "other";
+            if (normalWindow) {
+                windowTypeV4 = "normal";
+            } else if (dialog) {
+                windowTypeV4 = "dialog";
+            } else if (kindFlag("utility") || kindFlag("toolbar")) {
+                windowTypeV4 = "utility";
+            } else if (kindFlag("desktopWindow")) {
+                windowTypeV4 = "desktop";
+            } else if (kindFlag("dock")) {
+                windowTypeV4 = "dock";
+            } else if (kindFlag("menu") || kindFlag("dropdownMenu") || kindFlag("popupMenu")) {
+                windowTypeV4 = "menu";
+            } else if (kindFlag("tooltip")) {
+                windowTypeV4 = "tooltip";
+            } else if (kindFlag("notification") || kindFlag("criticalNotification")) {
+                windowTypeV4 = "notification";
+            } else if (kindFlag("splash")) {
+                windowTypeV4 = "splash";
+            }
+            // Decorated-frame hint projection for the v4 row: same
+            // client-to-decorated conversion as the legacy carrier below
+            // (client sizes plus this window's own frame/client delta per
+            // axis; positive in-bound client values convert, zero/sentinel
+            // values ride verbatim, unknown delta nulls converted bounds).
+            const minV4 = readHintSize(readProp(ref, "minSize"));
+            const maxV4 = readHintSize(readProp(ref, "maxSize"));
+            const clientV4 = readClientRect(ref);
+            const deltaWV4 = clientV4 !== null ? rect.w - clientV4.w : null;
+            const deltaHV4 = clientV4 !== null ? rect.h - clientV4.h : null;
             rawFacts.push({
                 win: rawId,
                 out: outName as string,
@@ -1002,6 +1078,23 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 onAllDesktops,
                 minimized,
                 hidden,
+                rectV4: rect,
+                hintsV4: {
+                    minW: convertHintBound(minV4 ? minV4.w : null, deltaWV4),
+                    minH: convertHintBound(minV4 ? minV4.h : null, deltaHV4),
+                    maxW: convertHintBound(maxV4 ? maxV4.w : null, deltaWV4),
+                    maxH: convertHintBound(maxV4 ? maxV4.h : null, deltaHV4),
+                },
+                nativeWsV4: desktopIds.length === 1 ? (desktopIds[0] as string) : null,
+                resizable: resizableV4,
+                above: aboveV4,
+                below: belowV4,
+                role: roleV4,
+                appId: appIdV4,
+                processId: processIdV4,
+                class: classV4,
+                title: titleV4,
+                windowType: windowTypeV4,
             });
             try {
                 if (env.isFloating !== undefined && env.isFloating(rawId)) {

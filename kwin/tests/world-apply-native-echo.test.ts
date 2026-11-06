@@ -220,7 +220,7 @@ function observe(surf: ReturnType<typeof makeSurface>): WorldObservation {
 
 function freshState(reply: WorldReply): WorldAdapterState {
     const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1", "broker-1");
+    state.onDiscovery("gen-1", "adapter-1");
     state.invalidate();
     state.invalidate();
     reply.obs = state.currentInvalid;
@@ -231,9 +231,10 @@ function windowRow(win: string, out: string, ws: string): WorldReply["windows"][
     return {
         win, out, ws,
         alloc: null, frame: null,
-        frame_auth: "", frame_hold: "",
+        frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
         frame_op: "", clear_op: "", floating: false, float_origin: "",
+        cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
     };
 }
 
@@ -241,9 +242,9 @@ function windowRow(win: string, out: string, ws: string): WorldReply["windows"][
 // matching the fake native ids): adapter-side resolution never falls
 // back to native string equality.
 const fusedRows = (): WorldReply["workspaces"] => ([
-    { id: D6, out: HDMI, bind: D6, scope: HDMI, order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
-    { id: D3, out: DP, bind: D3, scope: DP, order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
-    { id: DY, out: HDMI, bind: DY, scope: HDMI, order: 1, mode: "tiled", exist: true, hold: "", trailing: false },
+    { id: D6, out: HDMI, bind: D6, scope: { kind: "output", out: HDMI }, order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
+    { id: D3, out: DP, bind: D3, scope: { kind: "output", out: DP }, order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
+    { id: DY, out: HDMI, bind: DY, scope: { kind: "output", out: HDMI }, order: 1, mode: "tiled", exist: true, hold: "", trailing: false },
 ]);
 
 function migrationReply(): WorldReply {
@@ -256,14 +257,17 @@ function migrationReply(): WorldReply {
         gestureSettled: null, gestureAssoc: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        scopes: [{ scope: `${HDMI}/${D6}`, auth: "controlled", reason: "" }],
+        intentWrites: [],
+        switchSettled: [],
+        diagnostics: [],
+        presentation: { foreground: "", rev: "1", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        scopes: [{ scope: { kind: "workspace", out: HDMI, ws: D6 }, auth: "controlled", reason: "" }],
         workspaces: fusedRows(),
         outputs: [],
         windows: [windowRow("win-a", HDMI, D6), windowRow("win-b", HDMI, D6)],
         transfers: [
-            { op: "op-22", kind: "migration", win: "", out: HDMI, ws: D6, follow: false, held: false },
-            { op: "op-22-refill", kind: "view", win: "", out: DP, ws: D3, follow: false, held: false },
+            { op: "op-22", kind: "migration", win: "", out: HDMI, ws: D6, follow: false, held: false, cmdSeq: null },
+            { op: "op-22-refill", kind: "view", win: "", out: DP, ws: D3, follow: false, held: false, cmdSeq: null },
         ],
         effects: [],
         result: null,
@@ -331,12 +335,15 @@ describe("world native output echo", () => {
             gestureSettled: null, gestureAssoc: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+            intentWrites: [],
+            switchSettled: [],
+            diagnostics: [],
+            presentation: { foreground: "", rev: "1", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [], workspaces: fusedRows(), outputs: [],
             windows: [windowRow("win-a", HDMI, DY), windowRow("win-b", HDMI, DY)],
             transfers: [
-                { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow: true, held: false },
-                { op: "op-2", kind: "window", win: "win-b", out: HDMI, ws: DY, follow: false, held: false },
+                { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow: true, held: false, cmdSeq: null },
+                { op: "op-2", kind: "window", win: "win-b", out: HDMI, ws: DY, follow: false, held: false, cmdSeq: null },
             ],
             effects: [],
             result: null,
@@ -590,11 +597,14 @@ describe("world native output lag (T05 producer shape)", () => {
             gestureSettled: null, gestureAssoc: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+            intentWrites: [],
+            switchSettled: [],
+            diagnostics: [],
+            presentation: { foreground: "", rev: "1", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [], workspaces: fusedRows(), outputs: [],
             windows: [windowRow("win-a", HDMI, DY)],
             transfers: [
-                { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow: true, held: false },
+                { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow: true, held: false, cmdSeq: null },
             ],
             effects: [],
             result: null,
