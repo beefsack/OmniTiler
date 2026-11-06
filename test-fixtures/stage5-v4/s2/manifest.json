@@ -1,0 +1,78 @@
+{
+  "tool": "world-stage5-v4-record",
+  "bridge": "broker_world_eval",
+  "chain": "s2",
+  "adapter": "kwin-stage5-v4",
+  "gen": "gen-stage5-v4",
+  "volatile": [
+    "gen",
+    "source",
+    "sourceSeq",
+    "nativeInvalid",
+    "req"
+  ],
+  "internalReads": 9,
+  "parkedWaits": 1,
+  "steps": [
+    {
+      "name": "p5",
+      "projection": "projection-p5.json",
+      "envelopes": [
+        "envelope-p5-0.json"
+      ],
+      "facts": [
+        "facts-p5-0.json"
+      ],
+      "gestures": []
+    },
+    {
+      "name": "p6",
+      "projection": "projection-p6.json",
+      "envelopes": [
+        "envelope-p6-0.json"
+      ],
+      "facts": [],
+      "gestures": []
+    },
+    {
+      "name": "cover",
+      "projection": "projection-cover.json",
+      "envelopes": [
+        "envelope-cover-0.json"
+      ],
+      "facts": [
+        "facts-cover-0.json"
+      ],
+      "gestures": []
+    },
+    {
+      "name": "preview",
+      "projection": "projection-preview.json",
+      "envelopes": [
+        "envelope-preview-0.json"
+      ],
+      "facts": [],
+      "gestures": [
+        "gesture-preview-0.json"
+      ]
+    },
+    {
+      "name": "s2",
+      "projection": "projection-s2.json",
+      "envelopes": [
+        "envelope-s2-0.json",
+        "envelope-s2-1.json"
+      ],
+      "facts": [
+        "facts-s2-0.json"
+      ],
+      "gestures": [
+        "gesture-s2-0.json"
+      ]
+    }
+  ],
+  "genesisEnvelopes": [
+    "envelope-genesis-0.json",
+    "envelope-genesis-1.json"
+  ]
+}
