@@ -342,6 +342,17 @@
   authored accepts with the production parser. All 63 focused connection, store,
   entry-persistence and producer tests pass, including the 12 durability and
   stale-apply cases. This does not substitute for nonempty native restart proof.
+- A new offline recorder drives the actual entry through a retained production
+  broker bridge, including handshake/settings and presentation reads. Both
+  stage5 causal chains record successfully with coverage joins, found underlay,
+  required preview provenance, hidden border and native-open frame barriers.
+  Genesis and intermediate captures are retained rather than folded away.
+  The first execution exposed a false constant gesture-active fake: removing
+  it restores the production snapshot-derived barrier without changing the
+  oracle. Typecheck and both chains pass after that correction. Checked-in v4
+  counterpart fixtures and enabled route/subscriber regressions remain pending;
+  the two deferred Rust tests are still ignored. This is not native rendering
+  or D-Bus authorization evidence.
 - Teardown unloaded the exact controller, stopped the development service and
   shut down the fixture cleanly. Follow-up checks found no fixture process,
   socket, native windows or script helpers; development status was down and the
