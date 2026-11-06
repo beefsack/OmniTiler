@@ -177,6 +177,7 @@ interface FakeWindow {
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
+    clientGeometry: { x: number; y: number; width: number; height: number };
     output: { name: string };
     desktops: FakeDesktop[];
     minimized: boolean;
@@ -186,9 +187,19 @@ interface FakeWindow {
     onAllDesktops: boolean;
     minSize: { width: number; height: number } | null;
     maxSize: { width: number; height: number } | null;
+    pid: number;
+    resourceClass: string;
+    caption: string;
+    windowRole: string;
+    desktopFileName: string;
+    resizeable: boolean;
+    keepAbove: boolean;
+    keepBelow: boolean;
     readonly outputChanged: FakeSignal["signal"];
     readonly desktopsChanged: FakeSignal["signal"];
-    readonly __signals?: { readonly outputChanged: FakeSignal; readonly desktopsChanged: FakeSignal };
+    readonly hiddenChanged: FakeSignal["signal"];
+    readonly frameGeometryChanged: FakeSignal["signal"];
+    readonly __signals?: { readonly outputChanged: FakeSignal; readonly desktopsChanged: FakeSignal; readonly hiddenChanged: FakeSignal; readonly frameGeometryChanged: FakeSignal };
 }
 
 interface CapturedCall {
@@ -266,10 +277,13 @@ async function makeProducerHarness(): Promise<Harness> {
     ): FakeWindow => {
         const outputChanged = makeSignal();
         const winDesktopsChanged = makeSignal();
+        const winHiddenChanged = makeSignal();
+        const winFrameChanged = makeSignal();
         return {
             internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: frame,
+            clientGeometry: { x: frame.x + 2, y: frame.y + 21, width: Math.max(1, frame.width - 4), height: Math.max(1, frame.height - 22) },
             output: { name: out },
             desktops: [byId.get(ws) as FakeDesktop],
             minimized: false,
@@ -277,11 +291,21 @@ async function makeProducerHarness(): Promise<Harness> {
             fullScreen: false,
             maximizeMode: 0,
             onAllDesktops: false,
-            minSize: fixed === null ? null : { ...fixed },
-            maxSize: fixed === null ? null : { ...fixed },
+            minSize: fixed === null ? { width: 100, height: 100 } : { ...fixed },
+            maxSize: fixed === null ? { width: 2147483647, height: 2147483647 } : { ...fixed },
+            pid: 1234,
+            resourceClass: "Example",
+            caption: "Window",
+            windowRole: "normal",
+            desktopFileName: "example.app",
+            resizeable: true,
+            keepAbove: false,
+            keepBelow: false,
             outputChanged: outputChanged.signal,
             desktopsChanged: winDesktopsChanged.signal,
-            __signals: { outputChanged, desktopsChanged: winDesktopsChanged },
+            hiddenChanged: winHiddenChanged.signal,
+            frameGeometryChanged: winFrameChanged.signal,
+            __signals: { outputChanged, desktopsChanged: winDesktopsChanged, hiddenChanged: winHiddenChanged, frameGeometryChanged: winFrameChanged },
         };
     };
     const wins: FakeWindow[] = [
@@ -418,7 +442,12 @@ async function makeProducerHarness(): Promise<Harness> {
         set activeScreen(ref: unknown) {
             void ref;
         },
-        cursorPos: { x: 2, y: 100 },
+        get cursorPos(): { x: number; y: number } {
+            // Production-shaped cursor inventory: the cursor rides the
+            // active output, which the core's cursor-first selection
+            // source resolution requires for output-relative commands.
+            return harness.activeScreen.name === RIGHT ? { x: 1002, y: 100 } : { x: 2, y: 100 };
+        },
         windowAdded: (signals["windowAdded"] as FakeSignal).signal,
         windowRemoved: (signals["windowRemoved"] as FakeSignal).signal,
         windowActivated: (signals["windowActivated"] as FakeSignal).signal,
@@ -509,6 +538,32 @@ async function makeProducerHarness(): Promise<Harness> {
         removeDesktop: (): boolean => false,
     };
     for (const win of wins) {
+        // Truthful native decoration: every native write (entry frame
+        // actuation via Reflect.set, never a bypass) keeps the client rect
+        // tracking the frame with the same insets the constructor proves,
+        // so no capture ever pairs a fresh frame with a stale client.
+        let frame = { ...win.frameGeometry };
+        let client = { ...win.clientGeometry };
+        Object.defineProperty(win, "frameGeometry", {
+            configurable: true,
+            get: () => frame,
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                frame = rect;
+                client = {
+                    x: rect.x + 2,
+                    y: rect.y + 21,
+                    width: Math.max(1, rect.width - 4),
+                    height: Math.max(1, rect.height - 22),
+                };
+            },
+        });
+        Object.defineProperty(win, "clientGeometry", {
+            configurable: true,
+            get: () => client,
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                client = rect;
+            },
+        });
         let desks = win.desktops;
         Object.defineProperty(win, "desktops", {
             configurable: true,
@@ -571,16 +626,51 @@ async function makeProducerHarness(): Promise<Harness> {
     return harness;
 }
 
-async function discover(h: Harness): Promise<void> {
-    const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
-    assert.ok(discIndex >= 0, "entry discovers on start");
-    const disc = h.calls[discIndex] as CapturedCall;
-    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
-    const reply = h.broker.bindDiscovery(engineBootstrap);
-    const parsed = JSON.parse(reply) as Record<string, unknown>;
-    assert.equal(parsed["ready"], false, "bootstrap is not ready");
-    disc.callback(reply);
+async function discover(h: Harness): Promise<string> {
+    // Authentic v4 connection pump: the handshake binds the producer
+    // adapter lifetime and mints the serving generation; the revisioned
+    // settings snapshot (rev 1) precedes the first report on the wire.
+    const hsIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
+    assert.ok(hsIndex >= 0, "entry discovers on start");
+    const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
+    assert.equal(hsBody["adapter"], "test-adapter", "handshake carries the producer adapter");
+    const hsReplyText = await h.bridge.send("DiscoverWorld", (h.calls[hsIndex] as CapturedCall).payload);
+    const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
+    assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
+    assert.equal(hsReply["ready"], false, "accepted handshake carries ready:false");
+    assert.equal(hsReply["kind"], "", "accepted handshake carries an empty kind");
+    assert.equal(hsReply["adapter"], "test-adapter", "handshake retains the producer adapter, never a broker incarnation");
+    assert.equal(hsReply["req"], hsBody["req"], "handshake echoes the request correlation");
+    assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string) !== "", "handshake mints the serving generation");
+    const gen = hsReply["gen"] as string;
+    const boundHs = h.broker.bindDiscovery(hsReplyText);
+    assert.equal((JSON.parse(boundHs) as Record<string, unknown>)["adapter"], "test-adapter", "harness passes the producer lifetime through");
+    assert.equal(h.broker.gen, gen, "harness records the actual serving generation");
+    (h.calls[hsIndex] as CapturedCall).callback(boundHs);
+    const setIndex = h.calls.findIndex((call, at) => at > hsIndex && call.method === "DiscoverWorld");
+    assert.ok(setIndex >= 0, "revisioned settings follow the handshake");
+    const setBody = JSON.parse((h.calls[setIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(setBody["type"], "settings", "second discovery is the revisioned settings snapshot");
+    assert.equal(setBody["adapter"], "test-adapter", "settings carry the producer adapter");
+    assert.equal(setBody["gen"], gen, "settings bind the serving generation");
+    assert.equal(setBody["rev"], "1", "first settings snapshot carries rev 1");
+    const setReplyText = await h.bridge.send("DiscoverWorld", (h.calls[setIndex] as CapturedCall).payload);
+    const setReply = JSON.parse(setReplyText) as Record<string, unknown>;
+    assert.equal(setReply["type"], "settings-reply", "engine answers settings");
+    assert.equal(setReply["status"], "accepted", `settings accepted, got ${setReplyText.slice(0, 300)}`);
+    assert.equal(setReply["adapter"], "test-adapter", "settings reply retains the producer adapter");
+    assert.equal(setReply["gen"], gen, "settings reply binds the serving generation");
+    assert.equal(setReply["req"], setBody["req"], "settings reply echoes the request correlation");
+    assert.equal(setReply["rev"], "1", "settings reply binds the sent revision");
+    (h.calls[setIndex] as CapturedCall).callback(setReplyText);
+    assert.deepEqual(
+        h.calls.slice(0, setIndex + 1).map((call) => call.method),
+        ["DiscoverWorld", "DiscoverWorld"],
+        "no report precedes the accepted settings",
+    );
     await h.settle();
+    return gen;
 }
 
 function lastReply(h: Harness): Record<string, unknown> {
@@ -675,15 +765,34 @@ describe("world aligned migration producer", () => {
                 assert.equal(selects.length, 1, "selection travels the production command route exactly once");
             }
 
-            // The float intent lands after the seed: fixed min/max pins
-            // win-c floating (automatic fixed admission), converting the
-            // seeded member into a float the migration must carry
-            // membership-only.
-            const winCSeed = h.wins.find((w) => w.internalId === "win-c") as FakeWindow;
-            winCSeed.minSize = { width: 100, height: 100 };
-            winCSeed.maxSize = { width: 100, height: 100 };
-            h.fire("desktopsChanged");
+            // The float intent lands after the seed via the production
+            // direct toggle-float command on win-c, converting the seeded
+            // tiled member into an intentional float the migration must
+            // carry membership-only (hints-as-intent is invalid under v4
+            // retained-tile semantics: window_classify.rs:481-513).
+            h.activeRef = h.wins.find((w) => w.internalId === "win-c") as FakeWindow;
+            h.handle.requestFloat();
+            h.runTimers();
             await h.settle();
+            {
+                const floatCmds = h.calls
+                    .map((call, index) => ({ call, index }))
+                    .filter(({ call }) => {
+                        if (call.method !== "QueueWorldCommand") {
+                            return false;
+                        }
+                        try {
+                            const body = JSON.parse(call.payload) as Record<string, unknown>;
+                            return (body["command"] as Record<string, unknown> | null)?.["op"] === "toggle-float";
+                        } catch {
+                            return false;
+                        }
+                    });
+                assert.equal(floatCmds.length, 1, "explicit float intent files exactly once, never replayed");
+                const floatRow = ((lastReply(h)["windows"] as Array<Record<string, unknown>> | undefined) ?? []).find((w) => (w["win"] as string) === "win-c");
+                assert.equal(floatRow?.["floating"], true, "win-c settled floating before migration");
+            }
+            h.activeRef = h.wins.find((w) => w.internalId === "win-a") as FakeWindow;
 
             const settledBefore = lastReply(h);
             const sourceLogical = ((settledBefore["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === RIGHT && b["bind"] === "ws-1") as Record<string, string> | undefined)?.["id"];

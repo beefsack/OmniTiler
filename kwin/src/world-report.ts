@@ -308,51 +308,49 @@ export interface WorldFrameAttempt {
     op: string;
     pre: [number, number, number, number] | null;
 }
+// Approved v4 workspace reference (world-contract.md "Typed references"):
+// `kind` names the id namespace explicitly, never inferred from the
+// string; `out` is the output at sampling time, `ws` the id in that
+// namespace. Member rows carry the namespace the host capability
+// allows; view rows are native-only. Unreadable rides null, never a
+// guess. The exact live homing rides here while `out`/`ws` keep the
+// stable target correlation, never rewritten into the evidence.
+export type WorldMemberRef =
+    | { kind: "logical"; out: string; ws: string }
+    | { kind: "native"; out: string; ws: string };
+export type WorldViewRef = { kind: "native"; out: string; ws: string };
 // One normalized raw membership attempt: the mechanical facts behind a
 // single native membership write for one window under one retained
-// operation. `pre`/`post` are the live homings immediately before/after
-// the write. Under host-owned workspace domains the adapter cannot express
-// native homing in the logical attempt fields (translation through the
-// adapter binding table would forge logical evidence and poison core
-// third-location proof), so both ride `null` there: the setter plus exact
-// logical target correlation is the whole row, and the core holds the
-// flight ambiguous without re-actuation. The fresh same-turn native
-// desktop ids ride `nativePre`/`nativePost` (null when unreadable); the
-// core translates them through its own per-output bindings. At most one
-// latest-wins entry per operation window.
+// operation. `pre`/`post` are the exact live WorkspaceRefs immediately
+// before/after the write (null when unreadable); the core translates
+// them through its own per-output bindings. At most one latest-wins
+// entry per operation window.
 export interface WorldMemberAttempt {
     op: string;
     win: string;
     out: string;
     ws: string;
     setter: FrameSetter;
-    pre: { out: string; ws: string } | null;
-    post: { out: string; ws: string } | null;
-    nativePre?: string | null;
-    nativePost?: string | null;
+    pre: WorldMemberRef | null;
+    post: WorldMemberRef | null;
     attemptMs: string;
 }
 // One normalized raw view attempt: the mechanical facts behind a single
 // native view write for one owning phase (standalone view id, window
-// follow parent, migration-target parent, or refill child id). Same
-// host-owned null-evidence rule as membership: `pre`/`post`/`base` ride
-// `null`, never translated native ids. The fresh same-turn native current
-// ids ride `nativePre` (live current before the write), `nativePost`
-// (live current immediately after), and `nativeBase` (observation-time
-// current for the target output, null when unreadable). The core
-// translates them through its own bindings for the attempt's target
-// output. At most one latest-wins entry per owning view phase.
+// follow parent, migration-target parent, or refill child id). `pre`/
+// `post`/`base` are native-only WorkspaceRefs: the live current before
+// the write, the live current immediately after, and the
+// observation-time current for the target output (null when unreadable).
+// The core translates them through its own bindings for the attempt's
+// target output. At most one latest-wins entry per owning view phase.
 export interface WorldViewAttempt {
     op: string;
     out: string;
     ws: string;
     setter: FrameSetter;
-    pre: string | null;
-    post: string | null;
-    base: string | null;
-    nativePre?: string | null;
-    nativePost?: string | null;
-    nativeBase?: string | null;
+    pre: WorldViewRef | null;
+    post: WorldViewRef | null;
+    base: WorldViewRef | null;
     attemptMs: string;
 }
 // One normalized raw maximize-clear attempt: the mechanical facts behind a
@@ -2768,8 +2766,8 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
 }
 
 // Retained mechanical attempt lanes ride verbatim in canonical key order.
-// These mirror the v3 attempt shapes the apply loop already retains; a
-// row that cannot be spelled canonically fails the whole report closed.
+// Member/view rows carry approved v4 WorkspaceRefs; a row that cannot be
+// spelled canonically fails the whole report closed.
 function encodeV4FrameAttempt(a: WorldFrameAttempt): string | null {
     if (!isOpaqueId(a.win)) {
         return null;
@@ -2805,33 +2803,42 @@ function encodeV4FrameAttempt(a: WorldFrameAttempt): string | null {
         `"op":${op},"pre":${pre}}`;
 }
 
+// Canonical v4 member/view evidence writer: one WorkspaceRef object per
+// non-null ref in canonical key order (`kind`, `out`, `ws`), or null
+// for unreadable. Member refs carry either approved namespace;
+// view refs are native-only (a logical view ref has no wire spelling
+// and fails closed). Malformed ids fail the whole row closed.
+function encodeV4WorkspaceRef(value: WorldMemberRef, nativeOnly: boolean): string | null {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        return null;
+    }
+    const kind = (value as { kind: unknown }).kind;
+    if (kind !== "logical" && kind !== "native") {
+        return null;
+    }
+    if (kind === "logical" && nativeOnly) {
+        return null;
+    }
+    const out = (value as { out: unknown }).out;
+    const ws = (value as { ws: unknown }).ws;
+    if (!isOpaqueId(out) || !isOpaqueId(ws)) {
+        return null;
+    }
+    return `{"kind":${encodeV4String(kind)},"out":${encodeV4String(out)},"ws":${encodeV4String(ws)}}`;
+}
+
 function encodeV4MemberAttempt(a: WorldMemberAttempt): string | null {
     if (!isOpaqueId(a.op) || !isOpaqueId(a.win) || !isOpaqueId(a.out) || !isOpaqueId(a.ws)) {
         return null;
     }
-    const homing = (h: { out: string; ws: string } | null): string | null => {
-        if (h === null) {
-            return "null";
-        }
-        return isOpaqueId(h.out) && isOpaqueId(h.ws)
-            ? `{"out":${encodeV4String(h.out)},"ws":${encodeV4String(h.ws)}}`
-            : null;
-    };
-    const pre = homing(a.pre);
-    const post = homing(a.post);
-    const nativePre = a.nativePre === undefined || a.nativePre === null
-        ? "null"
-        : encodeV4NullableId(a.nativePre);
-    const nativePost = a.nativePost === undefined || a.nativePost === null
-        ? "null"
-        : encodeV4NullableId(a.nativePost);
-    if (pre === null || post === null || nativePre === null || nativePost === null) {
+    const pre = a.pre === null ? "null" : encodeV4WorkspaceRef(a.pre, false);
+    const post = a.post === null ? "null" : encodeV4WorkspaceRef(a.post, false);
+    if (pre === null || post === null) {
         return null;
     }
     return `{"op":${encodeV4String(a.op)},"win":${encodeV4String(a.win)},` +
         `"out":${encodeV4String(a.out)},"ws":${encodeV4String(a.ws)},` +
         `"setter":${encodeV4String(a.setter)},"pre":${pre},"post":${post},` +
-        `"nativePre":${nativePre},"nativePost":${nativePost},` +
         `"attemptMs":${encodeV4String(a.attemptMs)}}`;
 }
 
@@ -2839,22 +2846,17 @@ function encodeV4ViewAttempt(a: WorldViewAttempt): string | null {
     if (!isOpaqueId(a.op) || !isOpaqueId(a.out) || !isOpaqueId(a.ws)) {
         return null;
     }
-    const view = (v: string | null): string | null =>
-        (v === null ? "null" : encodeV4NullableId(v));
-    const pre = view(a.pre);
-    const post = view(a.post);
-    const base = view(a.base);
-    const nativePre = a.nativePre === undefined || a.nativePre === null ? "null" : encodeV4NullableId(a.nativePre);
-    const nativePost = a.nativePost === undefined || a.nativePost === null ? "null" : encodeV4NullableId(a.nativePost);
-    const nativeBase = a.nativeBase === undefined || a.nativeBase === null ? "null" : encodeV4NullableId(a.nativeBase);
-    if (pre === null || post === null || base === null ||
-        nativePre === null || nativePost === null || nativeBase === null) {
+    const ref = (v: WorldViewRef | null): string | null =>
+        (v === null ? "null" : encodeV4WorkspaceRef(v, true));
+    const pre = ref(a.pre);
+    const post = ref(a.post);
+    const base = ref(a.base);
+    if (pre === null || post === null || base === null) {
         return null;
     }
     return `{"op":${encodeV4String(a.op)},"out":${encodeV4String(a.out)},` +
         `"ws":${encodeV4String(a.ws)},"setter":${encodeV4String(a.setter)},` +
         `"pre":${pre},"post":${post},"base":${base},` +
-        `"nativePre":${nativePre},"nativePost":${nativePost},"nativeBase":${nativeBase},` +
         `"attemptMs":${encodeV4String(a.attemptMs)}}`;
 }
 
@@ -3033,20 +3035,23 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
         `"op":${esc(a.op)},"pre":${rectOrNull(a.pre)}}`,
     ).join(",");
     const memberAttempts = input.memberAttempts.map((a) => {
+        // Dead lane: v4 refs predate this builder, so it spells the legacy
+        // keys from the carried refs without revalidation (never emitted).
         const homing = (h: { out: string; ws: string } | null): string =>
             h === null ? "null" : `{"out":${esc(h.out)},"ws":${esc(h.ws)}}`;
-        const native = (v: string | null): string => (v === null ? "null" : esc(v));
         return `{"op":${esc(a.op)},"win":${esc(a.win)},"out":${esc(a.out)},"ws":${esc(a.ws)},` +
             `"setter":${esc(a.setter)},"pre":${homing(a.pre)},"post":${homing(a.post)},` +
-            `"nativePre":${native(a.nativePre ?? null)},"nativePost":${native(a.nativePost ?? null)},` +
+            `"nativePre":null,"nativePost":null,` +
             `"attemptMs":${JSON.stringify(a.attemptMs)}}`;
     }).join(",");
     const viewAttempts = input.viewAttempts.map((a) => {
-        const view = (v: string | null): string => (v === null ? "null" : esc(v));
-        const native = (v: string | null): string => (v === null ? "null" : esc(v));
+        // Dead lane: v4 refs predate this builder, so it spells the legacy
+        // keys from the carried refs without revalidation (never emitted).
+        const view = (v: { out: string; ws: string } | null): string =>
+            v === null ? "null" : esc(v.ws);
         return `{"op":${esc(a.op)},"out":${esc(a.out)},"ws":${esc(a.ws)},` +
             `"setter":${esc(a.setter)},"pre":${view(a.pre)},"post":${view(a.post)},"base":${view(a.base)},` +
-            `"nativePre":${native(a.nativePre ?? null)},"nativePost":${native(a.nativePost ?? null)},"nativeBase":${native(a.nativeBase ?? null)},` +
+            `"nativePre":null,"nativePost":null,"nativeBase":null,` +
             `"attemptMs":${JSON.stringify(a.attemptMs)}}`;
     }).join(",");
     const clearAttempts = input.clearAttempts.map((a) => {

@@ -450,3 +450,31 @@
   regressions. Strict TypeScript and all 24 tests across these four files pass.
   This is offline evidence, not native migration or full-suite acceptance;
   remaining corpus migration, widened gates and integrated review remain open.
+
+## Tagged member and view evidence
+
+- Four more real-engine carriers now use the genuine handshake/settings sequence:
+  aligned migration producer and engine, unequal-height R4 and native retirement.
+  Their native-shaped facts include truthful frame/client tracking. The floating
+  migration member is explicitly floated after seeding through the existing
+  command route; changing fixed hints on a retained tile is not float intent.
+  Original membership-only carry, close, echo, refill, retirement and no-replay
+  assertions remain.
+- The both-view rewind regression exposed a production wire defect: member/view
+  attempts still emitted retired parallel native fields, so the strict v4 decoder
+  held them instead of consuming their proof. The producer, retention and apply
+  path now use the approved single tagged `WorkspaceRef` evidence. Cross-output
+  member preimages retain their actual source output; views remain native-only,
+  unreadable evidence stays null and original attempt stamps survive delivery.
+  The unchanged real-engine refill-retirement regression now passes.
+- Encoder/retention regressions cover canonical tagged references, absence of
+  sidecars, logical member tagging, native-only views and malformed-id refusal.
+  The two stale raw-attempt entry harnesses now accept handshake/settings and
+  strict v4 replies; an invalid explicit null optional presentation field was
+  removed rather than weakening the decoder.
+- Strict TypeScript passes. All 89 tests across these four carriers, raw attempts,
+  v4 report encoding, native echo and genuine stage5 recording/subscriber suites
+  pass across the latest targeted executions. The production build succeeds.
+  The current full adapter gate executes 980 tests: 634 pass, 346 fail, none skip.
+  Remaining stale corpus failures, widened gates and integrated review keep K1
+  incomplete; these offline passes add no native migration or rendering claim.

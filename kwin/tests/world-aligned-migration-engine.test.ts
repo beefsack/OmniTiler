@@ -169,6 +169,7 @@ interface FakeWindow {
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
+    clientGeometry: { x: number; y: number; width: number; height: number };
     output: { name: string };
     desktops: FakeDesktop[];
     minimized: boolean;
@@ -176,8 +177,21 @@ interface FakeWindow {
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
-    minSize: null;
-    maxSize: null;
+    minSize: { width: number; height: number };
+    maxSize: { width: number; height: number };
+    pid: number;
+    resourceClass: string;
+    caption: string;
+    windowRole: string;
+    desktopFileName: string;
+    resizeable: boolean;
+    keepAbove: boolean;
+    keepBelow: boolean;
+    readonly outputChanged: FakeSignal["signal"];
+    readonly desktopsChanged: FakeSignal["signal"];
+    readonly hiddenChanged: FakeSignal["signal"];
+    readonly frameGeometryChanged: FakeSignal["signal"];
+    readonly __signals: { readonly outputChanged: FakeSignal; readonly desktopsChanged: FakeSignal; readonly hiddenChanged: FakeSignal; readonly frameGeometryChanged: FakeSignal };
 }
 
 interface CapturedCall {
@@ -230,20 +244,68 @@ async function makeHarness(): Promise<Harness> {
         { name: "out-b", geometry: { x: 800, y: 0, width: 800, height: 600 } },
     ];
     const currents = new Map([["out-a", "ws-1"], ["out-b", "ws-2"]]);
-    const mkWin = (id: string, out: string, ws: string, x: number): FakeWindow => ({
-        internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
-        normalWindow: true,
-        frameGeometry: { x, y: 0, width: 200, height: 200 },
-        output: { name: out },
-        desktops: [byId.get(ws) as FakeDesktop],
-        minimized: false,
-        hidden: false,
-        fullScreen: false,
-        maximizeMode: 0,
-        onAllDesktops: false,
-        minSize: null,
-        maxSize: null,
-    });
+    const mkWin = (id: string, out: string, ws: string, x: number): FakeWindow => {
+        const outputChanged = makeSignal();
+        const winDesktopsChanged = makeSignal();
+        const winHiddenChanged = makeSignal();
+        const winFrameChanged = makeSignal();
+        const frame = { x, y: 0, width: 200, height: 200 };
+        const win: FakeWindow = {
+            internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
+            normalWindow: true,
+            frameGeometry: { ...frame },
+            clientGeometry: { x: frame.x + 2, y: frame.y + 21, width: Math.max(1, frame.width - 4), height: Math.max(1, frame.height - 22) },
+            output: { name: out },
+            desktops: [byId.get(ws) as FakeDesktop],
+            minimized: false,
+            hidden: false,
+            fullScreen: false,
+            maximizeMode: 0,
+            onAllDesktops: false,
+            minSize: { width: 100, height: 100 },
+            maxSize: { width: 2147483647, height: 2147483647 },
+            pid: 1234,
+            resourceClass: "Example",
+            caption: "Window",
+            windowRole: "normal",
+            desktopFileName: "example.app",
+            resizeable: true,
+            keepAbove: false,
+            keepBelow: false,
+            outputChanged: outputChanged.signal,
+            desktopsChanged: winDesktopsChanged.signal,
+            hiddenChanged: winHiddenChanged.signal,
+            frameGeometryChanged: winFrameChanged.signal,
+            __signals: { outputChanged, desktopsChanged: winDesktopsChanged, hiddenChanged: winHiddenChanged, frameGeometryChanged: winFrameChanged },
+        };
+        // Truthful native decoration: every native write (entry frame
+        // actuation via Reflect.set, never a bypass) keeps the client rect
+        // tracking the frame with the same insets the constructor proves,
+        // so no capture ever pairs a fresh frame with a stale client.
+        let liveFrame = { ...frame };
+        let liveClient = { ...win.clientGeometry };
+        Object.defineProperty(win, "frameGeometry", {
+            configurable: true,
+            get: () => liveFrame,
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                liveFrame = rect;
+                liveClient = {
+                    x: rect.x + 2,
+                    y: rect.y + 21,
+                    width: Math.max(1, rect.width - 4),
+                    height: Math.max(1, rect.height - 22),
+                };
+            },
+        });
+        Object.defineProperty(win, "clientGeometry", {
+            configurable: true,
+            get: () => liveClient,
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                liveClient = rect;
+            },
+        });
+        return win;
+    };
     const wins: FakeWindow[] = [
         mkWin("win-a", "out-a", "ws-1", 0),
         mkWin("win-c", "out-a", "ws-1", 210),
@@ -256,7 +318,6 @@ async function makeHarness(): Promise<Harness> {
         "desktopsChanged",
         "screensChanged",
         "currentDesktopChanged",
-        "activeScreenChanged",
     ] as const;
     const signals: Record<string, FakeSignal> = {};
     for (const name of sigNames) {
@@ -354,6 +415,11 @@ async function makeHarness(): Promise<Harness> {
         assert.ok(found !== undefined, `desktop ${id} exists`);
         return found as FakeDesktop;
     };
+    const screenByName = (name: string): { name: string; geometry: Record<string, number> } => {
+        const found = harness.screens.find((s) => s.name === name);
+        assert.ok(found !== undefined, `screen ${name} exists`);
+        return found as { name: string; geometry: Record<string, number> };
+    };
     const surface: Record<string, unknown> = {
         windowList: (): FakeWindow[] => [...harness.wins],
         screens: harness.screens,
@@ -364,14 +430,18 @@ async function makeHarness(): Promise<Harness> {
         set activeScreen(ref: unknown) {
             void ref;
         },
-        cursorPos: { x: 2, y: 100 },
+        get cursorPos(): { x: number; y: number } {
+            // Production-shaped cursor inventory: the cursor rides the
+            // active output, which the core's cursor-first selection
+            // source resolution requires for output-relative commands.
+            return harness.activeScreen.name === "out-b" ? { x: 802, y: 100 } : { x: 2, y: 100 };
+        },
         windowAdded: (signals["windowAdded"] as FakeSignal).signal,
         windowRemoved: (signals["windowRemoved"] as FakeSignal).signal,
         windowActivated: (signals["windowActivated"] as FakeSignal).signal,
         desktopsChanged: (signals["desktopsChanged"] as FakeSignal).signal,
         screensChanged: (signals["screensChanged"] as FakeSignal).signal,
         currentDesktopChanged: (signals["currentDesktopChanged"] as FakeSignal).signal,
-        activeScreenChanged: (signals["activeScreenChanged"] as FakeSignal).signal,
         get activeWindow(): FakeWindow | null {
             return harness.activeRef;
         },
@@ -381,7 +451,11 @@ async function makeHarness(): Promise<Harness> {
                 harness.activeRef = found;
             }
         },
-        clientArea: (): Record<string, number> => ({ x: 0, y: 0, width: 800, height: 600 }),
+        clientArea: (_kind: unknown, outRef: unknown, _deskRef: unknown): Record<string, number> => {
+            const name = (outRef as { name: string }).name;
+            const geom = screenByName(name).geometry;
+            return { x: geom["x"] as number, y: geom["y"] as number, width: geom["width"] as number, height: geom["height"] as number };
+        },
         currentDesktopForScreen: (screen: { name: string }): FakeDesktop =>
             desktopById(harness.currents.get(screen.name) ?? ""),
         setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }): void => {
@@ -389,6 +463,7 @@ async function makeHarness(): Promise<Harness> {
             assert.ok(byId.has(id), `desktop ${id} exists`);
             harness.currents.set(screen.name, id);
             harness.viewWrites.push(`${screen.name}->${id}`);
+            harness.fire("currentDesktopChanged");
         },
         sendClientToScreen: (mover: unknown, out: unknown): void => {
             const win = mover as FakeWindow;
@@ -461,16 +536,51 @@ async function makeHarness(): Promise<Harness> {
     return harness;
 }
 
-async function discover(h: Harness): Promise<void> {
-    const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
-    assert.ok(discIndex >= 0, "entry discovers on start");
-    const disc = h.calls[discIndex] as CapturedCall;
-    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
-    const reply = h.broker.bindDiscovery(engineBootstrap);
-    const parsed = JSON.parse(reply) as Record<string, unknown>;
-    assert.equal(parsed["ready"], false, "bootstrap is not ready");
-    disc.callback(reply);
+async function discover(h: Harness): Promise<string> {
+    // Authentic v4 connection pump: the handshake binds the producer
+    // adapter lifetime and mints the serving generation; the revisioned
+    // settings snapshot (rev 1) precedes the first report on the wire.
+    const hsIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
+    assert.ok(hsIndex >= 0, "entry discovers on start");
+    const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
+    assert.equal(hsBody["adapter"], "test-adapter", "handshake carries the producer adapter");
+    const hsReplyText = await h.bridge.send("DiscoverWorld", (h.calls[hsIndex] as CapturedCall).payload);
+    const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
+    assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
+    assert.equal(hsReply["ready"], false, "accepted handshake carries ready:false");
+    assert.equal(hsReply["kind"], "", "accepted handshake carries an empty kind");
+    assert.equal(hsReply["adapter"], "test-adapter", "handshake retains the producer adapter, never a broker incarnation");
+    assert.equal(hsReply["req"], hsBody["req"], "handshake echoes the request correlation");
+    assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string) !== "", "handshake mints the serving generation");
+    const gen = hsReply["gen"] as string;
+    const boundHs = h.broker.bindDiscovery(hsReplyText);
+    assert.equal((JSON.parse(boundHs) as Record<string, unknown>)["adapter"], "test-adapter", "harness passes the producer lifetime through");
+    assert.equal(h.broker.gen, gen, "harness records the actual serving generation");
+    (h.calls[hsIndex] as CapturedCall).callback(boundHs);
+    const setIndex = h.calls.findIndex((call, at) => at > hsIndex && call.method === "DiscoverWorld");
+    assert.ok(setIndex >= 0, "revisioned settings follow the handshake");
+    const setBody = JSON.parse((h.calls[setIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(setBody["type"], "settings", "second discovery is the revisioned settings snapshot");
+    assert.equal(setBody["adapter"], "test-adapter", "settings carry the producer adapter");
+    assert.equal(setBody["gen"], gen, "settings bind the serving generation");
+    assert.equal(setBody["rev"], "1", "first settings snapshot carries rev 1");
+    const setReplyText = await h.bridge.send("DiscoverWorld", (h.calls[setIndex] as CapturedCall).payload);
+    const setReply = JSON.parse(setReplyText) as Record<string, unknown>;
+    assert.equal(setReply["type"], "settings-reply", "engine answers settings");
+    assert.equal(setReply["status"], "accepted", `settings accepted, got ${setReplyText.slice(0, 300)}`);
+    assert.equal(setReply["adapter"], "test-adapter", "settings reply retains the producer adapter");
+    assert.equal(setReply["gen"], gen, "settings reply binds the serving generation");
+    assert.equal(setReply["req"], setBody["req"], "settings reply echoes the request correlation");
+    assert.equal(setReply["rev"], "1", "settings reply binds the sent revision");
+    (h.calls[setIndex] as CapturedCall).callback(setReplyText);
+    assert.deepEqual(
+        h.calls.slice(0, setIndex + 1).map((call) => call.method),
+        ["DiscoverWorld", "DiscoverWorld"],
+        "no report precedes the accepted settings",
+    );
     await h.settle();
+    return gen;
 }
 
 function lastTakeResult(h: Harness): Record<string, unknown> {

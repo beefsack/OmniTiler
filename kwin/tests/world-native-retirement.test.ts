@@ -1,6 +1,6 @@
-// Native retirement producer->core->apply->readback (offline, real v3 capture
-// + real core via raw_world_eval + mechanical apply). Adopted empty unviewed
-// middle desktops publish existence:false while rows/bindings persist;
+// Native retirement producer->core->apply->readback (offline, genuine v4
+// producer bytes + retained real core via raw_world_eval + mechanical
+// apply). Adopted empty unviewed middle desktops publish existence:false while rows/bindings persist;
 // mechanical apply removes only explicit authorized natives; the next
 // complete capture without the native clears the binding and deletes or
 // validly recycles the row with stable survivors and compact ordinals.
@@ -16,7 +16,14 @@ import { captureWorldObservation, type WorldObservation } from "../src/world-obs
 import { applyWorldReply, type ApplyEnv } from "../src/world-apply";
 import { WorldAdapterState } from "../src/world-state";
 import {
-    buildWorldInnerReportJson,
+    buildHandshakeRequest,
+    buildSettingsRequest,
+    defaultKwinCapabilities,
+    ownApplicationIdentity,
+} from "../src/world-connection";
+import { createWorldSettingsLive } from "../src/world-settings-live";
+import {
+    buildWorldReportV4InnerJson,
     isCoreWorldReply,
     parseWorldReply,
 } from "../src/world-report";
@@ -140,6 +147,8 @@ function makeWorld() {
         activeScreen: { name: "out-1" },
         activeWindow: null as unknown,
         cursorPos: { x: 2, y: 100 },
+        windowAt: () => [],
+        stackingOrder: [],
         clientArea: () => ({ x: 0, y: 0, width: 800, height: 600 }),
         currentDesktopForScreen: (screen: { name: string }) => {
             const id = currents.get(screen.name) ?? "";
@@ -177,29 +186,75 @@ function observe(w: W): WorldObservation | null {
     });
 }
 
+async function connectBridge(
+    bridge: WorldBridge,
+    broker: ReturnType<typeof createMiniBroker>,
+): Promise<string> {
+    // Authentic v4 connection pump: the handshake binds the producer
+    // adapter lifetime and mints the serving generation; the revisioned
+    // settings snapshot (rev 1) precedes the first report on the wire.
+    // Production builders only: the own identity plus the default
+    // per-output KDE capabilities (host-owned natives, never a generic
+    // Windows-like hostOwned:false/unavailableFacts:[] pair the strict
+    // core refuses as snapshot-invalid against native-shaped facts), and
+    // the genuine default settings snapshot the production entry sends.
+    const hsBody = buildHandshakeRequest("test-adapter", "req-1", ownApplicationIdentity(), defaultKwinCapabilities(true));
+    assert.ok(hsBody !== null, "production handshake request builds");
+    const hsReplyText = await bridge.send("DiscoverWorld", hsBody);
+    const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
+    assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
+    assert.equal(hsReply["ready"], false, "accepted handshake carries ready:false");
+    assert.equal(hsReply["kind"], "", "accepted handshake carries an empty kind");
+    assert.equal(hsReply["adapter"], "test-adapter", "handshake retains the producer adapter, never a broker incarnation");
+    assert.equal(hsReply["req"], "req-1", "handshake echoes the request correlation");
+    assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string) !== "", "handshake mints the serving generation");
+    const gen = hsReply["gen"] as string;
+    const boundHs = broker.bindDiscovery(hsReplyText);
+    assert.equal((JSON.parse(boundHs) as Record<string, unknown>)["adapter"], "test-adapter", "harness passes the producer lifetime through");
+    assert.equal(broker.gen, gen, "harness records the actual serving generation");
+    // Genuine default settings exactly as the production entry sends them:
+    // same readers and seed values (per-output-local mode, default-tiled,
+    // 8px gaps), snapshotted through the production settings module.
+    const liveSettings = createWorldSettingsLive({
+        readWorkspaceModeFn: () => "per-output-local",
+        readDefaultTiledFn: () => true,
+        readInnerGapFn: () => 8,
+        readOuterGapFn: () => 8,
+    });
+    const setBody = buildSettingsRequest("test-adapter", gen, "settings-1", "1", liveSettings.snapshotConnectionValues());
+    assert.ok(setBody !== null, "production settings request builds");
+    const setReplyText = await bridge.send("DiscoverWorld", setBody);
+    const setReply = JSON.parse(setReplyText) as Record<string, unknown>;
+    assert.equal(setReply["type"], "settings-reply", "engine answers settings");
+    assert.equal(setReply["status"], "accepted", `settings accepted, got ${setReplyText.slice(0, 300)}`);
+    assert.equal(setReply["adapter"], "test-adapter", "settings reply retains the producer adapter");
+    assert.equal(setReply["gen"], gen, "settings reply binds the serving generation");
+    assert.equal(setReply["req"], "settings-1", "settings reply echoes the request correlation");
+    assert.equal(setReply["rev"], "1", "settings reply binds the sent revision");
+    return gen;
+}
+
 async function roundtrip(
     bridge: WorldBridge,
     broker: ReturnType<typeof createMiniBroker>,
     w: W,
     src: string,
+    gen: string,
 ): Promise<{ obs: WorldObservation; bound: string }> {
     const obs = observe(w);
     assert.ok(obs !== null, "capture stays non-null");
     assert.equal(obs.complete, true, "capture complete");
-    const inner = buildWorldInnerReportJson({
+    const inner = buildWorldReportV4InnerJson({
         observation: obs,
-        defaultTiled: true,
-        refill: "last-remaining-workspace",
-        bornMaximized: "tile-on-launch",
-        anchorFallback: "closest-splittable-relative",
-        noSpaceResult: "allow-overlap",
         creationAttempts: [],
         frameAttempts: [],
         memberAttempts: [],
         viewAttempts: [],
         clearAttempts: [],
+        intentRecords: [],
     });
-    const envelope = JSON.stringify({ report: JSON.parse(inner), source: src, nativeInvalid: "0" });
+    assert.ok(inner !== null, "genuine v4 producer bytes encode");
+    const envelope = JSON.stringify({ v: 4, adapter: "test-adapter", gen, source: src, nativeInvalid: "0", report: JSON.parse(inner) });
     const stamped = broker.stampCapture(envelope);
     const coreRaw = await bridge.send("DescribeWorld", stamped);
     const bound = broker.bindReply(coreRaw, envelope);
@@ -244,7 +299,7 @@ function applyWith(
     const parsed = parseWorldReply(bound);
     assert.ok(parsed !== null && isCoreWorldReply(parsed), "bound reply parses as core");
     const state = new WorldAdapterState("test-adapter", "owner-a");
-    assert.equal(state.onDiscovery(parsed.gen, "broker-1"), true);
+    assert.equal(state.onDiscovery(parsed.gen, "test-adapter"), true);
     const flight = state.beginCapture(parsed.source, null);
     assert.ok(flight !== null);
     const verdict = state.acceptReply(parsed, parsed.source, (flight as { watermark: string }).watermark);
@@ -309,10 +364,9 @@ describe("world native retirement", () => {
         const broker = createMiniBroker();
         try {
             const w = makeWorld();
-            const disc = await bridge.send("DiscoverWorld", JSON.stringify({ adapter: "test-adapter", req: "req-1" }));
-            broker.bindDiscovery(disc);
-            await roundtrip(bridge, broker, w, "src-1");
-            const second = await roundtrip(bridge, broker, w, "src-2");
+            const gen = await connectBridge(bridge, broker);
+            await roundtrip(bridge, broker, w, "src-1", gen);
+            const second = await roundtrip(bridge, broker, w, "src-2", gen);
             const rows = workspacesOf(second.bound);
             assert.equal(rows.length, 4, `four rows persist, got ${JSON.stringify(rows)}`);
             const byBind = new Map(rows.map((r) => [r.bind, r]));
@@ -341,7 +395,7 @@ describe("world native retirement", () => {
 
             // Next complete capture without the natives clears bindings and
             // settles rows with stable survivors and compact ordinals.
-            const third = await roundtrip(bridge, broker, w, "src-3");
+            const third = await roundtrip(bridge, broker, w, "src-3", gen);
             const next = workspacesOf(third.bound);
             assert.ok(!next.some((r) => r.bind === "d2" || r.bind === "d3"), `bindings cleared: ${JSON.stringify(next)}`);
             const l1 = byBind.get("d1")?.id;
@@ -361,10 +415,9 @@ describe("world native retirement", () => {
         const broker = createMiniBroker();
         try {
             const w = makeWorld();
-            const disc = await bridge.send("DiscoverWorld", JSON.stringify({ adapter: "test-adapter", req: "req-1" }));
-            broker.bindDiscovery(disc);
-            await roundtrip(bridge, broker, w, "src-1");
-            const second = await roundtrip(bridge, broker, w, "src-2");
+            const gen = await connectBridge(bridge, broker);
+            await roundtrip(bridge, broker, w, "src-1", gen);
+            const second = await roundtrip(bridge, broker, w, "src-2", gen);
             const rows = workspacesOf(second.bound);
             assert.ok(rows.some((r) => r.exist === false), "desire captured before vetoes");
 
@@ -440,7 +493,7 @@ describe("world native retirement", () => {
             }
             // Row plus binding survive held vetoes until complete evidence:
             // the same desire still publishes with rows and bindings intact.
-            const again = await roundtrip(bridge, broker, w, "src-3");
+            const again = await roundtrip(bridge, broker, w, "src-3", gen);
             const againRows = workspacesOf(again.bound);
             assert.equal(againRows.length, 4, "rows persist through held vetoes");
             assert.equal(againRows.filter((r) => r.bind !== "").length, 4, "bindings persist through held vetoes");
@@ -454,9 +507,9 @@ describe("world native retirement", () => {
         const broker = createMiniBroker();
         try {
             const captured = makeWorld();
-            broker.bindDiscovery(await bridge.send("DiscoverWorld", JSON.stringify({ adapter: "test-adapter", req: "req-1" })));
-            await roundtrip(bridge, broker, captured, "src-1");
-            const second = await roundtrip(bridge, broker, captured, "src-2");
+            const gen = await connectBridge(bridge, broker);
+            await roundtrip(bridge, broker, captured, "src-1", gen);
+            const second = await roundtrip(bridge, broker, captured, "src-2", gen);
             for (const windows of [
                 [{ onAllDesktops: true, desktops: [{ id: "d1" }] }],
                 [{ onAllDesktops: false, desktops: [] }],

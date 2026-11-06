@@ -3,20 +3,20 @@
 // (tiled sweep frames, explicit float placements, window membership, exact
 // output views, maximize clears) and carries them on the next report with
 // original write stamps, actual setter evidence, immediate readbacks, and
-// nullable DPI. Host-owned logical receipts stay empty: native homing/views
-// never ride as logical pre/post/base evidence (translation through the
-// adapter binding table would forge logical evidence and poison core
-// third-location proof). The fresh same-turn native desktop/current ids
-// ride the native keys for core-side translation. Maximize clears actuate
-// through the native nonactivating setter with spend-before-dispatch;
-// already-unmaximized desires spend with no invented row. Included in
-// `npm test`.
+// nullable DPI. Member/view evidence rides approved v4 WorkspaceRefs
+// (`{kind,out,ws}` on the single namespace the host capability allows;
+// native-only for views), never retired native* sidecars and never
+// translated or rewritten preimages: the exact live output rides each
+// ref with the native id. Maximize clears actuate through the native
+// nonactivating setter with spend-before-dispatch; already-unmaximized
+// desires spend with no invented row. Included in `npm test`.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
 import { WorldAdapterState } from "../src/world-state";
 import { applyWorldReply } from "../src/world-apply";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
 import type { WorldReplyScope } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
 
@@ -165,11 +165,44 @@ function lastPayload(flow: Flow, method: string): string {
     return (found as { payload: string }).payload;
 }
 
-function answerDiscover(flow: Flow, body: Record<string, unknown>): void {
-    const found = [...flow.calls].reverse().find((c) => c.method === "DiscoverWorld");
+function answerHandshake(flow: Flow, gen = "gen-1"): void {
+    const found = [...flow.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
+    });
     assert.ok(found !== undefined,
-        `expected DiscoverWorld, have [${flow.calls.map((c) => c.method).join(",")}]; logs=${JSON.stringify(flow.logs)}`);
-    (found as { callback: (reply: unknown) => void }).callback(JSON.stringify(body));
+        `expected DiscoverWorld/handshake, have [${flow.calls.map((c) => c.method).join(",")}]; logs=${JSON.stringify(flow.logs)}`);
+    const req = (JSON.parse((found as { payload: string }).payload) as Record<string, unknown>)["req"] as string;
+    (found as { callback: (reply: unknown) => void }).callback(JSON.stringify({
+        type: "handshake-reply", v: 4, adapter: "test-adapter", req,
+        ready: false, kind: "", gen,
+    }));
+}
+
+function answerSettings(flow: Flow, gen = "gen-1"): void {
+    const found = [...flow.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined,
+        `expected DiscoverWorld/settings, have [${flow.calls.map((c) => c.method).join(",")}]; logs=${JSON.stringify(flow.logs)}`);
+    const body = JSON.parse((found as { payload: string }).payload) as Record<string, unknown>;
+    (found as { callback: (reply: unknown) => void }).callback(JSON.stringify({
+        type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+        req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+    }));
 }
 
 function answerDescribe(flow: Flow, body: Record<string, unknown>): void {
@@ -193,22 +226,9 @@ function runTimers(flow: Flow): void {
 const PRESENTATION = {
     foreground: "",
     rev: "1",
-    suspendedOutput: null,
     border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null },
     underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [],
 };
-
-function bootstrap(gen: string, req: string): Record<string, unknown> {
-    return {
-        v: 4, adapter: "test-adapter", gen, req, obs: "0", rev: "0",
-        ready: false, consumed: false,
-        scopes: [], workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [], result: null,
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-        intentWrites: [], switchSettled: [], diagnostics: [],
-        presentation: PRESENTATION,
-    };
-}
 
 // Full bound acceptance shape: every key the strict core-reply parser
 // requires, with the live source/watermark echoed back.
@@ -230,6 +250,9 @@ function accept(
         ],
     };
     mutate(reply);
+    const text = JSON.stringify(reply);
+    const parsed = parseWorldReply(text);
+    assert.ok(isCoreWorldReply(parsed), "authored accept binds strict v4");
     answerDescribe(flow, reply);
 }
 
@@ -237,7 +260,9 @@ describe("world raw mechanical attempts", () => {
     it("carries populated frame/member/view arrays with exact wire shapes", () => {
         const flow = startFlow();
         try {
-            answerDiscover(flow, bootstrap("gen-1", "disc-1"));
+            answerHandshake(flow, "gen-1");
+            answerSettings(flow, "gen-1");
+            runTimers(flow);
             // Round 1: converge bindings plus win-c float intent (floating
             // with untouched authority, no write token yet).
             accept(flow, "1", (reply) => {
@@ -317,24 +342,42 @@ describe("world raw mechanical attempts", () => {
                 { win: "win-c", target: [300, 200, 250, 180], setter: "accepted", readback: [300, 200, 250, 180], dpiBefore: null, dpiAfter: null, attemptMs: "1", op: "op-float-1", pre: [10, 10, 100, 100] },
             );
             // Membership: exact logical target correlation plus the real
-            // setter; logical pre/post stay null while the fresh same-turn
-            // native desktop ids ride the native keys for core translation.
+            // setter; the exact live WorkspaceRefs ride pre/post (the
+            // cross-output preimage keeps its source output, never the
+            // target) for core-side translation.
             assert.deepEqual(
                 members[0],
-                { op: "op-9", win: "win-a", out: "out-2", ws: "w2", setter: "accepted", pre: null, post: null, nativePre: "d1", nativePost: "d2", attemptMs: "1" },
+                {
+                    op: "op-9", win: "win-a", out: "out-2", ws: "w2", setter: "accepted",
+                    pre: { kind: "native", out: "out-1", ws: "d1" },
+                    post: { kind: "native", out: "out-2", ws: "d2" },
+                    attemptMs: "1",
+                },
             );
-            // Views: follow parent plus standalone, same null logical
-            // rule with fresh native currents plus the observation-time
+            // Views: follow parent plus standalone, same native-only ref
+            // rule with fresh live currents plus the observation-time
             // baseline; the adapter never invents logical proof.
             const follow = views.find((v) => v["op"] === "op-9");
             assert.deepEqual(
                 follow,
-                { op: "op-9", out: "out-2", ws: "w2", setter: "accepted", pre: null, post: null, base: null, nativePre: "d1", nativePost: "d2", nativeBase: "d1", attemptMs: "1" },
+                {
+                    op: "op-9", out: "out-2", ws: "w2", setter: "accepted",
+                    pre: { kind: "native", out: "out-2", ws: "d1" },
+                    post: { kind: "native", out: "out-2", ws: "d2" },
+                    base: { kind: "native", out: "out-2", ws: "d1" },
+                    attemptMs: "1",
+                },
             );
             const alone = views.find((v) => v["op"] === "op-10");
             assert.deepEqual(
                 alone,
-                { op: "op-10", out: "out-1", ws: "w1", setter: "accepted", pre: null, post: null, base: null, nativePre: "d2", nativePost: "d1", nativeBase: "d2", attemptMs: "1" },
+                {
+                    op: "op-10", out: "out-1", ws: "w1", setter: "accepted",
+                    pre: { kind: "native", out: "out-1", ws: "d2" },
+                    post: { kind: "native", out: "out-1", ws: "d1" },
+                    base: { kind: "native", out: "out-1", ws: "d2" },
+                    attemptMs: "1",
+                },
             );
         } finally {
             flow.handle.stop();
@@ -349,7 +392,9 @@ describe("world raw mechanical attempts", () => {
         // frame/member/view write.
         const flow = startFlow();
         try {
-            answerDiscover(flow, bootstrap("gen-1", "disc-1"));
+            answerHandshake(flow, "gen-1");
+            answerSettings(flow, "gen-1");
+            runTimers(flow);
             accept(flow, "1", (reply) => {
                 reply["outputs"] = [
                     { out: "out-1", view: "w1", mode: "tiled", hold: "" },
@@ -443,6 +488,74 @@ describe("world attempt retention", () => {
         // Generation rotation clears every retained attempt.
         state.onDiscovery("gen-2", "adapter-a");
         assert.equal(state.framesForReport().length, 0);
+    });
+    it("tags the member namespace the capability allows and keeps views native-only", () => {
+        const state = new WorldAdapterState("adapter-a", "owner-a");
+        state.recordClock("7");
+        // A native member preimage (host-owned route) retains verbatim.
+        assert.equal(state.recordMemberAttempt({
+            op: "op-1", win: "win-a", out: "out-2", ws: "w2",
+            setter: "accepted",
+            pre: { kind: "native", out: "out-1", ws: "d1" },
+            post: { kind: "native", out: "out-2", ws: "d2" },
+            attemptMs: "7",
+        }), true);
+        // A logical member preimage stays tagged logical, never rewritten
+        // to the target.
+        assert.equal(state.recordMemberAttempt({
+            op: "op-2", win: "win-b", out: "out-1", ws: "w1",
+            setter: "accepted",
+            pre: { kind: "logical", out: "out-1", ws: "w9" },
+            post: { kind: "logical", out: "out-1", ws: "w1" },
+            attemptMs: "7",
+        }), true);
+        assert.deepEqual(state.memberAttemptsForReport(), [
+            {
+                op: "op-1", win: "win-a", out: "out-2", ws: "w2",
+                setter: "accepted",
+                pre: { kind: "native", out: "out-1", ws: "d1" },
+                post: { kind: "native", out: "out-2", ws: "d2" },
+                attemptMs: "7",
+            },
+            {
+                op: "op-2", win: "win-b", out: "out-1", ws: "w1",
+                setter: "accepted",
+                pre: { kind: "logical", out: "out-1", ws: "w9" },
+                post: { kind: "logical", out: "out-1", ws: "w1" },
+                attemptMs: "7",
+            },
+        ]);
+        // Views are native-only: a logical view ref has no wire spelling
+        // and refuses at retention, never reaching the report lane.
+        assert.equal(state.recordViewAttempt({
+            op: "op-3", out: "out-1", ws: "w1",
+            setter: "accepted",
+            pre: { kind: "logical", out: "out-1", ws: "w1" } as never,
+            post: null, base: null, attemptMs: "7",
+        }), false);
+        assert.equal(state.recordViewAttempt({
+            op: "op-3", out: "out-1", ws: "w1",
+            setter: "accepted",
+            pre: { kind: "native", out: "out-1", ws: "d1" },
+            post: { kind: "native", out: "out-1", ws: "d2" },
+            base: { kind: "native", out: "out-1", ws: "d1" },
+            attemptMs: "7",
+        }), true);
+        // Malformed ref ids fail closed on both lanes.
+        assert.equal(state.recordMemberAttempt({
+            op: "op-4", win: "win-a", out: "out-1", ws: "w1",
+            setter: "accepted",
+            pre: { kind: "native", out: "out-1", ws: "bad id" },
+            post: null, attemptMs: "7",
+        }), false);
+        assert.equal(state.recordViewAttempt({
+            op: "op-4", out: "out-1", ws: "w1",
+            setter: "accepted", pre: null, post: null, base: null, attemptMs: "7",
+        }), true);
+        assert.equal(state.recordViewAttempt({
+            op: "", out: "out-1", ws: "w1",
+            setter: "accepted", pre: null, post: null, base: null, attemptMs: "7",
+        }), false);
     });
 });
 
@@ -796,8 +909,10 @@ describe("world setter attempt correspondence", () => {
         const members = state.memberAttemptsForReport();
         assert.deepEqual(members, [{
             op: "op-9", win: "win-a", out: "out-2", ws: "w2",
-            setter: "accepted", pre: null, post: null,
-            nativePre: "d1", nativePost: "d1", attemptMs: "9",
+            setter: "accepted",
+            pre: { kind: "native", out: "out-1", ws: "d1" },
+            post: { kind: "native", out: "out-2", ws: "d1" },
+            attemptMs: "9",
         }], "veto keeps the one real setter disposition");
         assert.equal(result.membershipWrites, 0, "unproven setter earns no write credit");
     });
@@ -931,8 +1046,10 @@ describe("world setter attempt correspondence", () => {
         assert.equal(setters, 1, "output setter ran once before throwing");
         assert.deepEqual(state.memberAttemptsForReport(), [{
             op: "op-9", win: "win-a", out: "out-2", ws: "w2",
-            setter: "threw", pre: null, post: null,
-            nativePre: "d1", nativePost: "d2", attemptMs: "9",
+            setter: "threw",
+            pre: { kind: "native", out: "out-1", ws: "d1" },
+            post: { kind: "native", out: "out-2", ws: "d2" },
+            attemptMs: "9",
         }], "throw after moving keeps the threw disposition, never accepted");
         assert.equal(result.membershipWrites, 0, "ambiguous throw earns no write credit");
     });
@@ -995,8 +1112,10 @@ describe("world setter attempt correspondence", () => {
         assert.equal(sends, 1, "output setter ran once before the homing went unreadable");
         assert.deepEqual(state.memberAttemptsForReport(), [{
             op: "op-10", win: "win-q", out: "out-b", ws: "w1",
-            setter: "accepted", pre: null, post: null,
-            nativePre: "da", nativePost: null, attemptMs: "9",
+            setter: "accepted",
+            pre: { kind: "native", out: "out-a", ws: "da" },
+            post: null,
+            attemptMs: "9",
         }], "superseded flight keeps the real output disposition");
         assert.equal(result.membershipWrites, 0, "superseded flight earns no write credit");
     });

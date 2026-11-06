@@ -346,3 +346,122 @@ describe("v4 frame attempt lane", () => {
         assert.equal(buildWithFrames([ordinary({ target: [0, 0, Number.NaN, 2] })]).json, null);
     });
 });
+
+describe("v4 member/view attempt lanes", () => {
+    function buildWithAttempts(
+        members: Array<Record<string, unknown>>,
+        views: Array<Record<string, unknown>>,
+    ) {
+        const obs = observe(makeSurface([makeWin({})]));
+        const json = buildWorldReportV4InnerJson({
+            observation: obs,
+            creationAttempts: [],
+            frameAttempts: [],
+            memberAttempts: members as never,
+            viewAttempts: views as never,
+            clearAttempts: [],
+            intentRecords: [],
+        });
+        return { json, value: json === null ? null : JSON.parse(json) as Record<string, unknown> };
+    }
+
+    function member(over: Record<string, unknown> = {}) {
+        return {
+            op: "op-9",
+            win: "win-a",
+            out: "out-2",
+            ws: "w2",
+            setter: "accepted",
+            pre: { kind: "native", out: "out-1", ws: "d1" },
+            post: { kind: "native", out: "out-2", ws: "d2" },
+            attemptMs: "7",
+            ...over,
+        };
+    }
+
+    function view(over: Record<string, unknown> = {}) {
+        return {
+            op: "op-9",
+            out: "out-2",
+            ws: "w2",
+            setter: "accepted",
+            pre: { kind: "native", out: "out-2", ws: "d1" },
+            post: { kind: "native", out: "out-2", ws: "d2" },
+            base: { kind: "native", out: "out-2", ws: "d1" },
+            attemptMs: "7",
+            ...over,
+        };
+    }
+
+    it("encodes native member evidence in canonical key order without sidecars", () => {
+        const { json, value } = buildWithAttempts([member()], []);
+        assert.ok(json !== null, "native member row must encode");
+        const rows = (value as Record<string, unknown>)["memberAttempts"] as Array<Record<string, unknown>>;
+        assert.equal(rows.length, 1);
+        assert.deepEqual(Object.keys(rows[0] as Record<string, unknown>), [
+            "op", "win", "out", "ws", "setter", "pre", "post", "attemptMs",
+        ]);
+        // The cross-output preimage keeps its source output, never the target.
+        assert.ok(json.includes('"pre":{"kind":"native","out":"out-1","ws":"d1"}'), "pre ref spells kind/out/ws");
+        assert.ok(json.includes('"post":{"kind":"native","out":"out-2","ws":"d2"}'), "post ref spells kind/out/ws");
+        for (const sidecar of ["nativePre", "nativePost", "nativeBase"]) {
+            assert.ok(!json.includes(`"${sidecar}"`), `retired ${sidecar} must be absent`);
+        }
+        assert.ok(json.includes('"attemptMs":"7"'), "original write stamp preserved");
+    });
+
+    it("keeps logical member evidence tagged logical", () => {
+        const { json } = buildWithAttempts([member({
+            pre: { kind: "logical", out: "out-1", ws: "w9" },
+            post: { kind: "logical", out: "out-1", ws: "w1" },
+        })], []);
+        assert.ok(json !== null, "logical member row must encode");
+        assert.ok(json.includes('"pre":{"kind":"logical","out":"out-1","ws":"w9"}'), "logical pre stays tagged");
+        assert.ok(json.includes('"post":{"kind":"logical","out":"out-1","ws":"w1"}'), "logical post stays tagged");
+    });
+
+    it("encodes a native view row with pre/post/base and no sidecars", () => {
+        const { json, value } = buildWithAttempts([], [view()]);
+        assert.ok(json !== null, "native view row must encode");
+        const rows = (value as Record<string, unknown>)["viewAttempts"] as Array<Record<string, unknown>>;
+        assert.equal(rows.length, 1);
+        assert.deepEqual(Object.keys(rows[0] as Record<string, unknown>), [
+            "op", "out", "ws", "setter", "pre", "post", "base", "attemptMs",
+        ]);
+        assert.ok(json.includes('"base":{"kind":"native","out":"out-2","ws":"d1"}'), "baseline spells kind/out/ws");
+        for (const sidecar of ["nativePre", "nativePost", "nativeBase"]) {
+            assert.ok(!json.includes(`"${sidecar}"`), `retired ${sidecar} must be absent`);
+        }
+    });
+
+    it("keeps unreadable evidence null on both lanes", () => {
+        const { json, value } = buildWithAttempts(
+            [member({ pre: null, post: null })],
+            [view({ pre: null, post: null, base: null })],
+        );
+        assert.ok(json !== null, "null-evidence rows must encode");
+        const members = (value as Record<string, unknown>)["memberAttempts"] as Array<Record<string, unknown>>;
+        const views = (value as Record<string, unknown>)["viewAttempts"] as Array<Record<string, unknown>>;
+        assert.equal(members[0]?.["pre"], null);
+        assert.equal(members[0]?.["post"], null);
+        assert.equal(views[0]?.["pre"], null);
+        assert.equal(views[0]?.["post"], null);
+        assert.equal(views[0]?.["base"], null);
+        assert.ok(json.includes('"pre":null'), "null evidence stays null");
+    });
+
+    it("fails closed on a malformed ref id on either lane", () => {
+        assert.equal(buildWithAttempts([member({ pre: { kind: "native", out: "out-1", ws: "bad id" } })], []).json, null);
+        assert.equal(buildWithAttempts([member({ post: { kind: "native", out: "", ws: "d2" } })], []).json, null);
+        assert.equal(buildWithAttempts([], [view({ base: { kind: "native", out: "out-2", ws: "" } })]).json, null);
+    });
+
+    it("fails closed on a logical view ref, which has no wire spelling", () => {
+        assert.equal(buildWithAttempts([], [view({ pre: { kind: "logical", out: "out-2", ws: "w2" } })]).json, null);
+    });
+
+    it("fails closed on a bad operation id on either lane", () => {
+        assert.equal(buildWithAttempts([member({ op: "not an id!" })], []).json, null);
+        assert.equal(buildWithAttempts([], [view({ op: "" })]).json, null);
+    });
+});
