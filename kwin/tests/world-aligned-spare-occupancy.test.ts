@@ -165,6 +165,7 @@ interface FakeWindow {
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
+    clientGeometry: { x: number; y: number; width: number; height: number };
     output: { name: string };
     desktops: FakeDesktop[];
     minimized: boolean;
@@ -174,9 +175,19 @@ interface FakeWindow {
     onAllDesktops: boolean;
     minSize: { width: number; height: number } | null;
     maxSize: { width: number; height: number } | null;
+    pid: number;
+    resourceClass: string;
+    caption: string;
+    windowRole: string;
+    desktopFileName: string;
+    resizeable: boolean;
+    keepAbove: boolean;
+    keepBelow: boolean;
     readonly outputChanged: FakeSignal["signal"];
     readonly desktopsChanged: FakeSignal["signal"];
-    readonly __signals?: { readonly outputChanged: FakeSignal; readonly desktopsChanged: FakeSignal };
+    readonly hiddenChanged: FakeSignal["signal"];
+    readonly frameGeometryChanged: FakeSignal["signal"];
+    readonly __signals?: { readonly outputChanged: FakeSignal; readonly desktopsChanged: FakeSignal; readonly hiddenChanged: FakeSignal; readonly frameGeometryChanged: FakeSignal };
 }
 
 interface CapturedCall {
@@ -233,10 +244,14 @@ async function makeSpareHarness(): Promise<Harness> {
     ): FakeWindow => {
         const outputChanged = makeSignal();
         const winDesktopsChanged = makeSignal();
+        const winHiddenChanged = makeSignal();
+        const winFrameChanged = makeSignal();
+        const frame = { x: 8, y: 52, width: 200, height: 200 };
         return {
             internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
-            frameGeometry: { x: 8, y: 52, width: 200, height: 200 },
+            frameGeometry: { ...frame },
+            clientGeometry: { x: frame.x + 2, y: frame.y + 21, width: Math.max(1, frame.width - 4), height: Math.max(1, frame.height - 22) },
             output: { name: out },
             // Production sticky shape: an empty desktop list. The observer
             // homes it at its output's current (world-observe.ts), so the
@@ -247,11 +262,21 @@ async function makeSpareHarness(): Promise<Harness> {
             fullScreen: false,
             maximizeMode: 0,
             onAllDesktops: sticky,
-            minSize: null,
-            maxSize: null,
+            minSize: { width: 100, height: 100 },
+            maxSize: { width: 2147483647, height: 2147483647 },
+            pid: 1234,
+            resourceClass: "Example",
+            caption: "Window",
+            windowRole: "normal",
+            desktopFileName: "example.app",
+            resizeable: true,
+            keepAbove: false,
+            keepBelow: false,
             outputChanged: outputChanged.signal,
             desktopsChanged: winDesktopsChanged.signal,
-            __signals: { outputChanged, desktopsChanged: winDesktopsChanged },
+            hiddenChanged: winHiddenChanged.signal,
+            frameGeometryChanged: winFrameChanged.signal,
+            __signals: { outputChanged, desktopsChanged: winDesktopsChanged, hiddenChanged: winHiddenChanged, frameGeometryChanged: winFrameChanged },
         };
     };
     const wins: FakeWindow[] = [
@@ -375,7 +400,12 @@ async function makeSpareHarness(): Promise<Harness> {
         set activeScreen(_ref: unknown) {
             void _ref;
         },
-        cursorPos: { x: 2, y: 100 },
+        get cursorPos(): { x: number; y: number } {
+            // Production-shaped cursor inventory: the cursor rides the
+            // active output, which the core's cursor-first selection
+            // source resolution requires for output-relative commands.
+            return harness.activeScreen.name === RIGHT ? { x: 1002, y: 100 } : { x: 2, y: 100 };
+        },
         windowAdded: (signals["windowAdded"] as FakeSignal).signal,
         windowRemoved: (signals["windowRemoved"] as FakeSignal).signal,
         windowActivated: (signals["windowActivated"] as FakeSignal).signal,
@@ -492,12 +522,48 @@ describe("world aligned spare occupancy-only", () => {
     it("showing empty ends creates no spare on either output, forward next wraps, occupancy still extends", { timeout: 240000 }, async () => {
         const h = await makeSpareHarness();
         try {
-            const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
-            assert.ok(discIndex >= 0, "entry discovers on start");
-            const disc = h.calls[discIndex] as CapturedCall;
-            const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
-            const discReply = h.broker.bindDiscovery(engineBootstrap);
-            disc.callback(discReply);
+            // Authentic v4 connection pump: the handshake binds the producer
+            // adapter lifetime and mints the serving generation; the
+            // revisioned settings snapshot (rev 1) precedes the first report.
+            const hsIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
+            assert.ok(hsIndex >= 0, "entry discovers on start");
+            const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
+            assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
+            assert.equal(hsBody["adapter"], "test-adapter", "handshake carries the producer adapter");
+            const hsReplyText = await h.bridge.send("DiscoverWorld", (h.calls[hsIndex] as CapturedCall).payload);
+            const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
+            assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
+            assert.equal(hsReply["ready"], false, "accepted handshake carries ready:false");
+            assert.equal(hsReply["kind"], "", "accepted handshake carries an empty kind");
+            assert.equal(hsReply["adapter"], "test-adapter", "handshake retains the producer adapter, never a broker incarnation");
+            assert.equal(hsReply["req"], hsBody["req"], "handshake echoes the request correlation");
+            assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string) !== "", "handshake mints the serving generation");
+            const gen = hsReply["gen"] as string;
+            const boundHs = h.broker.bindDiscovery(hsReplyText);
+            assert.equal((JSON.parse(boundHs) as Record<string, unknown>)["adapter"], "test-adapter", "harness passes the producer lifetime through");
+            assert.equal(h.broker.gen, gen, "harness records the actual serving generation");
+            (h.calls[hsIndex] as CapturedCall).callback(boundHs);
+            const setIndex = h.calls.findIndex((call, at) => at > hsIndex && call.method === "DiscoverWorld");
+            assert.ok(setIndex >= 0, "revisioned settings follow the handshake");
+            const setBody = JSON.parse((h.calls[setIndex] as CapturedCall).payload) as Record<string, unknown>;
+            assert.equal(setBody["type"], "settings", "second discovery is the revisioned settings snapshot");
+            assert.equal(setBody["adapter"], "test-adapter", "settings carry the producer adapter");
+            assert.equal(setBody["gen"], gen, "settings bind the serving generation");
+            assert.equal(setBody["rev"], "1", "first settings snapshot carries rev 1");
+            const setReplyText = await h.bridge.send("DiscoverWorld", (h.calls[setIndex] as CapturedCall).payload);
+            const setReply = JSON.parse(setReplyText) as Record<string, unknown>;
+            assert.equal(setReply["type"], "settings-reply", "engine answers settings");
+            assert.equal(setReply["status"], "accepted", `settings accepted, got ${setReplyText.slice(0, 300)}`);
+            assert.equal(setReply["adapter"], "test-adapter", "settings reply retains the producer adapter");
+            assert.equal(setReply["gen"], gen, "settings reply binds the serving generation");
+            assert.equal(setReply["req"], setBody["req"], "settings reply echoes the request correlation");
+            assert.equal(setReply["rev"], "1", "settings reply binds the sent revision");
+            (h.calls[setIndex] as CapturedCall).callback(setReplyText);
+            assert.deepEqual(
+                h.calls.slice(0, setIndex + 1).map((call) => call.method),
+                ["DiscoverWorld", "DiscoverWorld"],
+                "no report precedes the accepted settings",
+            );
             await h.settle();
             assert.equal(h.desktops.length, 4, "no native appended while showing empty ends");
             let reply = lastReply(h);
@@ -587,10 +653,12 @@ describe("world aligned spare occupancy-only", () => {
             // targets it directly.
             const fillEnd = (tag: string, out: string, ws: string): void => {
                 const desk = h.desktops.find((d) => d.id === ws) as FakeDesktop;
+                const frame = { x: 8, y: 52, width: 200, height: 200 };
                 const newcomer: FakeWindow = {
                     internalId: tag, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                     normalWindow: true,
-                    frameGeometry: { x: 8, y: 52, width: 200, height: 200 },
+                    frameGeometry: { ...frame },
+                    clientGeometry: { x: frame.x + 2, y: frame.y + 21, width: Math.max(1, frame.width - 4), height: Math.max(1, frame.height - 22) },
                     output: { name: out },
                     desktops: [desk],
                     minimized: false,
@@ -598,10 +666,20 @@ describe("world aligned spare occupancy-only", () => {
                     fullScreen: false,
                     maximizeMode: 0,
                     onAllDesktops: false,
-                    minSize: null,
-                    maxSize: null,
+                    minSize: { width: 100, height: 100 },
+                    maxSize: { width: 2147483647, height: 2147483647 },
+                    pid: 1234,
+                    resourceClass: "Example",
+                    caption: "Window",
+                    windowRole: "normal",
+                    desktopFileName: "example.app",
+                    resizeable: true,
+                    keepAbove: false,
+                    keepBelow: false,
                     outputChanged: makeSignal().signal,
                     desktopsChanged: makeSignal().signal,
+                    hiddenChanged: makeSignal().signal,
+                    frameGeometryChanged: makeSignal().signal,
                 };
                 h.wins.push(newcomer);
             };

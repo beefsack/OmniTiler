@@ -173,6 +173,7 @@ interface FakeWindow {
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
+    clientGeometry: { x: number; y: number; width: number; height: number };
     output: FakeScreen;
     desktops: FakeDesktop[];
     minimized: boolean;
@@ -180,8 +181,21 @@ interface FakeWindow {
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
-    minSize: null;
-    maxSize: null;
+    minSize: { width: number; height: number } | null;
+    maxSize: { width: number; height: number } | null;
+    pid: number;
+    resourceClass: string;
+    caption: string;
+    windowRole: string;
+    desktopFileName: string;
+    resizeable: boolean;
+    keepAbove: boolean;
+    keepBelow: boolean;
+    readonly outputChanged: FakeSignal["signal"];
+    readonly desktopsChanged: FakeSignal["signal"];
+    readonly hiddenChanged: FakeSignal["signal"];
+    readonly frameGeometryChanged: FakeSignal["signal"];
+    readonly __signals: { readonly outputChanged: FakeSignal; readonly desktopsChanged: FakeSignal; readonly hiddenChanged: FakeSignal; readonly frameGeometryChanged: FakeSignal };
 }
 
 interface CapturedCall {
@@ -248,27 +262,47 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
         desktop: FakeDesktop,
         internalId: string,
         frame: { x: number; y: number; width: number; height: number },
-    ): FakeWindow => ({
-        internalId,
-        managed: true,
-        deleted: false,
-        transient: false,
-        transientFor: null,
-        dialog: false,
-        modal: false,
-        wantsInput: true,
-        normalWindow: true,
-        frameGeometry: { ...frame },
-        output,
-        desktops: [desktop],
-        minimized: false,
-        hidden: false,
-        fullScreen: false,
-        maximizeMode: 0,
-        onAllDesktops: false,
-        minSize: null,
-        maxSize: null,
-    });
+    ): FakeWindow => {
+        const outputChanged = makeSignal();
+        const winDesktopsChanged = makeSignal();
+        const winHiddenChanged = makeSignal();
+        const winFrameChanged = makeSignal();
+        return {
+            internalId,
+            managed: true,
+            deleted: false,
+            transient: false,
+            transientFor: null,
+            dialog: false,
+            modal: false,
+            wantsInput: true,
+            normalWindow: true,
+            frameGeometry: { ...frame },
+            clientGeometry: { x: frame.x + 2, y: frame.y + 21, width: Math.max(1, frame.width - 4), height: Math.max(1, frame.height - 22) },
+            output,
+            desktops: [desktop],
+            minimized: false,
+            hidden: false,
+            fullScreen: false,
+            maximizeMode: 0,
+            onAllDesktops: false,
+            minSize: { width: 100, height: 100 },
+            maxSize: { width: 2147483647, height: 2147483647 },
+            pid: 1234,
+            resourceClass: "Example",
+            caption: "Window",
+            windowRole: "normal",
+            desktopFileName: "example.app",
+            resizeable: true,
+            keepAbove: false,
+            keepBelow: false,
+            outputChanged: outputChanged.signal,
+            desktopsChanged: winDesktopsChanged.signal,
+            hiddenChanged: winHiddenChanged.signal,
+            frameGeometryChanged: winFrameChanged.signal,
+            __signals: { outputChanged, desktopsChanged: winDesktopsChanged, hiddenChanged: winHiddenChanged, frameGeometryChanged: winFrameChanged },
+        };
+    };
     const wins: FakeWindow[] = [
         mkWin(top, wsA, "w-move", { x: moverX, y: 20, width: 200, height: 100 }),
         ...(soloTop
@@ -388,7 +422,7 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
             throw new Error("settle did not converge");
         },
         commandPayloads: (op: string): Array<{ index: number; body: Record<string, unknown> }> => {
-            // v2 command lane: presses file QueueWorldCommand (the broker
+            // v4 command lane: presses file QueueWorldCommand (the broker
             // drains at most one per capture); DescribeWorld envelopes
             // carry no inline command.
             const out: Array<{ index: number; body: Record<string, unknown> }> = [];
@@ -496,16 +530,31 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
         },
     };
     let activeRef: FakeWindow | null = mover;
-    // Instrument native setters through live refs.
+    // Instrument native setters through live refs. Frame and truthful
+    // client track together so every capture carries consistent facts.
     for (const win of wins) {
         let frame = win.frameGeometry;
+        let client = { ...win.clientGeometry };
         Object.defineProperty(win, "frameGeometry", {
             configurable: true,
             get: () => frame,
             set: (rect: { x: number; y: number; width: number; height: number }) => {
                 frame = rect;
+                client = {
+                    x: rect.x + 2,
+                    y: rect.y + 21,
+                    width: Math.max(1, rect.width - 4),
+                    height: Math.max(1, rect.height - 22),
+                };
                 harness.geometryWrites.push(`${win.internalId}@${rect.x},${rect.y},${rect.width},${rect.height}`);
                 return true;
+            },
+        });
+        Object.defineProperty(win, "clientGeometry", {
+            configurable: true,
+            get: () => client,
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                client = rect;
             },
         });
         let desks = win.desktops;
@@ -557,21 +606,55 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
     return harness;
 }
 
-async function discover(h: Harness): Promise<void> {
-    const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
-    assert.ok(discIndex >= 0, "entry discovers on start");
-    const disc = h.calls[discIndex] as CapturedCall;
-    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
-    const reply = h.broker.bindDiscovery(engineBootstrap);
-    const parsed = JSON.parse(reply) as Record<string, unknown>;
-    assert.equal(parsed["ready"], false, "bootstrap is not ready");
-    assert.ok(typeof parsed["gen"] === "string" && (parsed["gen"] as string).length > 0, "bootstrap binds a generation");
-    disc.callback(reply);
+async function discover(h: Harness): Promise<string> {
+    // Authentic v4 connection pump: the handshake binds the producer
+    // adapter lifetime and mints the serving generation; the revisioned
+    // settings snapshot (rev 1) precedes the first report on the wire.
+    const hsIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
+    assert.ok(hsIndex >= 0, "entry discovers on start");
+    const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
+    assert.equal(hsBody["adapter"], "test-adapter", "handshake carries the producer adapter");
+    const hsReplyText = await h.bridge.send("DiscoverWorld", (h.calls[hsIndex] as CapturedCall).payload);
+    const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
+    assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
+    assert.equal(hsReply["ready"], false, "accepted handshake carries ready:false");
+    assert.equal(hsReply["kind"], "", "accepted handshake carries an empty kind");
+    assert.equal(hsReply["adapter"], "test-adapter", "handshake retains the producer adapter, never a broker incarnation");
+    assert.equal(hsReply["req"], hsBody["req"], "handshake echoes the request correlation");
+    assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string).length > 0, "handshake mints the serving generation");
+    const gen = hsReply["gen"] as string;
+    const boundHs = h.broker.bindDiscovery(hsReplyText);
+    assert.equal((JSON.parse(boundHs) as Record<string, unknown>)["adapter"], "test-adapter", "harness passes the producer lifetime through");
+    assert.equal(h.broker.gen, gen, "harness records the actual serving generation");
+    (h.calls[hsIndex] as CapturedCall).callback(boundHs);
+    const setIndex = h.calls.findIndex((call, at) => at > hsIndex && call.method === "DiscoverWorld");
+    assert.ok(setIndex >= 0, "revisioned settings follow the handshake");
+    const setBody = JSON.parse((h.calls[setIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(setBody["type"], "settings", "second discovery is the revisioned settings snapshot");
+    assert.equal(setBody["adapter"], "test-adapter", "settings carry the producer adapter");
+    assert.equal(setBody["gen"], gen, "settings bind the serving generation");
+    assert.equal(setBody["rev"], "1", "first settings snapshot carries rev 1");
+    const setReplyText = await h.bridge.send("DiscoverWorld", (h.calls[setIndex] as CapturedCall).payload);
+    const setReply = JSON.parse(setReplyText) as Record<string, unknown>;
+    assert.equal(setReply["type"], "settings-reply", "engine answers settings");
+    assert.equal(setReply["status"], "accepted", `settings accepted, got ${setReplyText.slice(0, 300)}`);
+    assert.equal(setReply["adapter"], "test-adapter", "settings reply retains the producer adapter");
+    assert.equal(setReply["gen"], gen, "settings reply binds the serving generation");
+    assert.equal(setReply["req"], setBody["req"], "settings reply echoes the request correlation");
+    assert.equal(setReply["rev"], "1", "settings reply binds the sent revision");
+    (h.calls[setIndex] as CapturedCall).callback(setReplyText);
+    assert.deepEqual(
+        h.calls.slice(0, setIndex + 1).map((call) => call.method),
+        ["DiscoverWorld", "DiscoverWorld"],
+        "no report precedes the accepted settings",
+    );
     // Settle the discovery-triggered observation report so every leg below
     // starts from an idle single-flight with retained FULL topology.
     await h.settle();
     assert.equal(h.commandPayloads("move-directional").length, 0);
     assert.equal(h.commandPayloads("send-directional").length, 0);
+    return gen;
 }
 
 function lastTakeResult(h: Harness): Record<string, unknown> {
@@ -593,7 +676,7 @@ function winById(h: Harness, id: string): FakeWindow {
     return found as FakeWindow;
 }
 
-// v2: reply workspace `id` is the core logical; producer natives resolve
+// v4: reply workspace `id` is the core logical; producer natives resolve
 // through the core-owned binding (`bind`), never by string equality.
 function boundNativeOf(reply: Record<string, unknown>, out: string, logical: string): string | null {
     const rows = reply["workspaces"] as Array<Record<string, unknown>>;
@@ -605,7 +688,7 @@ function boundNativeOf(reply: Record<string, unknown>, out: string, logical: str
 
 // Desired window rows carry `frame` as [x,y,w,h] plus homing: every row
 // the real Engine names must be natively present. Membership resolves
-// through the core-owned native binding (v2: reply `ws` is the logical
+// through the core-owned native binding (v4: reply `ws` is the logical
 // id, producer natives never equal it by construction).
 function appliedMatchesReply(h: Harness, reply: Record<string, unknown>): void {
     const geometry = reply["windows"] as Array<Record<string, unknown>>;
@@ -646,7 +729,7 @@ describe("world split-edge selection through the production entry (real Engine)"
             const cmd = (moves[0] as { body: Record<string, unknown> }).body["command"] as Record<string, unknown>;
             assert.equal(cmd["op"], "move-directional");
             assert.deepEqual(Object.keys(cmd).sort(), ["direction", "op", "sameAxis", "win"], "command carries no endpoint or cross flag");
-            // v2: the filed move drains through a capture; the draining
+            // v4: the filed move drains through a capture; the draining
             // capture's bound reply carries the plan.
             const captureIndex = h.drainCapture.get((moves[0] as { body: Record<string, unknown> }).body["clientCmd"]);
             assert.ok(captureIndex !== undefined, "the core drained the move");
@@ -748,11 +831,11 @@ describe("world split-edge selection through the production entry (real Engine)"
             const migrates = h.commandPayloads("migrate-directional");
             assert.equal(migrates.length, 1, "exactly one direction-only migrate dispatch, never replayed");
             const cmd = migrates[0]?.body["command"] as Record<string, unknown>;
-            // v2: direction only; legacy from/ws keys refuse as unknown fields.
+            // v4: direction only; legacy from/ws keys refuse as unknown fields.
             assert.deepEqual(Object.keys(cmd).sort(), ["direction", "op"], "migrate names direction only, never the target");
             const captureIndex = h.drainCapture.get((migrates[0] as { body: Record<string, unknown> }).body["clientCmd"]);
             assert.ok(captureIndex !== undefined, "the core drained the migrate");
-            // v2: terminal results ride the take lane (requester-only), never
+            // v4: terminal results ride the take lane (requester-only), never
             // the capture reply.
             const result = lastTakeResult(h);
             assert.equal(result["op"], "migrate-workspace", "real Engine resolves the migration");
@@ -825,9 +908,10 @@ describe("world split-edge selection through the production entry (real Engine)"
 
     it("keeps split-edge focus local while the windowed move selects", async () => {
         // Strict unique-reciprocal focus: two forward touches below refuse
-        // the cross as unchanged with zero writes. The entry then recovers
-        // through observation-only catchup and the same edge still
-        // window-selects the move on the sole-leaf report below.
+        // the cross with an operation-refused typed refusal and zero
+        // writes. The entry then recovers through observation-only
+        // catchup and the same edge still window-selects the move on the
+        // sole-leaf report below.
         const h = await makeHarness(1100);
         try {
             await discover(h);
@@ -839,8 +923,16 @@ describe("world split-edge selection through the production entry (real Engine)"
             const focusCapture = h.drainCapture.get((focuses[0] as { body: Record<string, unknown> }).body["clientCmd"]);
             assert.ok(focusCapture !== undefined, "the core drained the focus");
             const focusReply = JSON.parse(h.replies.get(focusCapture as number) as string) as Record<string, unknown>;
-            assert.equal(focusReply["outcome"], "rejected", "strict split edge refuses the cross");
-            assert.equal(focusReply["kind"], "unchanged", "no local target either: strict unchanged");
+            // v4 semantic refusal: the capture reply stays accepted with the
+            // command unconsumed; the typed refusal rides the requester-only
+            // take lane (plus the broker record), never top-level
+            // outcome/kind keys.
+            assert.equal(focusReply["consumed"], false, "refused focus consumes no command");
+            assert.equal(focusReply["result"], null, "actuator-lane result stays nulled");
+            assert.deepEqual(h.broker.lastResult, { op: "rejected", kind: "operation-refused" }, "core records the typed semantic refusal");
+            const focusTake = lastTakeResult(h);
+            assert.equal(focusTake["op"], "rejected", "take lane carries the typed refusal");
+            assert.equal(focusTake["kind"], "operation-refused", "refusal kind stays the closed token");
             const active = h.workspace["activeWindow"] as FakeWindow;
             assert.equal(active.output.name, "out-top", "focus never leaves the source output");
             assert.equal(h.outputWrites.length, 0, "focus writes no output transfer");
@@ -863,7 +955,7 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.ok(localCapture !== undefined, "the core drained the local move");
             const localReply = JSON.parse(h.replies.get(localCapture as number) as string) as Record<string, unknown>;
             assert.equal((localReply["transfers"] as Array<unknown>).length, 0, "local R1-R3 move retains no transfer");
-            // v2: the executed local move carries an explicit focus effect
+            // v4: the executed local move carries an explicit focus effect
             // for the mover (already focused): it actuates with no redundant
             // native write, so focus is unchanged.
             const localEffects = localReply["effects"] as Array<Record<string, unknown>>;

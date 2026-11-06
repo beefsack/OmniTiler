@@ -168,6 +168,7 @@ interface FakeWindow {
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
+    clientGeometry: { x: number; y: number; width: number; height: number };
     output: FakeScreen;
     desktops: FakeDesktop[];
     minimized: boolean;
@@ -175,8 +176,21 @@ interface FakeWindow {
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
-    minSize: null;
-    maxSize: null;
+    minSize: { width: number; height: number } | null;
+    maxSize: { width: number; height: number } | null;
+    pid: number;
+    resourceClass: string;
+    caption: string;
+    windowRole: string;
+    desktopFileName: string;
+    resizeable: boolean;
+    keepAbove: boolean;
+    keepBelow: boolean;
+    readonly outputChanged: FakeSignal["signal"];
+    readonly desktopsChanged: FakeSignal["signal"];
+    readonly hiddenChanged: FakeSignal["signal"];
+    readonly frameGeometryChanged: FakeSignal["signal"];
+    readonly __signals?: { readonly outputChanged: FakeSignal; readonly desktopsChanged: FakeSignal; readonly hiddenChanged: FakeSignal; readonly frameGeometryChanged: FakeSignal };
 }
 interface CapturedCall {
     readonly method: string;
@@ -212,27 +226,53 @@ async function makeHarness(): Promise<Harness> {
     const mkWin = (
         internalId: string,
         frame: { x: number; y: number; width: number; height: number },
-    ): FakeWindow => ({
-        internalId,
-        managed: true,
-        deleted: false,
-        transient: false,
-        transientFor: null,
-        dialog: false,
-        modal: false,
-        wantsInput: true,
-        normalWindow: true,
-        frameGeometry: { ...frame },
-        output: screen,
-        desktops: [ws],
-        minimized: false,
-        hidden: false,
-        fullScreen: false,
-        maximizeMode: 0,
-        onAllDesktops: false,
-        minSize: null,
-        maxSize: null,
-    });
+    ): FakeWindow => {
+        const outputChanged = makeSignal();
+        const winDesktopsChanged = makeSignal();
+        const winHiddenChanged = makeSignal();
+        const winFrameChanged = makeSignal();
+        const truthfulClient = (f: { x: number; y: number; width: number; height: number }): { x: number; y: number; width: number; height: number } => ({
+            x: f.x + 2,
+            y: f.y + 21,
+            width: Math.max(1, f.width - 4),
+            height: Math.max(1, f.height - 22),
+        });
+        return {
+            internalId,
+            managed: true,
+            deleted: false,
+            transient: false,
+            transientFor: null,
+            dialog: false,
+            modal: false,
+            wantsInput: true,
+            normalWindow: true,
+            frameGeometry: { ...frame },
+            clientGeometry: truthfulClient(frame),
+            output: screen,
+            desktops: [ws],
+            minimized: false,
+            hidden: false,
+            fullScreen: false,
+            maximizeMode: 0,
+            onAllDesktops: false,
+            minSize: { width: 100, height: 100 },
+            maxSize: { width: 2147483647, height: 2147483647 },
+            pid: 1234,
+            resourceClass: "Example",
+            caption: "Window",
+            windowRole: "normal",
+            desktopFileName: "example.app",
+            resizeable: true,
+            keepAbove: false,
+            keepBelow: false,
+            outputChanged: outputChanged.signal,
+            desktopsChanged: winDesktopsChanged.signal,
+            hiddenChanged: winHiddenChanged.signal,
+            frameGeometryChanged: winFrameChanged.signal,
+            __signals: { outputChanged, desktopsChanged: winDesktopsChanged, hiddenChanged: winHiddenChanged, frameGeometryChanged: winFrameChanged },
+        };
+    };
     // The victim starts far from any tiled slot; the sibling starts near
     // its slot so only the victim exercises the clamp lane.
     const wins: FakeWindow[] = [
@@ -354,11 +394,13 @@ async function makeHarness(): Promise<Harness> {
         createDesktop: (): void => undefined,
         removeDesktop: (): boolean => false,
     };
-    // Native setters: the sibling converges; the victim is clamped (the
-    // setter reports accepted but the live frame never lands). Every
-    // native write is recorded with its target.
+    // Native setters: the sibling converges (frame and truthful client
+    // track together); the victim is clamped (the setter reports accepted
+    // but the live frame never lands). Every native write is recorded with
+    // its target.
     for (const win of wins) {
         let frame = win.frameGeometry;
+        let client = { ...win.clientGeometry };
         const clamped = win.internalId === "victim";
         Object.defineProperty(win, "frameGeometry", {
             configurable: true,
@@ -367,8 +409,21 @@ async function makeHarness(): Promise<Harness> {
                 harness.geometryWrites.push(`${win.internalId}@${rect.x},${rect.y},${rect.width},${rect.height}`);
                 if (!clamped) {
                     frame = rect;
+                    client = {
+                        x: rect.x + 2,
+                        y: rect.y + 21,
+                        width: Math.max(1, rect.width - 4),
+                        height: Math.max(1, rect.height - 22),
+                    };
                 }
                 return true;
+            },
+        });
+        Object.defineProperty(win, "clientGeometry", {
+            configurable: true,
+            get: () => client,
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                client = rect;
             },
         });
     }
@@ -408,15 +463,50 @@ async function makeHarness(): Promise<Harness> {
     return harness;
 }
 
-async function discover(h: Harness): Promise<void> {
-    const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
-    assert.ok(discIndex >= 0, "entry discovers on start");
-    const disc = h.calls[discIndex] as CapturedCall;
-    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
-    const reply = h.broker.bindDiscovery(engineBootstrap);
-    const parsed = JSON.parse(reply) as Record<string, unknown>;
-    assert.equal(parsed["ready"], false, "bootstrap is not ready");
-    disc.callback(reply);
+async function discover(h: Harness): Promise<string> {
+    // Authentic v4 connection pump: the handshake binds the producer
+    // adapter lifetime and mints the serving generation; the revisioned
+    // settings snapshot (rev 1) precedes the first report on the wire.
+    const hsIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
+    assert.ok(hsIndex >= 0, "entry discovers on start");
+    const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
+    assert.equal(hsBody["adapter"], "test-adapter", "handshake carries the producer adapter");
+    const hsReplyText = await h.bridge.send("DiscoverWorld", (h.calls[hsIndex] as CapturedCall).payload);
+    const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
+    assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
+    assert.equal(hsReply["ready"], false, "accepted handshake carries ready:false");
+    assert.equal(hsReply["kind"], "", "accepted handshake carries an empty kind");
+    assert.equal(hsReply["adapter"], "test-adapter", "handshake retains the producer adapter, never a broker incarnation");
+    assert.equal(hsReply["req"], hsBody["req"], "handshake echoes the request correlation");
+    assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string) !== "", "handshake mints the serving generation");
+    const gen = hsReply["gen"] as string;
+    const boundHs = h.broker.bindDiscovery(hsReplyText);
+    assert.equal((JSON.parse(boundHs) as Record<string, unknown>)["adapter"], "test-adapter", "harness passes the producer lifetime through");
+    assert.equal(h.broker.gen, gen, "harness records the actual serving generation");
+    (h.calls[hsIndex] as CapturedCall).callback(boundHs);
+    const setIndex = h.calls.findIndex((call, at) => at > hsIndex && call.method === "DiscoverWorld");
+    assert.ok(setIndex >= 0, "revisioned settings follow the handshake");
+    const setBody = JSON.parse((h.calls[setIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(setBody["type"], "settings", "second discovery is the revisioned settings snapshot");
+    assert.equal(setBody["adapter"], "test-adapter", "settings carry the producer adapter");
+    assert.equal(setBody["gen"], gen, "settings bind the serving generation");
+    assert.equal(setBody["rev"], "1", "first settings snapshot carries rev 1");
+    const setReplyText = await h.bridge.send("DiscoverWorld", (h.calls[setIndex] as CapturedCall).payload);
+    const setReply = JSON.parse(setReplyText) as Record<string, unknown>;
+    assert.equal(setReply["type"], "settings-reply", "engine answers settings");
+    assert.equal(setReply["status"], "accepted", `settings accepted, got ${setReplyText.slice(0, 300)}`);
+    assert.equal(setReply["adapter"], "test-adapter", "settings reply retains the producer adapter");
+    assert.equal(setReply["gen"], gen, "settings reply binds the serving generation");
+    assert.equal(setReply["req"], setBody["req"], "settings reply echoes the request correlation");
+    assert.equal(setReply["rev"], "1", "settings reply binds the sent revision");
+    (h.calls[setIndex] as CapturedCall).callback(setReplyText);
+    assert.deepEqual(
+        h.calls.slice(0, setIndex + 1).map((call) => call.method),
+        ["DiscoverWorld", "DiscoverWorld"],
+        "no report precedes the accepted settings",
+    );
+    return gen;
 }
 
 function lastReply(h: Harness): Record<string, unknown> {
@@ -485,7 +575,14 @@ describe("core-owned tiled clamp suppression through the production route (real 
             const stored = (h.victim.frameGeometry as { x: number; y: number; width: number; height: number });
             const moved = { x: stored.x + 40, y: stored.y + 40, width: stored.width, height: stored.height };
             // Bypass the clamped setter: this is external native input,
-            // not an adapter write.
+            // not an adapter write. The truthful client tracks the moved
+            // frame so the follow-up capture carries consistent facts.
+            const movedClient = {
+                x: moved.x + 2,
+                y: moved.y + 21,
+                width: Math.max(1, moved.width - 4),
+                height: Math.max(1, moved.height - 22),
+            };
             Object.defineProperty(h.victim, "frameGeometry", {
                 configurable: true,
                 get: () => ({ ...moved }),
@@ -493,6 +590,11 @@ describe("core-owned tiled clamp suppression through the production route (real 
                     h.geometryWrites.push(`victim@${rect.x},${rect.y},${rect.width},${rect.height}`);
                     return true;
                 },
+            });
+            Object.defineProperty(h.victim, "clientGeometry", {
+                configurable: true,
+                get: () => ({ ...movedClient }),
+                set: () => undefined,
             });
             await round(h);
             assert.ok(victimWrites(h) > writesAtHold, "genuine change resumes adapter writes (core lifted suppression)");

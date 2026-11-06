@@ -428,3 +428,25 @@
   comparison above proves classification only, not downstream admission of that
   sticky internal surface. Native isolation, helper unloads, private config use
   and TERM-only process/socket cleanup passed. K1's remaining gates stay open.
+
+## Shared-carrier migration and covering authority
+
+- The clamp-lifetime, aligned-spare-occupancy and split-edge real-engine tests now
+  drive the genuine handshake/settings sequence and complete native-shaped facts.
+  Their original clamp, occupancy, directional, migration, deferred-arrival and
+  no-replay assertions remain. Stale focus refusal assertions now read the typed
+  requester result; the spare fake's cursor follows its selected output, matching
+  the core's cursor-first command targeting.
+- The migration leg exposed a production consumer gap: core compresses uniform
+  workspace authority into one output-scoped row, but KDE's migration gate only
+  looked for workspace rows. It now accepts covering output authority while an
+  exact workspace hold still takes precedence; member and freshness gates remain.
+- A new independent v4 migration counterpart retains production-encoded inputs
+  and exact real-core replies with test-only broker-transport binding under
+  `test-fixtures/kde-v4/migration/`. No old fixture was converted or overwritten.
+  The apply harness binds the recorded generation, adapter and source rather than
+  stale hardcoded identity. It retains the original unbound, one-shot, partial
+  progress, refill and exact-output proof checks plus covering-authority refusal
+  regressions. Strict TypeScript and all 24 tests across these four files pass.
+  This is offline evidence, not native migration or full-suite acceptance;
+  remaining corpus migration, widened gates and integrated review remain open.

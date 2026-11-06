@@ -1777,17 +1777,26 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.stoppedMidApply = true;
             break;
         }
-        // Core-published actuation scope for the target cell (mirroring the
-        // Windows v2 `scope_actuatable` gate): Controlled actuates, and
-        // Untouched (core-owned floating workspaces) actuates only when its
-        // output row exists unheld and no gesture barrier is up. Missing
-        // scopes, Hold, and Untouched with a held/missing output or an
-        // active gesture authorize no write and no retirement: holds with
-        // no view, never missing-equals-empty. No member/frame authority
-        // bypass: the row gates below keep their own Controlled checks.
-        const scopeAuthority = reply.scopes.find((s) =>
+        // Core-published actuation scope for the target cell: the exact
+        // workspace authority first, else the covering output authority
+        // the core publishes when every workspace status on that output is
+        // uniform (world_publish compresses uniform statuses to
+        // AuthorityScope::Output). Controlled actuates, and Untouched
+        // (core-owned floating workspaces) actuates only when its output
+        // row exists unheld and no gesture barrier is up. A narrower
+        // exact workspace Hold never falls back to a broader
+        // Controlled: missing scopes, Hold, and Untouched with a
+        // held/missing output or an active gesture authorize no write and
+        // no retirement: holds with no view, never missing-equals-empty.
+        // No member/frame authority bypass: the row gates below keep
+        // their own Controlled checks.
+        const exactAuthority = reply.scopes.find((s) =>
             s.scope.kind === "workspace" && s.scope.out === t.out && s.scope.ws === t.ws,
         )?.auth;
+        const coveringAuthority = reply.scopes.find((s) =>
+            s.scope.kind === "output" && s.scope.out === t.out,
+        )?.auth;
+        const scopeAuthority = exactAuthority ?? coveringAuthority;
         const outputUnheld = reply.outputs.some((o) => o.out === t.out && o.hold === "");
         const scopeActuatable = scopeAuthority === "controlled" ||
             (scopeAuthority === "untouched" && outputUnheld && !observation.gesture);

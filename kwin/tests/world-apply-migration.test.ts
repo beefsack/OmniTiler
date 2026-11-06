@@ -1,11 +1,15 @@
 // Whole-workspace migration actuation through the production apply
-// path: the live-broker reply (reply-migrate.json: the retained migration
-// transfer plus its paired source-refill child, terminal result strictly
-// take-lane) moves every member exactly once under the stable operation
-// id once the creation-flow binding proof is staged, follows the target
-// view, refills the source when a remaining row exists, settles applied
-// only on proof, holds partial progress truthfully, and never repeats an
-// ambiguous attempt. The broker leaves the migrated unit unbound, so each
+// path: the recorded real-core reply (MIGRATE_DRAIN.reply.json: the retained
+// migration transfer plus its paired source-refill child, terminal result
+// strictly take-lane) moves every member exactly once under the stable
+// operation id once the creation-flow binding proof is staged, follows the
+// target view, refills the source when a remaining row exists, settles
+// applied only on proof, holds partial progress truthfully, and never
+// repeats an ambiguous attempt. The reply is genuine v4 core bytes recorded
+// from the retained real WorldEngine against a synthetic offline producer
+// through the test-only MiniBroker transport shim (see
+// test-fixtures/kde-v4/migration/README.md): not live-production-broker or
+// native proof. The core leaves the migrated unit unbound, so each
 // actuation test stages that one binding proof; the unbound hold is
 // covered by the strict-shape parser gate.
 
@@ -19,12 +23,12 @@ import { parseWorldReply, isWorldRejection, type WorldReply } from "../src/world
 import type { WorldObservation } from "../src/world-observe";
 import type { WorldReplyResult } from "../src/world-report";
 
-const FIXTURE = path.resolve("..", "test-fixtures", "world-wire", "reply-migrate.json");
+const FIXTURE = path.resolve("..", "test-fixtures", "kde-v4", "migration", "MIGRATE_DRAIN.reply.json");
 
 // Correlated terminal result for the filed migration command (take lane,
 // requester-only): member/source provenance the snapshot alone cannot
 // express. Names the stable core LOGICAL workspace id (ws-1), never the
-// native desktop: the broker output below binds no native desktop to the
+// native desktop: the recorded output binds no native desktop to the
 // migrated unit, so the adapter must hold rather than guess.
 const MIGRATE_TAKE: WorldReplyResult = {
     op: "migrate-workspace", direction: "right",
@@ -32,16 +36,23 @@ const MIGRATE_TAKE: WorldReplyResult = {
     members: ["win-a"], floats: 0,
 };
 
+// The recorded take result stays exact against the const above: the real
+// core output, not a hand-written oracle.
+assert.deepEqual(
+    JSON.parse(fs.readFileSync(path.resolve("..", "test-fixtures", "kde-v4", "migration", "MIGRATE_TAKE.result.json"), "utf8")),
+    MIGRATE_TAKE,
+);
+
 function loadReply(): WorldReply {
     const parsed = parseWorldReply(fs.readFileSync(FIXTURE, "utf8"));
     assert.ok(parsed !== null && !isWorldRejection(parsed));
     return parsed as WorldReply;
 }
 
-// Stage the creation-flow binding proof for the migrated unit: the live
-// broker leaves ws-1 unbound until the adapter proves the native desktop,
-// and these actuation oracles test the post-proof flight (member moves,
-// view follows, refills) with real broker bytes otherwise untouched.
+// Stage the creation-flow binding proof for the migrated unit: the
+// recorded core leaves ws-1 unbound until the adapter proves the native
+// desktop, and these actuation oracles test the post-proof flight (member
+// moves, view follows, refills) with real core bytes otherwise untouched.
 function bindTarget(reply: WorldReply): void {
     for (const ws of reply.workspaces) {
         if (ws.id === "ws-1" && ws.out === "out-b") {
@@ -165,18 +176,24 @@ function makeEnv(state: WorldAdapterState, world: FakeWorld) {
 }
 
 function freshState(reply: WorldReply): WorldAdapterState {
-    const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1", "adapter-1");
-    state.invalidate();
-    state.invalidate();
-    reply.obs = state.currentInvalid;
+    // Bind the actual recorded receipt: producer adapter, serving
+    // generation, broker-stamped source correlation, and the capture
+    // watermark, mirroring the typed v4 apply harness
+    // (world-v4-binding-apply.test.ts freshBound). The old hardcoded
+    // adapter-1/gen-1 fenced every setter via replyFresh. Never mutates
+    // the broker-owned reply.obs sequencing lane.
+    const state = new WorldAdapterState(reply.adapter, "owner-a");
+    assert.equal(state.onDiscovery(reply.gen, reply.adapter, "disc-1", "disc-1"), true);
+    const flight = state.beginCapture(reply.source, null);
+    assert.ok(flight !== null);
+    assert.deepEqual(state.acceptReply(reply, reply.source, flight.watermark), { applied: true, reason: "accepted" });
     return state;
 }
 
 describe("world migration apply", () => {
     it("an unbound migrated target holds without guessing", () => {
         const reply = loadReply();
-        // No binding staged: the live broker leaves ws-1 unbound, so the
+        // No binding staged: the recorded core leaves ws-1 unbound, so the
         // adapter must hold the whole migration rather than guess a
         // native desktop. Fail-closed under the exact wire bytes.
         const world: FakeWorld = {
@@ -310,6 +327,70 @@ describe("world migration apply", () => {
         assert.ok(!world.switchViewCalls.some((c) => c === "out-a->wa0"), "rows-lowest loses");
     });
 
+    it("covering output authority actuates the migration target cell", () => {
+        const reply = loadReply();
+        bindTarget(reply);
+        // v4 structural compression (world_publish compresses uniform
+        // per-output workspace statuses to AuthorityScope::Output): no
+        // exact workspace row for the target cell, only the covering
+        // controlled output authority.
+        reply.scopes = [
+            { scope: { kind: "output", out: "out-a" }, auth: "controlled", reason: "" },
+            { scope: { kind: "output", out: "out-b" }, auth: "controlled", reason: "" },
+        ];
+        const world: FakeWorld = {
+            homing: new Map([
+                ["win-a", { out: "out-a", ws: "wa1" }],
+                ["win-b", { out: "out-b", ws: "wb1" }],
+            ]),
+            currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
+            sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
+            lieMembership: false,
+        };
+        const state = freshState(reply);
+        const applied = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: MIGRATE_TAKE,
+            ...makeEnv(state, world),
+            observation: makeObservation(world),
+            reply,
+        });
+        assert.ok(world.sendToOutputCalls.some((c) => c === "win-a->out-b"), "member output moves under covering authority");
+        assert.ok(world.switchViewCalls.some((c) => c === "out-b->wa1"), "target view follows under covering authority");
+        assert.ok(applied.membershipWrites >= 1);
+        assert.ok(applied.viewWrites >= 1);
+        assert.deepEqual({ ...world.homing.get("win-a") }, { out: "out-b", ws: "wa1" });
+    });
+
+    it("a narrower workspace hold still refuses under a controlled covering output", () => {
+        const reply = loadReply();
+        bindTarget(reply);
+        // Exact workspace Hold on the target cell plus a controlled
+        // covering output: the narrower Hold wins, never bypassed by the
+        // broader Controlled.
+        reply.scopes = [
+            { scope: { kind: "workspace", out: "out-b", ws: "ws-1" }, auth: "hold", reason: "constraint-clamp" },
+            { scope: { kind: "output", out: "out-a" }, auth: "controlled", reason: "" },
+            { scope: { kind: "output", out: "out-b" }, auth: "controlled", reason: "" },
+        ];
+        const world: FakeWorld = {
+            homing: new Map([
+                ["win-a", { out: "out-a", ws: "wa1" }],
+                ["win-b", { out: "out-b", ws: "wb1" }],
+            ]),
+            currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
+            sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
+            lieMembership: false,
+        };
+        const state = freshState(reply);
+        const applied = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: MIGRATE_TAKE,
+            ...makeEnv(state, world),
+            observation: makeObservation(world),
+            reply,
+        });
+        assert.equal(world.sendToOutputCalls.length, 0, "held target moves nothing");
+        assert.equal(world.switchViewCalls.length, 0, "held target follows nothing");
+        assert.ok(applied.held >= 1, "workspace hold refuses despite covering controlled");
+    });
+
     it("holds partial progress truthfully without repeating ambiguity", () => {
         const reply = loadReply();
         bindTarget(reply);
@@ -437,7 +518,7 @@ describe("world migration apply", () => {
 
 describe("world migration refill gating", () => {
     // Reply with the broker-retained paired refill child (op-1-refill,
-    // emitted with the op-1 migration by the live broker): the paired view
+    // emitted with the op-1 migration by the recorded core): the paired view
     // names the core-chosen ws-3 source refill, with wa0 as the
     // rows-lowest decoy.
     function loadPairedReply(): WorldReply {
