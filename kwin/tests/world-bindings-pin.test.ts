@@ -4,10 +4,14 @@
 // pinned/displaced desktop property and no legacy source ever read one,
 // so disp stays false; listed bindings are adapter-managed inventory by
 // construction (unmanaged natives are omitted, never marked).
+//
+// Synthetic strict-v4 receipts; scripted obs/rev are independent of nativeInvalid.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 function makeSurface() {
     const ws1 = { id: "ws-1" };
@@ -68,15 +72,18 @@ describe("world binding retention flags", () => {
                 calls.push({ method, payload, callback });
                 if (method === "QueueWorldCommand") {
                     const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                    callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
+                    const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                    callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
                         client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
                 } else if (method === "TakeCommandResult") {
+                    const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                    const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
                     const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                     if (stagedTake !== undefined) {
                         delete (globalThis as Record<string, unknown>)["__takeResult"];
-                        callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                        callback(JSON.stringify({ v: 4, outcome: "ready", gen: takeGen, globalCmd: "1", result: stagedTake }));
                     } else {
-                        callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                        callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
                     }                }
             },
             scheduleOnce: (delay, cb) => {
@@ -89,23 +96,54 @@ describe("world binding retention flags", () => {
             readWorkspaceModeFn: () => "per-output-local",
         });
         assert.ok(handle !== null);
-        calls.find((c) => c.method === "DiscoverWorld")?.callback(JSON.stringify({
-            v: 3, adapter: "broker-1", gen: "gen-1", req: "disc-1",
-            obs: "0", rev: "0", ready: false, consumed: false,
-            gestureSettled: null,
-            operationSettled: [], nativeCreations: [],
-            warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            scopes: [], workspaces: [], outputs: [], windows: [],
-            transfers: [], effects: [], result: null,
+        // Accept settings before the first report.
+        const handshake = calls.find((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+            } catch {
+                return false;
+            }
+        });
+        assert.ok(handshake !== undefined, "expected DiscoverWorld/handshake");
+        const handshakeReq = (JSON.parse((handshake as { payload: string }).payload) as Record<string, unknown>)["req"] as string;
+        (handshake as { callback: (reply: unknown) => void }).callback(JSON.stringify({
+            type: "handshake-reply", v: 4, adapter: "test-adapter", req: handshakeReq,
+            ready: false, kind: "", gen: "gen-1",
         }));
+        const settings = calls.find((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+            } catch {
+                return false;
+            }
+        });
+        assert.ok(settings !== undefined, "expected DiscoverWorld/settings");
+        const settingsBody = JSON.parse((settings as { payload: string }).payload) as Record<string, unknown>;
+        (settings as { callback: (reply: unknown) => void }).callback(JSON.stringify({
+            type: "settings-reply", v: 4, adapter: "test-adapter", gen: "gen-1",
+            req: settingsBody["req"], rev: settingsBody["rev"], status: "accepted", diagnostics: [],
+        }));
+        for (let i = 0; i < timers.length; i += 1) {
+            const t = timers[i] as { delay: number; cb: () => void };
+            if (t.delay <= 120) {
+                timers.splice(i, 1);
+                i -= 1;
+                t.cb();
+            }
+        }
         // Settle the auto report with a reply that binds both natives, so
         // the next report converges the adapter binding snapshot.
         const auto = [...calls].reverse().find((c) => c.method === "DescribeWorld");
         assert.ok(auto !== undefined);
         const autoBody = JSON.parse((auto as { payload: string }).payload) as Record<string, unknown>;
-        (auto as { callback: (reply: unknown) => void }).callback(JSON.stringify({
-            v: 3, adapter: "broker-1", gen: "gen-1", req: autoBody["source"],
+        const autoText = JSON.stringify({
+            v: 4, adapter: "test-adapter", gen: "gen-1", req: autoBody["source"],
             obs: "1", rev: "1", ready: true, consumed: false,
             source: autoBody["source"],
             nativeInvalid: autoBody["nativeInvalid"],
@@ -113,13 +151,18 @@ describe("world binding retention flags", () => {
             gestureSettled: null, gestureAssoc: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            scopes: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
+            intentWrites: [], switchSettled: [], diagnostics: [],
+            presentation: DISABLED_PRESENTATION,
+            scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws-1" }, auth: "controlled", reason: "" }],
             workspaces: [
-                { id: "ws-1", out: "out-1", bind: "ws-1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "ws-2", out: "out-2", bind: "ws-2", scope: "out-2", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "ws-1", out: "out-1", bind: "ws-1", scope: { kind: "output", out: "out-1" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "ws-2", out: "out-2", bind: "ws-2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" },
             ],
-        }));
+            outputs: [],
+            windows: [], transfers: [], effects: [], result: null,
+        });
+        assert.ok(parseWorldReply(autoText) !== null && isCoreWorldReply(parseWorldReply(autoText)), "authored accept binds strict v4");
+        (auto as { callback: (reply: unknown) => void }).callback(autoText);
         // Observation-only reports carry no retention: nothing pinned.
         const settled = JSON.parse((auto as { payload: string }).payload) as Record<string, unknown>;
         void settled;

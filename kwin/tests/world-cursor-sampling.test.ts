@@ -3,12 +3,16 @@
 // Pure pointer motion triggers no capture and no enabled behavior (no
 // cursorPosChanged subscription, no polling timer), and the moved position
 // rides the next relevant capture. A nonnull warpCursor reply is unexpected:
-// the adapter logs and ignores it, performs no write, and the capability
-// stays false in the next capture.
+// the adapter logs and ignores it, performs no write, and the next capture
+// still carries no warp capability lane.
+//
+// Synthetic strict-v4 receipts; scripted obs/rev are independent of nativeInvalid.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface FakeSignal {
     handlers: Array<() => void>;
@@ -42,14 +46,15 @@ interface Call {
 const GEN = "gen-1";
 
 function acceptedReply(source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string {
-    return JSON.stringify({
-        v: 3, adapter: "broker-1", gen: GEN, req: source, obs: rev, rev,
+    const text = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen: GEN, req: source, obs: rev, rev,
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: DISABLED_PRESENTATION,
+        scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [],
         outputs: [],
         windows: [],
@@ -58,15 +63,22 @@ function acceptedReply(source: string, nativeInvalid: string, rev: string, extra
         result: null,
         ...extra,
     });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+    return text;
 }
 
 function bootstrap(req: string): string {
     return JSON.stringify({
-        v: 3, adapter: "broker-1", gen: GEN, req, obs: "0", rev: "0",
-        ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-        windows: [], transfers: [], effects: [], result: null,
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        type: "handshake-reply", v: 4, adapter: "test-adapter", req,
+        ready: false, kind: "", gen: GEN,
+    });
+}
+
+function settingsReply(req: string, rev: string): string {
+    return JSON.stringify({
+        type: "settings-reply", v: 4, adapter: "test-adapter", gen: GEN,
+        req, rev, status: "accepted", diagnostics: [],
     });
 }
 
@@ -143,10 +155,13 @@ function makeHarness() {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const body = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 3, outcome: "queued", gen: GEN,
+                const queueGen = typeof body["gen"] === "string" ? (body["gen"] as string) : GEN;
+                callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
                     client: body["client"], clientCmd: body["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
-                callback(JSON.stringify({ v: 3, outcome: "pending", gen: GEN }));
+                const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : GEN;
+                callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
             }
         },
         scheduleOnce: (delay, cb) => {
@@ -189,12 +204,37 @@ function makeHarness() {
             handler();
         }
     };
-    // Bind: answer discovery, then settle the auto-dispatched observation.
-    const discoverCall = [...calls].reverse().find((c) => c.method === "DiscoverWorld");
-    assert.ok(discoverCall !== undefined, "expected DiscoverWorld");
-    const discoverBody = JSON.parse(discoverCall.payload) as { req: string };
-    calls.splice(calls.indexOf(discoverCall), 1);
-    discoverCall.callback(bootstrap(discoverBody.req));
+    // Bind: answer the handshake, then the revisioned settings snapshot
+    // (accepted before the first report flies), then settle the
+    // auto-dispatched observation.
+    const handshakeCall = [...calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(handshakeCall !== undefined, "expected DiscoverWorld/handshake");
+    const handshakeBody = JSON.parse(handshakeCall.payload) as { req: string };
+    calls.splice(calls.indexOf(handshakeCall), 1);
+    handshakeCall.callback(bootstrap(handshakeBody.req));
+    const settingsCall = [...calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(settingsCall !== undefined, "expected DiscoverWorld/settings");
+    const settingsBody = JSON.parse(settingsCall.payload) as { req: string; rev: string };
+    calls.splice(calls.indexOf(settingsCall), 1);
+    settingsCall.callback(settingsReply(settingsBody.req, settingsBody.rev));
     runTimers();
     answerDescribes();
     runTimers();
@@ -236,7 +276,8 @@ describe("world entry cursor sampling and warp defense", () => {
         const report = reportOf(describes[0] as Call);
         assert.deepEqual(report["cursor"], [321, 77]);
         assert.equal(report["cursorWindow"], "win-a");
-        assert.equal(report["cursorWarp"], false);
+        // Capabilities are connection-level, not report lanes.
+        assert.ok(!("cursorWarp" in report), "no retired warp capability lane");
         h.answerDescribes();
         h.runTimers();
     });
@@ -255,10 +296,9 @@ describe("world entry cursor sampling and warp defense", () => {
         h.runTimers();
     });
 
-    it("logs and ignores an unexpected nonnull warp reply with no write, staying false", () => {
+    it("logs and ignores an unexpected nonnull warp reply with no write", () => {
         const h = makeHarness();
-        // Baseline: the real core reply carries no warp while the capability
-        // reads false.
+        // Baseline: the synthetic reply carries no warp.
         h.fire("windowActivated");
         h.runTimers();
         assert.equal(h.pendingDescribes().length, 1);
@@ -276,12 +316,12 @@ describe("world entry cursor sampling and warp defense", () => {
         assert.ok((warpLines[0] as string).includes("x=50 y=60"), warpLines[0] as string);
         assert.equal(h.writes.length, 0, "no cursor write through the workspace surface");
         assert.deepEqual(h.cursor.pos, { x: 321, y: 77 }, "cursor position unchanged");
-        // The capability stays false in the next capture.
+        // The capability stays absent in the next capture (never actuated).
         h.fire("windowActivated");
         h.runTimers();
         const next = h.pendingDescribes();
         assert.equal(next.length, 1);
-        assert.equal(reportOf(next[0] as Call)["cursorWarp"], false);
+        assert.ok(!("cursorWarp" in reportOf(next[0] as Call)), "no retired warp capability lane");
         h.answerDescribes();
         h.runTimers();
     });

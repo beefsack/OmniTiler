@@ -2,9 +2,13 @@
 // braced UUIDs. Live wrappers carry `{uuid}`, reports carry bare ids. The
 // removal payload is never read (dead QObject): closes come from the
 // event-gated full-inventory difference only.
+//
+// Synthetic strict-v4 receipts; scripted obs/rev are independent of nativeInvalid.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 const WS_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const WS_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
@@ -127,15 +131,18 @@ function makeHarness() {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
+                const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
+                const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 4, outcome: "ready", gen: takeGen, globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
                 }            }
         },
         scheduleOnce: (delay, cb) => {
@@ -166,9 +173,9 @@ function makeHarness() {
         assert.ok(found !== undefined, `expected ${method}`);
         return found as { method: string; payload: string; callback: (reply: unknown) => void };
     };
-    const accepted = (gen: string, source: string, nativeInvalid: string, rev: string): string =>
-        JSON.stringify({
-            v: 3, adapter: "broker-1", gen, req: source, obs: rev, rev,
+    const accepted = (gen: string, source: string, nativeInvalid: string, rev: string): string => {
+        const text = JSON.stringify({
+            v: 4, adapter: "test-adapter", gen, req: source, obs: rev, rev,
             ready: true, consumed: false,
             source,
             nativeInvalid,
@@ -176,22 +183,55 @@ function makeHarness() {
             gestureSettled: null, gestureAssoc: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            scopes: [{ scope: `${OUT}/${WS_A}`, auth: "controlled", reason: "" }],
+            intentWrites: [], switchSettled: [], diagnostics: [],
+            presentation: DISABLED_PRESENTATION,
+            scopes: [{ scope: { kind: "workspace", out: OUT, ws: WS_A }, auth: "controlled", reason: "" }],
             workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
         });
-    const discover = (gen = "gen-1"): void => {
-        const call = lastCall("DiscoverWorld");
-        const body = JSON.parse(call.payload);
-        call.callback(JSON.stringify({
-            v: 3, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
-            ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-            gestureSettled: null,
-            operationSettled: [], nativeCreations: [],
-            warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            windows: [], transfers: [], effects: [], result: null,
+        const parsed = parseWorldReply(text);
+        assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+        return text;
+    };
+    const answerHandshake = (gen = "gen-1"): void => {
+        const found = [...calls].reverse().find((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+            } catch {
+                return false;
+            }
+        });
+        assert.ok(found !== undefined, "expected DiscoverWorld/handshake");
+        const req = (JSON.parse((found as { payload: string }).payload) as Record<string, unknown>)["req"] as string;
+        (found as { callback: (reply: unknown) => void }).callback(JSON.stringify({
+            type: "handshake-reply", v: 4, adapter: "test-adapter", req,
+            ready: false, kind: "", gen,
         }));
+    };
+    const answerSettings = (gen = "gen-1"): void => {
+        const found = [...calls].reverse().find((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+            } catch {
+                return false;
+            }
+        });
+        assert.ok(found !== undefined, "expected DiscoverWorld/settings");
+        const body = JSON.parse((found as { payload: string }).payload) as Record<string, unknown>;
+        (found as { callback: (reply: unknown) => void }).callback(JSON.stringify({
+            type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+            req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+        }));
+    };
+    const discover = (gen = "gen-1"): void => {
+        answerHandshake(gen);
+        answerSettings(gen);
+        runTimers();
         const auto = lastCall("DescribeWorld");
         const autoBody = JSON.parse(auto.payload);
         auto.callback(accepted(gen, autoBody.source, autoBody.nativeInvalid, "0"));

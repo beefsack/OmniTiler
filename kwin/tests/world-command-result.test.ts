@@ -1,26 +1,23 @@
-// Production entry consumption of correlated Rust results: real
-// engine reply bytes (test-fixtures/world-wire, shared with the
-// tiler-protocol byte gate) drive the actual entry request path. Take-lane
-// terminal results never paint (requester-only, not renderer authority):
-// a drag-preview result with no gesture paints nothing and an
-// active-group result paints nothing through the take lane. Painting
-// belongs to the read-only presentation subscriber (Stage 5): the broker
-// ReadWorldPresentation projection paints accepted core shapes (border,
-// underlay, drop preview) through the native effect, with generation,
-// request, and transport fencing. A migration result moves every member
-// and follows the views without repeats.
+// Production entry consumption of correlated Rust results: the accepted
+// capture plus the requester-only take lane drive the actual entry request
+// path. Take-lane terminal results never paint (requester-only, not
+// renderer authority): a drag-preview result with no gesture paints
+// nothing and a preview result with a live gesture paints nothing through
+// the take lane either. Painting belongs to the read-only presentation
+// subscriber (Stage 5): the broker ReadWorldPresentation projection paints
+// accepted core shapes (border, underlay, drop preview) through the
+// native effect, with generation, request, and transport fencing. A
+// migration result moves every member and follows the views without
+// repeats.
+//
+// Synthetic strict-v4 receipts; scripted obs/rev are independent of nativeInvalid.
+// A valid drag-preview result replaces the retired active-group take shape.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { startWorldAdapterEntry } from "../src/world-entry";
-
-const FIXTURE_DIR = path.resolve("..", "test-fixtures", "world-wire");
-
-function loadFixture(name: string): Record<string, unknown> {
-    return JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, name), "utf8")) as Record<string, unknown>;
-}
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface FakeDesktop {
     id: string;
@@ -42,6 +39,21 @@ interface FakeWindow {
     onAllDesktops: boolean;
     minimized: boolean;
     hidden: boolean;
+}
+
+// Current-v4 synthetic 18-key window row (retired shapes refuse).
+function tiledRow(win: string, rect: [number, number, number, number] = [4, 4, 792, 592]): Record<string, unknown> {
+    return {
+        win, out: "out", ws: "ws",
+        alloc: [...rect], frame: [...rect],
+        frame_auth: "controlled", frame_hold: "",
+        member_auth: "controlled", member_hold: "",
+        frame_op: "", clear_op: "",
+        floating: false, float_origin: "",
+        cmdSeq: null,
+        visibility: null, visibility_auth: "untouched", visibility_hold: "",
+        state: [],
+    };
 }
 
 function makeWindow(id: string, out: { name: string }, ws: FakeDesktop): FakeWindow {
@@ -134,21 +146,36 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
         adapter: "test-adapter",
         callDbus: (_s, _p, _i, method, payload, callback) => {
             if (method === "ReadFloatIntent") {
-                callback(JSON.stringify({ members: [], tile: [] }));
+                // Opaque schema-2 seed (mirrors the shared float-echo
+                // store shape): empty membership, byte-exact records.
+                const seedBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({
+                    v: 2, correlation_id: seedBody["correlation_id"], outcome: "ok",
+                    records: [], stored: 0, returned: 0,
+                }));
                 return;
             }
             calls.push({ method, payload, callback });
-            if (method === "QueueWorldCommand") {
+            if (method === "WriteFloatIntent") {
+                const writeBody = JSON.parse(payload) as Record<string, unknown>;
+                const records = writeBody["records"] as ReadonlyArray<unknown>;
+                callback(JSON.stringify({
+                    v: 2, correlation_id: writeBody["correlation_id"], outcome: "stored", stored: records.length,
+                }));
+            } else if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
+                const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
+                const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 4, outcome: "ready", gen: takeGen, globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
                 }            }
         },
         scheduleOnce: (delay, cb) => {
@@ -203,15 +230,22 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
         const last = [...calls].reverse().find((c) => c.method === "DescribeWorld");
         assert.ok(last !== undefined);
         const envelope = JSON.parse((last as { payload: string }).payload) as Record<string, unknown>;
-        const staged = (globalThis as Record<string, unknown>)["__pendingReply"] as Record<string, unknown>;
         takeRev.n += 1;
         const accept: Record<string, unknown> = {
-            ...staged,
-            v: 3, adapter: "broker-1", gen: "gen-1",
+            v: 4, adapter: "test-adapter", gen: "gen-1",
             req: envelope["source"], obs: String(takeRev.n), rev: String(takeRev.n),
             ready: true, consumed: false,
             source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "1",
-            result: null,
+            gestureSettled: null, gestureAssoc: null,
+            operationSettled: [], nativeCreations: [],
+            warpCursor: null,
+            intentWrites: [], switchSettled: [], diagnostics: [],
+            presentation: DISABLED_PRESENTATION,
+            scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
+            workspaces: [],
+            outputs: [{ out: "out", view: "ws", mode: "tiled", hold: "" }],
+            windows: [tiledRow("win-a"), tiledRow("win-b")],
+            transfers: [], effects: [], result: null,
         };
         if (mutate !== undefined) {
             mutate(accept);
@@ -223,43 +257,68 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
             (globalThis as Record<string, unknown>)["__takeResult"] = accept["takeResult"];
             delete accept["takeResult"];
         }
-        (last as { callback: (reply: unknown) => void }).callback(JSON.stringify(accept));
+        const text = JSON.stringify(accept);
+        const parsed = parseWorldReply(text);
+        assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+        (last as { callback: (reply: unknown) => void }).callback(text);
     };
     return { handle, calls, timers, renders, sentToOutput, currents, runTimers, replyNext };
 }
 
 function discover(h: Harness): void {
-    const disc = h.calls.find((c) => c.method === "DiscoverWorld");
-    assert.ok(disc !== undefined);
-    const req = (JSON.parse((disc as { payload: string }).payload) as Record<string, unknown>)["req"];
-    (disc as { callback: (reply: unknown) => void }).callback(JSON.stringify({
-        v: 3, adapter: "broker-1", gen: "gen-1", req,
-        obs: "0", rev: "0", ready: false, consumed: false,
-        gestureSettled: null,
-        operationSettled: [], nativeCreations: [],
-        warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        scopes: [], workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [], result: null,
+    // Accept settings before the first report.
+    const handshake = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(handshake !== undefined, "expected DiscoverWorld/handshake");
+    const handshakeReq = (JSON.parse((handshake as { payload: string }).payload) as Record<string, unknown>)["req"];
+    (handshake as { callback: (reply: unknown) => void }).callback(JSON.stringify({
+        type: "handshake-reply", v: 4, adapter: "test-adapter", req: handshakeReq,
+        ready: false, kind: "", gen: "gen-1",
+    }));
+    const settings = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(settings !== undefined, "expected DiscoverWorld/settings");
+    const settingsBody = JSON.parse((settings as { payload: string }).payload) as Record<string, unknown>;
+    (settings as { callback: (reply: unknown) => void }).callback(JSON.stringify({
+        type: "settings-reply", v: 4, adapter: "test-adapter", gen: "gen-1",
+        req: settingsBody["req"], rev: settingsBody["rev"], status: "accepted", diagnostics: [],
     }));
     // Settle the discovery-triggered auto capture so the command filed by
     // replyNext drains on a fresh flight instead of queueing behind it.
+    h.runTimers();
     const auto = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
     assert.ok(auto !== undefined);
     const autoEnv = JSON.parse((auto as { payload: string }).payload) as Record<string, unknown>;
-    (auto as { callback: (reply: unknown) => void }).callback(JSON.stringify({
-        v: 3, adapter: "broker-1", gen: "gen-1", req: autoEnv["source"], obs: "1", rev: "0",
+    const autoText = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen: "gen-1", req: autoEnv["source"], obs: "1", rev: "1",
         ready: true, consumed: false,
         source: autoEnv["source"], nativeInvalid: autoEnv["nativeInvalid"], clock: "1",
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        scopes: [], workspaces: [], outputs: [], windows: [],
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: DISABLED_PRESENTATION,
+        scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
+        workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
-    }));
-}
-
-function stageFixture(name: string): void {
-    (globalThis as Record<string, unknown>)["__pendingReply"] = loadFixture(name);
+    });
+    const autoParsed = parseWorldReply(autoText);
+    assert.ok(autoParsed !== null && isCoreWorldReply(autoParsed), "authored accept binds strict v4");
+    (auto as { callback: (reply: unknown) => void }).callback(autoText);
 }
 
 // Effect-facts seam (Stage 5 witness route): answer the held
@@ -317,41 +376,6 @@ const TAKE_RESULTS: Record<string, Record<string, unknown>> = {
             355
         ]
     },
-    "group": {
-        "op": "active-group",
-        "rev": "1",
-        "group": "grp-win-a-r0",
-        "leaf": "leaf-win-a",
-        "win": "win-a",
-        "bounds": [
-            4,
-            4,
-            792,
-            592
-        ],
-        "members": [
-            {
-                "leaf": "leaf-win-b",
-                "win": "win-b",
-                "rect": [
-                    4,
-                    4,
-                    392,
-                    592
-                ]
-            },
-            {
-                "leaf": "leaf-win-a",
-                "win": "win-a",
-                "rect": [
-                    404,
-                    4,
-                    392,
-                    592
-                ]
-            }
-        ]
-    },
     "migrate": {
         "op": "migrate-workspace",
         "direction": "right",
@@ -364,6 +388,9 @@ const TAKE_RESULTS: Record<string, Record<string, unknown>> = {
         ],
         "floats": 0
     },
+    // The retired active-group take shape has no v4 contract: the
+    // take-lane-never-paints invariant stages a valid drag-preview
+    // result instead (requester-only, never renderer authority).
     "preview": {
         "op": "drag-preview",
         "rev": "1",
@@ -401,12 +428,10 @@ describe("world command result entry", () => {
         const ws = { id: "ws" };
         const h = setup([makeWindow("win-a", out, ws), makeWindow("win-b", out, ws)], new Map([["out", "ws"]]));
         discover(h);
-        stageFixture("reply-preview.json");
         stageTake("preview");
         h.replyNext();
         assert.ok(!h.renders.some((r) => r.method === "SetDragTargetPreview"), "no gesture means no overlay");
         h.handle?.stop();
-        delete (globalThis as Record<string, unknown>)["__pendingReply"];
     });
 
     it("paints accepted core shapes through the subscriber, never take results", () => {
@@ -420,14 +445,13 @@ describe("world command result entry", () => {
         // the live gesture's own producing preview.
         answerEffectFacts(h);
         answerGesture(h, gestureBody({}));
-        stageFixture("reply-group.json");
-        stageTake("group");
+        stageTake("preview");
         h.replyNext((accept) => {
             accept["gestureAssoc"] = { instance: "gesture-1", serial: "1", coreId: "1" };
         });
         // Answer every presentation read with an accepted projection
-        // carrying a found underlay, a visible border, and gesture A's
-        // producing drop preview. The take-lane active-group result must
+        // carrying a found underlay, a K1-hidden border, and gesture A's
+        // producing drop preview. The take-lane preview result must
         // never paint beside it.
         const answerPresentations = (): void => {
             // Drain in a loop: a reply invalidated during flight is
@@ -442,10 +466,10 @@ describe("world command result entry", () => {
                 for (const call of pending) {
                 const req = (JSON.parse((call as { payload: string }).payload) as Record<string, unknown>)["req"];
                 (call as { callback: (reply: unknown) => void }).callback(JSON.stringify({
-                    v: 3, outcome: "presentation", gen: "gen-1", req, rev: "12", obs: "12",
+                    v: 4, outcome: "presentation", gen: "gen-1", req, rev: "12", obs: "12",
                     coveredInstance: "effect-1", coveredInvalid: "0",
-                    scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
-                    workspaces: [{ id: "ws", out: "out", bind: "ws", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" }],
+                    scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
+                    workspaces: [{ id: "ws", out: "out", bind: "ws", scope: { kind: "workspace", out: "out", ws: "ws" }, order: 0, mode: "tiled", exist: true, hold: "" }],
                     outputs: [{ out: "out", view: "ws", mode: "tiled", hold: "" }],
                     windows: [{
                         win: "win-a", out: "out", ws: "ws",
@@ -453,10 +477,14 @@ describe("world command result entry", () => {
                         frame_auth: "controlled", frame_hold: "",
                         member_auth: "controlled", member_hold: "",
                         floating: false, float_origin: "",
+                        cmdSeq: null,
+                        visibility: null, visibility_auth: "controlled", visibility_hold: "",
+                        state: [],
                     }],
                     presentation: {
                         foreground: "win-a",
-                        border: { visible: true, reason: "", inner: [10, 10, 300, 300], outer: [8, 8, 304, 304] },
+                        rev: "12",
+                        border: { visible: true, reason: "", subject: null, outsets: [8, 8, 304, 304], width: null, radius: null, witness: null },
                         underlay: {
                             status: "found", reason: "", baseRev: "11",
                             homeOut: "out", homeWs: "ws", group: "grp-win-a-r0", leaf: "leaf-win-a", win: "win-a",
@@ -485,7 +513,7 @@ describe("world command result entry", () => {
         assert.equal(payload["gen"], "gen-1");
         assert.equal(payload["rev"], "12");
         assert.equal(payload["foreground"], "win-a");
-        assert.deepEqual(payload["border"], { visible: 1, inner: [10, 10, 300, 300], outer: [8, 8, 304, 304] });
+        assert.deepEqual(payload["border"], { visible: 0, inner: null, outer: null });
         assert.deepEqual(payload["underlay"], {
             status: "found", win: "win-a", outer: [0, 0, 800, 600], members: ["win-b", "win-a"],
         });
@@ -497,13 +525,12 @@ describe("world command result entry", () => {
         // fences it too.
         assert.equal(payload["coveredInstance"], "effect-1");
         assert.equal(payload["coveredInvalid"], "0");
-        // The staged take-lane active-group result never paints beside the
+        // The staged take-lane preview result never paints beside the
         // subscriber: no legacy forwarding methods survive.
         assert.ok(!h.renders.some((r) => r.method === "SetGroupHighlight"), "no legacy group forwarding");
         assert.ok(!h.renders.some((r) => r.method === "ClearGroupHighlight"), "no legacy group clear");
         assert.ok(!h.renders.some((r) => r.method === "SetDragTargetPreview"), "no legacy drag overlay");
         h.handle?.stop();
-        delete (globalThis as Record<string, unknown>)["__pendingReply"];
     });
 
     it("migrates every member and follows the views without repeats", () => {
@@ -514,17 +541,30 @@ describe("world command result entry", () => {
         const currents = new Map([["out-a", "wa1"], ["out-b", "wb1"]]);
         const h = setup([makeWindow("win-a", outA, wa1), makeWindow("win-b", outB, wb1)], currents);
         discover(h);
-        stageFixture("reply-migrate.json");
-        // Stage the creation-flow binding proof for the migrated unit
-        // (ws-1 to native wa1 on out-b): the live broker leaves it unbound
-        // until the adapter proves the desktop.
-        for (const ws of ((globalThis as Record<string, unknown>)["__pendingReply"] as Record<string, unknown>)["workspaces"] as Array<Record<string, unknown>>) {
-            if (ws["id"] === "ws-1" && ws["out"] === "out-b") {
-                ws["bind"] = "wa1";
-            }
-        }
         stageTake("migrate");
-        h.replyNext();
+        h.replyNext((accept) => {
+            // Stage the creation-flow binding proof for the migrated unit
+            // (ws-1 to native wa1 on out-b): the live broker leaves it unbound
+            // until the adapter proves the desktop.
+            accept["workspaces"] = [
+                { id: "ws-1", out: "out-b", bind: "wa1", scope: { kind: "workspace", out: "out-b", ws: "ws-1" }, order: 0, mode: "tiled", exist: true, hold: "" },
+            ];
+            accept["outputs"] = [
+                { out: "out-a", view: "wa1", mode: "tiled", hold: "" },
+                { out: "out-b", view: "wa1", mode: "tiled", hold: "" },
+            ];
+            accept["windows"] = [
+                { ...tiledRow("win-a"), out: "out-b", ws: "ws-1", alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592] },
+                { ...tiledRow("win-b"), out: "out-b", ws: "wb1", alloc: [404, 4, 392, 592], frame: [404, 4, 392, 592] },
+            ];
+            accept["scopes"] = [
+                { scope: { kind: "workspace", out: "out-b", ws: "ws-1" }, auth: "controlled", reason: "" },
+                { scope: { kind: "workspace", out: "out-b", ws: "wb1" }, auth: "controlled", reason: "" },
+            ];
+            accept["transfers"] = [
+                { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "ws-1", follow: false, held: false, cmdSeq: null },
+            ];
+        });
         assert.ok(h.sentToOutput.some((c) => c === "win-a->out-b"), "member arrives natively");
         assert.equal(currents.get("out-b"), "wa1", "target view follows");
         const sends = h.sentToOutput.length;
@@ -533,28 +573,51 @@ describe("world command result entry", () => {
         const last = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
         if (last !== undefined) {
             const repBody = JSON.parse((last as { payload: string }).payload) as Record<string, unknown>;
-            const pending = loadFixture("reply-migrate.json");
             takeRev.n += 1;
-            pending["req"] = repBody["source"];
-            pending["obs"] = String(takeRev.n);
-            pending["rev"] = String(takeRev.n);
-            pending["adapter"] = "broker-1";
-            pending["source"] = repBody["source"];
-            pending["nativeInvalid"] = repBody["nativeInvalid"];
-            pending["result"] = null;
+            const second: Record<string, unknown> = {
+                v: 4, adapter: "test-adapter", gen: "gen-1",
+                req: repBody["source"], obs: String(takeRev.n), rev: String(takeRev.n),
+                ready: true, consumed: false,
+                source: repBody["source"], nativeInvalid: repBody["nativeInvalid"], clock: "1",
+                gestureSettled: null, gestureAssoc: null,
+                operationSettled: [], nativeCreations: [],
+                warpCursor: null,
+                intentWrites: [], switchSettled: [], diagnostics: [],
+                presentation: DISABLED_PRESENTATION,
+                scopes: [
+                    { scope: { kind: "workspace", out: "out-b", ws: "ws-1" }, auth: "controlled", reason: "" },
+                    { scope: { kind: "workspace", out: "out-b", ws: "wb1" }, auth: "controlled", reason: "" },
+                ],
+                workspaces: [
+                    { id: "ws-1", out: "out-b", bind: "wa1", scope: { kind: "workspace", out: "out-b", ws: "ws-1" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                ],
+                outputs: [
+                    { out: "out-a", view: "wa1", mode: "tiled", hold: "" },
+                    { out: "out-b", view: "wa1", mode: "tiled", hold: "" },
+                ],
+                windows: [
+                    { ...tiledRow("win-a"), out: "out-b", ws: "ws-1", alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592] },
+                    { ...tiledRow("win-b"), out: "out-b", ws: "wb1", alloc: [404, 4, 392, 592], frame: [404, 4, 392, 592] },
+                ],
+                transfers: [
+                    { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "ws-1", follow: false, held: false, cmdSeq: null },
+                ], effects: [], result: null,
+            };
+            const secondText = JSON.stringify(second);
+            const secondParsed = parseWorldReply(secondText);
+            assert.ok(secondParsed !== null && isCoreWorldReply(secondParsed), "authored accept binds strict v4");
             (globalThis as Record<string, unknown>)["__takeResult"] = {
                 op: "migrate-workspace", direction: "right",
                 sourceOut: "out-a", sourceWs: "ws-1", targetOut: "out-b", targetWs: "ws-1",
                 members: ["win-a"], floats: 0,
             };
-            (last as { callback: (reply: unknown) => void }).callback(JSON.stringify(pending));
+            (last as { callback: (reply: unknown) => void }).callback(secondText);
             // Re-stage: the repeat dispatch drains observation-only. Take a
             // pending collection path instead of reusing the result.
             delete (globalThis as Record<string, unknown>)["__takeResult"];
         }
         assert.equal(h.sentToOutput.length, sends, "no repeated ambiguous moves");
         h.handle?.stop();
-        delete (globalThis as Record<string, unknown>)["__pendingReply"];
     });
 
     it("hides on a malformed presentation read instead of painting stale shapes", () => {
@@ -562,7 +625,6 @@ describe("world command result entry", () => {
         const ws = { id: "ws" };
         const h = setup([makeWindow("win-a", out, ws), makeWindow("win-b", out, ws)], new Map([["out", "ws"]]));
         discover(h);
-        stageFixture("reply-group.json");
         h.replyNext();
         // Malformed reads hide display-only (evidence preserved) instead
         // of painting anything stale.
@@ -573,7 +635,6 @@ describe("world command result entry", () => {
         assert.ok(hides.length >= 1, "malformed read hides the renderer display-only");
         assert.ok(!h.renders.some((r) => r.method === "SetPresentation" || r.method === "SetGroupHighlight"));
         h.handle?.stop();
-        delete (globalThis as Record<string, unknown>)["__pendingReply"];
     });
 
     it("persists the tile override on unfloat and keeps it settled", () => {
@@ -582,10 +643,24 @@ describe("world command result entry", () => {
         const wins = [makeWindow("win-a", out, ws), makeWindow("win-b", out, ws)];
         const h = setup(wins, new Map([["out", "ws"]]), true);
         discover(h);
-        // Float first: the accepted untouched row converges membership.
-        stageFixture("reply-float.json");
+        // Float first: the accepted controlled placement writes the live
+        // frame; the accepted explicit core intentWrite converges the
+        // opaque float membership (genuine core-minted schema-1 bytes,
+        // see world-entry.test.ts FLOAT_DATA/TILE_DATA).
         stageTake("float");
-        h.replyNext();
+        h.replyNext((accept) => {
+            accept["windows"] = [
+                { ...tiledRow("win-a"), alloc: [162, 122, 475, 355], frame: [162, 122, 475, 355] },
+                tiledRow("win-b"),
+            ];
+            accept["intentWrites"] = [{ win: "win-a", data: "{\"v\":1,\"float\":true,\"stickyPrior\":null}" }];
+        });
+        const floatWrites = h.calls.filter((c) => c.method === "WriteFloatIntent");
+        assert.ok(floatWrites.length >= 1, "float decision persists");
+        const floatBody = JSON.parse(
+            (floatWrites[floatWrites.length - 1] as { payload: string }).payload,
+        ) as Record<string, unknown>;
+        assert.deepEqual(floatBody["records"], [{ win: "win-a", data: "{\"v\":1,\"float\":true,\"stickyPrior\":null}" }]);
         // Unfloat through the production shortcut: the command carries the
         // live frame, and the accepted result (no placement rect) records
         // the explicit tile override.
@@ -598,41 +673,43 @@ describe("world command result entry", () => {
         const capture = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
         assert.ok(capture !== undefined);
         const envelope = JSON.parse((capture as { payload: string }).payload) as Record<string, unknown>;
-        const unfloat = loadFixture("reply-float.json");
         takeRev.n += 1;
-        unfloat["req"] = envelope["source"];
-        unfloat["obs"] = String(takeRev.n);
-        unfloat["rev"] = String(takeRev.n);
-        unfloat["source"] = envelope["source"];
-        unfloat["nativeInvalid"] = envelope["nativeInvalid"];
-        unfloat["adapter"] = "broker-1";
+        // A real unfloat reply re-admits the window tiled: the float
+        // exception is gone, so membership leaves the float set while
+        // the tile override records. The successful terminal omits
+        // noSpace (never false).
+        const unfloat: Record<string, unknown> = {
+            v: 4, adapter: "test-adapter", gen: "gen-1",
+            req: envelope["source"], obs: String(takeRev.n), rev: String(takeRev.n),
+            ready: true, consumed: false,
+            source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "1",
+            gestureSettled: null, gestureAssoc: null,
+            operationSettled: [], nativeCreations: [],
+            warpCursor: null,
+            intentWrites: [{ win: "win-a", data: "{\"v\":1,\"float\":false,\"stickyPrior\":null}" }],
+            switchSettled: [], diagnostics: [],
+            presentation: DISABLED_PRESENTATION,
+            scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
+            workspaces: [], outputs: [{ out: "out", view: "ws", mode: "tiled", hold: "" }],
+            // Re-admitted tile respects the outer gap.
+            windows: [
+                { ...tiledRow("win-a"), alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592] },
+                tiledRow("win-b"),
+            ],
+            transfers: [], effects: [], result: null,
+        };
+        const unfloatText = JSON.stringify(unfloat);
+        const unfloatParsed = parseWorldReply(unfloatText);
+        assert.ok(unfloatParsed !== null && isCoreWorldReply(unfloatParsed), "authored accept binds strict v4");
         (globalThis as Record<string, unknown>)["__takeResult"] = { op: "toggle-float", win: "win-a", rect: null };
-        // A real unfloat reply re-admits the window tiled: the untouched
-        // exception row is gone, so membership leaves the float set while
-        // the tile override records.
-        // Re-admitted tile respects the outer gap (outer 4 fixture).
-        unfloat["windows"] = [
-            {
-                win: "win-a", out: "out", ws: "ws",
-                alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592],
-                frame_auth: "controlled", frame_hold: "",
-                member_auth: "controlled", member_hold: "",
-                frame_op: "",
-                clear_op: "",
-                floating: false, float_origin: "",
-            },
-            ...((unfloat["windows"] as Array<Record<string, unknown>>).filter((w) => w["win"] !== "win-a")),
-        ];
-        (capture as unknown as { callback: (reply: unknown) => void }).callback(JSON.stringify(unfloat));
+        (capture as unknown as { callback: (reply: unknown) => void }).callback(unfloatText);
 
         const intentCalls = h.calls.filter((c) => c.method === "WriteFloatIntent");
-        assert.ok(intentCalls.length >= 1, "settled change persists");
+        assert.ok(intentCalls.length >= 2, "settled changes persist");
         const lastIntent = JSON.parse(
             (intentCalls[intentCalls.length - 1] as { payload: string }).payload,
         ) as Record<string, unknown>;
-        assert.deepEqual(lastIntent["tile"], ["win-a"], "explicit tile override persists");
-        assert.ok(!(lastIntent["members"] as string[]).includes("win-a"), "unfloated leaves float membership");
+        assert.deepEqual(lastIntent["records"], [{ win: "win-a", data: "{\"v\":1,\"float\":false,\"stickyPrior\":null}" }], "explicit tile override persists");
         h.handle?.stop();
-        delete (globalThis as Record<string, unknown>)["__pendingReply"];
     });
 });

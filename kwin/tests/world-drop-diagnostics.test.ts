@@ -12,9 +12,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 const GEN = "gen-1";
-const BROKER = "broker-1";
 const EFFECT = "effect-1";
 
 interface Call { method: string; payload: string; callback: (reply: unknown) => void }
@@ -61,16 +62,20 @@ function windowRow(over: Record<string, unknown> = {}): Record<string, unknown> 
         frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
         frame_op: "", clear_op: "",
-        floating: false, float_origin: "", ...over,
+        floating: false, float_origin: "",
+        cmdSeq: null,
+        visibility: null, visibility_auth: "untouched", visibility_hold: "",
+        state: [],
+        ...over,
     };
 }
 
 function projection(req: string, preview: Record<string, unknown> | null, rev = "9", obs = "9"): string {
     return JSON.stringify({
-        v: 3, outcome: "presentation", gen: GEN, req, rev, obs,
+        v: 4, outcome: "presentation", gen: GEN, req, rev, obs,
         coveredInstance: EFFECT, coveredInvalid: "0",
-        scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
-        workspaces: [{ id: "ws1", out: "out-1", bind: "ws1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" }],
+        scopes: [{ scope: { kind: "output", out: "out-1" }, auth: "controlled", reason: "" }],
+        workspaces: [{ id: "ws1", out: "out-1", bind: "ws1", scope: { kind: "output", out: "out-1" }, order: 0, mode: "tiled", exist: true, hold: "" }],
         outputs: [{ out: "out-1", view: "ws1", mode: "tiled", hold: "" }],
         windows: [{
             win: "win-a", out: "out-1", ws: "ws1",
@@ -78,10 +83,14 @@ function projection(req: string, preview: Record<string, unknown> | null, rev = 
             frame_auth: "controlled", frame_hold: "",
             member_auth: "controlled", member_hold: "",
             floating: false, float_origin: "",
+            cmdSeq: null,
+            visibility: null, visibility_auth: "controlled", visibility_hold: "",
+            state: [],
         }],
         presentation: {
             foreground: "win-a",
-            border: { visible: true, reason: "", inner: [10, 10, 300, 300], outer: [8, 8, 304, 304] },
+            rev,
+            border: { visible: true, reason: "", subject: null, outsets: [8, 8, 304, 304], width: null, radius: null, witness: null },
             underlay: { status: "hidden", reason: "disabled", baseRev: null },
             pager: [],
         },
@@ -162,14 +171,18 @@ function setup(): Harness {
         callDbus: (_s, _p, _i, method, payload, callback) => {
             calls.push({ method, payload, callback });
             if (method === "DiscoverWorld") {
-                const body = JSON.parse(payload) as { req: string };
-                callback(JSON.stringify({
-                    v: 3, adapter: BROKER, gen: GEN, req: body.req, obs: "0", rev: "0",
-                    ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-                    windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
-                    operationSettled: [], nativeCreations: [], warpCursor: null,
-                    presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-                }));
+                const body = JSON.parse(payload) as Record<string, unknown>;
+                if (body["type"] === "handshake") {
+                    callback(JSON.stringify({
+                        type: "handshake-reply", v: 4, adapter: "test-adapter", req: body["req"],
+                        ready: false, kind: "", gen: GEN,
+                    }));
+                } else if (body["type"] === "settings") {
+                    callback(JSON.stringify({
+                        type: "settings-reply", v: 4, adapter: "test-adapter", gen: GEN,
+                        req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+                    }));
+                }
             }
         },
         effectCallDbus: (_s, _p, _i, method, payload, callback) => {
@@ -235,15 +248,20 @@ function setup(): Harness {
                 assoc = { instance: raw["instance"] as string, serial: raw["serial"] as string, coreId: id };
             }
             const settled = make(report, assoc);
-            call.callback(JSON.stringify({
-                v: 3, adapter: BROKER, gen: GEN, req: body.source, obs: String(rev), rev: String(rev),
+            // Synthetic strict-v4 receipt; obs/rev are independent of nativeInvalid.
+            const text = JSON.stringify({
+                v: 4, adapter: "test-adapter", gen: GEN, req: body.source, obs: String(rev), rev: String(rev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                 windows: describeWindows, transfers: [], effects: [], result: null,
                 gestureSettled: settled.settled, gestureAssoc: assoc,
                 operationSettled: [], nativeCreations: [], warpCursor: null,
+                intentWrites: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
-                presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            }));
+                presentation: DISABLED_PRESENTATION,
+            });
+            const parsed = parseWorldReply(text);
+            assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+            call.callback(text);
         }
     };
     h.answerReads = (make): void => {

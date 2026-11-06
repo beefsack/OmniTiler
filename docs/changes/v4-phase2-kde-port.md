@@ -560,3 +560,11 @@
   marker. All 35 tests and strict TypeScript pass, retaining stacking ownership,
   fullscreen safety, explicit unfloat release, restart, refusal and no-replay
   assertions. These are offline mechanical cases, not new native acceptance.
+- Binding retention, braced-close inventory, command results, cursor sampling
+  and terminal-drop diagnostics now use strict v4 synthetic receipts. All 15
+  tests and strict TypeScript pass. Migration actuation retains explicit transfer
+  authority, member/view readback and no-replay; unfloat persists exact opaque
+  float/tile records rather than retired membership keys. Subscriber coverage,
+  underlay and preview assertions remain, with the intentionally hidden K1 border.
+  Cursor tests retain no polling, no warp writes and refusal logging while checking
+  that the retired report capability lane is absent. No fixture bytes changed.
