@@ -1,29 +1,27 @@
-//! Test-only genuine internal-v4 stress twin (unit 6 sub-increment 7f-5).
+//! Active genuine internal-v4 stress runtime.
 //!
 //! Runs the authored duo/trio cases over all three simulated-host schedules
-//! through the real internal v4 boundary
-//! ([`WorldEngine::handle_report_v4_for_test`]), with no legacy
-//! [`WorldReport`](tiler_core::world_report::WorldReport) conversion, no
-//! logical [`ViewAttempt`](tiler_core::world_report::ViewAttempt)
+//! through the real public v4 boundary
+//! ([`WorldEngine::handle_report`], matched on [`WorldOutcome`]), with no
+//! legacy [`WorldReport`](tiler_core::world_report::WorldReport) conversion,
+//! no logical [`ViewAttempt`](tiler_core::world_report::ViewAttempt)
 //! fabrication (that lane is native-only and refused without the host-owned
-//! capability), and no changes to the legacy public stress path, fixture
-//! files, schedules, report counts, or oracles. Selector-attempt ingress is absent
+//! capability), and no generic report engine. Selector-attempt ingress is absent
 //! from every v4 report: native-free selection completes through the frozen
 //! binding plus the blocked-`LastWrite` verdict lane, and the driver-side
 //! predicted alias only steers simulation bookkeeping, never wire ingress.
 //! The v4 oracle reads genuine [`WorldReplyV4`](tiler_core::world_report::WorldReplyV4)
 //! rows directly, never a converted legacy reply.
 
-use super::{
+use crate::world_stress::{
     Pending, PendingMember, RawAction, StressCase, StressSchedule, StressStats, bind_engine,
-    build_command, case_mode, coverage_ok, fail, load_stress_case, member_proof, rect_of, rect4,
-    resolve,
+    build_command, case_mode, coverage_ok, fail, member_proof, rect_of, rect4, resolve,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::workspace_scope::WorkspaceMode;
-use tiler_core::world_engine::WorldEngine;
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     AuthorityScope, LastWrite, LastWritePath, LastWriteProperty, OutputIdentity,
     PresentationIngressV4, PresentationRowV4, ScopeAuthority, ScreenReport,
@@ -256,9 +254,18 @@ fn bootstrap_binding_v4(
         pairs: Vec::new(),
     };
     let first = build_report_v4(case, mode, &sim, None, None, vec![])?;
-    let reply = probe
-        .handle_report_v4_for_test(&first)
-        .map_err(|(kind, message)| format!("bootstrap probe: refused {kind} {message}"))?;
+    let reply = match probe.handle_report(&first) {
+        WorldOutcome::Accepted(reply) => reply,
+        WorldOutcome::Duplicate(_) => {
+            return Err("bootstrap probe: expected accepted, got duplicate".to_owned());
+        }
+        WorldOutcome::CommandConsumed(_) => {
+            return Err("bootstrap probe: expected accepted, got command-consumed".to_owned());
+        }
+        WorldOutcome::Rejected { kind, message } => {
+            return Err(format!("bootstrap probe: refused {kind} {message}"));
+        }
+    };
     let home = reply
         .outputs
         .iter()
@@ -691,12 +698,11 @@ fn submit_v4(
     sim.obs += 1;
     let observation_only = command.is_none();
     let report = build_report_v4(case, mode, sim, command, command_seq, closed)?;
-    // The test bridge erases Accepted/Duplicate/CommandConsumed into one
-    // `Ok` carrying the typed reply; refusals keep their kind/message.
-    // Every in-flow submit is fresh, so `Ok` must pair a fresh acceptance:
-    // a stale revision below fails instead of masking a consumed command.
-    match engine.handle_report_v4_for_test(&report) {
-        Ok(reply) => {
+    // Every in-flow submit is fresh, so only `Accepted` counts: duplicates
+    // and consumed commands fail loudly (no relabel), refusals keep their
+    // kind/message.
+    match engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => {
             let revision = sim.pairs.len() as u64 + 1;
             check_pairing_v4(case, &report, &reply, at, revision)?;
             note_effects_v4(sim, &reply, at)?;
@@ -718,7 +724,11 @@ fn submit_v4(
             }
             Ok(())
         }
-        Err((kind, message)) => Err(format!("{at}: rejected {kind} {message}")),
+        WorldOutcome::Duplicate(_) => Err(fail(at, "duplicate reply is not fresh acceptance")),
+        WorldOutcome::CommandConsumed(_) => {
+            Err(fail(at, "consumed command never re-executes here"))
+        }
+        WorldOutcome::Rejected { kind, message } => Err(format!("{at}: rejected {kind} {message}")),
     }
 }
 
@@ -1008,7 +1018,9 @@ fn submit_receipt_v4(
     Ok(())
 }
 
-fn run_stress_v4(
+/// Active v4 stress entry: runs one case over one schedule through the
+/// public v4 boundary. Report counts and oracles are locked by tests.
+pub fn run_stress_v4(
     case: &StressCase,
     schedule: StressSchedule,
 ) -> Result<(Vec<String>, StressStats), String> {
@@ -1308,8 +1320,8 @@ fn probe_completions_v4(
     let (last_report, last_reply) = sim.pairs.last().expect("final").clone();
     // Exact redelivery is a duplicate: the cached reply returns with no new
     // revision, never a fresh acceptance.
-    match engine.handle_report_v4_for_test(&last_report) {
-        Ok(cached) => {
+    match engine.handle_report(&last_report) {
+        WorldOutcome::Duplicate(cached) => {
             if cached != last_reply {
                 return Err("probe duplicate: cached reply moved".to_owned());
             }
@@ -1317,7 +1329,15 @@ fn probe_completions_v4(
                 return Err("probe duplicate: cached revision moved".to_owned());
             }
         }
-        Err((kind, message)) => {
+        WorldOutcome::Accepted(_) => {
+            return Err("probe duplicate: expected cached duplicate, accepted".to_owned());
+        }
+        WorldOutcome::CommandConsumed(_) => {
+            return Err(
+                "probe duplicate: expected cached duplicate, got command-consumed".to_owned(),
+            );
+        }
+        WorldOutcome::Rejected { kind, message } => {
             return Err(format!(
                 "probe duplicate: expected cached duplicate, got {kind} {message}"
             ));
@@ -1329,14 +1349,19 @@ fn probe_completions_v4(
         stale.request_seq = sim.req + 1;
         stale.request_id = format!("req-{}", sim.req + 1);
         stale.observation_seq = sim.obs.saturating_sub(1).max(1);
-        match engine.handle_report_v4_for_test(&stale) {
-            Err(("observation-stale", _)) => {}
-            Err((kind, message)) => {
+        match engine.handle_report(&stale) {
+            WorldOutcome::Rejected {
+                kind: "observation-stale",
+                ..
+            } => {}
+            WorldOutcome::Rejected { kind, message } => {
                 return Err(format!(
                     "probe stale-obs: expected observation-stale, got {kind} {message}"
                 ));
             }
-            Ok(_) => {
+            WorldOutcome::Accepted(_)
+            | WorldOutcome::Duplicate(_)
+            | WorldOutcome::CommandConsumed(_) => {
                 return Err("probe stale-obs: expected observation-stale, accepted".to_owned());
             }
         }
@@ -1345,14 +1370,19 @@ fn probe_completions_v4(
     {
         let mut reused = last_report.clone();
         reused.focused_global = "nobody".to_owned();
-        match engine.handle_report_v4_for_test(&reused) {
-            Err(("request-reused", _)) => {}
-            Err((kind, message)) => {
+        match engine.handle_report(&reused) {
+            WorldOutcome::Rejected {
+                kind: "request-reused",
+                ..
+            } => {}
+            WorldOutcome::Rejected { kind, message } => {
                 return Err(format!(
                     "probe reused-req: expected request-reused, got {kind} {message}"
                 ));
             }
-            Ok(_) => {
+            WorldOutcome::Accepted(_)
+            | WorldOutcome::Duplicate(_)
+            | WorldOutcome::CommandConsumed(_) => {
                 return Err("probe reused-req: expected request-reused, accepted".to_owned());
             }
         }
@@ -1360,8 +1390,7 @@ fn probe_completions_v4(
     // An already-consumed command sequence never re-executes: the
     // observation reconciles into a fresh reply exactly one revision
     // later, with the genuine `command_consumed` bit set and the command
-    // never dispatched. The bridge erases the intent outcome into `Ok`,
-    // so the probe asserts the erased shape on genuine reply rows.
+    // never dispatched.
     {
         let first_seq = case
             .actions
@@ -1404,8 +1433,8 @@ fn probe_completions_v4(
             Some(first_seq),
             vec![],
         )?;
-        match engine.handle_report_v4_for_test(&report) {
-            Ok(reply) => {
+        match engine.handle_report(&report) {
+            WorldOutcome::CommandConsumed(reply) => {
                 if !reply.command_consumed {
                     return Err(
                         "probe consumed-cmd: expected command_consumed set, re-executed".to_owned(),
@@ -1419,7 +1448,15 @@ fn probe_completions_v4(
                     ));
                 }
             }
-            Err((kind, message)) => {
+            WorldOutcome::Accepted(_) => {
+                return Err("probe consumed-cmd: expected command-consumed, re-executed".to_owned());
+            }
+            WorldOutcome::Duplicate(_) => {
+                return Err(
+                    "probe consumed-cmd: expected command-consumed, got duplicate".to_owned(),
+                );
+            }
+            WorldOutcome::Rejected { kind, message } => {
                 return Err(format!(
                     "probe consumed-cmd: expected consumed without re-execution, got {kind} {message}"
                 ));
@@ -1432,6 +1469,7 @@ fn probe_completions_v4(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world_stress::load_stress_case;
 
     fn duo_path() -> String {
         format!(

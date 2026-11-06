@@ -1626,7 +1626,7 @@ impl WorldEngine {
 mod prior_empty_scope_tests {
     use super::*;
     use crate::world_directional::tests::{accepted, fact, report, report_full, screen};
-    use crate::world_engine::{KIND_REUSED, WorldOutcome};
+    use crate::world_engine::{KIND_REUSED, LegacyWorldOutcome};
     use crate::world_report::{AuthorityScope, ScopeAuthority, WorldCommand};
 
     #[test]
@@ -1705,8 +1705,8 @@ mod prior_empty_scope_tests {
             None,
             None,
         );
-        match engine.handle_report(&reused) {
-            WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
+        match engine.handle_report_legacy(&reused) {
+            LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
             other => panic!("expected reused refusal, got {other:?}"),
         }
         assert!(engine.prior_empty_controlled(&key));
@@ -1732,8 +1732,8 @@ mod prior_empty_scope_tests {
             Some(1),
             Some(refused_focus),
         );
-        match engine.handle_report(&first) {
-            WorldOutcome::Accepted(reply) => match reply.command_result {
+        match engine.handle_report_legacy(&first) {
+            LegacyWorldOutcome::Accepted(reply) => match reply.command_result {
                 Some(crate::world_report::CommandResult::Rejected { kind, .. }) => {
                     assert_eq!(kind, crate::world_report::CommandRejectKind::FocusUnknown)
                 }
@@ -1754,8 +1754,8 @@ mod prior_empty_scope_tests {
                 direction: "left".to_owned(),
             }),
         );
-        match engine.handle_report(&redelivery) {
-            WorldOutcome::CommandConsumed(reply) => {
+        match engine.handle_report_legacy(&redelivery) {
+            LegacyWorldOutcome::CommandConsumed(reply) => {
                 let known_empty = reply
                     .workspaces
                     .iter()

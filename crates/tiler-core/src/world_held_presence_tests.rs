@@ -7,7 +7,7 @@ use crate::connection::FactName;
 use crate::directional::{OutputId, WindowId};
 use crate::size_hints::WindowSizeHints;
 use crate::world_directional::tests::{accepted, fact, report_full, screen};
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
     HeldWindowRow, RowDiagnosticKind, ScopeAuthority, WorldCommand, WorldReport,
 };
@@ -325,8 +325,8 @@ fn held_plus_closed_same_id_refuses() {
     let mut report = two_output_report(1, vec![held_fact, fact("win-b", "out-b", 800)]);
     report.closed = vec![WindowId("win-a".to_owned())];
     assert!(matches!(
-        engine.handle_report(&report),
-        WorldOutcome::Rejected { .. }
+        engine.handle_report_legacy(&report),
+        LegacyWorldOutcome::Rejected { .. }
     ));
 }
 
@@ -893,8 +893,8 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.command = Some(WorldCommand::MigrateDirectional {
         direction: "right".to_owned(),
     });
-    match eng.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match eng.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(crate::world_report::CommandResult::Rejected {
                 kind: crate::world_report::CommandRejectKind::MigrationRefused
@@ -928,8 +928,8 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.command = Some(WorldCommand::MigrateDirectional {
         direction: "right".to_owned(),
     });
-    match sticky_engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => match &reply.command_result {
+    match sticky_engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => match &reply.command_result {
             Some(crate::world_report::CommandResult::Migration { members, .. }) => {
                 assert!(members.is_empty(), "sticky stays: {members:?}");
             }
@@ -950,8 +950,8 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.command = Some(WorldCommand::MigrateDirectional {
         direction: "right".to_owned(),
     });
-    match proven_engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => {
+    match proven_engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => {
             assert!(reply.transfers.iter().any(|transfer| matches!(
                 transfer.kind,
                 crate::world_report::TransferKind::Migration

@@ -121,12 +121,21 @@ fn check_keys(value: &Value, keys: &[&str], what: &str) {
     assert_eq!(got, want, "exact v3 keys for {what}");
 }
 
-/// Discover once; returns the serving generation and broker incarnation.
-/// Verifies the bootstrap binds the broker identity (never the producer
-/// lifetime) with `ready=false` and no capture transport bindings.
+/// Discover once via the v4 connection route; returns the serving
+/// generation and the bound producer lifetime.
 fn discover(service: &WorldService, request_id: &str) -> (String, String) {
-    let bootstrap: Value = serde_json::from_str(&service.discovery_body(LIFETIME, request_id))
-        .expect("bootstrap parses");
+    let handshake = format!(
+        "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{LIFETIME}\",\"req\":\"{request_id}\",\
+          \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+          \"processId\":\"pid-own-1\"}},\
+          \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"birthClear\":false,\
+          \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+          \"maximize\":false,\"fullscreen\":false,\"nativeSticky\":false,\"above\":false,\
+          \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+    );
+    let bootstrap: Value =
+        serde_json::from_str(&service.discover(&handshake).expect("handshake routes"))
+            .expect("bootstrap parses");
     assert_eq!(bootstrap["ready"], false);
     assert_eq!(bootstrap["req"], request_id);
     let generation = bootstrap["gen"].as_str().expect("gen").to_owned();

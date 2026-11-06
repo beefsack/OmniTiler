@@ -10,8 +10,8 @@
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldOutcome};
-use crate::world_report::{WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_report::{WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport};
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -133,7 +133,7 @@ fn command_report(
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -173,8 +173,8 @@ fn command_report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -747,7 +747,7 @@ fn focus_follows_stale_hit_refuses() {
     // A hit naming no reported window (stale or recycled id) refuses the
     // report instead of focusing blindly.
     let mut engine = rig();
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         2,
         2,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
@@ -759,7 +759,7 @@ fn focus_follows_stale_hit_refuses() {
         true,
         false,
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("expected rejection, got {other:?}"),
     }
 }
@@ -769,7 +769,7 @@ fn focus_follows_hit_without_cursor_refuses() {
     // A hit without the cursor position it was resolved from refuses:
     // the two always travel together.
     let mut engine = rig();
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         2,
         2,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
@@ -781,7 +781,7 @@ fn focus_follows_hit_without_cursor_refuses() {
         true,
         false,
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("expected rejection, got {other:?}"),
     }
 }

@@ -7,7 +7,7 @@
 use crate::connection::HostCapabilities;
 use crate::directional::WindowId;
 use crate::world_directional::tests::{accepted, fact, report_full, screen};
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, CommandResult, FrameSetter, ScopeAuthority, StateAttempt,
     StateProperty, WorldCommand, WorldReport,
@@ -397,8 +397,8 @@ fn unknown_maximized_home_unreadable_refuses_without_mutation() {
     let mut row = max_fact("win-a", None, false, false);
     row.maximized = None;
     let revision = engine.state_revision;
-    match engine.handle_report(&cmd(2, 1, vec![row], toggle("win-a"))) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&cmd(2, 1, vec![row], toggle("win-a"))) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -445,13 +445,13 @@ fn dual_pair_cap_refusal_mints_neither_leg() {
         "exact bound before dual attempt"
     );
     let revision = engine.state_revision;
-    match engine.handle_report(&cmd(
+    match engine.handle_report_legacy(&cmd(
         3,
         2,
         vec![max_fact("win-a", Some(true), true, false)],
         toggle("win-a"),
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -529,9 +529,9 @@ fn both_true_at_cap_refuses_without_mutation() {
     let mut control_obs = refused_obs.clone();
     control_obs.command = None;
     control_obs.command_seq = None;
-    let _ = control.handle_report(&control_obs);
-    match engine.handle_report(&refused_obs) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    let _ = control.handle_report_legacy(&control_obs);
+    match engine.handle_report_legacy(&refused_obs) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -575,13 +575,13 @@ fn dual_pair_one_vacant_slot_refuses_with_no_partial_pair() {
         "one vacant slot before dual attempt"
     );
     let revision = engine.state_revision;
-    match engine.handle_report(&cmd(
+    match engine.handle_report_legacy(&cmd(
         3,
         2,
         vec![max_fact("win-a", Some(true), true, false)],
         toggle("win-a"),
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused

@@ -20,7 +20,7 @@ use tiler_core::world_report::{BorderHideReasonV4, BorderPresentationV4, FrameWi
 use tiler_core::world_sizing::anchored_border_estimate;
 use tiler_protocol::world_protocol::{
     WORLD_MAX_REQUEST_BYTES, decode_border_presentation_v4, decode_border_presentation_v4_str,
-    decode_request, encode_border_presentation_v4,
+    decode_request_legacy, encode_border_presentation_v4,
 };
 
 fn fixture_root() -> std::path::PathBuf {
@@ -923,7 +923,7 @@ fn v4_existing_v3_gates_are_unchanged() {
          \"pagerOrder\":[],\"pagerFrames\":[]},\
          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[]}"
         .to_owned();
-    let report = decode_request(&request).expect("v3 decodes");
+    let report = decode_request_legacy(&request).expect("v3 decodes");
     assert_eq!(report.contract_version, 3);
     // A full immutable v4 report fixture still refuses on the unchanged
     // whole-report route: the staged `rendererInput` key is unknown before
@@ -931,7 +931,7 @@ fn v4_existing_v3_gates_are_unchanged() {
     // decoder exists yet).
     let root = fixture_root();
     let text = read_message(&root, "messages/report-renderer-workspace.json");
-    let error = decode_request(&text).expect_err("v4 report refuses");
+    let error = decode_request_legacy(&text).expect_err("v4 report refuses");
     assert_eq!(
         error.kind, "unknown-field",
         "v4 report refuses before version gate"

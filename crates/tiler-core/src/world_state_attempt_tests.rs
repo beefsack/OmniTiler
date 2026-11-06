@@ -1031,9 +1031,9 @@ fn offroute_diagnostics_survive_command_restage() {
         rows.clone(),
     );
     commanded.request_seq = 2;
-    let reply = match engine.handle_report(&commanded) {
-        crate::world_engine::WorldOutcome::Accepted(reply) => reply,
-        crate::world_engine::WorldOutcome::CommandConsumed(reply) => reply,
+    let reply = match engine.handle_report_legacy(&commanded) {
+        crate::world_engine::LegacyWorldOutcome::Accepted(reply) => reply,
+        crate::world_engine::LegacyWorldOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     assert_eq!(
@@ -1497,8 +1497,8 @@ fn reply_bound_state_term_rejected_without_mutation() {
     assert!(without_state + state_term > WORLD_MAX_REPLY_BYTES);
     assert_eq!(crate::world_sizing::MAX_TARGET_LANES_PER_WINDOW, 626);
     let revision = engine.state_revision;
-    match engine.handle_report(&report) {
-        crate::world_engine::WorldOutcome::Rejected { kind, .. } => {
+    match engine.handle_report_legacy(&report) {
+        crate::world_engine::LegacyWorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
         }
         other => panic!("expected reply-oversize, got {other:?}"),
@@ -1514,9 +1514,9 @@ fn reply_bound_state_term_rejected_without_mutation() {
         None,
         None,
     );
-    match engine.handle_report(&retry) {
-        crate::world_engine::WorldOutcome::Accepted(_)
-        | crate::world_engine::WorldOutcome::CommandConsumed(_) => {}
+    match engine.handle_report_legacy(&retry) {
+        crate::world_engine::LegacyWorldOutcome::Accepted(_)
+        | crate::world_engine::LegacyWorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected accepted retry, got {other:?}"),
     }
 }

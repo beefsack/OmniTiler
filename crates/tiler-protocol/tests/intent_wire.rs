@@ -17,12 +17,12 @@ use tiler_core::connection::{
     ApplicationIdentity, HandshakeRequest, HostCapabilities, SettingsRequest,
 };
 use tiler_core::directional::WindowId;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
 use tiler_core::world_report::{
-    IntentRecord, IntentWrite, WORLD_CONTRACT_VERSION, WorldReport, report_digest,
+    IntentRecord, IntentWrite, WORLD_CONTRACT_VERSION_LEGACY, WorldReport, report_digest,
     validate_intent_writes_reason, validate_report_reason,
 };
-use tiler_protocol::world_protocol::{decode_request, encode_reply};
+use tiler_protocol::world_protocol::{decode_request_legacy, encode_reply_legacy};
 
 fn fixture(name: &str) -> serde_json::Value {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -140,7 +140,7 @@ fn nested_fixture_rows_decode_verbatim() {
     ] {
         let row = nested_record(name);
         let expected = row["data"].as_str().expect("record data string").to_owned();
-        let report = decode_request(&envelope(serde_json::json!([row]))).expect("decodes");
+        let report = decode_request_legacy(&envelope(serde_json::json!([row]))).expect("decodes");
         assert_eq!(report.intent_records.len(), 1, "{name}");
         assert_eq!(report.intent_records[0].win.0, "win-a", "{name}");
         assert_eq!(report.intent_records[0].data, expected, "{name}");
@@ -154,7 +154,7 @@ fn unsupported_and_malformed_inner_stay_accepted_verbatim() {
     let row = nested_record("report-intent-unsupported-inner-version");
     let expected = row["data"].as_str().expect("record data string").to_owned();
     assert_eq!(expected, "{\"v\":2,\"float\":true,\"stickyPrior\":null}");
-    let report = decode_request(&envelope(serde_json::json!([row]))).expect("decodes");
+    let report = decode_request_legacy(&envelope(serde_json::json!([row]))).expect("decodes");
     assert_eq!(report.intent_records[0].data, expected);
     // Malformed and whitespace-padded inner strings are equally opaque:
     // the outer record carries bytes, not verdicts.
@@ -164,7 +164,7 @@ fn unsupported_and_malformed_inner_stay_accepted_verbatim() {
         "  {\"v\":1,\"float\":true,\"stickyPrior\":null}  ",
         "",
     ] {
-        let report = decode_request(&envelope(
+        let report = decode_request_legacy(&envelope(
             serde_json::json!([{"win": "win-a", "data": data}]),
         ))
         .expect("malformed inner stays accepted");
@@ -181,7 +181,7 @@ fn outer_invalid_rows_refuse_with_fixed_kinds() {
         .as_object_mut()
         .expect("object")
         .remove("intentRecords");
-    let error = decode_request(&value.to_string()).expect_err("missing refuses");
+    let error = decode_request_legacy(&value.to_string()).expect_err("missing refuses");
     assert_eq!(error.kind, "malformed");
     // Wrong container or row shapes refuse before any bound check.
     for (rows, kind) in [
@@ -196,12 +196,12 @@ fn outer_invalid_rows_refuse_with_fixed_kinds() {
         (serde_json::json!([{"win": 1, "data": "x"}]), "malformed"),
         (serde_json::json!([{"win": "win-a"}]), "malformed"),
     ] {
-        let error = decode_request(&envelope(rows)).expect_err("shape refuses");
+        let error = decode_request_legacy(&envelope(rows)).expect_err("shape refuses");
         assert_eq!(error.kind, kind);
     }
     // Bad subjects refuse as unknown values, never as typed facts.
     for win in ["", "has space", "win!a"] {
-        let error = decode_request(&envelope(
+        let error = decode_request_legacy(&envelope(
             serde_json::json!([{"win": win, "data": "{\"v\":1}"}]),
         ))
         .expect_err("bad subject refuses");
@@ -216,7 +216,7 @@ fn outer_invalid_rows_refuse_with_fixed_kinds() {
         serde_json::json!(1),
         serde_json::json!(true),
     ] {
-        let error = decode_request(&envelope(
+        let error = decode_request_legacy(&envelope(
             serde_json::json!([{"win": "win-a", "data": data}]),
         ))
         .expect_err("wrong-typed data refuses");
@@ -226,8 +226,8 @@ fn outer_invalid_rows_refuse_with_fixed_kinds() {
     let overbound = nested_record("invalid-intent-overbound");
     let data = overbound["data"].as_str().expect("record data string");
     assert_eq!(data.len(), 1025);
-    let error =
-        decode_request(&envelope(serde_json::json!([overbound]))).expect_err("overbound refuses");
+    let error = decode_request_legacy(&envelope(serde_json::json!([overbound])))
+        .expect_err("overbound refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "intent-data-invalid");
 }
@@ -238,7 +238,7 @@ fn section_cap_refuses_at_10001_and_accepts_at_10000() {
         .map(|i| serde_json::json!({"win": format!("win-{i}"), "data": "{\"v\":1}"}))
         .collect();
     assert_eq!(rows.len(), 10_000);
-    let report = decode_request(&envelope(serde_json::json!(rows))).expect("cap admits");
+    let report = decode_request_legacy(&envelope(serde_json::json!(rows))).expect("cap admits");
     assert_eq!(report.intent_records.len(), 10_000);
     let too_many = (0..10_001)
         .map(|i| serde_json::json!({"win": format!("win-{i}"), "data": "{\"v\":1}"}))
@@ -246,8 +246,8 @@ fn section_cap_refuses_at_10001_and_accepts_at_10000() {
     assert_eq!(too_many.len(), 10_001);
     // Keep the byte bound out of the cap witness: tiny payloads isolate
     // the section cap from the slot bound.
-    let error =
-        decode_request(&envelope(serde_json::json!(too_many))).expect_err("over cap refuses");
+    let error = decode_request_legacy(&envelope(serde_json::json!(too_many)))
+        .expect_err("over cap refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "section-over-cap");
 }
@@ -257,7 +257,7 @@ fn typed_direct_construction_refuses_the_same_outer_bounds() {
     // Decode and typed-direct paths refuse the same outer bounds with the
     // same fixed vocabulary (the decoder's structural kinds stay
     // malformed/unknown-value/unknown-field; bound verdicts match here).
-    let mut report = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
+    let mut report = decode_request_legacy(&envelope(serde_json::json!([]))).expect("decodes");
     assert_eq!(validate_report_reason(&report), None);
     report.intent_records.push(IntentRecord {
         win: WindowId("bad id!".to_owned()),
@@ -285,7 +285,7 @@ fn outer_string_bound_is_utf8_bytes_not_chars() {
     let at_bound = "\u{e9}".repeat(512);
     assert_eq!(at_bound.len(), 1024);
     assert_eq!(at_bound.chars().count(), 512);
-    let report = decode_request(&envelope(
+    let report = decode_request_legacy(&envelope(
         serde_json::json!([{"win": "win-a", "data": at_bound}]),
     ))
     .expect("1024 bytes admit");
@@ -293,7 +293,7 @@ fn outer_string_bound_is_utf8_bytes_not_chars() {
     // One more multibyte char is 1026 bytes: refused.
     let over = format!("{at_bound}\u{e9}");
     assert_eq!(over.len(), 1026);
-    let error = decode_request(&envelope(
+    let error = decode_request_legacy(&envelope(
         serde_json::json!([{"win": "win-a", "data": over}]),
     ))
     .expect_err("multibyte overbound refuses");
@@ -303,7 +303,7 @@ fn outer_string_bound_is_utf8_bytes_not_chars() {
 
 #[test]
 fn digest_separates_every_carried_record_byte() {
-    let base = decode_request(&envelope(serde_json::json!([
+    let base = decode_request_legacy(&envelope(serde_json::json!([
         {"win": "win-a", "data": "{\"v\":1,\"float\":true,\"stickyPrior\":null}"},
         {"win": "win-b", "data": "{\"v\":1,\"float\":null,\"stickyPrior\":null}"},
     ])))
@@ -335,25 +335,25 @@ fn engine_accepts_opaque_record_and_publishes_empty_writes() {
     // unsupported-inner-version record still accepts, with no behavior
     // change and no published writes.
     let row = nested_record("report-intent-unsupported-inner-version");
-    let report = decode_request(&envelope(serde_json::json!([row]))).expect("decodes");
+    let report = decode_request_legacy(&envelope(serde_json::json!([row]))).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let reply = match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     assert!(reply.intent_writes.is_empty(), "no writes this increment");
     // Empty-record twin: the opaque record changes no behavior versus no
     // records at all (identical published reply on a fresh engine).
     let mut twin = connected_engine("gen-1", HostCapabilities::default());
-    let empty = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
-    let twin_reply = match twin.handle_report(&empty) {
-        WorldOutcome::Accepted(reply) => reply,
+    let empty = decode_request_legacy(&envelope(serde_json::json!([]))).expect("decodes");
+    let twin_reply = match twin.handle_report_legacy(&empty) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     assert_eq!(reply, twin_reply, "opaque record is behavior-free");
     // The required section publishes empty on both writers, after the
     // presentation and before diagnostics.
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
     assert_eq!(wire, canonical, "transport mirrors the core writer");
     let presentation_end = wire.find("\"pager\"").expect("pager publishes");
@@ -376,10 +376,10 @@ fn canonical_save_and_clear_spell_exact_key_order() {
     assert!(clear["data"].is_null(), "fixture clear is null");
     let save_data = save["data"].as_str().expect("save data string").to_owned();
     assert_eq!(save_data, "{\"v\":1,\"float\":true,\"stickyPrior\":false}");
-    let report = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
+    let report = decode_request_legacy(&envelope(serde_json::json!([]))).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let mut reply = match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     reply.intent_writes = vec![
@@ -392,7 +392,7 @@ fn canonical_save_and_clear_spell_exact_key_order() {
             data: None,
         },
     ];
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
     assert_eq!(wire, canonical, "transport mirrors the core writer");
     assert!(
@@ -440,21 +440,21 @@ fn estimates_count_escaped_bytes_and_both_arrays() {
     );
     // The reply estimator is exact over the canonical encoding, escapes
     // included.
-    let mut report = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
+    let mut report = decode_request_legacy(&envelope(serde_json::json!([]))).expect("decodes");
     report.intent_records = records;
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let mut reply = match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     reply.intent_writes = writes;
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     // The reply estimator is exact over the new section (the wider reply
     // base carries pre-existing one-count conservatism, so the witness
     // pins the delta plus the standing upper-bound convention).
     let mut empty_reply = reply.clone();
     empty_reply.intent_writes = Vec::new();
-    let empty_wire = encode_reply(&empty_reply);
+    let empty_wire = encode_reply_legacy(&empty_reply);
     assert_eq!(
         tiler_core::world_report::reply_estimate(&reply)
             - tiler_core::world_report::reply_estimate(&empty_reply),
@@ -487,7 +487,7 @@ fn estimates_count_escaped_bytes_and_both_arrays() {
         })
         .collect();
     assert!(tiler_core::world_report::report_estimate(&heavy) > 4 * 1024 * 1024);
-    assert_eq!(WORLD_CONTRACT_VERSION, 3);
+    assert_eq!(WORLD_CONTRACT_VERSION_LEGACY, 3);
 }
 
 #[test]
@@ -604,14 +604,14 @@ fn published_replies_originate_valid_under_the_commit_gate() {
     // outbound helper over the real publication (not a fixture copy), and
     // both legacy `String` writers spell the same bytes under that
     // precondition.
-    let report = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
+    let report = decode_request_legacy(&envelope(serde_json::json!([]))).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let reply = match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     assert_eq!(validate_intent_writes_reason(&reply.intent_writes), None);
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     assert_eq!(
         wire,
         tiler_core::world_report::encode_reply_canonical(&reply),
@@ -639,7 +639,7 @@ fn duplicate_keys_inside_intent_row_refuse_on_the_literal_wire() {
         "[{\"win\":\"win-a\",\"data\":\"x\",\"\\u0064ata\":\"y\"}]",
     ] {
         let wire = base.replace("\"intentRecords\":[]", &format!("\"intentRecords\":{rows}"));
-        let error = decode_request(&wire).expect_err("duplicate refuses");
+        let error = decode_request_legacy(&wire).expect_err("duplicate refuses");
         assert_eq!(error.kind, "malformed", "rows {rows}");
     }
 }
@@ -649,26 +649,26 @@ fn reused_seq_with_only_intent_bytes_changed_reuses_nothing() {
     // Same reqSeq with edited raw intent bytes is not a duplicate: the
     // digest separates every carried byte, so the engine refuses reuse and
     // keeps the prior cached reply and state for the true duplicate.
-    let first = decode_request(&envelope(serde_json::json!([
+    let first = decode_request_legacy(&envelope(serde_json::json!([
         {"win": "win-a", "data": "{\"v\":1,\"float\":true,\"stickyPrior\":null}"},
     ])))
     .expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let reply = match engine.handle_report(&first) {
-        WorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report_legacy(&first) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     let mut edited = first.clone();
     edited.intent_records[0].data = "{\"v\":1,\"float\":false,\"stickyPrior\":null}".to_owned();
     assert_ne!(edited, first);
-    match engine.handle_report(&edited) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
+    match engine.handle_report_legacy(&edited) {
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
         other => panic!("expected request-reused, got {other:?}"),
     }
     // The refused edit committed nothing: the identical original still hits
     // the cached reply byte-for-byte.
-    match engine.handle_report(&first) {
-        WorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
+    match engine.handle_report_legacy(&first) {
+        LegacyWorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
         other => panic!("expected duplicate, got {other:?}"),
     }
 }
@@ -678,7 +678,7 @@ fn heavy_intent_report_refuses_oversized_without_mutation() {
     // Typed-direct heavy section (no wire involved): the pre-mutation
     // estimate gate refuses before any convergence or slot work, so a
     // follow-up report still accepts on the unmutated engine.
-    let mut base = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
+    let mut base = decode_request_legacy(&envelope(serde_json::json!([]))).expect("decodes");
     base.intent_records = (0..10_000)
         .map(|i| IntentRecord {
             win: WindowId(format!("win-{i}")),
@@ -687,17 +687,17 @@ fn heavy_intent_report_refuses_oversized_without_mutation() {
         .collect();
     assert!(tiler_core::world_report::report_estimate(&base) > 4 * 1024 * 1024);
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    match engine.handle_report(&base) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "oversized"),
+    match engine.handle_report_legacy(&base) {
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "oversized"),
         other => panic!("expected oversized, got {other:?}"),
     }
     // Untouched engine: the next sequence accepts normally.
-    let mut next = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
+    let mut next = decode_request_legacy(&envelope(serde_json::json!([]))).expect("decodes");
     next.request_seq = base.request_seq + 1;
     next.observation_seq = base.observation_seq + 1;
     next.request_id = "req-2".to_owned();
-    match engine.handle_report(&next) {
-        WorldOutcome::Accepted(_) => {}
+    match engine.handle_report_legacy(&next) {
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
 }

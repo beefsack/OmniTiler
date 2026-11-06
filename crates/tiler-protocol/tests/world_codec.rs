@@ -6,10 +6,10 @@
 use tiler_core::connection::{
     ApplicationIdentity, HandshakeRequest, HostCapabilities, SettingsRequest,
 };
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{WORLD_CONTRACT_VERSION, WorldReport};
+use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
+use tiler_core::world_report::{WORLD_CONTRACT_VERSION_LEGACY, WorldReport};
 use tiler_protocol::world_protocol::{
-    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, decode_request, encode_reply,
+    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, decode_request_legacy, encode_reply_legacy,
 };
 
 /// Minimal observation-only request envelope (v3): screens plus facts only,
@@ -131,8 +131,8 @@ fn connected_engine(generation: &str, caps: HostCapabilities) -> WorldEngine {
 
 #[test]
 fn decode_minimal_observation_only_request() {
-    let report: WorldReport = decode_request(&one_window_request()).expect("decodes");
-    assert_eq!(report.contract_version, WORLD_CONTRACT_VERSION);
+    let report: WorldReport = decode_request_legacy(&one_window_request()).expect("decodes");
+    assert_eq!(report.contract_version, WORLD_CONTRACT_VERSION_LEGACY);
     assert_eq!(report.contract_version, 3);
     assert_eq!(report.observation_seq, 1);
     assert_eq!(report.request_seq, 1);
@@ -150,9 +150,9 @@ fn decode_minimal_observation_only_request() {
 fn counters_reject_json_numbers_and_non_canonical_strings() {
     // JSON numbers where counters belong refuse: no f64 precision loss path.
     let numeric = one_window_request().replace("\"obs\":\"1\"", "\"obs\":1");
-    assert!(decode_request(&numeric).is_err());
+    assert!(decode_request_legacy(&numeric).is_err());
     let float = one_window_request().replace("\"obs\":\"1\"", "\"obs\":1.0");
-    assert!(decode_request(&float).is_err());
+    assert!(decode_request_legacy(&float).is_err());
     for bad in [
         "007",
         "",
@@ -164,13 +164,16 @@ fn counters_reject_json_numbers_and_non_canonical_strings() {
         "12a",
     ] {
         let request = one_window_request().replace("\"obs\":\"1\"", &format!("\"obs\":\"{bad}\""));
-        assert!(decode_request(&request).is_err(), "obs {bad:?} must refuse");
+        assert!(
+            decode_request_legacy(&request).is_err(),
+            "obs {bad:?} must refuse"
+        );
     }
     // u64::MAX is the largest accepted counter.
     let max = one_window_request()
         .replace("\"obs\":\"1\"", "\"obs\":\"18446744073709551615\"")
         .replace("\"reqSeq\":\"1\"", "\"reqSeq\":\"18446744073709551615\"");
-    let report = decode_request(&max).expect("u64 max decodes");
+    let report = decode_request_legacy(&max).expect("u64 max decodes");
     assert_eq!(report.observation_seq, u64::MAX);
     assert_eq!(report.request_seq, u64::MAX);
 }
@@ -179,16 +182,16 @@ fn counters_reject_json_numbers_and_non_canonical_strings() {
 fn unknown_fields_and_values_refuse() {
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["extra"] = serde_json::Value::Bool(true);
-    let error = decode_request(&value.to_string()).expect_err("unknown field refuses");
+    let error = decode_request_legacy(&value.to_string()).expect_err("unknown field refuses");
     assert_eq!(error.kind, "unknown-field");
     for version in [1, 2, 4] {
         let wire = one_window_request().replace("\"v\":3", &format!("\"v\":{version}"));
-        let error = decode_request(&wire).expect_err("wrong version refuses");
+        let error = decode_request_legacy(&wire).expect_err("wrong version refuses");
         assert_eq!(error.kind, "unsupported-version");
     }
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["command"] = serde_json::json!({"op": "select-trailing", "out": "out"});
-    let error = decode_request(&value.to_string()).expect_err("unpaired command refuses");
+    let error = decode_request_legacy(&value.to_string()).expect_err("unpaired command refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     for retired in [
         "owner",
@@ -210,7 +213,7 @@ fn unknown_fields_and_values_refuse() {
         let mut value: serde_json::Value =
             serde_json::from_str(&one_window_request()).expect("valid");
         value[retired] = serde_json::Value::Null;
-        let error = decode_request(&value.to_string()).expect_err("retired field refuses");
+        let error = decode_request_legacy(&value.to_string()).expect_err("retired field refuses");
         assert_eq!(error.kind, "unknown-field", "{retired}");
     }
 }
@@ -219,7 +222,7 @@ fn unknown_fields_and_values_refuse() {
 fn native_observations_decode_without_report_owned_capability() {
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
-    let report = decode_request(&value.to_string())
+    let report = decode_request_legacy(&value.to_string())
         .expect("fact shape decodes independently of capabilities");
     assert_eq!(report.native.len(), 1);
     assert_eq!(report.native[0].current_native.as_deref(), Some("ws"));
@@ -229,7 +232,7 @@ fn native_observations_decode_without_report_owned_capability() {
 fn report_owned_birth_clear_field_is_rejected() {
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["birthClear"] = serde_json::Value::Bool(true);
-    let error = decode_request(&value.to_string()).expect_err("retired policy key refuses");
+    let error = decode_request_legacy(&value.to_string()).expect_err("retired policy key refuses");
     assert_eq!(error.kind, "unknown-field");
 }
 
@@ -237,14 +240,14 @@ fn report_owned_birth_clear_field_is_rejected() {
 fn all_commands_decode_typed_and_refuse_bad_vocab() {
     use tiler_core::world_report::WorldCommand as C;
     let command_json = serde_json::json!({"op": "focus", "win": "win-a", "direction": "left"});
-    let report = decode_request(&with_command(&command_json, "7")).expect("focus decodes");
+    let report = decode_request_legacy(&with_command(&command_json, "7")).expect("focus decodes");
     assert!(matches!(
         report.command,
         Some(C::Focus { direction, .. }) if direction == "left"
     ));
     assert_eq!(report.command_seq, Some(7));
     let bad = serde_json::json!({"op": "focus", "win": "win-a", "direction": "sideways"});
-    assert!(decode_request(&with_command(&bad, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&bad, "7")).is_err());
     for (op, extra) in [
         (
             "send",
@@ -308,26 +311,27 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
             map.insert(key.clone(), value.clone());
         }
         let command = serde_json::Value::Object(map);
-        let report = decode_request(&with_command(&command, "7")).expect("command decodes: {op}");
+        let report =
+            decode_request_legacy(&with_command(&command, "7")).expect("command decodes: {op}");
         assert!(report.command.is_some(), "{op}");
     }
     // Bad vocabularies refuse.
     let bad_numbered = serde_json::json!({"op": "select-numbered", "out": "o", "index": 0});
-    assert!(decode_request(&with_command(&bad_numbered, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&bad_numbered, "7")).is_err());
     let bad_relative = serde_json::json!({"op": "select-relative", "out": "o", "delta": 2});
-    assert!(decode_request(&with_command(&bad_relative, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&bad_relative, "7")).is_err());
     let bad_send_numbered = serde_json::json!({"op": "send-numbered", "win": "w", "source": {"explicit": "o"}, "index": 10, "follow": false});
-    assert!(decode_request(&with_command(&bad_send_numbered, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&bad_send_numbered, "7")).is_err());
     let bad_migrate =
         serde_json::json!({"op": "migrate-workspace", "from": "a", "to": "a", "ws": "ws-1"});
-    assert!(decode_request(&with_command(&bad_migrate, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&bad_migrate, "7")).is_err());
     let bad_same_axis = serde_json::json!({"op": "move-directional", "win": "w", "direction": "down", "sameAxis": "sideways"});
-    assert!(decode_request(&with_command(&bad_same_axis, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&bad_same_axis, "7")).is_err());
     let bad_unknown = serde_json::json!({"op": "frobnicate", "out": "o"});
-    assert!(decode_request(&with_command(&bad_unknown, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&bad_unknown, "7")).is_err());
     // The neutral toggle carries no preselected mode: `tiled` refuses.
     let bad_toggle_extra = serde_json::json!({"op": "toggle-workspace-tiling", "out": "o", "ws": "ws-1", "tiled": true});
-    assert!(decode_request(&with_command(&bad_toggle_extra, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&bad_toggle_extra, "7")).is_err());
     // A null selection output resolves in core: it decodes to `None`,
     // never to an invented output.
     for (op, extra) in [
@@ -348,7 +352,7 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
             map.insert(key.clone(), value.clone());
         }
         let command = serde_json::Value::Object(map);
-        let report = decode_request(&with_command(&command, "7")).expect("null out decodes");
+        let report = decode_request_legacy(&with_command(&command, "7")).expect("null out decodes");
         let resolved = match report.command {
             Some(C::SelectNumbered { output, .. })
             | Some(C::SelectRelative { output, .. })
@@ -362,7 +366,7 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
     // the action source and its current view from the neutral report
     // facts, never from an adapter-preselected output.
     let migrate = serde_json::json!({"op": "migrate-directional", "direction": "right"});
-    let report = decode_request(&with_command(&migrate, "7")).expect("direction decodes");
+    let report = decode_request_legacy(&with_command(&migrate, "7")).expect("direction decodes");
     match report.command {
         Some(C::MigrateDirectional { direction }) => {
             assert_eq!(direction, "right");
@@ -371,11 +375,11 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
     }
     // Legacy source/workspace legs are deleted and refuse as unknown.
     let legacy_migrate = serde_json::json!({"op": "migrate-directional", "from": "a", "ws": "ws-1", "direction": "right"});
-    assert!(decode_request(&with_command(&legacy_migrate, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&legacy_migrate, "7")).is_err());
     // The neutral tiling toggle names the logical scope only; the mode
     // resolves in core at execution time.
     let toggle = serde_json::json!({"op": "toggle-workspace-tiling", "out": "o", "ws": "ws-1"});
-    let report = decode_request(&with_command(&toggle, "7")).expect("toggle decodes");
+    let report = decode_request_legacy(&with_command(&toggle, "7")).expect("toggle decodes");
     match report.command {
         Some(C::ToggleWorkspaceTiling { output, workspace }) => {
             assert_eq!(output.0, "o");
@@ -409,7 +413,7 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
             map.insert(key.clone(), value.clone());
         }
         let command = serde_json::Value::Object(map);
-        let report = decode_request(&with_command(&command, "7")).expect("source decodes");
+        let report = decode_request_legacy(&with_command(&command, "7")).expect("source decodes");
         match (report.command, expect_implicit) {
             (
                 Some(C::SendNumbered {
@@ -445,7 +449,7 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
         serde_json::json!({"op": "send-numbered", "win": "w", "source": {"explicit": "o", "implicit": "home-then-action"}, "index": 9, "follow": false}),
         serde_json::json!({"op": "send-numbered", "win": "w", "index": 9, "follow": false}),
     ] {
-        assert!(decode_request(&with_command(&bad, "7")).is_err());
+        assert!(decode_request_legacy(&with_command(&bad, "7")).is_err());
     }
 }
 
@@ -454,7 +458,7 @@ fn fullscreen_commands_decode_strictly() {
     use tiler_core::world_report::WorldCommand as C;
     // Valid set/toggle spellings decode typed.
     let set = serde_json::json!({"op": "set-fullscreen", "win": "win-a", "value": true});
-    match decode_request(&with_command(&set, "7"))
+    match decode_request_legacy(&with_command(&set, "7"))
         .expect("set decodes")
         .command
     {
@@ -465,7 +469,7 @@ fn fullscreen_commands_decode_strictly() {
         other => panic!("set-fullscreen decoded {other:?}"),
     }
     let set_false = serde_json::json!({"op": "set-fullscreen", "win": "win-a", "value": false});
-    match decode_request(&with_command(&set_false, "8"))
+    match decode_request_legacy(&with_command(&set_false, "8"))
         .expect("set false decodes")
         .command
     {
@@ -476,7 +480,7 @@ fn fullscreen_commands_decode_strictly() {
         other => panic!("set-fullscreen decoded {other:?}"),
     }
     let toggle = serde_json::json!({"op": "toggle-fullscreen", "win": "win-a"});
-    match decode_request(&with_command(&toggle, "9"))
+    match decode_request_legacy(&with_command(&toggle, "9"))
         .expect("toggle decodes")
         .command
     {
@@ -488,7 +492,10 @@ fn fullscreen_commands_decode_strictly() {
         serde_json::json!({"op": "set-fullscreen", "win": "w", "value": true, "extra": 1}),
         serde_json::json!({"op": "toggle-fullscreen", "win": "w", "extra": 1}),
     ] {
-        assert!(decode_request(&with_command(&bad, "7")).is_err(), "{bad}");
+        assert!(
+            decode_request_legacy(&with_command(&bad, "7")).is_err(),
+            "{bad}"
+        );
     }
     // Missing keys refuse.
     for bad in [
@@ -496,7 +503,10 @@ fn fullscreen_commands_decode_strictly() {
         serde_json::json!({"op": "set-fullscreen", "value": true}),
         serde_json::json!({"op": "toggle-fullscreen"}),
     ] {
-        assert!(decode_request(&with_command(&bad, "7")).is_err(), "{bad}");
+        assert!(
+            decode_request_legacy(&with_command(&bad, "7")).is_err(),
+            "{bad}"
+        );
     }
     // Wrong types refuse (value must be bool, win must be an id string).
     for bad in [
@@ -509,7 +519,10 @@ fn fullscreen_commands_decode_strictly() {
         serde_json::json!({"op": "toggle-fullscreen", "win": 1}),
         serde_json::json!({"op": "toggle-fullscreen", "win": "w", "value": true}),
     ] {
-        assert!(decode_request(&with_command(&bad, "7")).is_err(), "{bad}");
+        assert!(
+            decode_request_legacy(&with_command(&bad, "7")).is_err(),
+            "{bad}"
+        );
     }
 }
 
@@ -517,7 +530,7 @@ fn fullscreen_commands_decode_strictly() {
 fn action_context_facts_decode_strictly() {
     // The envelope carries the required neutral facts: null legs read as
     // unknown, the ordered registry rides in adapter order.
-    let report = decode_request(&one_window_request()).expect("decodes");
+    let report = decode_request_legacy(&one_window_request()).expect("decodes");
     assert_eq!(report.action_foreground, None);
     assert_eq!(report.action_cached, None);
     assert_eq!(
@@ -529,7 +542,7 @@ fn action_context_facts_decode_strictly() {
     value["actionForeground"] = serde_json::Value::String("out".to_owned());
     value["actionCached"] = serde_json::Value::String("out".to_owned());
     value["actionOutputs"] = serde_json::json!(["out", "out-b"]);
-    let report = decode_request(&value.to_string()).expect("facts decode");
+    let report = decode_request_legacy(&value.to_string()).expect("facts decode");
     assert_eq!(
         report.action_foreground.map(|out| out.0),
         Some("out".to_owned())
@@ -542,18 +555,18 @@ fn action_context_facts_decode_strictly() {
     // Empty strings refuse: unknown rides `null`, never a blank id.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["actionForeground"] = serde_json::Value::String(String::new());
-    assert!(decode_request(&value.to_string()).is_err());
+    assert!(decode_request_legacy(&value.to_string()).is_err());
     // Missing keys refuse: the contract requires the neutral facts.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value
         .as_object_mut()
         .expect("object")
         .remove("actionOutputs");
-    assert!(decode_request(&value.to_string()).is_err());
+    assert!(decode_request_legacy(&value.to_string()).is_err());
     // Duplicate registry entries refuse.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["actionOutputs"] = serde_json::json!(["out", "out"]);
-    assert!(decode_request(&value.to_string()).is_err());
+    assert!(decode_request_legacy(&value.to_string()).is_err());
 }
 
 fn with_command(command: &serde_json::Value, seq: &str) -> String {
@@ -568,7 +581,7 @@ fn report_owned_born_maximized_setting_is_rejected() {
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["bornMaximized"] = serde_json::json!("keep-maximized-overlay");
     assert_eq!(
-        decode_request(&value.to_string())
+        decode_request_legacy(&value.to_string())
             .expect_err("retired setting refuses")
             .kind,
         "unknown-field"
@@ -582,7 +595,7 @@ fn report_owned_capacity_settings_are_rejected() {
             serde_json::from_str(&one_window_request()).expect("valid");
         value[key] = serde_json::json!("no-search");
         assert_eq!(
-            decode_request(&value.to_string())
+            decode_request_legacy(&value.to_string())
                 .expect_err("retired setting refuses")
                 .kind,
             "unknown-field"
@@ -594,7 +607,7 @@ fn report_owned_capacity_settings_are_rejected() {
 fn cursor_fact_decodes_independently_of_removed_policy_fields() {
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["cursor"] = serde_json::json!([100, 200]);
-    let report = decode_request(&value.to_string()).expect("cursor decodes");
+    let report = decode_request_legacy(&value.to_string()).expect("cursor decodes");
     assert_eq!(report.cursor, Some((100, 200)));
     for cursor in [
         serde_json::json!([1]),
@@ -607,7 +620,7 @@ fn cursor_fact_decodes_independently_of_removed_policy_fields() {
         let mut value: serde_json::Value =
             serde_json::from_str(&one_window_request()).expect("valid");
         value["cursor"] = cursor;
-        assert!(decode_request(&value.to_string()).is_err());
+        assert!(decode_request_legacy(&value.to_string()).is_err());
     }
 }
 
@@ -615,13 +628,13 @@ fn cursor_fact_decodes_independently_of_removed_policy_fields() {
 fn cursor_hit_decodes_tolerantly_but_validates_strictly() {
     // Missing backfills null: adapters predating the hit fact keep
     // decoding, and the core reads absence as no hover.
-    let report = decode_request(&one_window_request()).expect("decodes");
+    let report = decode_request_legacy(&one_window_request()).expect("decodes");
     assert_eq!(report.cursor_hit, None);
     // Present hit decodes to the named lifetime.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["cursor"] = serde_json::json!([100, 200]);
     value["cursorHit"] = serde_json::Value::String("win-a".to_owned());
-    let report = decode_request(&value.to_string()).expect("hit decodes");
+    let report = decode_request_legacy(&value.to_string()).expect("hit decodes");
     assert_eq!(
         report.cursor_hit,
         Some(tiler_core::directional::WindowId("win-a".to_owned()))
@@ -635,7 +648,7 @@ fn cursor_hit_decodes_tolerantly_but_validates_strictly() {
             serde_json::from_str(&one_window_request()).expect("valid");
         value["cursor"] = serde_json::json!([100, 200]);
         value["cursorHit"] = hit;
-        let report = decode_request(&value.to_string()).expect("null hit decodes");
+        let report = decode_request_legacy(&value.to_string()).expect("null hit decodes");
         assert_eq!(report.cursor_hit, None);
     }
     // Non-id shapes refuse; a hit naming no reported window refuses at
@@ -649,18 +662,18 @@ fn cursor_hit_decodes_tolerantly_but_validates_strictly() {
             serde_json::from_str(&one_window_request()).expect("valid");
         value["cursor"] = serde_json::json!([100, 200]);
         value["cursorHit"] = hit;
-        assert!(decode_request(&value.to_string()).is_err());
+        assert!(decode_request_legacy(&value.to_string()).is_err());
     }
     // A hit without the cursor it was resolved from refuses.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["cursorHit"] = serde_json::Value::String("win-a".to_owned());
-    assert!(decode_request(&value.to_string()).is_err());
+    assert!(decode_request_legacy(&value.to_string()).is_err());
 }
 
 #[test]
 fn request_estimate_bounds_actual_wire_bytes() {
     let compact = one_window_request();
-    let report = decode_request(&compact).expect("decodes");
+    let report = decode_request_legacy(&compact).expect("decodes");
     let estimate = tiler_core::world_report::report_estimate(&report);
     assert!(
         estimate >= compact.len(),
@@ -668,7 +681,7 @@ fn request_estimate_bounds_actual_wire_bytes() {
         compact.len()
     );
     let empty = request_json("adapter-1", "gen-1", "1", "1", "req-1", "");
-    let report = decode_request(&empty).expect("empty decodes");
+    let report = decode_request_legacy(&empty).expect("empty decodes");
     let estimate = tiler_core::world_report::report_estimate(&report);
     assert!(estimate >= empty.len());
     // Carried action-context facts stay bounded too.
@@ -676,7 +689,7 @@ fn request_estimate_bounds_actual_wire_bytes() {
     full["actionForeground"] = serde_json::Value::String("out".to_owned());
     full["actionCached"] = serde_json::Value::String("out".to_owned());
     let wire = full.to_string();
-    let report = decode_request(&wire).expect("facts decode");
+    let report = decode_request_legacy(&wire).expect("facts decode");
     let estimate = tiler_core::world_report::report_estimate(&report);
     assert!(
         estimate >= wire.len(),
@@ -695,7 +708,7 @@ fn request_estimate_bounds_actual_wire_bytes() {
         "pagerFrames": [{"win": "win-a", "live": [0, 0, 200, 200], "float": null, "tile": [0, 0, 200, 200]}],
     });
     let wire = full.to_string();
-    let report = decode_request(&wire).expect("presentation decodes");
+    let report = decode_request_legacy(&wire).expect("presentation decodes");
     assert_eq!(report.presentation.foreground, "win-a");
     assert_eq!(report.presentation.pager_order.len(), 1);
     assert_eq!(report.presentation.pager_frames.len(), 1);
@@ -710,7 +723,7 @@ fn request_estimate_bounds_actual_wire_bytes() {
 #[test]
 fn presentation_ingress_decodes_strictly() {
     // The disabled fixture rides an empty presentation ingress.
-    let report = decode_request(&one_window_request()).expect("decodes");
+    let report = decode_request_legacy(&one_window_request()).expect("decodes");
     assert!(report.presentation.foreground.is_empty());
     assert!(!report.presentation.border_enabled);
     assert!(!report.presentation.paused);
@@ -721,11 +734,12 @@ fn presentation_ingress_decodes_strictly() {
         .as_object_mut()
         .expect("object")
         .remove("presentation");
-    assert!(decode_request(&value.to_string()).is_err());
+    assert!(decode_request_legacy(&value.to_string()).is_err());
     // Unknown fields refuse; unknown id tokens refuse.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["presentation"]["extra"] = serde_json::Value::Bool(true);
-    let error = decode_request(&value.to_string()).expect_err("unknown presentation field refuses");
+    let error =
+        decode_request_legacy(&value.to_string()).expect_err("unknown presentation field refuses");
     assert_eq!(error.kind, "unknown-field");
     for (key, replacement) in [
         ("foreground", serde_json::json!("not an id!!")),
@@ -734,28 +748,29 @@ fn presentation_ingress_decodes_strictly() {
         let mut value: serde_json::Value =
             serde_json::from_str(&one_window_request()).expect("valid");
         value["presentation"][key] = replacement;
-        let error = decode_request(&value.to_string()).expect_err("bad presentation id refuses");
+        let error =
+            decode_request_legacy(&value.to_string()).expect_err("bad presentation id refuses");
         assert_eq!(error.kind, "unknown-value");
     }
     // Out-of-range style numbers and over-cap orders refuse at the core gate.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["presentation"]["borderGap"] = serde_json::json!(-1);
-    let error = decode_request(&value.to_string()).expect_err("negative style refuses");
+    let error = decode_request_legacy(&value.to_string()).expect_err("negative style refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     // Snapshot rows refuse unknown ids and non-rect frames.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["presentation"]["pagerFrames"] = serde_json::json!([{"win": "win-a", "live": [0, 0, 200, 200], "float": null, "tile": [0, 0, 200, 200]}]);
-    let report = decode_request(&value.to_string()).expect("frames decode");
+    let report = decode_request_legacy(&value.to_string()).expect("frames decode");
     assert_eq!(report.presentation.pager_frames.len(), 1);
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["presentation"]["pagerFrames"] =
         serde_json::json!([{"win": "win-a", "live": [0, 0, 0, 0], "float": null, "tile": null}]);
-    assert!(decode_request(&value.to_string()).is_err());
+    assert!(decode_request_legacy(&value.to_string()).is_err());
     // Empty tokens mean none and stay valid.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["presentation"]["foreground"] = serde_json::Value::String(String::new());
     value["presentation"]["moveWindow"] = serde_json::Value::String(String::new());
-    let report = decode_request(&value.to_string()).expect("empty tokens decode");
+    let report = decode_request_legacy(&value.to_string()).expect("empty tokens decode");
     assert!(report.presentation.foreground.is_empty());
     assert!(report.presentation.move_window.is_empty());
 }
@@ -765,7 +780,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     use tiler_core::world_report::FrameSetter;
     // Absent keys backfill: predates-the-field adapters stay valid with an
     // unreported clock and no attempts.
-    let report = decode_request(&one_window_request()).expect("decodes");
+    let report = decode_request_legacy(&one_window_request()).expect("decodes");
     assert_eq!(report.monotonic_ms, 0);
     assert!(report.frames.is_empty());
     // Present keys decode to the typed mechanical shape.
@@ -777,7 +792,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
         "attemptMs": "1000", "op": "op-7", "pre": [0, 0, 800, 560],
     }]);
     let wire = value.to_string();
-    let report = decode_request(&wire).expect("attempts decode");
+    let report = decode_request_legacy(&wire).expect("attempts decode");
     assert_eq!(report.monotonic_ms, 1200);
     assert_eq!(report.frames.len(), 1);
     let attempt = &report.frames[0];
@@ -803,7 +818,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
         "readback": null, "dpiBefore": null, "dpiAfter": null,
         "attemptMs": "1001", "op": "", "pre": null,
     }]);
-    let report = decode_request(&value.to_string()).expect("ordinary decodes");
+    let report = decode_request_legacy(&value.to_string()).expect("ordinary decodes");
     assert_eq!(report.frames[0].operation_id, None);
     assert_eq!(report.frames[0].prewrite, None);
     // A prewrite without an operation id refuses: only placement writes
@@ -814,7 +829,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
         "readback": null, "dpiBefore": null, "dpiAfter": null,
         "attemptMs": "1001", "op": "", "pre": [0, 0, 800, 560],
     }]);
-    let error = decode_request(&value.to_string()).expect_err("pre without op refuses");
+    let error = decode_request_legacy(&value.to_string()).expect_err("pre without op refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "frame-pre-without-operation");
     let estimate = tiler_core::world_report::report_estimate(&report);
@@ -826,7 +841,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     // A JSON number where the clock belongs refuses like every counter.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["monotonicMs"] = serde_json::json!(1200);
-    assert!(decode_request(&value.to_string()).is_err());
+    assert!(decode_request_legacy(&value.to_string()).is_err());
     // Unknown setter vocabulary refuses; unknown attempt fields refuse.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["frameAttempts"] = serde_json::json!([{
@@ -834,7 +849,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
         "readback": null, "dpiBefore": null, "dpiAfter": null,
         "attemptMs": "1000", "op": "", "pre": null,
     }]);
-    let error = decode_request(&value.to_string()).expect_err("bad setter refuses");
+    let error = decode_request_legacy(&value.to_string()).expect_err("bad setter refuses");
     assert_eq!(error.kind, "unknown-value");
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["frameAttempts"] = serde_json::json!([{
@@ -842,7 +857,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
         "readback": null, "dpiBefore": null, "dpiAfter": null,
         "attemptMs": "1000", "op": "", "pre": null, "verdict": "clamp",
     }]);
-    let error = decode_request(&value.to_string()).expect_err("unknown field refuses");
+    let error = decode_request_legacy(&value.to_string()).expect_err("unknown field refuses");
     assert_eq!(error.kind, "unknown-field");
     // Duplicate windows refuse with fixed vocabulary, never payload bytes.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
@@ -854,7 +869,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
          "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1001",
          "op": "", "pre": null},
     ]);
-    let error = decode_request(&value.to_string()).expect_err("duplicate refuses");
+    let error = decode_request_legacy(&value.to_string()).expect_err("duplicate refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "duplicate-frame");
 }
@@ -962,7 +977,7 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
     use tiler_core::world_report::FrameSetter;
     // Absent key backfills: predates-the-field adapters stay valid with no
     // clear attempts.
-    let report = decode_request(&one_window_request()).expect("decodes");
+    let report = decode_request_legacy(&one_window_request()).expect("decodes");
     assert!(report.clear_attempts.is_empty());
     // Present keys decode to the typed mechanical shape: operation plus
     // window correlation, setter disposition, and nullable immediate
@@ -973,7 +988,7 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
         "pre": true, "post": false, "attemptMs": "2000",
     }]);
     let wire = value.to_string();
-    let report = decode_request(&wire).expect("clear attempts decode");
+    let report = decode_request_legacy(&wire).expect("clear attempts decode");
     assert_eq!(report.clear_attempts.len(), 1);
     let attempt = &report.clear_attempts[0];
     assert_eq!(attempt.operation_id, "op-13");
@@ -988,7 +1003,7 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
         "op": "op-13", "win": "win-a", "setter": "threw",
         "pre": null, "post": null, "attemptMs": "1",
     }]);
-    let null_report = decode_request(&value.to_string()).expect("null proofs decode");
+    let null_report = decode_request_legacy(&value.to_string()).expect("null proofs decode");
     assert_eq!(null_report.clear_attempts[0].pre_maximized, None);
     assert_eq!(null_report.clear_attempts[0].post_maximized, None);
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
@@ -998,7 +1013,7 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
         {"op": "op-9", "win": "win-a", "setter": "accepted",
          "pre": true, "post": false, "attemptMs": "2"},
     ]);
-    let error = decode_request(&value.to_string()).expect_err("duplicate refuses");
+    let error = decode_request_legacy(&value.to_string()).expect_err("duplicate refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "duplicate-clear-attempt");
     // A maximized move through the engine publishes the one-shot clear
@@ -1030,7 +1045,7 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
     value["focused"] = serde_json::json!("win-a");
     value["command"] = serde_json::json!({"op": "move-directional", "win": "win-a", "direction": "right", "sameAxis": "group-with-neighbor"});
     value["cmdSeq"] = serde_json::Value::String("13".to_owned());
-    let report = decode_request(&value.to_string()).expect("maximized command decodes");
+    let report = decode_request_legacy(&value.to_string()).expect("maximized command decodes");
     let mut engine = connected_engine(
         "gen-1",
         HostCapabilities {
@@ -1041,8 +1056,8 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
             ..Default::default()
         },
     );
-    let reply = match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     let row = reply
@@ -1051,7 +1066,7 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
         .find(|row| row.lifetime.0 == "win-a")
         .expect("mover keeps a row");
     assert_eq!(row.clear_operation.as_deref(), Some("op-13"));
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
     assert_eq!(wire, canonical, "transport mirrors the core writer");
     assert!(
@@ -1089,7 +1104,7 @@ fn retired_window_keys_hold_identifiable_row_with_key_retained() {
             serde_json::from_str(&one_window_request()).expect("valid");
         let windows = value["windows"].as_array_mut().expect("windows");
         windows[0][key] = serde_json::Value::Bool(false);
-        let report = decode_request(&value.to_string()).expect("retired holds");
+        let report = decode_request_legacy(&value.to_string()).expect("retired holds");
         assert!(report.windows.is_empty(), "{key}");
         assert_eq!(report.held_windows.len(), 1, "{key}");
         assert!(
@@ -1107,7 +1122,7 @@ fn overbound_request_refuses_before_core_mutation() {
     let big = "w".repeat(WORLD_MAX_REQUEST_BYTES + 1);
     let request = one_window_request().replace("win-a", &big);
     assert!(request.len() > WORLD_MAX_REQUEST_BYTES);
-    let error = decode_request(&request).expect_err("oversized refuses");
+    let error = decode_request_legacy(&request).expect_err("oversized refuses");
     assert_eq!(error.kind, "oversized");
 }
 
@@ -1118,7 +1133,7 @@ fn empty_view_attempt_refs_are_rejected() {
         "op": "op-9", "out": "out-a", "ws": "ws-2", "setter": "threw",
         "pre": "", "post": "", "base": "", "attemptMs": "1",
     }]);
-    let error = decode_request(&value.to_string()).expect_err("empty typed refs reject");
+    let error = decode_request_legacy(&value.to_string()).expect_err("empty typed refs reject");
     assert_eq!(error.kind, "malformed");
 }
 
@@ -1126,13 +1141,13 @@ fn empty_view_attempt_refs_are_rejected() {
 fn reply_encode_matches_core_canonical_writer() {
     // Drive the engine once, then lock the transport encoding to the core
     // canonical writer over the same reply.
-    let report = decode_request(&one_window_request()).expect("decodes");
+    let report = decode_request_legacy(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let reply = match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
     assert_eq!(wire, canonical);
     assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
@@ -1164,10 +1179,10 @@ fn compact_automatic_effects_encode_identically_through_both_reply_writers() {
     // (explicit 294, compact admission 279, pair plus comma 574).
     use tiler_core::directional::WindowId;
     use tiler_core::world_report::{EffectCause, EffectKind, OneShotEffect};
-    let report = decode_request(&one_window_request()).expect("decodes");
+    let report = decode_request_legacy(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let mut reply = match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     let admission_target = WindowId("a".repeat(128));
@@ -1193,10 +1208,10 @@ fn compact_automatic_effects_encode_identically_through_both_reply_writers() {
             await_shown: false,
         },
     ];
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
     assert_eq!(wire, canonical, "transport mirrors the core writer");
-    let empty_wire = encode_reply(&{
+    let empty_wire = encode_reply_legacy(&{
         let mut empty = reply.clone();
         empty.effects = Vec::new();
         empty
@@ -1215,10 +1230,10 @@ fn reply_presentation_rev_encodes_quoted_exact_order() {
     // quoted `u64::MAX` byte-identically, the label rides immediately
     // after the foreground and before the optional suspended output, and
     // the nested label stays independent of the outer reply revision.
-    let report = decode_request(&one_window_request()).expect("decodes");
+    let report = decode_request_legacy(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let mut reply = match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     assert_eq!(
@@ -1230,7 +1245,7 @@ fn reply_presentation_rev_encodes_quoted_exact_order() {
     reply.state_revision = 7;
     reply.presentation.suspended_output =
         Some(tiler_core::directional::OutputId("out-b".to_owned()));
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
     assert_eq!(wire, canonical, "transport mirrors the core writer");
     assert!(
@@ -1265,7 +1280,7 @@ fn reply_gesture_settled_matches_core_sizing() {
         id: 7,
         committed: true,
     });
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
     assert_eq!(wire, canonical);
     assert!(wire.contains("\"gestureSettled\":{\"id\":\"7\",\"committed\":true}"));
@@ -1286,7 +1301,7 @@ fn reply_warp_cursor_matches_core_sizing() {
         .expect("generation")
         .bootstrap_reply("adapter-1", "req-1");
     reply.cursor_warp = Some((810, 300));
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
     assert_eq!(wire, canonical);
     assert!(wire.contains("\"warpCursor\":[810,300]"));
@@ -1305,17 +1320,17 @@ fn native_current_null_strict_and_creation_attempts_decode() {
     // strings and missing keys refuse (no compatibility tolerance).
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": null, "occupancy": [{"native": "ws", "count": null}]}]);
-    let report = decode_request(&value.to_string()).expect("null current decodes");
+    let report = decode_request_legacy(&value.to_string()).expect("null current decodes");
     assert_eq!(report.native[0].current_native, None);
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "", "occupancy": [{"native": "ws", "count": null}]}]);
-    assert!(decode_request(&value.to_string()).is_err());
+    assert!(decode_request_legacy(&value.to_string()).is_err());
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "occupancy": [{"native": "ws", "count": null}]}]);
-    assert!(decode_request(&value.to_string()).is_err());
+    assert!(decode_request_legacy(&value.to_string()).is_err());
     // Creation attempts decode tolerantly (missing backfills) and strictly
     // when present; the estimate bounds the wire.
-    let report = decode_request(&one_window_request()).expect("decodes");
+    let report = decode_request_legacy(&one_window_request()).expect("decodes");
     assert!(report.creation_attempts.is_empty());
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
@@ -1324,7 +1339,7 @@ fn native_current_null_strict_and_creation_attempts_decode() {
         "before": ["ws"], "after": ["ws", "ws-new"], "attemptMs": "5",
     }]);
     let wire = value.to_string();
-    let report = decode_request(&wire).expect("creation decodes");
+    let report = decode_request_legacy(&wire).expect("creation decodes");
     assert_eq!(report.creation_attempts.len(), 1);
     assert_eq!(report.creation_attempts[0].operation_id, "op-native-1");
     let estimate = tiler_core::world_report::report_estimate(&report);
@@ -1336,10 +1351,10 @@ fn native_current_null_strict_and_creation_attempts_decode() {
         "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
         "before": [], "after": ["ws"], "attemptMs": "5",
     }]);
-    let report = decode_request(&value.to_string()).expect("creation fact decodes");
+    let report = decode_request_legacy(&value.to_string()).expect("creation fact decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
     assert!(
-        matches!(engine.handle_report(&report), WorldOutcome::Rejected { message, .. } if message == "native-without-capability")
+        matches!(engine.handle_report_legacy(&report), LegacyWorldOutcome::Rejected { message, .. } if message == "native-without-capability")
     );
 }
 
@@ -1348,7 +1363,7 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
     // The discovery reply is fixed shape: v3, ready false, empty sections.
     let engine = WorldEngine::new("gen-1").expect("generation");
     let reply = engine.bootstrap_reply("adapter-1", "req-1");
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     assert_eq!(
         wire,
         "{\"v\":3,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"req\":\"req-1\",\
@@ -1400,7 +1415,7 @@ fn reply_operation_settled_matches_core_sizing() {
             cause: Some("closed".to_owned()),
         },
     ];
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
     assert_eq!(wire, canonical);
     assert!(wire.contains("\"operationSettled\":["));
@@ -1435,7 +1450,7 @@ fn unknown_valid_output_stays_valid_for_core_hold() {
          "complete": true, "scale": 1.0,
          "identity": {"manufacturer": null, "model": null, "serial": null, "connector": null}},
     ]);
-    let report = decode_request(&value.to_string()).expect("unknown valid out decodes");
+    let report = decode_request_legacy(&value.to_string()).expect("unknown valid out decodes");
     assert_eq!(report.windows.len(), 1);
     assert_eq!(
         report.windows[0].output.as_ref().map(|out| out.0.as_str()),
@@ -1448,7 +1463,7 @@ fn unknown_restoration_key_refuses() {
     // No restoration ingress exists on the wire: a present `restored`
     // key is unknown and refuses before any semantic check. Reports
     // without the key decode.
-    let report = decode_request(&one_window_request()).expect("decodes");
+    let report = decode_request_legacy(&one_window_request()).expect("decodes");
     let estimate = tiler_core::world_report::report_estimate(&report);
     assert!(
         estimate >= one_window_request().len(),
@@ -1462,25 +1477,25 @@ fn unknown_restoration_key_refuses() {
         "tiling": [{"out": "out", "ws": "ws-1", "tiled": true}],
         "members": [{"win": "win-a", "out": "out", "ws": "ws-1"}],
     });
-    assert!(decode_request(&value.to_string()).is_err());
+    assert!(decode_request_legacy(&value.to_string()).is_err());
     let mut null_value: serde_json::Value =
         serde_json::from_str(&one_window_request()).expect("valid");
     null_value["restored"] = serde_json::Value::Null;
-    assert!(decode_request(&null_value.to_string()).is_err());
+    assert!(decode_request_legacy(&null_value.to_string()).is_err());
 }
 
 #[test]
 fn gesture_ingress_decodes_phases_and_refuses_unknown_tokens() {
     use tiler_core::gesture::{GestureKind, GesturePhase};
     // Tolerant missing backfills observation-only.
-    let plain = decode_request(&one_window_request()).expect("decodes");
+    let plain = decode_request_legacy(&one_window_request()).expect("decodes");
     assert!(plain.gesture.is_none());
     // Explicit null backfills the same way.
     let mut null_value: serde_json::Value =
         serde_json::from_str(&one_window_request()).expect("valid");
     null_value["gestureIngress"] = serde_json::Value::Null;
     assert!(
-        decode_request(&null_value.to_string())
+        decode_request_legacy(&null_value.to_string())
             .expect("null decodes")
             .gesture
             .is_none()
@@ -1494,7 +1509,7 @@ fn gesture_ingress_decodes_phases_and_refuses_unknown_tokens() {
         "esc": false, "modal": true,
         "start": [0, 0, 40, 90],
     });
-    let report = decode_request(&value.to_string()).expect("decodes");
+    let report = decode_request_legacy(&value.to_string()).expect("decodes");
     let gesture = report.gesture.as_ref().expect("gesture rides");
     assert_eq!(gesture.window.0, "win-a");
     assert_eq!(gesture.id, 7);
@@ -1509,7 +1524,7 @@ fn gesture_ingress_decodes_phases_and_refuses_unknown_tokens() {
         serde_json::from_str(&value.to_string()).expect("valid");
     cursorless["gestureIngress"]["cursor"] = serde_json::Value::Null;
     assert!(
-        decode_request(&cursorless.to_string())
+        decode_request_legacy(&cursorless.to_string())
             .expect("decodes")
             .gesture
             .expect("gesture rides")
@@ -1520,7 +1535,7 @@ fn gesture_ingress_decodes_phases_and_refuses_unknown_tokens() {
     let mut nocursor: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
     nocursor["gestureIngress"]["startCursor"] = serde_json::Value::Null;
     assert!(
-        decode_request(&nocursor.to_string())
+        decode_request_legacy(&nocursor.to_string())
             .expect("decodes")
             .gesture
             .expect("gesture rides")
@@ -1530,10 +1545,10 @@ fn gesture_ingress_decodes_phases_and_refuses_unknown_tokens() {
     // Zero and non-decimal ids refuse: the id space starts at one.
     let mut zero_id: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
     zero_id["gestureIngress"]["id"] = serde_json::json!("0");
-    assert!(decode_request(&zero_id.to_string()).is_err());
+    assert!(decode_request_legacy(&zero_id.to_string()).is_err());
     let mut bad_id: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
     bad_id["gestureIngress"]["id"] = serde_json::json!(7);
-    assert!(decode_request(&bad_id.to_string()).is_err());
+    assert!(decode_request_legacy(&bad_id.to_string()).is_err());
     // Missing id or down-point keys refuse (exact shape, no backfill).
     let mut missing_id: serde_json::Value =
         serde_json::from_str(&value.to_string()).expect("valid");
@@ -1541,33 +1556,33 @@ fn gesture_ingress_decodes_phases_and_refuses_unknown_tokens() {
         .as_object_mut()
         .expect("object")
         .remove("id");
-    assert!(decode_request(&missing_id.to_string()).is_err());
+    assert!(decode_request_legacy(&missing_id.to_string()).is_err());
     let mut missing_down: serde_json::Value =
         serde_json::from_str(&value.to_string()).expect("valid");
     missing_down["gestureIngress"]
         .as_object_mut()
         .expect("object")
         .remove("startCursor");
-    assert!(decode_request(&missing_down.to_string()).is_err());
+    assert!(decode_request_legacy(&missing_down.to_string()).is_err());
     // Unknown kind/phase tokens refuse with fixed vocabulary.
     let mut bad_kind: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
     bad_kind["gestureIngress"]["kind"] = serde_json::json!("drag");
-    assert!(decode_request(&bad_kind.to_string()).is_err());
+    assert!(decode_request_legacy(&bad_kind.to_string()).is_err());
     let mut bad_phase: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
     bad_phase["gestureIngress"]["phase"] = serde_json::json!("dropped");
-    assert!(decode_request(&bad_phase.to_string()).is_err());
+    assert!(decode_request_legacy(&bad_phase.to_string()).is_err());
     // Degenerate start frames and out-of-bound cursors refuse.
     let mut bad_rect: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
     bad_rect["gestureIngress"]["start"] = serde_json::json!([0, 0, 0, 90]);
-    assert!(decode_request(&bad_rect.to_string()).is_err());
+    assert!(decode_request_legacy(&bad_rect.to_string()).is_err());
     let mut bad_cursor: serde_json::Value =
         serde_json::from_str(&value.to_string()).expect("valid");
     bad_cursor["gestureIngress"]["cursor"] = serde_json::json!([99999999, 50]);
-    assert!(decode_request(&bad_cursor.to_string()).is_err());
+    assert!(decode_request_legacy(&bad_cursor.to_string()).is_err());
     // Unknown window ids refuse.
     let mut bad_win: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
     bad_win["gestureIngress"]["win"] = serde_json::json!("not an id!");
-    assert!(decode_request(&bad_win.to_string()).is_err());
+    assert!(decode_request_legacy(&bad_win.to_string()).is_err());
     // The estimate still bounds the wider gesture wire shape.
     let wire = value.to_string();
     let estimate = tiler_core::world_report::report_estimate(&report);
@@ -1582,7 +1597,7 @@ fn gesture_ingress_decodes_phases_and_refuses_unknown_tokens() {
 fn native_ws_field_decodes_and_gates() {
     use tiler_core::world_report::NativeWorkspaceFact;
     // Missing nativeWs stays omitted (native-free reports predate it).
-    let report = decode_request(&one_window_request()).expect("missing stays omitted");
+    let report = decode_request_legacy(&one_window_request()).expect("missing stays omitted");
     assert_eq!(
         report.windows[0].native_workspace,
         NativeWorkspaceFact::Omitted
@@ -1594,7 +1609,7 @@ fn native_ws_field_decodes_and_gates() {
         let mut window = v4_window("win-a", "out", [0, 0, 200, 200]);
         window["nativeWs"] = native;
         value["windows"] = serde_json::json!([window]);
-        decode_request(&value.to_string())
+        decode_request_legacy(&value.to_string())
     };
     // Null, empty, and missing are distinct spellings of the same unknown.
     let report = with_native(serde_json::Value::Null).expect("null decodes");
@@ -1624,7 +1639,7 @@ fn native_ws_field_decodes_and_gates() {
     let mut window = v4_window("win-a", "out", [0, 0, 200, 200]);
     window["nativeWs"] = serde_json::Value::String("d1".to_owned());
     value["windows"] = serde_json::json!([window]);
-    let report = decode_request(&value.to_string()).expect("native fact decodes");
+    let report = decode_request_legacy(&value.to_string()).expect("native fact decodes");
     let mut engine = connected_engine(
         "gen-1",
         HostCapabilities {
@@ -1636,7 +1651,7 @@ fn native_ws_field_decodes_and_gates() {
         },
     );
     assert!(
-        matches!(engine.handle_report(&report), WorldOutcome::Rejected { message, .. } if message == "native-without-capability")
+        matches!(engine.handle_report_legacy(&report), LegacyWorldOutcome::Rejected { message, .. } if message == "native-without-capability")
     );
 }
 
@@ -1651,7 +1666,7 @@ fn native_ws_estimate_bounds_actual_wire() {
     value["windows"] = serde_json::json!([window]);
     let wire = value.to_string();
     assert!(wire.contains("\"nativeWs\":\"9f1c-0005-space\""));
-    let report = decode_request(&wire).expect("native report decodes");
+    let report = decode_request_legacy(&wire).expect("native report decodes");
     assert_eq!(
         report.windows[0].native_workspace.as_deref(),
         Some("9f1c-0005-space")
@@ -1679,7 +1694,7 @@ fn creation_created_receipt_decodes_tolerantly_and_bounds() {
         });
         attempt["created"] = created;
         value["creationAttempts"] = serde_json::json!([attempt]);
-        (value.to_string(), decode_request(&value.to_string()))
+        (value.to_string(), decode_request_legacy(&value.to_string()))
     };
     let (wire, report) = with_created(serde_json::Value::String("ws-new".to_owned()));
     let report = report.expect("created decodes");
@@ -1710,7 +1725,7 @@ fn creation_created_receipt_decodes_tolerantly_and_bounds() {
         "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
         "before": ["ws"], "after": ["ws"], "attemptMs": "5",
     }]);
-    let report = decode_request(&value.to_string()).expect("missing backfills");
+    let report = decode_request_legacy(&value.to_string()).expect("missing backfills");
     assert_eq!(report.creation_attempts[0].created_native, None);
     // Non-id and non-string receipts refuse with fixed vocabulary.
     for bad in [
@@ -1719,7 +1734,7 @@ fn creation_created_receipt_decodes_tolerantly_and_bounds() {
         serde_json::json!(["ws-new"]),
     ] {
         let (wire, _) = with_created(bad);
-        assert!(decode_request(&wire).is_err(), "bad created refuses");
+        assert!(decode_request_legacy(&wire).is_err(), "bad created refuses");
     }
     // Unknown receipt fields refuse.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
@@ -1728,7 +1743,7 @@ fn creation_created_receipt_decodes_tolerantly_and_bounds() {
         "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
         "before": ["ws"], "after": ["ws"], "createdId": "ws-new", "attemptMs": "5",
     }]);
-    let error = decode_request(&value.to_string()).expect_err("unknown field refuses");
+    let error = decode_request_legacy(&value.to_string()).expect_err("unknown field refuses");
     assert_eq!(error.kind, "unknown-field");
 }
 
@@ -1739,7 +1754,7 @@ fn focus_directional_empty_win_decodes_as_no_focus_marker() {
     // refusing. Every other windowed command still refuses it.
     use tiler_core::world_report::WorldCommand as C;
     let command = serde_json::json!({"op": "focus-directional", "win": "", "direction": "right"});
-    let report = decode_request(&with_command(&command, "7")).expect("empty win decodes");
+    let report = decode_request_legacy(&with_command(&command, "7")).expect("empty win decodes");
     assert!(matches!(
         report.command,
         Some(C::FocusDirectional { ref window, .. }) if window.0.is_empty()
@@ -1757,19 +1772,19 @@ fn focus_directional_empty_win_decodes_as_no_focus_marker() {
             map.insert(key.clone(), value.clone());
         }
         assert!(
-            decode_request(&with_command(&serde_json::Value::Object(map), "7")).is_err(),
+            decode_request_legacy(&with_command(&serde_json::Value::Object(map), "7")).is_err(),
             "{op} refuses empty win"
         );
     }
     // The key stays required and string-typed; blank-nonempty wins refuse.
     let missing = serde_json::json!({"op": "focus-directional", "direction": "right"});
-    assert!(decode_request(&with_command(&missing, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&missing, "7")).is_err());
     let null = serde_json::json!({"op": "focus-directional", "win": null, "direction": "right"});
-    assert!(decode_request(&with_command(&null, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&null, "7")).is_err());
     let number = serde_json::json!({"op": "focus-directional", "win": 7, "direction": "right"});
-    assert!(decode_request(&with_command(&number, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&number, "7")).is_err());
     let blank = serde_json::json!({"op": "focus-directional", "win": " ", "direction": "right"});
-    assert!(decode_request(&with_command(&blank, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&blank, "7")).is_err());
 }
 
 #[test]
@@ -1821,19 +1836,20 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
             ..Default::default()
         },
     );
-    let seed = decode_request(&two_output_envelope("1", "req-1", None)).expect("seed decodes");
-    match engine.handle_report(&seed) {
-        WorldOutcome::Accepted(_) => {}
+    let seed =
+        decode_request_legacy(&two_output_envelope("1", "req-1", None)).expect("seed decodes");
+    match engine.handle_report_legacy(&seed) {
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted seed, got {other:?}"),
     }
-    let report = decode_request(&two_output_envelope(
+    let report = decode_request_legacy(&two_output_envelope(
         "2",
         "req-2",
         Some(serde_json::json!({"op": "focus-directional", "win": "", "direction": "right"})),
     ))
     .expect("no-focus command decodes");
-    let reply = match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     let focus: Vec<&tiler_core::world_report::OneShotEffect> = reply
@@ -1844,7 +1860,7 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
     assert_eq!(focus.len(), 1, "one crossing effect: {:?}", reply.effects);
     assert_eq!(focus[0].target.0, "win-b");
     assert!(reply.command_result.is_none());
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     assert_eq!(
         wire,
         tiler_core::world_report::encode_reply_canonical(&reply),
@@ -1900,19 +1916,20 @@ fn explicit_focus_effect_wire_carries_cause_metadata() {
             ..Default::default()
         },
     );
-    let seed = decode_request(&two_output_envelope("1", "req-1", None)).expect("seed decodes");
-    match engine.handle_report(&seed) {
-        WorldOutcome::Accepted(_) => {}
+    let seed =
+        decode_request_legacy(&two_output_envelope("1", "req-1", None)).expect("seed decodes");
+    match engine.handle_report_legacy(&seed) {
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted seed, got {other:?}"),
     }
-    let report = decode_request(&two_output_envelope(
+    let report = decode_request_legacy(&two_output_envelope(
         "2",
         "req-2",
         Some(serde_json::json!({"op": "focus-directional", "win": "", "direction": "right"})),
     ))
     .expect("no-focus command decodes");
-    let reply = match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     let focus: Vec<&tiler_core::world_report::OneShotEffect> = reply
@@ -1930,7 +1947,7 @@ fn explicit_focus_effect_wire_carries_cause_metadata() {
     );
     assert_eq!(focus[0].command_seq, Some(11));
     assert!(!focus[0].await_shown);
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     assert_eq!(
         wire,
         tiler_core::world_report::encode_reply_canonical(&reply),
@@ -1962,7 +1979,7 @@ fn toggle_maximize_decodes_and_result_encodes() {
     let mut value: serde_json::Value =
         serde_json::from_str(&with_command(&command, "7")).expect("valid");
     value["focused"] = serde_json::Value::String("win-a".to_owned());
-    let report = decode_request(&value.to_string()).expect("toggle-maximize decodes");
+    let report = decode_request_legacy(&value.to_string()).expect("toggle-maximize decodes");
     assert!(
         matches!(report.command, Some(C::ToggleMaximize { ref window }) if window.0 == "win-a")
     );
@@ -1977,8 +1994,8 @@ fn toggle_maximize_decodes_and_result_encodes() {
             ..Default::default()
         },
     );
-    let reply = match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     match &reply.command_result {
@@ -1996,7 +2013,7 @@ fn toggle_maximize_decodes_and_result_encodes() {
         }
         other => panic!("expected maximize result, got {other:?}"),
     }
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
     assert_eq!(wire, canonical, "transport mirrors the core writer");
     assert!(
@@ -2018,14 +2035,14 @@ fn toggle_maximize_decodes_and_result_encodes() {
     );
     assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
     let missing = serde_json::json!({"op": "toggle-maximize"});
-    assert!(decode_request(&with_command(&missing, "7")).is_err());
+    assert!(decode_request_legacy(&with_command(&missing, "7")).is_err());
     for bad in [
         serde_json::json!({"op": "toggle-maximize", "win": null}),
         serde_json::json!({"op": "toggle-maximize", "win": 7}),
         serde_json::json!({"op": "toggle-maximize", "win": ""}),
         serde_json::json!({"op": "toggle-maximize", "win": " "}),
     ] {
-        assert!(decode_request(&with_command(&bad, "7")).is_err());
+        assert!(decode_request_legacy(&with_command(&bad, "7")).is_err());
     }
 }
 
@@ -2040,7 +2057,7 @@ fn sticky_commands_decode_typed_and_rejected_result_encodes_exact() {
     use tiler_core::world_report::CommandResult as R;
     use tiler_core::world_report::WorldCommand as C;
     let set = serde_json::json!({"op": "set-sticky", "win": "win-a", "value": true});
-    let report = decode_request(&with_command(&set, "7")).expect("set-sticky decodes");
+    let report = decode_request_legacy(&with_command(&set, "7")).expect("set-sticky decodes");
     assert!(matches!(
         report.command,
         Some(C::SetSticky { ref window, value: true }) if window.0 == "win-a"
@@ -2050,7 +2067,8 @@ fn sticky_commands_decode_typed_and_rejected_result_encodes_exact() {
         report.command.as_ref().expect("command")
     ));
     let toggle = serde_json::json!({"op": "toggle-sticky", "win": "win-a"});
-    let toggled = decode_request(&with_command(&toggle, "7")).expect("toggle-sticky decodes");
+    let toggled =
+        decode_request_legacy(&with_command(&toggle, "7")).expect("toggle-sticky decodes");
     assert!(matches!(
         toggled.command,
         Some(C::ToggleSticky { ref window }) if window.0 == "win-a"
@@ -2063,7 +2081,7 @@ fn sticky_commands_decode_typed_and_rejected_result_encodes_exact() {
         serde_json::json!({"op": "set-sticky", "win": "win-a", "value": true, "extra": 1}),
         serde_json::json!({"op": "toggle-sticky", "win": "win-a", "value": true}),
     ] {
-        assert!(decode_request(&with_command(&bad, "7")).is_err());
+        assert!(decode_request_legacy(&with_command(&bad, "7")).is_err());
     }
     // Wrong types refuse: null/number/empty wins, non-bool values.
     for bad in [
@@ -2078,11 +2096,12 @@ fn sticky_commands_decode_typed_and_rejected_result_encodes_exact() {
         serde_json::json!({"op": "toggle-sticky", "win": 7}),
         serde_json::json!({"op": "toggle-sticky", "win": ""}),
     ] {
-        assert!(decode_request(&with_command(&bad, "7")).is_err());
+        assert!(decode_request_legacy(&with_command(&bad, "7")).is_err());
     }
     // Typed rows digest distinctly: value and op both separate.
     let set_false = serde_json::json!({"op": "set-sticky", "win": "win-a", "value": false});
-    let off = decode_request(&with_command(&set_false, "7")).expect("set-sticky false decodes");
+    let off =
+        decode_request_legacy(&with_command(&set_false, "7")).expect("set-sticky false decodes");
     let digest_on = tiler_core::world_report::report_digest(&report);
     let digest_off = tiler_core::world_report::report_digest(&off);
     let digest_toggle = tiler_core::world_report::report_digest(&toggled);
@@ -2111,7 +2130,7 @@ fn sticky_commands_decode_typed_and_rejected_result_encodes_exact() {
             .expect("generation")
             .bootstrap_reply("adapter-1", "req-1");
         reply.command_result = result;
-        let wire = encode_reply(&reply);
+        let wire = encode_reply_legacy(&reply);
         let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
         assert_eq!(wire, canonical, "transport mirrors the core writer");
         assert!(
@@ -2181,7 +2200,7 @@ fn reply_trailing_marker_encodes_on_both_writers() {
             },
         ],
     }];
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
     assert_eq!(wire, canonical);
     assert_eq!(
@@ -2205,7 +2224,7 @@ fn typed_scopes_match_v4_fixture_rows_and_reject_malformed_unions() {
     use tiler_core::world_report::{
         AuthorityScope, ScopeAuthority, ScopeStatus, TilingMode, WorkspaceDesire,
     };
-    use tiler_protocol::world_protocol::{decode_authority_scope, encode_reply};
+    use tiler_protocol::world_protocol::{decode_authority_scope, encode_reply_legacy};
 
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../test-fixtures/world-wire/v4/messages/reply-untouched-workspace-scope.json"
@@ -2243,7 +2262,7 @@ fn typed_scopes_match_v4_fixture_rows_and_reject_malformed_unions() {
         );
     }
     let encoded: serde_json::Value =
-        serde_json::from_str(&encode_reply(&reply)).expect("reply json");
+        serde_json::from_str(&encode_reply_legacy(&reply)).expect("reply json");
     assert_eq!(encoded["scopes"], fixture["scopes"]);
     assert_eq!(encoded["workspaces"], fixture["workspaces"]);
 
@@ -2277,7 +2296,7 @@ fn typed_scopes_match_v4_fixture_rows_and_reject_malformed_unions() {
         });
     }
     let output_encoded: serde_json::Value =
-        serde_json::from_str(&encode_reply(&output_reply)).expect("output reply json");
+        serde_json::from_str(&encode_reply_legacy(&output_reply)).expect("output reply json");
     assert_eq!(output_encoded["scopes"], output_fixture["scopes"]);
     assert_eq!(output_encoded["workspaces"], output_fixture["workspaces"]);
 
@@ -2288,9 +2307,9 @@ fn typed_scopes_match_v4_fixture_rows_and_reject_malformed_unions() {
             "\"actionOutputs\":[\"out\"]",
             "\"actionOutputs\":[\"out-a\"]",
         );
-    let report = decode_request(&request).expect("real report decode");
-    let outcome = engine.handle_report(&report);
-    let WorldOutcome::Accepted(published) = outcome else {
+    let report = decode_request_legacy(&request).expect("real report decode");
+    let outcome = engine.handle_report_legacy(&report);
+    let LegacyWorldOutcome::Accepted(published) = outcome else {
         panic!("real report was not applied: {outcome:?}");
     };
     assert_eq!(
@@ -2344,9 +2363,9 @@ fn startup_ordering_end_to_end_decode_engine_encode() {
 
     // Pre-settings report decodes yet bootstraps: correlated, not ready,
     // no desired state, no effects.
-    let pre_settings = decode_request(&wire_request).expect("decodes");
-    let bootstrap = match engine.handle_report(&pre_settings) {
-        WorldOutcome::Accepted(reply) => reply,
+    let pre_settings = decode_request_legacy(&wire_request).expect("decodes");
+    let bootstrap = match engine.handle_report_legacy(&pre_settings) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected bootstrap, got {other:?}"),
     };
     assert!(!bootstrap.ready);
@@ -2356,7 +2375,7 @@ fn startup_ordering_end_to_end_decode_engine_encode() {
         bootstrap.presentation.rev, bootstrap.state_revision,
         "empty bootstrap mirrors the current revision"
     );
-    let bootstrap_wire = encode_reply(&bootstrap);
+    let bootstrap_wire = encode_reply_legacy(&bootstrap);
     assert!(bootstrap_wire.contains("\"ready\":false"));
     assert!(bootstrap_wire.contains("\"req\":\"req-1\""));
 
@@ -2372,9 +2391,9 @@ fn startup_ordering_end_to_end_decode_engine_encode() {
         })
         .expect("settings accepted");
     assert!(!engine.is_ready());
-    let ready_report = decode_request(&wire_request).expect("decodes");
-    let ready = match engine.handle_report(&ready_report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let ready_report = decode_request_legacy(&wire_request).expect("decodes");
+    let ready = match engine.handle_report_legacy(&ready_report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected ready reply, got {other:?}"),
     };
     assert!(ready.ready);
@@ -2383,7 +2402,7 @@ fn startup_ordering_end_to_end_decode_engine_encode() {
         ready.presentation.rev, ready.state_revision,
         "ready publication labels its own revision"
     );
-    let ready_wire = encode_reply(&ready);
+    let ready_wire = encode_reply_legacy(&ready);
     assert!(ready_wire.contains("\"ready\":true"));
     let parsed: WorldReplyWire = serde_json::from_str(&ready_wire).expect("valid json");
     assert_eq!(parsed.v, 3);
@@ -2397,11 +2416,11 @@ fn world_request_rejects_duplicate_json_keys_strictly() {
     // Otherwise-valid staged request decodes on its own; every duplicate
     // spelling below reuses that same valid shape with one key doubled.
     let wire = one_window_request();
-    decode_request(&wire).expect("valid staged request decodes");
+    decode_request_legacy(&wire).expect("valid staged request decodes");
 
     let assert_malformed = |bytes: &str, case: &str| {
         // Direct decode rejects; never a decode-then-encode round trip.
-        let error = decode_request(bytes).expect_err(case);
+        let error = decode_request_legacy(bytes).expect_err(case);
         assert_eq!(error.kind, "malformed", "{case}");
         assert_eq!(error.message, "request is malformed", "{case}");
         assert!(
@@ -2447,7 +2466,7 @@ fn world_request_rejects_duplicate_json_keys_strictly() {
         &serde_json::json!({"op": "focus", "win": "win-a", "direction": "left"}),
         "7",
     );
-    decode_request(&command_wire).expect("valid command decodes");
+    decode_request_legacy(&command_wire).expect("valid command decodes");
     let command_dup =
         command_wire.replacen("\"op\":\"focus\"", "\"op\":\"focus\",\"op\":\"focus\"", 1);
     assert_ne!(command_dup, command_wire);
@@ -2461,10 +2480,10 @@ fn world_request_rejects_duplicate_json_keys_strictly() {
     // the same key name reused across separate objects stays valid.
     let escaped_single = wire.replacen("\"adapter\"", "\"\\u0061dapter\"", 1);
     assert_ne!(escaped_single, wire);
-    decode_request(&escaped_single).expect("single escaped key decodes");
+    decode_request_legacy(&escaped_single).expect("single escaped key decodes");
     let escaped_v = wire.replacen("\"v\":3", "\"\\u0076\":3", 1);
     assert_ne!(escaped_v, wire);
-    decode_request(&escaped_v).expect("single escaped v decodes");
+    decode_request_legacy(&escaped_v).expect("single escaped v decodes");
     let two_windows = request_json(
         "adapter-1",
         "gen-1",
@@ -2473,12 +2492,12 @@ fn world_request_rejects_duplicate_json_keys_strictly() {
         "req-1",
         &format!("{},{}", fact_json("win-a", 0), fact_json("win-b", 300)),
     );
-    let report = decode_request(&two_windows).expect("sibling key reuse decodes");
+    let report = decode_request_legacy(&two_windows).expect("sibling key reuse decodes");
     assert_eq!(report.windows.len(), 2);
 
     // v4 manifest duplicate witnesses are connection-family fixtures, so
     // they are asserted at the shared strict parser directly (not counted
-    // as world duplicate coverage via `decode_request`).
+    // as world duplicate coverage via `decode_request_legacy`).
     let root_fixture =
         include_str!("../../../test-fixtures/world-wire/v4/messages/invalid-duplicate-root.json");
     assert!(
@@ -2522,7 +2541,7 @@ fn v4_screen_rows_decode_valid_held_and_reject_with_canonical_bytes() {
         "[]",
         "",
     );
-    let report = decode_request(&valid).expect("valid row decodes");
+    let report = decode_request_legacy(&valid).expect("valid row decodes");
     assert_eq!(report.screens.len(), 1);
     assert!(report.held_screens.is_empty());
     let screen = &report.screens[0];
@@ -2577,7 +2596,7 @@ fn v4_screen_rows_decode_valid_held_and_reject_with_canonical_bytes() {
     ];
     for (name, screens, expected_canonical) in held_cases {
         let wire = request_with(screens, "[]", "[]", "");
-        let report = decode_request(&wire).expect("held row decodes: {name}");
+        let report = decode_request_legacy(&wire).expect("held row decodes: {name}");
         assert!(report.screens.is_empty(), "{name}: no valid row");
         assert_eq!(report.held_screens.len(), 1, "{name}: one held row");
         let held = &report.held_screens[0];
@@ -2611,7 +2630,7 @@ fn v4_screen_rows_decode_valid_held_and_reject_with_canonical_bytes() {
         "[]",
         "",
     );
-    let report = decode_request(&wire).expect("overbound serial holds");
+    let report = decode_request_legacy(&wire).expect("overbound serial holds");
     assert_eq!(report.held_screens.len(), 1);
     assert_eq!(
         report.held_screens[0].diagnostic.kind,
@@ -2643,7 +2662,7 @@ fn v4_screen_rows_decode_valid_held_and_reject_with_canonical_bytes() {
         ),
     ] {
         let wire = request_with(screens, "[]", "[]", "");
-        assert!(decode_request(&wire).is_err(), "{name} refuses");
+        assert!(decode_request_legacy(&wire).is_err(), "{name} refuses");
     }
     let null_primary = request_with(
         r#"[{"out":"out","full":null,"work":null,"complete":false,"scale":1.0,"identity":{"connector":null,"manufacturer":null,"model":null,"serial":null}}]"#,
@@ -2652,7 +2671,7 @@ fn v4_screen_rows_decode_valid_held_and_reject_with_canonical_bytes() {
         r#","primary":null"#,
     );
     assert!(
-        decode_request(&null_primary).is_err(),
+        decode_request_legacy(&null_primary).is_err(),
         "null primary refuses"
     );
     let named_primary = request_with(
@@ -2661,7 +2680,7 @@ fn v4_screen_rows_decode_valid_held_and_reject_with_canonical_bytes() {
         "[]",
         r#","primary":"out""#,
     );
-    let report = decode_request(&named_primary).expect("named primary decodes");
+    let report = decode_request_legacy(&named_primary).expect("named primary decodes");
     assert_eq!(
         report.primary_output.as_ref().map(|o| o.0.as_str()),
         Some("out")
@@ -2900,7 +2919,7 @@ fn v4_screen_rows_retain_canonical_bytes_from_immutable_fixtures() {
         // The nested row bytes ride the production route staged in the
         // current parent shape; the row itself is never re-serialized.
         let staged = stage_fixture_rows(&rows, None);
-        let report = decode_request(&staged).expect("{name}: held row decodes");
+        let report = decode_request_legacy(&staged).expect("{name}: held row decodes");
         assert!(report.screens.is_empty(), "{name}: no valid row");
         assert_eq!(report.held_screens.len(), 1, "{name}: one held row");
         let held_row = &report.held_screens[0];
@@ -2929,7 +2948,7 @@ fn v4_screen_rows_retain_canonical_bytes_from_immutable_fixtures() {
     let valid_primary = raw_lane_value(valid, "primary");
     assert_eq!(valid_primary, Some("\"out-b\""));
     let staged = stage_fixture_rows(&valid_rows, valid_primary);
-    let report = decode_request(&staged).expect("valid rows decode");
+    let report = decode_request_legacy(&staged).expect("valid rows decode");
     assert_eq!(report.screens.len(), 2);
     assert!(report.held_screens.is_empty());
     assert_eq!(report.screens[0].scale, 1.25);
@@ -2958,7 +2977,7 @@ fn v4_screen_rows_retain_canonical_bytes_from_immutable_fixtures() {
     assert_eq!(raw_lane_value(null_primary, "primary"), Some("null"));
     let staged = stage_fixture_rows(&raw_lane_elements(null_primary, "screens"), Some("null"));
     assert!(
-        decode_request(&staged).is_err(),
+        decode_request_legacy(&staged).is_err(),
         "explicit null primary refuses"
     );
 }
@@ -2980,7 +2999,7 @@ fn v4_held_rows_retain_multibyte_identity_bytes() {
          \"model\":\"m\",\"serial\":\"{at_bound}\",\"connector\":null}}}}"
     );
     let staged = stage_fixture_rows(&[&valid_row], None);
-    let report = decode_request(&staged).expect("bound-exact identity decodes");
+    let report = decode_request_legacy(&staged).expect("bound-exact identity decodes");
     assert_eq!(report.screens.len(), 1);
     assert_eq!(
         report.screens[0].identity.manufacturer.as_deref(),
@@ -3005,7 +3024,7 @@ fn v4_held_rows_retain_multibyte_identity_bytes() {
          \"serial\":\"{over_bound}\",\"connector\":null}}}}"
     );
     let staged = stage_fixture_rows(&[&held_row], None);
-    let report = decode_request(&staged).expect("overbound identity holds");
+    let report = decode_request_legacy(&staged).expect("overbound identity holds");
     assert!(report.screens.is_empty());
     assert_eq!(report.held_screens.len(), 1);
     let held = &report.held_screens[0];
@@ -3027,7 +3046,7 @@ fn v4_mixed_valid_held_rows_keep_original_index() {
         r#"{"out":"out-c","full":[800,0,800,600],"work":[800,0,800,560],"complete":true,"scale":2,"identity":{"manufacturer":null,"model":null,"serial":null,"connector":null}}"#,
     ];
     let staged = stage_fixture_rows(&rows, None);
-    let report = decode_request(&staged).expect("mixed rows decode");
+    let report = decode_request_legacy(&staged).expect("mixed rows decode");
     assert_eq!(report.screens.len(), 2);
     assert_eq!(report.screens[0].output.0, "out-a");
     assert_eq!(report.screens[1].output.0, "out-c");
@@ -3050,7 +3069,7 @@ fn v4_mixed_valid_held_rows_keep_original_index() {
 /// report field-for-field with ordinals preserved.
 #[test]
 fn direct_typed_invalid_rows_match_decoded_hold_replies() {
-    use tiler_core::world_engine::WorldOutcome;
+    use tiler_core::world_engine::LegacyWorldOutcome;
     use tiler_core::world_report::{
         AuthorityScope, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, grade_invalid_screens,
     };
@@ -3081,7 +3100,8 @@ fn direct_typed_invalid_rows_match_decoded_hold_replies() {
             "screens",
             &format!("[{},{}]", healthy_row("out-a"), bad_row),
         );
-        let mut decoded: WorldReport = decode_request(&decoded_wire).expect("held row decodes");
+        let mut decoded: WorldReport =
+            decode_request_legacy(&decoded_wire).expect("held row decodes");
         assert_eq!(decoded.screens.len(), 1, "{name}: one valid row");
         assert_eq!(decoded.held_screens.len(), 1, "{name}: one held row");
         assert_eq!(decoded.held_screens[0].output.0, "out-b", "{name}");
@@ -3091,7 +3111,7 @@ fn direct_typed_invalid_rows_match_decoded_hold_replies() {
         );
 
         let mut direct: WorldReport =
-            decode_request(&two_healthy_wire()).expect("healthy rows decode");
+            decode_request_legacy(&two_healthy_wire()).expect("healthy rows decode");
         assert_eq!(direct.screens.len(), 2, "{name}");
         mutate(&mut direct);
 
@@ -3110,19 +3130,19 @@ fn direct_typed_invalid_rows_match_decoded_hold_replies() {
 
         let mut engine_held = connected_engine("gen-1", HostCapabilities::default());
         let mut engine_direct = connected_engine("gen-1", HostCapabilities::default());
-        let seed: WorldReport = decode_request(&two_healthy_wire()).expect("seed decodes");
+        let seed: WorldReport = decode_request_legacy(&two_healthy_wire()).expect("seed decodes");
         for engine in [&mut engine_held, &mut engine_direct] {
-            match engine.handle_report(&seed) {
-                WorldOutcome::Accepted(reply) => assert!(reply.ready, "{name}: seed latches"),
+            match engine.handle_report_legacy(&seed) {
+                LegacyWorldOutcome::Accepted(reply) => assert!(reply.ready, "{name}: seed latches"),
                 other => panic!("{name}: seed must latch readiness, got {other:?}"),
             }
         }
-        let held_reply = match engine_held.handle_report(&decoded) {
-            WorldOutcome::Accepted(reply) => reply,
+        let held_reply = match engine_held.handle_report_legacy(&decoded) {
+            LegacyWorldOutcome::Accepted(reply) => reply,
             other => panic!("{name}: decoded hold must be accepted, got {other:?}"),
         };
-        let direct_reply = match engine_direct.handle_report(&direct) {
-            WorldOutcome::Accepted(reply) => reply,
+        let direct_reply = match engine_direct.handle_report_legacy(&direct) {
+            LegacyWorldOutcome::Accepted(reply) => reply,
             other => panic!("{name}: direct invalid row must grade to hold, got {other:?}"),
         };
         assert!(held_reply.ready, "{name}");
@@ -3208,7 +3228,7 @@ fn decode_screen_structural_violations_refuse_before_narrow_holds() {
     }
     fn check_wire(name: &str, rows: &[String], reason: &str) {
         let wire = stage_fixture_rows(&rows.iter().map(String::as_str).collect::<Vec<_>>(), None);
-        let error = decode_request(&wire).expect_err(&format!("{name}: refuses"));
+        let error = decode_request_legacy(&wire).expect_err(&format!("{name}: refuses"));
         assert_eq!(error.kind, "snapshot-invalid", "{name}: kind");
         assert_eq!(error.message, reason, "{name}: reason");
     }
@@ -3222,7 +3242,7 @@ fn decode_screen_structural_violations_refuse_before_narrow_holds() {
             &base_rows.iter().map(String::as_str).collect::<Vec<_>>(),
             None,
         );
-        let mut direct: WorldReport = decode_request(&wire).expect("{name}: base decodes");
+        let mut direct: WorldReport = decode_request_legacy(&wire).expect("{name}: base decodes");
         mutate(&mut direct);
         assert_eq!(
             validate_report_reason(&direct),
@@ -3485,7 +3505,7 @@ fn bad_process_grammar_holds_with_invalid_kind_parity() {
     // with its carried pid retained and an InvalidFact kind.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["windows"][0]["processId"] = serde_json::json!("has space");
-    let report = decode_request(&value.to_string()).expect("bad process holds");
+    let report = decode_request_legacy(&value.to_string()).expect("bad process holds");
     assert!(report.windows.is_empty());
     assert_eq!(report.held_windows.len(), 1);
     let held = &report.held_windows[0];
@@ -3507,7 +3527,7 @@ fn masked_owner_with_overbound_refuses_decoder() {
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["windows"][0]["floating"] = serde_json::Value::Bool(false);
     value["windows"][0]["owner"] = serde_json::json!("has space");
-    let error = decode_request(&value.to_string()).expect_err("masked owner refuses");
+    let error = decode_request_legacy(&value.to_string()).expect_err("masked owner refuses");
     assert_eq!(error.kind, "unknown-value");
 }
 
@@ -3517,7 +3537,7 @@ fn masked_owner_with_bad_process_refuses_decoder() {
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["windows"][0]["processId"] = serde_json::json!("has space");
     value["windows"][0]["owner"] = serde_json::json!("also bad!");
-    assert!(decode_request(&value.to_string()).is_err());
+    assert!(decode_request_legacy(&value.to_string()).is_err());
 }
 
 #[test]
@@ -3526,7 +3546,7 @@ fn output_null_decodes_without_fabricated_scope() {
     // retains evidence but names no scope.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["windows"][0]["out"] = serde_json::Value::Null;
-    let report = decode_request(&value.to_string()).expect("null out decodes");
+    let report = decode_request_legacy(&value.to_string()).expect("null out decodes");
     assert_eq!(report.windows.len(), 1);
     assert_eq!(report.windows[0].output, None);
 }
@@ -3570,7 +3590,7 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
         "ordinary row omits nativeWs"
     );
     let staged = stage_fixture_window_rows(&[&healthy_raw]);
-    let report = decode_request(&staged).expect("healthy row decodes");
+    let report = decode_request_legacy(&staged).expect("healthy row decodes");
     assert_eq!(report.windows.len(), 1);
     assert!(report.held_windows.is_empty());
     let fact = &report.windows[0];
@@ -3605,7 +3625,7 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
     );
     assert_eq!(
         report_digest(&report),
-        report_digest(&decode_request(&staged).expect("redigest")),
+        report_digest(&decode_request_legacy(&staged).expect("redigest")),
         "digest stable over identical bytes"
     );
 
@@ -3614,7 +3634,7 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
         "../../../test-fixtures/world-wire/v4/messages/report-last-write-preimage-unavailable.json"
     ));
     let staged = stage_fixture_window_rows(&[&nullable_raw]);
-    let report = decode_request(&staged).expect("nullable row decodes");
+    let report = decode_request_legacy(&staged).expect("nullable row decodes");
     assert_eq!(report.windows.len(), 1);
     assert!(report.held_windows.is_empty());
     let fact = &report.windows[0];
@@ -3634,7 +3654,7 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
     );
     assert_ne!(
         report_digest(
-            &decode_request(&stage_fixture_window_rows(&[&healthy_raw])).expect("healthy")
+            &decode_request_legacy(&stage_fixture_window_rows(&[&healthy_raw])).expect("healthy")
         ),
         report_digest(&report),
         "digest separates healthy from nullable"
@@ -3646,7 +3666,7 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
         "../../../test-fixtures/world-wire/v4/messages/invalid-removed-window-floating.json"
     ));
     let staged = stage_fixture_window_rows(&[&held_raw]);
-    let report = decode_request(&staged).expect("retired holds");
+    let report = decode_request_legacy(&staged).expect("retired holds");
     assert!(report.windows.is_empty(), "no valid row");
     assert_eq!(report.held_windows.len(), 1, "one held row");
     let held = &report.held_windows[0];
@@ -3702,7 +3722,7 @@ fn v4_window_canonical_spells_escapes_and_preserves_native_ws() {
         rows[0].to_owned()
     };
     let staged = stage_fixture_window_rows(&[&healthy_raw]);
-    let report = decode_request(&staged).expect("healthy row decodes");
+    let report = decode_request_legacy(&staged).expect("healthy row decodes");
     let mut fact = report.windows[0].clone();
     fact.title = Some("a\"b\\c\u{1}é".to_owned());
     fact.hints = None;
@@ -3718,7 +3738,7 @@ fn v4_window_canonical_spells_escapes_and_preserves_native_ws() {
     );
     // A re-decode of the escaped bytes preserves the text exactly.
     let restaged = stage_fixture_window_rows(&[&wire]);
-    let roundtrip = decode_request(&restaged).expect("escaped row decodes");
+    let roundtrip = decode_request_legacy(&restaged).expect("escaped row decodes");
     assert_eq!(roundtrip.windows[0].title.as_deref(), Some("a\"b\\c\u{1}é"));
     assert_eq!(roundtrip.windows[0].hints, None);
 
@@ -3754,7 +3774,7 @@ fn v4_window_canonical_spells_escapes_and_preserves_native_ws() {
             ),
         };
         let staged = stage_fixture_window_rows(&[&with_native]);
-        let report = decode_request(&staged).expect("native spelling decodes");
+        let report = decode_request_legacy(&staged).expect("native spelling decodes");
         assert_eq!(
             &report.windows[0].native_workspace, expected,
             "{label} typed twin identical"
@@ -3804,8 +3824,8 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
         assert_eq!(rows.len(), 1);
         rows[0].to_owned()
     };
-    let error =
-        decode_request(&stage_fixture_window_rows(&[&unknown])).expect_err("unknown type refuses");
+    let error = decode_request_legacy(&stage_fixture_window_rows(&[&unknown]))
+        .expect_err("unknown type refuses");
     assert_eq!(error.kind, "unknown-value");
 
     // Wrong-typed `type` holds the identifiable row with exact bytes.
@@ -3817,7 +3837,8 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
         assert_eq!(rows.len(), 1);
         rows[0].to_owned()
     };
-    let report = decode_request(&stage_fixture_window_rows(&[&mistyped])).expect("mistyped holds");
+    let report =
+        decode_request_legacy(&stage_fixture_window_rows(&[&mistyped])).expect("mistyped holds");
     assert!(report.windows.is_empty());
     assert_eq!(report.held_windows.len(), 1);
     assert_eq!(report.held_windows[0].kind, RowDiagnosticKind::InvalidFact);
@@ -3852,7 +3873,8 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
         let mut row = healthy.clone();
         row.pop();
         row.push_str(&format!(",\"{key}\":false}}"));
-        let report = decode_request(&stage_fixture_window_rows(&[&row])).expect("{key} holds");
+        let report =
+            decode_request_legacy(&stage_fixture_window_rows(&[&row])).expect("{key} holds");
         assert!(report.windows.is_empty(), "{key}");
         assert_eq!(report.held_windows.len(), 1, "{key}");
         assert_eq!(
@@ -3889,7 +3911,7 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
     assert!(encode_held_window_canonical(&nonfinite).is_err());
     // Valid integer geometry is always finite: the valid writer never fails.
     let staged = stage_fixture_window_rows(&[&healthy]);
-    let report = decode_request(&staged).expect("healthy decodes");
+    let report = decode_request_legacy(&staged).expect("healthy decodes");
     assert!(encode_window_canonical(&report.windows[0]).is_ok());
 }
 
@@ -4038,7 +4060,7 @@ fn immutable_effect_rows_match_fixture_bytes() {
         reply.effects = vec![test_only_typed_effect(row, name)];
         let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
         assert_eq!(
-            encode_reply(&reply),
+            encode_reply_legacy(&reply),
             canonical,
             "transport mirrors the core writer over {name}"
         );
@@ -4091,19 +4113,19 @@ fn admission_focus_effect_carries_causal_metadata() {
             ..Default::default()
         },
     );
-    let seed = decode_request(&envelope_with_windows(
+    let seed = decode_request_legacy(&envelope_with_windows(
         serde_json::json!([v4_window("win-a", "out", [0, 0, 200, 200])]),
         "1",
         "req-1",
     ))
     .expect("seed decodes");
-    match engine.handle_report(&seed) {
-        WorldOutcome::Accepted(_) => {}
+    match engine.handle_report_legacy(&seed) {
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted seed, got {other:?}"),
     }
-    let report = decode_request(&envelope_with_newcomer("2", "req-2")).expect("decodes");
-    let reply = match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let report = decode_request_legacy(&envelope_with_newcomer("2", "req-2")).expect("decodes");
+    let reply = match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     assert_eq!(reply.effects.len(), 1, "one admission: {:?}", reply.effects);
@@ -4116,7 +4138,7 @@ fn admission_focus_effect_carries_causal_metadata() {
     assert_eq!(effect.command_seq, None);
     assert!(!effect.await_shown);
     assert!(!effect.is_explicit_focus_for(2));
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     assert_eq!(
         wire,
         tiler_core::world_report::encode_reply_canonical(&reply),
@@ -4153,9 +4175,9 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
             ..Default::default()
         },
     );
-    let seed = decode_request(&one_window_request()).expect("seed decodes");
-    match engine.handle_report(&seed) {
-        WorldOutcome::Accepted(_) => {}
+    let seed = decode_request_legacy(&one_window_request()).expect("seed decodes");
+    match engine.handle_report_legacy(&seed) {
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted seed, got {other:?}"),
     }
     let command = serde_json::json!({"op": "focus", "win": "win-a", "direction": "right"});
@@ -4169,9 +4191,9 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
         value["req"] = serde_json::Value::String("req-2".to_owned());
         value
     };
-    let first = decode_request(&first_value.to_string()).expect("decodes");
-    let before = match engine.handle_report(&first) {
-        WorldOutcome::Accepted(reply) => reply,
+    let first = decode_request_legacy(&first_value.to_string()).expect("decodes");
+    let before = match engine.handle_report_legacy(&first) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     assert!(
@@ -4189,9 +4211,9 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
         value["req"] = serde_json::Value::String("req-3".to_owned());
         value
     };
-    let retry = decode_request(&retry_value.to_string()).expect("decodes");
-    let reply = match engine.handle_report(&retry) {
-        WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
+    let retry = decode_request_legacy(&retry_value.to_string()).expect("decodes");
+    let reply = match engine.handle_report_legacy(&retry) {
+        LegacyWorldOutcome::Accepted(reply) | LegacyWorldOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     assert!(reply.command_consumed, "repeat consumes: {reply:?}");
@@ -4208,7 +4230,7 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
         "consumed command carries no result: {:?}",
         reply.command_result
     );
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     assert_eq!(
         wire,
         tiler_core::world_report::encode_reply_canonical(&reply),

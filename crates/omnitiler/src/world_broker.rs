@@ -1,7 +1,7 @@
 //! Sole world broker: one [`WorldEngine`], one service-owned sequencing namespace.
 //!
 //! The broker is the only [`WorldEngine`] owner on this bus. It mints one
-//! core generation and one broker adapter incarnation at construction, stamps
+//! core generation seed at construction (no broker incarnation), stamps
 //! every capture with its own monotonic observation/request sequences and its
 //! own [`std::time::Instant`] clock, and maps per-sender per-client command
 //! identities onto one global command sequence. JavaScript never owns
@@ -30,21 +30,25 @@
 //!   alongside it so a renderer without take-lane authority can paint
 //!   exactly what core published.
 //!
-//! Wire shapes (strict v3, no v1 compatibility route):
+//! Wire shapes (strict v4, no legacy compatibility route):
 //!
 //! ```text
-//! discovery: {"v":3,"adapter":A,"req":R}
-//!   `adapter` is the producer capture lifetime (the actuator's opaque
-//!   incarnation, e.g. `kwin-world-adapter-...`), NOT the broker
-//!   incarnation. Discovery binds exactly one active lifetime: rediscovery
-//!   of the same lifetime rebinds without reset, while a new lifetime
-//!   rotates the broker (fresh generation, fresh broker incarnation, all
-//!   capture/queue/result/presentation state dropped) so no old capture can
-//!   ever apply again. Replies `ready=false` with the serving generation,
-//!   the broker incarnation in `adapter`, and no applicable desired state.
-//! capture:  {"v":3,"adapter":A,"gen":G,"source":S,"sourceSeq":Q,
+//! discovery: connection-family messages dispatched by `type` through the
+//!   connection router (see [`WorldBroker::discover_connection`]): `handshake`
+//!   binds the single active producer capture lifetime, `settings` applies
+//!   under its own revision rules without resetting. `adapter` is the sole
+//!   adapter producer lifetime (the actuator's opaque incarnation), never a
+//!   broker incarnation: replies echo it back with the serving generation,
+//!   `ready=false`, and no applicable desired state. Every successful
+//!   handshake clears all broker ancillary state (sequencing, replay, queue,
+//!   result, presentation, watermark, gesture, wake), including the first
+//!   handshake whose generation equals the construction seed, so no old
+//!   capture can ever apply again.
+//! capture:  {"v":4,"adapter":A,"gen":G,"source":S,"sourceSeq":Q,
 //!            "nativeInvalid":"N","report":{...}}
-//!   `report` is the full projected v3 observation WITHOUT the broker-owned
+//!   `report` is the full normalized v4 observation (see
+//!   `tiler_protocol::world_protocol::decode_report_v4` for the exact
+//!   required/optional keys, including `rendererInput`) WITHOUT the broker-owned
 //!   keys (owner, adapter, gen, obs, reqSeq, req, cmdSeq, command,
 //!   monotonicMs): carrying any of them refuses as unknown-field, so there
 //!   is exactly one sequencing namespace. `adapter` is the producer capture
@@ -67,11 +71,11 @@
 //!   and "clock" (the broker dispatch-clock reading in milliseconds, the
 //!   epoch raw attempt timestamps must fit), with the terminal "result"
 //!   always nulled for the actuator lane; or the bounded in-band error
-//!   {"v":3,"outcome":"rejected","kind","message","gen"} extended with
+//!   {"v":4,"outcome":"rejected","kind","message","gen"} extended with
 //!   "source", "nativeInvalid" and "clock". Unknown envelopes bind source
 //!   "" and watermark "0", which never match a real source. Every response
 //!   stays within the reply cap, including the bound envelope expansion.
-//! queue:    {"v":3,"gen":G,"client":C,"clientCmd":"N","command":{...}}
+//! queue:    {"v":4,"gen":G,"client":C,"clientCmd":"N","command":{...}}
 //!   `gen` must equal the serving generation (stale generations refuse as
 //!   generation-mismatch before any high-water or queue state is touched, so
 //!   a delayed old-generation call can never file an old intent into the new
@@ -79,21 +83,21 @@
 //!   or below the per-sender per-client high-water it is a duplicate and
 //!   never re-executes. The client namespace binds the authenticated D-Bus
 //!   sender: one sender can neither take another's results nor move its
-//!   high-water. Replies {"v":3,"outcome":"queued","gen","client",
+//!   high-water. Replies {"v":4,"outcome":"queued","gen","client",
 //!   "clientCmd","globalCmd":"G"} (or "duplicate" with the same body).
-//! take:     {"v":3,"gen":G,"client":C,"clientCmd":"N"}
+//! take:     {"v":4,"gen":G,"client":C,"clientCmd":"N"}
 //!   `gen` binds like the queue lane: stale generations refuse before any
-//!   settlement or high-water access. Replies {"v":3,"outcome":"pending",
+//!   settlement or high-water access. Replies {"v":4,"outcome":"pending",
 //!   "gen"} while queued or undispatched;
-//!   {"v":3,"outcome":"ready","gen","globalCmd":"G","result":R|null} once the
+//!   {"v":4,"outcome":"ready","gen","globalCmd":"G","result":R|null} once the
 //!   command dispatches (re-readable while remembered, never replaying
-//!   effects); {"v":3,"outcome":"failed","gen","globalCmd":"G","kind",
+//!   effects); {"v":4,"outcome":"failed","gen","globalCmd":"G","kind",
 //!   "message"} when the world rejected the dispatched command (truthful
 //!   terminal settlement, never a null result masquerading as success);
-//!   {"v":3,"outcome":"duplicate","gen"} when forgotten through bounded
+//!   {"v":4,"outcome":"duplicate","gen"} when forgotten through bounded
 //!   eviction (never re-executes); or an unknown-command rejection.
-//! read:     {"v":3,"req":R}
-//!   Replies {"v":3,"outcome":"presentation","gen","req","rev","obs",
+//! read:     {"v":4,"req":R}
+//!   Replies {"v":4,"outcome":"presentation","gen","req","rev","obs",
 //!   "scopes","workspaces","outputs","windows","presentation","preview"} from
 //!   the last accepted capture, or a not-ready rejection before the first
 //!   one. Window rows carry no frame_op/clear_op tokens. `preview` is the
@@ -108,7 +112,11 @@
 //! capture whose queued command the world rejects settles that command
 //! terminally as `failed` with the core kind/message, then dispatches the
 //! same fresh facts observation-only so the stream never wedges (the command
-//! never re-executes). The fallback verdict binds for its source exactly
+//! never re-executes). A v4 semantic rejection is an accepted reply carrying
+//! the typed `Rejected` command result: the observation incorporates, the
+//! command settles terminally as `failed`, and that same reply continues the
+//! stream with no second dispatch (the actuator lane stays nulled; the
+//! requester collects through take). The fallback verdict binds for its source exactly
 //! like any other outcome but never touches the presentation cache (last
 //! accepted projection only), so a failed drain can never wedge or poison
 //! the cached full reply. Raw attempt timestamps (`attemptMs` in
@@ -127,30 +135,35 @@
 //! wait route never executes native work or engine logic; the follow-up
 //! capture does that.
 //!
-//! Wait wire (strict v3, same auth as capture/discover: same-UID plus the
-//! live KWin owner plus the bound producer lifetime and generation):
-//! wait:     {"v":3,"gen":G,"adapter":A,"nonce":N,"cursor":"C"}
+//! Wait wire (strict v4, same auth as capture/discover: same-UID plus the
+//! live KWin owner plus the bound producer lifetime and generation;
+//! generation binds before lifetime, so a stale generation refuses first):
+//! wait:     {"v":4,"gen":G,"adapter":A,"nonce":N,"cursor":"C"}
 //!   `adapter` is the discovery-bound producer lifetime, `nonce` the
 //!   waiter correlation fencing stale completions, `cursor` the last
 //!   delivered wake cursor ("0" before the first wake), all canonical.
-//!   Immediate `{"v":3,"outcome":"wake","gen":G,"cursor":"E"}` when the
+//!   Immediate `{"v":4,"outcome":"wake","gen":G,"cursor":"E"}` when the
 //!   broker event epoch `E` advanced past `cursor` AND a command is
 //!   pending; otherwise the single bounded server waiter parks (new
 //!   waiters supersede parked ones, rotations drop them). Epoch `E`
 //!   advances only on a newly queued command or an actual head drain
 //!   (never on exact-capture replay, malformed captures, or
 //!   rejected/no-drain captures), and the reply cursor only advances on a
-//!   delivered wake, so a lease `{"v":3,"outcome":"lease","gen":G,
+//!   delivered wake, so a lease `{"v":4,"outcome":"lease","gen":G,
 //!   "cursor":"C"}` (idle server lease, cursor unchanged) or a lost reply
 //!   re-armed with the old cursor can never skip unseen work.
-//!   `{"v":3,"outcome":"superseded","gen":G}` answers a replaced waiter.
+//!   `{"v":4,"outcome":"superseded","gen":G}` answers a replaced waiter.
 //!
-//! Raw classification capture (Stage 4): the inner `windows` lane carries
-//! KWin-shaped native facts plus the tolerant intent lanes; the broker
-//! normalizes them into projected v3 `WindowFact`s via
-//! `crate::kde_raw` before stamping, sequencing, or draining. Carrying
-//! legacy projected verdict keys inside a raw row refuses as
-//! `unknown-field`: there is no projected-fact fallback lane.
+//! Native facts ride normalized (Stage 4): the inner `report` already carries
+//! projected v4 facts through the strict v4 codec (including `rendererInput`,
+//! with `views` refused); there is no runtime raw KWin window normalization
+//! here. Window rows carry normalized native facts, never adapter verdicts:
+//! retired membership verdict keys hold the identifiable row fail-closed.
+//! The broker retains only the capture-only gesture lane (folded to the core
+//! ingress lane on a staged map that installs with the accepted reply) and
+//! the `nativeInvalidWitness` causal lane (validated and stripped before the
+//! strict core decode); both strip before decode, and absent keys pass
+//! through.
 //!
 //! Bounds: 128 queued commands (`queue-full` past that), 1024 settled plus
 //! 1024 retired terminal results with oldest-first eviction (duplicates of
@@ -189,14 +202,13 @@ use std::time::Instant;
 use serde_json::Map;
 
 use tiler_protocol::world_protocol::{
-    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldEngine, WorldOutcome, decode_request,
-    encode_error, encode_reply, is_valid_adapter_id, is_valid_request_id,
+    DecodedReplyV4, ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
+    WorldEngine, WorldOutcome, decode_request, encode_error, encode_reply, is_valid_adapter_id,
+    is_valid_request_id,
 };
 
-/// Broker-owned logical owner stamped on every core report.
-pub const BROKER_OWNER: &str = "omnitiler-broker";
 /// Broker wire contract version (equals the core/world protocol version).
-pub const BROKER_VERSION: u32 = 3;
+pub const BROKER_VERSION: u32 = 4;
 /// FIFO cap for commands awaiting the next actuator capture.
 pub const MAX_PENDING_COMMANDS: usize = 128;
 /// Cap for settled terminal results awaiting collection (oldest evicted).
@@ -207,8 +219,7 @@ pub const MAX_COMMAND_CLIENTS: usize = 1024;
 
 /// Keys the broker stamps itself; carrying any of them inside the inner
 /// capture report refuses as `unknown-field`.
-const BROKER_KEYS: [&str; 9] = [
-    "owner",
+const BROKER_KEYS: [&str; 8] = [
     "adapter",
     "gen",
     "obs",
@@ -297,8 +308,6 @@ enum FreshOutcome {
 #[derive(Debug)]
 pub struct WorldBroker {
     engine: WorldEngine,
-    generation: String,
-    incarnation: String,
     clock_base: Instant,
     next_observation_seq: u64,
     next_request_seq: u64,
@@ -374,21 +383,6 @@ pub(crate) struct BrokerWaiter {
     waker: Option<std::task::Waker>,
 }
 
-/// Mint a broker adapter incarnation (`broker-<nanos>-<pid>-<counter>`):
-/// opaque alphabet, within the id bound.
-#[must_use]
-pub fn mint_broker_incarnation() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("broker-{nanos}-{pid}-{count}")
-}
-
 /// Authenticated sender namespace: the D-Bus unique name of the caller when
 /// it looks like one (`:1.42` shape), otherwise any non-empty bounded opaque
 /// token (alphanumeric plus `:`, `-`, `_`, `.`, at most 128 bytes) such as a
@@ -432,9 +426,8 @@ pub fn is_canonical_u64(text: &str) -> bool {
 }
 
 impl WorldBroker {
-    /// Fresh sole broker: new core generation, new broker incarnation,
-    /// default engine config (the Linux route; no stale per-output alignment
-    /// option exists in core).
+    /// Fresh sole broker: new core generation seed (the Linux route; no stale
+    /// per-output alignment option exists in core).
     #[must_use]
     pub fn new() -> Self {
         Self::fresh()
@@ -442,7 +435,6 @@ impl WorldBroker {
 
     fn fresh() -> Self {
         let generation = crate::world_service::mint_core_generation();
-        let incarnation = mint_broker_incarnation();
         // The Linux service carrier opts in to neutral focused-fullscreen
         // presentation suspension: KWin only offers truthful `fullScreen`,
         // never game identity, so the core suspends on the focused
@@ -452,8 +444,6 @@ impl WorldBroker {
             .with_focused_fullscreen_presentation_suspension();
         Self {
             engine,
-            generation,
-            incarnation,
             clock_base: Instant::now(),
             next_observation_seq: 1,
             next_request_seq: 1,
@@ -478,7 +468,7 @@ impl WorldBroker {
         }
     }
 
-    /// Replace backend state under a fresh generation/incarnation (poison or
+    /// Replace backend state under a fresh generation (poison or
     /// counter exhaustion). Queued and settled command state drops with the
     /// old namespace; issuers re-establish after re-discovery. A displaced
     /// parked waiter wakes immediately with generation-mismatch against the
@@ -491,16 +481,10 @@ impl WorldBroker {
         }
     }
 
-    /// Serving core generation (the discovery/bootstrap binding).
+    /// Serving core generation (the handshake binding; core owns it).
     #[must_use]
     pub fn generation(&self) -> &str {
-        &self.generation
-    }
-
-    /// Service-owned broker incarnation stamped on every core report.
-    #[must_use]
-    pub fn incarnation(&self) -> &str {
-        &self.incarnation
+        self.engine.core_generation()
     }
 
     /// Service-owned monotonic clock in milliseconds since broker
@@ -515,27 +499,65 @@ impl WorldBroker {
             .unwrap_or(u64::MAX)
     }
 
-    /// Discovery/bootstrap body: binds the producer capture lifetime, then
-    /// returns the generation plus capabilities with `ready=false` and no
-    /// applicable desired state. Rediscovery of the same lifetime rebinds
-    /// without reset (generation, floor, caches, and queue state survive);
-    /// a new lifetime rotates the broker first (fresh generation, fresh
-    /// broker incarnation, all capture/queue/result/presentation state
-    /// dropped) so no capture from the old lifetime can ever apply again.
-    /// The reply's adapter field carries the broker incarnation (authority
-    /// stays with the broker); the caller's lifetime correlates via `req`.
-    #[must_use]
-    pub fn discovery_body(&mut self, adapter: &str, request_id: &str) -> String {
-        if self.capture_lifetime.as_deref() != Some(adapter) {
+    /// Discovery route for v4 connection-family messages (`handshake` and
+    /// `settings`, dispatched by `type` through the connection router).
+    /// Only a successful handshake resets: every handshake reaches core and
+    /// starts fresh, so all broker sequencing, replay, queue, result, and
+    /// presentation state drops with the old lifetime and the producer
+    /// lifetime rebinds. Settings keep their revision rules and never reset.
+    /// The engine binds at handshake; the broker forwards the producer
+    /// identity as supplied with no application-identity policy.
+    pub fn discover_connection(&mut self, input: &str) -> Result<String, BrokerError> {
+        if input.len() > WORLD_MAX_REQUEST_BYTES {
+            return Err(BrokerError::Oversized);
+        }
+        let reply = match tiler_protocol::connection_protocol::route_connection_request(
+            &mut self.engine,
+            input,
+        ) {
+            Ok(reply) => reply,
+            Err(e) => {
+                if e.0 == "oversized" {
+                    return Err(BrokerError::Oversized);
+                }
+                return Ok(self.error_body("malformed", "request is malformed"));
+            }
+        };
+        if reply.len() > WORLD_MAX_REPLY_BYTES {
+            return Err(BrokerError::Oversized);
+        }
+        if let Ok(handshake) = tiler_protocol::connection_protocol::decode_handshake_reply(&reply)
+            && handshake.kind.is_none()
+        {
+            // Every successful handshake resets, including the first
+            // one whose generation equals the construction seed.
             let displaced = self.take_parked_waiter();
-            *self = Self::fresh();
-            self.capture_lifetime = Some(adapter.to_owned());
+            let clock_base = Instant::now();
+            self.pending.clear();
+            self.highwater.clear();
+            self.settled.clear();
+            self.settled_order.clear();
+            self.retired.clear();
+            self.retired_order.clear();
+            self.presentation = None;
+            self.presentation_covered = None;
+            self.source_floor = 0;
+            self.watermarks.clear();
+            self.gesture_map = crate::kde_gesture::KdeGestureMap::new();
+            self.responses.clear();
+            self.response_order.clear();
+            self.wake_epoch = 0;
+            self.wait_ready = None;
+            self.next_observation_seq = 1;
+            self.next_request_seq = 1;
+            self.next_command_seq = 1;
+            self.clock_base = clock_base;
             if let Some(waiter) = displaced {
                 self.complete_displaced(waiter);
             }
+            self.capture_lifetime = Some(handshake.adapter);
         }
-        let incarnation = self.incarnation.clone();
-        encode_reply(&self.engine.bootstrap_reply(&incarnation, request_id))
+        Ok(reply)
     }
 
     /// Bounded in-band rejection bound to the serving generation, with the
@@ -544,7 +566,7 @@ impl WorldBroker {
     #[must_use]
     pub fn error_body(&self, kind: &str, message: &str) -> String {
         bind_response(
-            &encode_error(kind, message, &self.generation),
+            &encode_error(kind, message, self.generation()),
             "",
             0,
             self.monotonic_ms(),
@@ -555,7 +577,7 @@ impl WorldBroker {
     /// watermark, and clock.
     fn bound_error(&self, kind: &str, message: &str, parsed: &ParsedCapture, clock: u64) -> String {
         bind_response(
-            &encode_error(kind, message, &self.generation),
+            &encode_error(kind, message, self.generation()),
             &parsed.source,
             parsed.native_invalid,
             clock,
@@ -563,7 +585,7 @@ impl WorldBroker {
     }
 
     /// Evaluate one capture envelope end to end: bound the bytes, parse the
-    /// strict v3 envelope, replay byte-identical redeliveries of remembered
+    /// strict v4 envelope, replay byte-identical redeliveries of remembered
     /// sources without touching the engine (never draining from an old
     /// capture), otherwise bind generation/lifetime/watermark/source
     /// sequence, stamp the broker-owned sequencing namespace, validate
@@ -580,7 +602,7 @@ impl WorldBroker {
             Ok(parsed) => parsed,
             Err(failure) => {
                 return Ok(bind_response(
-                    &encode_error(failure.kind, failure.message, &self.generation),
+                    &encode_error(failure.kind, failure.message, self.generation()),
                     &failure.source,
                     failure.native_invalid,
                     self.monotonic_ms(),
@@ -605,7 +627,7 @@ impl WorldBroker {
         let clock_now = self.monotonic_ms();
         // Generation binding: delayed captures from a rotated broker refuse
         // without applying.
-        if parsed.generation != self.generation {
+        if parsed.generation != self.generation() {
             return Ok(self.bound_error(
                 "generation-mismatch",
                 "generation mismatch",
@@ -642,13 +664,15 @@ impl WorldBroker {
                 clock_now,
             ));
         }
-        // Stage 4 raw classification capture: normalize the KWin-shaped raw
-        // `windows` lane into projected v3 facts before any sequencing,
-        // floor, watermark, queue, or presentation change. A malformed raw
-        // envelope is remembered for exact replay like any other rejection
-        // but drains nothing and consumes no counters. Legacy projected
-        // verdict keys inside a raw row refuse as unknown-field: there is
-        // no projected-fact fallback lane.
+        // v4 capture: the inner report already carries projected v4 facts
+        // (the strict v4 codec owns the shape, including `rendererInput`).
+        // The retired v3 raw KWin classification (`predicate`/`hostOwned`
+        // adapter verdicts) has no v4 translation and is not attempted here:
+        // a v4 report carries no such keys, and carrying them refuses as
+        // `unknown-field` at the strict decode below. The raw gesture and
+        // invalidation-witness lanes below are capture-only strips that stay
+        // v4-compatible (absent keys pass through, present keys strip before
+        // decode).
         let ParsedCapture {
             adapter,
             generation,
@@ -658,22 +682,10 @@ impl WorldBroker {
             inner,
         } = parsed;
         let mut raw_inner = inner;
-        if let Err((kind, message)) = crate::kde_raw::normalize_raw_windows(&mut raw_inner) {
-            let refused = ParsedCapture {
-                adapter,
-                generation,
-                source,
-                source_seq,
-                native_invalid,
-                inner: Map::new(),
-            };
-            return self.remember_rejection(&refused, envelope, kind, message, clock_now);
-        }
         // Broker-owned gesture normalization: the raw native lane folds to
         // the core ingress lane (script never mints) on a staged map clone
-        // before sequencing. Like the raw classification above, a malformed
-        // lane remembers an exact-replay rejection and never installs map
-        // state. The staged map installs only with an accepted
+        // before sequencing. A malformed lane remembers an exact-replay
+        // rejection and never installs map state. The staged map installs only with an accepted
         // `FreshOutcome::Reply` below; every other outcome (rejection,
         // decode failure, attempt-clock refusal, fallback rejection)
         // discards the staged mutation so a malformed report with a valid
@@ -897,9 +909,8 @@ impl WorldBroker {
         command: Option<&QueuedCommand>,
         clock: u64,
     ) {
-        inner.insert("owner".to_owned(), json_string(BROKER_OWNER));
-        inner.insert("adapter".to_owned(), json_string(&self.incarnation));
-        inner.insert("gen".to_owned(), json_string(&self.generation));
+        inner.insert("adapter".to_owned(), json_string(&parsed.adapter));
+        inner.insert("gen".to_owned(), json_string(self.generation()));
         inner.insert("obs".to_owned(), json_string(&observation_seq.to_string()));
         inner.insert("reqSeq".to_owned(), json_string(&request_seq.to_string()));
         inner.insert("req".to_owned(), json_string(&parsed.source));
@@ -964,15 +975,27 @@ impl WorldBroker {
             WorldOutcome::Accepted(reply)
             | WorldOutcome::Duplicate(reply)
             | WorldOutcome::CommandConsumed(reply) => {
-                let encoded = encode_reply(&reply);
-                if encoded.len() > WORLD_MAX_REPLY_BYTES {
-                    return Err(BrokerError::Oversized);
+                // v4 semantic rejection is an accepted reply carrying a
+                // typed `Rejected` result: the observation incorporates,
+                // the command settles terminally as failed, and this same
+                // reply continues the stream (no second dispatch).
+                if let Some(tiler_core::world_report::CommandResult::Rejected { kind }) =
+                    &reply.command_result
+                {
+                    let kind_str = kind.as_str();
+                    let encoded = encode_world_reply(&reply)?;
+                    self.pop_settle_failed(queued, kind_str, kind_str)?;
+                    // A rejected command never produces a drag preview:
+                    // any preview here is session-produced.
+                    Ok((FreshOutcome::Reply(encoded), false))
+                } else {
+                    let encoded = encode_world_reply(&reply)?;
+                    let result = result_of(&encoded);
+                    self.pop_settle_ready(queued, result)?;
+                    // The reply result is the drained command's own terminal
+                    // outcome: a `DragPreview` result here is command-produced.
+                    Ok((FreshOutcome::Reply(encoded), true))
                 }
-                let result = result_of(&encoded);
-                self.pop_settle_ready(queued, result)?;
-                // The reply result is the drained command's own terminal
-                // outcome: a `DragPreview` result here is command-produced.
-                Ok((FreshOutcome::Reply(encoded), true))
             }
             WorldOutcome::Rejected { kind, message } => {
                 self.pop_settle_failed(queued, kind, message)?;
@@ -1013,10 +1036,7 @@ impl WorldBroker {
             WorldOutcome::Accepted(reply)
             | WorldOutcome::Duplicate(reply)
             | WorldOutcome::CommandConsumed(reply) => {
-                let encoded = encode_reply(&reply);
-                if encoded.len() > WORLD_MAX_REPLY_BYTES {
-                    return Err(BrokerError::Oversized);
-                }
+                let encoded = encode_world_reply(&reply)?;
                 Ok(Ok(encoded))
             }
             WorldOutcome::Rejected { kind, message } => Ok(Err((kind, message))),
@@ -1089,10 +1109,10 @@ impl WorldBroker {
             Ok(parsed) => parsed,
             Err((kind, message)) => return Ok(self.error_body(kind, message)),
         };
-        if generation != self.generation {
+        if generation != self.generation() {
             return Ok(self.error_body("generation-mismatch", "generation mismatch"));
         }
-        if !command_shape_valid(&self.generation, &command) {
+        if !command_shape_valid(self.generation(), &command) {
             return Ok(self.error_body("snapshot-invalid", "command-invalid"));
         }
         let namespace = (sender.clone(), client.clone());
@@ -1108,7 +1128,7 @@ impl WorldBroker {
                 .or_else(|| self.retired.get(&key).map(Settlement::global_seq));
             return Ok(queue_reply(
                 "duplicate",
-                &self.generation,
+                self.generation(),
                 &client,
                 &client_cmd.to_string(),
                 global,
@@ -1136,7 +1156,7 @@ impl WorldBroker {
         self.complete_waiter_if_work();
         Ok(queue_reply(
             "queued",
-            &self.generation,
+            self.generation(),
             &client,
             &client_cmd_text,
             Some(global_seq),
@@ -1166,25 +1186,25 @@ impl WorldBroker {
             Ok(parsed) => parsed,
             Err((kind, message)) => return Ok(self.error_body(kind, message)),
         };
-        if generation != self.generation {
+        if generation != self.generation() {
             return Ok(self.error_body("generation-mismatch", "generation mismatch"));
         }
         let key = (sender.clone(), client.clone(), client_cmd.to_string());
         if self.pending.iter().any(|q| q.key() == key) {
-            return Ok(take_pending_reply(&self.generation));
+            return Ok(take_pending_reply(self.generation()));
         }
         if let Some(settled) = self.settled.remove(&key) {
             self.settled_order.retain(|k| k != &key);
-            let reply = take_settlement_reply(&self.generation, &settled);
+            let reply = take_settlement_reply(self.generation(), &settled);
             self.retire_settlement(key, settled);
             return Ok(reply);
         }
         if let Some(retired) = self.retired.get(&key) {
-            return Ok(take_settlement_reply(&self.generation, retired));
+            return Ok(take_settlement_reply(self.generation(), retired));
         }
         let mark = self.highwater.get(&(sender, client)).copied().unwrap_or(0);
         if client_cmd <= mark {
-            Ok(take_duplicate_reply(&self.generation))
+            Ok(take_duplicate_reply(self.generation()))
         } else {
             Ok(self.error_body("unknown-command", "unknown command"))
         }
@@ -1214,7 +1234,7 @@ impl WorldBroker {
         };
         Ok(project_read(
             cached,
-            &self.generation,
+            self.generation(),
             &req,
             self.presentation_covered.as_ref(),
         ))
@@ -1265,8 +1285,9 @@ impl WorldBroker {
             return;
         }
         let reply = format!(
-            "{{\"v\":3,\"outcome\":\"wake\",\"gen\":\"{}\",\"cursor\":\"{}\"}}",
-            self.generation, self.wake_epoch
+            "{{\"v\":4,\"outcome\":\"wake\",\"gen\":\"{}\",\"cursor\":\"{}\"}}",
+            self.generation(),
+            self.wake_epoch
         );
         self.wait_ready = Some((waiter.nonce.clone(), reply));
         if let Some(waker) = waiter.waker {
@@ -1284,7 +1305,7 @@ impl WorldBroker {
         generation: &str,
         cursor: u64,
     ) -> Result<Option<String>, String> {
-        if generation != self.generation {
+        if generation != self.generation() {
             return Err(self.error_body("generation-mismatch", "generation mismatch"));
         }
         if self.capture_lifetime.as_deref() != Some(lifetime) {
@@ -1374,8 +1395,9 @@ impl WorldBroker {
     /// is already established by the caller).
     fn wait_wake_body(&self) -> String {
         format!(
-            "{{\"v\":3,\"outcome\":\"wake\",\"gen\":\"{}\",\"cursor\":\"{}\"}}",
-            self.generation, self.wake_epoch
+            "{{\"v\":4,\"outcome\":\"wake\",\"gen\":\"{}\",\"cursor\":\"{}\"}}",
+            self.generation(),
+            self.wake_epoch
         )
     }
 
@@ -1384,8 +1406,8 @@ impl WorldBroker {
     #[must_use]
     pub fn wait_lease_body(&self, cursor: u64) -> String {
         format!(
-            "{{\"v\":3,\"outcome\":\"lease\",\"gen\":\"{}\",\"cursor\":\"{cursor}\"}}",
-            self.generation
+            "{{\"v\":4,\"outcome\":\"lease\",\"gen\":\"{}\",\"cursor\":\"{cursor}\"}}",
+            self.generation()
         )
     }
 
@@ -1393,8 +1415,8 @@ impl WorldBroker {
     #[must_use]
     pub fn wait_superseded_body(&self) -> String {
         format!(
-            "{{\"v\":3,\"outcome\":\"superseded\",\"gen\":\"{}\"}}",
-            self.generation
+            "{{\"v\":4,\"outcome\":\"superseded\",\"gen\":\"{}\"}}",
+            self.generation()
         )
     }
 
@@ -1505,8 +1527,8 @@ fn is_generation_token(text: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// Strict v3 capture envelope parse: exact keys
-/// (`v,adapter,gen,source,sourceSeq,nativeInvalid,report`), v3 versions in
+/// Strict v4 capture envelope parse: exact keys
+/// (`v,adapter,gen,source,sourceSeq,nativeInvalid,report`), v4 versions in
 /// both layers, opaque lifetime, generation alphabet, opaque source
 /// correlation, canonical per-lifetime source sequence, canonical watermark,
 /// object report, and no broker-owned key inside the report.
@@ -1603,7 +1625,7 @@ fn parse_capture_envelope(envelope: &str) -> Result<ParsedCapture, CaptureFailur
     })
 }
 
-/// Strict queue-request parse: exact keys, v3, serving generation binding,
+/// Strict queue-request parse: exact keys, v4, serving generation binding,
 /// opaque client, canonical per-client command id, object command.
 fn parse_queue_request(
     request: &str,
@@ -1661,7 +1683,7 @@ fn parse_queue_request(
     ))
 }
 
-/// Strict take-request parse: exact keys, v3, serving generation binding,
+/// Strict take-request parse: exact keys, v4, serving generation binding,
 /// opaque client, canonical id.
 fn parse_take_request(
     request: &str,
@@ -1708,7 +1730,7 @@ fn parse_take_request(
 }
 
 /// Strict wait-request parse: exact keys (`v,gen,adapter,nonce,cursor`),
-/// v3, serving-generation binding, discovery-bound producer lifetime,
+/// v4, serving-generation binding, discovery-bound producer lifetime,
 /// opaque waiter correlation, canonical cursor.
 pub fn parse_wait_request(
     request: &str,
@@ -1765,7 +1787,7 @@ pub fn parse_wait_request(
     ))
 }
 
-/// Strict read-request parse: exact keys, v3, opaque correlation.
+/// Strict read-request parse: exact keys, v4, opaque correlation.
 fn parse_read_request(request: &str) -> Result<String, (&'static str, &'static str)> {
     let value: serde_json::Value =
         serde_json::from_str(request).map_err(|_| ("malformed", "request is malformed"))?;
@@ -1814,21 +1836,14 @@ fn command_shape_valid(generation: &str, command: &serde_json::Value) -> bool {
 /// inventory, so only inventory-free commands queue.
 fn minimal_skeleton() -> serde_json::Map<String, serde_json::Value> {
     serde_json::from_str::<serde_json::Value>(
-        "{\"v\":3,\"mode\":\"per-output-local\",\
-          \"screens\":[],\"windows\":[],\"views\":[],\"closed\":[],\
-          \"hostOwned\":false,\"equalCount\":false,\"native\":[],\
-          \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
-          \"defaultTiled\":true,\"focused\":\"\",\
-          \"complete\":false,\"gesture\":false,\"switchTarget\":\"cursor-output\",\
-          \"freshPlacement\":\"cursor-output-last-focused\",\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
-          \"actionOutputs\":[],\"focusFollowsCursor\":false,\"cursorWarp\":false,\
-          \"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
-          \"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\
-          \"shell\":false,\"frame\":null,\"borderEnabled\":false,\
-          \"underlayEnabled\":false,\"borderGap\":0,\"borderWidth\":0,\
-          \"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\
-          \"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}}",
+        "{\"v\":4,\"screens\":[],\"windows\":[],\"closed\":[],\"native\":[],\
+          \"focused\":\"\",\"complete\":true,\"gesture\":false,\"cursor\":null,\
+          \"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[],\
+          \"presentation\":{\"foreground\":\"\",\"minimized\":null,\"maximized\":null,\
+          \"fullscreen\":null,\"hostHidden\":null,\"hiddenWorkspace\":null,\"frame\":null,\
+          \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
+          \"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\
+          \"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}",
     )
     .expect("skeleton is a JSON object")
     .as_object()
@@ -1843,7 +1858,6 @@ fn stamp_probe(
     generation: &str,
     command: Option<&serde_json::Value>,
 ) {
-    inner.insert("owner".to_owned(), json_string(BROKER_OWNER));
     inner.insert("adapter".to_owned(), json_string("broker-probe"));
     inner.insert("gen".to_owned(), json_string(generation));
     inner.insert("obs".to_owned(), json_string("1"));
@@ -1859,6 +1873,30 @@ fn stamp_probe(
             inner.insert("cmdSeq".to_owned(), serde_json::Value::Null);
             inner.insert("command".to_owned(), serde_json::Value::Null);
         }
+    }
+}
+
+/// Checked canonical encode of one v4 engine reply for the broker lane.
+/// The wire presence flag mirrors the typed presentation so the strict
+/// codec accepts its own output. Any encode failure fails closed as
+/// oversize (the caller never serves a partial reply).
+fn encode_world_reply(
+    reply: &tiler_core::world_report::WorldReplyV4,
+) -> Result<String, BrokerError> {
+    let decoded = DecodedReplyV4 {
+        reply: reply.clone(),
+        wire: ReplyWireOptionals {
+            suspended_output_present: reply.presentation.suspended_output.is_some(),
+        },
+    };
+    match encode_reply(&decoded) {
+        Ok(encoded) => {
+            if encoded.len() > WORLD_MAX_REPLY_BYTES {
+                return Err(BrokerError::Oversized);
+            }
+            Ok(encoded)
+        }
+        Err(_) => Err(BrokerError::Oversized),
     }
 }
 
@@ -1981,14 +2019,14 @@ fn queue_reply(
         None => "null".to_owned(),
     };
     format!(
-        "{{\"v\":3,\"outcome\":\"{outcome}\",\"gen\":\"{generation}\",\
+        "{{\"v\":4,\"outcome\":\"{outcome}\",\"gen\":\"{generation}\",\
           \"client\":\"{client}\",\"clientCmd\":\"{client_cmd}\",\
           \"globalCmd\":{global_json}}}"
     )
 }
 
 fn take_pending_reply(generation: &str) -> String {
-    format!("{{\"v\":3,\"outcome\":\"pending\",\"gen\":\"{generation}\"}}")
+    format!("{{\"v\":4,\"outcome\":\"pending\",\"gen\":\"{generation}\"}}")
 }
 
 /// Terminal take reply for one settlement: `ready` with the core result
@@ -1997,7 +2035,7 @@ fn take_pending_reply(generation: &str) -> String {
 fn take_settlement_reply(generation: &str, settlement: &Settlement) -> String {
     match settlement {
         Settlement::Ready { global_seq, result } => format!(
-            "{{\"v\":3,\"outcome\":\"ready\",\"gen\":\"{generation}\",\
+            "{{\"v\":4,\"outcome\":\"ready\",\"gen\":\"{generation}\",\
               \"globalCmd\":\"{global_seq}\",\"result\":{result}}}"
         ),
         Settlement::Failed {
@@ -2005,14 +2043,14 @@ fn take_settlement_reply(generation: &str, settlement: &Settlement) -> String {
             kind,
             message,
         } => format!(
-            "{{\"v\":3,\"outcome\":\"failed\",\"gen\":\"{generation}\",\
+            "{{\"v\":4,\"outcome\":\"failed\",\"gen\":\"{generation}\",\
               \"globalCmd\":\"{global_seq}\",\"kind\":\"{kind}\",\"message\":\"{message}\"}}"
         ),
     }
 }
 
 fn take_duplicate_reply(generation: &str) -> String {
-    format!("{{\"v\":3,\"outcome\":\"duplicate\",\"gen\":\"{generation}\"}}")
+    format!("{{\"v\":4,\"outcome\":\"duplicate\",\"gen\":\"{generation}\"}}")
 }
 
 /// Causal coverage witness of one accepted capture: the
@@ -2274,12 +2312,148 @@ fn json_string(value: &str) -> serde_json::Value {
 mod tests {
     use super::*;
 
+    fn handshake_message(adapter: &str, req: &str) -> String {
+        format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"{req}\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+              \"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+              \"maximize\":false,\"fullscreen\":false,\"nativeSticky\":false,\"above\":false,\
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        )
+    }
+
+    fn settings_message(adapter: &str, generation: &str, req: &str) -> String {
+        format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+              \"req\":\"{req}\",\"rev\":\"1\",\"values\":{{}}}}"
+        )
+    }
+
     #[test]
-    fn incarnation_is_opaque_and_unique() {
-        let first = mint_broker_incarnation();
-        let second = mint_broker_incarnation();
-        assert_ne!(first, second);
-        assert!(is_valid_adapter_id(&first));
+    fn handshake_binds_producer_lifetime_without_broker_incarnation() {
+        let mut broker = WorldBroker::new();
+        let reply: serde_json::Value = serde_json::from_str(
+            &broker
+                .discover_connection(&handshake_message("lifetime-a", "req-0"))
+                .expect("handshake routes"),
+        )
+        .expect("handshake reply is JSON");
+        assert_eq!(reply["adapter"], "lifetime-a");
+        assert_eq!(reply["req"], "req-0");
+        assert_eq!(reply["ready"], false);
+        let generation = reply["gen"].as_str().expect("generation").to_owned();
+        assert!(!generation.is_empty());
+        assert_eq!(broker.generation(), generation.as_str());
+        // No broker incarnation exists: the reply adapter is the producer
+        // lifetime, and a second lifetime binds a fresh generation.
+        let reply_b: serde_json::Value = serde_json::from_str(
+            &broker
+                .discover_connection(&handshake_message("lifetime-b", "req-1"))
+                .expect("handshake routes"),
+        )
+        .expect("handshake reply is JSON");
+        assert_eq!(reply_b["adapter"], "lifetime-b");
+        let generation_b = reply_b["gen"].as_str().expect("generation").to_owned();
+        assert_ne!(generation_b, generation);
+        assert_eq!(broker.generation(), generation_b.as_str());
+        // Settings dispatch through the same route without resetting.
+        let settings: serde_json::Value = serde_json::from_str(
+            &broker
+                .discover_connection(&settings_message("lifetime-b", &generation_b, "req-2"))
+                .expect("settings routes"),
+        )
+        .expect("settings reply is JSON");
+        assert_eq!(settings["adapter"], "lifetime-b");
+        assert_eq!(
+            settings["gen"],
+            serde_json::Value::String(generation_b.clone())
+        );
+        assert_eq!(broker.generation(), generation_b.as_str());
+    }
+
+    #[test]
+    fn initial_handshake_drops_prebinding_queue_state() {
+        let mut broker = WorldBroker::new();
+        let generation = broker.generation().to_owned();
+        let queue = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+              \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+        );
+        let filed: serde_json::Value =
+            serde_json::from_str(&broker.queue_command(":1.42", &queue).expect("in-band"))
+                .expect("JSON");
+        assert_eq!(filed["outcome"], "queued");
+        broker
+            .discover_connection(&handshake_message("lifetime-a", "req-0"))
+            .expect("handshake routes");
+        assert_eq!(broker.generation(), generation);
+        assert!(broker.pending.is_empty());
+        assert!(broker.highwater.is_empty());
+        assert_eq!(broker.next_command_seq, 1);
+        assert_eq!(broker.capture_lifetime.as_deref(), Some("lifetime-a"));
+    }
+
+    #[test]
+    fn repeat_handshake_resets_broker_state() {
+        let mut broker = WorldBroker::new();
+        let reply: serde_json::Value = serde_json::from_str(
+            &broker
+                .discover_connection(&handshake_message("lifetime-a", "req-0"))
+                .expect("handshake routes"),
+        )
+        .expect("handshake reply is JSON");
+        let gen_a = reply["gen"].as_str().expect("gen").to_owned();
+        let queue = format!(
+            "{{\"v\":4,\"gen\":\"{gen_a}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+              \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+        );
+        let filed: serde_json::Value =
+            serde_json::from_str(&broker.queue_command(":1.42", &queue).expect("in-band"))
+                .expect("JSON");
+        assert_eq!(filed["outcome"], "queued");
+        // Every handshake reaches core and starts fresh: repeating the same
+        // lifetime resets onto a new generation and drops queued state.
+        let reply2: serde_json::Value = serde_json::from_str(
+            &broker
+                .discover_connection(&handshake_message("lifetime-a", "req-1"))
+                .expect("handshake routes"),
+        )
+        .expect("handshake reply is JSON");
+        let gen_b = reply2["gen"].as_str().expect("gen").to_owned();
+        assert_ne!(gen_b, gen_a);
+        let take =
+            format!("{{\"v\":4,\"gen\":\"{gen_b}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}");
+        let dropped: serde_json::Value =
+            serde_json::from_str(&broker.take_result(":1.42", &take).expect("in-band"))
+                .expect("JSON");
+        assert_eq!(dropped["outcome"], "rejected");
+        assert_eq!(dropped["kind"], "unknown-command");
+    }
+
+    #[test]
+    fn stale_generation_wait_refuses_before_identity_after_reset() {
+        let mut broker = WorldBroker::new();
+        let reply: serde_json::Value = serde_json::from_str(
+            &broker
+                .discover_connection(&handshake_message("lifetime-a", "req-0"))
+                .expect("handshake routes"),
+        )
+        .expect("handshake reply is JSON");
+        let gen_a = reply["gen"].as_str().expect("gen").to_owned();
+        let _ = broker
+            .discover_connection(&handshake_message("lifetime-b", "req-1"))
+            .expect("handshake routes");
+        // Stale generation answers mismatch before producer identity: the
+        // lifetime is also unknown under the fresh binding, but generation
+        // binds first.
+        let err = broker
+            .wait_immediate("lifetime-a", &gen_a, 0)
+            .expect_err("stale refuses");
+        let parsed: serde_json::Value = serde_json::from_str(&err).expect("JSON");
+        assert_eq!(parsed["outcome"], "rejected");
+        assert_eq!(parsed["kind"], "generation-mismatch");
     }
 
     #[test]
@@ -2303,10 +2477,10 @@ mod tests {
     }
 
     #[test]
-    fn capture_envelope_rejects_broker_keys_and_v1() {
-        let inner = r#"{"v":3,"obs":"1"}"#;
+    fn capture_envelope_rejects_broker_keys_and_legacy_versions() {
+        let inner = r#"{"v":4,"obs":"1"}"#;
         let with_owner = format!(
-            r#"{{"v":3,"adapter":"a-1","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{inner}}}"#
+            r#"{{"v":4,"adapter":"a-1","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{inner}}}"#
         );
         // `obs` inside the report is broker-owned, but the outer envelope
         // parsed, so the rejection still binds the source watermark.
@@ -2315,29 +2489,29 @@ mod tests {
         assert_eq!(failure.message, "request contains an unknown field");
         assert_eq!(failure.source, "src-1");
         assert_eq!(failure.native_invalid, 3);
-        let v1 = r#"{"v":1,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":3}}"#;
+        let v1 = r#"{"v":1,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":1}}"#;
         let failure = parse_capture_envelope(v1).expect_err("v1 refuses");
         assert_eq!(failure.kind, "unsupported-version");
         assert_eq!(failure.source, "");
         let v2 = r#"{"v":2,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":2}}"#;
-        let failure = parse_capture_envelope(v2).expect_err("v2 refuses after v3 cutover");
+        let failure = parse_capture_envelope(v2).expect_err("v2 refuses after v4 cutover");
         assert_eq!(failure.kind, "unsupported-version");
         assert_eq!(failure.source, "");
-        let bad_watermark = r#"{"v":3,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"03","report":{"v":3}}"#;
+        let bad_watermark = r#"{"v":4,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"03","report":{"v":4}}"#;
         let failure = parse_capture_envelope(bad_watermark).expect_err("watermark refuses");
         assert_eq!(failure.kind, "unknown-value");
         assert_eq!(failure.source, "");
         // The per-lifetime source sequence is mandatory and canonical: a
         // missing, non-canonical, or overflowing sequence refuses as a
         // value, never as a match.
-        let no_seq = r#"{"v":3,"adapter":"a","gen":"w-1","source":"src-1","nativeInvalid":"3","report":{"v":3}}"#;
+        let no_seq = r#"{"v":4,"adapter":"a","gen":"w-1","source":"src-1","nativeInvalid":"3","report":{"v":4}}"#;
         assert_eq!(
             parse_capture_envelope(no_seq)
                 .expect_err("sourceSeq required")
                 .kind,
             "malformed"
         );
-        let bad_seq = r#"{"v":3,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"01","nativeInvalid":"3","report":{"v":3}}"#;
+        let bad_seq = r#"{"v":4,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"01","nativeInvalid":"3","report":{"v":4}}"#;
         assert_eq!(
             parse_capture_envelope(bad_seq)
                 .expect_err("sequence canonical")
@@ -2345,14 +2519,14 @@ mod tests {
             "unknown-value"
         );
         // Generation and adapter are mandatory envelope bindings now.
-        let no_gen = r#"{"v":3,"adapter":"a","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":3}}"#;
+        let no_gen = r#"{"v":4,"adapter":"a","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":4}}"#;
         assert_eq!(
             parse_capture_envelope(no_gen)
                 .expect_err("gen required")
                 .kind,
             "malformed"
         );
-        let no_adapter = r#"{"v":3,"gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":3}}"#;
+        let no_adapter = r#"{"v":4,"gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":4}}"#;
         assert_eq!(
             parse_capture_envelope(no_adapter)
                 .expect_err("adapter required")
@@ -2372,9 +2546,9 @@ mod tests {
 
     #[test]
     fn queue_and_take_bind_the_serving_generation() {
-        // Strict v3: the generation is mandatory and token-shaped on both
+        // Strict v4: the generation is mandatory and token-shaped on both
         // lanes; a missing key is malformed, a bad token an unknown value.
-        let no_gen_queue = "{\"v\":3,\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+        let no_gen_queue = "{\"v\":4,\"client\":\"panel-1\",\"clientCmd\":\"1\",\
             \"command\":{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}";
         assert_eq!(
             parse_queue_request(no_gen_queue)
@@ -2382,7 +2556,7 @@ mod tests {
                 .0,
             "malformed"
         );
-        let bad_gen_queue = "{\"v\":3,\"gen\":\"GEN STALE!\",\"client\":\"panel-1\",\
+        let bad_gen_queue = "{\"v\":4,\"gen\":\"GEN STALE!\",\"client\":\"panel-1\",\
             \"clientCmd\":\"1\",\"command\":{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}";
         assert_eq!(
             parse_queue_request(bad_gen_queue)
@@ -2390,14 +2564,14 @@ mod tests {
                 .0,
             "unknown-value"
         );
-        let no_gen_take = "{\"v\":3,\"client\":\"panel-1\",\"clientCmd\":\"1\"}";
+        let no_gen_take = "{\"v\":4,\"client\":\"panel-1\",\"clientCmd\":\"1\"}";
         assert_eq!(
             parse_take_request(no_gen_take)
                 .expect_err("take gen required")
                 .0,
             "malformed"
         );
-        let bad_gen_take = "{\"v\":3,\"gen\":\"\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}";
+        let bad_gen_take = "{\"v\":4,\"gen\":\"\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}";
         assert_eq!(
             parse_take_request(bad_gen_take)
                 .expect_err("take gen token")
@@ -2412,17 +2586,19 @@ mod tests {
         // refuses as generation-mismatch before any high-water or queue
         // access: no old intent files, and the new namespace starts clean.
         let mut broker = WorldBroker::new();
-        let _ = broker.discovery_body("lifetime-a", "req-0");
+        let _ = broker
+            .discover_connection(&handshake_message("lifetime-a", "req-0"))
+            .expect("handshake routes");
         let gen_a = broker.generation().to_owned();
         let queue = |generation: &str, cmd: &str| {
             format!(
-                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"{cmd}\",\
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"{cmd}\",\
                   \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
             )
         };
         let take = |generation: &str, cmd: &str| {
             format!(
-                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"{cmd}\"}}"
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"{cmd}\"}}"
             )
         };
         let filed = broker
@@ -2431,7 +2607,9 @@ mod tests {
         let filed: serde_json::Value = serde_json::from_str(&filed).expect("JSON");
         assert_eq!(filed["outcome"], "queued");
         // A new producer lifetime rotates onto a fresh generation.
-        let _ = broker.discovery_body("lifetime-b", "req-1");
+        let _ = broker
+            .discover_connection(&handshake_message("lifetime-b", "req-1"))
+            .expect("handshake routes");
         let gen_b = broker.generation().to_owned();
         assert_ne!(gen_b, gen_a);
         // Stale queue refuses bound to the serving generation, moving
@@ -2478,12 +2656,12 @@ mod tests {
 
     #[test]
     fn strip_result_nulls_only_the_terminal_lane() {
-        let reply = "{\"v\":3,\"result\":{\"op\":\"toggle-float\"},\"effects\":[]}";
+        let reply = "{\"v\":4,\"result\":{\"op\":\"toggle-float\"},\"effects\":[]}";
         let stripped: serde_json::Value = serde_json::from_str(&strip_result(reply)).expect("JSON");
         assert!(stripped["result"].is_null());
         assert!(stripped["effects"].is_array());
         // Error bodies carry no result lane and pass through untouched.
-        let error = "{\"v\":3,\"outcome\":\"rejected\",\"kind\":\"k\",\"message\":\"m\"}";
+        let error = "{\"v\":4,\"outcome\":\"rejected\",\"kind\":\"k\",\"message\":\"m\"}";
         let passthrough: serde_json::Value =
             serde_json::from_str(&strip_result(error)).expect("JSON");
         assert_eq!(
@@ -2494,7 +2672,7 @@ mod tests {
 
     #[test]
     fn projection_drops_write_tokens_and_one_shot_lanes() {
-        let reply = "{\"v\":3,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
+        let reply = "{\"v\":4,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
             \"outputs\":[],\"windows\":[{\"win\":\"w\",\"frame_op\":\"op-1\",\"clear_op\":\"op-1\",\
             \"alloc\":null}],\"transfers\":[{}],\"effects\":[{}],\"result\":{},\
             \"operationSettled\":[{}],\"gestureSettled\":null,\"presentation\":{}}";
@@ -2526,7 +2704,7 @@ mod tests {
             \"domainWs\":\"ws-1\",\"sourceOut\":\"out-1\",\"sourceWs\":\"ws-1\",\
             \"rect\":[0,0,396,600],\"hover\":null,\"win\":\"win-a\"}";
         let reply = format!(
-            "{{\"v\":3,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
+            "{{\"v\":4,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
             \"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\"result\":{preview},\
             \"operationSettled\":[],\"gestureSettled\":null,\"presentation\":{{}}}}"
         );
@@ -2602,7 +2780,7 @@ mod tests {
         // Missing and malformed preview shapes fail closed to null, never a
         // fabricated geometry: no rect, a non-quad rect, or a missing
         // subject identity carries nothing.
-        assert!(drag_preview_of("{\"v\":3}").is_none());
+        assert!(drag_preview_of("{\"v\":4}").is_none());
         assert!(drag_preview_of("not json").is_none());
         let no_rect = reply.replace("[0,0,396,600]", "null");
         assert!(drag_preview_of(&no_rect).is_none());
@@ -2617,7 +2795,7 @@ mod tests {
         // A suspended output matching the preview's resolution (pointer)
         // domain omits the renderer preview; the command result itself is
         // untouched (the take lane still settles the issuer).
-        let suspended = "{\"v\":3,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
+        let suspended = "{\"v\":4,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
             \"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\
             \"result\":{\"op\":\"drag-preview\",\"rev\":\"7\",\"domainOut\":\"out-1\",\
             \"domainWs\":\"ws-1\",\"sourceOut\":\"out-2\",\"sourceWs\":\"ws-2\",\
@@ -2644,7 +2822,7 @@ mod tests {
         assert!(!preview_suspended_by_presentation(&no_result));
         let other = suspended.replace("\"drag-preview\"", "\"toggle-float\"");
         assert!(!preview_suspended_by_presentation(&other));
-        assert!(!preview_suspended_by_presentation("{\"v\":3}"));
+        assert!(!preview_suspended_by_presentation("{\"v\":4}"));
         assert!(!preview_suspended_by_presentation("not json"));
         // The conversion over a suspended reply carries no preview, so the
         // projection (and its cache) cannot retain an older preview across
@@ -2702,7 +2880,7 @@ mod tests {
         // A well-formed witness validates and strips, binding as coverage.
         let mut proven: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str::<serde_json::Value>(
-                "{\"nativeInvalidWitness\":{\"instance\":\"effect-1\",\"counter\":\"7\"},\"v\":3}",
+                "{\"nativeInvalidWitness\":{\"instance\":\"effect-1\",\"counter\":\"7\"},\"v\":4}",
             )
             .expect("object")
             .as_object()
@@ -2718,7 +2896,7 @@ mod tests {
         assert!(!proven.contains_key("nativeInvalidWitness"));
         assert_eq!(
             proven.get("v").expect("other keys survive").as_u64(),
-            Some(3)
+            Some(4)
         );
         // Malformed proof refuses: mistyped, wrong keys, non-canonical
         // counters, and non-opaque instances.

@@ -30,15 +30,15 @@ use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
 use tiler_core::world_report::{
     AuthorityScope, FrameSetter, LastWrite, LastWritePath, LastWriteProperty, MemberAttempt,
     OutputIdentity, ScopeAuthority, ScreenReport, ScreenView, VisibilityReason, VisibilitySample,
-    VisibilitySetter, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReply,
-    WorldReport,
+    VisibilitySetter, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorkspaceRef, WorldCommand,
+    WorldReply, WorldReport,
 };
 
-fn rect4(v: [i32; 4]) -> Rect {
+pub(crate) fn rect4(v: [i32; 4]) -> Rect {
     Rect {
         x: v[0],
         y: v[1],
@@ -47,7 +47,7 @@ fn rect4(v: [i32; 4]) -> Rect {
     }
 }
 
-fn rect_of(v: Rect) -> [i32; 4] {
+pub(crate) fn rect_of(v: Rect) -> [i32; 4] {
     [v.x, v.y, v.w, v.h]
 }
 
@@ -68,7 +68,7 @@ fn inside(outer: [i32; 4], inner: [i32; 4]) -> bool {
         && inner[1] + inner[3] <= outer[1] + outer[3]
 }
 
-fn coverage_ok(work: [i32; 4], allocs: &[[i32; 4]]) -> Result<(), String> {
+pub(crate) fn coverage_ok(work: [i32; 4], allocs: &[[i32; 4]]) -> Result<(), String> {
     for a in allocs {
         if a[2] <= 0 || a[3] <= 0 {
             return Err("allocation has non-positive area".to_owned());
@@ -94,7 +94,7 @@ fn coverage_ok(work: [i32; 4], allocs: &[[i32; 4]]) -> Result<(), String> {
     Ok(())
 }
 
-fn fail(at: &str, msg: impl std::fmt::Display) -> String {
+pub(crate) fn fail(at: &str, msg: impl std::fmt::Display) -> String {
     format!("{at}: {msg}")
 }
 
@@ -114,20 +114,20 @@ where
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StressScreen {
-    out: String,
-    full: [i32; 4],
-    work: [i32; 4],
-    gap: i32,
-    outer_gap: i32,
-    complete: bool,
-    primary: bool,
+pub(crate) struct StressScreen {
+    pub(crate) out: String,
+    pub(crate) full: [i32; 4],
+    pub(crate) work: [i32; 4],
+    pub(crate) gap: i32,
+    pub(crate) outer_gap: i32,
+    pub(crate) complete: bool,
+    pub(crate) primary: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StressSettings {
-    default_tiled: bool,
+pub(crate) struct StressSettings {
+    pub(crate) default_tiled: bool,
 }
 
 /// One action in the stream. Command actions carry `seq`; observation-only
@@ -135,66 +135,66 @@ struct StressSettings {
 /// carry the full intermediate oracle.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawAction {
-    op: String,
-    seq: Option<u64>,
-    output: Option<String>,
-    workspace: Option<String>,
-    index: Option<u8>,
-    delta: Option<i32>,
-    window: Option<String>,
-    direction: Option<String>,
-    same_axis: Option<String>,
-    follow: Option<bool>,
-    rect: Option<[i32; 4]>,
-    name: Option<String>,
-    view: Option<String>,
-    members: Option<Vec<String>>,
-    homing: Option<BTreeMap<String, String>>,
-    tiles: Option<BTreeMap<String, [i32; 4]>>,
-    focus: Option<String>,
+pub(crate) struct RawAction {
+    pub(crate) op: String,
+    pub(crate) seq: Option<u64>,
+    pub(crate) output: Option<String>,
+    pub(crate) workspace: Option<String>,
+    pub(crate) index: Option<u8>,
+    pub(crate) delta: Option<i32>,
+    pub(crate) window: Option<String>,
+    pub(crate) direction: Option<String>,
+    pub(crate) same_axis: Option<String>,
+    pub(crate) follow: Option<bool>,
+    pub(crate) rect: Option<[i32; 4]>,
+    pub(crate) name: Option<String>,
+    pub(crate) view: Option<String>,
+    pub(crate) members: Option<Vec<String>>,
+    pub(crate) homing: Option<BTreeMap<String, String>>,
+    pub(crate) tiles: Option<BTreeMap<String, [i32; 4]>>,
+    pub(crate) focus: Option<String>,
     /// Expected real foreground: a live window id, or null when no managed
     /// fixture window can hold the foreground (hidden focus never counts).
     /// Present (even null) on every checkpoint; refused when absent.
     #[serde(default, deserialize_with = "de_presence")]
-    foreground: Option<Option<String>>,
-    expect_effect: Option<String>,
-    expect_target: Option<String>,
-    pager_current: Option<String>,
-    pager_occupied: Option<Vec<String>>,
+    pub(crate) foreground: Option<Option<String>>,
+    pub(crate) expect_effect: Option<String>,
+    pub(crate) expect_target: Option<String>,
+    pub(crate) pager_current: Option<String>,
+    pub(crate) pager_occupied: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FinalExpect {
-    view: String,
-    members: Vec<String>,
-    homing: BTreeMap<String, String>,
-    tiles: BTreeMap<String, [i32; 4]>,
-    focus: String,
-    foreground: Option<String>,
-    pager_current: String,
-    pager_occupied: Vec<String>,
+pub(crate) struct FinalExpect {
+    pub(crate) view: String,
+    pub(crate) members: Vec<String>,
+    pub(crate) homing: BTreeMap<String, String>,
+    pub(crate) tiles: BTreeMap<String, [i32; 4]>,
+    pub(crate) focus: String,
+    pub(crate) foreground: Option<String>,
+    pub(crate) pager_current: String,
+    pub(crate) pager_occupied: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StressCase {
-    name: String,
+    pub(crate) name: String,
     #[allow(dead_code)]
-    description: String,
+    pub(crate) description: String,
     #[allow(dead_code)]
-    owner: String,
-    adapter: String,
-    generation: String,
-    mode: String,
-    screens: Vec<StressScreen>,
-    settings: StressSettings,
-    windows: Vec<String>,
-    initial_facts: BTreeMap<String, [i32; 4]>,
-    actions: Vec<RawAction>,
+    pub(crate) owner: String,
+    pub(crate) adapter: String,
+    pub(crate) generation: String,
+    pub(crate) mode: String,
+    pub(crate) screens: Vec<StressScreen>,
+    pub(crate) settings: StressSettings,
+    pub(crate) windows: Vec<String>,
+    pub(crate) initial_facts: BTreeMap<String, [i32; 4]>,
+    pub(crate) actions: Vec<RawAction>,
     #[serde(rename = "final")]
-    final_expect: FinalExpect,
+    pub(crate) final_expect: FinalExpect,
 }
 
 pub fn load_stress_case(path: &str) -> Result<StressCase, String> {
@@ -660,28 +660,28 @@ impl StressSchedule {
     }
 }
 
-struct PendingMember {
-    operation_id: String,
-    target_output: OutputId,
+pub(crate) struct PendingMember {
+    pub(crate) operation_id: String,
+    pub(crate) target_output: OutputId,
     /// Logical workspace id resolved at command time: matches the retained
     /// transfer target exactly.
-    target_workspace: String,
-    pre: Option<WorkspaceRef>,
-    attempt_ms: u64,
+    pub(crate) target_workspace: String,
+    pub(crate) pre: Option<WorkspaceRef>,
+    pub(crate) attempt_ms: u64,
 }
 
-struct Pending {
+pub(crate) struct Pending {
     /// Latest view target (output, home/away alias) since the last receipt.
     /// Latest wins, exactly like core view retention. Aliases resolve to
     /// workspace ids when the receipt is built, so lifecycle slot rebinding
     /// between command and receipt stays consistent.
-    view: Option<(String, String)>,
+    pub(crate) view: Option<(String, String)>,
     /// Window homing proofs in command order.
-    member_order: Vec<String>,
-    members: BTreeMap<String, PendingMember>,
+    pub(crate) member_order: Vec<String>,
+    pub(crate) members: BTreeMap<String, PendingMember>,
 }
 
-fn member_proof(window: &str, member: &PendingMember) -> MemberAttempt {
+pub(crate) fn member_proof(window: &str, member: &PendingMember) -> MemberAttempt {
     MemberAttempt {
         operation_id: member.operation_id.clone(),
         window: WindowId(window.to_owned()),
@@ -698,7 +698,7 @@ fn member_proof(window: &str, member: &PendingMember) -> MemberAttempt {
 }
 
 impl Pending {
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             view: None,
             member_order: Vec::new(),
@@ -706,7 +706,7 @@ impl Pending {
         }
     }
 
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.view.is_none() && self.members.is_empty()
     }
 }
@@ -763,14 +763,14 @@ struct Sim {
     pairs: Vec<(WorldReport, WorldReply)>,
 }
 
-fn case_mode(mode: &str) -> Result<WorkspaceMode, String> {
+pub(crate) fn case_mode(mode: &str) -> Result<WorkspaceMode, String> {
     match mode {
         "per-output-local" => Ok(WorkspaceMode::PerOutputLocal),
         other => Err(format!("mode {other:?} is not covered")),
     }
 }
 
-fn build_command(
+pub(crate) fn build_command(
     action: &RawAction,
     binding: &BTreeMap<String, String>,
 ) -> Result<Option<WorldCommand>, String> {
@@ -978,7 +978,7 @@ fn build_report(
         });
     }
     Ok(WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: case.adapter.clone(),
         core_generation: case.generation.clone(),
         observation_seq: sim.obs,
@@ -1061,8 +1061,8 @@ fn bootstrap_binding(
         pairs: Vec::new(),
     };
     let first = build_report(case, mode, &sim, None, None, vec![])?;
-    let reply = match probe.handle_report(&first) {
-        WorldOutcome::Accepted(reply) => reply,
+    let reply = match probe.handle_report_legacy(&first) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => return Err(format!("bootstrap probe: expected accepted, got {other:?}")),
     };
     let home = reply
@@ -1087,7 +1087,7 @@ fn bootstrap_binding(
     ]))
 }
 
-fn bind_engine(
+pub(crate) fn bind_engine(
     engine: &mut WorldEngine,
     case: &StressCase,
     mode: WorkspaceMode,
@@ -1188,7 +1188,7 @@ fn check_pairing(
     if reply.command_consumed {
         return Err(fail(at, "command consumed without execution"));
     }
-    if reply.contract_version != WORLD_CONTRACT_VERSION
+    if reply.contract_version != WORLD_CONTRACT_VERSION_LEGACY
         || reply.adapter_incarnation != case.adapter
         || reply.core_generation != case.generation
     {
@@ -1206,7 +1206,11 @@ fn check_pairing(
     Ok(())
 }
 
-fn resolve(binding: &BTreeMap<String, String>, alias: &str, at: &str) -> Result<String, String> {
+pub(crate) fn resolve(
+    binding: &BTreeMap<String, String>,
+    alias: &str,
+    at: &str,
+) -> Result<String, String> {
     binding
         .get(alias)
         .cloned()
@@ -1565,8 +1569,8 @@ fn submit(
             report.closed.iter().map(|w| &w.0).collect::<Vec<_>>()
         );
     }
-    match engine.handle_report(&report) {
-        WorldOutcome::Accepted(reply) => {
+    match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Accepted(reply) => {
             let revision = sim.pairs.len() as u64 + 1;
             check_pairing(case, &report, &reply, at, revision)?;
             note_effects(sim, &reply, at)?;
@@ -1609,11 +1613,15 @@ fn submit(
             }
             Ok(())
         }
-        WorldOutcome::Duplicate(_) => Err(fail(at, "duplicate reply is not fresh acceptance")),
-        WorldOutcome::CommandConsumed(_) => {
+        LegacyWorldOutcome::Duplicate(_) => {
+            Err(fail(at, "duplicate reply is not fresh acceptance"))
+        }
+        LegacyWorldOutcome::CommandConsumed(_) => {
             Err(fail(at, "consumed command never re-executes here"))
         }
-        WorldOutcome::Rejected { kind, message } => Err(format!("{at}: rejected {kind} {message}")),
+        LegacyWorldOutcome::Rejected { kind, message } => {
+            Err(format!("{at}: rejected {kind} {message}"))
+        }
     }
 }
 
@@ -1927,7 +1935,10 @@ pub struct StressStats {
     pub checkpoints: usize,
 }
 
-pub fn run_stress(
+/// Dead legacy harness entry (kept for 7-4 regression only): the active
+/// stress runtime is `crate::world_stress_v4::run_stress_v4`. Active tools
+/// must never call this.
+pub fn run_stress_legacy(
     case: &StressCase,
     schedule: StressSchedule,
 ) -> Result<(Vec<String>, StressStats), String> {
@@ -2244,8 +2255,8 @@ fn probe_completions(
 ) -> Result<(), String> {
     let (last_report, _) = sim.pairs.last().expect("final").clone();
     // Exact redelivery is a duplicate, never a new revision.
-    match engine.handle_report(&last_report) {
-        WorldOutcome::Duplicate(cached) => {
+    match engine.handle_report_legacy(&last_report) {
+        LegacyWorldOutcome::Duplicate(cached) => {
             let (_, last_reply) = sim.pairs.last().expect("final");
             if cached.state_revision != last_reply.state_revision {
                 return Err("probe duplicate: cached revision moved".to_owned());
@@ -2263,8 +2274,8 @@ fn probe_completions(
         stale.request_seq = sim.req + 1;
         stale.request_id = format!("req-{}", sim.req + 1);
         stale.observation_seq = sim.obs.saturating_sub(1).max(1);
-        match engine.handle_report(&stale) {
-            WorldOutcome::Rejected {
+        match engine.handle_report_legacy(&stale) {
+            LegacyWorldOutcome::Rejected {
                 kind: "observation-stale",
                 ..
             } => {}
@@ -2279,8 +2290,8 @@ fn probe_completions(
     {
         let mut reused = last_report.clone();
         reused.focused_global = "nobody".to_owned();
-        match engine.handle_report(&reused) {
-            WorldOutcome::Rejected {
+        match engine.handle_report_legacy(&reused) {
+            LegacyWorldOutcome::Rejected {
                 kind: "request-reused",
                 ..
             } => {}
@@ -2335,8 +2346,8 @@ fn probe_completions(
             Some(first_seq),
             vec![],
         )?;
-        match engine.handle_report(&report) {
-            WorldOutcome::CommandConsumed(_) => {}
+        match engine.handle_report_legacy(&report) {
+            LegacyWorldOutcome::CommandConsumed(_) => {}
             other => {
                 return Err(format!(
                     "probe consumed-cmd: expected command-consumed, got {other:?}"
@@ -2346,10 +2357,6 @@ fn probe_completions(
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "world_stress_v4.rs"]
-mod stress_v4;
 
 #[cfg(test)]
 mod stress_tests {
@@ -2594,14 +2601,14 @@ mod stress_tests {
         let case = load_stress_case(&duo_path()).expect("load duo");
         let command_ops = case.actions.iter().filter(|a| a.seq.is_some()).count();
         assert!(command_ops >= 100, "stress volume {command_ops} < 100");
-        let (lines, stats) = run_stress(&case, StressSchedule::Ordered).expect("ordered");
+        let (lines, stats) = run_stress_legacy(&case, StressSchedule::Ordered).expect("ordered");
         assert_eq!(stats.reports, 186);
         assert_eq!(stats.checkpoints, 16);
         assert!(lines.iter().any(|l| l.contains("final members=2")));
-        let (_, stats) = run_stress(&case, StressSchedule::Batched).expect("batched");
+        let (_, stats) = run_stress_legacy(&case, StressSchedule::Batched).expect("batched");
         assert_eq!(stats.reports, 149);
         assert_eq!(stats.checkpoints, 16);
-        let (_, stats) = run_stress(&case, StressSchedule::Reordered).expect("reordered");
+        let (_, stats) = run_stress_legacy(&case, StressSchedule::Reordered).expect("reordered");
         assert_eq!(stats.reports, 151);
         assert_eq!(stats.checkpoints, 16);
     }
@@ -2611,14 +2618,14 @@ mod stress_tests {
         let case = load_stress_case(&trio_path()).expect("load trio");
         let command_ops = case.actions.iter().filter(|a| a.seq.is_some()).count();
         assert!(command_ops >= 100, "stress volume {command_ops} < 100");
-        let (lines, stats) = run_stress(&case, StressSchedule::Ordered).expect("ordered");
+        let (lines, stats) = run_stress_legacy(&case, StressSchedule::Ordered).expect("ordered");
         assert_eq!(stats.reports, 190);
         assert_eq!(stats.checkpoints, 19);
         assert!(lines.iter().any(|l| l.contains("final members=3")));
-        let (_, stats) = run_stress(&case, StressSchedule::Batched).expect("batched");
+        let (_, stats) = run_stress_legacy(&case, StressSchedule::Batched).expect("batched");
         assert_eq!(stats.reports, 156);
         assert_eq!(stats.checkpoints, 19);
-        let (_, stats) = run_stress(&case, StressSchedule::Reordered).expect("reordered");
+        let (_, stats) = run_stress_legacy(&case, StressSchedule::Reordered).expect("reordered");
         assert_eq!(stats.reports, 158);
         assert_eq!(stats.checkpoints, 19);
     }
@@ -2628,8 +2635,9 @@ mod stress_tests {
         // The reordered split receipts are genuine extra round-trips, not
         // relabeled batching: reordered must emit strictly more reports.
         let case = load_stress_case(&duo_path()).expect("load duo");
-        let (_, batched) = run_stress(&case, StressSchedule::Batched).expect("batched");
-        let (_, reordered) = run_stress(&case, StressSchedule::Reordered).expect("reordered");
+        let (_, batched) = run_stress_legacy(&case, StressSchedule::Batched).expect("batched");
+        let (_, reordered) =
+            run_stress_legacy(&case, StressSchedule::Reordered).expect("reordered");
         assert!(reordered.reports > batched.reports);
         assert_eq!(reordered.checkpoints, batched.checkpoints);
     }
@@ -2689,7 +2697,7 @@ mod stress_tests {
             .expect("acquisition");
         actions.remove(focus);
         let case = load_value(&value).expect("loads; honorability is runtime");
-        let error = run_stress(&case, StressSchedule::Ordered).expect_err("must reject");
+        let error = run_stress_legacy(&case, StressSchedule::Ordered).expect_err("must reject");
         assert!(
             error.contains("does not hold the predicted foreground"),
             "unexpected: {error}"
@@ -2712,7 +2720,7 @@ mod stress_tests {
             serde_json::json!({"op": "focus-window", "window": "win-a"}),
         );
         let case = load_value(&value).expect("loads; visibility is runtime");
-        let error = run_stress(&case, StressSchedule::Ordered).expect_err("must reject");
+        let error = run_stress_legacy(&case, StressSchedule::Ordered).expect_err("must reject");
         assert!(
             error.contains("outside the shown view"),
             "unexpected: {error}"
@@ -2769,7 +2777,7 @@ mod stress_tests {
         value["final"]["tiles"]["win-a"] = serde_json::json!([0, 0, 399, 560]);
         let case = load_value(&value).expect("loads; oracle is wrong, not the shape");
         for schedule in StressSchedule::all() {
-            let error = run_stress(&case, schedule).expect_err("must reject");
+            let error = run_stress_legacy(&case, schedule).expect_err("must reject");
             assert!(error.contains("authored tile"), "unexpected: {error}");
         }
     }
@@ -2779,7 +2787,7 @@ mod stress_tests {
         let mut value = duo_value();
         value["final"]["focus"] = serde_json::json!("win-a");
         let case = load_value(&value).expect("loads");
-        let error = run_stress(&case, StressSchedule::Ordered).expect_err("must reject");
+        let error = run_stress_legacy(&case, StressSchedule::Ordered).expect_err("must reject");
         assert!(error.contains("tracked focus"), "unexpected: {error}");
     }
 
@@ -2791,7 +2799,7 @@ mod stress_tests {
         let mut value = duo_value();
         value["final"]["foreground"] = serde_json::json!(null);
         let case = load_value(&value).expect("loads");
-        let error = run_stress(&case, StressSchedule::Ordered).expect_err("must reject");
+        let error = run_stress_legacy(&case, StressSchedule::Ordered).expect_err("must reject");
         assert!(
             error.contains("predicted foreground"),
             "unexpected: {error}"
@@ -2811,7 +2819,7 @@ mod stress_tests {
         let mut value = duo_value();
         action_of(&mut value, "show-F1")["view"] = serde_json::json!("away");
         let case = load_value(&value).expect("loads");
-        let error = run_stress(&case, StressSchedule::Ordered).expect_err("must reject");
+        let error = run_stress_legacy(&case, StressSchedule::Ordered).expect_err("must reject");
         assert!(error.contains("expected view"), "unexpected: {error}");
     }
 
@@ -2821,7 +2829,7 @@ mod stress_tests {
         action_of(&mut value, "hide-F1")["focus"] = serde_json::json!("win-b");
         let case = load_value(&value).expect("loads");
         for schedule in StressSchedule::all() {
-            let error = run_stress(&case, schedule).expect_err("must reject");
+            let error = run_stress_legacy(&case, schedule).expect_err("must reject");
             assert!(error.contains("tracked focus"), "unexpected: {error}");
         }
     }
@@ -2835,7 +2843,7 @@ mod stress_tests {
         action_of(&mut value, "hide-L05")["foreground"] = serde_json::json!("win-b");
         let case = load_value(&value).expect("loads");
         for schedule in StressSchedule::all() {
-            let error = run_stress(&case, schedule).expect_err("must reject");
+            let error = run_stress_legacy(&case, schedule).expect_err("must reject");
             assert!(
                 error.contains("predicted foreground"),
                 "unexpected: {error}"
@@ -2848,7 +2856,7 @@ mod stress_tests {
         let mut value = duo_value();
         action_of(&mut value, "show-F1")["tiles"]["win-a"] = serde_json::json!([0, 0, 399, 560]);
         let case = load_value(&value).expect("loads");
-        let error = run_stress(&case, StressSchedule::Ordered).expect_err("must reject");
+        let error = run_stress_legacy(&case, StressSchedule::Ordered).expect_err("must reject");
         assert!(error.contains("tile"), "unexpected: {error}");
     }
 
@@ -2871,7 +2879,7 @@ mod stress_tests {
         // requiring settlement at the next one with a mismatched view.
         action_of(&mut value, "hide-F1")["view"] = serde_json::json!("home");
         let case = load_value(&value).expect("loads");
-        let error = run_stress(&case, StressSchedule::Batched).expect_err("must reject");
+        let error = run_stress_legacy(&case, StressSchedule::Batched).expect_err("must reject");
         assert!(
             error.contains("expected view") || error.contains("transfer"),
             "unexpected: {error}"
@@ -2897,7 +2905,7 @@ mod stress_tests {
             .expect("readmit-b");
         cp["tiles"]["win-a"] = serde_json::json!([0, 0, 401, 280]);
         let case = load_value(&value).expect("loads; oracle is wrong, not the shape");
-        let error = run_stress(&case, StressSchedule::Ordered).expect_err("must reject");
+        let error = run_stress_legacy(&case, StressSchedule::Ordered).expect_err("must reject");
         assert!(error.contains("tile"), "unexpected: {error}");
     }
 
@@ -2988,9 +2996,10 @@ mod stress_tests {
             .remove(admit - 1);
         let without = load_value(&without_value).expect("trio loads without precondition");
         for schedule in StressSchedule::all() {
-            let (_, with_stats) = run_stress(&with, schedule).expect("trio with precondition");
+            let (_, with_stats) =
+                run_stress_legacy(&with, schedule).expect("trio with precondition");
             let (_, without_stats) =
-                run_stress(&without, schedule).expect("trio without precondition");
+                run_stress_legacy(&without, schedule).expect("trio without precondition");
             assert_eq!(with_stats.checkpoints, 19);
             assert_eq!(without_stats.checkpoints, 19);
             assert_eq!(

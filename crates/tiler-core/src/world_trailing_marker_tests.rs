@@ -11,7 +11,7 @@ use crate::size_hints::WindowSizeHints;
 use crate::workspace_scope::WorkspaceMode;
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
-    PresentationIngress, ScreenReport, WORLD_CONTRACT_VERSION, WindowFact, WorldReport,
+    PresentationIngress, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -81,7 +81,7 @@ fn report(
     _equal_count: bool,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: 1,

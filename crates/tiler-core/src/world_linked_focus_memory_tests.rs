@@ -11,10 +11,10 @@ use crate::seed::EngineWindow;
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
 use crate::world_commands::CommandApplied;
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, EffectKind, ScreenReport, WORLD_CONTRACT_VERSION, WindowFact,
-    WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, EffectKind, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY,
+    WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -87,7 +87,7 @@ fn report(
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -127,8 +127,8 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -422,7 +422,7 @@ fn view_return_select_records_linked_target_before_native_writes() {
     );
     // Leave early: no further legs. Real duplicate check: replaying the
     // consumed sequence reconciles only, never re-executes.
-    let outcome = engine.handle_report(&report(
+    let outcome = engine.handle_report_legacy(&report(
         5,
         two_screens(),
         windows(),
@@ -434,7 +434,7 @@ fn view_return_select_records_linked_target_before_native_writes() {
         }),
     ));
     assert!(
-        matches!(outcome, WorldOutcome::CommandConsumed(_)),
+        matches!(outcome, LegacyWorldOutcome::CommandConsumed(_)),
         "replayed select stays consumed: {outcome:?}"
     );
     assert_eq!(
@@ -553,7 +553,7 @@ fn view_return_fallback_records_effect_target_not_remembered() {
 fn rejected_unknown_focus_records_nothing() {
     let (mut engine, key) = bootstrap_two_tiled();
     let before = remembered_window(&engine, &key);
-    let outcome = engine.handle_report(&report(
+    let outcome = engine.handle_report_legacy(&report(
         2,
         two_screens(),
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)],
@@ -565,7 +565,7 @@ fn rejected_unknown_focus_records_nothing() {
         }),
     ));
     match outcome {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::FocusUnknown

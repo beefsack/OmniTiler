@@ -27,21 +27,28 @@ use omnitiler::world_service::WorldService;
 const ADAPTER: &str = "kwin-actuator-1";
 const SENDER: &str = ":1.42";
 
-fn window_json(id: &str, rect: &str) -> String {
+fn v4_win(id: &str, rect: &str) -> String {
     let frame = rect
         .trim_matches(|c| c == '[' || c == ']')
         .split(',')
         .map(str::trim)
         .collect::<Vec<_>>();
     format!(
-        "{{\"win\":\"{id}\",\"out\":\"DP-1\",\
-          \"frameGeometry\":{{\"x\":{x},\"y\":{y},\"width\":{w},\"height\":{h}}},\
-          \"clientGeometry\":{{\"x\":{x},\"y\":{y},\"width\":{w},\"height\":{h}}},\
-          \"minSize\":null,\"maxSize\":null,\"desktops\":[\"550e8400-e29b-41d4-a716-446655440001\"],\
-          \"normalWindow\":true,\"managed\":true,\"deleted\":false,\
-          \"transient\":false,\"transientFor\":null,\"dialog\":false,\"modal\":false,\
-          \"wantsInput\":true,\"fullScreen\":false,\"maximizeMode\":0,\
-          \"onAllDesktops\":false,\"minimized\":false,\"hidden\":false}}",
+        "{{\"win\":\"{id}\",\"out\":\"DP-1\",\"rect\":[{x},{y},{w},{h}],\
+          \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\
+          \"minimized\":false,\
+          \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}},\
+          \"hostHidden\":false,\"privileged\":false,\"managed\":true,\
+          \"acceptsInput\":true,\"activationInhibited\":false,\
+          \"toolWindow\":false,\"owned\":false,\"transient\":false,\
+          \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\
+          \"owner\":null,\"parent\":null,\"role\":null,\"appId\":null,\
+          \"executable\":null,\"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\
+          \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
+          \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
+          \"suppressionAvailable\":null,\
+          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
+          \"lastWrite\":null}}",
         x = frame[0],
         y = frame[1],
         w = frame[2],
@@ -49,51 +56,35 @@ fn window_json(id: &str, rect: &str) -> String {
     )
 }
 
+fn window_json(id: &str, rect: &str) -> String {
+    v4_win(id, rect)
+}
+
 fn bare_window_json(id: &str, rect: &str) -> String {
-    let frame = rect
-        .trim_matches(|c| c == '[' || c == ']')
-        .split(',')
-        .map(str::trim)
-        .collect::<Vec<_>>();
-    format!(
-        "{{\"win\":\"{id}\",\"out\":\"DP-1\",\
-          \"frameGeometry\":{{\"x\":{x},\"y\":{y},\"width\":{w},\"height\":{h}}},\
-          \"clientGeometry\":{{\"x\":{x},\"y\":{y},\"width\":{w},\"height\":{h}}},\
-          \"minSize\":null,\"maxSize\":null,\"desktops\":[],\
-          \"normalWindow\":true,\"managed\":true,\"deleted\":false,\
-          \"transient\":false,\"transientFor\":null,\"dialog\":false,\"modal\":false,\
-          \"wantsInput\":true,\"fullScreen\":false,\"maximizeMode\":0,\
-          \"onAllDesktops\":false,\"minimized\":false,\"hidden\":false}}",
-        x = frame[0],
-        y = frame[1],
-        w = frame[2],
-        h = frame[3],
-    )
+    v4_win(id, rect)
 }
 
 fn inner_report(windows: &[String]) -> String {
     format!(
-        "{{\"v\":3,\"mode\":\"per-output-local\",\
+        "{{\"v\":4,\
           \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
-          \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}}],\
-          \"windows\":[{}],\"views\":[{{\"out\":\"DP-1\",\"view\":\"\"}}],\"closed\":[],\
-          \"hostOwned\":false,\"equalCount\":false,\"birthClear\":true,\"native\":[],\
-          \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
-          \"bornMaximized\":\"tile-on-launch\",\
-          \"defaultTiled\":true,\"focused\":\"\",\
-          \"complete\":true,\"gesture\":true,\"switchTarget\":\"cursor-output\",\
-          \"freshPlacement\":\"cursor-output-last-focused\",\
+          \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+          \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+          \"windows\":[{}],\"closed\":[],\"native\":[],\
+          \"focused\":\"\",\"complete\":true,\"gesture\":false,\
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
-          \"actionOutputs\":[\"DP-1\"],\"focusFollowsCursor\":false,\"cursorWarp\":false,\
+          \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
-          \"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\
-          \"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\
-          \"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\
-          \"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}},\
-          \"creationAttempts\":[],\"frameAttempts\":[],\"memberAttempts\":[],\
-          \"viewAttempts\":[],\"clearAttempts\":[],\
-          \"floatIntent\":[],\"tileIntent\":[],\
-          \"anchorFallback\":\"keep\",\"noSpaceResult\":\"keep\"}}",
+          \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\
+          \"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\
+          \"pagerOrder\":[\"win-a\",\"win-b\"],\
+          \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}},\
+          {{\"win\":\"win-b\",\"live\":[300,0,200,200]}}],\
+          \"witness\":null,\"foregroundOut\":null}},\
+          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"rendererInput\":null,\
+          \"gestureIngress\":null,\"nativeGesture\":null,\
+          \"cursorWindow\":null,\"nativeInvalidWitness\":null}}",
         windows.join(","),
     )
 }
@@ -104,9 +95,9 @@ fn inner_report(windows: &[String]) -> String {
 /// covered value.
 fn witnessed(inner: &str, instance: &str, counter: &str) -> String {
     inner.replacen(
-        "\"anchorFallback\"",
+        "\"nativeInvalidWitness\":null",
         &format!(
-            "\"nativeInvalidWitness\":{{\"instance\":\"{instance}\",\"counter\":\"{counter}\"}},\"anchorFallback\""
+            "\"nativeInvalidWitness\":{{\"instance\":\"{instance}\",\"counter\":\"{counter}\"}}"
         ),
         1,
     )
@@ -120,7 +111,7 @@ fn capture(
     inner: &str,
 ) -> serde_json::Value {
     let envelope = format!(
-        "{{\"v\":3,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
+        "{{\"v\":4,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
           \"source\":\"src-{seq}-t\",\"sourceSeq\":\"{seq}\",\
           \"nativeInvalid\":\"{watermark}\",\"report\":{inner}}}"
     );
@@ -130,40 +121,75 @@ fn capture(
 
 fn read_presentation(service: &WorldService, req: &str) -> serde_json::Value {
     let reply = service
-        .read_presentation(&format!("{{\"v\":3,\"req\":\"{req}\"}}"))
+        .read_presentation(&format!("{{\"v\":4,\"req\":\"{req}\"}}"))
         .expect("in-band");
     serde_json::from_str(&reply).expect("reply is JSON")
+}
+
+/// v4 connection handshake for the discovery route (dispatched by type
+/// through the connection router). Producer lifetime is the opaque
+/// actuator incarnation; every handshake resets onto a fresh generation.
+fn handshake_req(adapter: &str, req: &str) -> String {
+    format!(
+        "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"{req}\",\
+          \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+          \"processId\":\"pid-own-1\"}},\
+          \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"birthClear\":false,\
+          \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+          \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+          \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+    )
+}
+
+fn apply_settings(service: &WorldService, generation: &str) {
+    let body = format!(
+        "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
+          \"req\":\"settings-1\",\"rev\":\"1\",\"values\":{{}}}}"
+    );
+    let reply: serde_json::Value =
+        serde_json::from_str(&service.discover(&body).expect("settings routes"))
+            .expect("valid JSON");
+    assert_eq!(reply["status"], "accepted");
+}
+
+fn handshake_discover(service: &WorldService, adapter: &str, req: &str) -> String {
+    service
+        .discover(&handshake_req(adapter, req))
+        .expect("handshake routes")
 }
 
 fn discovered() -> (WorldService, String) {
     let service = WorldService::new();
     let discovery: serde_json::Value =
-        serde_json::from_str(&service.discovery_body(ADAPTER, "req-0")).expect("valid JSON");
+        serde_json::from_str(&handshake_discover(&service, ADAPTER, "req-0")).expect("valid JSON");
     let generation = discovery["gen"].as_str().expect("gen").to_owned();
+    apply_settings(&service, &generation);
     (service, generation)
 }
 
 fn gesture_open_inner(windows: &[String], instance: &str, serial: &str) -> String {
     inner_report(windows)
         .replacen(
-            ",\"anchorFallback\"",
+            "\"gestureIngress\":null,\"nativeGesture\":null",
             &format!(
-                ",\"gestureIngress\":null,\"nativeGesture\":{{\"v\":1,\"instance\":\"{instance}\",\"serial\":\"{serial}\",\"revision\":\"1\",\"phase\":\"updated\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,200,200],\"startCursor\":[10,10],\"cursor\":null,\"modalMove\":1,\"changed\":1,\"superseded\":0,\"available\":1}},\"cursorWindow\":null,\"anchorFallback\""
+                "\"gestureIngress\":null,\"nativeGesture\":{{\"v\":1,\"instance\":\"{instance}\",\"serial\":\"{serial}\",\"revision\":\"1\",\"phase\":\"updated\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,200,200],\"startCursor\":[10,10],\"cursor\":null,\"modalMove\":1,\"changed\":1,\"superseded\":0,\"available\":1}}"
             ),
             1,
         )
+        .replacen("\"gesture\":false", "\"gesture\":true", 1)
         .replacen("\"cursor\":null", "\"cursor\":[150,50]", 1)
 }
 
 fn gesture_terminal_inner(windows: &[String], instance: &str, serial: &str) -> String {
     inner_report(windows)
         .replacen(
-            ",\"anchorFallback\"",
+            "\"gestureIngress\":null,\"nativeGesture\":null",
             &format!(
-                ",\"gestureIngress\":null,\"nativeGesture\":{{\"v\":1,\"instance\":\"{instance}\",\"serial\":\"{serial}\",\"revision\":\"2\",\"phase\":\"released\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,200,200],\"startCursor\":[10,10],\"cursor\":[30,30],\"modalMove\":1,\"changed\":1,\"superseded\":0,\"available\":1}},\"cursorWindow\":null,\"anchorFallback\""
+                "\"gestureIngress\":null,\"nativeGesture\":{{\"v\":1,\"instance\":\"{instance}\",\"serial\":\"{serial}\",\"revision\":\"2\",\"phase\":\"released\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,200,200],\"startCursor\":[10,10],\"cursor\":[30,30],\"modalMove\":1,\"changed\":1,\"superseded\":0,\"available\":1}}"
             ),
             1,
         )
+        .replacen("\"gesture\":false", "\"gesture\":true", 1)
         .replacen("\"cursor\":null", "\"cursor\":[30,30]", 1)
 }
 
@@ -339,27 +365,36 @@ fn stage5_red_preview_requires_producing_identity() {
     ];
     commanded
         .evaluate_capture(&format!(
-            "{{\"v\":3,\"adapter\":\"{ADAPTER}\",\"gen\":\"{command_gen}\",\
+            "{{\"v\":4,\"adapter\":\"{ADAPTER}\",\"gen\":\"{command_gen}\",\
               \"source\":\"src-1-t\",\"sourceSeq\":\"1\",\
               \"nativeInvalid\":\"10\",\"report\":{}}}",
             witnessed(&inner_report(&big), "effect-1", "1")
         ))
         .expect("admit");
+    // v4 inherent boundary: the queue holds no drag-preview vocabulary
+    // (the `operation` wrapper refuses), so the command-only leg fails
+    // closed at queue time and never produces a preview. Live gestures
+    // stay the only preview source; the issuer lane settles nothing.
     let drag_command = "{\"op\":\"operation\",\"command\":{\"op\":\"drag-preview\",\
         \"win\":\"win-a\",\"x\":155,\"y\":50,\"hover\":null,\"source\":null}}";
-    commanded
-        .queue_command(
-            SENDER,
-            &format!(
-                "{{\"v\":3,\"gen\":\"{command_gen}\",\"client\":\"drag-1\",\
-                  \"clientCmd\":\"1\",\"command\":{drag_command}}}"
-            ),
-        )
-        .expect("queued");
+    let queue_reply: serde_json::Value = serde_json::from_str(
+        &commanded
+            .queue_command(
+                SENDER,
+                &format!(
+                    "{{\"v\":4,\"gen\":\"{command_gen}\",\"client\":\"drag-1\",\
+                      \"clientCmd\":\"1\",\"command\":{drag_command}}}"
+                ),
+            )
+            .expect("in-band"),
+    )
+    .expect("queue reply is JSON");
+    assert_eq!(queue_reply["outcome"], serde_json::json!("rejected"));
+    assert_eq!(queue_reply["kind"], serde_json::json!("snapshot-invalid"));
     let drained: serde_json::Value = serde_json::from_str(
         &commanded
             .evaluate_capture(&format!(
-                "{{\"v\":3,\"adapter\":\"{ADAPTER}\",\"gen\":\"{command_gen}\",\
+                "{{\"v\":4,\"adapter\":\"{ADAPTER}\",\"gen\":\"{command_gen}\",\
                   \"source\":\"src-2-t\",\"sourceSeq\":\"2\",\
                   \"nativeInvalid\":\"11\",\"report\":{}}}",
                 witnessed(&inner_report(&big), "effect-1", "1")
@@ -380,30 +415,20 @@ fn stage5_red_preview_requires_producing_identity() {
             .take_result(
                 SENDER,
                 &format!(
-                    "{{\"v\":3,\"gen\":\"{command_gen}\",\"client\":\"drag-1\",\"clientCmd\":\"1\"}}"
+                    "{{\"v\":4,\"gen\":\"{command_gen}\",\"client\":\"drag-1\",\"clientCmd\":\"1\"}}"
                 ),
             )
             .expect("in-band"),
     )
     .expect("settled is JSON");
-    assert_eq!(settled["outcome"], serde_json::json!("ready"));
-    assert_eq!(settled["result"]["op"], serde_json::json!("drag-preview"));
+    assert_eq!(settled["outcome"], serde_json::json!("rejected"));
+    assert_eq!(settled["kind"], serde_json::json!("unknown-command"));
     let projection = read_presentation(&commanded, "red-preview-command");
     assert_eq!(projection["outcome"], serde_json::json!("presentation"));
     let preview_c = projection["preview"].clone();
     assert!(
-        !preview_c.is_null(),
-        "command-produced geometry still rides the shared projection, got {projection}"
-    );
-    assert!(
-        preview_c
-            .get("producerInstance")
-            .is_some_and(|v| v.is_null()),
-        "command-produced preview names no instance (unproven), got {preview_c}"
-    );
-    assert!(
-        preview_c.get("producerSerial").is_some_and(|v| v.is_null()),
-        "command-produced preview names no serial (unproven), got {preview_c}"
+        preview_c.is_null(),
+        "v4 holds no command-produced preview vocabulary, got {projection}"
     );
 }
 
@@ -440,11 +465,11 @@ fn stage5_red_focus_clear_preserves_covered_watermark() {
         "1",
     );
     let envelope = format!(
-        "{{\"v\":3,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
+        "{{\"v\":4,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
           \"source\":\"src-1-t\",\"sourceSeq\":\"1\",\
           \"nativeInvalid\":\"10\",\"report\":{inner}}}"
     );
-    let hostile = envelope.replace("\"x\":10,\"y\":10", "\"x\":11,\"y\":10");
+    let hostile = envelope.replace("[10,10,300,300]", "[11,10,300,300]");
     let rejected: serde_json::Value = serde_json::from_str(
         &service
             .evaluate_capture(&hostile)

@@ -7,10 +7,10 @@
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
     CommandRejectKind, CommandResult, ScopeAuthority, ScreenReport, ScreenView,
-    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -110,7 +110,7 @@ fn report(
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -156,8 +156,8 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -399,7 +399,7 @@ fn report_screens(
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -1121,7 +1121,7 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
     assert!(back.transfers.is_empty(), "{:?}", back.transfers);
 
     // Dependent toggle stays fail-closed without replacing nulls.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         4,
         4,
         vec![
@@ -1137,7 +1137,7 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
             },
         )),
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused

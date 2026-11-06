@@ -1,4 +1,4 @@
-//! Protocol-only optional wire metadata seam (unit1): `decode_request_with_wire`
+//! Protocol-only optional wire metadata seam (unit1): `decode_request_with_wire_legacy`
 //! records the tolerant spelling of every report-level optional group while
 //! the normalized values stay in [`WorldReport`].
 //!
@@ -14,14 +14,14 @@ use tiler_core::connection::{
 };
 use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
 use tiler_core::world_report::{
     ClearAttempt, FrameAttempt, MemberAttempt, NativeCreationAttempt, NativeWorkspaceFact,
     ViewAttempt, WorkspaceRef, WorldReport, report_digest,
 };
 use tiler_protocol::world_protocol::{
-    CursorHitWire, DecodedRequest, GestureIngressWire, ReportWireOptionals, decode_request,
-    decode_request_with_wire, encode_reply,
+    CursorHitWire, DecodedRequest, GestureIngressWire, ReportWireOptionals, decode_request_legacy,
+    decode_request_with_wire_legacy, encode_reply_legacy,
 };
 
 /// Minimal observation-only request envelope (v3): screens plus facts only.
@@ -111,8 +111,8 @@ fn connected_engine(generation: &str, caps: HostCapabilities) -> WorldEngine {
 /// Decode through both entry points; the wrapper report must equal the
 /// legacy report byte-for-byte in typed terms.
 fn decode_both(json: &str) -> DecodedRequest {
-    let legacy = decode_request(json).expect("legacy decodes");
-    let wired = decode_request_with_wire(json).expect("wired decodes");
+    let legacy = decode_request_legacy(json).expect("legacy decodes");
+    let wired = decode_request_with_wire_legacy(json).expect("wired decodes");
     assert_eq!(
         legacy, wired.report,
         "wrapper report matches legacy decoder"
@@ -122,8 +122,8 @@ fn decode_both(json: &str) -> DecodedRequest {
 
 /// Both entry points must reject with the identical fixed kind/message.
 fn assert_same_rejection(json: &str) -> (&'static str, &'static str) {
-    let legacy = decode_request(json).expect_err("legacy rejects");
-    let wired = decode_request_with_wire(json).expect_err("wired rejects");
+    let legacy = decode_request_legacy(json).expect_err("legacy rejects");
+    let wired = decode_request_with_wire_legacy(json).expect_err("wired rejects");
     assert_eq!(
         (legacy.kind, legacy.message),
         (wired.kind, wired.message),
@@ -183,20 +183,20 @@ fn cursor_hit_preserves_all_four_spellings() {
     // hit spelling varies.
     let mut absent_cursor = base_value();
     absent_cursor["cursor"] = serde_json::json!([100, 200]);
-    let absent_report = decode_request(&absent_cursor.to_string()).expect("decodes");
-    let null_report = decode_request(&null_value.to_string()).expect("decodes");
-    let empty_report = decode_request(&empty_value.to_string()).expect("decodes");
+    let absent_report = decode_request_legacy(&absent_cursor.to_string()).expect("decodes");
+    let null_report = decode_request_legacy(&null_value.to_string()).expect("decodes");
+    let empty_report = decode_request_legacy(&empty_value.to_string()).expect("decodes");
     assert_eq!(absent_report, null_report);
     assert_eq!(absent_report, empty_report);
     assert_eq!(report_digest(&absent_report), report_digest(&null_report));
     assert_eq!(report_digest(&absent_report), report_digest(&empty_report));
-    let absent_wire = decode_request_with_wire(&absent_cursor.to_string())
+    let absent_wire = decode_request_with_wire_legacy(&absent_cursor.to_string())
         .expect("decodes")
         .wire;
-    let null_wire = decode_request_with_wire(&null_value.to_string())
+    let null_wire = decode_request_with_wire_legacy(&null_value.to_string())
         .expect("decodes")
         .wire;
-    let empty_wire = decode_request_with_wire(&empty_value.to_string())
+    let empty_wire = decode_request_with_wire_legacy(&empty_value.to_string())
         .expect("decodes")
         .wire;
     assert_ne!(absent_wire.cursor_hit, null_wire.cursor_hit);
@@ -234,8 +234,8 @@ fn monotonic_clock_absent_zero_and_max() {
     // Absent and explicit zero normalize identically (equal typed report
     // and digest) with differing metadata: the canonical parse makes
     // presence plus the u64 sufficient.
-    let absent_report = decode_request(&one_window_request()).expect("decodes");
-    let zero_report = decode_request(&zero_value.to_string()).expect("decodes");
+    let absent_report = decode_request_legacy(&one_window_request()).expect("decodes");
+    let zero_report = decode_request_legacy(&zero_value.to_string()).expect("decodes");
     assert_eq!(absent_report, zero_report);
     assert_eq!(report_digest(&absent_report), report_digest(&zero_report));
 
@@ -326,8 +326,8 @@ fn attempt_lanes_absent_empty_and_nonempty() {
     assert!(decoded.wire.clear_attempts_present);
     assert!(decoded.wire.creation_attempts_present);
     assert!(decoded.report.frames.is_empty());
-    let absent_report = decode_request(&one_window_request()).expect("decodes");
-    let empty_report = decode_request(&empty_lanes.to_string()).expect("decodes");
+    let absent_report = decode_request_legacy(&one_window_request()).expect("decodes");
+    let empty_report = decode_request_legacy(&empty_lanes.to_string()).expect("decodes");
     assert_eq!(absent_report, empty_report);
     assert_eq!(report_digest(&absent_report), report_digest(&empty_report));
 
@@ -401,8 +401,8 @@ fn gesture_ingress_absent_null_and_present() {
     assert!(decoded.report.gesture.is_none());
 
     // Absent and null normalize identically.
-    let absent_report = decode_request(&one_window_request()).expect("decodes");
-    let null_report = decode_request(&null_value.to_string()).expect("decodes");
+    let absent_report = decode_request_legacy(&one_window_request()).expect("decodes");
+    let null_report = decode_request_legacy(&null_value.to_string()).expect("decodes");
     assert_eq!(absent_report, null_report);
     assert_eq!(report_digest(&absent_report), report_digest(&null_report));
 
@@ -1155,8 +1155,8 @@ fn wrapper_preserves_primary_native_and_held_row_semantics() {
     let mut retired_value = base_value();
     retired_value["windows"].as_array_mut().expect("windows")[0]["floating"] =
         serde_json::Value::Bool(false);
-    let legacy = decode_request(&retired_value.to_string()).expect("held decodes");
-    let wired = decode_request_with_wire(&retired_value.to_string()).expect("held decodes");
+    let legacy = decode_request_legacy(&retired_value.to_string()).expect("held decodes");
+    let wired = decode_request_with_wire_legacy(&retired_value.to_string()).expect("held decodes");
     assert_eq!(legacy, wired.report);
     assert!(legacy.windows.is_empty());
     assert_eq!(legacy.held_windows.len(), 1);
@@ -1215,24 +1215,24 @@ fn engine_duplicate_and_reused_on_optional_spellings() {
     // and is rejected.
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
 
-    let first_report = decode_request(&one_window_request()).expect("decodes");
-    let accepted = match engine.handle_report(&first_report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let first_report = decode_request_legacy(&one_window_request()).expect("decodes");
+    let accepted = match engine.handle_report_legacy(&first_report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    let accepted_bytes = encode_reply(&accepted);
+    let accepted_bytes = encode_reply_legacy(&accepted);
 
     // Same reqSeq/req/obs with an equivalent spelling (explicit null hit)
     // decodes to the identical typed report: Duplicate, same bytes.
     let mut null_hit = base_value();
     null_hit["cursorHit"] = serde_json::Value::Null;
     let null_json = null_hit.to_string();
-    let legacy = decode_request(&null_json).expect("decodes");
-    let wired = decode_request_with_wire(&null_json).expect("decodes");
+    let legacy = decode_request_legacy(&null_json).expect("decodes");
+    let wired = decode_request_with_wire_legacy(&null_json).expect("decodes");
     assert_eq!(legacy, wired.report);
     assert_eq!(
         legacy,
-        decode_request(&one_window_request()).expect("decodes"),
+        decode_request_legacy(&one_window_request()).expect("decodes"),
         "null hit normalizes like absence"
     );
     assert_eq!(
@@ -1241,16 +1241,16 @@ fn engine_duplicate_and_reused_on_optional_spellings() {
         "digests match across equivalent spellings"
     );
     assert_ne!(
-        decode_request_with_wire(&one_window_request())
+        decode_request_with_wire_legacy(&one_window_request())
             .expect("decodes")
             .wire,
         wired.wire,
         "metadata still differs"
     );
-    match engine.handle_report(&legacy) {
-        WorldOutcome::Duplicate(cached) => {
+    match engine.handle_report_legacy(&legacy) {
+        LegacyWorldOutcome::Duplicate(cached) => {
             assert_eq!(
-                encode_reply(&cached),
+                encode_reply_legacy(&cached),
                 accepted_bytes,
                 "duplicate keeps unchanged bytes"
             );
@@ -1262,13 +1262,13 @@ fn engine_duplicate_and_reused_on_optional_spellings() {
     // different digest: Reused rejection, never execution.
     let mut clocked = base_value();
     clocked["monotonicMs"] = serde_json::Value::String("1200".to_owned());
-    let clocked_report = decode_request(&clocked.to_string()).expect("decodes");
+    let clocked_report = decode_request_legacy(&clocked.to_string()).expect("decodes");
     assert_ne!(
         report_digest(&clocked_report),
-        report_digest(&decode_request(&one_window_request()).expect("decodes")),
+        report_digest(&decode_request_legacy(&one_window_request()).expect("decodes")),
     );
-    match engine.handle_report(&clocked_report) {
-        WorldOutcome::Rejected { kind, message } => {
+    match engine.handle_report_legacy(&clocked_report) {
+        LegacyWorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, "request-reused");
             assert_eq!(message, "request sequence reused with different input");
         }

@@ -21,7 +21,7 @@ use tiler_core::world_report::{
 };
 use tiler_protocol::world_protocol::{
     CreationReceiptWire, DecodedReportV4, decode_report_v4, decode_report_v4_for_host,
-    decode_request, encode_report_v4,
+    decode_request_legacy, encode_report_v4,
 };
 
 fn fixture_root() -> std::path::PathBuf {
@@ -1205,7 +1205,7 @@ fn v4_decoder_rejects_strict_envelope_violations() {
     let error = decode_report_v4(&versioned).expect_err("version refuses");
     assert_eq!(error.kind, "unsupported-version");
     assert_eq!(error.message, "unsupported contract version");
-    let error = decode_request(&empty).expect_err("v3 rejects the v4 envelope");
+    let error = decode_request_legacy(&empty).expect_err("v3 rejects the v4 envelope");
     assert_eq!(error.kind, "unknown-field");
 }
 

@@ -5,10 +5,10 @@ use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
     CommandRejectKind, CommandResult, FrameAttempt, FrameSetter, ScopeAuthority, ScreenReport,
-    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -81,7 +81,7 @@ fn report(
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -142,7 +142,7 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
     let mut engine = engine();
     // Bootstrap with a real later-closed lifetime so the close below is
     // genuine, not a vacuous unknown id.
-    let base = match engine.handle_report(&report(
+    let base = match engine.handle_report_legacy(&report(
         1,
         vec![
             fact("w0", "out-a", 0),
@@ -154,7 +154,7 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         None,
         None,
     )) {
-        WorldOutcome::Accepted(reply) => reply,
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("base accepted, got {other:?}"),
     };
     let base_rev = base.state_revision;
@@ -198,8 +198,8 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         operation_id: None,
         prewrite: None,
     }];
-    let reply = match engine.handle_report(&rejected) {
-        WorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report_legacy(&rejected) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("rejection must accept with typed result, got {other:?}"),
     };
     assert_eq!(
@@ -264,7 +264,7 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         "frame attempt settles pre-command"
     );
     // A commandless observation-only followup carries no result.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         3,
         vec![
             fact("w0", "out-a", 0),
@@ -276,7 +276,7 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         None,
         None,
     )) {
-        WorldOutcome::Accepted(follow) => {
+        LegacyWorldOutcome::Accepted(follow) => {
             assert_eq!(
                 follow.command_result, None,
                 "observation-only followup has no result"
@@ -299,7 +299,7 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
 #[test]
 fn rejected_seq_consumed_then_duplicate_replays() {
     let mut engine = engine();
-    let base = match engine.handle_report(&report(
+    let base = match engine.handle_report_legacy(&report(
         1,
         vec![fact("w0", "out-a", 0)],
         "w0",
@@ -307,7 +307,7 @@ fn rejected_seq_consumed_then_duplicate_replays() {
         None,
         None,
     )) {
-        WorldOutcome::Accepted(reply) => reply,
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("base accepted, got {other:?}"),
     };
     let rejected_report = report(
@@ -321,8 +321,8 @@ fn rejected_seq_consumed_then_duplicate_replays() {
             direction: "left".to_owned(),
         }),
     );
-    let rejected_reply = match engine.handle_report(&rejected_report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let rejected_reply = match engine.handle_report_legacy(&rejected_report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("rejection accepts, got {other:?}"),
     };
     assert_eq!(
@@ -345,8 +345,8 @@ fn rejected_seq_consumed_then_duplicate_replays() {
     let mut published = String::new();
     crate::world_sizing::encode_presentation(&mut published, &rejected_reply.presentation);
     // Exact duplicate replays the cached reply with no new revision.
-    match engine.handle_report(&rejected_report) {
-        WorldOutcome::Duplicate(cached) => {
+    match engine.handle_report_legacy(&rejected_report) {
+        LegacyWorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.state_revision, rejected_reply.state_revision);
             assert_eq!(cached.command_result, rejected_reply.command_result);
             assert_eq!(cached.presentation.rev, rejected_reply.presentation.rev);
@@ -358,7 +358,7 @@ fn rejected_seq_consumed_then_duplicate_replays() {
     }
     // Same consumed command sequence with fresh observation reconciles
     // only: no re-execution, no result re-emission.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         3,
         vec![
             fact("w0", "out-a", 0),
@@ -373,7 +373,7 @@ fn rejected_seq_consumed_then_duplicate_replays() {
             direction: "left".to_owned(),
         }),
     )) {
-        WorldOutcome::CommandConsumed(reply) => {
+        LegacyWorldOutcome::CommandConsumed(reply) => {
             assert_eq!(reply.command_result, None, "consumed emits no result");
             assert!(
                 row_window_ids(&reply).contains(&"w2".to_owned()),
@@ -391,7 +391,7 @@ fn rejected_seq_consumed_then_duplicate_replays() {
 #[test]
 fn noncatalog_legacy_refusal_normalizes_to_operation_refused_without_mutation() {
     let mut engine = engine();
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         1,
         vec![fact("w0", "out-a", 0)],
         "w0",
@@ -399,12 +399,12 @@ fn noncatalog_legacy_refusal_normalizes_to_operation_refused_without_mutation() 
         None,
         None,
     )) {
-        WorldOutcome::Accepted(_) => {}
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("base accepted, got {other:?}"),
     }
     // Unknown-window local move surfaces a legacy session refusal string
     // (unknown-window), which is not in the closed command catalog.
-    let reply = match engine.handle_report(&report(
+    let reply = match engine.handle_report_legacy(&report(
         2,
         vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
         "w0",
@@ -417,7 +417,7 @@ fn noncatalog_legacy_refusal_normalizes_to_operation_refused_without_mutation() 
             same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
         })),
     )) {
-        WorldOutcome::Accepted(reply) => reply,
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("legacy refusal must accept with mapping, got {other:?}"),
     };
     assert_eq!(
@@ -447,7 +447,7 @@ fn noncatalog_legacy_refusal_normalizes_to_operation_refused_without_mutation() 
 #[test]
 fn creation_exhaustion_stays_envelope_without_adoption() {
     let mut engine = engine();
-    let _base = match engine.handle_report(&report(
+    let _base = match engine.handle_report_legacy(&report(
         1,
         vec![fact("w0", "out-a", 0)],
         "w0",
@@ -455,13 +455,13 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
         None,
         None,
     )) {
-        WorldOutcome::Accepted(reply) => reply,
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("base accepted, got {other:?}"),
     };
     engine.creation_counter = u64::MAX;
     // Occupy the live trailing empty so the next trailing selection must
     // create (the exhaustion path) instead of reusing.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         2,
         vec![fact("w0", "out-a", 0)],
         "w0",
@@ -469,10 +469,10 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
         Some(10),
         Some(WorldCommand::SelectTrailing { output: None }),
     )) {
-        WorldOutcome::Accepted(_) => {}
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("trailing reuse accepted, got {other:?}"),
     }
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         3,
         vec![fact("w0", "out-a", 0)],
         "w0",
@@ -485,10 +485,10 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
             follow: true,
         }),
     )) {
-        WorldOutcome::Accepted(_) => {}
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("send to trailing accepted, got {other:?}"),
     }
-    let rev_before = match engine.handle_report(&report(
+    let rev_before = match engine.handle_report_legacy(&report(
         4,
         vec![fact("w0", "out-a", 0)],
         "w0",
@@ -496,12 +496,12 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
         None,
         None,
     )) {
-        WorldOutcome::Accepted(reply) => reply.state_revision,
+        LegacyWorldOutcome::Accepted(reply) => reply.state_revision,
         other => panic!("observation base accepted, got {other:?}"),
     };
     let highwater_before = engine.command_highwater;
     let revision_before = engine.state_revision;
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         5,
         vec![fact("w0", "out-a", 0)],
         "w0",
@@ -509,7 +509,7 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
         Some(12),
         Some(WorldCommand::SelectTrailing { output: None }),
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "creation-exhausted"),
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "creation-exhausted"),
         other => panic!("creation exhaustion stays envelope, got {other:?}"),
     }
     // Envelope rejects adopt nothing: revision, command watermark, and
@@ -539,8 +539,8 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
             direction: "left".to_owned(),
         }),
     );
-    match engine.handle_report(&fresh) {
-        WorldOutcome::Accepted(reply) => {
+    match engine.handle_report_legacy(&fresh) {
+        LegacyWorldOutcome::Accepted(reply) => {
             assert_eq!(
                 reply.state_revision,
                 rev_before + 1,
@@ -560,7 +560,7 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
 #[test]
 fn precommand_view_transfer_survives_rejection() {
     let mut engine = engine();
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         1,
         vec![fact("w0", "out-a", 0)],
         "w0",
@@ -568,12 +568,12 @@ fn precommand_view_transfer_survives_rejection() {
         None,
         None,
     )) {
-        WorldOutcome::Accepted(_) => {}
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("base accepted, got {other:?}"),
     }
     // Establish a retained view transfer (observation, not a command
     // result): switching to the trailing empty retains op-2.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         2,
         vec![fact("w0", "out-a", 0)],
         "w0",
@@ -584,7 +584,7 @@ fn precommand_view_transfer_survives_rejection() {
             workspace: "ws-2".to_owned(),
         }),
     )) {
-        WorldOutcome::Accepted(reply) => {
+        LegacyWorldOutcome::Accepted(reply) => {
             assert!(
                 reply.transfers.iter().any(|t| t.operation_id == "op-2"),
                 "view flight retained: {:?}",
@@ -595,7 +595,7 @@ fn precommand_view_transfer_survives_rejection() {
     }
     // A later rejected command must keep the pre-command transfer and
     // still incorporate the fresh observation.
-    let reply = match engine.handle_report(&report(
+    let reply = match engine.handle_report_legacy(&report(
         3,
         vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
         "w0",
@@ -606,7 +606,7 @@ fn precommand_view_transfer_survives_rejection() {
             direction: "left".to_owned(),
         }),
     )) {
-        WorldOutcome::Accepted(reply) => reply,
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("rejection accepts, got {other:?}"),
     };
     assert_eq!(
@@ -630,7 +630,7 @@ fn precommand_view_transfer_survives_rejection() {
 #[test]
 fn sticky_trailing_create_refusal_rolls_back_creation() {
     let mut engine = engine();
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         1,
         vec![fact("w0", "out-a", 0), sticky_fact("wSticky", "out-a", 100)],
         "w0",
@@ -638,11 +638,11 @@ fn sticky_trailing_create_refusal_rolls_back_creation() {
         None,
         None,
     )) {
-        WorldOutcome::Accepted(_) => {}
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("base accepted, got {other:?}"),
     }
     // Occupy the trailing empty so the numbered trailing send must create.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         2,
         vec![fact("w0", "out-a", 0), sticky_fact("wSticky", "out-a", 100)],
         "w0",
@@ -650,10 +650,10 @@ fn sticky_trailing_create_refusal_rolls_back_creation() {
         Some(2),
         Some(WorldCommand::SelectTrailing { output: None }),
     )) {
-        WorldOutcome::Accepted(_) => {}
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("trailing reuse accepted, got {other:?}"),
     }
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         3,
         vec![fact("w0", "out-a", 0), sticky_fact("wSticky", "out-a", 100)],
         "w0",
@@ -666,7 +666,7 @@ fn sticky_trailing_create_refusal_rolls_back_creation() {
             follow: true,
         }),
     )) {
-        WorldOutcome::Accepted(_) => {}
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("send to trailing accepted, got {other:?}"),
     }
     let retained_before = engine.retained.len();
@@ -688,14 +688,14 @@ fn sticky_trailing_create_refusal_rolls_back_creation() {
         None,
         None,
     );
-    match control.handle_report(&control_obs) {
-        WorldOutcome::Accepted(_) => {}
+    match control.handle_report_legacy(&control_obs) {
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("control accepted, got {other:?}"),
     }
     // send-refused originates only in execute_send, after the trailing
     // create in start_numbered_send (pre-create checks never return it),
     // so this result proves the creation was attempted then rolled back.
-    let reply = match engine.handle_report(&report(
+    let reply = match engine.handle_report_legacy(&report(
         4,
         vec![fact("w0", "out-a", 0), sticky_fact("wSticky", "out-a", 100)],
         "w0",
@@ -708,7 +708,7 @@ fn sticky_trailing_create_refusal_rolls_back_creation() {
             follow: false,
         }),
     )) {
-        WorldOutcome::Accepted(reply) => reply,
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("sticky refusal must accept with mapping, got {other:?}"),
     };
     assert_eq!(

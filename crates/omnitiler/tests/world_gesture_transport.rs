@@ -8,21 +8,28 @@ use omnitiler::world_service::WorldService;
 
 const ADAPTER: &str = "kwin-actuator-1";
 
-fn window_json(id: &str, rect: &str) -> String {
+fn v4_win(id: &str, rect: &str) -> String {
     let frame = rect
         .trim_matches(|c| c == '[' || c == ']')
         .split(',')
         .map(str::trim)
         .collect::<Vec<_>>();
     format!(
-        "{{\"win\":\"{id}\",\"out\":\"DP-1\",\
-          \"frameGeometry\":{{\"x\":{x},\"y\":{y},\"width\":{w},\"height\":{h}}},\
-          \"clientGeometry\":{{\"x\":{x},\"y\":{y},\"width\":{w},\"height\":{h}}},\
-          \"minSize\":null,\"maxSize\":null,\"desktops\":[],\
-          \"normalWindow\":true,\"managed\":true,\"deleted\":false,\
-          \"transient\":false,\"transientFor\":null,\"dialog\":false,\"modal\":false,\
-          \"wantsInput\":true,\"fullScreen\":false,\"maximizeMode\":0,\
-          \"onAllDesktops\":false,\"minimized\":false,\"hidden\":false}}",
+        "{{\"win\":\"{id}\",\"out\":\"DP-1\",\"rect\":[{x},{y},{w},{h}],\
+          \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\
+          \"minimized\":false,\
+          \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}},\
+          \"hostHidden\":false,\"privileged\":false,\"managed\":true,\
+          \"acceptsInput\":true,\"activationInhibited\":false,\
+          \"toolWindow\":false,\"owned\":false,\"transient\":false,\
+          \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\
+          \"owner\":null,\"parent\":null,\"role\":null,\"appId\":null,\
+          \"executable\":null,\"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\
+          \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
+          \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
+          \"suppressionAvailable\":null,\
+          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
+          \"lastWrite\":null}}",
         x = frame[0],
         y = frame[1],
         w = frame[2],
@@ -30,37 +37,39 @@ fn window_json(id: &str, rect: &str) -> String {
     )
 }
 
+fn window_json(id: &str, rect: &str) -> String {
+    v4_win(id, rect)
+}
+
 fn inner_report(windows: &[String]) -> String {
     format!(
-        "{{\"v\":3,\"mode\":\"per-output-local\",\
+        "{{\"v\":4,\
           \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
-          \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}}],\
-          \"windows\":[{}],\"views\":[{{\"out\":\"DP-1\",\"view\":\"\"}}],\"closed\":[],\
-          \"hostOwned\":false,\"equalCount\":false,\"birthClear\":true,\"native\":[],\
-          \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
-          \"bornMaximized\":\"tile-on-launch\",\
-          \"defaultTiled\":true,\"focused\":\"\",\
-          \"complete\":true,\"gesture\":true,\"switchTarget\":\"cursor-output\",\
-          \"freshPlacement\":\"cursor-output-last-focused\",\
+          \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+          \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+          \"windows\":[{}],\"closed\":[],\"native\":[],\
+          \"focused\":\"\",\"complete\":true,\"gesture\":false,\
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
-          \"actionOutputs\":[\"DP-1\"],\"focusFollowsCursor\":false,\"cursorWarp\":false,\
+          \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
-          \"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\
-          \"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\
-          \"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\
-          \"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}},\
-          \"creationAttempts\":[],\"frameAttempts\":[],\"memberAttempts\":[],\
-          \"viewAttempts\":[],\"clearAttempts\":[],\
-          \"floatIntent\":[],\"tileIntent\":[],\
-          \"anchorFallback\":\"keep\",\"noSpaceResult\":\"keep\"}}",
+          \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\
+          \"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\
+          \"pagerOrder\":[\"win-a\",\"win-b\"],\
+          \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}},\
+          {{\"win\":\"win-b\",\"live\":[300,0,200,200]}}],\
+          \"witness\":null,\"foregroundOut\":null}},\
+          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"rendererInput\":null,\
+          \"gestureIngress\":null,\"nativeGesture\":null,\
+          \"cursorWindow\":null,\"nativeInvalidWitness\":null}}",
         windows.join(","),
     )
 }
 
 fn with_ingress(inner: &str, ingress: &str) -> String {
     inner.replacen(
-        ",\"anchorFallback\"",
-        &format!(",\"gestureIngress\":{ingress},\"anchorFallback\""),
+        "\"gestureIngress\":null",
+        &format!("\"gestureIngress\":{ingress}"),
         1,
     )
 }
@@ -81,7 +90,7 @@ fn capture(service: &WorldService, generation: &str, seq: u64, inner: &str) -> s
 
 fn capture_envelope_text(generation: &str, seq: u64, inner: &str) -> String {
     format!(
-        "{{\"v\":3,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
+        "{{\"v\":4,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
           \"source\":\"src-{seq}-t\",\"sourceSeq\":\"{seq}\",\
           \"nativeInvalid\":\"{seq}\",\"report\":{inner}}}"
     )
@@ -151,26 +160,63 @@ fn raw_terminal(serial: &str, revision: &str, cursor: &str) -> String {
 
 fn with_raw(inner: &str, native: &str, cursor: &str, cursor_window: &str) -> String {
     let stepped = inner.replacen(
-        ",\"anchorFallback\"",
-        &format!(
-            ",\"gestureIngress\":null,\"nativeGesture\":{native},\
-             \"cursorWindow\":{cursor_window},\"anchorFallback\""
-        ),
+        "\"gestureIngress\":null,\"nativeGesture\":null",
+        &format!("\"gestureIngress\":null,\"nativeGesture\":{native}"),
         1,
     );
+    let stepped = stepped.replacen(
+        "\"cursorWindow\":null",
+        &format!("\"cursorWindow\":{cursor_window}"),
+        1,
+    );
+    let stepped = stepped.replacen("\"gesture\":false", "\"gesture\":true", 1);
     stepped.replacen("\"cursor\":null", &format!("\"cursor\":{cursor}"), 1)
+}
+
+/// v4 connection handshake for the discovery route (dispatched by type
+/// through the connection router). Producer lifetime is the opaque
+/// actuator incarnation; every handshake resets onto a fresh generation.
+fn handshake_req(adapter: &str, req: &str) -> String {
+    format!(
+        "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"{req}\",\
+          \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+          \"processId\":\"pid-own-1\"}},\
+          \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"birthClear\":false,\
+          \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+          \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+          \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+    )
+}
+
+fn apply_settings(service: &WorldService, generation: &str) {
+    let body = format!(
+        "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
+          \"req\":\"settings-1\",\"rev\":\"1\",\"values\":{{}}}}"
+    );
+    let reply: serde_json::Value =
+        serde_json::from_str(&service.discover(&body).expect("settings routes"))
+            .expect("valid JSON");
+    assert_eq!(reply["status"], "accepted");
+}
+
+fn handshake_discover(service: &WorldService, adapter: &str, req: &str) -> String {
+    service
+        .discover(&handshake_req(adapter, req))
+        .expect("handshake routes")
 }
 
 fn discover(service: &WorldService) -> String {
     let discovery: serde_json::Value =
-        serde_json::from_str(&service.discovery_body(ADAPTER, "req-0")).expect("valid JSON");
-    discovery["gen"].as_str().expect("gen").to_owned()
+        serde_json::from_str(&handshake_discover(service, ADAPTER, "req-0")).expect("valid JSON");
+    let generation = discovery["gen"].as_str().expect("gen").to_owned();
+    apply_settings(service, &generation);
+    generation
 }
 
 fn preview_of(service: &WorldService, req: &str) -> serde_json::Value {
     serde_json::from_str(
         &service
-            .read_presentation(&format!("{{\"v\":3,\"req\":\"{req}\"}}"))
+            .read_presentation(&format!("{{\"v\":4,\"req\":\"{req}\"}}"))
             .expect("in-band"),
     )
     .expect("valid JSON")
@@ -546,8 +592,7 @@ fn script_minted_ingress_refuses() {
             &raw_open("1", "1", "[150,50]"),
             "null",
             "null",
-        )
-        .replacen(",\"gestureIngress\":null", "", 1),
+        ),
         &ingress("1", "updated", "[150,50]", "[10,10]", &ra),
     );
     let refused = capture(&service, &generation, 1, &minted_beside_raw);
@@ -571,8 +616,9 @@ fn parse(reply: &serde_json::Value) -> &serde_json::Value {
 fn broker_carries_native_lifecycle_without_second_lifecycle() {
     let service = WorldService::new();
     let discovery: serde_json::Value =
-        serde_json::from_str(&service.discovery_body(ADAPTER, "req-0")).expect("valid JSON");
+        serde_json::from_str(&handshake_discover(&service, ADAPTER, "req-0")).expect("valid JSON");
     let generation = discovery["gen"].as_str().expect("gen").to_owned();
+    apply_settings(&service, &generation);
 
     let ra = "[0,0,200,200]".to_owned();
     let rb = "[300,0,200,200]".to_owned();
@@ -603,7 +649,7 @@ fn broker_carries_native_lifecycle_without_second_lifecycle() {
     assert_eq!(parse(&replied)["outcome"], serde_json::Value::Null);
     let projection: serde_json::Value = serde_json::from_str(
         &service
-            .read_presentation("{\"v\":3,\"req\":\"read-1\"}")
+            .read_presentation("{\"v\":4,\"req\":\"read-1\"}")
             .expect("in-band"),
     )
     .expect("valid JSON");
@@ -639,7 +685,7 @@ fn broker_carries_native_lifecycle_without_second_lifecycle() {
     let _ = capture(&service, &generation, 2, &held);
     let projection: serde_json::Value = serde_json::from_str(
         &service
-            .read_presentation("{\"v\":3,\"req\":\"read-2\"}")
+            .read_presentation("{\"v\":4,\"req\":\"read-2\"}")
             .expect("in-band"),
     )
     .expect("valid JSON");
@@ -1100,8 +1146,8 @@ fn staged_map_discards_malformed_report_without_spending_identity() {
     // Same valid native lane plus a malformed unknown top-level field: the
     // strict decode refuses after gesture normalization ran on the stage.
     let malformed = valid_open.replacen(
-        "\"anchorFallback\":\"keep\"",
-        "\"anchorFallback\":\"keep\",\"bogusField\":1",
+        "\"rendererInput\":null",
+        "\"rendererInput\":null,\"bogusField\":1",
         1,
     );
     let refused = capture(&service, &generation, 1, &malformed);

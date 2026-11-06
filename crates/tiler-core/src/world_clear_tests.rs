@@ -1664,9 +1664,9 @@ fn clear_consumed_replay_does_not_supersede() {
         Some(true),
         Some(false),
     )];
-    let outcome = engine.handle_report(&replay);
+    let outcome = engine.handle_report_legacy(&replay);
     match outcome {
-        crate::world_engine::WorldOutcome::CommandConsumed(reply) => {
+        crate::world_engine::LegacyWorldOutcome::CommandConsumed(reply) => {
             assert!(
                 reply.transfers.iter().any(|t| t.operation_id == "op-13"),
                 "consumed replay still continues old op-13, got {:?}",
@@ -2413,8 +2413,8 @@ fn float_settled_events_are_one_shot_and_replay_cached() {
     );
     // Replay of the identical report repeats the cached reply with its
     // events instead of settling twice.
-    match engine.handle_report(&confirming) {
-        crate::world_engine::WorldOutcome::Duplicate(cached) => {
+    match engine.handle_report_legacy(&confirming) {
+        crate::world_engine::LegacyWorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.operation_settled, reply.operation_settled);
         }
         other => panic!("expected duplicate, got {other:?}"),

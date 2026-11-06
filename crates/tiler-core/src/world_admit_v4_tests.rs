@@ -14,15 +14,15 @@ use crate::world_admit_v4::{V4Replay, classify_replay_v4};
 use crate::world_directional::tests::{fact, screen};
 use crate::world_engine::{
     EventIssue, KIND_CORRELATION, KIND_GENERATION, KIND_OBS_STALE, KIND_OWNER, KIND_REPLY_SIZE,
-    KIND_REUSED, KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED, RawRouting, WorldEngine,
-    WorldOutcome,
+    KIND_REUSED, KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED, LegacyWorldOutcome,
+    RawRouting, WorldEngine,
 };
 use crate::world_report::{
     AttemptLaneV4, AuthorityScope, CommandRejectKind, CommandResult, HeldAttemptRow, HeldWindowRow,
     IntentWrite, PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION, WORLD_CONTRACT_VERSION_V4,
-    WORLD_MAX_REPLY_BYTES, WindowFact, WorldCommand, WorldReport, WorldReportV4,
-    retained_window_fields,
+    RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION_LEGACY,
+    WORLD_CONTRACT_VERSION_V4, WORLD_MAX_REPLY_BYTES, WindowFact, WorldCommand, WorldReport,
+    WorldReportV4, retained_window_fields,
 };
 use crate::world_report_v4_checks::{graded_effective_v4, report_digest_v4};
 use crate::world_run_v4::V4RunOutcome;
@@ -687,7 +687,7 @@ fn late_import_ingests_but_admitted_latch_ignores() {
 fn structural_refusals_leave_original_unchanged() {
     let mut engine = engine();
     let mut versioned = observe(1, facts_pair(), "win-a");
-    versioned.contract_version = WORLD_CONTRACT_VERSION;
+    versioned.contract_version = WORLD_CONTRACT_VERSION_LEGACY;
     match admit(&mut engine, &versioned) {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
@@ -830,7 +830,7 @@ fn creation_exhaustion_discards_candidate_atomically() {
 
 fn legacy_report(seq: u64, windows: Vec<WindowFact>, focused: &str) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -871,8 +871,8 @@ fn legacy_report(seq: u64, windows: Vec<WindowFact>, focused: &str) -> WorldRepo
 #[test]
 fn typed_v4_cache_stays_separate_from_legacy_cache() {
     let mut engine = engine();
-    match engine.handle_report(&legacy_report(1, facts_pair(), "win-a")) {
-        WorldOutcome::Accepted(_) => {}
+    match engine.handle_report_legacy(&legacy_report(1, facts_pair(), "win-a")) {
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted legacy run, got {other:?}"),
     }
     // The legacy run populates no typed v4 cache: the v4 boundary treats
@@ -1370,7 +1370,7 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
     assert_eq!(trials(&engine), 0, "fresh engine runs no trials");
     // Early refusal pays no clone and no trial.
     let mut versioned = observe(1, facts_pair(), "win-a");
-    versioned.contract_version = WORLD_CONTRACT_VERSION;
+    versioned.contract_version = WORLD_CONTRACT_VERSION_LEGACY;
     match admit(&mut engine, &versioned) {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
@@ -2188,7 +2188,7 @@ fn slice_7_1_invalid_version_and_unbound_owner_refused() {
     let mut engine = engine();
     let revision_before = engine.state_revision;
     let mut version = observe(1, facts_pair(), "win-a");
-    version.contract_version = WORLD_CONTRACT_VERSION;
+    version.contract_version = WORLD_CONTRACT_VERSION_LEGACY;
     match admit(&mut engine, &version) {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);

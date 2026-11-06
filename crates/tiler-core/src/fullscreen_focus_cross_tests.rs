@@ -28,9 +28,9 @@ use crate::session::{
 use crate::settings_catalog::{FIELD_INNER_GAP, FIELD_OUTER_GAP};
 use crate::settings_state::EffectiveSetting;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
-    EffectKind, ScreenReport, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    EffectKind, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
 };
 use std::collections::BTreeMap;
 
@@ -637,7 +637,7 @@ fn report(
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -677,8 +677,8 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -851,7 +851,7 @@ fn world_fullscreen_single_output_retains_without_effect() {
         ),
     );
     let key = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
-    let outcome = engine.handle_report(&report(
+    let outcome = engine.handle_report_legacy(&report(
         2,
         one_screen(),
         vec![
@@ -866,8 +866,8 @@ fn world_fullscreen_single_output_retains_without_effect() {
         }),
     ));
     let reply = match outcome {
-        WorldOutcome::Accepted(reply) => reply,
-        WorldOutcome::Rejected { kind, .. } => {
+        LegacyWorldOutcome::Accepted(reply) => reply,
+        LegacyWorldOutcome::Rejected { kind, .. } => {
             assert_eq!(
                 kind, "unchanged",
                 "single-output fullscreen refuses as unchanged, not {kind}"
@@ -912,7 +912,7 @@ fn world_fullscreen_vertical_is_noop() {
         ),
     );
     let key = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
-    let outcome = engine.handle_report(&report(
+    let outcome = engine.handle_report_legacy(&report(
         2,
         two_screens(),
         vec![
@@ -928,8 +928,8 @@ fn world_fullscreen_vertical_is_noop() {
         }),
     ));
     let reply = match outcome {
-        WorldOutcome::Accepted(reply) => reply,
-        WorldOutcome::Rejected { kind, .. } => {
+        LegacyWorldOutcome::Accepted(reply) => reply,
+        LegacyWorldOutcome::Rejected { kind, .. } => {
             assert_eq!(
                 kind, "unchanged",
                 "vertical fullscreen refuses as unchanged, not {kind}"

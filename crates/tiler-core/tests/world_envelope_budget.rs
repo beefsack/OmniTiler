@@ -12,9 +12,9 @@
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
 use tiler_core::world_report::{
-    ScreenReport, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    ScreenReport, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -104,7 +104,7 @@ fn report_obs(
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -147,15 +147,15 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReport,
 ) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
 fn rejected_kind(engine: &mut WorldEngine, report: &WorldReport) -> &'static str {
-    match engine.handle_report(report) {
-        WorldOutcome::Rejected { kind, .. } => kind,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Rejected { kind, .. } => kind,
         other => panic!("expected rejected, got {other:?}"),
     }
 }
@@ -236,14 +236,14 @@ fn observation_stale_and_duplicates_hold_the_watermark() {
     assert_eq!(engine.state_revision(), revision);
     // An identical latest report duplicates with the cached reply and no
     // new revision.
-    match engine.handle_report(&report_obs(
+    match engine.handle_report_legacy(&report_obs(
         1,
         2,
         vec![fact("win-a", "out-a", 0)],
         None,
         None,
     )) {
-        WorldOutcome::Duplicate(reply) => assert_eq!(reply.state_revision, revision),
+        LegacyWorldOutcome::Duplicate(reply) => assert_eq!(reply.state_revision, revision),
         other => panic!("expected duplicate, got {other:?}"),
     }
     assert_eq!(engine.state_revision(), revision);
@@ -317,7 +317,7 @@ fn late_command_refusal_rolls_back_without_mutation() {
     // Same-output send to an unknown workspace refuses after staging:
     // no transfer retained, no ring/view churn; the refused sequence still
     // consumes and the issuing revision advances by exactly one.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         4,
         vec![fact("win-a", "out-a", 0)],
         Some(11),
@@ -328,7 +328,7 @@ fn late_command_refusal_rolls_back_without_mutation() {
             follow: false,
         }),
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::SendTargetUnknown

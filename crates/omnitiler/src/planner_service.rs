@@ -6,13 +6,13 @@
 //! `TakeCommandResult`, `ReadWorldPresentation`, `ReadFloatIntent`,
 //! `WriteFloatIntent`. The world capture route carries the sole broker; the
 //! query/command routes share its backend; the intent routes carry the
-//! session-scoped float-intent membership store.
+//! session-scoped opaque intent snapshot.
 //!
 //! Boundary rules: no Rust-to-KWin calls except `org.freedesktop.DBus`
 //! identity/owner queries (`GetConnectionUnixUser` for same-UID caller
-//! verification, `GetId` plus `GetNameOwner(org.kde.KWin)` for float-intent
+//! verification, `GetId` plus `GetNameOwner(org.kde.KWin)` for opaque-intent
 //! namespace derivation and live-KWin-owner authorization), no other
-//! persistence beyond the session-scoped float-intent membership store, no
+//! persistence beyond the session-scoped opaque intent snapshot, no
 //! tray coupling, no autostart, no native mutation. Bounded single-flight
 //! endpoint handling via independent world-capture and intent non-queuing
 //! async locks (the query/command routes are short broker critical sections
@@ -41,8 +41,8 @@ use crate::float_intent_store::{
     FloatIntentStore, INTENT_MAX_REPLY_BYTES, INTENT_MAX_REQUEST_BYTES, IntentNamespace,
 };
 use crate::world_service::{
-    WORLD_SERVICE_MAX_REPLY, WORLD_SERVICE_MAX_REQUEST, WorldService, parse_discovery_request,
-    world_egress_summary, world_ingress_summary,
+    WORLD_SERVICE_MAX_REPLY, WORLD_SERVICE_MAX_REQUEST, WorldService, world_egress_summary,
+    world_ingress_summary,
 };
 
 pub const SERVICE: &str = "com.omnitiler.Planner";
@@ -322,8 +322,8 @@ impl PlannerEndpoint {
     /// as D-Bus errors. Lock-free: the backend mutex serializes against
     /// world flights, and poison replacement mints a fresh generation
     /// rather than serving partial state. A new producer lifetime (KWin
-    /// restart) rotates the broker onto a fresh generation and incarnation
-    /// and re-observes from rev 0; a service restart does the same and
+    /// restart) re-handshakes onto a fresh generation and re-observes
+    /// from rev 0; a service restart does the same and
     /// rejects stale reports until re-discovery.
     #[zbus(name = "DiscoverWorld")]
     async fn discover_world(
@@ -357,9 +357,16 @@ impl PlannerEndpoint {
             emit_plan_early_exit(PlanEarlyExit::Unauthorized);
             return Ok(self.world.error_body(reason, reason));
         }
-        let reply = match parse_discovery_request(&request) {
-            Ok((adapter, req)) => self.world.discovery_body(&adapter, &req),
-            Err((kind, message)) => self.world.error_body(kind, message),
+        let reply = match self.world.discover(&request) {
+            Ok(reply) => reply,
+            Err(crate::world_service::WorldServiceError::Oversized) => {
+                return Err(PlannerError::Unavailable(
+                    "request exceeds size bound".to_owned(),
+                ));
+            }
+            Err(crate::world_service::WorldServiceError::Unavailable(message)) => {
+                return Err(PlannerError::Unavailable(message));
+            }
         };
         if reply.len() > WORLD_SERVICE_MAX_REPLY {
             return Err(PlannerError::Unavailable(
@@ -712,11 +719,11 @@ impl PlannerEndpoint {
         Ok(reply)
     }
 
-    /// Float-intent read route. Authenticated same-UID caller that must also
+    /// Opaque-intent read route. Authenticated same-UID caller that must also
     /// be the current KWin owner; the namespace is derived from the serving
-    /// bus, never from the caller. Returns the stored membership (pruned to
-    /// the caller-attested complete live inventory when `live` is present),
-    /// a degraded empty reply when the content is missing or unusable, or an
+    /// bus, never from the caller. Returns the stored opaque snapshot, a
+    /// degraded empty reply when the content is missing or unusable (the old
+    /// v1 membership body degrades as corrupt with no conversion), or an
     /// in-band rejection for authorization and request failures. Only an
     /// oversize body or reply fails closed as `Unavailable`.
     #[zbus(name = "ReadFloatIntent")]
@@ -746,8 +753,6 @@ impl PlannerEndpoint {
                       outcome: &str,
                       stored: Option<usize>,
                       returned: Option<usize>,
-                      tile_stored: Option<usize>,
-                      tile_returned: Option<usize>,
                       reason: Option<&str>,
                       reply: String| {
             drop(guard);
@@ -757,8 +762,6 @@ impl PlannerEndpoint {
                 outcome,
                 stored,
                 returned,
-                tile_stored,
-                tile_returned,
                 reason,
             ));
             reply
@@ -771,8 +774,6 @@ impl PlannerEndpoint {
                     guard,
                     &error.correlation,
                     error.reason,
-                    None,
-                    None,
                     None,
                     None,
                     Some(error.reason),
@@ -790,8 +791,6 @@ impl PlannerEndpoint {
                     "rejected",
                     None,
                     None,
-                    None,
-                    None,
                     Some("not-kwin-owner"),
                     reply,
                 ));
@@ -802,8 +801,6 @@ impl PlannerEndpoint {
                     guard,
                     &parsed.correlation,
                     "degraded",
-                    Some(0),
-                    Some(0),
                     Some(0),
                     Some(0),
                     Some(reason),
@@ -819,43 +816,27 @@ impl PlannerEndpoint {
                 "degraded",
                 Some(0),
                 Some(0),
-                Some(0),
-                Some(0),
                 Some("namespace-unavailable"),
                 reply,
             ));
         };
-        let read = match &parsed.live {
-            None => store.read_membership(&namespace),
-            Some(live) => store.read_pruned(&namespace, live),
+        let read = store.read_membership(&namespace);
+        let (outcome, stored, returned, reason, reply) = match read.degraded {
+            None => (
+                "ok",
+                read.stored,
+                read.records.len(),
+                None,
+                read_ok_reply(&parsed.correlation, &read.records, read.stored),
+            ),
+            Some(reason) => (
+                "degraded",
+                0,
+                0,
+                Some(reason),
+                read_degraded_reply(&parsed.correlation, reason),
+            ),
         };
-        let (outcome, stored, returned, tile_stored, tile_returned, reason, reply) =
-            match read.degraded {
-                None => (
-                    "ok",
-                    read.stored,
-                    read.members.len(),
-                    read.tile_stored,
-                    read.tile_members.len(),
-                    None,
-                    read_ok_reply(
-                        &parsed.correlation,
-                        &read.members,
-                        read.stored,
-                        &read.tile_members,
-                        read.tile_stored,
-                    ),
-                ),
-                Some(reason) => (
-                    "degraded",
-                    0,
-                    0,
-                    0,
-                    0,
-                    Some(reason),
-                    read_degraded_reply(&parsed.correlation, reason),
-                ),
-            };
         if reply.len() > INTENT_MAX_REPLY_BYTES {
             drop(guard);
             return Err(PlannerError::Unavailable(
@@ -868,19 +849,17 @@ impl PlannerEndpoint {
             outcome,
             Some(stored),
             Some(returned),
-            Some(tile_stored),
-            Some(tile_returned),
             reason,
             reply,
         ))
     }
 
-    /// Float-intent write route. Same authentication and namespace rules as
-    /// the read route. Persists the full snapshot (empty clears the settled
-    /// unfloat) after successful application upstream; a write failure
-    /// retains the previous local intent and the next settled update
-    /// rewrites. Replies mirror the read route outcomes with `stored` and
-    /// `rejected`/`unavailable` failure shapes.
+    /// Opaque-intent write route. Same authentication and namespace rules as
+    /// the read route. Persists the full opaque snapshot (empty `records`
+    /// clears); a write failure retains the previous local intent and the
+    /// next settled update rewrites. Replies mirror the read route outcomes
+    /// with `stored` and `rejected`/`unavailable` failure shapes. The store
+    /// never interprets inner `data` JSON.
     #[zbus(name = "WriteFloatIntent")]
     async fn write_float_intent(
         &self,
@@ -907,7 +886,6 @@ impl PlannerEndpoint {
                       correlation: &str,
                       outcome: &str,
                       stored: Option<usize>,
-                      tile_stored: Option<usize>,
                       reason: Option<&str>,
                       reply: String| {
             drop(guard);
@@ -916,8 +894,6 @@ impl PlannerEndpoint {
                 correlation,
                 outcome,
                 stored,
-                None,
-                tile_stored,
                 None,
                 reason,
             ));
@@ -936,7 +912,6 @@ impl PlannerEndpoint {
                     &error.correlation,
                     "rejected",
                     None,
-                    None,
                     Some(error.reason),
                     reply,
                 ));
@@ -951,7 +926,6 @@ impl PlannerEndpoint {
                     &parsed.correlation,
                     "rejected",
                     None,
-                    None,
                     Some("not-kwin-owner"),
                     reply,
                 ));
@@ -963,49 +937,39 @@ impl PlannerEndpoint {
                     &parsed.correlation,
                     "unavailable",
                     None,
-                    None,
                     Some(reason),
                     reply,
                 ));
             }
         };
-        let (outcome, stored, tile_stored, reason, reply) = match &self.intent_store {
+        let (outcome, stored, reason, reply) = match &self.intent_store {
             None => (
                 "unavailable",
-                None,
                 None,
                 Some("namespace-unavailable"),
                 write_failed_reply(&parsed.correlation, "unavailable", "namespace-unavailable"),
             ),
-            Some(store) => {
-                // Absent tile means an empty full tile snapshot; present tile
-                // (even empty) replaces atomically with float. Full snapshots
-                // remain disjoint.
-                let tile_members: Vec<String> = parsed.tile.clone().unwrap_or_default();
-                match store.write_both(&namespace, &parsed.members, &tile_members) {
-                    Ok((stored, stored_tile)) => (
-                        "stored",
-                        Some(stored),
-                        Some(stored_tile),
+            Some(store) => match store.write_records(&namespace, &parsed.records) {
+                Ok(stored) => (
+                    "stored",
+                    Some(stored),
+                    None,
+                    write_stored_reply(&parsed.correlation, stored),
+                ),
+                Err(reason) => {
+                    let outcome = if reason == "invalid-members" {
+                        "rejected"
+                    } else {
+                        "unavailable"
+                    };
+                    (
+                        outcome,
                         None,
-                        write_stored_reply(&parsed.correlation, stored, stored_tile),
-                    ),
-                    Err(reason) => {
-                        let outcome = if reason == "invalid-members" {
-                            "rejected"
-                        } else {
-                            "unavailable"
-                        };
-                        (
-                            outcome,
-                            None,
-                            None,
-                            Some(reason),
-                            write_failed_reply(&parsed.correlation, outcome, reason),
-                        )
-                    }
+                        Some(reason),
+                        write_failed_reply(&parsed.correlation, outcome, reason),
+                    )
                 }
-            }
+            },
         };
         if reply.len() > INTENT_MAX_REPLY_BYTES {
             drop(guard);
@@ -1018,7 +982,6 @@ impl PlannerEndpoint {
             &parsed.correlation,
             outcome,
             stored,
-            tile_stored,
             reason,
             reply,
         ))
@@ -1121,8 +1084,8 @@ fn handle_name_owner_changed(
 
 /// Retained manually invoked planner service. Acquires the planner name
 /// without queueing and serves the world plus the narrow
-/// session-scoped float-intent membership routes until the serving
-/// connection or the planner name is lost. No tray coupling; the float-intent
+/// session-scoped opaque intent routes until the serving
+/// connection or the planner name is lost. No tray coupling; the opaque-intent
 /// store is the sole persistence exception.
 pub fn run() -> zbus::Result<()> {
     serve(PlannerEndpoint::new())
@@ -1331,8 +1294,8 @@ mod tests {
     #[test]
     fn intent_method_identity_is_exact_and_json_string_shaped() {
         use crate::float_intent_store::{
-            INTENT_MAX_REPLY_BYTES, INTENT_MAX_REQUEST_BYTES, MAX_FLOAT_MEMBERS, READ_METHOD,
-            WRITE_METHOD,
+            INTENT_MAX_REPLY_BYTES, INTENT_MAX_REQUEST_BYTES, MAX_INTENT_DATA_BYTES,
+            MAX_INTENT_RECORDS, READ_METHOD, WRITE_METHOD,
         };
         use crate::world_service::{DISCOVERY_METHOD, WORLD_METHOD};
         assert_eq!(READ_METHOD, "ReadFloatIntent");
@@ -1353,10 +1316,11 @@ mod tests {
                 .unwrap();
             assert_eq!(message.body().signature().to_string(), "s");
         }
-        // Bounds fit a full membership snapshot with margin.
-        assert_eq!(INTENT_MAX_REQUEST_BYTES, 256 * 1024);
-        assert_eq!(INTENT_MAX_REPLY_BYTES, 256 * 1024);
-        assert_eq!(MAX_FLOAT_MEMBERS, 1024);
+        // Bounds fit a full opaque snapshot within the 4 MiB envelope.
+        assert_eq!(INTENT_MAX_REQUEST_BYTES, 4 * 1024 * 1024);
+        assert_eq!(INTENT_MAX_REPLY_BYTES, 4 * 1024 * 1024);
+        assert_eq!(MAX_INTENT_RECORDS, 10_000);
+        assert_eq!(MAX_INTENT_DATA_BYTES, 1024);
     }
 
     #[test]
@@ -1507,17 +1471,17 @@ mod tests {
         let read: serde_json::Value = serde_json::from_str(&call_intent(
             &proxy,
             READ,
-            r#"{"v":1,"correlation_id":"intent-neg-1"}"#,
+            r#"{"v":2,"correlation_id":"intent-neg-1"}"#,
         ))
         .expect("read reply is JSON");
         assert_eq!(read["outcome"], "degraded");
         assert_eq!(read["correlation_id"], "intent-neg-1");
         assert_eq!(read["reason"], "namespace-unavailable");
-        assert_eq!(read["members"].as_array().expect("array").len(), 0);
+        assert_eq!(read["records"].as_array().expect("array").len(), 0);
         let write: serde_json::Value = serde_json::from_str(&call_intent(
             &proxy,
             WRITE,
-            r#"{"v":1,"correlation_id":"intent-neg-1","members":["win-a"]}"#,
+            r#"{"v":2,"correlation_id":"intent-neg-1","records":[{"win":"win-a","data":"x"}]}"#,
         ))
         .expect("write reply is JSON");
         assert_eq!(write["outcome"], "unavailable");
@@ -1530,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn private_bus_kwin_owner_roundtrip_persists_membership() {
+    fn private_bus_kwin_owner_roundtrip_persists_opaque_snapshot() {
         use crate::float_intent_store::READ_METHOD as READ;
         use crate::float_intent_store::WRITE_METHOD as WRITE;
         let Some(bus) = PrivateBus::start() else {
@@ -1565,45 +1529,93 @@ mod tests {
         let rejected: serde_json::Value = serde_json::from_str(&call_intent(
             &outsider_proxy,
             WRITE,
-            r#"{"v":1,"correlation_id":"intent-out-1","members":["win-a"]}"#,
+            r#"{"v":2,"correlation_id":"intent-out-1","records":[{"win":"win-a","data":"x"}]}"#,
         ))
         .expect("rejection is JSON");
         assert_eq!(rejected["outcome"], "rejected");
         assert_eq!(rejected["reason"], "not-kwin-owner");
-        // Settled float persists the full snapshot through the wire.
+        // Settled opaque records persist the full snapshot through the wire.
         let stored: serde_json::Value = serde_json::from_str(&call_intent(
             &proxy,
             WRITE,
-            r#"{"v":1,"correlation_id":"intent-rt-1","members":["win-a","win-b"]}"#,
+            r#"{"v":2,"correlation_id":"intent-rt-1","records":[{"win":"win-a","data":"{\"v\":1,\"float\":true,\"stickyPrior\":null}"},{"win":"win-b","data":"{\"v\":1,\"float\":false,\"stickyPrior\":null}"}]}"#,
         ))
         .expect("write reply is JSON");
         assert_eq!(stored["outcome"], "stored");
+        assert_eq!(stored["v"], 2);
         assert_eq!(stored["stored"], 2);
-        // Reads return the membership; a complete live inventory prunes the
-        // closed window from the reply without mutating the file.
+        // Reads return the opaque records unchanged with bounded counts.
         let read: serde_json::Value = serde_json::from_str(&call_intent(
             &proxy,
             READ,
-            r#"{"v":1,"correlation_id":"intent-rt-2"}"#,
+            r#"{"v":2,"correlation_id":"intent-rt-2"}"#,
         ))
         .expect("read reply is JSON");
         assert_eq!(read["outcome"], "ok");
+        assert_eq!(read["v"], 2);
         assert_eq!(read["stored"], 2);
         assert_eq!(read["returned"], 2);
-        let pruned: serde_json::Value = serde_json::from_str(&call_intent(
+        assert_eq!(read["records"].as_array().expect("array").len(), 2);
+        assert_eq!(read["records"][0]["win"], "win-a");
+        // Duplicate subjects reject without touching disk.
+        let dup: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            r#"{"v":2,"correlation_id":"intent-rt-3","records":[{"win":"win-a","data":"x"},{"win":"win-a","data":"y"}]}"#,
+        ))
+        .expect("rejection is JSON");
+        assert_eq!(dup["outcome"], "rejected");
+        assert_eq!(dup["reason"], "invalid-members");
+        // Overbound data rejects without touching disk.
+        let over_data = "x".repeat(1025);
+        let over_body = format!(
+            r#"{{"v":2,"correlation_id":"intent-rt-over","records":[{{"win":"win-a","data":"{over_data}"}}]}}"#
+        );
+        let over: serde_json::Value =
+            serde_json::from_str(&call_intent(&proxy, WRITE, &over_body))
+                .expect("rejection is JSON");
+        assert_eq!(over["outcome"], "rejected");
+        assert_eq!(over["reason"], "invalid-members");
+        // Invalid subjects reject without touching disk.
+        let bad: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            r#"{"v":2,"correlation_id":"intent-rt-bad","records":[{"win":"bad id","data":"x"}]}"#,
+        ))
+        .expect("rejection is JSON");
+        assert_eq!(bad["outcome"], "rejected");
+        assert_eq!(bad["reason"], "invalid-members");
+        // The rejected writes left the stored snapshot unchanged.
+        let kept: serde_json::Value = serde_json::from_str(&call_intent(
             &proxy,
             READ,
-            r#"{"v":1,"correlation_id":"intent-rt-3","live":["win-a"]}"#,
+            r#"{"v":2,"correlation_id":"intent-rt-kept"}"#,
         ))
-        .expect("pruned read is JSON");
-        assert_eq!(pruned["outcome"], "ok");
-        assert_eq!(pruned["stored"], 2);
-        assert_eq!(pruned["returned"], 1);
-        // Settled unfloat clears with an empty snapshot.
+        .expect("read reply is JSON");
+        assert_eq!(kept["stored"], 2);
+        assert_eq!(kept["records"][0]["win"], "win-a");
+        // Old v1 wire bodies reject as invalid-request.
+        let old_wire: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            READ,
+            r#"{"v":1,"correlation_id":"intent-rt-old"}"#,
+        ))
+        .expect("rejection is JSON");
+        assert_eq!(old_wire["outcome"], "rejected");
+        assert_eq!(old_wire["reason"], "invalid-request");
+        // Explicit replacement swaps the full snapshot; empty clears.
+        let replaced: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            r#"{"v":2,"correlation_id":"intent-rt-4","records":[{"win":"win-c","data":"z"}]}"#,
+        ))
+        .expect("write reply is JSON");
+        assert_eq!(replaced["outcome"], "stored");
+        assert_eq!(replaced["stored"], 1);
         let cleared: serde_json::Value = serde_json::from_str(&call_intent(
             &proxy,
             WRITE,
-            r#"{"v":1,"correlation_id":"intent-rt-4","members":[]}"#,
+            r#"{"v":2,"correlation_id":"intent-rt-5","records":[]}"#,
         ))
         .expect("clear reply is JSON");
         assert_eq!(cleared["outcome"], "stored");
@@ -1612,7 +1624,7 @@ mod tests {
     }
 
     #[test]
-    fn private_bus_tile_override_roundtrip_preserves_disjointness() {
+    fn private_bus_old_v1_file_degrades_and_next_write_replaces() {
         use crate::float_intent_store::READ_METHOD as READ;
         use crate::float_intent_store::WRITE_METHOD as WRITE;
         let Some(bus) = PrivateBus::start() else {
@@ -1636,65 +1648,60 @@ mod tests {
             .request_name(KWIN_SERVICE)
             .expect("claim KWin name on private bus");
         let proxy = intent_proxy(&client);
-        // Float plus tile persist atomically with disjoint counts.
+        // The rejected v1 membership body is unsupported: it degrades through
+        // the existing empty path with a fixed reason and no conversion.
+        std::fs::create_dir_all(root.join("omnitiler")).expect("project dir");
+        std::fs::write(
+            root.join("omnitiler").join("float-intent.json"),
+            br#"{"v":1,"bus":"x","kwin":"y","members":["win-a"],"tile":["win-t"]}"#,
+        )
+        .expect("plant old file");
+        // Fix the planted dir/file modes to the private gates (0700/0600)
+        // without touching production creation paths.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .expect("root mode");
+            std::fs::set_permissions(
+                root.join("omnitiler"),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .expect("project mode");
+            std::fs::set_permissions(
+                root.join("omnitiler").join("float-intent.json"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .expect("file mode");
+        }
+        // Unsupported storage shape rejects before namespace comparison;
+        // the matching-namespace case is also covered by the store unit test.
+        let read: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            READ,
+            r#"{"v":2,"correlation_id":"intent-old-1"}"#,
+        ))
+        .expect("read reply is JSON");
+        assert_eq!(read["outcome"], "degraded");
+        assert_eq!(read["records"].as_array().expect("array").len(), 0);
+        assert_eq!(read["reason"], "corrupt");
+        // The next full v2 snapshot replaces the old file atomically.
         let stored: serde_json::Value = serde_json::from_str(&call_intent(
             &proxy,
             WRITE,
-            r#"{"v":1,"correlation_id":"intent-tile-1","members":["win-a"],"tile":["win-t"]}"#,
+            r#"{"v":2,"correlation_id":"intent-old-2","records":[{"win":"win-b","data":"z"}]}"#,
         ))
         .expect("write reply is JSON");
         assert_eq!(stored["outcome"], "stored");
         assert_eq!(stored["stored"], 1);
-        assert_eq!(stored["tile_stored"], 1);
-        // Overlapping snapshots reject without touching disk.
-        let rejected: serde_json::Value = serde_json::from_str(&call_intent(
-            &proxy,
-            WRITE,
-            r#"{"v":1,"correlation_id":"intent-tile-2","members":["win-a"],"tile":["win-a"]}"#,
-        ))
-        .expect("rejection is JSON");
-        assert_eq!(rejected["outcome"], "rejected");
-        assert_eq!(rejected["reason"], "invalid-members");
-        // Reads return both sides; live prunes both without mutating the file.
-        let read: serde_json::Value = serde_json::from_str(&call_intent(
+        let reread: serde_json::Value = serde_json::from_str(&call_intent(
             &proxy,
             READ,
-            r#"{"v":1,"correlation_id":"intent-tile-3"}"#,
+            r#"{"v":2,"correlation_id":"intent-old-3"}"#,
         ))
         .expect("read reply is JSON");
-        assert_eq!(read["outcome"], "ok");
-        assert_eq!(read["stored"], 1);
-        assert_eq!(read["tile_stored"], 1);
-        assert_eq!(read["tile_returned"], 1);
-        let pruned: serde_json::Value = serde_json::from_str(&call_intent(
-            &proxy,
-            READ,
-            r#"{"v":1,"correlation_id":"intent-tile-4","live":["win-a"]}"#,
-        ))
-        .expect("pruned read is JSON");
-        assert_eq!(pruned["outcome"], "ok");
-        assert_eq!(pruned["stored"], 1);
-        assert_eq!(pruned["returned"], 1);
-        assert_eq!(pruned["tile_stored"], 1);
-        assert_eq!(pruned["tile_returned"], 0);
-        // Float-only write carries an empty tile snapshot and clears it.
-        let preserved: serde_json::Value = serde_json::from_str(&call_intent(
-            &proxy,
-            WRITE,
-            r#"{"v":1,"correlation_id":"intent-tile-5","members":["win-b"]}"#,
-        ))
-        .expect("write reply is JSON");
-        assert_eq!(preserved["outcome"], "stored");
-        assert_eq!(preserved["stored"], 1);
-        assert_eq!(preserved["tile_stored"], 0);
-        let cleared: serde_json::Value = serde_json::from_str(&call_intent(
-            &proxy,
-            WRITE,
-            r#"{"v":1,"correlation_id":"intent-tile-6","members":["win-b"],"tile":[]}"#,
-        ))
-        .expect("clear reply is JSON");
-        assert_eq!(cleared["outcome"], "stored");
-        assert_eq!(cleared["tile_stored"], 0);
+        assert_eq!(reread["outcome"], "ok");
+        assert_eq!(reread["stored"], 1);
+        assert_eq!(reread["records"][0]["win"], "win-b");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1735,12 +1742,87 @@ mod tests {
         let stored: serde_json::Value = serde_json::from_str(&call_intent(
             &intent_proxy(&client),
             WRITE,
-            r#"{"v":1,"correlation_id":"intent-lock-1","members":["win-a"]}"#,
+            r#"{"v":2,"correlation_id":"intent-lock-1","records":[{"win":"win-a","data":"x"}]}"#,
         ))
         .expect("write reply is JSON");
         assert_eq!(stored["outcome"], "stored");
         assert_eq!(stored["stored"], 1);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn handshake_request(adapter: &str, req: &str) -> String {
+        format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"{req}\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+              \"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+              \"maximize\":false,\"fullscreen\":false,\"nativeSticky\":false,\"above\":false,\
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        )
+    }
+
+    fn settings_request(adapter: &str, generation: &str, req: &str) -> String {
+        format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+              \"req\":\"{req}\",\"rev\":\"1\",\"values\":{{}}}}"
+        )
+    }
+
+    // Reports wait for initial settings: handshake binds the producer
+    // lifetime, settings unlock readiness, and only then do captures
+    // evaluate. Returns the serving generation.
+    fn discover_full(proxy: &zbus::blocking::Proxy<'_>, adapter: &str, req: &str) -> String {
+        use crate::world_service::DISCOVERY_METHOD;
+        let discovery: serde_json::Value = serde_json::from_str(&call_intent(
+            proxy,
+            DISCOVERY_METHOD,
+            &handshake_request(adapter, req),
+        ))
+        .expect("discovery reply is JSON");
+        assert_eq!(discovery["ready"], false);
+        let generation = discovery["gen"].as_str().expect("gen").to_owned();
+        let settings: serde_json::Value = serde_json::from_str(&call_intent(
+            proxy,
+            DISCOVERY_METHOD,
+            &settings_request(adapter, &generation, "settings-1"),
+        ))
+        .expect("settings reply is JSON");
+        assert_eq!(settings["status"], "accepted");
+        generation
+    }
+
+    // Genuine v4 capture facts: one complete screen, no inventory, the
+    // strict v4 presentation ingress plus `rendererInput`, no `views` or
+    // settings keys. The broker stamps the sequencing namespace.
+    fn capture_inner() -> String {
+        "{\"v\":4,\
+          \"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+          \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+          \"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\
+          \"connector\":null}}],\
+          \"windows\":[],\"closed\":[],\"native\":[],\
+          \"focused\":\"\",\
+          \"complete\":true,\"gesture\":false,\"cursor\":null,\
+          \"actionForeground\":null,\"actionCached\":null,\
+          \"actionOutputs\":[\"DP-1\"],\
+          \"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+          \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\
+          \"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\
+          \"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\
+          \"foregroundOut\":null},\
+          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"rendererInput\":null}"
+            .to_owned()
+    }
+
+    fn capture_envelope(adapter: &str, generation: &str, source: &str, seq: u64) -> String {
+        format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+              \"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\
+              \"nativeInvalid\":\"{seq}\",\"report\":{}}}",
+            capture_inner(),
+        )
     }
 
     #[test]
@@ -1771,26 +1853,15 @@ mod tests {
         };
         let owner_proxy = intent_proxy(&owner);
         let outsider_proxy = intent_proxy(&outsider);
-        let discovery: serde_json::Value = serde_json::from_str(&call_intent(
-            &owner_proxy,
-            DISCOVERY_METHOD,
-            r#"{"v":3,"adapter":"test-adapter","req":"d-1"}"#,
-        ))
-        .expect("discovery reply is JSON");
-        assert_eq!(discovery["ready"], false);
-        let generation = discovery["gen"].as_str().expect("gen").to_owned();
-        let incarnation = discovery["adapter"].as_str().expect("incarnation");
-        assert!(!incarnation.is_empty());
+        let generation = discover_full(&owner_proxy, "test-adapter", "d-1");
+        let lifetime = "test-adapter";
+        assert!(!lifetime.is_empty());
         // The outsider is not the KWin owner: capture and discovery reject
         // in-band without touching broker state.
         let denied: serde_json::Value = serde_json::from_str(&call_intent(
             &outsider_proxy,
             WORLD_METHOD,
-            &format!(
-                "{{\"v\":3,\"adapter\":\"test-adapter\",\"gen\":\"{generation}\",\
-                  \"source\":\"outsider-1\",\"sourceSeq\":\"1\",\
-                  \"nativeInvalid\":\"1\",\"report\":{{\"v\":3}}}}"
-            ),
+            &capture_envelope("test-adapter", &generation, "outsider-1", 1),
         ))
         .expect("rejection is JSON");
         assert_eq!(denied["outcome"], "rejected");
@@ -1798,7 +1869,7 @@ mod tests {
         let denied: serde_json::Value = serde_json::from_str(&call_intent(
             &outsider_proxy,
             DISCOVERY_METHOD,
-            r#"{"v":3,"adapter":"outsider","req":"d-9"}"#,
+            &handshake_request("outsider", "d-9"),
         ))
         .expect("rejection is JSON");
         assert_eq!(denied["outcome"], "rejected");
@@ -1808,7 +1879,7 @@ mod tests {
         let not_ready: serde_json::Value = serde_json::from_str(&call_intent(
             &outsider_proxy,
             READ_METHOD,
-            r#"{"v":3,"req":"r-0"}"#,
+            r#"{"v":4,"req":"r-0"}"#,
         ))
         .expect("rejection is JSON");
         assert_eq!(not_ready["outcome"], "rejected");
@@ -1818,39 +1889,19 @@ mod tests {
             &outsider_proxy,
             QUEUE_METHOD,
             &format!(
-                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
                  \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
             ),
         ))
         .expect("queue reply is JSON");
         assert_eq!(queued["outcome"], "queued");
         // The owner's fresh capture drains the outsider's queued command.
-        let inner = "{\"v\":3,\"mode\":\"per-output-local\",\
-          \"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
-          \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}],\
-          \"windows\":[],\"views\":[{\"out\":\"DP-1\",\"view\":\"\"}],\"closed\":[],\
-          \"hostOwned\":false,\"equalCount\":false,\"native\":[],\
-          \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
-          \"defaultTiled\":true,\"focused\":\"\",\
-          \"complete\":true,\"gesture\":false,\"switchTarget\":\"cursor-output\",\
-          \"freshPlacement\":\"cursor-output-last-focused\",\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
-          \"actionOutputs\":[\"DP-1\"],\"focusFollowsCursor\":false,\"cursorWarp\":false,\
-          \"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
-          \"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\
-          \"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\
-          \"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\
-          \"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}}";
-        let envelope = format!(
-            "{{\"v\":3,\"adapter\":\"test-adapter\",\"gen\":\"{generation}\",\
-              \"source\":\"actuator-1\",\"sourceSeq\":\"1\",\
-              \"nativeInvalid\":\"1\",\"report\":{inner}}}"
-        );
+        let envelope = capture_envelope("test-adapter", &generation, "actuator-1", 1);
         let accepted_text = call_intent(&owner_proxy, WORLD_METHOD, &envelope);
         let accepted: serde_json::Value =
             serde_json::from_str(&accepted_text).expect("capture reply is JSON");
         assert_eq!(accepted["ready"], true);
-        assert_eq!(accepted["adapter"], incarnation);
+        assert_eq!(accepted["adapter"], lifetime);
         assert_eq!(accepted["source"], "actuator-1");
         assert_eq!(accepted["nativeInvalid"], "1");
         // The outsider's command settled for the issuer only: the owner's
@@ -1860,7 +1911,7 @@ mod tests {
             &owner_proxy,
             TAKE_METHOD,
             &format!(
-                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
             ),
         ))
         .expect("take reply is JSON");
@@ -1872,7 +1923,7 @@ mod tests {
             &outsider_proxy,
             TAKE_METHOD,
             &format!(
-                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
             ),
         ))
         .expect("take reply is JSON");
@@ -1880,7 +1931,7 @@ mod tests {
         let projection: serde_json::Value = serde_json::from_str(&call_intent(
             &owner_proxy,
             READ_METHOD,
-            r#"{"v":3,"req":"pager-1"}"#,
+            r#"{"v":4,"req":"pager-1"}"#,
         ))
         .expect("presentation reply is JSON");
         assert_eq!(projection["outcome"], "presentation");
@@ -1896,9 +1947,7 @@ mod tests {
 
     #[test]
     fn private_bus_wait_wake_end_to_end_does_not_block_queue() {
-        use crate::world_service::{
-            DISCOVERY_METHOD, QUEUE_METHOD, TAKE_METHOD, WAIT_METHOD, WORLD_METHOD,
-        };
+        use crate::world_service::{QUEUE_METHOD, TAKE_METHOD, WAIT_METHOD, WORLD_METHOD};
         let Some(bus) = PrivateBus::start() else {
             eprintln!("SKIP: dbus-daemon unavailable for hermetic wait test");
             return;
@@ -1921,16 +1970,9 @@ mod tests {
         };
         let owner_proxy = intent_proxy(&owner);
         let outsider_proxy = intent_proxy(&outsider);
-        let discovery: serde_json::Value = serde_json::from_str(&call_intent(
-            &owner_proxy,
-            DISCOVERY_METHOD,
-            r#"{"v":3,"adapter":"test-adapter","req":"d-wait-e2e"}"#,
-        ))
-        .expect("discovery reply is JSON");
-        assert_eq!(discovery["ready"], false);
-        let generation = discovery["gen"].as_str().expect("gen").to_owned();
+        let generation = discover_full(&owner_proxy, "test-adapter", "d-wait-e2e");
         let wait_req = format!(
-            "{{\"v\":3,\"gen\":\"{generation}\",\"adapter\":\"test-adapter\",\
+            "{{\"v\":4,\"gen\":\"{generation}\",\"adapter\":\"test-adapter\",\
               \"nonce\":\"wait-e2e-1\",\"cursor\":\"0\"}}"
         );
         // Park the KWin-owner waiter on its own thread: the blocking proxy
@@ -1952,7 +1994,7 @@ mod tests {
             &outsider_proxy,
             WAIT_METHOD,
             &format!(
-                "{{\"v\":3,\"gen\":\"{generation}\",\"adapter\":\"test-adapter\",\
+                "{{\"v\":4,\"gen\":\"{generation}\",\"adapter\":\"test-adapter\",\
                   \"nonce\":\"wait-outsider\",\"cursor\":\"0\"}}"
             ),
         ))
@@ -1966,7 +2008,7 @@ mod tests {
             &outsider_proxy,
             QUEUE_METHOD,
             &format!(
-                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
                   \"clientCmd\":\"1\",\
                   \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
             ),
@@ -1987,34 +2029,14 @@ mod tests {
             &outsider_proxy,
             TAKE_METHOD,
             &format!(
-                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
                   \"clientCmd\":\"1\"}}"
             ),
         ))
         .expect("take reply is JSON");
         assert_eq!(pending["outcome"], "pending");
         // The follow-up capture drains exactly once for the issuer.
-        let inner = "{\"v\":3,\"mode\":\"per-output-local\",\
-          \"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
-          \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}],\
-          \"windows\":[],\"views\":[{\"out\":\"DP-1\",\"view\":\"\"}],\"closed\":[],\
-          \"hostOwned\":false,\"equalCount\":false,\"native\":[],\
-          \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
-          \"defaultTiled\":true,\"focused\":\"\",\
-          \"complete\":true,\"gesture\":false,\"switchTarget\":\"cursor-output\",\
-          \"freshPlacement\":\"cursor-output-last-focused\",\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
-          \"actionOutputs\":[\"DP-1\"],\"focusFollowsCursor\":false,\"cursorWarp\":false,\
-          \"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
-          \"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\
-          \"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\
-          \"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\
-          \"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}}";
-        let envelope = format!(
-            "{{\"v\":3,\"adapter\":\"test-adapter\",\"gen\":\"{generation}\",\
-              \"source\":\"actuator-1\",\"sourceSeq\":\"1\",\
-              \"nativeInvalid\":\"1\",\"report\":{inner}}}"
-        );
+        let envelope = capture_envelope("test-adapter", &generation, "actuator-1", 1);
         let accepted: serde_json::Value =
             serde_json::from_str(&call_intent(&owner_proxy, WORLD_METHOD, &envelope))
                 .expect("capture reply is JSON");
@@ -2023,7 +2045,7 @@ mod tests {
             &outsider_proxy,
             TAKE_METHOD,
             &format!(
-                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
                   \"clientCmd\":\"1\"}}"
             ),
         ))

@@ -15,7 +15,7 @@ use crate::geometry::Rect;
 use crate::intent_data::{IntentData, encode_intent_data};
 use crate::size_hints::WindowSizeHints;
 use crate::world_directional::tests::{accepted, fact, report_full, screen};
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{IntentRecord, WorldCommand, WorldReport};
 
 fn engine() -> WorldEngine {
@@ -409,8 +409,8 @@ fn duplicate_repeats_cached_save() {
     );
     let first = accepted(&mut engine, &report);
     assert_save(&first, "win-a", &float_true());
-    match engine.handle_report(&report) {
-        WorldOutcome::Duplicate(cached) => {
+    match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.intent_writes, first.intent_writes);
             assert_save(&cached, "win-a", &float_true());
         }
@@ -448,8 +448,8 @@ fn consumed_command_report_emits_no_save() {
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
     );
     consumed.command_seq = Some(2);
-    match engine.handle_report(&consumed) {
-        WorldOutcome::CommandConsumed(reply) => {
+    match engine.handle_report_legacy(&consumed) {
+        LegacyWorldOutcome::CommandConsumed(reply) => {
             assert!(reply.command_consumed);
             assert_eq!(reply.based_on_observation_seq, 3);
             assert!(reply.command_result.is_none(), "{:?}", reply.command_result);
@@ -491,8 +491,8 @@ fn refused_unknown_window_preserves_state_for_retry() {
         Some(2),
         Some(toggle("win-nope")),
     );
-    match engine.handle_report(&bad) {
-        WorldOutcome::Accepted(reply) => {
+    match engine.handle_report_legacy(&bad) {
+        LegacyWorldOutcome::Accepted(reply) => {
             // Unknown toggle subject never reaches the engine: the staged
             // observation cannot prove it.
             assert_eq!(
@@ -546,8 +546,8 @@ fn held_scope_toggle_refuses_without_mutation() {
         Some(2),
         Some(toggle("win-a")),
     );
-    match engine.handle_report(&held) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&held) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(crate::world_report::CommandResult::Rejected {
                 kind: crate::world_report::CommandRejectKind::OperationRefused
@@ -595,8 +595,8 @@ fn hints_null_toggle_refuses_without_mutation() {
         Some(2),
         Some(toggle("win-a")),
     );
-    match engine.handle_report(&refused) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&refused) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(crate::world_report::CommandResult::Rejected {
                 kind: crate::world_report::CommandRejectKind::OperationRefused
@@ -2114,8 +2114,8 @@ fn oversized_toggle_report_rejected_without_mutation() {
         report_estimate(&oversized) > WORLD_MAX_REQUEST_BYTES,
         "fixture really is oversized"
     );
-    match engine.handle_report(&oversized) {
-        WorldOutcome::Rejected { kind, .. } => {
+    match engine.handle_report_legacy(&oversized) {
+        LegacyWorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_OVERSIZED);
         }
         other => panic!("expected oversized, got {other:?}"),
@@ -2231,8 +2231,8 @@ fn reply_bound_toggle_report_rejected_without_mutation() {
     let conflicts = engine.intent_conflicts.clone();
     let blocks = engine.intent_sticky_blocks.clone();
     let restored = engine.restored_floats.clone();
-    match engine.handle_report(&report) {
-        WorldOutcome::Rejected { kind, .. } => {
+    match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
         }
         other => panic!("expected reply-oversize, got {other:?}"),
@@ -2345,8 +2345,8 @@ fn reply_bound_target_lanes_rejected_without_mutation() {
         "lane term is the discriminator: {without_lanes} + {lanes}"
     );
     let revision = engine.state_revision;
-    match engine.handle_report(&report) {
-        WorldOutcome::Rejected { kind, .. } => {
+    match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
         }
         other => panic!("expected reply-oversize, got {other:?}"),
@@ -2365,8 +2365,8 @@ fn reply_bound_target_lanes_rejected_without_mutation() {
         None,
         None,
     );
-    match engine.handle_report(&retry) {
-        WorldOutcome::Accepted(_) | WorldOutcome::CommandConsumed(_) => {}
+    match engine.handle_report_legacy(&retry) {
+        LegacyWorldOutcome::Accepted(_) | LegacyWorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected accepted retry, got {other:?}"),
     }
 }

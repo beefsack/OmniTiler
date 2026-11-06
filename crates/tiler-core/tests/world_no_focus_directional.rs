@@ -10,9 +10,9 @@
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
 use tiler_core::world_report::{
-    EffectKind, ScreenReport, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    EffectKind, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -86,7 +86,7 @@ fn report(
     action_foreground: Option<&str>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -129,8 +129,8 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReport,
 ) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }

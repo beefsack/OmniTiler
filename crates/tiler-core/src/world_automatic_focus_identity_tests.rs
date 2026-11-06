@@ -6,11 +6,11 @@ use crate::bounds::is_opaque_id;
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_focus::FocusVerdict;
 use crate::world_report::{
     EffectCause, FocusFeedback, RowDiagnosticKind, VisibilityReason, VisibilitySetter,
-    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -81,7 +81,7 @@ fn report(
     cursor_hit: Option<&str>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -120,8 +120,8 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -881,8 +881,8 @@ fn duplicate_cache_and_consumed_command_mint_no_new_identities() {
     let tokens = engine.automatic_focus_tokens.clone();
     // An exact duplicate returns the cached reply without running the
     // producers again.
-    match engine.handle_report(&arrival) {
-        WorldOutcome::Duplicate(cached) => {
+    match engine.handle_report_legacy(&arrival) {
+        LegacyWorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.state_revision, revision);
         }
         other => panic!("expected cached duplicate, got {other:?}"),
@@ -918,8 +918,8 @@ fn duplicate_cache_and_consumed_command_mint_no_new_identities() {
     replay.request_seq = 4;
     replay.observation_seq = 4;
     replay.request_id = "req-4".to_owned();
-    let consumed = match engine.handle_report(&replay) {
-        WorldOutcome::CommandConsumed(reply) => reply,
+    let consumed = match engine.handle_report_legacy(&replay) {
+        LegacyWorldOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected consumed command, got {other:?}"),
     };
     assert!(
@@ -990,8 +990,8 @@ fn rejected_command_keeps_admission_mapping_envelope_rejection_adopts_nothing() 
     // nothing: no mapping, no revision motion.
     let mut tampered = refused.clone();
     tampered.focused_global = "w2".to_owned();
-    match engine.handle_report(&tampered) {
-        WorldOutcome::Rejected { .. } => {}
+    match engine.handle_report_legacy(&tampered) {
+        LegacyWorldOutcome::Rejected { .. } => {}
         other => panic!("expected envelope rejection, got {other:?}"),
     }
     assert_eq!(
@@ -1047,8 +1047,8 @@ fn max_revision_boundary_mints_no_unissued_identity() {
         None,
         None,
     );
-    match engine.handle_report(&probe) {
-        WorldOutcome::Rejected { kind, .. } => {
+    match engine.handle_report_legacy(&probe) {
+        LegacyWorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REVISION_EXHAUSTED);
         }
         other => panic!("expected revision exhaustion, got {other:?}"),

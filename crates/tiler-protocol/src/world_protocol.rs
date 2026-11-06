@@ -24,173 +24,17 @@
 //!   reply (ASCII-validated wire alphabet); the codec test locks the
 //!   equality so the two gates cannot differ.
 //!
-//! Request keys (object, all required):
-//! ```text
-//! {v:3, owner, adapter, gen, obs:"u64", reqSeq:"u64", req, cmdSeq:"u64"|null,
-//!  command:{op,...}|null, screens, windows, views, closed,
-//!  hostOwned:bool, equalCount:bool, native, predicate, refill,
-//!  defaultTiled:bool, focused:""|id, complete:bool, gesture:bool,
-//!  switchTarget, freshPlacement, cursor:[x,y]|null,
-//!  actionForeground:id|null, actionCached:id|null, actionOutputs:[id...],
-//!  focusFollowsCursor:bool, cursorWarp:bool}
-//! (plus optional tolerant D2/D3 settings: anchorFallback, noSpaceResult,
-//!  and bornMaximized; missing or invalid values backfill the defaults;
-//!  plus the optional tolerant birthClear capability: missing backfills
-//!  false = no automatic birth clear, a present bool decodes, any other
-//!  shape refuses)
-//! screens[]: {out, full:[x,y,w,h]|null, work:[x,y,w,h]|null,
-//!             complete:bool, scale:finite-positive-number,
-//!             identity:{manufacturer,model,serial,connector}}
-//!             (all six keys required; retired gap/outer/primary keys hold
-//!             the identifiable row, other unknown keys refuse; scale is a
-//!             finite positive JSON number; identity keys are all required
-//!             and nullable with empty text preserved; bad identifiable rows
-//!             hold narrowly with their carried fields retained, bad `out`
-//!             refuses the report)
-//! report-level primary: "primary":id|null (optional: absent means
-//!             unknown, null refuses, an opaque id designates)
-//! windows[] (facts): {win, out:null|id, rect:[x,y,w,h]|null,
-//!             fullscreen:bool|null, maximized:bool|null, sticky:bool|null,
-//!             minimized:bool|null, hints:{...}, nativeWs:""|id|null (optional,
-//!             spelling-retained: missing stays omitted, null stays null,
-//!             empty stays "", capability-gated host-owned
-//!             native desktop id, separate namespace from logical ids;
-//!             without hostOwned it refuses), hostHidden:bool|null,
-//!             privileged:bool|null, managed:bool|null,
-//!             acceptsInput:bool|null, activationInhibited:bool|null,
-//!             toolWindow:bool|null, owned:bool|null, transient:bool|null,
-//!             modal:bool|null, resizable:bool|null, above:bool|null,
-//!             below:bool|null, owner:id|null, parent:id|null, role:text|null,
-//!             appId:text|null, executable:text|null, processId:id|null,
-//!             class:text|null, title:text|null, type:token|null,
-//!             activationPolicy:token|null, layer:i32|null,
-//!             fullscreenOwner:token|null, fullscreenExitable:bool|null,
-//!             suppressionAvailable:bool|null,
-//!             visibility:{visible:bool|null, suppressionOwned:bool|null},
-//!             lastWrite:{...}|null} (retired floating/fitExcluded/fixedAuto/
-//!             fixedSuppress/observedWs/shell/tool/ownedDialog/dialog/noActivate/
-//!             cannotControl keys hold the identifiable row;
-//!             unknown keys refuse; bad win/out-shape/rect/hints refuse;
-//!             overbound text and wrong-typed values hold; unknown enum
-//!             tokens refuse)
-//! views[]: {out, view:""|id} (empty means unknown)
-//! closed[]: [id...] (explicit closes)
-//! native[] (host-owned observations, requires hostOwned): {out, order:[id...],
-//!             current:id|null, occupancy:[{native,count:int|null}...]} (strict:
-//!             null means the current surface is not an ordered desktop and
-//!             retains the logical view; occupancy covers exactly each order
-//!             id: count is the neutral all-window occupant total for that
-//!             desktop, null is explicit unknown and never an inferred zero;
-//!             empty strings and missing keys refuse)
-//! predicate: "both-axes-fixed"|"either-axis-fixed"
-//! refill: "last-remaining-workspace"|"most-recently-used-workspace"
-//! anchorFallback: "largest-splittable-window"|"closest-splittable-relative"|"no-search"
-//!   (optional, tolerant: missing or invalid backfills the default)
-//! noSpaceResult: "float"|"allow-overlap"
-//!   (optional, tolerant: missing or invalid backfills the default)
-//! bornMaximized: "tile-on-launch"|"keep-maximized-overlay"
-//!   (optional, tolerant: missing or invalid backfills tile-on-launch)
-//! birthClear: bool (optional, tolerant: missing backfills false = no
-//!   automatic birth clear; a present bool decodes, any other shape
-//!   refuses like the strict capability flags)
-//! switchTarget: "cursor-output"|"focused-output" (strict: unknown refuses)
-//! freshPlacement: "cursor-output-last-focused"|"cursor-output-cursor-closest"|"focused-output-last-focused"
-//!   (strict: unknown refuses)
-//! cursor: [x,y] in adapter units (FULL-rect space) or null when unreadable
-//! cursorHit: ""|id|null (optional, tolerant: missing backfills null) - the
-//!   normalized cursor-hit managed lifetime: the exact managed window under
-//!   the cursor at observation time, resolved natively. Absent, foreign, or
-//!   hidden hits report null; the core never focuses without one.
-//! actionForeground/actionCached: id|null (required) - the neutral
-//!   migration/control action context: the adapter-grounded foreground
-//!   output and the adapter-retained cache output (`None` when unknown).
-//!   The core applies foreground, pointer, cache, then known-registry
-//!   order; `migrate-directional` carries no source (direction only).
-//! actionOutputs: [id...] (required, possibly empty) - the neutral
-//!   ordered known-output registry in adapter registry order. Every
-//!   action-context leg filters through it with first-entry fallback.
-//! focusFollowsCursor/cursorWarp: bool (stage-4b core-actuated settings)
-//! monotonicMs: "u64" adapter monotonic milliseconds, arbitrary process
-//!   epoch, never wall-clock (optional, tolerant: missing backfills 0 =
-//!   unreported, which never suppresses the transient lane)
-//! frameAttempts[] (optional, tolerant: missing backfills []):
-//!   {win, target:[x,y,w,h], setter:accepted|refused|threw,
-//!    readback:[x,y,w,h]|null, dpiBefore:number|null, dpiAfter:number|null,
-//!    attemptMs:"u64", op:""|id, pre:[x,y,w,h]|null} - mechanical
-//!   write/readback facts only, never a policy verdict; at most one entry
-//!   per window. `op` names the retained float-placement operation the
-//!   write ran under ("" for ordinary writes, never inferred); `pre` is
-//!   the live frame immediately before the write and requires `op`.
-//! memberAttempts[] (optional, tolerant: missing backfills []):
-//!   {op, win, out, ws, setter:accepted|refused|threw,
-//!    pre:{out,ws}|null, post:{out,ws}|null,
-//!    nativePre:id|null (optional, tolerant: missing/null/empty backfills
-//!    null for tiler-owned adapters), nativePost:id|null (same tolerance),
-//!    attemptMs:"u64"} -
-//!   mechanical membership write/homing facts only; at most one entry per
-//!   operation window. The core owns window/migration completion. The
-//!   host-owned native pre/post ids name the native desktops read
-//!   immediately before/after the write (translated core-side through its
-//!   own bindings; never an adapter table); without hostOwned any carried
-//!   native id refuses.
-//! viewAttempts[] (optional, tolerant: missing backfills []):
-//!   {op, out, ws, setter:accepted|refused|threw,
-//!    pre:""|id|null, post:""|id|null, base:""|id|null,
-//!    nativePre:id|null, nativePost:id|null, nativeBase:id|null
-//!    (each optional, tolerant: missing/null/empty backfills null),
-//!    attemptMs:"u64"} - mechanical view write/proof facts only; at most
-//!   one entry per owning view phase. The core owns every view verdict.
-//!   Host-owned native current ids ride the native keys (translated
-//!   core-side); logical keys stay null there. Without hostOwned any
-//!   carried native id refuses.
-//! clearAttempts[] (optional, tolerant: missing backfills []):
-//!   {op, win, setter:accepted|refused|threw,
-//!    pre:bool|null, post:bool|null, attemptMs:"u64"} - mechanical
-//!   maximize-clear write/proof facts only (immediate pre/post maximized
-//!   states); at most one entry per retained clear operation. The core
-//!   owns directional clear completion.
-//! stateAttempts[] (required, no tolerant backfill: missing refuses):
-//!   {win, property:fullscreen|maximized|sticky|above, target:bool,
-//!    rev:"u64", setter:accepted|refused|threw,
-//!    pre:bool|null, post:bool|null, attemptMs:"u64"} - mechanical
-//!   native-state write/proof facts only (immediate pre/post property
-//!   states); at most one entry per window property across every carried
-//!   revision. The core owns every state verdict.
-//! focusFeedback[] (required, no tolerant backfill: missing refuses):
-//!   {id, target, rev:"u64", setter:accepted|refused|threw|not-called,
-//!    reason:""|closed-token, pre:id|null, post:id|null,
-//!    foregroundProven:bool,
-//!    arrival:[{win, obs:"u64", before:{...}, kind:native|output,
-//!    home:WorkspaceRef|null|out:id|null, frame:R|null, after:{...}}],
-//!    attemptMs:"u64"} - mechanical one-shot native focus evidence only
-//!   (at-most-once call/no-call plus readiness brackets); no duplicate or
-//!   redelivery restriction. Both bracket arms decode context-free; the
-//!   engine host gate owns the native/output check. The core owns every
-//!   focus verdict.
-//! creationAttempts[] (optional, tolerant: missing backfills []):
-//!   {op, ws, out, setter:accepted|refused|threw,
-//!    before:[id...], after:[id...],
-//!    created:id|null (optional, tolerant: missing/null/empty backfills
-//!    null for adapters predating the correlated receipt),
-//!    attemptMs:"u64"} - mechanical native
-//!   creation write/readback facts only (live native order immediately
-//!   before and first successfully observed full order after the create call,
-//!   plus the host-correlated created native
-//!   id when the host can prove which fresh desktop its create call
-//!   produced); at most one entry per outstanding
-//!   creation operation (requires hostOwned). The core owns binding and
-//!   settlement over the fresh native[] readback.
-//! command.op: focus|send|switch-view|select-workspace|select-numbered|
-//!   select-relative|select-previous|select-trailing|send-relative|
-//!   send-numbered|set-workspace-tiling|toggle-workspace-tiling|
-//!   migrate-workspace|focus-directional|move-directional|send-directional|
-//!   migrate-directional|set-sticky|toggle-sticky|set-fullscreen|
-//!   toggle-fullscreen|operation
-//!   (fields per variant, see decode; every
-//!   `ws` field names a stable core logical workspace id; the four
-//!   selection commands carry `"out":null` for core-resolved output or an
-//!   opaque id for a genuinely semantic explicit output)
-//! ```
+//! Request shape (v4): the sole public ingress is [`decode_request`] /
+//! [`decode_request_with_wire`] through [`decode_report_v4`]; see that
+//! function for the exact required/optional envelope keys (v4 carries
+//! `rendererInput`, refuses `views`, holds identifiable bad rows narrowly).
+//! Window rows carry normalized native v4 facts, never adapter verdicts:
+//! retired membership verdict keys hold the identifiable row fail-closed.
+//! Attempt lanes carry mechanical write/readback facts only; the core owns
+//! every verdict, and a typed `Rejected` command result is an accepted
+//! observation that settles the command terminally as failed for the
+//! requester. Legacy v3 shapes live only in the doc-hidden `*_legacy`
+//! decoders below, which stay exact for deferred regressions.
 //!
 //! Reply keys are exactly the core canonical reply encoding (`v`, `adapter`,
 //! `gen`, `req`, `obs`/`rev` as decimal strings, `ready`, `consumed`,
@@ -219,7 +63,7 @@
 //! (a missing `id` encodes as JSON null, never the empty string).
 //! Bootstrap/discovery replies reuse the same shape with `ready:false` and
 //! empty sections. Bounded errors reuse
-//! `{v:3,outcome:"rejected",kind,message,gen}`.
+//! `{v:4,outcome:"rejected",kind,message,gen}`.
 
 use tiler_core::active_group::ActiveGroupMember;
 use tiler_core::boundary::CoreCommand;
@@ -255,14 +99,15 @@ use tiler_core::world_report::{
     RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScopeStatus, ScreenReport, ScreenView,
     StateProperty, StateTarget, SwitchEvent, SwitchFocus, SwitchOutcome, TilingMode, TransferKind,
     TransferTargetV4, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    VisibilityTarget, WORLD_CONTRACT_VERSION, WindowDesire, WindowFact, WindowType,
+    VisibilityTarget, WORLD_CONTRACT_VERSION_LEGACY, WindowDesire, WindowFact, WindowType,
     WorkspaceDesire, WorkspaceRef, WorldCommand, WorldPresentationV4, WorldReply, WorldReplyV4,
     WorldReport, WorldReportV4, check_screen_structure, check_window_structure,
     push_raw_setting_value, validate_report_reason,
 };
 
-/// World protocol contract version (equals the core world contract version).
-pub const WORLD_PROTOCOL_VERSION: u32 = WORLD_CONTRACT_VERSION;
+/// World protocol contract version (equals the core world contract version:
+/// v4).
+pub const WORLD_PROTOCOL_VERSION: u32 = tiler_core::world_report::WORLD_CONTRACT_VERSION;
 /// D4 transport budget mirror: 4 MiB request cap.
 pub const WORLD_MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 /// D4 transport budget mirror: 4 MiB reply cap.
@@ -316,7 +161,7 @@ fn unknown_value() -> WorldProtocolError {
 #[must_use]
 pub fn encode_error(kind: &str, message: &str, core_generation: &str) -> String {
     let mut out = String::new();
-    out.push_str("{\"v\":3,\"outcome\":\"rejected\",\"kind\":");
+    out.push_str("{\"v\":4,\"outcome\":\"rejected\",\"kind\":");
     push_json_string(&mut out, kind);
     out.push_str(",\"message\":");
     push_json_string(&mut out, message);
@@ -3375,11 +3220,14 @@ pub struct DecodedRequest {
     pub wire: ReportWireOptionals,
 }
 
-/// Decode one JSON world request into the typed core report plus its
-/// optional wire metadata. Enforces byte length first (4 MiB), then exact
-/// shape/types/vocabularies, then the core [`validate_report`] gate. Never
-/// logs or echoes payload bytes.
-pub fn decode_request_with_wire(
+/// Dead legacy decode: one JSON legacy world request into the typed legacy
+/// core report plus its optional wire metadata. Only the doc-hidden legacy
+/// implementation and its deferred regression tests use this; the public
+/// ingress is [`decode_request_with_wire`]. Enforces byte length first
+/// (4 MiB), then exact shape/types/vocabularies, then the core
+/// [`validate_report`] gate. Never logs or echoes payload bytes.
+#[doc(hidden)]
+pub fn decode_request_with_wire_legacy(
     json: &str,
 ) -> std::result::Result<DecodedRequest, WorldProtocolError> {
     if json.len() > WORLD_MAX_REQUEST_BYTES {
@@ -3444,7 +3292,7 @@ pub fn decode_request_with_wire(
         .get("v")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(malformed)?;
-    if version != u64::from(WORLD_PROTOCOL_VERSION) {
+    if version != u64::from(WORLD_CONTRACT_VERSION_LEGACY) {
         return Err(WorldProtocolError {
             kind: KIND_VERSION,
             message: MSG_VERSION,
@@ -3609,7 +3457,7 @@ pub fn decode_request_with_wire(
         intent_records.push(IntentRecord { win, data });
     }
     let report = WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: req_id(map, "adapter")?,
         core_generation: req_bounded(map, "gen", MAX_GENERATION_LEN, is_generation_text)?,
         observation_seq: req_u64_str(map, "obs")?,
@@ -3752,24 +3600,45 @@ pub fn decode_request_with_wire(
     Ok(DecodedRequest { report, wire })
 }
 
-/// Decode one JSON world request into the typed core report. Same gated
-/// parsing as [`decode_request_with_wire`]; optional wire metadata is
-/// discarded.
-pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProtocolError> {
-    decode_request_with_wire(json).map(|decoded| decoded.report)
+/// Dead legacy decode: one JSON legacy world request into the typed legacy
+/// core report. Only the doc-hidden legacy implementation and its deferred
+/// regression tests use this; the public ingress is [`decode_request`].
+/// Same gated parsing as [`decode_request_with_wire_legacy`]; optional wire
+/// metadata is discarded.
+#[doc(hidden)]
+pub fn decode_request_legacy(json: &str) -> std::result::Result<WorldReport, WorldProtocolError> {
+    decode_request_with_wire_legacy(json).map(|decoded| decoded.report)
 }
 
-// -- Staged v4 whole-report decoder --
-// Shape-only staging codec for the v4 contract (`rendererInput` carried,
-// `views` removed, identifiable bad rows held narrowly instead of refusing
-// the envelope). The v3 entrypoints above are untouched; the staged engine
-// use (unit 6) owns every verdict below. Snapshot refusal vocabulary is
-// reused verbatim from the core gate: no new error metadata is minted
-// here.
+/// Decode one JSON world request into the typed core v4 report. This is
+/// the sole public report ingress: the genuine v4 codec
+/// ([`decode_report_v4`]), which enforces the v4 envelope keys
+/// (`rendererInput` required, `views` refused as `unknown-field`) and the
+/// v4 contract version. No legacy dual decode and no report conversion.
+pub fn decode_request(json: &str) -> std::result::Result<WorldReportV4, WorldProtocolError> {
+    decode_report_v4(json).map(|decoded| decoded.report)
+}
 
-/// Staged v4 world protocol version: `rendererInput` carried, `views`
-/// removed, identifiable bad rows held narrowly. The v3
-/// [`WORLD_PROTOCOL_VERSION`] constant stays untouched.
+/// Decode one JSON world request into the typed core v4 report plus its
+/// optional wire metadata. This is the sole public wired report ingress:
+/// the genuine v4 codec ([`decode_report_v4`]). No legacy dual decode
+/// and no report conversion.
+pub fn decode_request_with_wire(
+    json: &str,
+) -> std::result::Result<DecodedReportV4, WorldProtocolError> {
+    decode_report_v4(json)
+}
+
+// -- V4 whole-report decoder --
+// Genuine v4 codec for the v4 contract (`rendererInput` carried, `views`
+// refused, identifiable bad rows held narrowly instead of refusing the
+// envelope). The legacy entrypoints above are dead doc-hidden regressions
+// only. Snapshot refusal vocabulary is reused verbatim from the core gate:
+// no new error metadata is minted here.
+
+/// V4 world protocol version: `rendererInput` carried, `views` refused,
+/// identifiable bad rows held narrowly. Equals [`WORLD_PROTOCOL_VERSION`]:
+/// the public contract is v4.
 pub const WORLD_PROTOCOL_VERSION_V4: u32 = tiler_core::world_report::WORLD_CONTRACT_VERSION_V4;
 
 /// Per-valid-row creation-receipt wire spelling (lane-level
@@ -9232,14 +9101,17 @@ fn push_authority_scope(out: &mut String, scope: &AuthorityScope) {
     }
 }
 
-/// Transport mirror of the core canonical reply writer: byte-identical by
-/// construction. Same unchecked-`String` caller precondition as
-/// [`tiler_core::world_sizing::encode_reply_canonical`]: the reply's
-/// `intent_writes` must satisfy
+/// Dead legacy transport mirror of the core canonical legacy reply writer:
+/// byte-identical by construction. Only the doc-hidden legacy
+/// implementation and its deferred regression tests use this; the public
+/// reply encode is [`encode_reply`]. Same unchecked-`String` caller
+/// precondition as [`tiler_core::world_sizing::encode_reply_canonical`]:
+/// the reply's `intent_writes` must satisfy
 /// [`tiler_core::world_report::validate_intent_writes_reason`]; the engine
 /// publication gate enforces it before any commit or encode.
+#[doc(hidden)]
 #[must_use]
-pub fn encode_reply(reply: &WorldReply) -> String {
+pub fn encode_reply_legacy(reply: &WorldReply) -> String {
     let mut out = String::new();
     out.push_str("{\"v\":");
     out.push_str(&reply.contract_version.to_string());
@@ -9492,10 +9364,19 @@ pub fn encode_reply(reply: &WorldReply) -> String {
     out
 }
 
+/// Checked canonical encode of one decoded v4 reply. This is the sole
+/// public reply encode: the genuine v4 codec ([`encode_reply_v4`]) with
+/// strict v4 shape enforcement. No legacy dual encode.
+pub fn encode_reply(decoded: &DecodedReplyV4) -> Result<String> {
+    encode_reply_v4(decoded)
+}
+
 /// Retained engine surface for the service boundary: the planner service
 /// drives [`WorldEngine`] through this module so only `tiler-protocol` sits
 /// between the service and the core.
-pub use tiler_core::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
+pub use tiler_core::world_engine::{
+    LegacyWorldOutcome, WorldEngine, WorldEngineConfig, WorldOutcome,
+};
 
 #[cfg(test)]
 mod tests {
@@ -9547,7 +9428,7 @@ mod tests {
         let mut core_section = String::new();
         tiler_core::world_sizing::encode_switch_settled(&mut core_section, &settled);
         let reply = tiler_core::world_report::WorldReply {
-            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
+            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_LEGACY,
             adapter_incarnation: "adapter-1".to_owned(),
             core_generation: "gen-1".to_owned(),
             request_id: "req-1".to_owned(),
@@ -9572,7 +9453,7 @@ mod tests {
             switch_settled: settled.clone(),
         };
         let core_wire = tiler_core::world_report::encode_reply_canonical(&reply);
-        let transport_wire = encode_reply(&reply);
+        let transport_wire = encode_reply_legacy(&reply);
         assert_eq!(transport_wire, core_wire, "both writers byte-identical");
         assert!(
             tiler_core::world_report::reply_estimate(&reply) >= core_wire.len(),

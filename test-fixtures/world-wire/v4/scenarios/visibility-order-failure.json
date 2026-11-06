@@ -2311,7 +2311,34 @@
                 "visible": true,
                 "suppressionOwned": false
               },
-              "lastWrite": null
+              "lastWrite": {
+                "property": "visibility",
+                "target": true,
+                "revision": "4",
+                "path": "staged",
+                "setter": "accepted",
+                "reason": "",
+                "pre": {
+                  "obs": "5",
+                  "lifetimeMatched": true,
+                  "visibility": {
+                    "visible": false,
+                    "suppressionOwned": true
+                  },
+                  "minimized": false,
+                  "hostHidden": false
+                },
+                "post": {
+                  "obs": "6",
+                  "lifetimeMatched": true,
+                  "visibility": {
+                    "visible": true,
+                    "suppressionOwned": false
+                  },
+                  "minimized": false,
+                  "hostHidden": false
+                }
+              }
             },
             {
               "win": "win-old",

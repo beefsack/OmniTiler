@@ -11,10 +11,10 @@
 use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
 use tiler_core::world_report::{
     AuthorityScope, HoldReason, NativeObservation, NativeOccupancy, ScopeAuthority,
-    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -136,7 +136,7 @@ fn report(
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -182,8 +182,8 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReport,
 ) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -535,8 +535,8 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         }),
     );
     send_report.focused_global = "win-a".to_owned();
-    match engine.handle_report(&send_report) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&send_report) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::SendWindowUnknown
@@ -562,8 +562,8 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         }),
     );
     focus_report.focused_global = "win-a".to_owned();
-    match engine.handle_report(&focus_report) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&focus_report) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::FocusUnknown
@@ -1116,8 +1116,8 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
         }),
     );
     click_minimized.focused_global = "win-a".to_owned();
-    match engine.handle_report(&click_minimized) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&click_minimized) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::FocusUnknown

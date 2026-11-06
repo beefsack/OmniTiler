@@ -9,7 +9,7 @@ use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
 use tiler_core::world_report::{
     FrameSetter, MemberAttempt, ScreenReport, ScreenView, TransferKind, WindowFact, WorkspaceRef,
     WorldCommand, WorldReport,
@@ -89,7 +89,7 @@ fn report(
     member_attempts: Vec<tiler_core::world_report::MemberAttempt>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
+        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -179,8 +179,8 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReport,
 ) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -350,7 +350,7 @@ fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
     );
     let view_b = view_of(&first, "out-b").expect("view b");
     // Local mode refuses a foreign id: no cross-output duplication.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         2,
         2,
         two_screens(),
@@ -365,7 +365,7 @@ fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
         }),
         vec![],
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::ViewTargetUnknown
@@ -469,7 +469,7 @@ fn shared_mode_refuses_whole_workspace_migration() {
         ),
     );
     let shared = view_of(&first, "out-a").expect("shared view");
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         2,
         2,
         two_screens(),
@@ -485,7 +485,7 @@ fn shared_mode_refuses_whole_workspace_migration() {
         }),
         vec![],
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::MigrationRefused

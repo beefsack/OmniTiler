@@ -38,13 +38,12 @@ use crate::world_report::{
 };
 use crate::world_report_v4_checks::graded_effective_v4;
 
-/// Internal outcome of one v4 accepted run: the genuine v4 reply on
+/// Genuine outcome of one v4 accepted run: the v4 reply on
 /// observation/command progression, or the envelope refusal kind when
 /// creation exhaustion discards the staged candidate (legacy parity: the
 /// candidate is dropped with no adoption, never a command result).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum V4RunOutcome {
+pub enum V4RunOutcome {
     Accepted(WorldReplyV4),
     /// Identical latest duplicate: cached v4 reply, no new revision.
     /// Only the admission boundary mints this; staged runs never do.

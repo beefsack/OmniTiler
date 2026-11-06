@@ -1,12 +1,14 @@
-//! Session-scoped float-intent membership store, extended with explicit
-//! fixed-window tile overrides (D7).
+//! Session-scoped opaque intent storage: one versioned snapshot of
+//! `{win, data}` records.
 //!
-//! Rust-owned private store for settled explicit float intent plus settled
-//! explicit fixed-window tile overrides: membership only (normalized live
-//! `internalId` strings per side). No rects, focus, stacking, history, or
-//! native writes. The narrow planner-service persistence exception for
-//! intent membership only. Float and tile memberships stay disjoint and
-//! bounded; overlap rejects before disk and persisted overlap reads corrupt.
+//! Rust-owned private store for settled opaque intent records: the core owns
+//! the inner `data` bytes, the adapter stores them unchanged, and this layer
+//! never interprets inner JSON or synthesizes floats. Each record binds the
+//! storage-verified live subject (`win`, normalized like the KWin
+//! `normalizeNativeId` utility) to the exact opaque core record (`data`,
+//! `<=1024` UTF-8 bytes). No rects, focus, stacking, history, geometry, or
+//! native writes. The narrow planner-service persistence exception for opaque
+//! intent only.
 //!
 //! Layout: `<root>/omnitiler/float-intent.json` (`XDG_RUNTIME_DIR`
 //! in production, a private temp root in tests). Every access is anchored:
@@ -30,30 +32,24 @@
 //! Namespace: serving bus id plus current `org.kde.KWin` owner, derived from
 //! the bus by the service layer, never from the caller. Mismatch degrades to
 //! empty; the next full write replaces. Missing content reads plain empty;
-//! unreadable, corrupt, or oversize content degrades with a fixed reason and
-//! zero counts. Write failures retain local intent; no retry machinery.
+//! unreadable, corrupt (including any non-`v:2` store body: the old `v:1`
+//! membership format is unsupported with no conversion), or oversize content
+//! degrades with a fixed reason and zero counts. Write failures retain local
+//! intent; no retry machinery.
 //!
 //! Wire contract on `com.omnitiler.Planner1` (see planner_service):
-//! `ReadFloatIntent({"v":1,"correlation_id":..,"live"?[..]})` returns
-//! `ok` with `members`/`stored`/`returned` plus `tile`/`tile_stored`/
-//! `tile_returned` (absent `tile` in old replies reads as empty), or
-//! `degraded` empty with
+//! `ReadFloatIntent({"v":2,"correlation_id":..})` returns `ok` with
+//! `records`/`stored`/`returned`, or `degraded` empty with
 //! `namespace-unavailable|unreadable|corrupt|namespace-mismatch`, or
-//! `rejected` with `unauthorized|not-kwin-owner`. `live`, when present, is
-//! the caller-attested complete inventory: entries must each normalize or
-//! the request rejects, and both sides of the reply are pruned to the
-//! intersection without mutating the file.
-//! `WriteFloatIntent({"v":1,"correlation_id":..,
-//! "members":[..],"tile"?[..]})` persists the full snapshot of both sides
-//! (each empty clears its side; absent `tile` means an empty full tile
-//! snapshot) and returns `stored` plus `tile_stored`, or `rejected`
-//! (`unauthorized|not-kwin-owner|invalid-request|
+//! `rejected` with `unauthorized|not-kwin-owner`.
+//! `WriteFloatIntent({"v":2,"correlation_id":..,"records":[{win,data}..]})`
+//! persists the full opaque snapshot (empty `records` clears) and returns
+//! `stored`, or `rejected` (`unauthorized|not-kwin-owner|invalid-request|
 //! invalid-members`), or `unavailable` (`namespace-unavailable|
-//! store-unavailable`). Overlap across sides rejects as `invalid-members`.
-//! Oversize bodies fail closed as `Unavailable` errors.
-//! Logs carry only the validated correlation (or `-`), op, outcome, float
-//! and tile counts, and fixed reasons: never ids, owners, bus ids, paths,
-//! or payloads.
+//! store-unavailable`). Oversize bodies fail closed as `Unavailable` errors.
+//! Logs carry only the validated correlation (or `-`), op, outcome, record
+//! counts, and fixed reasons: never ids, owners, bus ids, paths, data, or
+//! payloads.
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -71,19 +67,20 @@ use serde::{Deserialize, Serialize};
 pub(crate) const READ_METHOD: &str = "ReadFloatIntent";
 #[cfg(test)]
 pub(crate) const WRITE_METHOD: &str = "WriteFloatIntent";
-/// Request cap: a full 1024-member snapshot with margin.
-pub(crate) const INTENT_MAX_REQUEST_BYTES: usize = 256 * 1024;
-/// Reply cap: a full 1024-member read with margin.
-pub(crate) const INTENT_MAX_REPLY_BYTES: usize = 256 * 1024;
-/// Member cap per snapshot, well above any live count.
-pub(crate) const MAX_FLOAT_MEMBERS: usize = 1024;
-/// Tile-override cap per snapshot, mirroring float membership.
-pub(crate) const MAX_TILE_MEMBERS: usize = 1024;
+/// Request cap: full 10000-record opaque snapshot bounded by the 4 MiB
+/// envelope with margin for JSON framing.
+pub(crate) const INTENT_MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+/// Reply cap: full 10000-record read bounded by the 4 MiB envelope.
+pub(crate) const INTENT_MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
+/// Record cap per snapshot, per world-contract intent arrays (<=10000).
+pub(crate) const MAX_INTENT_RECORDS: usize = 10_000;
+/// Opaque data bound per record: at most 1024 UTF-8 bytes (byte length).
+pub(crate) const MAX_INTENT_DATA_BYTES: usize = 1024;
 pub(crate) const MAX_CORRELATION_LEN: usize = 128;
 pub(crate) const MAX_MEMBER_ID_LEN: usize = 128;
 pub(crate) const MAX_NAMESPACE_FIELD_LEN: usize = 256;
-pub(crate) const MAX_STORE_FILE_BYTES: u64 = 256 * 1024;
-pub(crate) const INTENT_STORE_VERSION: u32 = 1;
+pub(crate) const MAX_STORE_FILE_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const INTENT_STORE_VERSION: u32 = 2;
 pub(crate) const STORE_DIR_NAME: &str = "omnitiler";
 pub(crate) const STORE_FILE_NAME: &str = "float-intent.json";
 const TEMP_FILE_PREFIX: &str = ".float-intent.json.tmp.";
@@ -178,17 +175,32 @@ pub(crate) fn normalize_member_id(value: &str) -> Option<String> {
     None
 }
 
-fn normalize_all(members: &[String]) -> Result<Vec<String>, &'static str> {
-    if members.len() > MAX_FLOAT_MEMBERS {
+/// Opaque intent record: verified live subject plus exact core bytes.
+/// The store never interprets `data`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct IntentRecord {
+    pub(crate) win: String,
+    pub(crate) data: String,
+}
+
+fn validate_records(records: &[IntentRecord]) -> Result<Vec<IntentRecord>, &'static str> {
+    if records.len() > MAX_INTENT_RECORDS {
         return Err("invalid-members");
     }
-    let mut out = Vec::with_capacity(members.len());
-    for member in members {
-        out.push(normalize_member_id(member).ok_or("invalid-members")?);
-    }
-    let mut seen = HashSet::with_capacity(out.len());
-    if out.iter().map(String::as_str).any(|id| !seen.insert(id)) {
-        return Err("invalid-members");
+    let mut seen = HashSet::with_capacity(records.len());
+    let mut out = Vec::with_capacity(records.len());
+    for record in records {
+        let win = normalize_member_id(&record.win).ok_or("invalid-members")?;
+        if record.data.len() > MAX_INTENT_DATA_BYTES {
+            return Err("invalid-members");
+        }
+        if !seen.insert(win.clone()) {
+            return Err("invalid-members");
+        }
+        out.push(IntentRecord {
+            win,
+            data: record.data.clone(),
+        });
     }
     Ok(out)
 }
@@ -216,25 +228,6 @@ impl FloatIntentStore {
     }
 
     pub(crate) fn read_membership(&self, namespace: &IntentNamespace) -> IntentRead {
-        self.read_filtered(namespace, None)
-    }
-
-    /// Prune to the caller-attested complete live inventory. The file is
-    /// never mutated by a read. Malformed live entries were already rejected
-    /// at the wire layer; anything left un-normalizable here is skipped.
-    pub(crate) fn read_pruned(&self, namespace: &IntentNamespace, live: &[String]) -> IntentRead {
-        let allowed: HashSet<String> = live
-            .iter()
-            .filter_map(|id| normalize_member_id(id))
-            .collect();
-        self.read_filtered(namespace, Some(&allowed))
-    }
-
-    fn read_filtered(
-        &self,
-        namespace: &IntentNamespace,
-        live: Option<&HashSet<String>>,
-    ) -> IntentRead {
         let Ok(root) = open_root(&self.root) else {
             return IntentRead::degraded("unreadable");
         };
@@ -248,65 +241,29 @@ impl FloatIntentStore {
             Ok(Some(bytes)) => bytes,
             Err(()) => return IntentRead::degraded("unreadable"),
         };
-        let (members, tile) = match parse_store_bytes(&bytes, namespace) {
-            Ok(pair) => pair,
+        let records = match parse_store_bytes(&bytes, namespace) {
+            Ok(records) => records,
             Err(reason) => return IntentRead::degraded(reason),
         };
-        let stored = members.len();
-        let tile_stored = tile.len();
-        let kept: Vec<String> = match live {
-            None => members,
-            Some(allowed) => members
-                .into_iter()
-                .filter(|id| allowed.contains(id))
-                .collect(),
-        };
-        let kept_tile: Vec<String> = match live {
-            None => tile,
-            Some(allowed) => tile.into_iter().filter(|id| allowed.contains(id)).collect(),
-        };
-        IntentRead::ok(kept, stored, kept_tile, tile_stored)
+        let stored = records.len();
+        IntentRead::ok(records, stored)
     }
 
-    /// Replace with the full snapshot (empty clears). Members normalize;
-    /// duplicates and over-count reject before touching disk. Filesystem
-    /// failures retain local intent.
-    /// Test-only float shorthand: tile side is empty (absent wire tile also
-    /// means an empty full tile snapshot).
-    #[cfg(test)]
-    pub(crate) fn write_membership(
+    /// Replace with the full opaque snapshot (empty clears). Subjects
+    /// normalize; duplicates, over-count, overbound data, and oversize bodies
+    /// reject before touching disk. Inner `data` bytes are never interpreted.
+    /// Filesystem failures retain local intent.
+    pub(crate) fn write_records(
         &self,
         namespace: &IntentNamespace,
-        members: &[String],
+        records: &[IntentRecord],
     ) -> Result<usize, &'static str> {
-        self.write_both(namespace, members, &[])
-            .map(|(stored, _)| stored)
-    }
-
-    /// Replace both float and tile snapshots atomically (each empty clears
-    /// its side). Both sides normalize; duplicates, over-count, and any
-    /// float/tile overlap reject before touching disk. Filesystem failures
-    /// retain local intent.
-    pub(crate) fn write_both(
-        &self,
-        namespace: &IntentNamespace,
-        members: &[String],
-        tile: &[String],
-    ) -> Result<(usize, usize), &'static str> {
-        let normalized = normalize_all(members)?;
-        let normalized_tile = normalize_all(tile)?;
-        if normalized_tile.len() > MAX_TILE_MEMBERS {
-            return Err("invalid-members");
-        }
-        if normalized.iter().any(|id| normalized_tile.contains(id)) {
-            return Err("invalid-members");
-        }
+        let normalized = validate_records(records)?;
         let body = serde_json::to_string(&StoreFile {
             v: INTENT_STORE_VERSION,
             bus: namespace.bus_id.clone(),
             kwin: namespace.kwin_owner.clone(),
-            members: normalized.clone(),
-            tile: normalized_tile.clone(),
+            records: normalized.clone(),
         })
         .map_err(|_| "store-unavailable")?;
         if body.len() as u64 > MAX_STORE_FILE_BYTES {
@@ -328,54 +285,40 @@ impl FloatIntentStore {
         }
         atomic_replace(&project, body.as_bytes(), &temp_file_name())
             .map_err(|()| "store-unavailable")?;
-        Ok((normalized.len(), normalized_tile.len()))
+        Ok(normalized.len())
     }
 }
 
-/// Read outcome: returned members, readable on-disk count (`0` when missing
-/// or degraded), and the degraded reason if the content was unusable.
-/// Tile mirrors float: returned overrides plus on-disk count.
+/// Read outcome: returned records and the readable on-disk count (`0` when
+/// missing or degraded), plus the degraded reason if the content was unusable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct IntentRead {
-    pub(crate) members: Vec<String>,
+    pub(crate) records: Vec<IntentRecord>,
     pub(crate) stored: usize,
-    pub(crate) tile_members: Vec<String>,
-    pub(crate) tile_stored: usize,
     pub(crate) degraded: Option<&'static str>,
 }
 
 impl IntentRead {
     fn empty() -> Self {
         Self {
-            members: Vec::new(),
+            records: Vec::new(),
             stored: 0,
-            tile_members: Vec::new(),
-            tile_stored: 0,
             degraded: None,
         }
     }
 
-    fn ok(
-        members: Vec<String>,
-        stored: usize,
-        tile_members: Vec<String>,
-        tile_stored: usize,
-    ) -> Self {
+    fn ok(records: Vec<IntentRecord>, stored: usize) -> Self {
         Self {
-            members,
+            records,
             stored,
-            tile_members,
-            tile_stored,
             degraded: None,
         }
     }
 
     fn degraded(reason: &'static str) -> Self {
         Self {
-            members: Vec::new(),
+            records: Vec::new(),
             stored: 0,
-            tile_members: Vec::new(),
-            tile_stored: 0,
             degraded: Some(reason),
         }
     }
@@ -386,15 +329,13 @@ struct StoreFile {
     v: u32,
     bus: String,
     kwin: String,
-    members: Vec<String>,
-    #[serde(default)]
-    tile: Vec<String>,
+    records: Vec<IntentRecord>,
 }
 
 fn parse_store_bytes(
     bytes: &[u8],
     namespace: &IntentNamespace,
-) -> Result<(Vec<String>, Vec<String>), &'static str> {
+) -> Result<Vec<IntentRecord>, &'static str> {
     let file: StoreFile = serde_json::from_slice(bytes).map_err(|_| "corrupt")?;
     if file.v != INTENT_STORE_VERSION {
         return Err("corrupt");
@@ -402,12 +343,7 @@ fn parse_store_bytes(
     if file.bus != namespace.bus_id || file.kwin != namespace.kwin_owner {
         return Err("namespace-mismatch");
     }
-    let members = normalize_all(&file.members).map_err(|_| "corrupt")?;
-    let tile = normalize_all(&file.tile).map_err(|_| "corrupt")?;
-    if members.iter().any(|id| tile.contains(id)) {
-        return Err("corrupt");
-    }
-    Ok((members, tile))
+    validate_records(&file.records).map_err(|_| "corrupt")
 }
 
 // ---------------------------------------------------------------------------
@@ -580,33 +516,35 @@ pub(crate) fn atomic_replace(dir: &OwnedFd, body: &[u8], temp_name: &str) -> Res
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
-struct WriteWire {
-    v: u32,
-    correlation_id: String,
-    members: Vec<serde_json::Value>,
-    #[serde(default)]
-    tile: Option<Vec<serde_json::Value>>,
+struct RecordWire {
+    win: serde_json::Value,
+    data: serde_json::Value,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WriteWire {
+    v: u32,
+    correlation_id: String,
+    records: Vec<RecordWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ReadWire {
     v: u32,
     correlation_id: String,
-    live: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug)]
 pub(crate) struct WriteRequest {
     pub(crate) correlation: String,
-    pub(crate) members: Vec<String>,
-    /// Full tile snapshot; empty or absent clears stored tile membership.
-    pub(crate) tile: Option<Vec<String>>,
+    pub(crate) records: Vec<IntentRecord>,
 }
 
 #[derive(Debug)]
 pub(crate) struct ReadRequest {
     pub(crate) correlation: String,
-    pub(crate) live: Option<Vec<String>>,
 }
 
 /// Owned parse failure: validated correlation (or `-`) plus a fixed reason.
@@ -625,99 +563,72 @@ impl RequestParseError {
     }
 }
 
-fn string_entries(
-    entries: &[serde_json::Value],
-    correlation: &str,
-    cap: usize,
-    reason: &'static str,
-) -> Result<Vec<String>, RequestParseError> {
-    if entries.len() > cap {
-        return Err(RequestParseError::new(correlation, reason));
-    }
-    entries
-        .iter()
-        .map(|entry| {
-            entry
-                .as_str()
-                .map(str::to_owned)
-                .ok_or(RequestParseError::new(correlation, "invalid-request"))
-        })
-        .collect()
-}
-
 fn valid_wire(v: u32, correlation_id: &str) -> Result<String, RequestParseError> {
-    if v != 1 || !valid_correlation(correlation_id) {
+    if v != 2 || !valid_correlation(correlation_id) {
         return Err(RequestParseError::new("-", "invalid-request"));
     }
     Ok(correlation_id.to_owned())
 }
 
-/// Structural failures are `invalid-request`; over-count is `invalid-members`
-/// (id content is validated by the store write, also `invalid-members`).
-/// `tile`, when present, follows the same rules with the tile cap; absence
-/// means an empty full tile snapshot.
+/// Structural failures are `invalid-request`; over-count, duplicate subjects,
+/// un-normalizable subjects, and overbound data are `invalid-members`
+/// (subject/data content is validated by the store write, also
+/// `invalid-members`).
 pub(crate) fn parse_write_request(body: &str) -> Result<WriteRequest, RequestParseError> {
     let wire: WriteWire =
         serde_json::from_str(body).map_err(|_| RequestParseError::new("-", "invalid-request"))?;
     let correlation = valid_wire(wire.v, &wire.correlation_id)?;
-    let members = string_entries(
-        &wire.members,
-        &correlation,
-        MAX_FLOAT_MEMBERS,
-        "invalid-members",
-    )?;
-    let tile = wire
-        .tile
-        .map(|entries| string_entries(&entries, &correlation, MAX_TILE_MEMBERS, "invalid-members"))
-        .transpose()?;
+    if wire.records.len() > MAX_INTENT_RECORDS {
+        return Err(RequestParseError::new(&correlation, "invalid-members"));
+    }
+    let mut records = Vec::with_capacity(wire.records.len());
+    for entry in &wire.records {
+        let (Some(win), Some(data)) = (entry.win.as_str(), entry.data.as_str()) else {
+            return Err(RequestParseError::new(&correlation, "invalid-request"));
+        };
+        records.push(IntentRecord {
+            win: win.to_owned(),
+            data: data.to_owned(),
+        });
+    }
+    // Fail before disk on duplicate subjects, bad subjects, and overbound
+    // data; the store re-checks the same predicate before replacing.
+    validate_records(&records)
+        .map_err(|reason| RequestParseError::new(&correlation, reason))?;
     Ok(WriteRequest {
         correlation,
-        members,
-        tile,
+        records,
     })
 }
 
-/// `live` must be an array of normalizable ids when present: a malformed
-/// entry rejects the request rather than silently dropping records.
+/// Closed read shape: `{"v":2,"correlation_id":..}` only. Any extra key
+/// (including the retired `live` inventory) rejects as `invalid-request`.
 pub(crate) fn parse_read_request(body: &str) -> Result<ReadRequest, RequestParseError> {
     let wire: ReadWire =
         serde_json::from_str(body).map_err(|_| RequestParseError::new("-", "invalid-request"))?;
     let correlation = valid_wire(wire.v, &wire.correlation_id)?;
-    let live = wire
-        .live
-        .map(|entries| {
-            let ids = string_entries(&entries, &correlation, MAX_FLOAT_MEMBERS, "invalid-request")?;
-            for id in &ids {
-                if normalize_member_id(id).is_none() {
-                    return Err(RequestParseError::new(&correlation, "invalid-request"));
-                }
-            }
-            Ok(ids)
-        })
-        .transpose()?;
-    Ok(ReadRequest { correlation, live })
+    Ok(ReadRequest { correlation })
 }
 
 /// Fixed-shape in-band rejection. Inputs must be validated correlation (or
 /// `-`) and a fixed reason.
 pub(crate) fn intent_rejection(correlation: &str, reason: &str) -> String {
     serde_json::json!({
-        "v": 1,
+        "v": 2,
         "correlation_id": sanitize_correlation(correlation),
         "outcome": "rejected",
-        "members": [],
+        "records": [],
         "reason": reason,
     })
     .to_string()
 }
 
-pub(crate) fn write_stored_reply(correlation: &str, stored: usize, tile_stored: usize) -> String {
+pub(crate) fn write_stored_reply(correlation: &str, stored: usize) -> String {
     serde_json::json!({
-        "v": 1,
+        "v": 2,
         "correlation_id": sanitize_correlation(correlation),
         "outcome": "stored",
         "stored": stored,
-        "tile_stored": tile_stored,
     })
     .to_string()
 }
@@ -725,7 +636,7 @@ pub(crate) fn write_stored_reply(correlation: &str, stored: usize, tile_stored: 
 /// `outcome` is `rejected` or `unavailable`; the reason must be a fixed label.
 pub(crate) fn write_failed_reply(correlation: &str, outcome: &str, reason: &str) -> String {
     serde_json::json!({
-        "v": 1,
+        "v": 2,
         "correlation_id": sanitize_correlation(correlation),
         "outcome": outcome,
         "reason": reason,
@@ -735,62 +646,49 @@ pub(crate) fn write_failed_reply(correlation: &str, outcome: &str, reason: &str)
 
 pub(crate) fn read_ok_reply(
     correlation: &str,
-    members: &[String],
+    records: &[IntentRecord],
     stored: usize,
-    tile_members: &[String],
-    tile_stored: usize,
 ) -> String {
     serde_json::json!({
-        "v": 1,
+        "v": 2,
         "correlation_id": sanitize_correlation(correlation),
         "outcome": "ok",
-        "members": members,
+        "records": records,
         "stored": stored,
-        "returned": members.len(),
-        "tile": tile_members,
-        "tile_stored": tile_stored,
-        "tile_returned": tile_members.len(),
+        "returned": records.len(),
     })
     .to_string()
 }
 
-/// Degraded reply: empty membership with a fixed reason and zero counts.
+/// Degraded reply: empty records with a fixed reason and zero counts.
 pub(crate) fn read_degraded_reply(correlation: &str, reason: &str) -> String {
     serde_json::json!({
-        "v": 1,
+        "v": 2,
         "correlation_id": sanitize_correlation(correlation),
         "outcome": "degraded",
-        "members": [],
+        "records": [],
         "stored": 0,
         "returned": 0,
-        "tile": [],
-        "tile_stored": 0,
-        "tile_returned": 0,
         "reason": reason,
     })
     .to_string()
 }
 
 /// Bounded terminal summary over counts and fixed labels only: no ids,
-/// owners, bus ids, paths, payloads, or error strings.
-#[allow(clippy::too_many_arguments)]
+/// owners, bus ids, paths, data, payloads, or error strings.
 pub(crate) fn intent_egress_summary(
     op: &str,
     correlation: &str,
     outcome: &str,
     stored: Option<usize>,
     returned: Option<usize>,
-    tile_stored: Option<usize>,
-    tile_returned: Option<usize>,
     reason: Option<&str>,
 ) -> String {
     format!(
-        "omnitiler:intent-summary direction=egress op={op} correlation={} outcome={outcome} stored={} returned={} tile_stored={} tile_returned={} reason={}",
+        "omnitiler:intent-summary direction=egress op={op} correlation={} outcome={outcome} stored={} returned={} reason={}",
         sanitize_correlation(correlation),
         stored.map_or_else(|| "-".to_owned(), |count| count.to_string()),
         returned.map_or_else(|| "-".to_owned(), |count| count.to_string()),
-        tile_stored.map_or_else(|| "-".to_owned(), |count| count.to_string()),
-        tile_returned.map_or_else(|| "-".to_owned(), |count| count.to_string()),
         reason.unwrap_or("-"),
     )
 }
@@ -828,6 +726,17 @@ mod tests {
 
     fn namespace(bus: &str, owner: &str) -> IntentNamespace {
         IntentNamespace::parse(bus, owner).expect("valid namespace")
+    }
+
+    fn record(win: &str, data: &str) -> IntentRecord {
+        IntentRecord {
+            win: win.to_owned(),
+            data: data.to_owned(),
+        }
+    }
+
+    fn canonical_data() -> String {
+        "{\"v\":1,\"float\":true,\"stickyPrior\":null}".to_owned()
     }
 
     fn project_fd_for(root: &Path) -> OwnedFd {
@@ -901,18 +810,38 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_survives_service_restart() {
+    fn roundtrip_survives_service_restart_exact_bytes() {
         let root = fresh_root("restart");
         let ns = namespace("bus-restart", ":1.7");
-        let members = vec!["win-a".to_owned(), "win-b".to_owned()];
+        let data = canonical_data();
+        let records = vec![record("win-a", &data), record("win-b", &data)];
         assert_eq!(
-            FloatIntentStore::with_root(root.clone()).write_membership(&ns, &members),
+            FloatIntentStore::with_root(root.clone()).write_records(&ns, &records),
             Ok(2)
         );
+        // Within-session restart persists the snapshot byte-for-byte before
+        // the first admissible report: same records in the same order.
         let read = FloatIntentStore::with_root(root.clone()).read_membership(&ns);
         assert_eq!(read.degraded, None);
         assert_eq!(read.stored, 2);
-        assert_eq!(read.members, members);
+        assert_eq!(read.records, records);
+        drop_root(&root);
+    }
+
+    #[test]
+    fn opaque_control_escapes_roundtrip() {
+        let root = fresh_root("escapes");
+        let ns = namespace("bus-escapes", ":1.7");
+        // Exact opaque bytes with control escapes survive unchanged: the
+        // store never interprets inner JSON.
+        let data = "{\"v\":1,\"float\":null,\"stickyPrior\":null}\u{0009}".to_owned();
+        let records = vec![record("win-a", &data)];
+        FloatIntentStore::with_root(root.clone())
+            .write_records(&ns, &records)
+            .expect("write");
+        let read = FloatIntentStore::with_root(root.clone()).read_membership(&ns);
+        assert_eq!(read.degraded, None);
+        assert_eq!(read.records, records);
         drop_root(&root);
     }
 
@@ -923,7 +852,7 @@ mod tests {
             FloatIntentStore::with_root(root.clone()).read_membership(&namespace("bus-m", ":1.7"));
         assert_eq!(read.degraded, None);
         assert_eq!(read.stored, 0);
-        assert!(read.members.is_empty());
+        assert!(read.records.is_empty());
         drop_root(&root);
     }
 
@@ -935,20 +864,20 @@ mod tests {
         let new_bus = namespace("bus-two", ":1.7");
         let new_owner = namespace("bus-one", ":1.9");
         store
-            .write_membership(&first, &["win-a".to_owned()])
+            .write_records(&first, &[record("win-a", &canonical_data())])
             .expect("write");
         for other in [&new_bus, &new_owner] {
             let read = store.read_membership(other);
             assert_eq!(read.degraded, Some("namespace-mismatch"));
-            assert!(read.members.is_empty());
+            assert!(read.records.is_empty());
         }
         assert_eq!(
-            store.write_membership(&new_bus, &["win-b".to_owned()]),
+            store.write_records(&new_bus, &[record("win-b", &canonical_data())]),
             Ok(1)
         );
         assert_eq!(
-            store.read_membership(&new_bus).members,
-            vec!["win-b".to_owned()]
+            store.read_membership(&new_bus).records,
+            vec![record("win-b", &canonical_data())]
         );
         drop_root(&root);
     }
@@ -958,16 +887,23 @@ mod tests {
         let root = fresh_root("corrupt");
         let store = FloatIntentStore::with_root(root.clone());
         let ns = namespace("bus-corrupt", ":1.7");
+        let over_data = "x".repeat(MAX_INTENT_DATA_BYTES + 1);
         let bad = [
-            "not json{{{",
-            r#"{"v":2,"bus":"bus-corrupt","kwin":":1.7","members":[]}"#,
-            r#"{"v":1,"bus":"bus-corrupt","kwin":":1.7","members":{}}"#,
-            r#"{"v":1,"bus":"bus-corrupt","kwin":":1.7","members":[42]}"#,
-            r#"{"v":1,"bus":"bus-corrupt","kwin":":1.7","members":[""]}"#,
-            r#"{"v":1,"bus":"bus-corrupt","kwin":":1.7","members":["has space"]}"#,
-            r#"{"v":1,"bus":"bus-corrupt","kwin":":1.7","members":["a","a"]}"#,
+            "not json{{{".to_owned(),
+            r#"{"v":2,"bus":"bus-corrupt","kwin":":1.7","records":{}}"#.to_owned(),
+            r#"{"v":2,"bus":"bus-corrupt","kwin":":1.7","records":[{"win":42,"data":"x"}]}"#
+                .to_owned(),
+            r#"{"v":2,"bus":"bus-corrupt","kwin":":1.7","records":[{"win":"","data":"x"}]}"#
+                .to_owned(),
+            r#"{"v":2,"bus":"bus-corrupt","kwin":":1.7","records":[{"win":"has space","data":"x"}]}"#
+                .to_owned(),
+            r#"{"v":2,"bus":"bus-corrupt","kwin":":1.7","records":[{"win":"a","data":"x"},{"win":"a","data":"y"}]}"#
+                .to_owned(),
+            format!(
+                r#"{{"v":2,"bus":"bus-corrupt","kwin":":1.7","records":[{{"win":"a","data":"{over_data}"}}]}}"#
+            ),
         ];
-        for body in bad {
+        for body in &bad {
             plant_file(&root, body.as_bytes());
             assert_eq!(
                 store.read_membership(&ns).degraded,
@@ -977,63 +913,95 @@ mod tests {
         }
         plant_file(&root, &vec![b'x'; MAX_STORE_FILE_BYTES as usize + 1]);
         assert_eq!(store.read_membership(&ns).degraded, Some("unreadable"));
-        assert_eq!(store.write_membership(&ns, &["win-a".to_owned()]), Ok(1));
-        assert_eq!(store.read_membership(&ns).members, vec!["win-a".to_owned()]);
+        assert_eq!(
+            store.write_records(&ns, &[record("win-a", &canonical_data())]),
+            Ok(1)
+        );
+        assert_eq!(
+            store.read_membership(&ns).records,
+            vec![record("win-a", &canonical_data())]
+        );
         drop_root(&root);
     }
 
     #[test]
-    fn unfloat_empty_snapshot_clears() {
-        let root = fresh_root("unfloat");
+    fn old_v1_format_degrades_corrupt_and_next_write_replaces() {
+        let root = fresh_root("v1-reject");
         let store = FloatIntentStore::with_root(root.clone());
-        let ns = namespace("bus-unfloat", ":1.7");
+        let ns = namespace("bus-v1", ":1.7");
+        // The rejected v1 membership schema degrades through the existing
+        // empty path with a fixed reason; no conversion is attempted.
+        plant_file(
+            &root,
+            br#"{"v":1,"bus":"bus-v1","kwin":":1.7","members":["win-a"],"tile":["win-t"]}"#,
+        );
+        let read = store.read_membership(&ns);
+        assert_eq!(read.degraded, Some("corrupt"));
+        assert!(read.records.is_empty());
+        assert_eq!(read.stored, 0);
+        // The next full v2 snapshot replaces the old file atomically.
+        let records = vec![record("win-b", &canonical_data())];
+        assert_eq!(store.write_records(&ns, &records), Ok(1));
+        let kept = store.read_membership(&ns);
+        assert_eq!(kept.degraded, None);
+        assert_eq!(kept.records, records);
+        drop_root(&root);
+    }
+
+    #[test]
+    fn explicit_replacement_and_clear_snapshot() {
+        let root = fresh_root("replace");
+        let store = FloatIntentStore::with_root(root.clone());
+        let ns = namespace("bus-replace", ":1.7");
+        let data = canonical_data();
         store
-            .write_membership(&ns, &["win-a".to_owned()])
-            .expect("float");
-        assert_eq!(store.write_membership(&ns, &[]), Ok(0));
+            .write_records(&ns, &[record("win-a", &data)])
+            .expect("first");
+        // Explicit replacement swaps the full snapshot: win-a is gone.
+        let second = vec![record("win-b", &data), record("win-c", &data)];
+        assert_eq!(store.write_records(&ns, &second), Ok(2));
+        assert_eq!(store.read_membership(&ns).records, second);
+        // Empty snapshot clears.
+        assert_eq!(store.write_records(&ns, &[]), Ok(0));
         let read = store.read_membership(&ns);
         assert_eq!(read.degraded, None);
         assert_eq!(read.stored, 0);
-        assert!(read.members.is_empty());
+        assert!(read.records.is_empty());
         drop_root(&root);
     }
 
     #[test]
-    fn live_prune_returns_intersection_without_mutating_file() {
-        let root = fresh_root("prune");
-        let store = FloatIntentStore::with_root(root.clone());
-        let ns = namespace("bus-prune", ":1.7");
-        store
-            .write_membership(&ns, &["win-a".to_owned(), "win-b".to_owned()])
-            .expect("write");
-        let pruned = store.read_pruned(&ns, &["win-a".to_owned()]);
-        assert_eq!(pruned.degraded, None);
-        assert_eq!(pruned.stored, 2);
-        assert_eq!(pruned.members, vec!["win-a".to_owned()]);
-        assert_eq!(store.read_membership(&ns).members.len(), 2);
-        drop_root(&root);
-    }
-
-    #[test]
-    fn write_validates_members_before_touching_disk() {
+    fn write_validates_before_touching_disk() {
         let root = fresh_root("validate");
         let store = FloatIntentStore::with_root(root.clone());
         let ns = namespace("bus-validate", ":1.7");
+        let data = canonical_data();
+        let over_data = "x".repeat(MAX_INTENT_DATA_BYTES + 1);
         assert_eq!(
-            store.write_membership(&ns, &["bad id".to_owned()]),
+            store.write_records(&ns, &[record("bad id", &data)]),
             Err("invalid-members")
         );
         assert_eq!(
-            store.write_membership(&ns, &["a".to_owned(), "a".to_owned()]),
+            store.write_records(
+                &ns,
+                &[record("a", &data), record("a", &data)]
+            ),
             Err("invalid-members")
         );
         assert_eq!(
-            store.write_membership(&ns, &vec!["a".to_owned(); MAX_FLOAT_MEMBERS + 1]),
+            store.write_records(&ns, &[record("a", &over_data)]),
+            Err("invalid-members")
+        );
+        assert_eq!(
+            store.write_records(
+                &ns,
+                &vec![record("a", &data); MAX_INTENT_RECORDS + 1]
+            ),
             Err("invalid-members")
         );
         let read = store.read_membership(&ns);
         assert_eq!(read.degraded, None);
-        assert!(read.members.is_empty());
+        assert!(read.records.is_empty());
         drop_root(&root);
     }
 
@@ -1043,7 +1011,7 @@ mod tests {
         let store = FloatIntentStore::with_root(root.clone());
         let ns = namespace("bus-perms", ":1.7");
         store
-            .write_membership(&ns, &["win-a".to_owned()])
+            .write_records(&ns, &[record("win-a", &canonical_data())])
             .expect("write");
         let mode_of = |fd: &OwnedFd| rustix::fs::fstat(fd).expect("fstat").st_mode & 0o777;
         let root_fd = open_root(&root).expect("root opens");
@@ -1053,7 +1021,7 @@ mod tests {
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).expect("loosen");
         assert_eq!(store.read_membership(&ns).degraded, Some("unreadable"));
         assert_eq!(
-            store.write_membership(&ns, &["win-a".to_owned()]),
+            store.write_records(&ns, &[record("win-a", &canonical_data())]),
             Err("store-unavailable")
         );
         assert_eq!(
@@ -1074,13 +1042,13 @@ mod tests {
         let store = FloatIntentStore::with_root(root.clone());
         let ns = namespace("bus-dirperm", ":1.7");
         store
-            .write_membership(&ns, &["win-a".to_owned()])
+            .write_records(&ns, &[record("win-a", &canonical_data())])
             .expect("write");
         let project = root.join(STORE_DIR_NAME);
         std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o755)).expect("loosen");
         assert_eq!(store.read_membership(&ns).degraded, Some("unreadable"));
         assert_eq!(
-            store.write_membership(&ns, &["win-b".to_owned()]),
+            store.write_records(&ns, &[record("win-b", &canonical_data())]),
             Err("store-unavailable")
         );
         assert_eq!(
@@ -1101,7 +1069,7 @@ mod tests {
         let store = FloatIntentStore::with_root(root.clone());
         let ns = namespace("bus-symlink", ":1.7");
         let foreign = root.join("foreign.json");
-        let sentinel = br#"{"v":1,"bus":"bus-symlink","kwin":":1.7","members":["foreign-win"]}"#;
+        let sentinel = br#"{"v":2,"bus":"bus-symlink","kwin":":1.7","records":[]}"#;
         std::fs::write(&foreign, sentinel).expect("foreign");
         // Ensure the project dir exists for the path-based link plant below;
         // production access itself stays anchored.
@@ -1115,9 +1083,9 @@ mod tests {
         // bytes are never read and a write never follows the link.
         let read = store.read_membership(&ns);
         assert_eq!(read.degraded, Some("unreadable"));
-        assert!(read.members.is_empty());
+        assert!(read.records.is_empty());
         assert_eq!(
-            store.write_membership(&ns, &["win-a".to_owned()]),
+            store.write_records(&ns, &[record("win-a", &canonical_data())]),
             Err("store-unavailable")
         );
         assert_eq!(std::fs::read(&foreign).expect("foreign"), sentinel);
@@ -1169,9 +1137,9 @@ mod tests {
         // modified.
         let read = store.read_membership(&ns);
         assert_eq!(read.degraded, Some("unreadable"));
-        assert!(read.members.is_empty());
+        assert!(read.records.is_empty());
         assert_eq!(
-            store.write_membership(&ns, &["win-a".to_owned()]),
+            store.write_records(&ns, &[record("win-a", &canonical_data())]),
             Err("store-unavailable")
         );
         assert!(
@@ -1196,10 +1164,11 @@ mod tests {
     #[test]
     fn relative_and_dotdot_roots_refuse_without_touching_disk() {
         let ns = namespace("bus-relroot", ":1.7");
+        let data = canonical_data();
         let relative = FloatIntentStore::with_root(PathBuf::from("relative-intent-root"));
         assert_eq!(relative.read_membership(&ns).degraded, Some("unreadable"));
         assert_eq!(
-            relative.write_membership(&ns, &["win-a".to_owned()]),
+            relative.write_records(&ns, &[record("win-a", &data)]),
             Err("store-unavailable")
         );
         assert!(!Path::new("relative-intent-root").exists());
@@ -1211,7 +1180,7 @@ mod tests {
         let store = FloatIntentStore::with_root(via_dotdot);
         assert_eq!(store.read_membership(&ns).degraded, Some("unreadable"));
         assert_eq!(
-            store.write_membership(&ns, &["win-a".to_owned()]),
+            store.write_records(&ns, &[record("win-a", &data)]),
             Err("store-unavailable")
         );
         assert!(!target.join(STORE_DIR_NAME).exists());
@@ -1233,9 +1202,9 @@ mod tests {
         // the non-regular type, so the read degrades and the write fails.
         let read = store.read_membership(&ns);
         assert_eq!(read.degraded, Some("unreadable"));
-        assert!(read.members.is_empty());
+        assert!(read.records.is_empty());
         assert_eq!(
-            store.write_membership(&ns, &["win-a".to_owned()]),
+            store.write_records(&ns, &[record("win-a", &canonical_data())]),
             Err("store-unavailable")
         );
         drop_root(&root);
@@ -1293,7 +1262,10 @@ mod tests {
         let root = fresh_root("notemp");
         let store = FloatIntentStore::with_root(root.clone());
         store
-            .write_membership(&namespace("bus-notemp", ":1.7"), &["win-a".to_owned()])
+            .write_records(&namespace("bus-notemp", ":1.7"), &[record(
+                "win-a",
+                &canonical_data(),
+            )])
             .expect("write");
         let leftovers: Vec<_> = std::fs::read_dir(root.join(STORE_DIR_NAME))
             .expect("list dir")
@@ -1306,33 +1278,13 @@ mod tests {
 
     #[test]
     fn summaries_carry_counts_never_ids() {
-        let line = intent_egress_summary(
-            "read",
-            "evil-id\n:1.999",
-            "ok",
-            Some(2),
-            Some(1),
-            Some(1),
-            Some(1),
-            None,
-        );
+        let line = intent_egress_summary("read", "evil-id\n:1.999", "ok", Some(2), Some(1), None);
         assert!(line.contains("correlation=-"), "{line}");
         assert!(line.contains("stored=2"), "{line}");
         assert!(line.contains("returned=1"), "{line}");
-        assert!(line.contains("tile_stored=1"), "{line}");
-        assert!(line.contains("tile_returned=1"), "{line}");
         assert!(!line.contains("evil"), "{line}");
         assert!(!line.contains(":1.999"), "{line}");
-        let line = intent_egress_summary(
-            "write",
-            "corr-1",
-            "degraded",
-            Some(0),
-            Some(0),
-            Some(0),
-            Some(0),
-            Some("corrupt"),
-        );
+        let line = intent_egress_summary("write", "corr-1", "degraded", Some(0), Some(0), Some("corrupt"));
         assert!(line.contains("correlation=corr-1"), "{line}");
         assert!(line.contains("reason=corrupt"), "{line}");
         assert!(!line.contains('\n'), "{line}");
@@ -1340,183 +1292,78 @@ mod tests {
 
     #[test]
     fn wire_replies_are_bounded_fixed_shapes() {
-        let ok = write_stored_reply("corr-1", 2, 1);
+        let ok = write_stored_reply("corr-1", 2);
         let parsed: serde_json::Value = serde_json::from_str(&ok).expect("valid JSON");
+        assert_eq!(parsed["v"], 2);
         assert_eq!(parsed["outcome"], "stored");
         assert_eq!(parsed["stored"], 2);
-        assert_eq!(parsed["tile_stored"], 1);
         assert!(ok.len() <= INTENT_MAX_REPLY_BYTES);
         let rejected = intent_rejection("evil corr", "unauthorized");
         assert!(rejected.contains("\"correlation_id\":\"-\""), "{rejected}");
         assert!(!rejected.contains("evil"), "{rejected}");
         let degraded = read_degraded_reply("corr-1", "corrupt");
         let parsed: serde_json::Value = serde_json::from_str(&degraded).expect("valid JSON");
+        assert_eq!(parsed["v"], 2);
         assert_eq!(parsed["outcome"], "degraded");
-        assert_eq!(parsed["members"].as_array().expect("array").len(), 0);
-        assert_eq!(parsed["tile"].as_array().expect("array").len(), 0);
-        assert_eq!(parsed["tile_stored"], 0);
-        assert_eq!(parsed["tile_returned"], 0);
-        let ok = read_ok_reply("corr-1", &["win-a".to_owned()], 1, &["win-t".to_owned()], 1);
+        assert_eq!(parsed["records"].as_array().expect("array").len(), 0);
+        assert_eq!(parsed["stored"], 0);
+        assert_eq!(parsed["returned"], 0);
+        let ok = read_ok_reply("corr-1", &[record("win-a", &canonical_data())], 1);
         let parsed: serde_json::Value = serde_json::from_str(&ok).expect("valid JSON");
+        assert_eq!(parsed["v"], 2);
         assert_eq!(parsed["stored"], 1);
         assert_eq!(parsed["returned"], 1);
-        assert_eq!(parsed["tile_stored"], 1);
-        assert_eq!(parsed["tile_returned"], 1);
+        assert_eq!(parsed["records"].as_array().expect("array").len(), 1);
     }
 
     #[test]
     fn write_request_parsing_separates_structural_from_semantic() {
-        let good = parse_write_request(r#"{"v":1,"correlation_id":"corr-1","members":["win-a"]}"#)
-            .expect("valid");
+        let good = parse_write_request(
+            r#"{"v":2,"correlation_id":"corr-1","records":[{"win":"win-a","data":"x"}]}"#,
+        )
+        .expect("valid");
         assert_eq!(good.correlation, "corr-1");
-        assert_eq!(good.members, vec!["win-a".to_owned()]);
+        assert_eq!(good.records, vec![record("win-a", "x")]);
         for body in [
             "not json",
-            r#"{"v":1,"members":[]}"#,
-            r#"{"v":1,"correlation_id":"bad corr","members":[]}"#,
-            r#"{"v":2,"correlation_id":"corr-1","members":[]}"#,
-            r#"{"v":1,"correlation_id":"corr-1","members":{}}"#,
-            r#"{"v":1,"correlation_id":"corr-1","members":[42]}"#,
+            r#"{"v":2,"records":[]}"#,
+            r#"{"v":2,"correlation_id":"bad corr","records":[]}"#,
+            r#"{"v":1,"correlation_id":"corr-1","records":[]}"#,
+            r#"{"v":2,"correlation_id":"corr-1"}"#,
+            r#"{"v":2,"correlation_id":"corr-1","records":{}}"#,
+            r#"{"v":2,"correlation_id":"corr-1","records":[{"win":"win-a"}]}"#,
+            r#"{"v":2,"correlation_id":"corr-1","records":[{"win":"win-a","data":42}]}"#,
         ] {
             let error = parse_write_request(body).expect_err("must reject");
             assert_eq!(error.reason, "invalid-request", "{body}");
             assert!(!error.correlation.contains("bad"), "{body}");
         }
-        let clear = parse_write_request(r#"{"v":1,"correlation_id":"corr-1","members":[]}"#)
+        let clear = parse_write_request(r#"{"v":2,"correlation_id":"corr-1","records":[]}"#)
             .expect("empty clears");
-        assert!(clear.members.is_empty());
-    }
-
-    #[test]
-    fn read_request_parsing_rejects_malformed_live() {
-        let plain = parse_read_request(r#"{"v":1,"correlation_id":"corr-1"}"#).expect("valid");
-        assert_eq!(plain.correlation, "corr-1");
-        assert!(plain.live.is_none());
-        let pruned = parse_read_request(r#"{"v":1,"correlation_id":"corr-1","live":["win-a"]}"#)
-            .expect("valid");
-        assert_eq!(pruned.live, Some(vec!["win-a".to_owned()]));
-        // Malformed live entries reject instead of silently dropping records.
+        assert!(clear.records.is_empty());
+        // Semantic failures surface as invalid-members before disk.
         for body in [
-            r#"{"v":1,"correlation_id":"corr-1","live":{}}"#,
-            r#"{"v":1,"correlation_id":"corr-1","live":[42]}"#,
-            r#"{"v":1,"correlation_id":"corr-1","live":["bad id"]}"#,
-            r#"{"v":1,"correlation_id":"corr-1","live":[""]}"#,
-            r#"{"v":1,"correlation_id":"bad corr"}"#,
+            r#"{"v":2,"correlation_id":"corr-1","records":[{"win":"bad id","data":"x"}]}"#,
+            r#"{"v":2,"correlation_id":"corr-1","records":[{"win":"a","data":"x"},{"win":"a","data":"y"}]}"#,
         ] {
-            assert!(parse_read_request(body).is_err(), "{body}");
+            let error = parse_write_request(body).expect_err("must reject");
+            assert_eq!(error.reason, "invalid-members", "{body}");
         }
     }
 
     #[test]
-    fn tile_roundtrip_survives_restart_disjoint_and_bounded() {
-        let root = fresh_root("tile-rt");
-        let store = FloatIntentStore::with_root(root.clone());
-        let ns = namespace("bus-tile", ":1.7");
-        let (stored, tile_stored) = store
-            .write_both(&ns, &["win-a".to_owned()], &["win-t".to_owned()])
-            .expect("write both");
-        assert_eq!((stored, tile_stored), (1, 1));
-        let read = FloatIntentStore::with_root(root.clone()).read_membership(&ns);
-        assert_eq!(read.degraded, None);
-        assert_eq!(read.members, vec!["win-a".to_owned()]);
-        assert_eq!(read.tile_members, vec!["win-t".to_owned()]);
-        assert_eq!((read.stored, read.tile_stored), (1, 1));
-        // Overlap rejects before touching disk.
-        assert_eq!(
-            store.write_both(&ns, &["win-a".to_owned()], &["win-a".to_owned()]),
-            Err("invalid-members")
-        );
-        assert_eq!(
-            store.write_both(&ns, &["bad id".to_owned()], &[]),
-            Err("invalid-members")
-        );
-        assert_eq!(
-            store.write_both(&ns, &[], &["dup".to_owned(), "dup".to_owned()]),
-            Err("invalid-members")
-        );
-        // File unchanged by rejected writes.
-        let kept = store.read_membership(&ns);
-        assert_eq!(kept.members, vec!["win-a".to_owned()]);
-        assert_eq!(kept.tile_members, vec!["win-t".to_owned()]);
-        drop_root(&root);
-    }
-
-    #[test]
-    fn tile_prune_clear_and_old_format_fallback() {
-        let root = fresh_root("tile-prune");
-        let store = FloatIntentStore::with_root(root.clone());
-        let ns = namespace("bus-tile-prune", ":1.7");
-        store
-            .write_both(
-                &ns,
-                &["win-a".to_owned(), "win-gone".to_owned()],
-                &["win-t".to_owned(), "win-t-gone".to_owned()],
-            )
-            .expect("write");
-        let pruned = store.read_pruned(&ns, &["win-a".to_owned(), "win-t".to_owned()]);
-        assert_eq!(pruned.degraded, None);
-        assert_eq!(pruned.stored, 2);
-        assert_eq!(pruned.tile_stored, 2);
-        assert_eq!(pruned.members, vec!["win-a".to_owned()]);
-        assert_eq!(pruned.tile_members, vec!["win-t".to_owned()]);
-        // File not mutated by prune.
-        assert_eq!(store.read_membership(&ns).stored, 2);
-        // Clear tile with empty snapshot, float survives.
-        let (stored, tile_stored) = store
-            .write_both(&ns, &["win-a".to_owned()], &[])
-            .expect("clear tile");
-        assert_eq!((stored, tile_stored), (1, 0));
-        let read = store.read_membership(&ns);
-        assert_eq!(read.members, vec!["win-a".to_owned()]);
-        assert!(read.tile_members.is_empty());
-        // Old format (no tile field) reads as tile-empty, not degraded.
-        plant_file(
-            &root,
-            br#"{"v":1,"bus":"bus-tile-prune","kwin":":1.7","members":["win-a"]}"#,
-        );
-        let old = store.read_membership(&ns);
-        assert_eq!(old.degraded, None);
-        assert_eq!(old.members, vec!["win-a".to_owned()]);
-        assert!(old.tile_members.is_empty());
-        assert_eq!(old.tile_stored, 0);
-        // Overlapping persisted sets degrade corrupt.
-        plant_file(
-            &root,
-            br#"{"v":1,"bus":"bus-tile-prune","kwin":":1.7","members":["win-a"],"tile":["win-a"]}"#,
-        );
-        assert_eq!(store.read_membership(&ns).degraded, Some("corrupt"));
-        // Float-only test shorthand writes an empty tile side.
-        plant_file(
-            &root,
-            br#"{"v":1,"bus":"bus-tile-prune","kwin":":1.7","members":["win-a"],"tile":["win-t"]}"#,
-        );
-        assert_eq!(store.write_membership(&ns, &["win-b".to_owned()]), Ok(1));
-        let kept = store.read_membership(&ns);
-        assert_eq!(kept.members, vec!["win-b".to_owned()]);
-        assert!(kept.tile_members.is_empty());
-        drop_root(&root);
-    }
-
-    #[test]
-    fn tile_write_parsing_absent_means_empty() {
-        let plain = parse_write_request(r#"{"v":1,"correlation_id":"corr-1","members":["win-a"]}"#)
-            .expect("valid");
-        assert!(plain.tile.is_none());
-        let with_tile = parse_write_request(
-            r#"{"v":1,"correlation_id":"corr-1","members":["win-a"],"tile":["win-t"]}"#,
-        )
-        .expect("valid");
-        assert_eq!(with_tile.tile, Some(vec!["win-t".to_owned()]));
-        let cleared =
-            parse_write_request(r#"{"v":1,"correlation_id":"corr-1","members":[],"tile":[]}"#)
-                .expect("valid");
-        assert_eq!(cleared.tile, Some(Vec::new()));
+    fn read_request_parsing_is_closed_v2_only() {
+        let plain = parse_read_request(r#"{"v":2,"correlation_id":"corr-1"}"#).expect("valid");
+        assert_eq!(plain.correlation, "corr-1");
+        // The retired live inventory and any extra key reject.
         for body in [
-            r#"{"v":1,"correlation_id":"corr-1","members":[],"tile":{}}"#,
-            r#"{"v":1,"correlation_id":"corr-1","members":[],"tile":[42]}"#,
+            r#"{"v":2,"correlation_id":"corr-1","live":["win-a"]}"#,
+            r#"{"v":2,"correlation_id":"corr-1","records":[]}"#,
+            r#"{"v":1,"correlation_id":"corr-1"}"#,
+            r#"{"v":2,"correlation_id":"bad corr"}"#,
+            r#"{"v":2}"#,
         ] {
-            let error = parse_write_request(body).expect_err("must reject");
-            assert_eq!(error.reason, "invalid-request", "{body}");
+            assert!(parse_read_request(body).is_err(), "{body}");
         }
     }
 }

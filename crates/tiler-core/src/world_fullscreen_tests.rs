@@ -7,7 +7,7 @@
 use crate::connection::HostCapabilities;
 use crate::directional::WindowId;
 use crate::world_directional::tests::{accepted, fact, report_full, screen};
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, CommandResult, FrameSetter, ScopeAuthority, StateAttempt,
     StateProperty, WorldCommand, WorldReport,
@@ -582,8 +582,8 @@ fn minimized_window_refuses_without_mutation() {
     minimized.minimized = Some(true);
     accepted(&mut engine, &bootstrap(vec![minimized.clone()]));
     let rev_before = engine.state_revision;
-    match engine.handle_report(&cmd(2, 1, vec![minimized], set_fullscreen("win-a", true))) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&cmd(2, 1, vec![minimized], set_fullscreen("win-a", true))) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -673,13 +673,13 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
         );
     }
     let revision = capped.state_revision;
-    match capped.handle_report(&cmd(
+    match capped.handle_report_legacy(&cmd(
         2,
         1,
         vec![fs_fact("win-a", None, false)],
         set_fullscreen("win-a", true),
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused

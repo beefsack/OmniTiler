@@ -23,8 +23,9 @@ use tiler_core::world_report::{
 use tiler_protocol::world_protocol::{
     WORLD_MAX_REQUEST_BYTES, decode_frame_witness_str, decode_pager_frame_v4_str,
     decode_presentation_ingress_v4, decode_presentation_ingress_v4_str, decode_renderer_input_str,
-    decode_request, decode_request_with_wire, encode_frame_witness, encode_pager_frame_v4,
-    encode_presentation_ingress_v4, encode_render_target, encode_renderer_input,
+    decode_request_legacy, decode_request_with_wire_legacy, encode_frame_witness,
+    encode_pager_frame_v4, encode_presentation_ingress_v4, encode_render_target,
+    encode_renderer_input,
 };
 
 fn fixture_root() -> std::path::PathBuf {
@@ -393,12 +394,12 @@ fn v4_whole_report_still_refuses_before_any_version_verdict() {
     let root = fixture_root();
     for id in ["report-empty", "report-renderer-workspace"] {
         let text = read_message(&root, &format!("messages/{id}.json"));
-        let error = decode_request(&text).expect_err("{id} whole report refuses");
+        let error = decode_request_legacy(&text).expect_err("{id} whole report refuses");
         assert_eq!(
             error.kind, "unknown-field",
             "{id} refuses before version gate"
         );
-        let wired = decode_request_with_wire(&text).expect_err("{id} wired refuses");
+        let wired = decode_request_with_wire_legacy(&text).expect_err("{id} wired refuses");
         assert_eq!(wired.kind, "unknown-field");
     }
 }
@@ -990,8 +991,8 @@ fn v4_existing_v3_gates_are_unchanged() {
          \"pagerOrder\":[],\"pagerFrames\":[]},\
          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[]}"
         .to_owned();
-    let report = decode_request(&request).expect("v3 decodes");
+    let report = decode_request_legacy(&request).expect("v3 decodes");
     assert_eq!(report.contract_version, 3);
-    let wired = decode_request_with_wire(&request).expect("v3 wired decodes");
+    let wired = decode_request_with_wire_legacy(&request).expect("v3 wired decodes");
     assert_eq!(wired.report, report);
 }

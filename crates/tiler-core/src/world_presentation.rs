@@ -832,9 +832,9 @@ mod tests {
     use crate::directional::OutputId;
     use crate::gesture::{GestureIngress, GestureKind, GesturePhase};
     use crate::size_hints::WindowSizeHints;
-    use crate::world_engine::{WorldEngine, WorldOutcome};
+    use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
     use crate::world_report::{
-        PresentationIngress, ScreenReport, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand,
+        PresentationIngress, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand,
         WorldReply, WorldReport,
     };
 
@@ -928,7 +928,7 @@ mod tests {
         ingress: PresentationIngress,
     ) -> WorldReport {
         WorldReport {
-            contract_version: WORLD_CONTRACT_VERSION,
+            contract_version: WORLD_CONTRACT_VERSION_LEGACY,
             adapter_incarnation: "adapter-1".to_owned(),
             core_generation: "gen-1".to_owned(),
             observation_seq,
@@ -968,8 +968,8 @@ mod tests {
     }
 
     fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> WorldReply {
-        match engine.handle_report(report) {
-            WorldOutcome::Accepted(reply) => reply,
+        match engine.handle_report_legacy(report) {
+            LegacyWorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         }
     }
@@ -1356,7 +1356,7 @@ mod tests {
             ),
         );
         let revision = first.state_revision;
-        match engine.handle_report(&report(
+        match engine.handle_report_legacy(&report(
             3,
             3,
             members,
@@ -1366,7 +1366,7 @@ mod tests {
             None,
             ingress("win-a"),
         )) {
-            WorldOutcome::Duplicate(cached) => {
+            LegacyWorldOutcome::Duplicate(cached) => {
                 assert_eq!(cached.state_revision, revision);
                 assert_eq!(cached.presentation, first.presentation);
             }
@@ -1429,7 +1429,7 @@ mod tests {
         );
         let mut published = String::new();
         crate::world_sizing::encode_presentation(&mut published, &third.presentation);
-        match engine.handle_report(&report(
+        match engine.handle_report_legacy(&report(
             5,
             4,
             members(),
@@ -1442,7 +1442,7 @@ mod tests {
                 ..ingress("win-a")
             },
         )) {
-            WorldOutcome::Duplicate(cached) => {
+            LegacyWorldOutcome::Duplicate(cached) => {
                 assert_eq!(cached.presentation.rev, third.presentation.rev);
                 let mut replayed = String::new();
                 crate::world_sizing::encode_presentation(&mut replayed, &cached.presentation);

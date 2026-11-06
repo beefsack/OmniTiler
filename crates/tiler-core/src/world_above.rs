@@ -1662,9 +1662,10 @@ mod tests {
         use crate::directional::OutputId;
         use crate::world_report::WorldCommand;
         // Workspace-floating route: toggling the workspace to floating
-        // releases the session, so rows publish `floating == false` on a
-        // floating scope with untouched authorities. Union eligibility
-        // keys off the floating scope home, never `float_origin`.
+        // releases the session, so rows publish `floating: true` with
+        // empty `float_origin` and untouched authorities. Union
+        // eligibility keys off the assembled floating row (or the
+        // floating scope home), never `float_origin`.
         let mut engine = engine_above();
         let first = accepted(
             &mut engine,
@@ -1708,9 +1709,10 @@ mod tests {
             .find(|row| row.lifetime.0 == "win-a")
             .expect("floating-scope row");
         assert!(
-            !row.floating,
-            "floating scopes publish untouched rows, never float-marked"
+            row.floating,
+            "floating scopes publish float-marked rows with no write authority"
         );
+        assert_eq!(row.float_origin, None, "empty diagnostic origin");
         assert!(
             engine
                 .floating_scopes
@@ -1741,6 +1743,111 @@ mod tests {
         assert!(newcomer.value);
         assert_eq!(newcomer.authority, ScopeAuthority::Controlled);
         assert_eq!(newcomer.command_seq, None);
+        let newcomer_row = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-new")
+            .expect("floating-scope newcomer row");
+        assert!(
+            newcomer_row.floating,
+            "floating-scope newcomer publishes float-marked"
+        );
+        assert_eq!(newcomer_row.float_origin, None, "empty diagnostic origin");
+        assert_eq!(
+            newcomer_row.frame_authority,
+            ScopeAuthority::Untouched,
+            "newcomer frame untouched"
+        );
+        assert_eq!(
+            newcomer_row.membership_authority,
+            ScopeAuthority::Untouched,
+            "newcomer membership untouched"
+        );
+    }
+
+    #[test]
+    fn workspace_floating_minimized_row_stays_hold_without_above() {
+        use crate::directional::OutputId;
+        use crate::world_report::{HoldReason, WorldCommand};
+        // Second floating-scope arm: minimized occupants publish
+        // `floating: true` with empty `float_origin`, minimized frame
+        // hold, untouched membership, and no allocation or above target.
+        let mut engine = engine_above();
+        let first = accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0)],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        let ws = first
+            .workspaces
+            .iter()
+            .find(|row| row.output.0 == "out-a")
+            .map(|row| row.id.clone())
+            .expect("workspace");
+        accepted(
+            &mut engine,
+            &report_full(
+                2,
+                2,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0)],
+                vec![],
+                "win-a",
+                Some(11),
+                Some(WorldCommand::SetWorkspaceTiling {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: ws.clone(),
+                    tiled: false,
+                }),
+            ),
+        );
+        let mut minimized = fact("win-min", "out-a", 0);
+        minimized.minimized = Some(true);
+        let reply = accepted(
+            &mut engine,
+            &report_full(
+                3,
+                3,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 0), minimized],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        let row = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-min")
+            .expect("floating-scope minimized row");
+        assert!(row.floating, "minimized occupant still float-marked");
+        assert_eq!(row.float_origin, None, "empty diagnostic origin");
+        assert_eq!(row.allocation, None, "no allocation on floats");
+        assert_eq!(row.effective_frame, None, "no frame on floats");
+        assert_eq!(
+            row.frame_authority,
+            ScopeAuthority::Hold(HoldReason::Minimized),
+            "minimized hold unchanged"
+        );
+        assert_eq!(
+            row.membership_authority,
+            ScopeAuthority::Untouched,
+            "membership stays untouched"
+        );
+        assert!(
+            above_row(&reply, "win-min")
+                .is_none_or(|row| row.authority != ScopeAuthority::Controlled),
+            "minimized never acquires controlled above"
+        );
     }
 
     #[test]

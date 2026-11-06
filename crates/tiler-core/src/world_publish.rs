@@ -14,9 +14,9 @@ use crate::session::{DomainKey, RefusalKind};
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
     CommandResult, FloatOrigin, HoldReason, IntentWrite, OneShotEffect, OutputDesire,
-    ScopeAuthority, ScopeStatus, ScreenView, TilingMode, TransferKind, WORLD_CONTRACT_VERSION,
-    WindowDesire, WorkspaceDesire, WorldCommand, WorldReply, WorldReport,
-    workspace_authority_scope,
+    ScopeAuthority, ScopeStatus, ScreenView, TilingMode, TransferKind,
+    WORLD_CONTRACT_VERSION_LEGACY, WindowDesire, WorkspaceDesire, WorldCommand, WorldReply,
+    WorldReport, workspace_authority_scope,
 };
 
 /// Shared assembled publication rows: every known logical scope plus
@@ -240,11 +240,12 @@ impl WorldEngine {
     /// slot (core-owned geometry actuated only as part of the membership
     /// move, never a native remap guess); unchanged reports never flap
     /// the source.
-    /// Floating scopes carry explicit untouched lifetime rows (never
-    /// emptiness): observed non-movers publish with no authority, and
-    /// movers under an outstanding boundary transfer publish one
-    /// membership-only row at the target homing. No floating row ever
-    /// carries allocation or frame authority (no frame writes on floats).
+    /// Floating scopes carry explicit floating lifetime rows (never
+    /// emptiness, `floating: true` with empty `float_origin`): observed
+    /// non-movers publish with no authority, and movers under an
+    /// outstanding boundary transfer publish one membership-only row at
+    /// the target homing. No floating row ever carries allocation or
+    /// frame authority (no frame writes on floats).
     /// A held scope with no retained session carries its staged lifetimes
     /// as complete held rows, so no inventory ever vanishes.
     /// Whether one window rides an outstanding transfer whose source or
@@ -444,24 +445,20 @@ impl WorldEngine {
             let key = domain.key.clone();
             // Floating workspaces are adapter-owned: the scope is
             // explicitly untouched. Observed lifetimes still publish
-            // explicit untouched rows (never silent absence, never a
-            // frame write): non-movers with no authority at their
-            // observed homing; movers under an outstanding boundary
-            // transfer publish one membership-only row at the target
-            // homing below, so they emit nothing here (one homing).
+            // explicit floating rows (`floating: true`, empty
+            // `float_origin`; never silent absence, never a frame
+            // write): non-movers with no authority at their observed
+            // homing; movers under an outstanding boundary transfer
+            // publish one membership-only row at the target homing
+            // below, so they emit nothing here (one homing).
             if self.floating_scopes.contains(&key) {
                 scopes.push(ScopeStatus {
                     scope: workspace_authority_scope(&key.output, &key.workspace.0),
                     authority: ScopeAuthority::Untouched,
                 });
                 for window in &domain.windows {
-                    // Movers redirected to the target homing emit
-                    // nothing here (one homing); all other observed
-                    // lifetimes carry explicit untouched rows. A mover the
-                    // truthful homing already placed at this floating
-                    // target (same-output boundary commit) carries
-                    // membership-only proof: Controlled membership with no
-                    // frame authority, never a frame write.
+                    // Floating rows here; redirected movers ride the
+                    // target homing below (one homing).
                     if redirect.contains_key(&window.window.0) {
                         continue;
                     }
@@ -491,7 +488,7 @@ impl WorldEngine {
                         },
                         frame_operation: None,
                         clear_operation: None,
-                        floating: false,
+                        floating: true,
                         float_origin: None,
                         command_seq: None,
                         visibility: None,
@@ -516,7 +513,7 @@ impl WorldEngine {
                         membership_authority: ScopeAuthority::Untouched,
                         frame_operation: None,
                         clear_operation: None,
-                        floating: false,
+                        floating: true,
                         float_origin: None,
                         command_seq: None,
                         visibility: None,
@@ -1272,12 +1269,13 @@ impl WorldEngine {
         // unreadable/incomplete members carry no placement and ride
         // membership only. Arrived movers already carry sweep rows, so the
         // emitted guard keeps exactly one homing.
-        // Minimized lifetimes never ride this lane: staged minimized facts
-        // emit with minimized frame authority below.
+        // Hidden-lane lifetimes (minimized or host-hidden) never ride this
+        // lane: staged hidden facts emit with minimized frame authority
+        // below. Raw facts stay distinct; the derived lane decides.
         let minimized_ids: BTreeSet<&str> = staged
             .facts
             .values()
-            .filter(|fact| fact.minimized == Some(true))
+            .filter(|fact| self.derived_for(&fact.window).hidden)
             .map(|fact| fact.window.0.as_str())
             .collect();
         let mut migration_redirect: BTreeSet<String> = BTreeSet::new();
@@ -1335,14 +1333,16 @@ impl WorldEngine {
                 state: Vec::new(),
             });
         }
-        // Explicit minimized facts without a retained slot row: the adapter
-        // reported them minimized but no session slot emitted a row above
-        // (fresh minimize, held scope, or gap). Explicit minimized-hold
-        // rows, never silent absence, never inferred close.
+        // Explicit hidden-lane facts without a retained slot row: the
+        // adapter reported them minimized or host-hidden but no session
+        // slot emitted a row above (fresh minimize/hide, held scope, or
+        // gap). Explicit hidden-hold rows, never silent absence, never
+        // inferred close. Raw facts stay distinct; the derived lane
+        // decides.
         for fact in staged
             .facts
             .values()
-            .filter(|fact| fact.minimized == Some(true))
+            .filter(|fact| self.derived_for(&fact.window).hidden)
         {
             // Exclusions never publish minimized rows: no slot, no control.
             if self.is_excluded_window(&fact.window) {
@@ -1530,7 +1530,7 @@ impl WorldEngine {
         // report publishes empty. Duplicates repeat the cached reply.
         let switch_settled = std::mem::take(&mut self.switch_settled);
         WorldReply {
-            contract_version: WORLD_CONTRACT_VERSION,
+            contract_version: WORLD_CONTRACT_VERSION_LEGACY,
             adapter_incarnation: report.adapter_incarnation.clone(),
             core_generation: self.core_generation_str.clone(),
             request_id: report.request_id.clone(),

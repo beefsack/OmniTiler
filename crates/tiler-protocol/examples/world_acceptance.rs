@@ -2,20 +2,25 @@
 //!
 //! One tiled-only, zero-gap, per-output-local case: bootstrap two windows,
 //! admit a third, select-away, select-previous return. Runs the actual
-//! [`WorldEngine`] on authored host inputs and checks the narrow accepted
-//! result: desired roster/homing/authorities, actual allocations with
-//! work-area coverage, oracle tiles, effective frames, output views,
-//! workspace ring/orders/scopes, retained view flights, one-shot effects
+//! [`WorldEngine`] on authored host inputs through the genuine public v4
+//! boundary ([`WorldEngine::handle_report`], matched on [`WorldOutcome`])
+//! and checks the narrow accepted result: desired roster/homing/authorities,
+//! actual allocations with work-area coverage, oracle tiles, effective
+//! frames, output views, workspace ring/orders/scopes, one-shot effects
 //! (id/kind/target plus issued revision), settlement status, and
 //! report/reply freshness and pairing. Usage: `world_acceptance CASE`.
 //!
 //! No transcript mode, no native rows, no caller bindings: host visibility
-//! is not observed by the core and no live claim is made. Command steps pin
-//! exactly one retained view flight (`settlement: command-pending`) and
-//! settle on their receipt steps (`settlement: settled`); omitting a receipt
-//! leaves the flight outstanding and fails. Unsupported classes (float,
-//! sticky, fullscreen, maximize, minimize, constraints, gaps, host-owned,
-//! gestures, cursor/warp) are rejected as not covered, never held.
+//! is not observed by the core and no live claim is made. Reports carry the
+//! required v4 lanes (valid presentation ingress, no renderer input on this
+//! lane, empty held lanes) and no `views` echo: native-free selection
+//! completes through the frozen binding plus the blocked-`LastWrite` verdict
+//! lane, exactly like the v4 stress host. Command steps pin exactly one
+//! retained view flight (`settlement: command-pending`) and settle on their
+//! receipt steps (`settlement: settled`); omitting a receipt leaves the
+//! flight outstanding and fails. Unsupported classes (float, sticky,
+//! fullscreen, maximize, minimize, constraints, gaps, host-owned, gestures,
+//! cursor/warp) are rejected as not covered, never held.
 //! Presentation shapes are explicitly out of scope (never read).
 
 use std::collections::BTreeMap;
@@ -30,8 +35,9 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    AuthorityScope, ScreenReport, ScreenView, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand,
-    WorldReply, WorldReport,
+    AuthorityScope, LastWrite, LastWritePath, LastWriteProperty, PresentationIngressV4,
+    PresentationRowV4, ScreenReport, VisibilityReason, VisibilitySample, VisibilitySetter,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
 // ---------------------------------------------------------------------------
@@ -127,7 +133,8 @@ struct CaseFile {
     name: String,
     #[allow(dead_code)]
     description: String,
-    _owner: String,
+    #[allow(dead_code)]
+    owner: String,
     adapter: String,
     generation: String,
     mode: String,
@@ -194,7 +201,7 @@ fn fail(step: &str, msg: impl std::fmt::Display) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Build authored reports (host inputs only, never reply output).
+// Build authored v4 reports (host inputs only, never reply output).
 // ---------------------------------------------------------------------------
 
 fn case_mode(mode: &str) -> Result<WorkspaceMode, String> {
@@ -232,12 +239,23 @@ fn build_command(
     }
 }
 
-fn build_report(
+/// View-slot prediction for a core-resolved command: `select-previous`
+/// toggles between the two slots. Single output only.
+fn resolve_previous(predicted_alias: &str, step: &str) -> Result<String, String> {
+    match predicted_alias {
+        "home" => Ok("away".to_owned()),
+        "away" => Ok("home".to_owned()),
+        _ => Err(fail(step, "predicted alias is not a slot")),
+    }
+}
+
+fn build_report_v4(
     case: &CaseFile,
     step: &CaseStep,
     _mode: WorkspaceMode,
     binding: &BTreeMap<String, String>,
-) -> Result<WorldReport, String> {
+    grants: &BTreeMap<String, (bool, u64)>,
+) -> Result<WorldReportV4, String> {
     if !case.settings.default_tiled {
         return Err("only default_tiled=true is covered".to_owned());
     }
@@ -255,16 +273,16 @@ fn build_report(
             step.name
         ));
     }
-    let resolve = |alias: &str| -> Result<String, String> {
-        binding
-            .get(alias)
-            .cloned()
-            .ok_or_else(|| format!("{}: unbound alias {alias:?}", step.name))
-    };
     let mut windows = Vec::new();
     for id in &case.windows {
         let Some(rect) = step.facts.get(id) else {
             continue;
+        };
+        // The raw visibility facts the post sample must agree with: the
+        // sample below reuses this exact value, never a desired state.
+        let visibility = tiler_core::world_report::VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
         };
         windows.push(WindowFact {
             window: WindowId(id.clone()),
@@ -292,8 +310,11 @@ fn build_report(
             parent: None,
             role: None,
             app_id: None,
-            executable: Some("synthetic.exe".to_owned()),
-            process_id: Some("foreign-pid".to_owned()),
+            // The v4 lane declares executable/processId unavailable
+            // (null application identity): facts must report them as
+            // unknown, never as synthetic values the host cannot produce.
+            executable: None,
+            process_id: None,
             class: Some("Synthetic".to_owned()),
             title: None,
             window_type: Some(tiler_core::world_report::WindowType::Normal),
@@ -302,23 +323,44 @@ fn build_report(
             fullscreen_owner: None,
             fullscreen_exitable: None,
             suppression_available: None,
-            visibility: tiler_core::world_report::VisibilityFact {
-                visible: Some(true),
-                suppression_owned: None,
+            visibility,
+            // Correlated visibility verdicts ride the next observation
+            // report only: the recorded target/revision plus the actual
+            // read sampled now (post at this report's observation, post
+            // state from the raw facts above). This lane holds every
+            // write, so the verdict is always the blocked no-call shape,
+            // never an invented write. Command reports carry none
+            // (same-report raw would guess a future issuing revision).
+            last_write: if step.command.is_none() {
+                grants.get(id).map(|(shown, rev)| LastWrite {
+                    property: LastWriteProperty::Visibility,
+                    target: *shown,
+                    revision: *rev,
+                    path: LastWritePath::Staged,
+                    setter: VisibilitySetter::NotCalled,
+                    reason: VisibilityReason::ScopeHeld,
+                    pre: None,
+                    post: Some(VisibilitySample {
+                        obs: step.observation,
+                        lifetime_matched: Some(true),
+                        visibility,
+                        minimized: Some(false),
+                        host_hidden: Some(false),
+                    }),
+                })
+            } else {
+                None
             },
-            last_write: None,
         });
     }
     let command = build_command(step, binding)?;
-    let mut views = Vec::new();
-    for (out, alias) in &step.views {
-        views.push(ScreenView {
-            output: OutputId(out.clone()),
-            view: resolve(alias)?,
-        });
-    }
-    Ok(WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+    // No `views` echo on the v4 lane: native-free selection completes
+    // through the frozen binding plus the verdict lane above. The authored
+    // `views` map stays parsed (case files unchanged) but never rides the
+    // wire.
+    let _ = &step.views;
+    Ok(WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: case.adapter.clone(),
         core_generation: case.generation.clone(),
         observation_seq: step.observation,
@@ -334,10 +376,12 @@ fn build_report(
             scale: 1.0,
             identity: tiler_core::world_report::OutputIdentity::unknown(),
         }],
+        held_screens: Vec::new(),
         windows,
-        views,
+        held_windows: Vec::new(),
         closed: vec![],
         native: vec![],
+        held_native: vec![],
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
@@ -349,8 +393,6 @@ fn build_report(
         } else {
             None
         },
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -360,11 +402,12 @@ fn build_report(
         view_attempts: vec![],
         clear_attempts: vec![],
         creation_attempts: vec![],
+        held_attempts: vec![],
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     })
 }
 
@@ -378,7 +421,13 @@ fn configured_engine(case: &CaseFile, mode: WorkspaceMode) -> Result<WorldEngine
             executable: None,
             process_id: None,
         },
-        capabilities: HostCapabilities::without_native_identity(),
+        capabilities: HostCapabilities {
+            // Match the v4 stress host: facts carry native sticky and
+            // maximize observations, only native identity is unavailable.
+            native_sticky: true,
+            maximize: true,
+            ..HostCapabilities::without_native_identity()
+        },
     });
     let generation = handshake
         .generation
@@ -392,23 +441,17 @@ fn configured_engine(case: &CaseFile, mode: WorkspaceMode) -> Result<WorldEngine
             revision: 0,
             values: vec![
                 setting(
-                    tiler_core::settings_catalog::FIELD_WORKSPACE_MODE,
+                    "mode",
                     RawSettingValue::String(
                         tiler_core::workspace_scope::mode_token(mode).to_owned(),
                     ),
                 ),
                 setting(
-                    tiler_core::settings_catalog::FIELD_WORKSPACE_DEFAULT_TILED,
+                    "defaultTiled",
                     RawSettingValue::Bool(case.settings.default_tiled),
                 ),
-                setting(
-                    tiler_core::settings_catalog::FIELD_INNER_GAP,
-                    RawSettingValue::Number(0.0),
-                ),
-                setting(
-                    tiler_core::settings_catalog::FIELD_OUTER_GAP,
-                    RawSettingValue::Number(0.0),
-                ),
+                setting("gap", RawSettingValue::Number(0.0)),
+                setting("outer", RawSettingValue::Number(0.0)),
             ],
         })
         .ok_or("settings envelope refused")?;
@@ -430,10 +473,20 @@ fn bootstrap_binding(
         return Err("narrow case covers exactly one screen".to_owned());
     }
     let mut probe = configured_engine(case, mode)?;
-    let first = build_report(case, step0, mode, &BTreeMap::new())?;
+    let first = build_report_v4(case, step0, mode, &BTreeMap::new(), &BTreeMap::new())?;
     let reply = match probe.handle_report(&first) {
         WorldOutcome::Accepted(reply) => reply,
-        other => return Err(format!("bootstrap probe: expected accepted, got {other:?}")),
+        WorldOutcome::Duplicate(_) => {
+            return Err("bootstrap probe: expected accepted, got duplicate".to_owned());
+        }
+        WorldOutcome::CommandConsumed(_) => {
+            return Err("bootstrap probe: expected accepted, got command-consumed".to_owned());
+        }
+        WorldOutcome::Rejected { kind, message } => {
+            return Err(format!(
+                "bootstrap probe: expected accepted, got {kind} {message}"
+            ));
+        }
     };
     let home = reply
         .outputs
@@ -457,7 +510,13 @@ fn bootstrap_binding(
     ]))
 }
 
-fn build_reports(case: &CaseFile) -> Result<Vec<WorldReport>, String> {
+/// Run authored reports through a fresh engine. Only `Accepted` counts:
+/// duplicates, consumed commands, and rejections fail loudly (no relabel).
+/// Changed selections record the commanded visibility desire from the actual
+/// issuing reply's own rows (blocked-only lane: a `Controlled` row fails
+/// closed); the next observation report samples the correlated read and
+/// spends the desire, exactly like the v4 stress host.
+fn execute(case: &CaseFile) -> Result<Vec<(WorldReportV4, WorldReplyV4)>, String> {
     if case.steps.is_empty() {
         return Err("case has no steps".to_owned());
     }
@@ -466,24 +525,65 @@ fn build_reports(case: &CaseFile) -> Result<Vec<WorldReport>, String> {
     }
     let mode = case_mode(&case.mode)?;
     let binding = bootstrap_binding(case, mode)?;
-    case.steps
-        .iter()
-        .map(|step| build_report(case, step, mode, &binding))
-        .collect()
-}
-
-/// Run authored reports through a fresh engine. Only `Accepted` counts:
-/// duplicates, consumed commands, and rejections fail loudly (no relabel).
-fn run_reports(case: &CaseFile, reports: &[WorldReport]) -> Result<Vec<WorldReply>, String> {
-    if reports.len() != case.steps.len() {
-        return Err("report count != case steps".to_owned());
-    }
-    let mode = case_mode(&case.mode)?;
     let mut engine = configured_engine(case, mode)?;
-    let mut replies = Vec::new();
-    for (step, report) in case.steps.iter().zip(reports.iter()) {
-        match engine.handle_report(report) {
-            WorldOutcome::Accepted(reply) => replies.push(reply),
+    let mut pairs = Vec::new();
+    let mut predicted_alias = "home".to_owned();
+    let mut grants: BTreeMap<String, (bool, u64)> = BTreeMap::new();
+    for step in &case.steps {
+        let mut select_changed = false;
+        if let Some(cmd) = &step.command {
+            match cmd.op.as_str() {
+                "select-workspace" => {
+                    let alias = cmd
+                        .workspace
+                        .as_deref()
+                        .ok_or_else(|| fail(&step.name, "select-workspace needs workspace"))?;
+                    if predicted_alias != alias {
+                        select_changed = true;
+                    }
+                    predicted_alias = alias.to_owned();
+                }
+                "select-previous" => {
+                    let alias = resolve_previous(&predicted_alias, &step.name)?;
+                    select_changed = predicted_alias != alias;
+                    predicted_alias = alias;
+                }
+                other => {
+                    return Err(fail(
+                        &step.name,
+                        format!("command {other:?} is not covered"),
+                    ));
+                }
+            }
+        }
+        let report = build_report_v4(case, step, mode, &binding, &grants)?;
+        match engine.handle_report(&report) {
+            WorldOutcome::Accepted(reply) => {
+                if select_changed {
+                    grants.clear();
+                    for row in &reply.windows {
+                        if let Some(target) = &row.visibility {
+                            if matches!(
+                                row.visibility_authority,
+                                tiler_core::world_report::ScopeAuthority::Controlled
+                            ) {
+                                return Err(fail(
+                                    &step.name,
+                                    format!(
+                                        "controlled visibility for {} is not covered on the blocked lane",
+                                        row.lifetime.0
+                                    ),
+                                ));
+                            }
+                            grants.insert(row.lifetime.0.clone(), (target.shown, target.revision));
+                        }
+                    }
+                }
+                if step.command.is_none() {
+                    grants.clear();
+                }
+                pairs.push((report, reply));
+            }
             WorldOutcome::Duplicate(_) => {
                 return Err(fail(&step.name, "duplicate reply is not fresh acceptance"));
             }
@@ -495,13 +595,7 @@ fn run_reports(case: &CaseFile, reports: &[WorldReport]) -> Result<Vec<WorldRepl
             }
         }
     }
-    Ok(replies)
-}
-
-fn execute(case: &CaseFile) -> Result<Vec<(WorldReport, WorldReply)>, String> {
-    let reports = build_reports(case)?;
-    let replies = run_reports(case, &reports)?;
-    Ok(reports.into_iter().zip(replies).collect())
+    Ok(pairs)
 }
 
 // ---------------------------------------------------------------------------
@@ -510,7 +604,7 @@ fn execute(case: &CaseFile) -> Result<Vec<(WorldReport, WorldReply)>, String> {
 // check; coverage runs over actual reply allocations.
 // ---------------------------------------------------------------------------
 
-fn check(case: &CaseFile, pairs: &[(WorldReport, WorldReply)]) -> Result<Vec<String>, String> {
+fn check(case: &CaseFile, pairs: &[(WorldReportV4, WorldReplyV4)]) -> Result<Vec<String>, String> {
     if case.steps.is_empty() {
         return Err("case has no steps".to_owned());
     }
@@ -571,7 +665,7 @@ fn check(case: &CaseFile, pairs: &[(WorldReport, WorldReply)]) -> Result<Vec<Str
         if reply.command_consumed {
             return Err(fail(at, "command consumed without execution"));
         }
-        if reply.contract_version != WORLD_CONTRACT_VERSION
+        if reply.contract_version != WORLD_CONTRACT_VERSION_V4
             || reply.adapter_incarnation != case.adapter
             || reply.core_generation != case.generation
             || report.adapter_incarnation != case.adapter
@@ -607,6 +701,22 @@ fn check(case: &CaseFile, pairs: &[(WorldReport, WorldReply)]) -> Result<Vec<Str
             }
         } else if report.command_seq.is_some() {
             return Err(fail(at, "settled report carries a command_seq"));
+        }
+        // The executed report must carry no `views` echo and the required
+        // v4 lanes: valid presentation ingress, no renderer input on this
+        // lane, empty held lanes.
+        if !matches!(report.presentation, PresentationRowV4::Valid(_)) {
+            return Err(fail(at, "report presentation != valid ingress"));
+        }
+        if report.renderer_input.is_some() {
+            return Err(fail(at, "report carries unexpected renderer input"));
+        }
+        if !report.held_screens.is_empty()
+            || !report.held_windows.is_empty()
+            || !report.held_native.is_empty()
+            || !report.held_attempts.is_empty()
+        {
+            return Err(fail(at, "report carries unexpected held rows"));
         }
         // Bind home/away ONCE from the bootstrap reply ring; freeze orders.
         if index == 0 {
@@ -690,31 +800,26 @@ fn check(case: &CaseFile, pairs: &[(WorldReport, WorldReply)]) -> Result<Vec<Str
                 format!("output does not show expected view {:?}", step.expect.view),
             ));
         }
-        // Scopes: exact expected set, every listed scope controlled.
+        // Scopes: uniform output authority, controlled.
         {
-            let home_scope = AuthorityScope::Workspace {
-                output: OutputId(screen.out.clone()),
-                workspace: tiler_core::directional::WorkspaceId(home.clone()),
-            };
-            let away_scope = AuthorityScope::Workspace {
-                output: OutputId(screen.out.clone()),
-                workspace: tiler_core::directional::WorkspaceId(away.clone()),
-            };
+            let output_scope = AuthorityScope::Output(OutputId(screen.out.clone()));
             let mut scopes: Vec<&AuthorityScope> = reply.scopes.iter().map(|s| &s.scope).collect();
             scopes.sort();
-            let mut want = if index == 0 {
-                vec![&home_scope]
-            } else {
-                vec![&away_scope, &home_scope]
-            };
-            want.sort();
-            if scopes != want {
-                return Err(fail(at, format!("scopes {scopes:?} != {want:?}")));
+            if scopes != [&output_scope] {
+                return Err(fail(at, format!("scopes {scopes:?} != [{output_scope:?}]")));
             }
             for s in &reply.scopes {
                 if s.authority.as_str() != "controlled" {
                     return Err(fail(at, format!("scope {:?} is not controlled", s.scope)));
                 }
+            }
+            if reply.workspaces.iter().any(|workspace| {
+                workspace.output.0 == screen.out && workspace.scope != output_scope
+            }) {
+                return Err(fail(
+                    at,
+                    "workspace row scope does not match output authority",
+                ));
             }
         }
         // Desired roster: exact member set. Per row: homed home, actual
@@ -781,7 +886,8 @@ fn check(case: &CaseFile, pairs: &[(WorldReport, WorldReply)]) -> Result<Vec<Str
         }
         coverage_ok(work, &allocs).map_err(|e| fail(at, e))?;
         // Transfers: settled steps carry none; command steps pin the exact
-        // JSON flight, linked to the command sequence.
+        // JSON flight, linked to the command sequence (plus the v4 retained
+        // command correlation).
         if pending {
             let cmd = step.command.as_ref().expect("pending implies command");
             let mut want = Vec::new();
@@ -818,6 +924,7 @@ fn check(case: &CaseFile, pairs: &[(WorldReport, WorldReply)]) -> Result<Vec<Str
                 || w.1 != "view"
                 || w.5
                 || w.6
+                || t.command_seq != Some(cmd.seq)
             {
                 return Err(fail(at, "transfer != pinned unheld view flight"));
             }
@@ -844,7 +951,10 @@ fn check(case: &CaseFile, pairs: &[(WorldReport, WorldReply)]) -> Result<Vec<Str
                 .map(|e| (e.id.clone(), e.kind.as_str().to_owned(), e.target.0.clone()))
                 .collect();
             if got != want {
-                return Err(fail(at, "effects != expected one-shot set"));
+                return Err(fail(
+                    at,
+                    format!("effects != expected one-shot set: got {got:?} want {want:?}"),
+                ));
             }
             for e in &reply.effects {
                 if e.issued_revision != reply.state_revision {
@@ -921,13 +1031,13 @@ mod acceptance_tests {
         serde_json::from_value(value.clone()).expect("case schema")
     }
 
-    fn base_pairs() -> (CaseFile, Vec<(WorldReport, WorldReply)>) {
+    fn base_pairs() -> (CaseFile, Vec<(WorldReportV4, WorldReplyV4)>) {
         let case = load_case(&case_path()).expect("load fixture");
         let pairs = execute(&case).expect("engine run");
         (case, pairs)
     }
 
-    fn must_fail(case: &CaseFile, pairs: &[(WorldReport, WorldReply)], needle: &str) {
+    fn must_fail(case: &CaseFile, pairs: &[(WorldReportV4, WorldReplyV4)], needle: &str) {
         let error = check(case, pairs).expect_err("must reject");
         assert!(error.contains(needle), "error {error:?} misses {needle:?}");
     }
@@ -950,12 +1060,15 @@ mod acceptance_tests {
 
     #[test]
     fn settled_rejects_lingering_flight() {
-        // Drop the away logical receipt: the select-away flight stays
-        // outstanding into away-settled, which must fail as settled.
-        let mut value = case_json();
-        step_of(&mut value, "away-settled")["views"] = serde_json::json!({});
-        let case = case_file(&value);
-        let pairs = execute(&case).expect("engine accepts with outstanding flight");
+        // A settled step must carry no transfers: grafting the select-away
+        // flight onto the away-settled reply must fail as a pending
+        // transfer. (The v4 lane carries no `views` echo; settlement is
+        // proven through the blocked-verdict lane, so the lingering flight
+        // is grafted onto the reply instead of starved on the wire.)
+        let (case, mut pairs) = base_pairs();
+        let flight = pairs[2].1.transfers.clone();
+        assert_eq!(flight.len(), 1, "select-away pins exactly one flight");
+        pairs[3].1.transfers = flight;
         must_fail(&case, &pairs, "pending transfer");
     }
 
@@ -1062,9 +1175,13 @@ mod acceptance_tests {
     }
 
     #[test]
-    fn wrong_pairing_owner_rejected() {
+    fn wrong_pairing_adapter_rejected() {
+        // The case owner label is not carried on the v4 wire (reports
+        // carry adapter/generation provenance only; the owner field left
+        // the report shape after the ordered-acceptance baseline), so the
+        // pairing-identity probe mutates the adapter binding instead.
         let (mut value, pairs) = (case_json(), base_pairs().1);
-        value["owner"] = serde_json::json!("owner-zzz");
+        value["adapter"] = serde_json::json!("adapter-zzz");
         must_fail(&case_file(&value), &pairs, "provenance");
     }
 
@@ -1126,12 +1243,12 @@ mod acceptance_tests {
         must_fail(&case, &pairs, "not controlled");
     }
 
-    fn mutated_reports(case: &CaseFile) -> Vec<WorldReport> {
+    fn mutated_reports(case: &CaseFile) -> Vec<WorldReportV4> {
         let mode = case_mode(&case.mode).expect("mode");
-        let binding = bootstrap_binding(&case, mode).expect("bind");
+        let binding = bootstrap_binding(case, mode).expect("bind");
         case.steps
             .iter()
-            .map(|s| build_report(&case, s, mode, &binding).expect("build"))
+            .map(|s| build_report_v4(case, s, mode, &binding, &BTreeMap::new()).expect("build"))
             .collect()
     }
 
@@ -1140,8 +1257,20 @@ mod acceptance_tests {
         let case = load_case(&case_path()).expect("load fixture");
         let mut reports = mutated_reports(&case);
         reports[0].windows[0].rect = None;
-        let replies = run_reports(&case, &reports).expect("engine accepts the hold");
-        let pairs: Vec<(WorldReport, WorldReply)> = reports.into_iter().zip(replies).collect();
+        let mut engine =
+            configured_engine(&case, case_mode(&case.mode).expect("mode")).expect("engine");
+        let mut replies = Vec::new();
+        for report in &reports {
+            match engine.handle_report(report) {
+                WorldOutcome::Accepted(reply) => replies.push(reply),
+                WorldOutcome::Duplicate(_) => panic!("duplicate is not fresh acceptance"),
+                WorldOutcome::CommandConsumed(_) => panic!("consumed never re-executes"),
+                WorldOutcome::Rejected { kind, message } => {
+                    panic!("rejected {kind} {message}")
+                }
+            }
+        }
+        let pairs: Vec<(WorldReportV4, WorldReplyV4)> = reports.into_iter().zip(replies).collect();
         must_fail(&case, &pairs, "not controlled");
     }
 
@@ -1150,8 +1279,20 @@ mod acceptance_tests {
         let case = load_case(&case_path()).expect("load fixture");
         let mut reports = mutated_reports(&case);
         reports[0].screens[0].complete = false;
-        let replies = run_reports(&case, &reports).expect("engine accepts the fence");
-        let pairs: Vec<(WorldReport, WorldReply)> = reports.into_iter().zip(replies).collect();
+        let mut engine =
+            configured_engine(&case, case_mode(&case.mode).expect("mode")).expect("engine");
+        let mut replies = Vec::new();
+        for report in &reports {
+            match engine.handle_report(report) {
+                WorldOutcome::Accepted(reply) => replies.push(reply),
+                WorldOutcome::Duplicate(_) => panic!("duplicate is not fresh acceptance"),
+                WorldOutcome::CommandConsumed(_) => panic!("consumed never re-executes"),
+                WorldOutcome::Rejected { kind, message } => {
+                    panic!("rejected {kind} {message}")
+                }
+            }
+        }
+        let pairs: Vec<(WorldReportV4, WorldReplyV4)> = reports.into_iter().zip(replies).collect();
         let error = check(&case, &pairs).expect_err("must reject");
         assert!(error.contains("ring"), "unexpected: {error}");
     }
@@ -1163,7 +1304,7 @@ mod acceptance_tests {
         assert!(coverage_ok(work, &[[0, 0, 399, 560], [400, 0, 400, 560]]).is_err());
         assert!(coverage_ok(work, &[[0, 0, 401, 560], [400, 0, 400, 560]]).is_err());
         assert!(coverage_ok(work, &[[0, 0, 400, 560], [400, 0, 400, 0]]).is_err());
-        assert!(coverage_ok(work, &[[0, 0, 400, 560], [800, 0, 400, 560]]).is_err());
+        assert!(coverage_ok(work, &[[0, 0, 800, 560], [800, 0, 400, 560]]).is_err());
     }
 
     #[test]

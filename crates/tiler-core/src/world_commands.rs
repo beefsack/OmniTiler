@@ -1305,10 +1305,12 @@ impl WorldEngine {
                 let _ = plan;
                 // Full relocated member set from the committed target slot
                 // (tiled links plus carried float exceptions) with stable
-                // window identities, plus non-sticky minimized lifetimes
-                // homed at the source: the adapter actuates each member
-                // exactly once under the stable transfer identity below,
-                // with truthful partial attempt reporting.
+                // window identities, plus non-sticky hidden-lane lifetimes
+                // (minimized or host-hidden) homed at the source: the
+                // adapter actuates each member exactly once under the
+                // stable transfer identity below, with truthful partial
+                // attempt reporting. Raw facts stay distinct; the derived
+                // lane decides hidden.
                 let mut members: Vec<WindowId> = self
                     .engine
                     .session(&target_key)
@@ -1329,14 +1331,13 @@ impl WorldEngine {
                     .unwrap_or_default();
                 for (window, homed) in &self.staged.homing {
                     // Unknown sticky never silently includes or omits: a
-                    // homed minimized lifetime without proven sticky
+                    // homed hidden-lane lifetime without proven sticky
                     // state refuses with no partial mutation.
                     if homed == &source_key
                         && !members.iter().any(|member| member == window)
+                        && self.derived_for(window).hidden
                         && self.staged.facts.get(window).is_some_and(|fact| {
-                            fact.minimized == Some(true)
-                                && fact.sticky != Some(true)
-                                && fact.sticky != Some(false)
+                            fact.sticky != Some(true) && fact.sticky != Some(false)
                         })
                     {
                         return CommandApplied::Rejected {
@@ -1348,9 +1349,12 @@ impl WorldEngine {
                 for (window, homed) in &self.staged.homing {
                     if homed == &source_key
                         && !members.iter().any(|member| member == window)
-                        && self.staged.facts.get(window).is_some_and(|fact| {
-                            fact.minimized == Some(true) && fact.sticky == Some(false)
-                        })
+                        && self.derived_for(window).hidden
+                        && self
+                            .staged
+                            .facts
+                            .get(window)
+                            .is_some_and(|fact| fact.sticky == Some(false))
                     {
                         members.push(window.clone());
                     }

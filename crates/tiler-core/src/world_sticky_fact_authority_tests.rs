@@ -7,7 +7,7 @@
 use crate::directional::WindowId;
 use crate::intent_data::{IntentData, encode_intent_data};
 use crate::world_directional::tests::{fact, report_full, screen};
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{IntentRecord, RowDiagnosticKind, RowDiagnosticLane};
 
 fn caps(native_sticky: bool) -> crate::connection::HostCapabilities {
@@ -29,8 +29,8 @@ fn accepted_reply(
     engine: &mut WorldEngine,
     report: &crate::world_report::WorldReport,
 ) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -442,8 +442,8 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
         let mut engine = engine_with(false);
         assert!(
             matches!(
-                engine.handle_report(&engine_report),
-                WorldOutcome::Rejected { .. }
+                engine.handle_report_legacy(&engine_report),
+                LegacyWorldOutcome::Rejected { .. }
             ),
             "{label} violation refuses through the engine"
         );
@@ -599,8 +599,8 @@ fn conflict_recovery_consumes_pending_and_seals_admission() {
         engine.staged.held_windows
     );
     // An exact duplicate of the recovery returns the cached reply.
-    match engine.handle_report(&recovery) {
-        WorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
+    match engine.handle_report_legacy(&recovery) {
+        LegacyWorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
         other => panic!("expected duplicate, got {other:?}"),
     }
     // A late changed record for the admitted lifetime never overwrites and
@@ -641,8 +641,8 @@ fn conflict_recovery_consumes_pending_and_seals_admission() {
     changed_row.sticky = Some(true);
     let mut changed = late.clone();
     changed.windows = vec![changed_row];
-    match engine.handle_report(&changed) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
+    match engine.handle_report_legacy(&changed) {
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
         other => panic!("expected reused rejection, got {other:?}"),
     }
 }

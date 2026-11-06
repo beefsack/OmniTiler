@@ -24,9 +24,9 @@ use crate::directional::{Node, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
-    CommandRejectKind, RenderTarget, RendererInput, ScreenReport, WORLD_CONTRACT_VERSION,
+    CommandRejectKind, RenderTarget, RendererInput, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY,
     WindowFact, WorldCommand, WorldReport,
 };
 
@@ -102,7 +102,7 @@ fn report(
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: generation.to_owned(),
         observation_seq: seq,
@@ -141,8 +141,8 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }

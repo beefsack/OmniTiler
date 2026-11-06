@@ -15,9 +15,10 @@ use crate::gesture::{
     DropDestination, GestureIngress, GestureIntent, GestureKind, GesturePhase, classify_gesture,
     drop_point_in_domain, pointer_output, prefer_modal_move, resolve_drop_destination,
 };
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
-    CommandResult, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorldReport,
+    CommandResult, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION_LEGACY, WindowFact,
+    WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -132,7 +133,7 @@ fn report_on(
     inventory_complete: bool,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -172,8 +173,8 @@ fn report_on(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -1390,8 +1391,8 @@ fn consumed_command_reports_still_carry_gesture_preview() {
         window: WindowId("win-a".to_owned()),
         direction: "right".to_owned(),
     });
-    match engine.handle_report(&resend) {
-        WorldOutcome::CommandConsumed(reply) => {
+    match engine.handle_report_legacy(&resend) {
+        LegacyWorldOutcome::CommandConsumed(reply) => {
             preview_of(&reply);
         }
         other => panic!("expected command-consumed with gesture overlay, got {other:?}"),
@@ -1446,8 +1447,8 @@ fn incarnation_reset_clears_the_session() {
     let mut stale_old_generation = old_generation.clone();
     stale_old_generation.adapter_incarnation = "adapter-2".to_owned();
     assert!(matches!(
-        engine.handle_report(&stale_old_generation),
-        WorldOutcome::Rejected {
+        engine.handle_report_legacy(&stale_old_generation),
+        LegacyWorldOutcome::Rejected {
             kind: "generation-mismatch",
             ..
         }
@@ -1987,8 +1988,8 @@ fn terminal_id_zero_never_binds() {
         true,
     );
     let _ = &mut bad;
-    match engine.handle_report(&bad) {
-        WorldOutcome::Rejected { .. } => {}
+    match engine.handle_report_legacy(&bad) {
+        LegacyWorldOutcome::Rejected { .. } => {}
         other => panic!("expected rejection for id 0, got {other:?}"),
     }
     assert!(engine.gesture_terminal.is_none());
@@ -2524,8 +2525,8 @@ fn terminal_does_not_leak_into_next_report() {
         released.gesture_settled.map(|t| (t.id, t.committed)),
         Some((1, true))
     );
-    match engine.handle_report(&terminal_report) {
-        WorldOutcome::Duplicate(cached) => assert_eq!(
+    match engine.handle_report_legacy(&terminal_report) {
+        LegacyWorldOutcome::Duplicate(cached) => assert_eq!(
             cached.gesture_settled.map(|t| (t.id, t.committed)),
             Some((1, true)),
             "duplicate repeats the cached terminal"
@@ -2623,8 +2624,8 @@ fn rejected_report_consumes_no_gesture_identity() {
         vec![],
         true,
     );
-    match engine.handle_report(&bad) {
-        WorldOutcome::Rejected { .. } => {}
+    match engine.handle_report_legacy(&bad) {
+        LegacyWorldOutcome::Rejected { .. } => {}
         other => panic!("expected rejection, got {other:?}"),
     }
     let mut start = ingress_id(

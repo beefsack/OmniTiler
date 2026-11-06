@@ -15,7 +15,7 @@ use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_directional::tests::{accepted, fact, float_fact, report, report_full, screen};
-use crate::world_engine::{RetainedFloat, RetainedTransfer, WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, RetainedFloat, RetainedTransfer, WorldEngine};
 use crate::world_report::{
     ClearAttempt, CommandRejectKind, CommandResult, FrameSetter, HoldReason, ScopeAuthority,
     ScreenReport, TransferKind, TransferTarget, WindowFact, WorldCommand, WorldReport,
@@ -2140,7 +2140,7 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
         w: 150,
         h: 120,
     };
-    match engine.handle_report(&report_full(
+    match engine.handle_report_legacy(&report_full(
         2,
         2,
         vec![screen("out-a", 0)],
@@ -2153,7 +2153,7 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
             float_rect: Some(target),
         })),
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused

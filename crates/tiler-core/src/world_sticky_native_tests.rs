@@ -4,7 +4,7 @@ use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, WindowId};
 use crate::intent_data::{IntentData, encode_intent_data};
 use crate::world_directional::tests::{accepted, fact, float_fact, report_full, screen};
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, IntentRecord, IntentWrite, ScopeAuthority, StateProperty,
     WorldCommand, WorldReport,
@@ -1927,8 +1927,8 @@ fn native_rollback_consumed_report_still_emits() {
     );
     proof.command_seq = Some(2);
     proof.command = Some(set_sticky("win-a", false));
-    match engine.handle_report(&proof) {
-        WorldOutcome::CommandConsumed(reply) => {
+    match engine.handle_report_legacy(&proof) {
+        LegacyWorldOutcome::CommandConsumed(reply) => {
             let prior = IntentData::new(Some(true), Some(false));
             assert_eq!(
                 reply.intent_writes,
@@ -2163,8 +2163,8 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
     let floats = engine.restored_floats.clone();
     let highwater = engine.command_highwater;
     let queued = engine.sticky_rollback_saves.clone();
-    match engine.handle_report(&report) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REPLY_SIZE),
+    match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REPLY_SIZE),
         other => panic!("expected reply-oversize, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
@@ -2852,9 +2852,9 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
     let mut control_obs = refused_obs.clone();
     control_obs.command = None;
     control_obs.command_seq = None;
-    let _ = control.handle_report(&control_obs);
-    match capped.handle_report(&refused_obs) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    let _ = control.handle_report_legacy(&control_obs);
+    match capped.handle_report_legacy(&refused_obs) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(crate::world_report::CommandResult::Rejected {
                 kind: crate::world_report::CommandRejectKind::OperationRefused

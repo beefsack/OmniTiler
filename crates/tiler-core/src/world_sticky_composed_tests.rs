@@ -11,7 +11,7 @@ use crate::connection::HostCapabilities;
 use crate::directional::{OutputId, WindowId};
 use crate::intent_data::{IntentData, decode_intent_data, encode_intent_data};
 use crate::world_directional::tests::{accepted, fact, float_fact, report_full, screen};
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
     CommandRejectKind, CommandResult, IntentRecord, ScopeAuthority, StateProperty,
     VisibilityTarget, WindowDesire, WindowFact, WorldCommand, WorldReport, encode_reply_canonical,
@@ -383,13 +383,13 @@ fn set_same_state_consumes_without_a_repeat_save() {
     assert_eq!(engine.sticky_saved, before);
     // A consumed duplicate never re-executes either: same command
     // sequence on a fresh observation reconciles without staging.
-    match engine.handle_report(&cmd(
+    match engine.handle_report_legacy(&cmd(
         4,
         2,
         vec![cfact("win-a", "out-a", 0)],
         set_sticky("win-a", true),
     )) {
-        WorldOutcome::CommandConsumed(_) => {}
+        LegacyWorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected consumed, got {other:?}"),
     }
     assert!(engine.sticky_command_save.is_none());
@@ -935,13 +935,13 @@ fn held_scope_refuses_without_mutation() {
     // sibling command must refuse without touching anything.
     let mut held_fact = fact("win-b", "out-a", 100);
     held_fact.sticky = Some(false);
-    match engine.handle_report(&cmd(
+    match engine.handle_report_legacy(&cmd(
         2,
         1,
         vec![cfact("win-a", "out-a", 0), held_fact],
         set_sticky("win-a", true),
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::ScopeHeld
@@ -961,8 +961,8 @@ fn minimized_and_excluded_subjects_refuse_without_mutation() {
     accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
     let mut minimized = cfact("win-a", "out-a", 0);
     minimized.minimized = Some(true);
-    match engine.handle_report(&cmd(2, 1, vec![minimized], set_sticky("win-a", true))) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&cmd(2, 1, vec![minimized], set_sticky("win-a", true))) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -973,8 +973,8 @@ fn minimized_and_excluded_subjects_refuse_without_mutation() {
     }
     let mut excluded = cfact("win-a", "out-a", 0);
     excluded.privileged = Some(true);
-    match engine.handle_report(&cmd(3, 2, vec![excluded], set_sticky("win-a", true))) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&cmd(3, 2, vec![excluded], set_sticky("win-a", true))) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -991,13 +991,13 @@ fn minimized_and_excluded_subjects_refuse_without_mutation() {
 fn unknown_window_refuses_without_mutation() {
     let mut engine = composed_engine();
     accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
-    match engine.handle_report(&cmd(
+    match engine.handle_report_legacy(&cmd(
         2,
         1,
         vec![cfact("win-a", "out-a", 0)],
         set_sticky("win-ghost", true),
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1090,17 +1090,19 @@ fn duplicate_repeats_save_while_consumed_emits_none() {
     );
     let reply = accepted(&mut engine, &fresh);
     assert_eq!(reply.intent_writes.len(), 1);
-    match engine.handle_report(&fresh) {
-        WorldOutcome::Duplicate(cached) => assert_eq!(cached.intent_writes, reply.intent_writes),
+    match engine.handle_report_legacy(&fresh) {
+        LegacyWorldOutcome::Duplicate(cached) => {
+            assert_eq!(cached.intent_writes, reply.intent_writes)
+        }
         other => panic!("expected duplicate, got {other:?}"),
     }
-    match engine.handle_report(&cmd(
+    match engine.handle_report_legacy(&cmd(
         3,
         1,
         vec![cfact("win-a", "out-a", 0)],
         toggle_sticky("win-a"),
     )) {
-        WorldOutcome::CommandConsumed(consumed) => {
+        LegacyWorldOutcome::CommandConsumed(consumed) => {
             assert!(consumed.intent_writes.is_empty(), "consumed emits none")
         }
         other => panic!("expected consumed, got {other:?}"),
@@ -1687,8 +1689,8 @@ fn sticky_reply_bound_rejects_before_mutation_and_small_retry_wins() {
     let revision = engine.state_revision;
     let sticky = engine.restored_sticky.clone();
     let saved = engine.sticky_saved.clone();
-    match engine.handle_report(&report) {
-        WorldOutcome::Rejected { kind, .. } => {
+    match engine.handle_report_legacy(&report) {
+        LegacyWorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, KIND_REPLY_SIZE);
         }
         other => panic!("expected reply-oversize, got {other:?}"),
@@ -2077,13 +2079,13 @@ fn sticky_on_refuses_when_the_joint_ledger_is_full_without_mutation() {
     let revision = engine.state_revision;
     let sticky = engine.restored_sticky.clone();
     let saved = engine.sticky_saved.clone();
-    match engine.handle_report(&cmd(
+    match engine.handle_report_legacy(&cmd(
         2,
         1,
         vec![cfact("win-a", "out-a", 0)],
         set_sticky("win-a", true),
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -2125,9 +2127,9 @@ fn sticky_on_refuses_when_saved_knowledge_is_full_without_mutation() {
     let mut control_obs = refused_obs.clone();
     control_obs.command = None;
     control_obs.command_seq = None;
-    let _ = control.handle_report(&control_obs);
-    match engine.handle_report(&refused_obs) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    let _ = control.handle_report_legacy(&control_obs);
+    match engine.handle_report_legacy(&refused_obs) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -2450,8 +2452,8 @@ fn sticky_clear_refuses_whole_candidate_when_no_space_and_smaller_retry_wins() {
     let highwater = engine.command_highwater;
     let sticky = engine.restored_sticky.clone();
     let saved = engine.sticky_saved.clone();
-    match engine.handle_report(&tiny_cmd(3, 2, echo.clone(), toggle_float(&victim))) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&tiny_cmd(3, 2, echo.clone(), toggle_float(&victim))) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -2630,13 +2632,13 @@ fn saved_full_import_latches_and_native_still_refuses_after_prune() {
     // unreadable null: native observations stay authoritative, so the
     // known non-sticky fact reaches the exact-prior check and refuses
     // through the typed operation lane with no save and no binding.
-    match engine.handle_report(&cmd(
+    match engine.handle_report_legacy(&cmd(
         3,
         1,
         vec![fact("win-a", "out-a", 0), fact("win-new", "out-a", 100)],
         set_sticky("win-new", false),
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -2784,8 +2786,8 @@ fn null_null_first_then_valid_differs_latches_native_refuses() {
     // Retained pending keeps sticky_current true, so same-state ON would
     // NoEffect-accept before the fence; OFF reaches the exact-knowledge
     // gate while raw stays known false (never a StateUnknown mask).
-    match engine.handle_report(&cmd(4, 1, facts(), set_sticky("win-a", false))) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&cmd(4, 1, facts(), set_sticky("win-a", false))) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -2877,8 +2879,8 @@ fn valid_first_then_null_null_differs_latches_native_refuses() {
     // Retained pending keeps sticky_current true, so same-state ON would
     // NoEffect-accept before the fence; OFF reaches the exact-knowledge
     // gate while raw stays known false (never a StateUnknown mask).
-    match engine.handle_report(&cmd(4, 1, facts(), set_sticky("win-a", false))) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&cmd(4, 1, facts(), set_sticky("win-a", false))) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused

@@ -1,4 +1,4 @@
-//! Native occupancy regression (staged v3 vocabulary, `WORLD_CONTRACT_VERSION == 3`).
+//! Native occupancy regression (staged v3 vocabulary, `WORLD_CONTRACT_VERSION_LEGACY == 3`).
 //!
 //! Wire shape under test: `native[]: {out, order, current, occupancy}` with
 //! `occupancy: [{native, count: integer|null}]` covering exactly each `order`
@@ -12,7 +12,7 @@
 //! valid current-shape envelope with only `v` replaced, isolating the
 //! version gate from shape rejection.
 
-use tiler_protocol::world_protocol::decode_request;
+use tiler_protocol::world_protocol::decode_request_legacy;
 
 fn base_request(native_value: &str) -> String {
     format!(
@@ -43,7 +43,7 @@ fn native_row(order: &str, current: &str, occupancy: &str) -> String {
 fn v2_envelope_refuses_as_unsupported_version() {
     let v2 = base_request("{\"out\":\"out\",\"order\":[\"d1\"],\"current\":\"d1\"}")
         .replace("\"v\":3", "\"v\":2");
-    let error = decode_request(&v2).expect_err("v2 must refuse after v3 cutover");
+    let error = decode_request_legacy(&v2).expect_err("v2 must refuse after v3 cutover");
     assert_eq!(error.kind, "unsupported-version");
 }
 
@@ -51,7 +51,7 @@ fn v2_envelope_refuses_as_unsupported_version() {
 fn v3_requires_occupancy_key() {
     let missing = base_request("{\"out\":\"out\",\"order\":[\"d1\"],\"current\":\"d1\"}");
     assert!(
-        decode_request(&missing).is_err(),
+        decode_request_legacy(&missing).is_err(),
         "missing occupancy must refuse"
     );
 }
@@ -64,21 +64,24 @@ fn v3_accepts_empty_occupied_and_unknown_counts() {
         "\"d1\"",
         "{\"native\":\"d1\",\"count\":0}",
     ));
-    assert!(decode_request(&empty).is_ok(), "exact zero accepts");
+    assert!(decode_request_legacy(&empty).is_ok(), "exact zero accepts");
     // Occupied.
     let occupied = base_request(&native_row(
         "\"d1\",\"d2\"",
         "\"d1\"",
         "{\"native\":\"d1\",\"count\":2},{\"native\":\"d2\",\"count\":0}",
     ));
-    assert!(decode_request(&occupied).is_ok(), "occupied accepts");
+    assert!(decode_request_legacy(&occupied).is_ok(), "occupied accepts");
     // Explicit unknown.
     let unknown = base_request(&native_row(
         "\"d1\"",
         "\"d1\"",
         "{\"native\":\"d1\",\"count\":null}",
     ));
-    assert!(decode_request(&unknown).is_ok(), "null count accepts");
+    assert!(
+        decode_request_legacy(&unknown).is_ok(),
+        "null count accepts"
+    );
 }
 
 #[test]
@@ -89,21 +92,27 @@ fn v3_rejects_malformed_and_coverage_violations() {
         "\"d1\"",
         "{\"native\":\"d1\",\"count\":0}",
     ));
-    assert!(decode_request(&uncovered).is_err(), "uncovered refuses");
+    assert!(
+        decode_request_legacy(&uncovered).is_err(),
+        "uncovered refuses"
+    );
     // Extra occupancy id not in order.
     let extra = base_request(&native_row(
         "\"d1\"",
         "\"d1\"",
         "{\"native\":\"d1\",\"count\":0},{\"native\":\"d9\",\"count\":0}",
     ));
-    assert!(decode_request(&extra).is_err(), "extra refuses");
+    assert!(decode_request_legacy(&extra).is_err(), "extra refuses");
     // Duplicate occupancy row.
     let duplicate = base_request(&native_row(
         "\"d1\"",
         "\"d1\"",
         "{\"native\":\"d1\",\"count\":0},{\"native\":\"d1\",\"count\":1}",
     ));
-    assert!(decode_request(&duplicate).is_err(), "duplicate refuses");
+    assert!(
+        decode_request_legacy(&duplicate).is_err(),
+        "duplicate refuses"
+    );
     // Malformed count shape (string).
     let malformed = base_request(&native_row(
         "\"d1\"",
@@ -111,7 +120,7 @@ fn v3_rejects_malformed_and_coverage_violations() {
         "{\"native\":\"d1\",\"count\":\"two\"}",
     ));
     assert!(
-        decode_request(&malformed).is_err(),
+        decode_request_legacy(&malformed).is_err(),
         "malformed count refuses"
     );
     // Negative count refuses.
@@ -120,5 +129,8 @@ fn v3_rejects_malformed_and_coverage_violations() {
         "\"d1\"",
         "{\"native\":\"d1\",\"count\":-1}",
     ));
-    assert!(decode_request(&negative).is_err(), "negative refuses");
+    assert!(
+        decode_request_legacy(&negative).is_err(),
+        "negative refuses"
+    );
 }

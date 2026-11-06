@@ -3994,7 +3994,7 @@ mod effect_vocabulary_sizing_tests {
     use super::*;
     use crate::directional::WindowId;
     use crate::world_directional::tests::{accepted, fact, report_full, screen};
-    use crate::world_engine::WorldOutcome;
+    use crate::world_engine::LegacyWorldOutcome;
     use crate::world_report::{
         EffectCause, EffectKind, OneShotEffect, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
     };
@@ -4484,8 +4484,8 @@ mod effect_vocabulary_sizing_tests {
             "added reserve is the discriminator"
         );
         let revision = engine.state_revision;
-        match engine.handle_report(&report) {
-            WorldOutcome::Rejected { kind, .. } => {
+        match engine.handle_report_legacy(&report) {
+            LegacyWorldOutcome::Rejected { kind, .. } => {
                 assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
             }
             other => panic!("expected reply-oversize, got {other:?}"),

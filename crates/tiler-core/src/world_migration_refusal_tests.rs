@@ -6,11 +6,11 @@
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
     CommandRejectKind, CommandResult, FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport,
-    TransferKind, ViewAttempt, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand,
-    WorldReport,
+    TransferKind, ViewAttempt, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorkspaceRef,
+    WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -333,7 +333,7 @@ fn report(
     view_attempts: Vec<ViewAttempt>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -375,8 +375,8 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -851,7 +851,7 @@ fn report_with_screens(
     closed: Vec<WindowId>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -1574,7 +1574,7 @@ fn rejected_logical_supersession_does_not_replay_migration() {
     );
     // V4 rejects the historical logical-selector supersession proof. The
     // incomplete inventory still cannot erase migration state.
-    match engine.handle_report(&report_with_screens(
+    match engine.handle_report_legacy(&report_with_screens(
         5,
         5,
         vec![screen("out-a", 0), screen("out-b", 800)],
@@ -1593,7 +1593,9 @@ fn rejected_logical_supersession_does_not_replay_migration() {
         false,
         vec![],
     )) {
-        WorldOutcome::Rejected { message, .. } => assert_eq!(message, "native-without-capability"),
+        LegacyWorldOutcome::Rejected { message, .. } => {
+            assert_eq!(message, "native-without-capability")
+        }
         other => panic!("logical ViewAttempt must reject, got {other:?}"),
     }
     let gap = accepted(
@@ -2009,8 +2011,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         inventory_complete: true,
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
-    match engine.handle_report(&east) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&east) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2032,8 +2034,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     inv.inventory_complete = false;
-    match engine.handle_report(&inv) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&inv) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2059,8 +2061,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
     );
     ghost.action_outputs.push(OutputId("out-z".to_owned()));
     ghost.action_cached = Some(OutputId("out-z".to_owned()));
-    match engine.handle_report(&ghost) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&ghost) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2085,8 +2087,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
         vec![],
     );
-    match engine.handle_report(&bad_src) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&bad_src) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2115,8 +2117,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     tgt.screens = inc_screens.clone();
-    match engine.handle_report(&tgt) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&tgt) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2139,8 +2141,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     topo.screens = inc_screens;
-    match engine.handle_report(&topo) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&topo) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2193,8 +2195,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
         vec![],
     );
-    match flight_engine.handle_report(&again) {
-        WorldOutcome::Accepted(reply) => {
+    match flight_engine.handle_report_legacy(&again) {
+        LegacyWorldOutcome::Accepted(reply) => {
             let source = reply
                 .command_result
                 .clone()
@@ -2381,7 +2383,7 @@ fn logical_view_attempt_is_rejected_without_losing_migration_membership() {
     );
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let windows = vec![fact("win-a", "out-a", 0)];
-    match engine.handle_report(&report_with_screens(
+    match engine.handle_report_legacy(&report_with_screens(
         5,
         5,
         screens.clone(),
@@ -2400,7 +2402,9 @@ fn logical_view_attempt_is_rejected_without_losing_migration_membership() {
         true,
         vec![],
     )) {
-        WorldOutcome::Rejected { message, .. } => assert_eq!(message, "native-without-capability"),
+        LegacyWorldOutcome::Rejected { message, .. } => {
+            assert_eq!(message, "native-without-capability")
+        }
         other => panic!("logical ViewAttempt must be rejected, got {other:?}"),
     }
     let held = accepted(
@@ -2484,7 +2488,7 @@ fn logical_selector_attempt_rejects_while_migration_remains_in_flight() {
     );
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let windows = vec![fact("win-a", "out-a", 0)];
-    match engine.handle_report(&report_with_screens(
+    match engine.handle_report_legacy(&report_with_screens(
         5,
         5,
         screens.clone(),
@@ -2503,7 +2507,9 @@ fn logical_selector_attempt_rejects_while_migration_remains_in_flight() {
         true,
         vec![],
     )) {
-        WorldOutcome::Rejected { message, .. } => assert_eq!(message, "native-without-capability"),
+        LegacyWorldOutcome::Rejected { message, .. } => {
+            assert_eq!(message, "native-without-capability")
+        }
         other => panic!("logical ViewAttempt must be rejected, got {other:?}"),
     }
     let held = accepted(
@@ -2787,8 +2793,10 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_already_retired() {
         baseline: Some(native_ref("out-a", &refill_ws)),
         attempt_ms: 7,
     });
-    match engine.handle_report(&invalid) {
-        WorldOutcome::Rejected { message, .. } => assert_eq!(message, "native-without-capability"),
+    match engine.handle_report_legacy(&invalid) {
+        LegacyWorldOutcome::Rejected { message, .. } => {
+            assert_eq!(message, "native-without-capability")
+        }
         other => panic!("logical ViewAttempt must reject, got {other:?}"),
     }
     let settled = accepted(&mut engine, &external);
@@ -2942,7 +2950,7 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
     // A stale-but-registered cache still selects and refuses downstream
     // instead of silently retargeting live state.
     let (mut engine, _, _) = seeded();
-    match engine.handle_report(&context_cmd(
+    match engine.handle_report_legacy(&context_cmd(
         2,
         registry(&["out-a", "out-b", "out-z"]),
         None,
@@ -2950,7 +2958,7 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
         Some("out-z"),
         "right",
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2979,8 +2987,8 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
         }),
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
-    match engine.handle_report(&empty) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&empty) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -3011,8 +3019,8 @@ fn migrate_directional_freezes_source_view_pre_observation() {
         }),
         ..report(1, 1, vec![], "", None, None, vec![], vec![])
     };
-    match fresh.handle_report(&unbootstrapped) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match fresh.handle_report_legacy(&unbootstrapped) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -3117,8 +3125,8 @@ fn migrate_directional_ignores_same_report_view_creation() {
             vec![],
         )
     };
-    match engine.handle_report(&hotplug) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&hotplug) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused

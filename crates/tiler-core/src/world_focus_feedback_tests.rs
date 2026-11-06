@@ -5,7 +5,7 @@ use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::ids::NativeWorkspaceId;
 use crate::world_directional::tests::{accepted, fact, rect, report_full, screen};
-use crate::world_engine::{KIND_REUSED, KIND_SNAPSHOT, WorldEngine, WorldOutcome};
+use crate::world_engine::{KIND_REUSED, KIND_SNAPSHOT, LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, FocusFeedback, MAX_ARRIVAL_BRACKETS_TOTAL,
     MAX_WORLD_FOCUS_FEEDBACK, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
@@ -269,14 +269,14 @@ fn host_arm_mismatch_rejects_without_mutation() {
     accepted(&mut engine, &base(1));
     let revision = engine.state_revision;
     let last = engine.last_report.clone().expect("last report");
-    match engine.handle_report(&with_feedback(
+    match engine.handle_report_legacy(&with_feedback(
         base(2),
         vec![native_bracket("win-a", 2, None)]
             .into_iter()
             .map(|b| row("fb-2", "win-a", vec![b]))
             .collect::<Vec<_>>(),
     )) {
-        WorldOutcome::Rejected { kind, message } => {
+        LegacyWorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
             assert_eq!(message, "arrival-host-mismatch");
         }
@@ -303,7 +303,7 @@ fn host_owned_mirrors_arm_gate() {
     accepted(&mut engine, &base(1));
     let revision = engine.state_revision;
     let last = engine.last_report.clone().expect("last report");
-    match engine.handle_report(&with_feedback(
+    match engine.handle_report_legacy(&with_feedback(
         base(2),
         vec![row(
             "fb-2",
@@ -311,7 +311,7 @@ fn host_owned_mirrors_arm_gate() {
             vec![output_bracket("win-a", 2, Some("out-a"))],
         )],
     )) {
-        WorldOutcome::Rejected { kind, message } => {
+        LegacyWorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
             assert_eq!(message, "arrival-host-mismatch");
         }
@@ -345,8 +345,8 @@ fn changed_feedback_reuse_fences_while_exact_resend_duplicates() {
     );
     let reply = accepted(&mut engine, &first);
     let revision = engine.state_revision;
-    match engine.handle_report(&first) {
-        WorldOutcome::Duplicate(cached) => {
+    match engine.handle_report_legacy(&first) {
+        LegacyWorldOutcome::Duplicate(cached) => {
             assert_eq!(cached, reply);
             assert_eq!(engine.state_revision, revision);
         }
@@ -354,8 +354,8 @@ fn changed_feedback_reuse_fences_while_exact_resend_duplicates() {
     }
     let mut changed = first.clone();
     changed.focus_feedback[0].attempt_ms = 10;
-    match engine.handle_report(&changed) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
+    match engine.handle_report_legacy(&changed) {
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
         other => panic!("expected reused fence, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision);

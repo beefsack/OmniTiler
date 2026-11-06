@@ -8,12 +8,12 @@
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
     CommandRejectKind, CommandResult, FrameSetter, HoldReason, LastWrite, LastWritePath,
     LastWriteProperty, MemberAttempt, ScopeAuthority, ScreenReport, ScreenView, SendSource,
     TransferKind, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
+    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -165,7 +165,7 @@ fn report_attempts(
     view_attempts: Vec<crate::world_report::ViewAttempt>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -218,8 +218,8 @@ fn two_screens() -> Vec<ScreenReport> {
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -774,7 +774,7 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
         "membership proof settles: {:?}",
         settled.transfers
     );
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         4,
         4,
         two_screens(),
@@ -792,7 +792,7 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
         true,
         false,
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -918,7 +918,7 @@ fn directional_focus_up_never_crosses_outputs() {
     );
     // Up never crosses: the outcome stays local (an effect on the home
     // output) or refuses as unchanged, never an out-b target.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         2,
         2,
         two_screens(),
@@ -938,7 +938,7 @@ fn directional_focus_up_never_crosses_outputs() {
         true,
         false,
     )) {
-        WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
+        LegacyWorldOutcome::Accepted(reply) | LegacyWorldOutcome::CommandConsumed(reply) => {
             assert!(
                 reply
                     .effects
@@ -946,7 +946,7 @@ fn directional_focus_up_never_crosses_outputs() {
                     .all(|effect| effect.target.0 != "win-b")
             );
         }
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "unchanged"),
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "unchanged"),
         other => panic!("unexpected outcome: {other:?}"),
     }
 }
@@ -1042,7 +1042,7 @@ fn selection_commands_resolve_over_logical_rings() {
     );
     // Unknown targets refuse without mutation.
     let seq = 4;
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         4,
         4,
         two_screens(),
@@ -1058,7 +1058,7 @@ fn selection_commands_resolve_over_logical_rings() {
         true,
         false,
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::ViewTargetUnknown
@@ -1212,7 +1212,7 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
     // alike.
     for (i, (seq, index)) in [(2u64, 0u8), (3u64, 1u8)].iter().enumerate() {
         let command_seq = 11 + i as u64;
-        match engine.handle_report(&report(
+        match engine.handle_report_legacy(&report(
             *seq,
             *seq,
             two_screens(),
@@ -1230,7 +1230,7 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
             false,
             false,
         )) {
-            WorldOutcome::Accepted(reply) => assert_eq!(
+            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::OperationRefused
@@ -1375,7 +1375,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match engine.handle_report(&staged(
+    match engine.handle_report_legacy(&staged(
         2,
         vec![fact("win-a", "out-b", 800)],
         "win-a",
@@ -1389,7 +1389,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1417,7 +1417,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match engine.handle_report(&staged(
+    match engine.handle_report_legacy(&staged(
         2,
         vec![fact("win-n", "out-a", 10)],
         "win-n",
@@ -1431,7 +1431,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1461,7 +1461,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match live_cached.handle_report(&staged(
+    match live_cached.handle_report_legacy(&staged(
         2,
         vec![fact("win-n", "out-a", 10)],
         "win-n",
@@ -1475,7 +1475,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1505,7 +1505,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match cli.handle_report(&staged(
+    match cli.handle_report_legacy(&staged(
         2,
         vec![fact("win-n", "out-a", 10)],
         "win-n",
@@ -1519,7 +1519,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1545,7 +1545,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match keyboard.handle_report(&staged(
+    match keyboard.handle_report_legacy(&staged(
         2,
         vec![fact("win-n", "out-a", 10), fact("win-m", "out-a", 100)],
         "win-n",
@@ -1559,7 +1559,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::SendTargetUnknown
@@ -2541,8 +2541,8 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 }),
                 attempt_ms: 3,
             };
-            match engine.handle_report(&make_report(vec![logical_attempt])) {
-                WorldOutcome::Rejected { message, .. } => {
+            match engine.handle_report_legacy(&make_report(vec![logical_attempt])) {
+                LegacyWorldOutcome::Rejected { message, .. } => {
                     assert_eq!(message, "native-without-capability")
                 }
                 other => panic!("logical ViewAttempt must reject: {other:?}"),
@@ -3397,7 +3397,7 @@ fn generations_watermarks_and_command_consumption_hold() {
             false,
         ),
     );
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         2,
         2,
         two_screens(),
@@ -3410,11 +3410,13 @@ fn generations_watermarks_and_command_consumption_hold() {
         true,
         false,
     )) {
-        WorldOutcome::Duplicate(cached) => assert_eq!(cached.state_revision, first.state_revision),
+        LegacyWorldOutcome::Duplicate(cached) => {
+            assert_eq!(cached.state_revision, first.state_revision)
+        }
         other => panic!("expected duplicate, got {other:?}"),
     }
     // Reused sequence with different input is invalid, never executed.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         2,
         2,
         two_screens(),
@@ -3427,11 +3429,11 @@ fn generations_watermarks_and_command_consumption_hold() {
         true,
         false,
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
         other => panic!("expected request-reused, got {other:?}"),
     }
     // Older sequences are superseded.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         1,
         1,
         two_screens(),
@@ -3444,11 +3446,11 @@ fn generations_watermarks_and_command_consumption_hold() {
         true,
         false,
     )) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-superseded"),
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-superseded"),
         other => panic!("expected request-superseded, got {other:?}"),
     }
     // Foreign generations never reset ordering.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         3,
         3,
         two_screens(),
@@ -3461,7 +3463,7 @@ fn generations_watermarks_and_command_consumption_hold() {
         true,
         false,
     )) {
-        WorldOutcome::Accepted(_) => {}
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
     // A consumed command reconciles observations without re-executing.
@@ -3488,7 +3490,7 @@ fn generations_watermarks_and_command_consumption_hold() {
     assert_eq!(view_reply.switch_settled.len(), 1);
     let transfers = view_reply.transfers.len();
     assert_eq!(transfers, 0);
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         5,
         5,
         two_screens(),
@@ -3503,7 +3505,7 @@ fn generations_watermarks_and_command_consumption_hold() {
         true,
         false,
     )) {
-        WorldOutcome::CommandConsumed(reply) => assert_eq!(reply.transfers.len(), transfers),
+        LegacyWorldOutcome::CommandConsumed(reply) => assert_eq!(reply.transfers.len(), transfers),
         other => panic!("expected command-consumed, got {other:?}"),
     }
     // A wrong generation is rejected outright.
@@ -3521,8 +3523,8 @@ fn generations_watermarks_and_command_consumption_hold() {
         false,
     );
     bad.core_generation = "gen-2".to_owned();
-    match engine.handle_report(&bad) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "generation-mismatch"),
+    match engine.handle_report_legacy(&bad) {
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "generation-mismatch"),
         other => panic!("expected generation-mismatch, got {other:?}"),
     }
 }
@@ -3619,8 +3621,8 @@ fn host_owned_capability_gates_native_observations() {
             count: None,
         }],
     });
-    match engine.handle_report(&bad) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+    match engine.handle_report_legacy(&bad) {
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("expected snapshot-invalid, got {other:?}"),
     }
     // With the capability native observations adopt: out-a builds one
@@ -4851,7 +4853,7 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
     );
     // Logical selector attempts are rejected in v4 rather than acting as
     // synthetic proof. The floating workspace membership remains intact.
-    match engine.handle_report(&report_attempts(
+    match engine.handle_report_legacy(&report_attempts(
         4,
         4,
         two_screens(),
@@ -4885,7 +4887,9 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
             attempt_ms: 4,
         }],
     )) {
-        WorldOutcome::Rejected { message, .. } => assert_eq!(message, "native-without-capability"),
+        LegacyWorldOutcome::Rejected { message, .. } => {
+            assert_eq!(message, "native-without-capability")
+        }
         other => panic!("native-free logical selector evidence must reject, got {other:?}"),
     }
     // A later observation settles independently; the selected workspace

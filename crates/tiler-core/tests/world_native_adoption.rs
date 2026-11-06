@@ -11,10 +11,10 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
 use tiler_core::world_report::{
     HoldReason, NativeObservation, NativeOccupancy, ScopeAuthority, ScreenReport, TransferKind,
-    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -149,7 +149,7 @@ fn report(
     inventory_complete: bool,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -278,8 +278,8 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReport,
 ) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -777,16 +777,16 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
         None,
         true,
     );
-    match engine.handle_report(&dup) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+    match engine.handle_report_legacy(&dup) {
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("within-output duplicate must refuse, got {other:?}"),
     }
     dup.native = vec![
         native_obs("out-a", &[N1], N1),
         native_obs("out-a", &[N2], N2),
     ];
-    match engine.handle_report(&dup) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+    match engine.handle_report_legacy(&dup) {
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("contradictory duplicate rows must refuse, got {other:?}"),
     }
 }

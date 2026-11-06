@@ -29,7 +29,7 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
 
 fn test_report() -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: 1,

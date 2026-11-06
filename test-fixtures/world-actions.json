@@ -61,7 +61,7 @@
           "win-c": [400, 280, 400, 280]
         },
         "transfers": [],
-        "effects": [{ "id": "af-win-c", "kind": "focus", "target": "win-c" }],
+        "effects": [{ "id": "af-2", "kind": "focus", "target": "win-c" }],
         "settlement": "settled"
       }
     },
@@ -137,7 +137,7 @@
         "transfers": [
           { "op": "op-12", "kind": "view", "window": null, "output": "out-a", "workspace": "home", "follow": false, "held": false }
         ],
-        "effects": [{ "id": "fx-12", "kind": "focus", "target": "win-a" }],
+        "effects": [{ "id": "fx-12", "kind": "focus", "target": "win-c" }],
         "settlement": "command-pending"
       }
     },

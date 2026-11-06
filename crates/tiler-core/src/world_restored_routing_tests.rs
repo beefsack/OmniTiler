@@ -15,11 +15,11 @@ use crate::directional::{OutputId, SameAxisMove, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
     CommandRejectKind, CommandResult, FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport,
-    ScreenView, TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorkspaceRef, WorldCommand,
-    WorldReport,
+    ScreenView, TransferKind, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorkspaceRef,
+    WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -173,7 +173,7 @@ fn report_full(
     _default_tiled: bool,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -213,8 +213,8 @@ fn report_full(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -579,8 +579,8 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
         Some(113),
         Some(move_up("win-a")),
     );
-    match engine.handle_report(&again) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&again) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::TransferInFlight
@@ -610,8 +610,8 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
         Some(114),
         Some(move_up("win-a")),
     );
-    match engine.handle_report(&again) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&again) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::TransferInFlight
@@ -934,9 +934,9 @@ fn drag_preview_same_domain_routes_and_carries_core_rect_and_hover() {
             source: None,
         })),
     );
-    let reply = match engine.handle_report(&preview) {
-        WorldOutcome::Accepted(reply) => reply,
-        WorldOutcome::Rejected { kind, .. } => {
+    let reply = match engine.handle_report_legacy(&preview) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
+        LegacyWorldOutcome::Rejected { kind, .. } => {
             panic!("same-domain preview must run the legacy route, got {kind}")
         }
         other => panic!("unexpected outcome {other:?}"),
@@ -1289,8 +1289,8 @@ fn operation_send_retains_and_foreign_routes_refuse() {
             direction: "right".to_owned(),
         })),
     );
-    match solo.handle_report(&refused) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match solo.handle_report_legacy(&refused) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1358,8 +1358,8 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
             }),
         );
         seq += 1;
-        match engine.handle_report(&send) {
-            WorldOutcome::Accepted(reply) => assert_eq!(
+        match engine.handle_report_legacy(&send) {
+            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::SendRefused
@@ -1573,11 +1573,11 @@ fn deterministic_sequence_replay_matches_exactly() {
             WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
         let mut replies = Vec::new();
         for report in reports {
-            match engine.handle_report(report) {
-                WorldOutcome::Accepted(reply)
-                | WorldOutcome::CommandConsumed(reply)
-                | WorldOutcome::Duplicate(reply) => replies.push(reply),
-                WorldOutcome::Rejected { kind, message } => {
+            match engine.handle_report_legacy(report) {
+                LegacyWorldOutcome::Accepted(reply)
+                | LegacyWorldOutcome::CommandConsumed(reply)
+                | LegacyWorldOutcome::Duplicate(reply) => replies.push(reply),
+                LegacyWorldOutcome::Rejected { kind, message } => {
                     panic!("replay rejected: {kind} {message}")
                 }
             }
@@ -1770,8 +1770,8 @@ fn hotplug_incomplete_survivor_holds_unit_and_full_report_recovers() {
         Some(11),
         Some(move_up("win-a")),
     );
-    match engine.handle_report(&fenced) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&fenced) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1976,8 +1976,8 @@ fn unknown_outputs_and_views_hold_fail_closed() {
             direction: "left".to_owned(),
         }),
     );
-    match engine.handle_report(&focus_ghost) {
-        WorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report_legacy(&focus_ghost) {
+        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::FocusUnknown
@@ -2315,9 +2315,9 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
             },
         };
         let report_in = report(3, 3, screens, facts, "win-a", Some(11), Some(command));
-        let reply = match engine.handle_report(&report_in) {
-            WorldOutcome::Accepted(reply) => reply,
-            WorldOutcome::Rejected { kind, message } => {
+        let reply = match engine.handle_report_legacy(&report_in) {
+            LegacyWorldOutcome::Accepted(reply) => reply,
+            LegacyWorldOutcome::Rejected { kind, message } => {
                 panic!("case {case}: expected accept, rejected {kind} {message}")
             }
             other => panic!("case {case}: expected accept, got {other:?}"),
@@ -2436,7 +2436,7 @@ fn explicit_output_send_uses_output_route() {
             target_workspace: view_b.clone(),
             follow,
         });
-        let reply = match engine.handle_report(&report(
+        let reply = match engine.handle_report_legacy(&report(
             3,
             3,
             screens.clone(),
@@ -2445,8 +2445,8 @@ fn explicit_output_send_uses_output_route() {
             Some(11),
             Some(command),
         )) {
-            WorldOutcome::Accepted(reply) => reply,
-            WorldOutcome::Rejected { kind, message } => {
+            LegacyWorldOutcome::Accepted(reply) => reply,
+            LegacyWorldOutcome::Rejected { kind, message } => {
                 panic!("follow={follow}: explicit SendToOutput must accept, got {kind} {message}")
             }
             other => panic!("follow={follow}: expected accept, got {other:?}"),
@@ -2659,8 +2659,8 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report(&refused) {
-            WorldOutcome::Accepted(reply) => assert_eq!(
+        match engine.handle_report_legacy(&refused) {
+            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::SendRefused
@@ -2695,8 +2695,8 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report(&refused) {
-            WorldOutcome::Accepted(reply) => assert_eq!(
+        match engine.handle_report_legacy(&refused) {
+            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::SendRefused
@@ -2733,8 +2733,8 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        let reply = match engine.handle_report(&first) {
-            WorldOutcome::Accepted(reply) => reply,
+        let reply = match engine.handle_report_legacy(&first) {
+            LegacyWorldOutcome::Accepted(reply) => reply,
             other => panic!("follow={follow}: first send must accept, got {other:?}"),
         };
         assert!(
@@ -2758,8 +2758,8 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report(&again) {
-            WorldOutcome::Accepted(reply) => assert_eq!(
+        match engine.handle_report_legacy(&again) {
+            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::TransferInFlight
@@ -2860,8 +2860,8 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report(&probe) {
-            WorldOutcome::Accepted(reply) => {
+        match engine.handle_report_legacy(&probe) {
+            LegacyWorldOutcome::Accepted(reply) => {
                 // KIND_SEND_TARGET is "send-target-unknown"; the
                 // migration-destination fence runs before the
                 // mapping/staged checks, so with the matching cell

@@ -5,11 +5,11 @@
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_focus::FocusVerdict;
 use crate::world_report::{
     FocusFeedback, OneShotEffect, RowDiagnosticKind, VisibilityReason, VisibilitySetter,
-    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
 };
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -81,7 +81,7 @@ fn report(
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -160,8 +160,8 @@ fn test_engine() -> WorldEngine {
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -1364,8 +1364,8 @@ fn envelope_rejection_adopts_nothing() {
         true,
         9,
     )];
-    match engine.handle_report(&reused) {
-        WorldOutcome::Rejected { kind, .. } => {
+    match engine.handle_report_legacy(&reused) {
+        LegacyWorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REUSED)
         }
         other => panic!("expected reused fence, got {other:?}"),
@@ -1401,8 +1401,8 @@ fn consumed_command_report_still_settles_feedback() {
         Some(focus_command("w0")),
     );
     consumed.focus_feedback = vec![row];
-    match engine.handle_report(&consumed) {
-        WorldOutcome::CommandConsumed(reply) => {
+    match engine.handle_report_legacy(&consumed) {
+        LegacyWorldOutcome::CommandConsumed(reply) => {
             assert_eq!(reply.command_result, None);
             assert!(reply.effects.is_empty());
         }
@@ -1439,8 +1439,8 @@ fn duplicate_replay_keeps_settlement_unchanged() {
     );
     let reply = accepted(&mut engine, &settled);
     let revision = engine.state_revision;
-    match engine.handle_report(&settled) {
-        WorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
+    match engine.handle_report_legacy(&settled) {
+        LegacyWorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
         other => panic!("expected duplicate, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision);

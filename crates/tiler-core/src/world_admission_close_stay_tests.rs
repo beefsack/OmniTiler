@@ -8,10 +8,10 @@
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{StaySourceFocus, WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, StaySourceFocus, WorldEngine};
 use crate::world_report::{
-    FrameSetter, MemberAttempt, ScreenReport, ScreenView, WORLD_CONTRACT_VERSION, WindowFact,
-    WorkspaceRef, WorldCommand, WorldReport,
+    FrameSetter, MemberAttempt, ScreenReport, ScreenView, WORLD_CONTRACT_VERSION_LEGACY,
+    WindowFact, WorkspaceRef, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -93,7 +93,7 @@ fn report(
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -142,8 +142,8 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }

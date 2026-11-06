@@ -14,7 +14,7 @@ use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     HoldReason, ScopeAuthority, StateProperty, StateTarget, VisibilityTarget, WindowDesire,
 };
-use tiler_protocol::world_protocol::encode_reply;
+use tiler_protocol::world_protocol::encode_reply_legacy;
 
 fn fixture_text(name: &str) -> String {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -91,7 +91,7 @@ fn both_writers_spell_crafted_target_lanes_byte_identically() {
             },
         ],
     });
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     assert_eq!(
         wire,
         tiler_core::world_report::encode_reply_canonical(&reply),

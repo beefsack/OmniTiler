@@ -20,13 +20,13 @@ use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, AuthorityScope, FocusFeedback, FrameSetter, HeldScreenRow,
     HeldWindowRow, LastWrite, LastWritePath, LastWriteProperty, MemberAttempt, OneShotEffect,
     RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, SwitchFocus,
     SwitchOutcome, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WindowFact, WorkspaceRef, WorldCommand,
+    WORLD_CONTRACT_VERSION_LEGACY, WORLD_MAX_REPLY_BYTES, WindowFact, WorkspaceRef, WorldCommand,
     WorldReport,
 };
 
@@ -174,7 +174,7 @@ fn report(
     focused: &str,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -216,8 +216,8 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -770,7 +770,7 @@ fn selection_native_arm_bracket_is_refused_before_adoption() {
         Some("w2"),
         vec![native],
     );
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         6,
         vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
         vec![],
@@ -779,7 +779,7 @@ fn selection_native_arm_bracket_is_refused_before_adoption() {
         vec![row],
         "",
     )) {
-        WorldOutcome::Rejected { kind, message } => {
+        LegacyWorldOutcome::Rejected { kind, message } => {
             assert_eq!(message, "arrival-host-mismatch");
             let _ = kind;
         }
@@ -962,7 +962,7 @@ fn selection_refusal_consumed_and_envelope_keep_first_feedback() {
     check_latched(&engine);
     // A consumed (replayed) command reconciles observation only: the latch
     // survives with no duplicate effect.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         6,
         vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
         vec![],
@@ -974,7 +974,7 @@ fn selection_refusal_consumed_and_envelope_keep_first_feedback() {
         vec![],
         "",
     )) {
-        WorldOutcome::CommandConsumed(_) => {}
+        LegacyWorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected consumed, got {other:?}"),
     }
     check_latched(&engine);
@@ -989,8 +989,8 @@ fn selection_refusal_consumed_and_envelope_keep_first_feedback() {
         "",
     );
     bad.contract_version = 0;
-    match engine.handle_report(&bad) {
-        WorldOutcome::Rejected { .. } => {}
+    match engine.handle_report_legacy(&bad) {
+        LegacyWorldOutcome::Rejected { .. } => {}
         other => panic!("expected envelope refusal, got {other:?}"),
     }
     check_latched(&engine);
@@ -5131,8 +5131,8 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
         );
     }
     let before_rev = engine.state_revision;
-    match engine.handle_report(&big) {
-        WorldOutcome::Rejected { kind, message } => {
+    match engine.handle_report_legacy(&big) {
+        LegacyWorldOutcome::Rejected { kind, message } => {
             assert_eq!(
                 message, "reply exceeds size bound",
                 "pre-mutation bound: {kind}"
@@ -5156,8 +5156,8 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
         vec![],
         "",
     );
-    match engine.handle_report(&small) {
-        WorldOutcome::Accepted(_) | WorldOutcome::CommandConsumed(_) => {}
+    match engine.handle_report_legacy(&small) {
+        LegacyWorldOutcome::Accepted(_) | LegacyWorldOutcome::CommandConsumed(_) => {}
         other => panic!("same-seq smaller retry must commit, got {other:?}"),
     }
 }
@@ -5246,7 +5246,7 @@ fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
     );
     // The refused seq is consumed: replaying it reconciles observation
     // only, with no revived terminal and no re-execution.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         5,
         vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
         vec![],
@@ -5258,7 +5258,7 @@ fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
         vec![],
         "",
     )) {
-        WorldOutcome::CommandConsumed(consumed) => {
+        LegacyWorldOutcome::CommandConsumed(consumed) => {
             assert!(consumed.switch_settled.is_empty(), "no revived terminal");
         }
         other => panic!("expected consumed replay, got {other:?}"),
@@ -5570,8 +5570,8 @@ fn switch_duplicate_replays_identical_event_then_next_report_empties() {
     let reply = accepted(&mut engine, &settle);
     assert_eq!(reply.switch_settled.len(), 1);
     let wire = crate::world_report::encode_reply_canonical(&reply);
-    match engine.handle_report(&settle) {
-        WorldOutcome::Duplicate(cached) => {
+    match engine.handle_report_legacy(&settle) {
+        LegacyWorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.switch_settled, reply.switch_settled);
             assert_eq!(
                 crate::world_report::encode_reply_canonical(&cached),
@@ -6815,8 +6815,8 @@ fn host_owned_focus_bearing_wrong_host_arms_refuse_at_ingress() {
         );
         let mut proof = host_native_report(4, host_proof_windows(true), "n0", None, None);
         proof.focus_feedback = vec![row];
-        match engine.handle_report(&proof) {
-            WorldOutcome::Rejected { .. } => {}
+        match engine.handle_report_legacy(&proof) {
+            LegacyWorldOutcome::Rejected { .. } => {}
             other => panic!("{name}: wrong-host arm must refuse, got {other:?}"),
         }
         assert!(
@@ -8719,8 +8719,8 @@ fn focusless_issuing_terminal_duplicate_replays_cached_then_empties() {
         "zero members complete at issuing: {reply:?}"
     );
     let wire = crate::world_report::encode_reply_canonical(&reply);
-    match engine.handle_report(&issuing) {
-        WorldOutcome::Duplicate(cached) => {
+    match engine.handle_report_legacy(&issuing) {
+        LegacyWorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.switch_settled, reply.switch_settled);
             assert_eq!(
                 crate::world_report::encode_reply_canonical(&cached),
@@ -8793,7 +8793,7 @@ fn focusless_issuing_terminal_consumed_replay_reconciles_empty() {
         "zero members complete at issuing: {reply:?}"
     );
     // The consumed seq reconciles only: no revived terminal, no re-execution.
-    match engine.handle_report(&report(
+    match engine.handle_report_legacy(&report(
         3,
         vec![w1, w2],
         vec![],
@@ -8805,7 +8805,7 @@ fn focusless_issuing_terminal_consumed_replay_reconciles_empty() {
         vec![],
         "",
     )) {
-        WorldOutcome::CommandConsumed(consumed) => {
+        LegacyWorldOutcome::CommandConsumed(consumed) => {
             assert!(
                 consumed.switch_settled.is_empty(),
                 "no revived terminal: {consumed:?}"

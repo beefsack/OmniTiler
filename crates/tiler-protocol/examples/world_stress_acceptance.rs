@@ -1,12 +1,13 @@
 //! Core-only high-volume stress acceptance (development-only).
 //!
-//! Runs the shared [`tiler_protocol::world_stress`] driver on one case file
+//! Runs the shared [`tiler_protocol::world_stress_v4`] driver on one case file
 //! across the ordered, batched and reordered simulated-host schedules and
 //! checks the hand-authored final oracle plus explicit hide/reveal
 //! checkpoints. Usage:
 //! `world_stress_acceptance CASE [--schedule ordered|batched|reordered|all]`.
 
-use tiler_protocol::world_stress::{StressSchedule, load_stress_case, run_stress};
+use tiler_protocol::world_stress::{StressSchedule, load_stress_case};
+use tiler_protocol::world_stress_v4::run_stress_v4;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -41,7 +42,7 @@ fn main() {
     };
     let schedules = schedule.unwrap_or_else(|| StressSchedule::all().to_vec());
     for schedule in schedules {
-        match run_stress(&case, schedule) {
+        match run_stress_v4(&case, schedule) {
             Ok((lines, stats)) => {
                 for line in &lines {
                     println!("{line}");

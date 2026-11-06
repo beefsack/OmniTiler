@@ -25,8 +25,8 @@ use crate::world_commands::CommandApplied;
 use crate::world_directional::tests::{accepted, fact, rect, report_full, screen};
 use crate::world_engine::{
     EventIssue, KIND_FOCUS, KIND_MIGRATION, KIND_OPERATION, KIND_SCOPE_HELD, KIND_SEND_WINDOW,
-    MSG_MIGRATION_INVENTORY, MSG_MIGRATION_SHARED, RawRouting, StagedDomain, WorldEngine,
-    WorldOutcome,
+    LegacyWorldOutcome, MSG_MIGRATION_INVENTORY, MSG_MIGRATION_SHARED, RawRouting, StagedDomain,
+    WorldEngine,
 };
 use crate::world_members::MemberState;
 use crate::world_report::{
@@ -1746,8 +1746,8 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
         None,
         None,
     );
-    match engine.handle_report(&bootstrap) {
-        WorldOutcome::Accepted(_) => {}
+    match engine.handle_report_legacy(&bootstrap) {
+        LegacyWorldOutcome::Accepted(_) => {}
         other => panic!("bootstrap must accept, got {other:?}"),
     }
     let command_report = report_full(
@@ -1760,8 +1760,8 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
         Some(7),
         Some(focus_command("win-b")),
     );
-    let reply = match engine.handle_report(&command_report) {
-        WorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report_legacy(&command_report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("command report must accept, got {other:?}"),
     };
     assert_eq!(reply.request_id, "req-2");
@@ -1779,8 +1779,8 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
         None,
         None,
     );
-    let reply = match engine.handle_report(&observation_only) {
-        WorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report_legacy(&observation_only) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("observation-only must accept, got {other:?}"),
     };
     assert_eq!(reply.request_id, "req-3");

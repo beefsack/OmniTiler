@@ -11,7 +11,7 @@ use crate::connection::{ApplicationIdentity, HandshakeRequest, HostCapabilities}
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::session::DomainKey;
 use crate::world_directional::tests::{accepted, fact, report, report_full, screen};
-use crate::world_engine::{KIND_REUSED, PriorAcceptedContext, WorldEngine, WorldOutcome};
+use crate::world_engine::{KIND_REUSED, LegacyWorldOutcome, PriorAcceptedContext, WorldEngine};
 use crate::world_report::{
     AuthorityScope, EffectKind, HoldReason, PresentationIngressV4, PresentationRowV4,
     ScopeAuthority, ScopeStatus, TilingMode, WORLD_CONTRACT_VERSION_V4, WindowDesire,
@@ -145,8 +145,8 @@ fn bootstrap_only_records_no_canonical_focus() {
         None,
     );
     incomplete.inventory_complete = false;
-    match engine.handle_report(&incomplete) {
-        WorldOutcome::Accepted(reply) => assert!(!reply.ready, "bootstrap stays unready"),
+    match engine.handle_report_legacy(&incomplete) {
+        LegacyWorldOutcome::Accepted(reply) => assert!(!reply.ready, "bootstrap stays unready"),
         other => panic!("expected bootstrap acceptance, got {other:?}"),
     }
     assert_eq!(engine.state_revision, 0);
@@ -186,8 +186,8 @@ fn rejected_report_leaves_canonical_focus_and_revision() {
         None,
         None,
     );
-    match engine.handle_report(&reused) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
+    match engine.handle_report_legacy(&reused) {
+        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
         other => panic!("expected reused refusal, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision);
@@ -336,7 +336,7 @@ fn unchanged_raw_focus_preserves_command_selected_slot_without_cache() {
         window: WindowId("win-b".to_owned()),
         direction: "left".to_owned(),
     };
-    let reply = match engine.handle_report(&report_full(
+    let reply = match engine.handle_report_legacy(&report_full(
         2,
         2,
         vec![screen("out-a", 0)],
@@ -346,7 +346,7 @@ fn unchanged_raw_focus_preserves_command_selected_slot_without_cache() {
         Some(1),
         Some(focus_b),
     )) {
-        WorldOutcome::Accepted(reply) => reply,
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted command, got {other:?}"),
     };
     assert!(reply.effects.iter().any(|effect| {
@@ -424,7 +424,7 @@ fn consumed_report_refreshes_prior_focus_and_empty_set() {
         window: WindowId("win-zzz".to_owned()),
         direction: "left".to_owned(),
     };
-    let empty_id = match engine.handle_report(&report_full(
+    let empty_id = match engine.handle_report_legacy(&report_full(
         1,
         1,
         vec![screen("out-a", 0)],
@@ -434,7 +434,7 @@ fn consumed_report_refreshes_prior_focus_and_empty_set() {
         Some(1),
         Some(refused()),
     )) {
-        WorldOutcome::Accepted(reply) => {
+        LegacyWorldOutcome::Accepted(reply) => {
             let row = reply
                 .workspaces
                 .iter()
@@ -464,8 +464,8 @@ fn consumed_report_refreshes_prior_focus_and_empty_set() {
         Some(1),
         Some(refused()),
     );
-    let occupied_id = match engine.handle_report(&redelivery) {
-        WorldOutcome::CommandConsumed(reply) => {
+    let occupied_id = match engine.handle_report_legacy(&redelivery) {
+        LegacyWorldOutcome::CommandConsumed(reply) => {
             let row = reply
                 .workspaces
                 .iter()

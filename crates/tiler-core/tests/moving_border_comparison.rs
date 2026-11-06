@@ -15,10 +15,10 @@ use tiler_core::geometry::Rect;
 use tiler_core::gesture::{GestureIngress, GestureKind, GesturePhase};
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::visual::BorderHideReason;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
 use tiler_core::world_presentation::PresentationUnderlay;
 use tiler_core::world_report::{
-    CommandResult, PresentationIngress, ScreenReport, TilingMode, WORLD_CONTRACT_VERSION,
+    CommandResult, PresentationIngress, ScreenReport, TilingMode, WORLD_CONTRACT_VERSION_LEGACY,
     WindowFact, WorldCommand, WorldReply, WorldReport,
 };
 
@@ -112,7 +112,7 @@ fn report(
     gesture: Option<GestureIngress>,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: obs,
@@ -344,11 +344,13 @@ fn live_ideal_outer(f: &Rect) -> Rect {
 }
 
 fn accept_reply(engine: &mut WorldEngine, rep: &WorldReport, what: &str) -> WorldReply {
-    match engine.handle_report(rep) {
-        WorldOutcome::Accepted(r)
-        | WorldOutcome::Duplicate(r)
-        | WorldOutcome::CommandConsumed(r) => r,
-        WorldOutcome::Rejected { kind, message } => panic!("{what} rejected: {kind} {message}"),
+    match engine.handle_report_legacy(rep) {
+        LegacyWorldOutcome::Accepted(r)
+        | LegacyWorldOutcome::Duplicate(r)
+        | LegacyWorldOutcome::CommandConsumed(r) => r,
+        LegacyWorldOutcome::Rejected { kind, message } => {
+            panic!("{what} rejected: {kind} {message}")
+        }
     }
 }
 

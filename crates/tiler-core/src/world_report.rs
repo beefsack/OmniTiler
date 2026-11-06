@@ -35,17 +35,23 @@ use crate::gesture::{GestureIngress, GestureSettled};
 use crate::ids::NativeWorkspaceId;
 use crate::session::{DomainKey, DragHoverPrior};
 
-/// World envelope version (single source for the wire `v`). Version 3 is
+/// World envelope version (single source for the wire `v`). Version 4 is
 /// the logical-first contract plus the required neutral all-native-window
 /// occupancy lane: stable core workspace ids authorize mapping, screens
 /// plus window facts are the only observation prerequisites, native
 /// workspace domains are an explicit capability-named opt-in, and every
 /// native row carries an explicit occupancy row per ordered desktop
-/// (`count: null` is unknown, never an inferred zero).
-pub const WORLD_CONTRACT_VERSION: u32 = 3;
-/// Staged v4 world contract version: `rendererInput` carried, `views`
-/// removed, identifiable bad rows held narrowly. The runtime stays on
-/// [`WORLD_CONTRACT_VERSION`]; the v4 twins stage the migration.
+/// (`count: null` is unknown, never an inferred zero). Renderer input is
+/// carried (`rendererInput` required, `views` removed) and identifiable
+/// bad rows are held narrowly instead of refusing the envelope.
+pub const WORLD_CONTRACT_VERSION: u32 = 4;
+/// Dead legacy world contract version. Only the doc-hidden legacy
+/// implementation and its deferred regression tests use this; the public
+/// contract is [`WORLD_CONTRACT_VERSION`].
+pub const WORLD_CONTRACT_VERSION_LEGACY: u32 = 3;
+/// Staged v4 world contract version (`rendererInput` carried, `views`
+/// refused, identifiable bad rows held narrowly). Equals
+/// [`WORLD_CONTRACT_VERSION`]: the public contract is v4.
 pub const WORLD_CONTRACT_VERSION_V4: u32 = 4;
 /// D4 selected transport budget: 4 MiB request AND reply.
 pub const WORLD_MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
@@ -4636,7 +4642,7 @@ pub fn grade_conflicting_windows(
 /// `snapshot-invalid`, so one log line diagnoses the report.
 #[must_use]
 pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
-    if report.contract_version != WORLD_CONTRACT_VERSION {
+    if report.contract_version != WORLD_CONTRACT_VERSION_LEGACY {
         return Some("version-mismatch");
     }
     if !is_opaque_id(&report.adapter_incarnation) || !is_opaque_id(&report.request_id) {

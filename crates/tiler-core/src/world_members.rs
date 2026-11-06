@@ -179,9 +179,10 @@ impl WorldEngine {
                     // Outstanding membership flights shield homing: delayed
                     // arrival stays at the committed target until
                     // settlement proves otherwise. Only explicit float and
-                    // minimized marks refresh; homing never flaps back.
+                    // hidden-lane (minimized or host-hidden) marks refresh;
+                    // homing never flaps back.
                     state.floating = derived_member.floating;
-                    state.minimized = fact.minimized == Some(true);
+                    state.minimized = derived_member.hidden;
                     state.geometry = fact.rect;
                     continue;
                 }
@@ -198,7 +199,7 @@ impl WorldEngine {
                 // Contradictory receipts naming an unknown workspace hold:
                 // keep the retained home, never fight newer input.
                 state.floating = derived_member.floating;
-                state.minimized = fact.minimized == Some(true);
+                state.minimized = derived_member.hidden;
                 state.geometry = fact.rect;
             } else {
                 // Newcomer admission: truthful known receipt wins, else the
@@ -225,7 +226,7 @@ impl WorldEngine {
                         MemberState {
                             home,
                             floating: derived_member.floating,
-                            minimized: fact.minimized == Some(true),
+                            minimized: derived_member.hidden,
                             geometry: fact.rect,
                         },
                     );

@@ -1,8 +1,10 @@
 //! World planner service boundary: retained sole [`WorldBroker`] behind JSON.
 //!
 //! D-Bus surface (same service/object/interface as the intent routes,
-//! [`crate::planner_service`]): `DiscoverWorld` returns the bootstrap
-//! envelope, `DescribeWorld` accepts one broker capture envelope per call and
+//! [`crate::planner_service`]): `DiscoverWorld` routes one v4
+//! connection-family message per call (`handshake` or `settings`, dispatched
+//! by `type`) and returns the connection reply, `DescribeWorld` accepts one
+//! broker capture envelope per call and
 //! returns one bound response, `QueueWorldCommand` files one external
 //! command, `TakeCommandResult` collects its terminal result exactly once,
 //! and `ReadWorldPresentation` reads the cached accepted presentation.
@@ -19,14 +21,15 @@
 //! query/command routes) lives in [`crate::planner_service`]; this type
 //! never touches the bus and never authorizes.
 //!
-//! Generation lifecycle: the broker mints a core generation and its own
-//! broker incarnation at construction, but the first discovery binds the
-//! single active producer capture lifetime and rotates onto a fresh serving
-//! generation first, so every served generation belongs to exactly one
-//! lifetime. Discovery returns the serving generation plus capabilities with
-//! `ready=false` and no applicable desired state. Same-lifetime rediscovery
-//! rebinds without reset; a new lifetime rotates (fresh generation and
-//! incarnation, all capture/queue/result/presentation state dropped), so no
+//! Generation lifecycle: the broker mints a core generation seed at
+//! construction (no broker incarnation). The adapter is the sole producer:
+//! every successful handshake through the connection router clears all broker
+//! ancillary state, including the first handshake whose generation equals the
+//! construction seed, and binds the single active producer capture lifetime;
+//! settings apply under their own revision rules without resetting. Replies
+//! echo the producer lifetime with the serving generation, `ready=false`,
+//! and no applicable desired state. Same-lifetime handshakes reset the same
+//! way (all capture/queue/result/presentation state dropped), so no
 //! old capture can ever apply again. Every capture binds its stamped `gen`
 //! against the serving generation; mismatches reject without state. Poison
 //! recovery mints a new generation and a new broker, so old effects,
@@ -41,9 +44,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use tiler_protocol::world_protocol::{
-    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, is_valid_adapter_id, is_valid_request_id,
-};
+use tiler_protocol::world_protocol::{WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES};
 
 use crate::world_broker::{BrokerError, WorldBroker};
 
@@ -53,7 +54,7 @@ pub const WORLD_METHOD: &str = "DescribeWorld";
 /// World discovery/bootstrap route: generation plus capabilities, always
 /// `ready=false` with no applicable desired state.
 pub const DISCOVERY_METHOD: &str = "DiscoverWorld";
-/// External command queue route: one strict v3 command in, queued/duplicate out.
+/// External command queue route: one strict v4 command in, queued/duplicate out.
 pub const QUEUE_METHOD: &str = "QueueWorldCommand";
 /// Command result route: exactly-once terminal result collection.
 pub const TAKE_METHOD: &str = "TakeCommandResult";
@@ -140,8 +141,7 @@ pub struct WorldService {
 }
 
 impl WorldService {
-    /// Fresh backend incarnation: new core generation, new broker
-    /// incarnation, empty engine and command state.
+    /// Fresh backend incarnation: new core generation seed, empty engine and command state.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -174,37 +174,15 @@ impl WorldService {
         self.world_lock.try_lock()
     }
 
-    /// Discovery/bootstrap body for an adapter incarnation and request id:
-    /// generation plus capabilities with `ready=false` and no applicable
-    /// desired state. The adapter sends a full capture before any ready
-    /// reply; empty pre-bootstrap state never authorizes removal.
-    #[must_use]
-    pub fn discovery_body(&self, adapter_incarnation: &str, request_id: &str) -> String {
-        match self.backend.lock() {
-            Ok(mut backend) => backend
-                .broker
-                .discovery_body(adapter_incarnation, request_id),
-            Err(poison) => {
-                // Poisoned backend: replace under a fresh generation, then
-                // serve discovery from the replacement (never from partial
-                // state). A displaced parked waiter wakes immediately with
-                // generation-mismatch instead of sleeping out its lease.
-                // The adapter must re-observe; nothing is claimed to have
-                // survived.
-                let mut backend = poison.into_inner();
-                let displaced = backend.broker.take_parked_waiter();
-                *backend = WorldBackend::fresh();
-                if let Some(waiter) = displaced {
-                    backend.broker.complete_displaced(waiter);
-                }
-                let reply = backend
-                    .broker
-                    .discovery_body(adapter_incarnation, request_id);
-                eprintln!("omnitiler:world-fault kind=poisoned-lock detail=replaced-with-fresh");
-                self.backend.clear_poison_if_needed();
-                reply
-            }
+    /// Discovery route for v4 connection-family messages (`handshake` and
+    /// `settings`, dispatched by `type` through the connection router).
+    /// Only a successful handshake resets; settings keep their revision
+    /// rules. The adapter sends a full capture before any ready reply.
+    pub fn discover(&self, request: &str) -> std::result::Result<String, WorldServiceError> {
+        if request.len() > WORLD_SERVICE_MAX_REQUEST {
+            return Err(WorldServiceError::Oversized);
         }
+        self.run_broker(|broker| broker.discover_connection(request))
     }
 
     /// Bounded in-band rejection body bound to the serving generation.
@@ -512,43 +490,6 @@ impl Future for WorldWait {
     }
 }
 
-/// Parsed discovery/bootstrap request: adapter incarnation plus request id.
-/// Strict v3 shape (`{v:3,adapter,req}`); failures carry fixed kind/message
-/// pairs for the in-band error body.
-pub fn parse_discovery_request(
-    request: &str,
-) -> std::result::Result<(String, String), (&'static str, &'static str)> {
-    let value: serde_json::Value =
-        serde_json::from_str(request).map_err(|_| ("malformed", "request is malformed"))?;
-    let map = value
-        .as_object()
-        .ok_or(("malformed", "request is malformed"))?;
-    if map.len() != 3
-        || !map.contains_key("v")
-        || !map.contains_key("adapter")
-        || !map.contains_key("req")
-    {
-        if map.keys().any(|k| k != "v" && k != "adapter" && k != "req") {
-            return Err(("unknown-field", "request contains an unknown field"));
-        }
-        return Err(("malformed", "request is malformed"));
-    }
-    if map.get("v").and_then(serde_json::Value::as_u64) != Some(3) {
-        return Err(("unsupported-version", "unsupported contract version"));
-    }
-    let adapter = map
-        .get("adapter")
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| is_valid_adapter_id(s))
-        .ok_or(("unknown-value", "request contains an unknown value"))?;
-    let req = map
-        .get("req")
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| is_valid_request_id(s))
-        .ok_or(("unknown-value", "request contains an unknown value"))?;
-    Ok((adapter.to_owned(), req.to_owned()))
-}
-
 fn world_token(raw: Option<&str>, missing: &str) -> String {
     match raw {
         Some(text)
@@ -788,63 +729,69 @@ mod tests {
         assert!(tiler_protocol::world_protocol::WorldEngine::new(&second).is_some());
     }
 
+    fn handshake_request(adapter: &str, req: &str) -> String {
+        format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"{req}\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+              \"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+              \"maximize\":false,\"fullscreen\":false,\"nativeSticky\":false,\"above\":false,\
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        )
+    }
+
     #[test]
     fn discovery_is_not_ready_without_state() {
         let service = WorldService::new();
-        let body = service.discovery_body("adapter-1", "req-1");
+        let body = service
+            .discover(&handshake_request("adapter-1", "req-1"))
+            .expect("handshake routes");
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["ready"], false);
-        assert_eq!(parsed["rev"], "0");
-        assert_eq!(parsed["windows"].as_array().map(Vec::len), Some(0));
         assert_eq!(
             parsed["gen"],
             serde_json::Value::String(service.generation())
         );
-        // The reply binds the broker incarnation, never the caller's id.
-        let incarnation = parsed["adapter"].as_str().expect("broker incarnation");
-        assert!(!incarnation.is_empty());
-        assert_ne!(incarnation, "adapter-1");
+        // The reply echoes the producer lifetime, never a broker incarnation.
+        assert_eq!(parsed["adapter"], "adapter-1");
+        assert_eq!(parsed["req"], "req-1");
     }
 
     #[test]
-    fn discovery_parse_is_strict_v3() {
-        assert!(parse_discovery_request("{\"v\":3,\"adapter\":\"a-1\",\"req\":\"r-1\"}").is_ok());
-        // v1 refuses: no compatibility route.
-        assert_eq!(
-            parse_discovery_request("{\"v\":1,\"adapter\":\"a-1\",\"req\":\"r-1\"}"),
-            Err(("unsupported-version", "unsupported contract version"))
-        );
-        assert_eq!(
-            parse_discovery_request("{\"v\":3,\"adapter\":\"a-1\",\"req\":\"r-1\",\"x\":1}"),
-            Err(("unknown-field", "request contains an unknown field"))
-        );
+    fn discovery_dispatches_handshake_and_settings_by_type() {
+        let service = WorldService::new();
+        // Malformed connection messages refuse in-band, bound to the serving
+        // generation.
+        let bad = service
+            .discover("{\"type\":\"nope\",\"v\":4}")
+            .expect("in-band rejection");
+        let parsed: serde_json::Value = serde_json::from_str(&bad).expect("valid JSON");
+        assert_eq!(parsed["outcome"], "rejected");
+        // Oversize fails closed before routing.
+        let big = "x".repeat(WORLD_SERVICE_MAX_REQUEST + 1);
+        match service.discover(&big) {
+            Err(WorldServiceError::Oversized) => {}
+            other => panic!("expected oversized, got {other:?}"),
+        }
     }
 
     #[test]
     fn broker_keys_inside_report_refuse_with_source_binding() {
         let service = WorldService::new();
-        // The serving generation comes from the bootstrap: the first
-        // discovery binds the lifetime and mints its generation.
-        let discovery: serde_json::Value =
-            serde_json::from_str(&service.discovery_body("adapter-1", "req-0"))
-                .expect("valid JSON");
-        let generation = discovery["gen"].as_str().expect("gen");
+        // The serving generation comes from the handshake: the first
+        // handshake binds the lifetime and mints its generation.
+        let discovery: serde_json::Value = serde_json::from_str(
+            &service
+                .discover(&handshake_request("adapter-1", "req-0"))
+                .expect("handshake routes"),
+        )
+        .expect("valid JSON");
+        let generation = discovery["gen"].as_str().expect("gen").to_owned();
         let envelope = format!(
-            "{{\"v\":3,\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
+            "{{\"v\":4,\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
             \"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\
-            \"report\":{{\"v\":3,\"mode\":\"per-output-local\",\"screens\":[],\"windows\":[],\
-            \"views\":[],\"closed\":[],\"hostOwned\":false,\"equalCount\":false,\"native\":[],\
-            \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
-            \"defaultTiled\":true,\"focused\":\"\",\"complete\":false,\"gesture\":false,\
-            \"switchTarget\":\"cursor-output\",\"freshPlacement\":\"cursor-output-last-focused\",\
-            \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[],\
-            \"focusFollowsCursor\":false,\"cursorWarp\":false,\
-            \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
-            \"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\
-            \"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\
-            \"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\
-            \"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}},\
-            \"owner\":\"x\",\"adapter\":\"y\",\"gen\":\"gen-stale\",\"obs\":\"1\",\"reqSeq\":\"1\"}}}}"
+            \"report\":{{\"v\":4,\"obs\":\"1\"}}}}"
         );
         // Broker-owned keys inside the report refuse before dispatch:
         // exactly one sequencing namespace exists.
@@ -889,12 +836,13 @@ mod tests {
         assert!(service.backend.is_poisoned());
         // Discovery serves from the replacement: a fresh generation with
         // ready=false and no surviving state.
-        let body = service.discovery_body("adapter-1", "req-1");
+        let body = service
+            .discover(&handshake_request("adapter-1", "req-1"))
+            .expect("handshake routes");
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         let fresh = parsed["gen"].as_str().expect("gen").to_owned();
         assert_ne!(fresh.as_str(), stale.as_str());
         assert_eq!(parsed["ready"], false);
-        assert_eq!(parsed["rev"], "0");
         assert_eq!(service.generation(), fresh);
         assert!(!service.backend.is_poisoned());
     }
@@ -935,9 +883,9 @@ mod tests {
             "omnitiler:world-summary direction=egress req=src-7 \
              outcome=accepted kind=- rev=3 msg=-"
         );
-        let queued_request = "{\"v\":3,\"gen\":\"gen-1\",\"client\":\"panel-1\",\"clientCmd\":\"4\",\
+        let queued_request = "{\"v\":4,\"gen\":\"gen-1\",\"client\":\"panel-1\",\"clientCmd\":\"4\",\
              \"command\":{\"op\":\"focus\"}}";
-        let queued = "{\"v\":3,\"outcome\":\"queued\",\"gen\":\"gen-1\",\"client\":\"panel-1\",\
+        let queued = "{\"v\":4,\"outcome\":\"queued\",\"gen\":\"gen-1\",\"client\":\"panel-1\",\
             \"clientCmd\":\"4\",\"globalCmd\":\"9\"}";
         let line = world_egress_summary(queued_request, queued);
         assert_eq!(
@@ -946,7 +894,7 @@ mod tests {
              outcome=queued kind=- rev=9 msg=-"
         );
         // Terminal command failures carry their kind and global sequence.
-        let failed = "{\"v\":3,\"outcome\":\"failed\",\"gen\":\"gen-1\",\"globalCmd\":\"9\",\
+        let failed = "{\"v\":4,\"outcome\":\"failed\",\"gen\":\"gen-1\",\"globalCmd\":\"9\",\
             \"kind\":\"selection-unknown\",\"message\":\"selection target is not a known workspace\"}";
         let line = world_egress_summary(queued_request, failed);
         assert_eq!(
@@ -958,18 +906,18 @@ mod tests {
 
     #[test]
     fn ingress_summary_names_route_and_watermark() {
-        let capture = "{\"v\":3,\"source\":\"src-9\",\"nativeInvalid\":\"12\",\"report\":{}}";
+        let capture = "{\"v\":4,\"source\":\"src-9\",\"nativeInvalid\":\"12\",\"report\":{}}";
         assert_eq!(
             world_ingress_summary(capture),
             "omnitiler:world-summary direction=ingress req=src-9 cmd=capture nwinv=12"
         );
-        let read = "{\"v\":3,\"req\":\"read-3\"}";
+        let read = "{\"v\":4,\"req\":\"read-3\"}";
         assert_eq!(
             world_ingress_summary(read),
             "omnitiler:world-summary direction=ingress req=read-3 cmd=read nwinv=-"
         );
         let wait =
-            "{\"v\":3,\"gen\":\"w-1\",\"adapter\":\"a-1\",\"nonce\":\"wait-7\",\"cursor\":\"3\"}";
+            "{\"v\":4,\"gen\":\"w-1\",\"adapter\":\"a-1\",\"nonce\":\"wait-7\",\"cursor\":\"3\"}";
         assert_eq!(
             world_ingress_summary(wait),
             "omnitiler:world-summary direction=ingress req=wait-7 cmd=wait nwinv=-"
@@ -977,21 +925,24 @@ mod tests {
     }
 
     fn discovered_generation(service: &WorldService) -> (String, String) {
-        let discovery: serde_json::Value =
-            serde_json::from_str(&service.discovery_body("adapter-1", "req-0"))
-                .expect("valid JSON");
+        let discovery: serde_json::Value = serde_json::from_str(
+            &service
+                .discover(&handshake_request("adapter-1", "req-0"))
+                .expect("handshake routes"),
+        )
+        .expect("valid JSON");
         (
             discovery["gen"].as_str().expect("gen").to_owned(),
             discovery["adapter"]
                 .as_str()
-                .expect("incarnation")
+                .expect("producer lifetime")
                 .to_owned(),
         )
     }
 
     fn queue_select_numbered(service: &WorldService, generation: &str, client_cmd: &str) {
         let request = format!(
-            "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
               \"clientCmd\":\"{client_cmd}\",\
               \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
         );
@@ -1004,7 +955,7 @@ mod tests {
     #[test]
     fn wait_future_answers_immediate_wake_and_rejections() {
         let service = WorldService::new();
-        let (generation, _incarnation) = discovered_generation(&service);
+        let (generation, _lifetime) = discovered_generation(&service);
         queue_select_numbered(&service, &generation, "1");
         let wake: serde_json::Value =
             serde_json::from_str(&async_io::block_on(service.wait_for_wake(
@@ -1041,7 +992,7 @@ mod tests {
     #[test]
     fn wait_future_delivers_queued_work_to_a_parked_call() {
         let service = WorldService::new();
-        let (generation, _incarnation) = discovered_generation(&service);
+        let (generation, _lifetime) = discovered_generation(&service);
         let parked = service.clone();
         let waiter = std::thread::spawn(move || {
             async_io::block_on(parked.wait_for_wake(
@@ -1064,7 +1015,7 @@ mod tests {
     #[test]
     fn wait_future_lease_keeps_the_cursor() {
         let service = WorldService::new();
-        let (generation, _incarnation) = discovered_generation(&service);
+        let (generation, _lifetime) = discovered_generation(&service);
         let lease: serde_json::Value =
             serde_json::from_str(&async_io::block_on(service.wait_with_lease(
                 "adapter-1".to_owned(),
@@ -1082,7 +1033,7 @@ mod tests {
     #[test]
     fn wait_future_answers_superseded_to_the_replaced_call() {
         let service = WorldService::new();
-        let (generation, _incarnation) = discovered_generation(&service);
+        let (generation, _lifetime) = discovered_generation(&service);
         let first = service.clone();
         let first_generation = generation.clone();
         let replaced = std::thread::spawn(move || {
@@ -1116,20 +1067,20 @@ mod tests {
     #[test]
     fn wait_summaries_name_wake_and_lease_without_content() {
         let request =
-            "{\"v\":3,\"gen\":\"w-1\",\"adapter\":\"a-1\",\"nonce\":\"wait-7\",\"cursor\":\"3\"}";
-        let wake = "{\"v\":3,\"outcome\":\"wake\",\"gen\":\"w-1\",\"cursor\":\"4\"}";
+            "{\"v\":4,\"gen\":\"w-1\",\"adapter\":\"a-1\",\"nonce\":\"wait-7\",\"cursor\":\"3\"}";
+        let wake = "{\"v\":4,\"outcome\":\"wake\",\"gen\":\"w-1\",\"cursor\":\"4\"}";
         assert_eq!(
             world_egress_summary(request, wake),
             "omnitiler:world-summary direction=egress req=wait-7 \
              outcome=wake kind=- rev=4 msg=-"
         );
-        let lease = "{\"v\":3,\"outcome\":\"lease\",\"gen\":\"w-1\",\"cursor\":\"3\"}";
+        let lease = "{\"v\":4,\"outcome\":\"lease\",\"gen\":\"w-1\",\"cursor\":\"3\"}";
         assert_eq!(
             world_egress_summary(request, lease),
             "omnitiler:world-summary direction=egress req=wait-7 \
              outcome=lease kind=- rev=3 msg=-"
         );
-        let superseded = "{\"v\":3,\"outcome\":\"superseded\",\"gen\":\"w-1\"}";
+        let superseded = "{\"v\":4,\"outcome\":\"superseded\",\"gen\":\"w-1\"}";
         assert_eq!(
             world_egress_summary(request, superseded),
             "omnitiler:world-summary direction=egress req=wait-7 \
@@ -1169,9 +1120,12 @@ mod tests {
         let service = WorldService::new();
         let (generation, _) = discovered_generation(&service);
         let rx = park_wait(&service, "adapter-1", &generation, "wait-parked");
-        let rotated: serde_json::Value =
-            serde_json::from_str(&service.discovery_body("adapter-2", "req-1"))
-                .expect("valid JSON");
+        let rotated: serde_json::Value = serde_json::from_str(
+            &service
+                .discover(&handshake_request("adapter-2", "req-1"))
+                .expect("handshake routes"),
+        )
+        .expect("valid JSON");
         let fresh = rotated["gen"].as_str().expect("gen").to_owned();
         assert_ne!(fresh, generation);
         let value = recv_immediate(&rx);
@@ -1192,9 +1146,12 @@ mod tests {
         assert!(poisoned.is_err());
         // The next backend op replaces the poisoned backend and displaces
         // the waiter against the fresh generation first.
-        let replaced: serde_json::Value =
-            serde_json::from_str(&service.discovery_body("adapter-1", "req-9"))
-                .expect("valid JSON");
+        let replaced: serde_json::Value = serde_json::from_str(
+            &service
+                .discover(&handshake_request("adapter-1", "req-9"))
+                .expect("handshake routes"),
+        )
+        .expect("valid JSON");
         let fresh = replaced["gen"].as_str().expect("gen").to_owned();
         assert_ne!(fresh, generation);
         let value = recv_immediate(&rx);
@@ -1279,8 +1236,8 @@ mod tests {
         assert_eq!(new["cursor"], "1");
     }
 
-    // Fullscreen suspension through the actual capture route: real raw
-    // KWin facts (fullScreen truthfully carried) into the core-published
+    // Fullscreen suspension through the actual capture route: genuine v4
+    // facts (fullscreen truthfully carried) into the core-published
     // verdict and the preview-cache replacement, plus queued
     // command-produced take outcomes. No hand-built core replies: every
     // verdict and preview below comes from WorldService capture dispatch,
@@ -1290,18 +1247,27 @@ mod tests {
     const WIN_C: &str = "2cc8f1c2-3b4d-4e5f-8a9b-0c1d2e3f4a5d";
     const WIN_D: &str = "3dd8f1c2-3b4d-4e5f-8a9b-0c1d2e3f4a5e";
 
-    fn raw_win(win: &str, out: &str, x: i32, fullscreen: bool) -> serde_json::Value {
+    // Genuine v4 window facts: every required key present with hold-healthy
+    // values (known class/type/policy/layer so the core admits the row).
+    // The retired v3 raw KWin classification has no v4 translation: rows
+    // arrive already projected, never normalized here.
+    fn v4_win(win: &str, out: &str, x: i32, fullscreen: bool) -> serde_json::Value {
         serde_json::json!({
-            "win": win, "out": out,
-            "frameGeometry": {"x": x, "y": 0, "width": 40, "height": 90},
-            "clientGeometry": {"x": x, "y": 0, "width": 40, "height": 90},
-            "minSize": null, "maxSize": null,
-            "desktops": ["ws-1"],
-            "normalWindow": true, "managed": true, "deleted": false,
-            "transient": false, "transientFor": null,
-            "dialog": false, "modal": false, "wantsInput": true,
-            "fullScreen": fullscreen, "maximizeMode": 0,
-            "onAllDesktops": false, "minimized": false, "hidden": false,
+            "win": win, "out": out, "rect": [x, 0, 40, 90],
+            "fullscreen": fullscreen, "maximized": false, "sticky": false,
+            "minimized": false,
+            "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null},
+            "hostHidden": false, "privileged": false, "managed": true,
+            "acceptsInput": true, "activationInhibited": false,
+            "toolWindow": false, "owned": false, "transient": false,
+            "modal": false, "resizable": true, "above": false, "below": false,
+            "owner": null, "parent": null, "role": null, "appId": null,
+            "executable": null, "processId": "pid-foreign-1", "class": "Synthetic",
+            "title": null, "type": "normal", "activationPolicy": "regular",
+            "layer": 0, "fullscreenOwner": null, "fullscreenExitable": null,
+            "suppressionAvailable": null,
+            "visibility": {"visible": true, "suppressionOwned": null},
+            "lastWrite": null,
         })
     }
 
@@ -1315,6 +1281,11 @@ mod tests {
             "null".to_owned()
         } else {
             "[0,0,40,90]".to_owned()
+        };
+        let foreground_out = if focused.is_empty() {
+            "null".to_owned()
+        } else {
+            "\"out-a\"".to_owned()
         };
         let (gesture_lane, native_gesture, cursor_window, cursor) = match gesture {
             Some((serial, rev, phase)) => (
@@ -1336,35 +1307,35 @@ mod tests {
             ),
         };
         format!(
-            "{{\"v\":3,\"mode\":\"per-output-local\",\
+            "{{\"v\":4,\
               \"screens\":[{{\"out\":\"out-a\",\"full\":[0,0,800,600],\"work\":[0,0,800,560],\
-              \"gap\":0,\"outer\":0,\"complete\":true,\"primary\":true}},\
+              \"complete\":true,\"scale\":1,\
+              \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}},\
               {{\"out\":\"out-b\",\"full\":[800,0,800,600],\"work\":[800,0,800,560],\
-              \"gap\":0,\"outer\":0,\"complete\":true,\"primary\":false}}],\
+              \"complete\":true,\"scale\":1,\
+              \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
               \"windows\":[{win_a},{win_b},{win_c},{win_d}],\
-              \"views\":[],\"closed\":[],\"hostOwned\":false,\"equalCount\":false,\"native\":[],\
-              \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
-              \"defaultTiled\":true,\"focused\":\"{focused}\",\"complete\":true,\"gesture\":{gesture_lane},\
-              \"switchTarget\":\"cursor-output\",\"freshPlacement\":\"cursor-output-last-focused\",\
-              \"cursor\":{cursor},\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[],\
-              \"focusFollowsCursor\":false,\"cursorWarp\":false,\
+              \"closed\":[],\"native\":[],\
+              \"focused\":\"{focused}\",\"complete\":true,\"gesture\":{gesture_lane},\
+              \"cursor\":{cursor},\"actionForeground\":null,\"actionCached\":null,\
+              \"actionOutputs\":[],\
               \"presentation\":{{\"foreground\":\"{focused}\",\"minimized\":false,\"maximized\":false,\
-              \"fullscreen\":{fullscreen},\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\
-              \"frame\":{frame},\"borderEnabled\":true,\"underlayEnabled\":true,\
-              \"borderGap\":2,\"borderWidth\":4,\"underlayExtension\":3,\
-              \"chordHeld\":true,\"moveWindow\":\"\",\"paused\":false,\
+              \"fullscreen\":{fullscreen},\"hostHidden\":false,\"hiddenWorkspace\":false,\
+              \"frame\":{frame},\"chordHeld\":true,\"moveWindow\":\"\",\
               \"pagerOrder\":[\"{WIN_A}\",\"{WIN_B}\",\"{WIN_C}\",\"{WIN_D}\"],\
-              \"pagerFrames\":[{{\"win\":\"{WIN_A}\",\"live\":[0,0,40,90],\"float\":null,\"tile\":null}},\
-              {{\"win\":\"{WIN_B}\",\"live\":[100,0,40,90],\"float\":null,\"tile\":null}},\
-              {{\"win\":\"{WIN_C}\",\"live\":[800,0,40,90],\"float\":null,\"tile\":null}},\
-              {{\"win\":\"{WIN_D}\",\"live\":[900,0,40,90],\"float\":null,\"tile\":null}}]}},\
-              \"gestureIngress\":null,\"floatIntent\":[],\"tileIntent\":[],\
+              \"pagerFrames\":[{{\"win\":\"{WIN_A}\",\"live\":[0,0,40,90]}},\
+              {{\"win\":\"{WIN_B}\",\"live\":[100,0,40,90]}},\
+              {{\"win\":\"{WIN_C}\",\"live\":[800,0,40,90]}},\
+              {{\"win\":\"{WIN_D}\",\"live\":[900,0,40,90]}}],\
+              \"witness\":null,\"foregroundOut\":{foreground_out}}},\
+              \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+              \"rendererInput\":null,\"gestureIngress\":null,\
               \"nativeGesture\":{native_gesture},\
               \"cursorWindow\":{cursor_window},\"nativeInvalidWitness\":null}}",
-            win_a = raw_win(WIN_A, "out-a", 0, fullscreen_a),
-            win_b = raw_win(WIN_B, "out-a", 100, false),
-            win_c = raw_win(WIN_C, "out-b", 800, false),
-            win_d = raw_win(WIN_D, "out-b", 900, false),
+            win_a = v4_win(WIN_A, "out-a", 0, fullscreen_a),
+            win_b = v4_win(WIN_B, "out-a", 100, false),
+            win_c = v4_win(WIN_C, "out-b", 800, false),
+            win_d = v4_win(WIN_D, "out-b", 900, false),
         )
     }
 
@@ -1378,7 +1349,7 @@ mod tests {
         gesture: Option<(&str, &str, &str)>,
     ) -> serde_json::Value {
         let envelope = format!(
-            "{{\"v\":3,\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
+            "{{\"v\":4,\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
               \"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\"nativeInvalid\":\"{seq}\",\
               \"report\":{}}}",
             suspension_inner(fullscreen_a, focused, gesture),
@@ -1391,78 +1362,86 @@ mod tests {
 
     fn suspension_read(service: &WorldService, req: &str) -> serde_json::Value {
         let body = service
-            .read_presentation(&format!("{{\"v\":3,\"req\":\"{req}\"}}"))
+            .read_presentation(&format!("{{\"v\":4,\"req\":\"{req}\"}}"))
             .expect("read");
         serde_json::from_str(&body).expect("valid JSON")
     }
 
-    fn suspension_queue_drag(
-        service: &WorldService,
-        generation: &str,
-        client_cmd: &str,
-        mover: &str,
-        x: i32,
-        y: i32,
-    ) -> serde_json::Value {
-        let request = format!(
-            "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
-              \"clientCmd\":\"{client_cmd}\",\
-              \"command\":{{\"op\":\"operation\",\"command\":{{\"op\":\"drag-preview\",\
-              \"win\":\"{mover}\",\"x\":{x},\"y\":{y},\"hover\":null,\"source\":null}}}}}}"
+    // Reports wait for initial settings: the handshake binds the lifetime,
+    // and settings (sent through discover like production) unlock report
+    // readiness. Settings never reset the lifetime.
+    fn suspension_settings(service: &WorldService, generation: &str) -> serde_json::Value {
+        let body = format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
+              \"req\":\"settings-1\",\"rev\":\"1\",\"values\":{{}}}}"
         );
-        let filed = service
-            .queue_command(":1.42", &request)
-            .expect("in-band queue");
-        serde_json::from_str(&filed).expect("valid JSON")
-    }
-
-    fn suspension_take(
-        service: &WorldService,
-        generation: &str,
-        client_cmd: &str,
-    ) -> serde_json::Value {
-        let request = format!(
-            "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
-              \"clientCmd\":\"{client_cmd}\"}}"
-        );
-        let settled = service
-            .take_result(":1.42", &request)
-            .expect("in-band take");
-        serde_json::from_str(&settled).expect("valid JSON")
+        let reply = service.discover(&body).expect("settings routes");
+        serde_json::from_str(&reply).expect("valid JSON")
     }
 
     #[test]
     fn focused_fullscreen_suspends_cached_preview_through_capture_route() {
-        // End-to-end through the real capture route (raw KWin facts,
-        // gesture lane, queue/take lanes, presentation reads): a proven
-        // live preview caches, suspends to null on focused fullscreen,
-        // and restores on exit, while command-produced previews settle
-        // the take lane unchanged. Cross-output resolution gating rides
-        // the broker unit (`suspended_presentation_omits_only_the_matching_domain_preview`):
+        // End-to-end through the real capture route (genuine v4 facts,
+        // gesture lane, presentation reads): a proven live preview caches,
+        // suspends to null on focused fullscreen, and restores on exit.
+        // Cross-output resolution gating rides the broker unit
+        // (`suspended_presentation_omits_only_the_matching_domain_preview`):
         // the engine focus-gates drags to the focused tiled window, so no
-        // command or gesture can produce an out-of-suspension preview
-        // while the verdict holds (pre-existing behavior, independent of
-        // suspension).
+        // live gesture can produce an out-of-suspension preview while the
+        // verdict holds (pre-existing behavior, independent of suspension).
+        // The v4 queue holds no drag-preview vocabulary (the `operation`
+        // wrapper refuses as an unknown value), so live gestures are the
+        // only preview source here; queue/take settlement rides the
+        // dedicated queue oracle tests.
         let service = WorldService::new();
-        let (generation, _) = discovered_generation(&service);
+        let mut handshake: serde_json::Value =
+            serde_json::from_str(&handshake_request("adapter-1", "req-0")).expect("handshake JSON");
+        for capability in ["maximize", "fullscreen", "nativeSticky"] {
+            handshake["capabilities"][capability] = serde_json::Value::Bool(true);
+        }
+        let bound: serde_json::Value = serde_json::from_str(
+            &service
+                .discover(&handshake.to_string())
+                .expect("handshake routes"),
+        )
+        .expect("handshake reply");
+        let generation = bound["gen"].as_str().expect("generation").to_owned();
+        let settings = suspension_settings(&service, &generation);
+        assert_eq!(settings["status"], "accepted");
+        assert_eq!(settings["adapter"], "adapter-1");
         // Admission baseline first (mirrors the core rig): the open
         // gesture binds implicitly only against retained homing, and the
         // managed focus latches behind the focused newcomer.
         let admitted = suspension_capture(&service, &generation, "cap-0", 1, false, "", None);
-        assert_eq!(admitted["ready"], true, "admission capture accepted");
+        assert_eq!(
+            admitted["ready"], true,
+            "admission capture accepted: {admitted}"
+        );
         // Baseline: an open live move gesture publishes a proven preview
-        // through the real raw-capture route (real fullScreen facts,
-        // real gesture lane, real command inputs throughout).
-        let first = suspension_capture(
+        // through the real v4 capture route (genuine fullscreen facts,
+        // real gesture lane, real command inputs throughout). The gesture
+        // opens with started, then updates: the update publishes the
+        // proven preview.
+        let opened = suspension_capture(
             &service,
             &generation,
             "cap-1",
             2,
             false,
             WIN_A,
-            Some(("1", "1", "updated")),
+            Some(("1", "1", "started")),
         );
-        assert_eq!(first["ready"], true, "baseline capture accepted");
+        assert_eq!(opened["ready"], true, "gesture open accepted: {opened}");
+        let first = suspension_capture(
+            &service,
+            &generation,
+            "cap-2",
+            3,
+            false,
+            WIN_A,
+            Some(("1", "2", "updated")),
+        );
+        assert_eq!(first["ready"], true, "baseline capture accepted: {first}");
         let proj = suspension_read(&service, "read-1");
         assert_eq!(proj["outcome"], "presentation");
         assert!(
@@ -1475,40 +1454,6 @@ mod tests {
         assert!(
             proj["presentation"]["suspendedOutput"].is_null(),
             "no verdict without fullscreen"
-        );
-        // A queued drag-preview command drains once the gesture terminal
-        // clears the session: the take settles ready with the
-        // command-produced preview, which rides the projection unproven.
-        // (Draining against the open session resolves to no change, so the
-        // cancel clears first; both lanes stay mechanical through the
-        // actual route. The queued pointer targets the sibling edge in
-        // engine-slot coordinates, the topology the engine resolves.)
-        let filed = suspension_queue_drag(&service, &generation, "1", WIN_A, 398, 280);
-        assert_eq!(filed["outcome"], "queued");
-        let drained = suspension_capture(
-            &service,
-            &generation,
-            "cap-2",
-            3,
-            false,
-            WIN_A,
-            Some(("1", "2", "cancelled")),
-        );
-        assert_eq!(drained["ready"], true, "command drain accepted");
-        let take = suspension_take(&service, &generation, "1");
-        assert_eq!(take["outcome"], "ready");
-        assert_eq!(take["result"]["op"], "drag-preview");
-        assert_eq!(take["result"]["domainOut"], "out-a");
-        let proj = suspension_read(&service, "read-2");
-        assert!(
-            proj["preview"].is_object(),
-            "command-produced preview cached, got {}",
-            proj["preview"]
-        );
-        assert!(proj["preview"]["rect"].is_array());
-        assert!(
-            proj["preview"]["producerInstance"].is_null(),
-            "command-produced preview stays unproven"
         );
         // Focused fullscreen on the same output: the verdict publishes and
         // the cached preview is replaced with null (no stale retention).
@@ -1554,5 +1499,71 @@ mod tests {
             proj["presentation"]["suspendedOutput"].is_null(),
             "verdict clears on exit"
         );
+    }
+
+    #[test]
+    fn maximum_v4_settings_snapshot_fits_discovery_request_bound() {
+        // The v4 settings decoder and the DiscoverWorld request bound share
+        // the 4 MiB budget: the largest decoder-accepted settings message
+        // must still pass the route length gate, and the live discover
+        // route must accept exactly that snapshot while the next byte
+        // fails closed (no widening).
+        let prefix = "{\"type\":\"settings\",\"v\":4,\"adapter\":\"a-1\",\"gen\":\"g-1\",\
+            \"req\":\"r-1\",\"rev\":\"0\",\"values\":{\"pad\":\"";
+        let suffix = "\"}}";
+        let pad_len = WORLD_SERVICE_MAX_REQUEST - prefix.len() - suffix.len();
+        let wire = format!("{prefix}{}{suffix}", "x".repeat(pad_len));
+        assert_eq!(wire.len(), WORLD_SERVICE_MAX_REQUEST);
+        assert!(
+            tiler_protocol::connection_protocol::decode_settings(&wire).is_ok(),
+            "max-size settings must decode"
+        );
+        assert!(
+            !(wire.len() > WORLD_SERVICE_MAX_REQUEST),
+            "max-size settings must pass the request length gate"
+        );
+        let oversized = format!("{wire}x");
+        assert_eq!(oversized.len(), WORLD_SERVICE_MAX_REQUEST + 1);
+        assert_eq!(
+            tiler_protocol::connection_protocol::decode_settings(&oversized),
+            Err(tiler_protocol::connection_protocol::CodecError("oversized"))
+        );
+        assert!(
+            oversized.len() > WORLD_SERVICE_MAX_REQUEST,
+            "bound+1 must trip the request length gate"
+        );
+        // The same bound holds on the live discover route: handshake first
+        // (settings bind the serving generation and producer lifetime), then
+        // the largest fitting snapshot routes to an accepted settings reply.
+        let service = WorldService::new();
+        let discovery: serde_json::Value = serde_json::from_str(
+            &service
+                .discover(&handshake_request("a-1", "req-0"))
+                .expect("handshake routes"),
+        )
+        .expect("valid JSON");
+        let generation = discovery["gen"].as_str().expect("gen").to_owned();
+        let route_prefix = format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"a-1\",\"gen\":\"{generation}\",\
+              \"req\":\"r-1\",\"rev\":\"1\",\"values\":{{\"pad\":\""
+        );
+        let route_pad = WORLD_SERVICE_MAX_REQUEST - route_prefix.len() - suffix.len();
+        let route_wire = format!("{route_prefix}{}{suffix}", "x".repeat(route_pad));
+        assert_eq!(route_wire.len(), WORLD_SERVICE_MAX_REQUEST);
+        let accepted = service
+            .discover(&route_wire)
+            .expect("max-size settings route");
+        let accepted_value: serde_json::Value =
+            serde_json::from_str(&accepted).expect("valid JSON");
+        assert_eq!(accepted_value["adapter"], "a-1");
+        assert_eq!(accepted_value["req"], "r-1");
+        assert_eq!(accepted_value["status"], "accepted");
+        // Bound+1 fails closed before routing: no reply, no state touched.
+        let over = format!("{route_wire}x");
+        assert_eq!(over.len(), WORLD_SERVICE_MAX_REQUEST + 1);
+        match service.discover(&over) {
+            Err(WorldServiceError::Oversized) => {}
+            other => panic!("expected oversized, got {other:?}"),
+        }
     }
 }

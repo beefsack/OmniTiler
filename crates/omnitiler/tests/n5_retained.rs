@@ -1,6 +1,6 @@
-//! N5 failing-first: producer-shaped raw capture with the REQUIRED
-//! native `hidden` lane plus dialog/transient admission through the real
-//! broker normalizer, strict codec, and retained `WorldEngine`.
+//! N5 failing-first: producer-shaped v4 capture with the REQUIRED
+//! native `hostHidden` lane plus dialog/transient admission through the real
+//! broker, strict codec, and retained `WorldEngine`.
 //!
 //! New-code expectations (green): hidden/minimized ordinary,
 //! transient, and dialog rows are retained members but ineligible for
@@ -23,16 +23,55 @@ fn parse(reply: &str) -> Value {
     serde_json::from_str(reply).expect("reply is JSON")
 }
 
+/// v4 connection handshake for the discovery route (dispatched by type
+/// through the connection router). Producer lifetime is the opaque
+/// actuator incarnation; every handshake resets onto a fresh generation.
+/// The retained native workspace arms need the host-owned capability, and
+/// the carried fullscreen/maximized/sticky facts need their capabilities
+/// declared (otherwise those facts hold instead of classifying).
+fn handshake_req(adapter: &str, req: &str) -> String {
+    format!(
+        "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"{req}\",\
+          \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+          \"processId\":\"pid-own-1\"}},\
+          \"capabilities\":{{\"hostOwned\":true,\"equalCount\":false,\
+          \"birthClear\":false,\"nativeSelectorScope\":\"per-output\",\
+          \"windowSuppression\":false,\"maximize\":true,\"fullscreen\":true,\
+          \"nativeSticky\":true,\"above\":false,\"warp\":false,\
+          \"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+    )
+}
+
+/// v4 settings for the discovery route use the short wire names; the
+/// baseline here carries none. Reports wait for initial settings: the
+/// handshake binds the lifetime and settings unlock report readiness.
+fn apply_settings(service: &WorldService, generation: &str) {
+    let body = format!(
+        "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
+          \"req\":\"settings-1\",\"rev\":\"1\",\"values\":{{}}}}"
+    );
+    let reply: Value = serde_json::from_str(&service.discover(&body).expect("settings routes"))
+        .expect("valid JSON");
+    assert_eq!(reply["status"], "accepted");
+}
+
 fn discovered_service() -> (WorldService, String) {
     let service = WorldService::new();
-    let discovery = parse(&service.discovery_body(ADAPTER, "req-0"));
+    let discovery = parse(
+        &service
+            .discover(&handshake_req(ADAPTER, "req-0"))
+            .expect("handshake routes"),
+    );
     let generation = discovery["gen"].as_str().expect("gen").to_owned();
+    apply_settings(&service, &generation);
     (service, generation)
 }
 
-/// Producer-shaped raw row with the REQUIRED `hidden` lane (distinct from
-/// `minimized`): KWin `hidden` is `m_hidden`, never minimized, Activity,
-/// off-desktop, or show-desktop state.
+/// Producer-shaped v4 window fact with the REQUIRED `hostHidden` lane
+/// (distinct from `minimized`): KWin `hidden` is `m_hidden`, never
+/// minimized, Activity, off-desktop, or show-desktop state. The KWin shape
+/// never pairs normal with dialog: dialog rows take the non-normal dialog
+/// type, every other retained row here takes the normal type.
 fn n5_raw(
     win: &str,
     hidden: bool,
@@ -41,7 +80,7 @@ fn n5_raw(
     transient: bool,
     dialog: bool,
     modal: bool,
-) -> Value {
+) -> String {
     n5_raw_full(
         win,
         "DP-1",
@@ -56,7 +95,8 @@ fn n5_raw(
     )
 }
 
-/// Producer-shaped raw row with explicit output, frame origin, and native desktop.
+/// Producer-shaped v4 window fact with explicit output, frame origin, and
+/// host-owned native desktop.
 // Deliberate producer-shape constructor: one arg per raw lane.
 #[allow(clippy::too_many_arguments)]
 fn n5_raw_full(
@@ -70,144 +110,107 @@ fn n5_raw_full(
     transient: bool,
     dialog: bool,
     modal: bool,
-) -> Value {
-    json!({
-        "win": win,
-        "out": out,
-        "frameGeometry": {"x": x, "y": 100, "width": 400, "height": 300},
-        "clientGeometry": {"x": x, "y": 100, "width": 400, "height": 300},
-        "minSize": null,
-        "maxSize": null,
-        "desktops": [desktop],
-        "normalWindow": normal_window,
-        "managed": true,
-        "deleted": false,
-        "transient": transient,
-        "transientFor": null,
-        "dialog": dialog,
-        "modal": modal,
-        "wantsInput": true,
-        "fullScreen": false,
-        "maximizeMode": 0,
-        "onAllDesktops": false,
-        "minimized": minimized,
-        "hidden": hidden,
-    })
+) -> String {
+    let _ = normal_window;
+    let kind = if dialog { "dialog" } else { "normal" };
+    format!(
+        "{{\"win\":\"{win}\",\"out\":\"{out}\",\"rect\":[{x},100,400,300],\
+          \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\
+          \"minimized\":{minimized},\
+          \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}},\
+          \"nativeWs\":\"{desktop}\",\
+          \"hostHidden\":{hidden},\"privileged\":false,\"managed\":true,\
+          \"acceptsInput\":true,\"activationInhibited\":false,\
+          \"toolWindow\":false,\"owned\":false,\"transient\":{transient},\
+          \"modal\":{modal},\"resizable\":true,\"above\":false,\"below\":false,\
+          \"owner\":null,\"parent\":null,\"role\":null,\"appId\":null,\
+          \"executable\":null,\"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\
+          \"title\":null,\"type\":\"{kind}\",\"activationPolicy\":\"regular\",\
+          \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
+          \"suppressionAvailable\":null,\
+          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
+          \"lastWrite\":null}}"
+    )
 }
 
-fn presentation() -> Value {
-    json!({
-        "foreground": "",
-        "minimized": false,
-        "maximized": false,
-        "fullscreen": false,
-        "cloaked": false,
-        "hiddenWorkspace": false,
-        "shell": false,
-        "frame": null,
-        "borderEnabled": false,
-        "underlayEnabled": false,
-        "borderGap": 0,
-        "borderWidth": 0,
-        "underlayExtension": 0,
-        "chordHeld": false,
-        "moveWindow": "",
-        "paused": false,
-        "pagerOrder": [],
-        "pagerFrames": [],
-    })
+fn presentation() -> String {
+    "{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+      \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\
+      \"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\
+      \"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\
+      \"foregroundOut\":null}"
+        .to_owned()
 }
 
-fn inner_report(windows: &[Value]) -> Value {
-    json!({
-        "v": 3,
-        "mode": "per-output-local",
-        "screens": [{"out": "DP-1", "full": [0, 0, 1920, 1080],
-            "work": [0, 0, 1920, 1040], "gap": 8, "outer": 4,
-            "complete": true, "primary": true}],
-        "windows": windows,
-        "views": [{"out": "DP-1", "view": ""}],
-        "closed": [],
-        "hostOwned": true,
-        "equalCount": false,
-        "birthClear": false,
-        "native": [{"out": "DP-1", "order": [UUID_A], "current": UUID_A, "occupancy": [{"native": UUID_A, "count": null}]}],
-        "predicate": "both-axes-fixed",
-        "refill": "last-remaining-workspace",
-        "defaultTiled": true,
-        "focused": "",
-        "complete": true,
-        "gesture": false,
-        "switchTarget": "cursor-output",
-        "freshPlacement": "cursor-output-last-focused",
-        "cursor": null,
-        "actionForeground": null,
-        "actionCached": null,
-        "actionOutputs": ["DP-1"],
-        "focusFollowsCursor": false,
-        "cursorWarp": false,
-        "presentation": presentation(),
-    })
+/// Minimal v4 inner report: one complete screen, caller-chosen windows, and
+/// the host-owned native row the retained members home through. Strict v4
+/// ingress: no `mode`, `views`, `hostOwned`, `predicate`, `refill`,
+/// `bornMaximized`, or float-intent lanes; the broker stamps the
+/// sequencing namespace.
+fn inner_report(windows: &[String]) -> String {
+    format!(
+        "{{\"v\":4,\
+          \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+          \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+          \"identity\":{{\"manufacturer\":null,\"model\":null,\
+          \"serial\":null,\"connector\":null}}}}],\
+          \"windows\":[{}],\"closed\":[],\
+          \"native\":[{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\"],\
+          \"current\":\"{UUID_A}\",\
+          \"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}}]}}],\
+          \"focused\":\"\",\"complete\":true,\"gesture\":false,\
+          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"actionOutputs\":[\"DP-1\"],\
+          \"presentation\":{},\
+          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"rendererInput\":null}}",
+        windows.join(","),
+        presentation(),
+    )
 }
 
-/// Two-output inner report for whole-workspace migration: DP-1 carries the
-/// migrated workspace, DP-2 a settled bystander.
-fn two_output_inner(windows: &[Value]) -> Value {
-    json!({
-        "v": 3,
-        "mode": "per-output-local",
-        "screens": [
-            {"out": "DP-1", "full": [0, 0, 1920, 1080],
-                "work": [0, 0, 1920, 1040], "gap": 8, "outer": 4,
-                "complete": true, "primary": true},
-            {"out": "DP-2", "full": [1920, 0, 1920, 1080],
-                "work": [1920, 0, 1920, 1040], "gap": 8, "outer": 4,
-                "complete": true, "primary": false},
-        ],
-        "windows": windows,
-        "views": [{"out": "DP-1", "view": ""}, {"out": "DP-2", "view": ""}],
-        "closed": [],
-        "hostOwned": true,
-        "equalCount": false,
-        "birthClear": false,
-        "native": [
-            {"out": "DP-1", "order": [UUID_A], "current": UUID_A, "occupancy": [{"native": UUID_A, "count": null}]},
-            {"out": "DP-2", "order": [UUID_B], "current": UUID_B, "occupancy": [{"native": UUID_B, "count": null}]},
-        ],
-        "predicate": "both-axes-fixed",
-        "refill": "last-remaining-workspace",
-        "defaultTiled": true,
-        "focused": "",
-        "complete": true,
-        "gesture": false,
-        "switchTarget": "cursor-output",
-        "freshPlacement": "cursor-output-last-focused",
-        "cursor": null,
-        "actionForeground": null,
-        "actionCached": null,
-        "actionOutputs": ["DP-1", "DP-2"],
-        "focusFollowsCursor": false,
-        "cursorWarp": false,
-        "presentation": presentation(),
-    })
+/// Two-output v4 inner report for whole-workspace migration: DP-1 carries
+/// the migrated workspace, DP-2 a settled bystander.
+fn two_output_inner(windows: &[String]) -> String {
+    format!(
+        "{{\"v\":4,\
+          \"screens\":[\
+          {{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+          \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+          \"identity\":{{\"manufacturer\":null,\"model\":null,\
+          \"serial\":null,\"connector\":null}}}},\
+          {{\"out\":\"DP-2\",\"full\":[1920,0,1920,1080],\
+          \"work\":[1920,0,1920,1040],\"complete\":true,\"scale\":1,\
+          \"identity\":{{\"manufacturer\":null,\"model\":null,\
+          \"serial\":null,\"connector\":null}}}}],\
+          \"windows\":[{}],\"closed\":[],\
+          \"native\":[\
+          {{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\"],\"current\":\"{UUID_A}\",\
+          \"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}}]}},\
+          {{\"out\":\"DP-2\",\"order\":[\"{UUID_B}\"],\"current\":\"{UUID_B}\",\
+          \"occupancy\":[{{\"native\":\"{UUID_B}\",\"count\":null}}]}}],\
+          \"focused\":\"\",\"complete\":true,\"gesture\":false,\
+          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
+          \"presentation\":{},\
+          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"rendererInput\":null}}",
+        windows.join(","),
+        presentation(),
+    )
 }
 
-fn capture(generation: &str, seq: u64, inner: &Value) -> String {
-    json!({
-        "v": 3,
-        "adapter": ADAPTER,
-        "gen": generation,
-        "source": format!("src-{seq}-t"),
-        "sourceSeq": format!("{seq}"),
-        "nativeInvalid": format!("{seq}"),
-        "report": inner,
-    })
-    .to_string()
+fn capture(generation: &str, seq: u64, inner: &str) -> String {
+    format!(
+        "{{\"v\":4,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
+          \"source\":\"src-{seq}-t\",\"sourceSeq\":\"{seq}\",\
+          \"nativeInvalid\":\"{seq}\",\"report\":{inner}}}"
+    )
 }
 
 fn queue_req(generation: &str, client_cmd: &str, command: &Value) -> String {
     json!({
-        "v": 3,
+        "v": 4,
         "gen": generation,
         "client": "panel-1",
         "clientCmd": client_cmd,
@@ -218,7 +221,7 @@ fn queue_req(generation: &str, client_cmd: &str, command: &Value) -> String {
 
 fn take_req(generation: &str, client_cmd: &str) -> String {
     json!({
-        "v": 3,
+        "v": 4,
         "gen": generation,
         "client": "panel-1",
         "clientCmd": client_cmd,
@@ -226,7 +229,7 @@ fn take_req(generation: &str, client_cmd: &str) -> String {
     .to_string()
 }
 
-fn dispatch(service: &WorldService, generation: &str, seq: u64, inner: &Value) -> Value {
+fn dispatch(service: &WorldService, generation: &str, seq: u64, inner: &str) -> Value {
     parse(
         &service
             .evaluate_capture(&capture(generation, seq, inner))
@@ -266,6 +269,17 @@ fn accepted_row(
 
 #[test]
 fn n5_hidden_ordinary_retained_without_layout() {
+    // Genuine v4 lanes: hostHidden and minimized stay distinct raw facts;
+    // the hidden lane retains without layout authority.
+    let raw = n5_raw("win-h", true, false, true, false, false, false);
+    assert!(
+        raw.contains("\"hostHidden\":true"),
+        "raw hidden lane: {raw}"
+    );
+    assert!(
+        raw.contains("\"minimized\":false"),
+        "raw stays unminimized: {raw}"
+    );
     let row = accepted_row("win-h", true, false, true, false, false, false);
     assert_eq!(row["alloc"], Value::Null, "no allocation");
     assert_eq!(row["frame"], Value::Null, "no frame");
@@ -407,11 +421,7 @@ fn n5_focus_hidden_and_minimized_refuses_without_effects() {
             &service
                 .queue_command(
                     SENDER,
-                    &queue_req(
-                        &generation,
-                        "1",
-                        &json!({"op": "focus", "win": win, "direction": "right"}),
-                    ),
+                    &queue_req(&generation, "1", &json!({"op": "focus", "win": win})),
                 )
                 .expect("in-band"),
         );
@@ -429,7 +439,11 @@ fn n5_focus_hidden_and_minimized_refuses_without_effects() {
         );
         assert_eq!(take["outcome"], "failed", "{win}: focus refuses");
         assert_eq!(take["kind"], "focus-unknown", "{win}: unknown focus target");
-        assert_ne!(drain["focused"], json!(win), "{win}: never focused");
+        assert_ne!(
+            drain["presentation"]["foreground"],
+            json!(win),
+            "{win}: never focused"
+        );
     }
 }
 

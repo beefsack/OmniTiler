@@ -10,7 +10,7 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
 use tiler_core::world_report::{
     NativeObservation, NativeOccupancy, ScreenReport, WindowFact, WorldCommand, WorldReport,
 };
@@ -119,7 +119,7 @@ fn report(
     inventory_complete: bool,
 ) -> WorldReport {
     WorldReport {
-        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
+        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -165,8 +165,8 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReport,
 ) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -948,7 +948,7 @@ fn missing_native_row_refuses_report() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     setup_four(&mut engine);
     // No observation row for the live output: nothing may retire.
-    if let WorldOutcome::Accepted(reply) = engine.handle_report(&report(
+    if let LegacyWorldOutcome::Accepted(reply) = engine.handle_report_legacy(&report(
         2,
         2,
         single_screen(),
@@ -971,7 +971,7 @@ fn occupancy_coverage_gap_refuses_report() {
     setup_four(&mut engine);
     let mut obs = empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1");
     obs.occupancy.pop();
-    let outcome = engine.handle_report(&report(
+    let outcome = engine.handle_report_legacy(&report(
         2,
         2,
         single_screen(),
@@ -982,7 +982,7 @@ fn occupancy_coverage_gap_refuses_report() {
         true,
     ));
     assert!(
-        !matches!(outcome, WorldOutcome::Accepted(_)),
+        !matches!(outcome, LegacyWorldOutcome::Accepted(_)),
         "coverage gap must not accept: {outcome:?}"
     );
 }

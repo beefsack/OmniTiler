@@ -57,13 +57,14 @@ use crate::world_commands::CommandApplied;
 use crate::world_gesture::{GestureOutcome, RetainedGesture};
 use crate::world_report::{
     AuthorityScope, CommandRejectKind, CommandResult, FrameAttempt, HoldReason, ScopeAuthority,
-    ScopeStatus, TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION,
+    ScopeStatus, TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION_LEGACY,
     WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WindowDesire, WorkspaceDesire, WorldCommand,
     WorldReply, WorldReplyV4, WorldReport, WorldReportV4, encode_reply_canonical,
     grade_conflicting_windows, grade_invalid_screens, grade_invalid_windows,
     max_intent_rollback_bound, reply_estimate, reply_upper_bound, report_digest, report_estimate,
     validate_intent_writes_reason, validate_report_reason,
 };
+use crate::world_run_v4::V4RunOutcome;
 
 pub(crate) const KIND_VERSION: &str = "unsupported-version";
 pub(crate) const KIND_OWNER: &str = "owner-invalid";
@@ -392,9 +393,11 @@ pub(crate) struct RetainedNativeCreation {
     pub(crate) ambiguous: bool,
 }
 
-/// Bounded outcome of one [`WorldEngine::handle_report`] call.
+/// Dead legacy bounded outcome of one legacy [`WorldEngine::handle_report_legacy`]
+/// call. Only the doc-hidden legacy implementation and its deferred
+/// regression tests use this; the public outcome is [`WorldOutcome`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorldOutcome {
+pub enum LegacyWorldOutcome {
     Accepted(WorldReply),
     /// Identical latest duplicate: cached reply, no new revision.
     Duplicate(WorldReply),
@@ -406,6 +409,10 @@ pub enum WorldOutcome {
         message: &'static str,
     },
 }
+
+/// Public bounded outcome of one [`WorldEngine::handle_report`] call: the
+/// genuine v4 result.
+pub type WorldOutcome = V4RunOutcome;
 
 /// One logical workspace projected into an Engine session: the stable core
 /// id, its owning screen, and the per-report staged observation assigned by
@@ -1885,7 +1892,7 @@ impl WorldEngine {
     #[must_use]
     pub fn bootstrap_reply(&self, adapter_incarnation: &str, request_id: &str) -> WorldReply {
         WorldReply {
-            contract_version: WORLD_CONTRACT_VERSION,
+            contract_version: WORLD_CONTRACT_VERSION_LEGACY,
             adapter_incarnation: adapter_incarnation.to_owned(),
             core_generation: self.core_generation_str.clone(),
             request_id: request_id.to_owned(),
@@ -2177,7 +2184,11 @@ impl WorldEngine {
         self.history.previous(output)
     }
 
-    /// Accept one complete report and publish one globally ordered reply.
+    /// Dead legacy ingress: accept one complete legacy report and publish
+    /// one globally ordered legacy reply. Only the doc-hidden legacy
+    /// implementation and its deferred regression tests use this; the
+    /// public ingress is [`WorldEngine::handle_report`]. No runtime
+    /// callers go through here.
     ///
     /// Transactional: every cheap gate (generation, request estimate,
     /// version, shape, identity, freshness, observation order, conservative
@@ -2187,16 +2198,17 @@ impl WorldEngine {
     /// staged overflow leaves sessions, retained transfers, ordering, and
     /// command consumption exactly as before. Only reports passing every
     /// cheap gate pay for the clone.
-    pub fn handle_report(&mut self, report: &WorldReport) -> WorldOutcome {
+    #[doc(hidden)]
+    pub fn handle_report_legacy(&mut self, report: &WorldReport) -> LegacyWorldOutcome {
         // A report can only refer to the lifetime established by handshake.
         if self.adapter.as_deref() != Some(report.adapter_incarnation.as_str()) {
-            return WorldOutcome::Rejected {
+            return LegacyWorldOutcome::Rejected {
                 kind: KIND_OWNER,
                 message: MSG_OWNER,
             };
         }
         if report.core_generation != self.core_generation_str {
-            return WorldOutcome::Rejected {
+            return LegacyWorldOutcome::Rejected {
                 kind: KIND_GENERATION,
                 message: MSG_GENERATION,
             };
@@ -2234,19 +2246,19 @@ impl WorldEngine {
         );
         let report = graded_conflicting.as_ref().map_or(report, |owned| owned);
         if report_estimate(report) > WORLD_MAX_REQUEST_BYTES {
-            return WorldOutcome::Rejected {
+            return LegacyWorldOutcome::Rejected {
                 kind: KIND_OVERSIZED,
                 message: MSG_OVERSIZED,
             };
         }
-        if report.contract_version != WORLD_CONTRACT_VERSION {
-            return WorldOutcome::Rejected {
+        if report.contract_version != WORLD_CONTRACT_VERSION_LEGACY {
+            return LegacyWorldOutcome::Rejected {
                 kind: KIND_VERSION,
                 message: MSG_VERSION,
             };
         }
         if let Some(reason) = validate_report_reason(report) {
-            return WorldOutcome::Rejected {
+            return LegacyWorldOutcome::Rejected {
                 kind: KIND_SNAPSHOT,
                 // Fixed check vocabulary, never payload bytes.
                 message: reason,
@@ -2269,7 +2281,7 @@ impl WorldEngine {
             || !report.view_attempts.is_empty()
             || !report.creation_attempts.is_empty();
         if native_evidence && !self.host_owned_workspace_domains() {
-            return WorldOutcome::Rejected {
+            return LegacyWorldOutcome::Rejected {
                 kind: KIND_SNAPSHOT,
                 message: "native-without-capability",
             };
@@ -2287,13 +2299,13 @@ impl WorldEngine {
                 .any(|bracket| bracket.location.is_native() != host_owned)
         });
         if arrival_host_mismatch {
-            return WorldOutcome::Rejected {
+            return LegacyWorldOutcome::Rejected {
                 kind: KIND_SNAPSHOT,
                 message: "arrival-host-mismatch",
             };
         }
         let Some(owner) = self.connection_owner.clone() else {
-            return WorldOutcome::Rejected {
+            return LegacyWorldOutcome::Rejected {
                 kind: KIND_OWNER,
                 message: MSG_OWNER,
             };
@@ -2301,7 +2313,7 @@ impl WorldEngine {
         let correlation = match CorrelationId::parse(&report.request_id) {
             Some(correlation) => correlation,
             None => {
-                return WorldOutcome::Rejected {
+                return LegacyWorldOutcome::Rejected {
                     kind: KIND_CORRELATION,
                     message: MSG_CORRELATION,
                 };
@@ -2316,7 +2328,7 @@ impl WorldEngine {
         );
         if has_last {
             if report.request_seq < last_seq {
-                return WorldOutcome::Rejected {
+                return LegacyWorldOutcome::Rejected {
                     kind: KIND_SUPERSEDED,
                     message: MSG_SUPERSEDED,
                 };
@@ -2324,28 +2336,28 @@ impl WorldEngine {
             if report.request_seq == last_seq {
                 // Fast digest pre-check first; true input equality decides.
                 if digest != last_digest {
-                    return WorldOutcome::Rejected {
+                    return LegacyWorldOutcome::Rejected {
                         kind: KIND_REUSED,
                         message: MSG_REUSED,
                     };
                 }
                 if self.last_report.as_ref().is_some_and(|last| last == report) {
                     let Some(cached) = self.last_reply.clone() else {
-                        return WorldOutcome::Rejected {
+                        return LegacyWorldOutcome::Rejected {
                             kind: KIND_SUPERSEDED,
                             message: MSG_SUPERSEDED,
                         };
                     };
-                    return WorldOutcome::Duplicate(cached);
+                    return LegacyWorldOutcome::Duplicate(cached);
                 }
-                return WorldOutcome::Rejected {
+                return LegacyWorldOutcome::Rejected {
                     kind: KIND_REUSED,
                     message: MSG_REUSED,
                 };
             }
         }
         if has_last && report.observation_seq < last_obs {
-            return WorldOutcome::Rejected {
+            return LegacyWorldOutcome::Rejected {
                 kind: KIND_OBS_STALE,
                 message: MSG_OBS_STALE,
             };
@@ -2380,7 +2392,7 @@ impl WorldEngine {
         .saturating_add(self.policy_terminal_reserve(report))
             > WORLD_MAX_REPLY_BYTES
         {
-            return WorldOutcome::Rejected {
+            return LegacyWorldOutcome::Rejected {
                 kind: KIND_REPLY_SIZE,
                 message: MSG_REPLY_SIZE,
             };
@@ -2388,7 +2400,7 @@ impl WorldEngine {
         // Counter exhaustion refuses and re-bootstraps under a new
         // generation; it never wraps in place.
         if self.state_revision == u64::MAX {
-            return WorldOutcome::Rejected {
+            return LegacyWorldOutcome::Rejected {
                 kind: KIND_REVISION_EXHAUSTED,
                 message: MSG_REVISION_EXHAUSTED,
             };
@@ -2398,7 +2410,7 @@ impl WorldEngine {
         let consumed = match (report.command_seq, report.command.as_ref()) {
             (Some(seq), Some(_)) => self.command_highwater.is_some_and(|mark| seq <= mark),
             (Some(_), None) | (None, Some(_)) => {
-                return WorldOutcome::Rejected {
+                return LegacyWorldOutcome::Rejected {
                     kind: KIND_SNAPSHOT,
                     message: "command-pair-invalid",
                 };
@@ -2449,7 +2461,7 @@ impl WorldEngine {
                 self.intent_sticky_blocks
                     .retain(|id| live.contains(id) || held.contains(id));
             }
-            return WorldOutcome::Accepted(self.bootstrap_report_reply(report, &correlation));
+            return LegacyWorldOutcome::Accepted(self.bootstrap_report_reply(report, &correlation));
         }
         // Stage everything past this point on a clone. Exact-encoding
         // overflow (or any late failure) drops the candidate; `self` is
@@ -2460,7 +2472,7 @@ impl WorldEngine {
         }
         let outcome = staged.run_accepted(report, &owner, &correlation, digest, consumed);
         match outcome {
-            WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
+            LegacyWorldOutcome::Accepted(reply) | LegacyWorldOutcome::CommandConsumed(reply) => {
                 // Outbound intent lane gate: every published/cached reply
                 // originates valid. This increment publishes at most one
                 // ToggleFloat save (see `toggle_float_intent_save`); the
@@ -2468,7 +2480,7 @@ impl WorldEngine {
                 // pass here before the candidate commits or encodes. Fixed
                 // check vocabulary, never payload.
                 if let Some(reason) = validate_intent_writes_reason(&reply.intent_writes) {
-                    return WorldOutcome::Rejected {
+                    return LegacyWorldOutcome::Rejected {
                         kind: KIND_SNAPSHOT,
                         message: reason,
                     };
@@ -2476,7 +2488,7 @@ impl WorldEngine {
                 if reply_estimate(&reply) > WORLD_MAX_REPLY_BYTES
                     || encode_reply_canonical(&reply).len() > WORLD_MAX_REPLY_BYTES
                 {
-                    return WorldOutcome::Rejected {
+                    return LegacyWorldOutcome::Rejected {
                         kind: KIND_REPLY_SIZE,
                         message: MSG_REPLY_SIZE,
                     };
@@ -2484,21 +2496,46 @@ impl WorldEngine {
                 *self = staged;
                 self.last_reply = Some(reply.clone());
                 if consumed {
-                    WorldOutcome::CommandConsumed(reply)
+                    LegacyWorldOutcome::CommandConsumed(reply)
                 } else {
-                    WorldOutcome::Accepted(reply)
+                    LegacyWorldOutcome::Accepted(reply)
                 }
             }
-            WorldOutcome::Duplicate(_) => {
+            LegacyWorldOutcome::Duplicate(_) => {
                 // Staged runs never duplicate: the latest duplicate returns
                 // above, before staging.
-                WorldOutcome::Rejected {
+                LegacyWorldOutcome::Rejected {
                     kind: KIND_SUPERSEDED,
                     message: MSG_SUPERSEDED,
                 }
             }
             rejected => rejected,
         }
+    }
+
+    /// Accept one complete v4 report and publish one globally ordered v4
+    /// reply. This is the sole public report ingress: the caller supplies
+    /// the typed v4 report, and the admitted boundary owns admission (bound
+    /// owner plus request correlation) before delegating to the internal
+    /// v4 run. Missing bound owner refuses as owner-invalid; an invalid
+    /// request correlation refuses as correlation-invalid.
+    pub fn handle_report(&mut self, report: &WorldReportV4) -> WorldOutcome {
+        let Some(owner) = self.connection_owner.clone() else {
+            return V4RunOutcome::Rejected {
+                kind: KIND_OWNER,
+                message: MSG_OWNER,
+            };
+        };
+        let correlation = match CorrelationId::parse(&report.request_id) {
+            Some(correlation) => correlation,
+            None => {
+                return V4RunOutcome::Rejected {
+                    kind: KIND_CORRELATION,
+                    message: MSG_CORRELATION,
+                };
+            }
+        };
+        self.handle_report_v4(report, &EventIssue { owner, correlation })
     }
 
     fn bootstrap_report_reply(
@@ -2510,7 +2547,7 @@ impl WorldEngine {
         // below trivially satisfies `validate_intent_writes_reason`, so the
         // staged commit gate above stays the single enforcing boundary.
         WorldReply {
-            contract_version: WORLD_CONTRACT_VERSION,
+            contract_version: WORLD_CONTRACT_VERSION_LEGACY,
             adapter_incarnation: report.adapter_incarnation.clone(),
             core_generation: report.core_generation.clone(),
             request_id: correlation.as_str().to_owned(),
@@ -3207,7 +3244,7 @@ impl WorldEngine {
         correlation: &CorrelationId,
         digest: u64,
         consumed: bool,
-    ) -> WorldOutcome {
+    ) -> LegacyWorldOutcome {
         // Freeze implicit send sources from pre-observation retained
         // homing, before staging can admit newcomers or settle rehoming.
         // The frozen explicit output is the only source the command below
@@ -3607,7 +3644,7 @@ impl WorldEngine {
                     // it discards the staged candidate with no adoption,
                     // exactly like every pre-acceptance gate.
                     if kind == KIND_CREATION_EXHAUSTED {
-                        return WorldOutcome::Rejected { kind, message };
+                        return LegacyWorldOutcome::Rejected { kind, message };
                     }
                     // Restore the observation-only pre-command image so
                     // no partial command mutation (e.g. a trailing create
@@ -3809,7 +3846,12 @@ impl WorldEngine {
     /// staged candidate. Every accepted report advances the revision, even a
     /// semantic no-op. The revision cannot wrap: exhaustion is refused
     /// before staging.
-    fn finish(&mut self, report: &WorldReport, digest: u64, mut reply: WorldReply) -> WorldOutcome {
+    fn finish(
+        &mut self,
+        report: &WorldReport,
+        digest: u64,
+        mut reply: WorldReply,
+    ) -> LegacyWorldOutcome {
         self.prune_lifetime_state();
         // Retain the last-known focused output before membership converges,
         // so the latch reflects strictly prior retention: a stealing
@@ -3881,9 +3923,9 @@ impl WorldEngine {
             self.retain_native_last_views();
         }
         if reply.command_consumed {
-            WorldOutcome::CommandConsumed(reply)
+            LegacyWorldOutcome::CommandConsumed(reply)
         } else {
-            WorldOutcome::Accepted(reply)
+            LegacyWorldOutcome::Accepted(reply)
         }
     }
 }

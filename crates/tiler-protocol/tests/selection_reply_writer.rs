@@ -12,13 +12,13 @@ use tiler_core::connection::HostCapabilities;
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
 use tiler_core::world_report::{
     ArrivalBracket, ArrivalLocation, FocusFeedback, LastWrite, LastWritePath, LastWriteProperty,
     ScopeAuthority, ScreenReport, VisibilityFact, VisibilityReason, VisibilitySample,
-    VisibilitySetter, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    VisibilitySetter, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
 };
-use tiler_protocol::world_protocol::encode_reply;
+use tiler_protocol::world_protocol::encode_reply_legacy;
 
 fn rect(x: i32) -> Rect {
     Rect {
@@ -105,7 +105,7 @@ fn report(
     focused: &str,
 ) -> WorldReport {
     WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
+        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -147,8 +147,8 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReport,
 ) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report(report) {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine.handle_report_legacy(report) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -257,7 +257,7 @@ fn selection_reply_spells_through_both_writers() {
 
     // Both writers spell the actual producer reply byte-identically, and
     // the structural estimate covers it.
-    let wire = encode_reply(&reply);
+    let wire = encode_reply_legacy(&reply);
     assert_eq!(
         wire,
         tiler_core::world_report::encode_reply_canonical(&reply),
@@ -409,7 +409,7 @@ fn selection_reply_carries_switch_terminal_through_both_writers() {
     assert!(!event.fallback);
     // Both writers spell the terminal reply byte-identically with the
     // exact canonical event row in frozen key order.
-    let wire = encode_reply(&settled);
+    let wire = encode_reply_legacy(&settled);
     assert_eq!(
         wire,
         tiler_core::world_report::encode_reply_canonical(&settled),
