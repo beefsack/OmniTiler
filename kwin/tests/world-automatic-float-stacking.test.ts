@@ -18,6 +18,8 @@ import { applyWorldReply } from "../src/world-apply";
 import { WorldAdapterState } from "../src/world-state";
 import { startWorldAdapterEntry } from "../src/world-entry";
 import type { WorldObservation } from "../src/world-observe";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 // ---------------------------------------------------------------------------
 // Shared QML-shaped float fakes with native above/below exclusivity.
@@ -512,31 +514,42 @@ function applyObservation(focused: string, focusIsFloat: boolean) {
     };
 }
 
-function applyReply(obs: string, target: string, id = "fx-1") {
-    return {
-        adapter: "adapter-1", gen: "gen-1", req: "req-1", obs, rev: "7",
+function applyBoundReply(target: string, id: string, effect: { cause: "automatic-admission" | "explicit-command"; cmdSeq: string | null }): { state: WorldAdapterState; flightWatermark: string; reply: never } {
+    // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
+    // output): the producer adapter lifetime, the serving generation, the
+    // capture source correlation and the local native watermark. Broker
+    // obs/rev advance together here; the terminal result stays null
+    // (requester-only on the take lane).
+    const state = new WorldAdapterState("test-adapter", "owner-a");
+    assert.equal(state.onDiscovery("gen-1", "test-adapter"), true);
+    state.invalidate();
+    const flight = state.beginCapture("req-1", null);
+    assert.ok(flight !== null);
+    const text = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen: "gen-1", req: "req-1",
+        obs: "1", rev: "1",
         ready: true, consumed: false,
         source: "req-1",
-        nativeInvalid: "1",
-        clock: "0",
+        nativeInvalid: flight.watermark,
+        clock: "1",
         gestureSettled: null, gestureAssoc: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        scopes: [], workspaces: [], outputs: [],
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: DISABLED_PRESENTATION,
+        scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
+        workspaces: [], outputs: [],
         windows: [], transfers: [],
-        effects: [{ id, kind: "focus", target, rev: "7" }],
+        effects: [{ id, kind: "focus", target, rev: "1", cause: effect.cause, cmdSeq: effect.cmdSeq, awaitShown: false }],
         result: null,
-    };
-}
-
-function applyState(obs: string): WorldAdapterState {
-    const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1", "broker-1");
-    while (state.currentInvalid !== obs) {
-        state.invalidate();
+    });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+    if (!isCoreWorldReply(parsed)) {
+        throw new Error("unreachable");
     }
-    return state;
+    assert.deepEqual(state.acceptReply(parsed, "req-1", flight.watermark), { applied: true, reason: "accepted" });
+    return { state, flightWatermark: flight.watermark, reply: parsed as never };
 }
 
 describe("world apply automatic-float focus preservation", () => {
@@ -544,11 +557,10 @@ describe("world apply automatic-float focus preservation", () => {
         const { observation, refs } = applyObservation("win-b", true);
         // Producer-accurate automatic admission intent (world_engine.rs
         // mints af-<window>); explicit fx-<seq> must never take this path.
-        const reply = applyReply("3", "win-a", "af-win-a") as never;
-        const state = applyState("3");
+        const { state, flightWatermark, reply } = applyBoundReply("win-a", "af-win-a", { cause: "automatic-admission", cmdSeq: null });
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
-        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
+        const result = applyWorldReply({ dispatchWatermark: flightWatermark, takeResult: null,
             state,
             observation,
             reply,
@@ -584,11 +596,10 @@ describe("world apply automatic-float focus preservation", () => {
         // mints fx-<seq> for executed focus commands, e.g. send-follow):
         // user intent must never be swallowed by float preservation.
         const { observation, refs } = applyObservation("win-b", true);
-        const reply = applyReply("3", "win-a", "fx-3") as never;
-        const state = applyState("3");
+        const { state, flightWatermark, reply } = applyBoundReply("win-a", "fx-3", { cause: "explicit-command", cmdSeq: "1" });
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
-        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
+        const result = applyWorldReply({ dispatchWatermark: flightWatermark, takeResult: null,
             state,
             observation,
             reply,
@@ -620,11 +631,10 @@ describe("world apply automatic-float focus preservation", () => {
 
     it("a tiled focus target still actuates with correlated attempt/result diagnostics", () => {
         const { observation, refs } = applyObservation("win-a", false);
-        const reply = applyReply("3", "win-b", "fx-7") as never;
-        const state = applyState("3");
+        const { state, flightWatermark, reply } = applyBoundReply("win-b", "fx-7", { cause: "explicit-command", cmdSeq: "1" });
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
-        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
+        const result = applyWorldReply({ dispatchWatermark: flightWatermark, takeResult: null,
             state,
             observation,
             reply,
@@ -657,11 +667,10 @@ describe("world apply automatic-float focus preservation", () => {
 
     it("an accepted setter without native activation reports active=false, not refused", () => {
         const { observation, refs } = applyObservation("win-a", false);
-        const reply = applyReply("3", "win-b", "fx-7") as never;
-        const state = applyState("3");
+        const { state, flightWatermark, reply } = applyBoundReply("win-b", "fx-7", { cause: "explicit-command", cmdSeq: "1" });
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
-        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
+        const result = applyWorldReply({ dispatchWatermark: flightWatermark, takeResult: null,
             state,
             observation,
             reply,
@@ -714,6 +723,9 @@ interface EntryWin {
     modal: boolean;
     wantsInput: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
+    // Truthful undecorated client rect: the fake carries no decoration, so
+    // the client mirrors the frame (delta 0).
+    clientGeometry: { x: number; y: number; width: number; height: number } | null;
     output: { name: string };
     desktops: EntryDesk[];
     minimized: boolean;
@@ -754,6 +766,8 @@ function entryWin(id: string, out: string, ws: EntryDesk, fixed: boolean, above:
         internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         frameGeometry: { x: 0, y: 0, width: fixed ? 640 : 200, height: fixed ? 480 : 200 },
+        // Truthful undecorated client rect mirrors the frame exactly.
+        clientGeometry: { x: 0, y: 0, width: fixed ? 640 : 200, height: fixed ? 480 : 200 },
         output: { name: out },
         desktops: [ws],
         minimized: false,
@@ -816,6 +830,7 @@ function makeEntryHarness(qmlLists = false): EntryHarness {
         screens: world.screens,
         desktops: world.desktops,
         activeScreen: world.activeScreen,
+        cursorPos: { x: 2, y: 100 },
         get activeWindow() {
             return world.activeWindow;
         },
@@ -848,6 +863,9 @@ function makeEntryHarness(qmlLists = false): EntryHarness {
             get: () => frame,
             set: (rect: { x: number; y: number; width: number; height: number }) => {
                 frame = rect;
+                // Keep the truthful undecorated client tracking the frame so
+                // no capture pairs a fresh frame with a stale client.
+                (w as unknown as Record<string, unknown>)["clientGeometry"] = { ...rect };
                 world.geometryWrites.push(`${w.internalId}@${rect.x},${rect.y},${rect.width},${rect.height}`);
                 return true;
             },
@@ -861,16 +879,21 @@ function makeEntryHarness(qmlLists = false): EntryHarness {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
-                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+                const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"],
+                    globalCmd: String(calls.filter((q) => q.method === "QueueWorldCommand").length) }));
             } else if (method === "TakeCommandResult") {
+                const takeBody = JSON.parse(payload) as Record<string, unknown>;
+                const takeGen = typeof takeBody["gen"] === "string" ? (takeBody["gen"] as string) : "gen-1";
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 4, outcome: "ready", gen: takeGen, globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
-                }            }
+                    callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
+                }
+            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -896,18 +919,60 @@ function makeEntryHarness(qmlLists = false): EntryHarness {
     return { wins, world, calls, timers, logs, aboveWrites, belowWrites, handle, runTimers, rev: { n: 0 } };
 }
 
+function answerHandshake(h: { calls: EntryHarness["calls"] }, gen = "gen-1"): void {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/handshake");
+    const req = (JSON.parse((found as EntryHarness["calls"][number]).payload) as Record<string, unknown>)["req"] as string;
+    (found as EntryHarness["calls"][number]).callback(JSON.stringify({
+        type: "handshake-reply", v: 4, adapter: "test-adapter", req,
+        ready: false, kind: "", gen,
+    }));
+}
+
+function answerSettings(h: { calls: EntryHarness["calls"] }, gen = "gen-1"): void {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/settings");
+    const body = JSON.parse((found as EntryHarness["calls"][number]).payload) as Record<string, unknown>;
+    (found as EntryHarness["calls"][number]).callback(JSON.stringify({
+        type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+        req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+    }));
+}
+
 function entryAcceptedReply(gen: string, source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string {
-    return JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req: source, obs: rev, rev,
+    // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
+    // output): the producer adapter lifetime, the serving generation, the
+    // capture source correlation and native watermark. This scripted
+    // harness advances broker obs and revision together; terminal results
+    // stay requester-only on the take lane.
+    const text = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
-        source,
-        nativeInvalid,
-        clock: "0",
+        source, nativeInvalid, clock: "1",
         gestureSettled: null, gestureAssoc: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: DISABLED_PRESENTATION,
+        scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [],
         outputs: [],
         windows: [],
@@ -916,25 +981,29 @@ function entryAcceptedReply(gen: string, source: string, nativeInvalid: string, 
         result: null,
         ...extra,
     });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+    return text;
 }
 
 function entryDiscover(h: EntryHarness, gen = "gen-1"): void {
-    const call = [...h.calls].reverse().find((c) => c.method === "DiscoverWorld");
-    assert.ok(call !== undefined);
-    const body = JSON.parse(call.payload);
-    call.callback(JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
-        ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-        gestureSettled: null,
-        operationSettled: [], nativeCreations: [],
-        warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        windows: [], transfers: [], effects: [], result: null,
-    }));
+    // Genuine v4 connection bootstrap: the handshake reply echoes the
+    // producer adapter lifetime and mints the serving generation; the
+    // revisioned settings snapshot must read accepted before the first
+    // report flies.
+    answerHandshake(h, gen);
+    answerSettings(h, gen);
+    h.runTimers();
+    // Settle the discovery-triggered observation report first: the entry
+    // auto-dispatches one observation-only DescribeWorld on bind, and a
+    // command issued while it is in flight queues in FIFO order behind it.
+    // Replying here leaves the flight idle for the test body.
     const auto = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
     assert.ok(auto !== undefined);
     const autoBody = JSON.parse(auto.payload);
-    auto.callback(entryAcceptedReply(gen, autoBody.source, autoBody.nativeInvalid, "0"));
+    assert.equal(autoBody["command"], undefined, "captures never carry an inline command");
+    assert.equal((autoBody["report"] as Record<string, unknown>)["command"], undefined, "inner reports never carry a command");
+    auto.callback(entryAcceptedReply(gen, autoBody["source"] as string, autoBody["nativeInvalid"] as string, "0"));
 }
 
 function entryRound(h: EntryHarness, extra: Record<string, unknown> = {}): void {
@@ -971,7 +1040,7 @@ describe("world entry automatic-float stacking", () => {
         entryDiscover(h);
         h.world.activeWindow = h.wins.find((w) => w.internalId === "win-b") ?? null;
         entryRound(h, {
-            effects: [{ id: "af-win-a", kind: "focus", target: "win-a", rev: "9" }],
+            effects: [{ id: "af-win-a", kind: "focus", target: "win-a", rev: "9", cause: "automatic-admission", cmdSeq: null, awaitShown: false }],
         });
         assert.deepEqual(h.world.focused, [], "no activation over the focused float");
         assert.ok(h.logs.some((l) => l.includes("focus-skipped") && l.includes("reason=automatic-active")), "automatic-active skip");
@@ -982,7 +1051,7 @@ describe("world entry automatic-float stacking", () => {
         entryDiscover(h);
         h.world.activeWindow = h.wins.find((w) => w.internalId === "win-b") ?? null;
         entryRound(h, {
-            effects: [{ id: "fx-3", kind: "focus", target: "win-a", rev: "9" }],
+            effects: [{ id: "fx-3", kind: "focus", target: "win-a", rev: "9", cause: "explicit-command", cmdSeq: "1", awaitShown: false }],
         });
         assert.deepEqual(h.world.focused, ["win-a"], "explicit fx-* follow actuates");
         assert.ok(!h.logs.some((l) => l.includes("focus-skipped")), "no preservation skip for explicit focus");
@@ -993,7 +1062,10 @@ describe("world entry automatic-float stacking", () => {
         entryDiscover(h);
         assert.deepEqual(h.aboveWrites, ["win-b=true"]);
         entryRound(h, {
-            result: { op: "toggle-float", win: "win-b", rect: null, noSpace: false },
+            // Strict v4 toggle-float success is the exact 3-key shape
+            // (world-report.ts result-float-keys): present-but-false
+            // noSpace refuses, so success omits the key entirely.
+            result: { op: "toggle-float", win: "win-b", rect: null },
         });
         assert.deepEqual(h.aboveWrites, ["win-b=true", "win-b=false"], "explicit tile releases once");
         assert.deepEqual(h.belowWrites, [], "tile never writes below");

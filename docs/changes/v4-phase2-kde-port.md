@@ -553,3 +553,10 @@
   The latest full adapter build succeeds and executes 984 tests: 902 pass, 82
   fail, none skip. Those remaining failures, widened gates and integrated review
   still keep K1 incomplete; scripted settlement is not later-slice native proof.
+- Automatic-float focus/stacking and capacity-float echo harnesses now bind strict
+  v4 captures and requester-only terminals. The echo store persists only explicit
+  core intent decisions as exact opaque records. Effects carry typed causes and
+  command provenance; successful float terminals omit the invalid false no-space
+  marker. All 35 tests and strict TypeScript pass, retaining stacking ownership,
+  fullscreen safety, explicit unfloat release, restart, refusal and no-replay
+  assertions. These are offline mechanical cases, not new native acceptance.
