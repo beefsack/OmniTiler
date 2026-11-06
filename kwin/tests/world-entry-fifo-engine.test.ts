@@ -162,6 +162,7 @@ interface FakeWindow {
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
+    clientGeometry: { x: number; y: number; width: number; height: number };
     output: { name: string };
     desktops: FakeDesktop[];
     minimized: boolean;
@@ -169,8 +170,21 @@ interface FakeWindow {
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
-    minSize: null;
-    maxSize: null;
+    minSize: { width: number; height: number };
+    maxSize: { width: number; height: number };
+    pid: number;
+    resourceClass: string;
+    caption: string;
+    windowRole: string;
+    desktopFileName: string;
+    resizeable: boolean;
+    keepAbove: boolean;
+    keepBelow: boolean;
+    readonly outputChanged: FakeSignal["signal"];
+    readonly desktopsChanged: FakeSignal["signal"];
+    readonly hiddenChanged: FakeSignal["signal"];
+    readonly frameGeometryChanged: FakeSignal["signal"];
+    readonly __signals: { readonly outputChanged: FakeSignal; readonly desktopsChanged: FakeSignal; readonly hiddenChanged: FakeSignal; readonly frameGeometryChanged: FakeSignal };
 }
 
 interface CapturedCall {
@@ -219,23 +233,57 @@ function frameOf(win: FakeWindow): { x: number; y: number; w: number; h: number 
     return { x: frame.x, y: frame.y, w: frame.width, h: frame.height };
 }
 
+// Truthful native decoration: stable nonnegative insets mirroring the v4
+// reference (deltaW 4, deltaH 22). The tiler writes frameGeometry only; the
+// native client tracks with the same insets so every capture carries
+// consistent frame/client facts.
+const DECOR = { left: 2, top: 21, right: 2, bottom: 1 };
+function truthfulClientFor(f: { x: number; y: number; width: number; height: number }): { x: number; y: number; width: number; height: number } {
+    const w = Math.max(1, f.width - (DECOR.left + DECOR.right));
+    const h = Math.max(1, f.height - (DECOR.top + DECOR.bottom));
+    const x = f.x + Math.min(DECOR.left, Math.max(0, f.width - w));
+    const y = f.y + Math.min(DECOR.top, Math.max(0, f.height - h));
+    return { x, y, width: w, height: h };
+}
+
 async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
     const ws: FakeDesktop = { id: "ws1", name: "WS1" };
     const liveDesktops: FakeDesktop[] = [ws];
-    const wins: FakeWindow[] = ids.map((id, i) => ({
-        internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
-        normalWindow: true,
-        frameGeometry: { x: i * 300, y: 0, width: 200, height: 200 },
-        output: { name: "out" },
-        desktops: [ws],
-        minimized: false,
-        hidden: false,
-        fullScreen: false,
-        maximizeMode: 0,
-        onAllDesktops: false,
-        minSize: null,
-        maxSize: null,
-    }));
+    const wins: FakeWindow[] = ids.map((id, i) => {
+        const outputChanged = makeSignal();
+        const winDesktopsChanged = makeSignal();
+        const winHiddenChanged = makeSignal();
+        const winFrameChanged = makeSignal();
+        const frame = { x: i * 300, y: 0, width: 200, height: 200 };
+        return {
+            internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
+            normalWindow: true,
+            frameGeometry: { ...frame },
+            clientGeometry: truthfulClientFor(frame),
+            output: { name: "out" },
+            desktops: [ws],
+            minimized: false,
+            hidden: false,
+            fullScreen: false,
+            maximizeMode: 0,
+            onAllDesktops: false,
+            minSize: { width: 100, height: 100 },
+            maxSize: { width: 2147483647, height: 2147483647 },
+            pid: 1234,
+            resourceClass: "Example",
+            caption: `Window ${id}`,
+            windowRole: "normal",
+            desktopFileName: "example.app",
+            resizeable: true,
+            keepAbove: false,
+            keepBelow: false,
+            outputChanged: outputChanged.signal,
+            desktopsChanged: winDesktopsChanged.signal,
+            hiddenChanged: winHiddenChanged.signal,
+            frameGeometryChanged: winFrameChanged.signal,
+            __signals: { outputChanged, desktopsChanged: winDesktopsChanged, hiddenChanged: winHiddenChanged, frameGeometryChanged: winFrameChanged },
+        };
+    });
     const geometryWrites: string[] = [];
     const focused: string[] = [];
     const sigNames = [
@@ -415,12 +463,22 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
     };
     for (const win of wins) {
         let frame = win.frameGeometry;
+        let client = truthfulClientFor(frame);
         Object.defineProperty(win, "frameGeometry", {
             configurable: true,
             get: () => frame,
             set: (rect: { x: number; y: number; width: number; height: number }) => {
                 frame = rect;
+                client = truthfulClientFor(rect);
                 harness.geometryWrites.push(`${win.internalId}@${rect.x},${rect.y},${rect.width},${rect.height}`);
+                return true;
+            },
+        });
+        Object.defineProperty(win, "clientGeometry", {
+            configurable: true,
+            get: () => client,
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                client = rect;
                 return true;
             },
         });
@@ -472,16 +530,51 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
     return harness;
 }
 
-async function discover(h: Harness): Promise<void> {
-    const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
-    assert.ok(discIndex >= 0, "entry discovers on start");
-    const disc = h.calls[discIndex] as CapturedCall;
-    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
-    const reply = h.broker.bindDiscovery(engineBootstrap);
-    const parsed = JSON.parse(reply) as Record<string, unknown>;
-    assert.equal(parsed["ready"], false, "bootstrap is not ready");
-    disc.callback(reply);
+async function discover(h: Harness): Promise<string> {
+    // Authentic v4 connection pump: the handshake binds the producer
+    // adapter lifetime and mints the serving generation; the revisioned
+    // settings snapshot (rev 1) precedes the first report on the wire.
+    const hsIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
+    assert.ok(hsIndex >= 0, "entry discovers on start");
+    const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
+    assert.equal(hsBody["adapter"], "test-adapter", "handshake carries the producer adapter");
+    const hsReplyText = await h.bridge.send("DiscoverWorld", (h.calls[hsIndex] as CapturedCall).payload);
+    const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
+    assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
+    assert.equal(hsReply["ready"], false, "accepted handshake carries ready:false");
+    assert.equal(hsReply["kind"], "", "accepted handshake carries an empty kind");
+    assert.equal(hsReply["adapter"], "test-adapter", "handshake retains the producer adapter, never a broker incarnation");
+    assert.equal(hsReply["req"], hsBody["req"], "handshake echoes the request correlation");
+    assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string) !== "", "handshake mints the serving generation");
+    const gen = hsReply["gen"] as string;
+    const boundHs = h.broker.bindDiscovery(hsReplyText);
+    assert.equal((JSON.parse(boundHs) as Record<string, unknown>)["adapter"], "test-adapter", "harness passes the producer lifetime through");
+    assert.equal(h.broker.gen, gen, "harness records the actual serving generation");
+    (h.calls[hsIndex] as CapturedCall).callback(boundHs);
+    const setIndex = h.calls.findIndex((call, at) => at > hsIndex && call.method === "DiscoverWorld");
+    assert.ok(setIndex >= 0, "revisioned settings follow the handshake");
+    const setBody = JSON.parse((h.calls[setIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(setBody["type"], "settings", "second discovery is the revisioned settings snapshot");
+    assert.equal(setBody["adapter"], "test-adapter", "settings carry the producer adapter");
+    assert.equal(setBody["gen"], gen, "settings bind the serving generation");
+    assert.equal(setBody["rev"], "1", "first settings snapshot carries rev 1");
+    const setReplyText = await h.bridge.send("DiscoverWorld", (h.calls[setIndex] as CapturedCall).payload);
+    const setReply = JSON.parse(setReplyText) as Record<string, unknown>;
+    assert.equal(setReply["type"], "settings-reply", "engine answers settings");
+    assert.equal(setReply["status"], "accepted", `settings accepted, got ${setReplyText.slice(0, 300)}`);
+    assert.equal(setReply["adapter"], "test-adapter", "settings reply retains the producer adapter");
+    assert.equal(setReply["gen"], gen, "settings reply binds the serving generation");
+    assert.equal(setReply["req"], setBody["req"], "settings reply echoes the request correlation");
+    assert.equal(setReply["rev"], "1", "settings reply binds the sent revision");
+    (h.calls[setIndex] as CapturedCall).callback(setReplyText);
+    assert.deepEqual(
+        h.calls.slice(0, setIndex + 1).map((call) => call.method),
+        ["DiscoverWorld", "DiscoverWorld"],
+        "no report precedes the accepted settings",
+    );
     await h.settle();
+    return gen;
 }
 
 function winById(h: Harness, id: string): FakeWindow {
@@ -807,8 +900,20 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             assert.equal(moves.length, 2, "timed-out head plus drained tail, nothing else");
             const tailIndex = await h.flushAt(h.calls.length - 1);
             const tailReply = JSON.parse(h.replies.get(tailIndex) as string) as Record<string, unknown>;
-            assert.equal(tailReply["outcome"], "rejected", "repeated tail move noops against settled topology");
-            assert.equal(tailReply["kind"], "planner-noop", "tail noop carries the exact engine verdict");
+            // v4 noop shape: a no-effect move drains accepted (accepted
+            // core replies carry no outcome key; the retired
+            // rejected/planner-noop pair never appears on the wire).
+            assert.equal(tailReply["outcome"] ?? "accepted", "accepted", "repeated tail move drains accepted against settled topology");
+            assert.equal(tailReply["consumed"], false, "tail executes fresh (not consumed) with no-op geometry");
+            assert.equal(tailReply["result"], null, "actuator lane never carries the terminal result");
+            // The noop verdict rides the requester take lane: move ops
+            // carry no separate result (the snapshot IS the result), so
+            // the ready take for the drained tail resolves null.
+            const tailTakes = h.takeReplies
+                .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+                .filter((r) => r["outcome"] === "ready");
+            assert.ok(tailTakes.length > 0, "take lane settles the drained tail");
+            assert.equal((tailTakes[tailTakes.length - 1] as Record<string, unknown>)["result"], null, "tail noop resolves a null take result");
             assert.deepEqual(
                 h.wins.map((w) => ({ ...frameOf(w) })),
                 framesAfterHead,

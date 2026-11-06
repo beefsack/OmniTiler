@@ -489,3 +489,13 @@
   The initial strict round-trip check exposed the parser's omitted version tag
   and inserted optional defaults; explicit wire projections corrected that test
   plumbing without changing the production decoder or scenario assertions.
+- The native-homing, fixed-client tile-precondition and real-engine directional
+  FIFO carriers now perform the genuine handshake/settings sequence and retain
+  truthful native facts and frame/client tracking. All 16 tests and strict
+  TypeScript pass. External homing, synchronous safe/unsafe echoes, zero/two
+  intervening observations, exact fixed-client tile intent and opaque persistence,
+  focus/move ordering, stale-head refusal and timeout-tail drainage remain covered.
+  Retired scope strings, native-fact projections, admission-effect ids and no-op
+  envelope expectations were replaced by their exact v4 counterparts. Fixed
+  client hints are asserted in decorated-frame space; zero/unbounded hints remain
+  unchanged. These are offline carriers, not new native or later-slice acceptance.

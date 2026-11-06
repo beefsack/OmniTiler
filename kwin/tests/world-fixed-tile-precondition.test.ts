@@ -226,6 +226,19 @@ interface Harness {
     stop: () => Promise<void>;
 }
 
+// Truthful native decoration: stable nonnegative insets mirroring the v4
+// reference (deltaW 4, deltaH 22). The tiler writes frameGeometry only; the
+// native client tracks with the same insets so every capture carries
+// consistent frame/client facts (fixed-hint conversion needs the delta).
+const DECOR = { left: 2, top: 21, right: 2, bottom: 1 };
+function truthfulClientFor(f: { x: number; y: number; width: number; height: number }): { x: number; y: number; width: number; height: number } {
+    const w = Math.max(1, f.width - (DECOR.left + DECOR.right));
+    const h = Math.max(1, f.height - (DECOR.top + DECOR.bottom));
+    const x = f.x + Math.min(DECOR.left, Math.max(0, f.width - w));
+    const y = f.y + Math.min(DECOR.top, Math.max(0, f.height - h));
+    return { x, y, width: w, height: h };
+}
+
 function termSpec(
     bare: string,
     frame: { x: number; y: number; width: number; height: number },
@@ -260,6 +273,10 @@ async function makeHarness(): Promise<Harness> {
     const viewSwitches: string[] = [];
     const focused: string[] = [];
     const storeWrites: string[] = [];
+    // Schema2 opaque intent bus: exact read/write correlation with
+    // acknowledgements, following the entry-intent harness. Starts empty:
+    // the entry auto-seeds the empty snapshot before the first report.
+    const intentStored: Array<{ win: string; data: string }> = [];
     const sigNames = [
         "windowAdded",
         "windowRemoved",
@@ -384,18 +401,35 @@ async function makeHarness(): Promise<Harness> {
             fullScreen: spec.fullScreen,
             maximizeMode: spec.maximizeMode,
             onAllDesktops: spec.onAllDesktops,
+            pid: 1234,
+            resourceClass: "Example",
+            caption: `Window ${spec.braced}`,
+            windowRole: "normal",
+            desktopFileName: "example.app",
+            resizeable: true,
+            clientGeometry: { ...truthfulClientFor(spec.frame) },
         };
         let frame = { ...spec.frame };
+        let client = truthfulClientFor(frame);
         Object.defineProperty(w, "frameGeometry", {
             configurable: true,
             get: () => ({ ...frame }),
             set: (rect: { x: number; y: number; width: number; height: number }) => {
                 frame = { ...rect };
+                client = truthfulClientFor(frame);
                 const cur = live.get(spec.braced);
                 if (cur !== undefined) {
                     cur.frame = { ...rect };
                 }
                 geometryWrites.push(`${spec.braced}@${rect.x},${rect.y},${rect.width},${rect.height}`);
+                return true;
+            },
+        });
+        Object.defineProperty(w, "clientGeometry", {
+            configurable: true,
+            get: () => ({ ...client }),
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                client = { ...rect };
                 return true;
             },
         });
@@ -452,11 +486,19 @@ async function makeHarness(): Promise<Harness> {
         floatIntent: true,
         callDbus: (_service, _path, _iface, method, payload, callback): void => {
             if (method === "ReadFloatIntent") {
-                callback(JSON.stringify({ v: 1, correlation_id: "float-seed", members: [], stored: 0, returned: 0, tile: [], tile_stored: 0, tile_returned: 0 }));
+                const corr = (JSON.parse(payload) as Record<string, unknown>)["correlation_id"] as string;
+                callback(JSON.stringify({ v: 2, correlation_id: corr, outcome: "ok", records: intentStored, stored: intentStored.length, returned: intentStored.length }));
                 return;
             }
             if (method === "WriteFloatIntent") {
+                const body = JSON.parse(payload) as Record<string, unknown>;
+                const corr = body["correlation_id"] as string;
+                intentStored.length = 0;
+                for (const row of (body["records"] as Array<{ win: string; data: string }>) ?? []) {
+                    intentStored.push({ win: row.win, data: row.data });
+                }
                 storeWrites.push(payload);
+                callback(JSON.stringify({ v: 2, correlation_id: corr, outcome: "stored", stored: intentStored.length }));
                 return;
             }
             if (method !== "DiscoverWorld" && method !== "DescribeWorld" && method !== "QueueWorldCommand" && method !== "TakeCommandResult") {
@@ -492,17 +534,48 @@ async function makeHarness(): Promise<Harness> {
 }
 
 async function discover(h: Harness): Promise<string> {
-    const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
-    assert.ok(discIndex >= 0, "entry discovers on start");
-    const disc = h.calls[discIndex] as CapturedCall;
-    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
-    const reply = h.broker.bindDiscovery(engineBootstrap);
-    const parsed = JSON.parse(reply) as Record<string, unknown>;
-    assert.equal(parsed["ready"], false, "bootstrap is not ready");
-    assert.ok(typeof parsed["gen"] === "string" && (parsed["gen"] as string).length > 0, "bootstrap binds a generation");
-    disc.callback(reply);
+    // Authentic v4 connection pump: the handshake binds the producer
+    // adapter lifetime and mints the serving generation; the revisioned
+    // settings snapshot (rev 1) precedes the first report on the wire.
+    const hsIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
+    assert.ok(hsIndex >= 0, "entry discovers on start");
+    const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
+    assert.equal(hsBody["adapter"], "test-adapter", "handshake carries the producer adapter");
+    const hsReplyText = await h.bridge.send("DiscoverWorld", (h.calls[hsIndex] as CapturedCall).payload);
+    const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
+    assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
+    assert.equal(hsReply["ready"], false, "accepted handshake carries ready:false");
+    assert.equal(hsReply["kind"], "", "accepted handshake carries an empty kind");
+    assert.equal(hsReply["adapter"], "test-adapter", "handshake retains the producer adapter, never a broker incarnation");
+    assert.equal(hsReply["req"], hsBody["req"], "handshake echoes the request correlation");
+    assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string) !== "", "handshake mints the serving generation");
+    const hsBound = h.broker.bindDiscovery(hsReplyText);
+    assert.equal((JSON.parse(hsBound) as Record<string, unknown>)["adapter"], "test-adapter", "harness passes the producer lifetime through");
+    (h.calls[hsIndex] as CapturedCall).callback(hsBound);
     const gen = h.broker.gen;
     assert.ok(gen.length > 0, "generation bound");
+    const setIndex = h.calls.findIndex((call, at) => at > hsIndex && call.method === "DiscoverWorld");
+    assert.ok(setIndex >= 0, "revisioned settings follow the handshake");
+    const setBody = JSON.parse((h.calls[setIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(setBody["type"], "settings", "second discovery is the revisioned settings snapshot");
+    assert.equal(setBody["adapter"], "test-adapter", "settings carry the producer adapter");
+    assert.equal(setBody["gen"], gen, "settings bind the serving generation");
+    assert.equal(setBody["rev"], "1", "first settings snapshot carries rev 1");
+    const setReplyText = await h.bridge.send("DiscoverWorld", (h.calls[setIndex] as CapturedCall).payload);
+    const setReply = JSON.parse(setReplyText) as Record<string, unknown>;
+    assert.equal(setReply["type"], "settings-reply", "engine answers settings");
+    assert.equal(setReply["status"], "accepted", `settings accepted, got ${setReplyText.slice(0, 300)}`);
+    assert.equal(setReply["adapter"], "test-adapter", "settings reply retains the producer adapter");
+    assert.equal(setReply["gen"], gen, "settings reply binds the serving generation");
+    assert.equal(setReply["req"], setBody["req"], "settings reply echoes the request correlation");
+    assert.equal(setReply["rev"], "1", "settings reply binds the sent revision");
+    (h.calls[setIndex] as CapturedCall).callback(setReplyText);
+    assert.deepEqual(
+        h.calls.slice(0, setIndex + 1).map((call) => call.method),
+        ["DiscoverWorld", "DiscoverWorld"],
+        "no report precedes the accepted settings",
+    );
     return gen;
 }
 
@@ -582,9 +655,24 @@ function assertExactBindings(h: Harness, round: FlushedRound, label: string): st
         assert.equal(w["ws"], logical, `${label}: ${String(w["win"])} homed on the bound logical through the core binding`);
     }
     const scopes = parsed["scopes"] as Array<Record<string, unknown>>;
-    const scope = scopes.find((s) => s["scope"] === `${OUT}/${logical}`);
-    assert.ok(scope !== undefined, `${label}: a scope names the bound logical`);
-    assert.equal(scope["auth"], "controlled", `${label}: the bound scope is controlled`);
+    // Exact covering authority on the tagged v4 union (never the retired
+    // composite string): the workspace arm names the bound logical
+    // directly, while an output arm covers the workspace on that output.
+    const scope = scopes.find((s) => {
+        const sc = s["scope"] as Record<string, unknown> | null;
+        if (typeof sc !== "object" || sc === null) {
+            return false;
+        }
+        if (sc["kind"] === "workspace") {
+            return sc["out"] === OUT && sc["ws"] === logical;
+        }
+        if (sc["kind"] === "output") {
+            return sc["out"] === OUT;
+        }
+        return false;
+    });
+    assert.ok(scope !== undefined, `${label}: a scope covers the bound logical`);
+    assert.equal(scope["auth"], "controlled", `${label}: the covering scope is controlled`);
     for (const bare of [WIN_O, WIN_F]) {
         assert.equal(h.live.get(`{${bare}}`)?.ws, WS_NATIVE, `${label}: native membership of ${bare} homed on the workspace native`);
     }
@@ -604,15 +692,18 @@ function assertEnablePrecondition(h: Harness, round: FlushedRound): string {
     assert.deepEqual(reported.map((w) => w["win"]).sort(), [WIN_F, WIN_O].sort(), "enable producer report names exactly the two windows");
     const repFixed = reported.find((w) => w["win"] === WIN_F) as Record<string, unknown>;
     const repPeer = reported.find((w) => w["win"] === WIN_O) as Record<string, unknown>;
-    assert.deepEqual(repFixed["minSize"], { ...FIXED_HINT }, "producer carries the finite fixed minimum");
-    assert.deepEqual(repFixed["maxSize"], { ...FIXED_HINT }, "producer carries the finite fixed maximum");
-    assert.deepEqual(repPeer["minSize"], { ...QT_ZERO }, "producer carries the Qt zero minimum for the ordinary peer");
-    assert.deepEqual(repPeer["maxSize"], { ...QT_UNBOUNDED }, "producer carries the Qt unbounded maximum for the ordinary peer");
-    assert.deepEqual(repFixed["desktops"], [WS_NATIVE], "fixed producer membership readable on the native desktop");
-    assert.deepEqual(repPeer["desktops"], [WS_NATIVE], "peer producer membership readable on the native desktop");
-    const fixedFrame = repFixed["frameGeometry"] as Record<string, unknown>;
-    for (const key of ["x", "y", "width", "height"]) {
-        assert.equal(typeof fixedFrame[key], "number", `fixed producer frame ${key} readable`);
+    // Frame-normalized hints (world-observe.ts convertHintBound): Qt
+    // minSize/maxSize are CLIENT sizes, the wire carries DECORATED-FRAME
+    // (client + frame/client delta dW4/dH22), so 480x320 rides 484x342.
+    // Zero/sentinel ride verbatim (no minimum, unbounded maximum).
+    assert.deepEqual(repFixed["hints"], { minW: 484, minH: 342, maxW: 484, maxH: 342 }, "producer carries the finite fixed hints");
+    assert.deepEqual(repPeer["hints"], { minW: 0, minH: 0, maxW: 16777215, maxH: 16777215 }, "producer carries the Qt zero/unbounded hints for the ordinary peer");
+    assert.equal(repFixed["nativeWs"], WS_NATIVE, "fixed producer membership readable on the native desktop");
+    assert.equal(repPeer["nativeWs"], WS_NATIVE, "peer producer membership readable on the native desktop");
+    const fixedFrame = repFixed["rect"] as unknown;
+    assert.ok(Array.isArray(fixedFrame) && fixedFrame.length === 4, "fixed producer frame readable as a carried rect");
+    for (const dim of fixedFrame as Array<unknown>) {
+        assert.equal(typeof dim, "number", "fixed producer frame dim readable");
     }
     return logical;
 }
@@ -725,11 +816,23 @@ async function runFixedTileLeg(intervening: 0 | 2, t: TestContext): Promise<void
         assert.equal(countQueueOp(h, "toggle-float"), 1, "explicit tile never replays after settlement");
         const settledWrites = h.storeWrites.map((raw) => JSON.parse(raw) as Record<string, unknown>);
         assert.ok(settledWrites.length >= 1, `expected settled store writes, got ${settledWrites.length}`);
+        // Schema2 exact opaque persistence: every write carries the v2
+        // shape with its dispatching correlation, and the bus acked each
+        // owed snapshot with the exact stored count (legacy unanswered
+        // writes never settle persistence).
+        for (const w of settledWrites) {
+            assert.equal(w["v"], 2, `store write rides schema2: ${JSON.stringify(w).slice(0, 200)}`);
+            assert.ok(typeof w["correlation_id"] === "string" && (w["correlation_id"] as string).length > 0, "store write carries its correlation");
+            assert.ok(Array.isArray(w["records"]), "store write carries opaque records");
+        }
+        assert.ok(h.logs.some((l) => l.includes("omnitiler:world:intent-write outcome=stored")), "bus acked the owed snapshot");
         const lastWrite = settledWrites[settledWrites.length - 1] as Record<string, unknown>;
-        const lastMembers = (lastWrite["members"] as Array<string>) ?? [];
-        const lastTile = ((lastWrite["tile"] as Array<string>) ?? []);
-        assert.ok(lastTile.includes(WIN_F), `store retains the fixed tile override: ${JSON.stringify(lastWrite)}`);
-        assert.ok(!lastMembers.includes(WIN_F), `sides stay disjoint: ${JSON.stringify(lastWrite)}`);
+        const records = lastWrite["records"] as Array<{ win: string; data: string }>;
+        const fixedRec = records.find((r) => r.win === WIN_F);
+        assert.ok(fixedRec !== undefined, `store retains the fixed tile override: ${JSON.stringify(lastWrite)}`);
+        const fixedData = JSON.parse(fixedRec.data) as Record<string, unknown>;
+        assert.equal(fixedData["float"], false, `tile override rides float:false: ${fixedRec.data}`);
+        assert.ok(!records.some((r) => r.win === WIN_F && (JSON.parse(r.data) as Record<string, unknown>)["float"] === true), `sides stay disjoint: ${JSON.stringify(lastWrite)}`);
         emitTrace(t, h, `${label} leg complete`);
     } catch (error) {
         emitTrace(t, h, `${label} leg failed`);
@@ -831,7 +934,7 @@ describe("world fixed-client explicit tile after workspace enable (real Engine)"
             const ordRound = await h.flushOne();
             await h.flushAll();
             const ordEffects = (ordRound.parsed["effects"] as Array<Record<string, unknown>>) ?? [];
-            assert.ok(ordEffects.some((fx) => fx["target"] === WIN_ORD_NEW && String(fx["id"]) === `af-${WIN_ORD_NEW}`), `ordinary newcomer takes admission intent, got ${JSON.stringify(ordEffects)}`);
+            assert.ok(ordEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === WIN_ORD_NEW && fx["cause"] === "automatic-admission" && fx["cmdSeq"] === null && fx["awaitShown"] === false), `ordinary newcomer takes admission intent, got ${JSON.stringify(ordEffects)}`);
             assert.ok(h.focused.includes(`{${WIN_ORD_NEW}}`), `ordinary admission activates natively, got ${JSON.stringify(h.focused)}`);
 
             // Focused-float fence: with native focus on the automatic
@@ -845,7 +948,7 @@ describe("world fixed-client explicit tile after workspace enable (real Engine)"
             const fencedRound = await h.flushOne();
             await h.flushAll();
             const fencedEffects = (fencedRound.parsed["effects"] as Array<Record<string, unknown>>) ?? [];
-            assert.ok(fencedEffects.some((fx) => fx["target"] === WIN_ORD_FENCED && String(fx["id"]) === `af-${WIN_ORD_FENCED}`), `fenced newcomer still mints admission intent, got ${JSON.stringify(fencedEffects)}`);
+            assert.ok(fencedEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === WIN_ORD_FENCED && fx["cause"] === "automatic-admission" && fx["cmdSeq"] === null && fx["awaitShown"] === false), `fenced newcomer still mints admission intent, got ${JSON.stringify(fencedEffects)}`);
             assert.ok(!h.focused.includes(`{${WIN_ORD_FENCED}}`), `focused float holds the newcomer activation, got ${JSON.stringify(h.focused)}`);
             assert.ok(h.logs.some((l) => l.includes("focus-skipped") && l.includes("reason=automatic-active") && l.includes(`target=${WIN_ORD_FENCED}`)), "focused automatic float fence logged");
             emitTrace(t, h, "admission-focus leg complete");

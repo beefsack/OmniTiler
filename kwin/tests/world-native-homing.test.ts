@@ -161,6 +161,7 @@ interface FakeWindow {
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
+    clientGeometry: { x: number; y: number; width: number; height: number };
     output: { name: string };
     desktops: FakeDesktop[];
     minimized: boolean;
@@ -168,8 +169,16 @@ interface FakeWindow {
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
-    minSize: { width: number; height: number } | null;
-    maxSize: { width: number; height: number } | null;
+    minSize: { width: number; height: number };
+    maxSize: { width: number; height: number };
+    pid: number;
+    resourceClass: string;
+    caption: string;
+    windowRole: string;
+    desktopFileName: string;
+    resizeable: boolean;
+    keepAbove: boolean;
+    keepBelow: boolean;
     readonly outputChanged: FakeSignal["signal"];
     readonly desktopsChanged: FakeSignal["signal"];
     readonly hiddenChanged: FakeSignal["signal"];
@@ -219,6 +228,20 @@ interface Harness {
 const LEFT = "out-left";
 const RIGHT = "out-right";
 
+// Truthful native decoration: stable nonnegative insets mirroring the v4
+// reference (frame 8.4,8.6,800,600 -> client 10,30,796,578: left 2, top 21,
+// right 2, bottom 1; deltaW 4, deltaH 22). The tiler writes frameGeometry
+// only; the native client tracks with the same insets so every capture
+// carries consistent frame/client facts.
+const DECOR = { left: 2, top: 21, right: 2, bottom: 1 };
+function truthfulClientFor(f: { x: number; y: number; width: number; height: number }): { x: number; y: number; width: number; height: number } {
+    const w = Math.max(1, f.width - (DECOR.left + DECOR.right));
+    const h = Math.max(1, f.height - (DECOR.top + DECOR.bottom));
+    const x = f.x + Math.min(DECOR.left, Math.max(0, f.width - w));
+    const y = f.y + Math.min(DECOR.top, Math.max(0, f.height - h));
+    return { x, y, width: w, height: h };
+}
+
 async function makeHarness(): Promise<Harness> {
     const desktops: FakeDesktop[] = ["ws-1", "ws-2", "ws-3", "ws-4"].map((id) => ({ id, name: id }));
     const byId = new Map(desktops.map((d) => [d.id, d]));
@@ -235,10 +258,17 @@ async function makeHarness(): Promise<Harness> {
         const winDesktopsChanged = makeSignal();
         const winHiddenChanged = makeSignal();
         const winFrameChanged = makeSignal();
-        return {
+        // Truthful native fake: finite minimum, the unbounded INT_MAX
+        // maximum the KWin backends report (never a (0,0) cap), a positive
+        // pid, resizable, class identity, and a client rect tracking every
+        // frame write with the stable decoration insets.
+        let liveFrame = { ...frame };
+        let liveClient = truthfulClientFor(liveFrame);
+        const win: FakeWindow = {
             internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
-            frameGeometry: frame,
+            frameGeometry: { ...frame },
+            clientGeometry: { ...liveClient },
             output: { name: out },
             desktops: [byId.get(ws) as FakeDesktop],
             minimized: false,
@@ -246,14 +276,40 @@ async function makeHarness(): Promise<Harness> {
             fullScreen: false,
             maximizeMode: 0,
             onAllDesktops: false,
-            minSize: null,
-            maxSize: null,
+            minSize: { width: 100, height: 100 },
+            maxSize: { width: 2147483647, height: 2147483647 },
+            pid: 1234,
+            resourceClass: "Example",
+            caption: `Window ${id}`,
+            windowRole: "normal",
+            desktopFileName: "example.app",
+            resizeable: true,
+            keepAbove: false,
+            keepBelow: false,
             outputChanged: outputChanged.signal,
             desktopsChanged: winDesktopsChanged.signal,
             hiddenChanged: winHiddenChanged.signal,
             frameGeometryChanged: winFrameChanged.signal,
             __signals: { outputChanged, desktopsChanged: winDesktopsChanged, hiddenChanged: winHiddenChanged, frameGeometryChanged: winFrameChanged },
         };
+        Object.defineProperty(win, "frameGeometry", {
+            configurable: true,
+            enumerable: true,
+            get: () => liveFrame,
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                liveFrame = rect;
+                liveClient = truthfulClientFor(rect);
+            },
+        });
+        Object.defineProperty(win, "clientGeometry", {
+            configurable: true,
+            enumerable: true,
+            get: () => liveClient,
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                liveClient = rect;
+            },
+        });
+        return win;
     };
     const wins: FakeWindow[] = [
         mkWin("win-a", RIGHT, "ws-1", { x: 1420, y: 102, width: 400, height: 300 }),
@@ -373,7 +429,13 @@ async function makeHarness(): Promise<Harness> {
         set activeScreen(ref: unknown) {
             void ref;
         },
-        cursorPos: { x: 2, y: 100 },
+        get cursorPos(): { x: number; y: number } {
+            // Production-shaped cursor inventory: the cursor rides the
+            // intended active output, which the core's cursor-first
+            // selection source resolution requires for output-relative
+            // commands.
+            return harness.activeScreen.name === RIGHT ? { x: 1002, y: 100 } : { x: 2, y: 100 };
+        },
         windowAdded: (signals["windowAdded"] as FakeSignal).signal,
         windowRemoved: (signals["windowRemoved"] as FakeSignal).signal,
         windowActivated: (signals["windowActivated"] as FakeSignal).signal,
@@ -486,14 +548,51 @@ async function makeHarness(): Promise<Harness> {
     return harness;
 }
 
-async function discover(h: Harness): Promise<void> {
-    const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
-    assert.ok(discIndex >= 0, "entry discovers on start");
-    const disc = h.calls[discIndex] as CapturedCall;
-    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
-    const reply = h.broker.bindDiscovery(engineBootstrap);
-    disc.callback(reply);
+async function discover(h: Harness): Promise<string> {
+    // Authentic v4 connection pump: the handshake binds the producer
+    // adapter lifetime and mints the serving generation; the revisioned
+    // settings snapshot (rev 1) precedes the first report on the wire.
+    const hsIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
+    assert.ok(hsIndex >= 0, "entry discovers on start");
+    const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
+    assert.equal(hsBody["adapter"], "test-adapter", "handshake carries the producer adapter");
+    const hsReplyText = await h.bridge.send("DiscoverWorld", (h.calls[hsIndex] as CapturedCall).payload);
+    const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
+    assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
+    assert.equal(hsReply["ready"], false, "accepted handshake carries ready:false");
+    assert.equal(hsReply["kind"], "", "accepted handshake carries an empty kind");
+    assert.equal(hsReply["adapter"], "test-adapter", "handshake retains the producer adapter, never a broker incarnation");
+    assert.equal(hsReply["req"], hsBody["req"], "handshake echoes the request correlation");
+    assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string) !== "", "handshake mints the serving generation");
+    const gen = hsReply["gen"] as string;
+    const boundHs = h.broker.bindDiscovery(hsReplyText);
+    assert.equal((JSON.parse(boundHs) as Record<string, unknown>)["adapter"], "test-adapter", "harness passes the producer lifetime through");
+    assert.equal(h.broker.gen, gen, "harness records the actual serving generation");
+    (h.calls[hsIndex] as CapturedCall).callback(boundHs);
+    const setIndex = h.calls.findIndex((call, at) => at > hsIndex && call.method === "DiscoverWorld");
+    assert.ok(setIndex >= 0, "revisioned settings follow the handshake");
+    const setBody = JSON.parse((h.calls[setIndex] as CapturedCall).payload) as Record<string, unknown>;
+    assert.equal(setBody["type"], "settings", "second discovery is the revisioned settings snapshot");
+    assert.equal(setBody["adapter"], "test-adapter", "settings carry the producer adapter");
+    assert.equal(setBody["gen"], gen, "settings bind the serving generation");
+    assert.equal(setBody["rev"], "1", "first settings snapshot carries rev 1");
+    const setReplyText = await h.bridge.send("DiscoverWorld", (h.calls[setIndex] as CapturedCall).payload);
+    const setReply = JSON.parse(setReplyText) as Record<string, unknown>;
+    assert.equal(setReply["type"], "settings-reply", "engine answers settings");
+    assert.equal(setReply["status"], "accepted", `settings accepted, got ${setReplyText.slice(0, 300)}`);
+    assert.equal(setReply["adapter"], "test-adapter", "settings reply retains the producer adapter");
+    assert.equal(setReply["gen"], gen, "settings reply binds the serving generation");
+    assert.equal(setReply["req"], setBody["req"], "settings reply echoes the request correlation");
+    assert.equal(setReply["rev"], "1", "settings reply binds the sent revision");
+    (h.calls[setIndex] as CapturedCall).callback(setReplyText);
+    assert.deepEqual(
+        h.calls.slice(0, setIndex + 1).map((call) => call.method),
+        ["DiscoverWorld", "DiscoverWorld"],
+        "no report precedes the accepted settings",
+    );
     await h.settle();
+    return gen;
 }
 
 function lastReply(h: Harness): Record<string, unknown> {
@@ -502,6 +601,7 @@ function lastReply(h: Harness): Record<string, unknown> {
     const raw = h.replies.get(Math.max(...indices) as number) as string;
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     assert.equal(parsed["outcome"] ?? "accepted", "accepted", `fresh reply accepted, got ${raw.slice(0, 300)}`);
+    assert.equal(parsed["result"], null, "terminal result rides the take lane only, never the capture reply");
     return parsed;
 }
 
@@ -510,15 +610,14 @@ function transfersOf(reply: Record<string, unknown>): Array<Record<string, unkno
 }
 
 function homingOf(h: Harness, index: number, win: string): { out: string; ws: string } | null {
-    // Raw lane: the inner report carries the native desktop membership
-    // list (never a logical slot); the broker derives nativeWs from the
-    // single-homed row exactly like this helper.
+    // Tagged native fact: the inner report carries the single-homed native
+    // desktop as `nativeWs` (never a logical slot); exact out/ws asserted,
+    // never loosened.
     const body = JSON.parse((h.calls[index] as CapturedCall).payload) as Record<string, unknown>;
     const report = body["report"] as Record<string, unknown>;
     for (const w of (report["windows"] as Array<Record<string, unknown>>) ?? []) {
         if (w["win"] === win) {
-            const desktops = (w["desktops"] as Array<unknown>) ?? [];
-            return { out: w["out"] as string, ws: desktops[0] as string };
+            return { out: w["out"] as string, ws: w["nativeWs"] as string };
         }
     }
     return null;
@@ -692,6 +791,7 @@ describe("world native homing", () => {
                 internalId: "win-new", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 normalWindow: true,
                 frameGeometry: { x: 20, y: 60, width: 300, height: 200 },
+                clientGeometry: truthfulClientFor({ x: 20, y: 60, width: 300, height: 200 }),
                 output: { name: LEFT },
                 desktops: [ws1],
                 minimized: false,
@@ -699,8 +799,16 @@ describe("world native homing", () => {
                 fullScreen: false,
                 maximizeMode: 0,
                 onAllDesktops: false,
-                minSize: null,
-                maxSize: null,
+                minSize: { width: 100, height: 100 },
+                maxSize: { width: 2147483647, height: 2147483647 },
+                pid: 1234,
+                resourceClass: "Example",
+                caption: "Window win-new",
+                windowRole: "normal",
+                desktopFileName: "example.app",
+                resizeable: true,
+                keepAbove: false,
+                keepBelow: false,
                 outputChanged: freshOutputChanged.signal,
                 desktopsChanged: freshDesktopsChanged.signal,
                 hiddenChanged: freshHiddenChanged.signal,
@@ -846,6 +954,7 @@ describe("world native homing", () => {
                     get: () => backing,
                     set: (rect: { x: number; y: number; width: number; height: number }) => {
                         backing = rect;
+                        win.clientGeometry = truthfulClientFor(rect);
                         events.push(`write:${win.internalId}`);
                         for (const handler of [...(win.__signals?.frameGeometryChanged.handlers ?? [])]) {
                             handler();
@@ -924,6 +1033,7 @@ describe("world native homing", () => {
                     get: () => backing,
                     set: (rect: { x: number; y: number; width: number; height: number }) => {
                         backing = rect;
+                        win.clientGeometry = truthfulClientFor(rect);
                         events.push(`write:${win.internalId}`);
                         (win as unknown as Record<string, unknown>)["hidden"] = "corrupt";
                         for (const handler of [...(win.__signals?.frameGeometryChanged.handlers ?? [])]) {
