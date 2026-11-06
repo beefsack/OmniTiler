@@ -357,13 +357,21 @@
    Initial replay exposed a fresh-clock/recorded-attempt mismatch and an
    intermediate-to-final witness mismatch; bounded clock settlement and correct
    predecessor-facts joins resolve those without changing fixture bytes or
-   production behavior. Subscriber fixture migration remains pending. This is
-   not native rendering or D-Bus authorization evidence.
+   production behavior. The JS regressions now regenerate both actual entry
+   chains and compare every step envelope and projection to these counterparts;
+   startup attempt stamps are checked against their originating broker clock,
+   not rewritten across recording epochs. All 17 producer/subscriber cases and
+   typecheck pass, including cross-instance/cross-serial preview stripping,
+   retained underlay and stale-coverage refusal. The initial JS check exposed an
+   idle-snapshot expectation error, corrected to the recorded idle A/0 shape.
+   Separating the standalone recording CLI from the imported module removes
+   bundled-import side effects; both standalone chains still record successfully.
+   This is not native rendering or D-Bus authorization evidence.
 - Teardown unloaded the exact controller, stopped the development service and
   shut down the fixture cleanly. Follow-up checks found no fixture process,
   socket, native windows or script helpers; development status was down and the
   original native view was selected. The appended desktop and stale project
   shortcut records were left as ordinary lifecycle residue. No crash or repeated
-  non-fixture actuation was observed. Remaining corpus migration, stage5 producer
-   subscriber migration, loaded-effect nested proof, independent review and widened gates
+   non-fixture actuation was observed. Remaining corpus migration,
+   loaded-effect nested proof, independent review and widened gates
   are still required before K1 acceptance.
