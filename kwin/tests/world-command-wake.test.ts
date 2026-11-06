@@ -1,26 +1,27 @@
-// External-command wait wake delivery (B1, strict v3): a foreign queued
+// External-command wait wake delivery (B1, strict v4): a foreign queued
 // command completes the long-held WaitWorldWake, and the adapter drains it
 // with a fresh capture WITHOUT any native event. Re-arming, lease,
 // watchdog, stale, in-flight, and rotation behavior included. Offline only:
 // scripted in-memory transport, no D-Bus, no KWin.
+//
+// STRICT V4 SYNTHETIC replies (hand-authored inline, never real-core
+// output): the handshake reply echoes the producer adapter lifetime and
+// mints the serving generation, the revisioned settings snapshot must read
+// accepted before the first report flies, captures echo source correlation
+// with scripted obs/rev advancing together (separate from nativeInvalid),
+// and terminal results stay requester-only on the take lane.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
-import { isWorldWaitReply, parseWorldReply } from "../src/world-report";
+import { isCoreWorldReply, isWorldWaitReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface FakeDesktop {
     id: string;
 }
 
 const desk = (id: string): FakeDesktop => ({ id });
-
-const DISABLED_PRESENTATION = {
-    foreground: "",
-    border: { visible: false, reason: "disabled", inner: null, outer: null },
-    underlay: { status: "hidden", reason: "disabled", baseRev: null },
-    pager: [],
-};
 
 function windowRow(frame: [number, number, number, number]): Record<string, unknown> {
     return {
@@ -30,6 +31,9 @@ function windowRow(frame: [number, number, number, number]): Record<string, unkn
         member_auth: "controlled", member_hold: "",
         frame_op: "", clear_op: "",
         floating: false, float_origin: "",
+        cmdSeq: null, visibility: null,
+        visibility_auth: "untouched", visibility_hold: "",
+        state: [],
     };
 }
 
@@ -40,9 +44,20 @@ function makeSurface() {
         {
             internalId: "win-a", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
+            // Truthful undecorated client rect: the fake carries no
+            // decoration, so the client mirrors the frame exactly.
+            clientGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out" }, desktops: [ws1],
             minimized: false, hidden: false, fullscreen: false, maximized: false, sticky: false,
             keepAbove: false, keepBelow: false, minSize: null, maxSize: null,
+            // Exact KWin overlay seams: `fullScreen`, `maximizeMode` with
+            // the `setMaximize` Q_INVOKABLE, and `onAllDesktops`.
+            fullScreen: false,
+            maximizeMode: 0,
+            onAllDesktops: false,
+            setMaximize: function (this: { maximizeMode: number }, vertically: boolean, horizontally: boolean): void {
+                this.maximizeMode = vertically && horizontally ? 3 : 0;
+            },
         },
     ];
     const screens = [{ name: "out", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }];
@@ -61,6 +76,9 @@ function makeSurface() {
             get: () => frame,
             set: (rect: { x: number; y: number; width: number; height: number }) => {
                 frame = rect;
+                // Keep the truthful undecorated client tracking the frame so
+                // no capture pairs a fresh frame with a stale client.
+                (w as unknown as Record<string, unknown>)["clientGeometry"] = { ...rect };
                 world.geometryWrites.push(`${w.internalId}@${rect.x},${rect.y},${rect.width},${rect.height}`);
                 return true;
             },
@@ -193,15 +211,42 @@ function liveHostTimers(flow: ReturnType<typeof startFlow>): number {
     return flow.timers.filter((t) => t.live && t.delay === 25000 && !isPresentationTimer(t)).length;
 }
 
-function bootstrap(gen: string, req: string): string {
-    return JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req,
-        obs: "0", rev: "0", ready: false, consumed: false,
-        scopes: [], workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [], result: null,
-        gestureSettled: null,  operationSettled: [], nativeCreations: [], warpCursor: null,
-        presentation: DISABLED_PRESENTATION,
+function answerHandshake(flow: ReturnType<typeof startFlow>, gen: string): void {
+    const found = [...flow.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
     });
+    assert.ok(found !== undefined, "expected DiscoverWorld/handshake");
+    const req = (JSON.parse((found as Call).payload) as Record<string, unknown>)["req"] as string;
+    (found as Call).callback(JSON.stringify({
+        type: "handshake-reply", v: 4, adapter: "test-adapter", req,
+        ready: false, kind: "", gen,
+    }));
+}
+
+function answerSettings(flow: ReturnType<typeof startFlow>, gen: string): void {
+    const found = [...flow.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/settings");
+    const body = JSON.parse((found as Call).payload) as Record<string, unknown>;
+    (found as Call).callback(JSON.stringify({
+        type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+        req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+    }));
 }
 
 function acceptCapture(
@@ -209,52 +254,72 @@ function acceptCapture(
     envelope: Record<string, unknown>,
     rev: string,
 ): string {
-    return JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req: envelope["source"], obs: rev, rev,
+    // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
+    // output): the producer adapter lifetime, the serving generation, the
+    // capture source correlation, the native watermark, and scripted
+    // obs/rev advancing together (separate from nativeInvalid); the
+    // terminal result stays null (the take lane serves it
+    // requester-only).
+    const text = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen, req: envelope["source"], obs: rev, rev,
         ready: true, consumed: false,
-        scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
+        source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
+        gestureSettled: null, gestureAssoc: null,
+        operationSettled: [], nativeCreations: [],
+        warpCursor: null,
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: DISABLED_PRESENTATION,
+        scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [], outputs: [],
         windows: [windowRow([10, 10, 300, 300])],
         transfers: [], effects: [], result: null,
-        gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-        presentation: DISABLED_PRESENTATION,
-        source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
     });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+    return text;
 }
 
 function captureRejection(gen: string, envelope: Record<string, unknown>): string {
     return JSON.stringify({
-        v: 3, outcome: "rejected", kind: "snapshot-invalid",
+        v: 4, outcome: "rejected", kind: "snapshot-invalid",
         message: "snapshot is invalid", gen,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
+        gestureAssoc: null,
     });
 }
 
 function wakeReply(gen: string, cursor: string): string {
-    return JSON.stringify({ v: 3, outcome: "wake", gen, cursor });
+    return JSON.stringify({ v: 4, outcome: "wake", gen, cursor });
 }
 
 function leaseReply(gen: string, cursor: string): string {
-    return JSON.stringify({ v: 3, outcome: "lease", gen, cursor });
+    return JSON.stringify({ v: 4, outcome: "lease", gen, cursor });
 }
 
 function generationMismatch(gen: string): string {
     return JSON.stringify({
-        v: 3, outcome: "rejected", kind: "generation-mismatch",
+        v: 4, outcome: "rejected", kind: "generation-mismatch",
         message: "generation mismatch", gen, source: "", nativeInvalid: "0", clock: "1",
+        gestureAssoc: null,
     });
 }
 
 function discoverFlow(flow: ReturnType<typeof startFlow>, gen: string): void {
-    const disc = lastCall(flow.calls, "DiscoverWorld");
-    const bootReq = (JSON.parse(disc.payload) as Record<string, unknown>)["req"] as string;
-    disc.callback(bootstrap(gen, bootReq));
+    // Genuine v4 connection bootstrap: the handshake reply echoes the
+    // producer adapter lifetime and mints the serving generation; the
+    // revisioned settings snapshot must read accepted before the first
+    // report flies.
+    answerHandshake(flow, gen);
+    answerSettings(flow, gen);
 }
 
 // Settle the discovery plus the automatic first capture, leaving the
 // adapter idle with exactly one WaitWorldWake outstanding.
 function settleIdle(flow: ReturnType<typeof startFlow>, gen: string): Call {
     discoverFlow(flow, gen);
+    // The settings accept releases the discovery-triggered observation
+    // report on the debounce; pump it so the auto capture is outstanding.
+    runShortTimers(flow);
     const auto = lastCall(flow.calls, "DescribeWorld");
     auto.callback(acceptCapture(gen, JSON.parse(auto.payload) as Record<string, unknown>, "1"));
     const wait = lastCall(flow.calls, "WaitWorldWake");
@@ -340,7 +405,7 @@ describe("external-command wait wake delivery", () => {
         runShortTimers(flow);
         const queued = lastCall(flow.calls, "QueueWorldCommand");
         queued.callback(JSON.stringify({
-            v: 3, outcome: "queued", gen: "gen-1",
+            v: 4, outcome: "queued", gen: "gen-1",
             client: (JSON.parse(queued.payload) as Record<string, unknown>)["client"],
             clientCmd: (JSON.parse(queued.payload) as Record<string, unknown>)["clientCmd"],
             globalCmd: "1",
@@ -369,55 +434,65 @@ describe("external-command wait wake delivery", () => {
         flow.handle.stop();
     });
 
-    it("a silent service keeps a host-deadline discovery chain, then recovers to wake/drain", () => {
+    it("a silent service re-arms the bound wait at the host deadline, then recovers to wake/drain", () => {
         const flow = startFlow();
         const wait = settleIdle(flow, "gen-1");
         const discs0 = countCalls(flow.calls, "DiscoverWorld");
-        // The host kills the long-held call at 25 s with no callback.
+        // The host kills the long-held call at 25 s with no callback. The
+        // bound generation still holds, so the deadline ONLY re-arms the
+        // wait with the same cursor: transport silence is never a
+        // handshake trigger (world-entry.ts armWait: bound host deadline
+        // re-arms; only an unbound generation rediscovers).
         assert.equal(runHostTimers(flow), 1, "wait25 fires the watchdog");
-        assert.equal(countCalls(flow.calls, "DiscoverWorld"), discs0 + 1);
+        assert.equal(
+            countCalls(flow.calls, "DiscoverWorld"), discs0,
+            "bound deadline sends no handshake",
+        );
         assert.ok(
-            flow.logs.some((l) => l.startsWith("omnitiler:world:wait-host-timeout")),
-            "watchdog logs its recovery",
+            flow.logs.some((l) => l.startsWith("omnitiler:world:wait-host-timeout recovery=rearm")),
+            "watchdog logs its re-arm",
         );
-        assert.equal(
-            lastCall(flow.calls, "WaitWorldWake"), wait,
-            "no premature re-arm while the chained discover is outstanding",
-        );
-        // The generic 2 s timeout gives up on a native event that never
-        // comes; the host-deadline chain must persist anyway.
-        sweepTimers(flow, (delay) => delay === 2000, 5);
-        assert.equal(runHostTimers(flow), 1, "discover25 fires the host chain");
-        assert.equal(
-            countCalls(flow.calls, "DiscoverWorld"), discs0 + 2,
-            "host chain retries despite the bound generation",
-        );
-        // Service restored: answer the latest discover. Same-lifetime
-        // rediscovery keeps the generation and the cursor.
-        const d = lastCall(flow.calls, "DiscoverWorld");
-        d.callback(bootstrap("gen-1", (JSON.parse(d.payload) as Record<string, unknown>)["req"] as string));
         const rearmed = lastCall(flow.calls, "WaitWorldWake");
-        assert.notEqual(rearmed, wait);
+        assert.notEqual(rearmed, wait, "deadline re-arms exactly once");
+        assert.equal(countCalls(flow.calls, "WaitWorldWake"), 2, "one re-arm per deadline");
         assert.equal((JSON.parse(rearmed.payload) as Record<string, unknown>)["gen"], "gen-1");
         assert.equal((JSON.parse(rearmed.payload) as Record<string, unknown>)["cursor"], "0");
-        // The recovered waiter still wakes work with zero native events.
-        rearmed.callback(wakeReply("gen-1", "1"));
+        // The host-deadline chain persists without handshakes: a second
+        // deadline re-arms exactly once more, linear and bounded.
+        assert.equal(runHostTimers(flow), 1, "second deadline fires its watchdog");
+        assert.equal(
+            countCalls(flow.calls, "DiscoverWorld"), discs0,
+            "still no handshake",
+        );
+        const rearmed2 = lastCall(flow.calls, "WaitWorldWake");
+        assert.notEqual(rearmed2, rearmed, "one re-arm per deadline, never ping-pong");
+        assert.equal(countCalls(flow.calls, "WaitWorldWake"), 3, "exactly one wait per deadline");
+        assert.equal((JSON.parse(rearmed2.payload) as Record<string, unknown>)["gen"], "gen-1");
+        assert.equal((JSON.parse(rearmed2.payload) as Record<string, unknown>)["cursor"], "0");
+        // The rearmed waiter still wakes work with zero native events.
+        rearmed2.callback(wakeReply("gen-1", "1"));
         const drain = lastCall(flow.calls, "DescribeWorld");
-        drain.callback(acceptCapture("gen-1", JSON.parse(drain.payload) as Record<string, unknown>, "3"));
-        assert.ok(flow.logs.some((l) => l.startsWith("omnitiler:world:applied rev=3")));
+        drain.callback(acceptCapture("gen-1", JSON.parse(drain.payload) as Record<string, unknown>, "2"));
+        assert.ok(flow.logs.some((l) => l.startsWith("omnitiler:world:applied rev=2")));
         flow.handle.stop();
     });
 
     it("a late stale callback after a watchdog re-arm never dispatches", () => {
         const flow = startFlow();
         const wait = settleIdle(flow, "gen-1");
-        runHostTimers(flow);
-        discoverFlow(flow, "gen-1");
+        const discs0 = countCalls(flow.calls, "DiscoverWorld");
+        // The host kills the long-held call at 25 s with no callback. The
+        // generation stays bound, so the deadline ONLY re-arms the wait:
+        // transport silence is never a handshake trigger (world-entry.ts
+        // armWait: bound host deadline re-arms; only an unbound generation
+        // rediscovers).
+        assert.equal(runHostTimers(flow), 1, "wait25 fires the watchdog");
+        assert.equal(
+            countCalls(flow.calls, "DiscoverWorld"), discs0,
+            "bound deadline sends no handshake",
+        );
         const rearmed = lastCall(flow.calls, "WaitWorldWake");
         assert.notEqual(rearmed, wait);
-        // Settle the rediscovery capture so the wire is idle again.
-        const auto2 = lastCall(flow.calls, "DescribeWorld");
-        auto2.callback(acceptCapture("gen-1", JSON.parse(auto2.payload) as Record<string, unknown>, "2"));
         const describes = countCalls(flow.calls, "DescribeWorld");
         // The dead call's callback arrives late with a newer cursor: the
         // nonce fence ignores it (the re-armed waiter owns the slot).
@@ -437,7 +512,7 @@ describe("external-command wait wake delivery", () => {
         runShortTimers(flow);
         const queued = lastCall(flow.calls, "QueueWorldCommand");
         queued.callback(JSON.stringify({
-            v: 3, outcome: "queued", gen: "gen-1",
+            v: 4, outcome: "queued", gen: "gen-1",
             client: (JSON.parse(queued.payload) as Record<string, unknown>)["client"],
             clientCmd: (JSON.parse(queued.payload) as Record<string, unknown>)["clientCmd"],
             globalCmd: "1",
@@ -458,7 +533,7 @@ describe("external-command wait wake delivery", () => {
         const body = JSON.parse(flight.payload) as Record<string, unknown>;
         flight.callback(acceptCapture("gen-1", body, "2"));
         const take = lastCall(flow.calls, "TakeCommandResult");
-        take.callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+        take.callback(JSON.stringify({ v: 4, outcome: "pending", gen: "gen-1" }));
         runShortTimers(flow);
         assert.equal(
             countCalls(flow.calls, "DescribeWorld"),
@@ -508,52 +583,55 @@ describe("external-command wait wake delivery", () => {
                 if (c.method === "WaitWorldWake" && (c as unknown as Record<string, unknown>)["answered"] !== true) {
                     (c as unknown as Record<string, unknown>)["answered"] = true;
                     c.callback(JSON.stringify({
-                        v: 3, outcome: "rejected", kind: "unknown-adapter",
+                        v: 4, outcome: "rejected", kind: "unknown-adapter",
                         message: "unknown adapter", gen: "gen-1",
                         source: "", nativeInvalid: "0", clock: "1",
+                        gestureAssoc: null,
                     }));
                 }
             }
         };
-        // The first refusal holds the wait for a host-deadline rediscovery
-        // instead of re-arming against the stale lifetime in a busy loop.
+        // The first refusal holds the wait for the host deadline instead of
+        // re-arming against the stale lifetime in a busy loop. The
+        // generation stays bound, so the deadline stands the held wait
+        // down (no re-arm, no bound handshake: a held flag alone never
+        // authorizes one).
+        const discs0 = countCalls(flow.calls, "DiscoverWorld");
+        const describes0 = countCalls(flow.calls, "DescribeWorld");
         rejectWaits();
         assert.equal(countCalls(flow.calls, "WaitWorldWake"), 1);
         assert.equal(
             liveHostTimers(flow), 1,
             "exactly one host recovery chain",
         );
-        assert.equal(runHostTimers(flow), 1, "recovery rediscovers at the deadline");
-        assert.equal(countCalls(flow.calls, "DiscoverWorld"), 2);
+        assert.equal(
+            countCalls(flow.calls, "DiscoverWorld"), discs0,
+            "held refusal files no handshake",
+        );
+        assert.equal(
+            countCalls(flow.calls, "DescribeWorld"), describes0,
+            "held refusal dispatches nothing",
+        );
+        assert.ok(
+            flow.logs.some((l) => l.startsWith("omnitiler:world:wait-rejected kind=unknown-adapter")),
+            "refusal logs its hold",
+        );
+        assert.equal(runHostTimers(flow), 1, "recovery fires at the deadline");
         assert.equal(
             countCalls(flow.calls, "WaitWorldWake"), 1,
-            "held: no re-arm before the rediscovery answers",
+            "held: no re-arm at the deadline",
         );
-        // Same-lifetime rediscovery clears the hold and re-arms once; the
-        // next refusal stands down again instead of storming.
-        const d = lastCall(flow.calls, "DiscoverWorld");
-        d.callback(bootstrap("gen-1", (JSON.parse(d.payload) as Record<string, unknown>)["req"] as string));
-        const auto2 = lastCall(flow.calls, "DescribeWorld");
-        auto2.callback(acceptCapture("gen-1", JSON.parse(auto2.payload) as Record<string, unknown>, "5"));
-        // The windowed accept dirties a follow-up observation; settle it
-        // (bounded) so the wire is idle before the local press below.
-        for (let rev = 6; rev < 9; rev += 1) {
-            runShortTimers(flow);
-            const followup = lastCall(flow.calls, "DescribeWorld");
-            const seen = (followup as unknown as Record<string, unknown>)["settledCapture"] === true;
-            (followup as unknown as Record<string, unknown>)["settledCapture"] = true;
-            if (followup === auto2 || seen) {
-                break;
-            }
-            followup.callback(acceptCapture("gen-1", JSON.parse(followup.payload) as Record<string, unknown>, `${rev}`));
-        }
-        runShortTimers(flow);
-        assert.equal(countCalls(flow.calls, "WaitWorldWake"), 2);
-        rejectWaits();
-        assert.equal(countCalls(flow.calls, "WaitWorldWake"), 2);
         assert.equal(
-            liveHostTimers(flow), 1,
-            "still exactly one host recovery chain",
+            countCalls(flow.calls, "DiscoverWorld"), discs0,
+            "held: no bound handshake at the deadline",
+        );
+        assert.ok(
+            flow.logs.some((l) => l.startsWith("omnitiler:world:wait-recovery-held recovery=stand-down")),
+            "deadline logs its stand-down",
+        );
+        assert.equal(
+            liveHostTimers(flow), 0,
+            "stood down: the chain fires once and schedules nothing further",
         );
         // The active producer is undisplaced: a local command still files
         // under the serving generation and drains.
@@ -566,16 +644,24 @@ describe("external-command wait wake delivery", () => {
         const queued = lastCall(flow.calls, "QueueWorldCommand");
         assert.equal((JSON.parse(queued.payload) as Record<string, unknown>)["gen"], "gen-1");
         queued.callback(JSON.stringify({
-            v: 3, outcome: "queued", gen: "gen-1",
+            v: 4, outcome: "queued", gen: "gen-1",
             client: (JSON.parse(queued.payload) as Record<string, unknown>)["client"],
             clientCmd: (JSON.parse(queued.payload) as Record<string, unknown>)["clientCmd"],
             globalCmd: "7",
         }));
-        const drain = lastCall(flow.calls, "DescribeWorld");
-        drain.callback(acceptCapture("gen-1", JSON.parse(drain.payload) as Record<string, unknown>, "9"));
+        // The filed head drains into exactly one fresh capture: the queue
+        // callback sends it synchronously on the fileQueue path, and the
+        // accepted drain files its take synchronously the same way.
+        const flight = lastCall(flow.calls, "DescribeWorld");
+        assert.equal((JSON.parse(flight.payload) as Record<string, unknown>)["gen"], "gen-1");
+        const flightBody = JSON.parse(flight.payload) as Record<string, unknown>;
+        flight.callback(acceptCapture("gen-1", flightBody, "2"));
         const take = lastCall(flow.calls, "TakeCommandResult");
-        take.callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
-        assert.ok(flow.logs.some((l) => l.startsWith("omnitiler:world:applied rev=9")));
+        take.callback(JSON.stringify({ v: 4, outcome: "pending", gen: "gen-1" }));
+        assert.ok(
+            flow.logs.some((l) => l.startsWith("omnitiler:world:applied rev=2")),
+            "filed command drains and applies under the held wait",
+        );
         flow.handle.stop();
     });
 
@@ -586,19 +672,23 @@ describe("external-command wait wake delivery", () => {
             for (const c of flow.calls) {
                 if (c.method === "WaitWorldWake" && (c as unknown as Record<string, unknown>)["answered"] !== true) {
                     (c as unknown as Record<string, unknown>)["answered"] = true;
-                    c.callback(JSON.stringify({ v: 3, outcome: "superseded", gen: "gen-1" }));
+                    c.callback(JSON.stringify({ v: 4, outcome: "superseded", gen: "gen-1" }));
                 }
             }
         };
         // A newer (possibly overlapping-script) waiter owns the slot: stand
-        // down, exactly one host recovery timer, no rediscovery storm.
+        // down, exactly one host recovery timer, no rediscovery storm. The
+        // generation stays bound throughout, so no deadline sends a
+        // handshake (world-entry.ts scheduleWaitRecovery: a held
+        // generation stands down; otherwise the wait re-arms).
+        const discs0 = countCalls(flow.calls, "DiscoverWorld");
         answerSuperseded();
         assert.equal(countCalls(flow.calls, "WaitWorldWake"), 1);
         assert.equal(
             liveHostTimers(flow), 1,
             "stand-down keeps exactly one host recovery timer",
         );
-        assert.equal(countCalls(flow.calls, "DiscoverWorld"), 1);
+        assert.equal(countCalls(flow.calls, "DiscoverWorld"), discs0);
         // One re-arm per deadline, linear and bounded, never ping-pong.
         runHostTimers(flow);
         answerSuperseded();
@@ -606,7 +696,7 @@ describe("external-command wait wake delivery", () => {
         runHostTimers(flow);
         answerSuperseded();
         assert.equal(countCalls(flow.calls, "WaitWorldWake"), 3);
-        assert.equal(countCalls(flow.calls, "DiscoverWorld"), 1);
+        assert.equal(countCalls(flow.calls, "DiscoverWorld"), discs0);
         flow.handle.stop();
     });
 
@@ -644,8 +734,49 @@ describe("external-command wait wake delivery", () => {
             readWorkspaceModeFn: () => "per-output-local",
         });
         assert.ok(handle !== null);
-        const disc = lastCall(calls, "DiscoverWorld");
-        disc.callback(bootstrap("gen-1", (JSON.parse(disc.payload) as Record<string, unknown>)["req"] as string));
+        // Genuine v4 connection bootstrap before the first report flies.
+        {
+            const hs = [...calls].reverse().find((c) => {
+                if (c.method !== "DiscoverWorld") {
+                    return false;
+                }
+                try {
+                    return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+                } catch {
+                    return false;
+                }
+            });
+            assert.ok(hs !== undefined, "expected DiscoverWorld/handshake");
+            const req = (JSON.parse(hs.payload) as Record<string, unknown>)["req"] as string;
+            hs.callback(JSON.stringify({
+                type: "handshake-reply", v: 4, adapter: "test-adapter", req,
+                ready: false, kind: "", gen: "gen-1",
+            }));
+            const st = [...calls].reverse().find((c) => {
+                if (c.method !== "DiscoverWorld") {
+                    return false;
+                }
+                try {
+                    return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+                } catch {
+                    return false;
+                }
+            });
+            assert.ok(st !== undefined, "expected DiscoverWorld/settings");
+            const body = JSON.parse(st.payload) as Record<string, unknown>;
+            st.callback(JSON.stringify({
+                type: "settings-reply", v: 4, adapter: "test-adapter", gen: "gen-1",
+                req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+            }));
+            for (let i = 0; i < timers.length; i += 1) {
+                const t = timers[i] as FakeTimer;
+                if (t.delay <= 120) {
+                    timers.splice(i, 1);
+                    i -= 1;
+                    t.cb();
+                }
+            }
+        }
         const auto = lastCall(calls, "DescribeWorld");
         auto.callback(acceptCapture("gen-1", JSON.parse(auto.payload) as Record<string, unknown>, "1"));
         // The armed wait threw synchronously: its orphaned watchdog is
@@ -691,12 +822,12 @@ describe("external-command wait wake delivery", () => {
             parseWorldReply(leaseReply("w-1", "4")),
             { outcome: "lease", gen: "w-1", cursor: "4" },
         );
-        const superseded = { v: 3, outcome: "superseded", gen: "w-1" };
+        const superseded = { v: 4, outcome: "superseded", gen: "w-1" };
         assert.ok(isWorldWaitReply(parseWorldReply(JSON.stringify(superseded))));
         assert.equal(parseWorldReply(JSON.stringify({ v: 1, outcome: "wake", gen: "w-1", cursor: "4" })), null);
-        assert.equal(parseWorldReply(JSON.stringify({ v: 3, outcome: "wake", gen: "w-1", cursor: "04" })), null);
+        assert.equal(parseWorldReply(JSON.stringify({ v: 4, outcome: "wake", gen: "w-1", cursor: "04" })), null);
         assert.equal(
-            parseWorldReply(JSON.stringify({ v: 3, outcome: "wake", gen: "w-1", cursor: "4", extra: 1 })),
+            parseWorldReply(JSON.stringify({ v: 4, outcome: "wake", gen: "w-1", cursor: "4", extra: 1 })),
             null,
         );
         assert.ok(!isWorldWaitReply(parseWorldReply(generationMismatch("w-1"))));

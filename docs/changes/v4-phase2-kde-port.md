@@ -528,3 +528,11 @@
   first targeted run exposed a timer pump expiring transport deadlines during
   debounce settlement; limiting that pump to native debounce restores the
   original directional assertions. All 13 tests and strict TypeScript pass.
+- Wake delivery, creation binding/rename and array-like host-list harnesses now
+  use strict v4 connection and receipts. All 23 tests and strict TypeScript pass.
+  Wake expectations follow the settled connection contract: bound silence re-arms
+  exactly once per deadline without a handshake; a held unknown-adapter wait
+  stands down without displacing local commands; generation mismatch reconnects.
+  Native creation causality, retained receipts, distinct friendly names, no-replay
+  and the synthetic array-like frame/view apply scenario remain covered. No new
+  native or later-slice acceptance is implied.

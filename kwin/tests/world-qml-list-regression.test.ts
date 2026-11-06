@@ -15,6 +15,7 @@ import { applyWorldReply } from "../src/world-apply";
 import type { WorldObservation } from "../src/world-observe";
 import { WorldAdapterState } from "../src/world-state";
 import { createWorldApplyHost } from "../src/world-native";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 // Fully synthetic generic ids. Live wrappers carry the canonical braced
 // form; the report/reply carry the normalized bare ids.
@@ -31,9 +32,16 @@ const REV = "7";
 const TRANSFER_OP = "op-3";
 
 // Synthetic reply: two controlled frames plus one retained unheld view
-// transfer to the non-shown workspace.
+// transfer to the non-shown workspace. STRICT V4 SYNTHETIC (hand-authored
+// inline for mechanical apply only and validated below through the real
+// parseWorldReply; these bytes are not real-core output): the producer
+// adapter lifetime, the serving generation, the capture source correlation
+// with scripted obs/rev advancing together (separate from nativeInvalid),
+// structural scopes, and the required
+// intentWrites/switchSettled/diagnostics lanes; the terminal result stays
+// null (the take lane serves it requester-only).
 const REPLY_TEXT = JSON.stringify({
-    v: 3, adapter: "broker-1", gen: GEN, req: REQ, obs: OBS, rev: REV,
+    v: 4, adapter: ADAPTER, gen: GEN, req: REQ, obs: OBS, rev: REV,
     ready: true, consumed: false,
     source: REQ,
     nativeInvalid: "1",
@@ -41,14 +49,15 @@ const REPLY_TEXT = JSON.stringify({
     gestureSettled: null, gestureAssoc: null,
     operationSettled: [], nativeCreations: [],
     warpCursor: null,
-    presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+    intentWrites: [], switchSettled: [], diagnostics: [],
+    presentation: DISABLED_PRESENTATION,
     scopes: [
-        { scope: `${OUT}/${WS_A}`, auth: "controlled", reason: "" },
-        { scope: `${OUT}/${WS_B}`, auth: "controlled", reason: "" },
+        { scope: { kind: "workspace", out: OUT, ws: WS_A }, auth: "controlled", reason: "" },
+        { scope: { kind: "workspace", out: OUT, ws: WS_B }, auth: "controlled", reason: "" },
     ],
     workspaces: [
-        { id: WS_A, out: OUT, bind: WS_A, scope: OUT, order: 0, mode: "tiled", exist: true, hold: "" },
-        { id: WS_B, out: OUT, bind: WS_B, scope: OUT, order: 1, mode: "tiled", exist: true, hold: "" },
+        { id: WS_A, out: OUT, bind: WS_A, scope: { kind: "output", out: OUT }, order: 0, mode: "tiled", exist: true, hold: "" },
+        { id: WS_B, out: OUT, bind: WS_B, scope: { kind: "output", out: OUT }, order: 1, mode: "tiled", exist: true, hold: "" },
     ],
     outputs: [{ out: OUT, view: WS_B, mode: "tiled", hold: "" }],
     windows: [
@@ -56,14 +65,16 @@ const REPLY_TEXT = JSON.stringify({
             win: WIN_A, out: OUT, ws: WS_A, alloc: [0, 0, 400, 600], frame: [0, 0, 400, 600],
             frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "",
             floating: false, float_origin: "",
+            cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
         },
         {
             win: WIN_B, out: OUT, ws: WS_B, alloc: [400, 0, 400, 600], frame: [400, 0, 400, 600],
             frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "",
             floating: false, float_origin: "",
+            cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
         },
     ],
-    transfers: [{ op: TRANSFER_OP, kind: "view", win: "", out: OUT, ws: WS_B, follow: false, held: false }],
+    transfers: [{ op: TRANSFER_OP, kind: "view", win: "", out: OUT, ws: WS_B, follow: false, held: false, cmdSeq: null }],
     effects: [],
     result: null,
 });
@@ -119,6 +130,10 @@ describe("world qml-list regression", () => {
         assert.equal(transfer.out, OUT);
         assert.equal(transfer.ws, WS_B);
         assert.equal(transfer.held, false);
+        // Required v4 lanes ride (empty here, never omitted, never nulled).
+        assert.deepEqual(parsed.intentWrites, []);
+        assert.deepEqual(parsed.switchSettled, []);
+        assert.deepEqual(parsed.diagnostics, []);
     });
 
     it("actuates geometry and the retained view against array-like host lists", () => {
@@ -253,7 +268,7 @@ describe("world qml-list regression", () => {
             presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
         };
         const state = new WorldAdapterState(ADAPTER, ADAPTER);
-        state.onDiscovery(GEN, "broker-1");
+        state.onDiscovery(GEN, ADAPTER);
         (state as unknown as { currentInvalid: string }).currentInvalid = OBS;
         // Production wiring: every read comes from the host under test;
         // only the two native effect setters are captured.

@@ -7,6 +7,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface FakeDesktop { id: string; name: string }
 const desk = (id: string, name?: string): FakeDesktop => ({ id, name: name ?? id });
@@ -122,13 +124,77 @@ function makeTwoOutput(opts: { throwOnce?: boolean; freezeCreated?: boolean } = 
     return { world, calls, handle, runTimers, lastCall, fire };
 }
 
-const DISABLED_PRESENTATION = { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] };
-const BOOT = (gen: string, req: string): string => JSON.stringify({ v: 3, adapter: "broker-1", gen, req, obs: "0", rev: "0", ready: false, consumed: false, scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null, gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null, presentation: DISABLED_PRESENTATION });
-const ACC = (gen: string, source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string => JSON.stringify({ v: 3, adapter: "broker-1", gen, req: source, obs: rev, rev, ready: true, consumed: false, source, nativeInvalid, clock: "1", gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null, presentation: DISABLED_PRESENTATION, scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null, ...extra });
+function answerHandshake(h: ReturnType<typeof makeTwoOutput>, gen = "gen-1"): void {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/handshake");
+    const req = (JSON.parse(found.payload) as { req: string }).req;
+    found.callback(JSON.stringify({
+        type: "handshake-reply", v: 4, adapter: "test-adapter", req,
+        ready: false, kind: "", gen,
+    }));
+}
+
+function answerSettings(h: ReturnType<typeof makeTwoOutput>, gen = "gen-1"): void {
+    const found = [...h.calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, "expected DiscoverWorld/settings");
+    const body = JSON.parse(found.payload) as Record<string, unknown>;
+    found.callback(JSON.stringify({
+        type: "settings-reply", v: 4, adapter: "test-adapter", gen,
+        req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+    }));
+}
+
+const ACC = (gen: string, source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string => {
+    // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
+    // output): the producer adapter lifetime, the serving generation, the
+    // capture source correlation, the native watermark, and scripted
+    // obs/rev advancing together (separate from nativeInvalid); the
+    // terminal result stays null (the take lane serves it
+    // requester-only).
+    const text = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen, req: source, obs: rev, rev,
+        ready: true, consumed: false,
+        source, nativeInvalid, clock: "1",
+        gestureSettled: null, gestureAssoc: null,
+        operationSettled: [], nativeCreations: [],
+        warpCursor: null,
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: DISABLED_PRESENTATION,
+        scopes: [], workspaces: [], outputs: [], windows: [],
+        transfers: [], effects: [], result: null,
+        ...extra,
+    });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+    return text;
+};
 
 function discover(h: ReturnType<typeof makeTwoOutput>, gen = "gen-1"): void {
-    const c = h.lastCall("DiscoverWorld");
-    c.callback(BOOT(gen, (JSON.parse(c.payload) as { req: string }).req));
+    // Genuine v4 connection bootstrap: the handshake reply echoes the
+    // producer adapter lifetime and mints the serving generation; the
+    // revisioned settings snapshot must read accepted before the first
+    // report flies.
+    answerHandshake(h, gen);
+    answerSettings(h, gen);
+    h.runTimers();
     const auto = h.lastCall("DescribeWorld");
     const b = JSON.parse(auto.payload) as { source: string; nativeInvalid: string };
     auto.callback(ACC(gen, b.source, b.nativeInvalid, "0"));
@@ -137,16 +203,14 @@ function discover(h: ReturnType<typeof makeTwoOutput>, gen = "gen-1"): void {
 // Core-owned publication oracle: core-published binds incorporate
 // retained receipts (they retire with no re-create); the adapter reports
 // observed native order plus the current native per output in `native[]`
-// and keeps the views lane empty (the core derives receipts from its own
-// bindings).
+// and v4 carries no logical views lane (the core derives receipts from
+// its own bindings).
 function nativeOf(h: ReturnType<typeof makeTwoOutput>): Array<{ out: string; order: string[]; current: string }> {
     return (JSON.parse(h.lastCall("DescribeWorld").payload) as { report: { native: Array<{ out: string; order: string[]; current: string }> } }).report.native;
 }
-function viewsOf(h: ReturnType<typeof makeTwoOutput>): Array<{ out: string; view: string }> {
-    return (JSON.parse(h.lastCall("DescribeWorld").payload) as { report: { views: Array<{ out: string; view: string }> } }).report.views;
-}
-function assertViewsEmpty(h: ReturnType<typeof makeTwoOutput>): void {
-    assert.ok(viewsOf(h).every((b) => b.view === ""), `host-owned views lane stays empty, got ${JSON.stringify(viewsOf(h))}`);
+function assertNoViews(h: ReturnType<typeof makeTwoOutput>): void {
+    const report = JSON.parse(h.lastCall("DescribeWorld").payload) as { report: Record<string, unknown> };
+    assert.ok(!("views" in report.report), "v4 carries no logical views lane");
 }
 
 const DESIRE = (op: string, ws: string, out: string): Record<string, unknown> => ({ op, ws, out });
@@ -171,7 +235,7 @@ function showNative(h: ReturnType<typeof makeTwoOutput>, out: string, nativeId: 
 }
 
 const UNBOUND = (logical: string, out: string, order: number): Record<string, unknown> => ({
-    id: logical, out, bind: "", scope: "out", order, mode: "tiled", exist: true, hold: "",
+    id: logical, out, bind: "", scope: { kind: "output", out }, order, mode: "tiled", exist: true, hold: "",
 });
 
 describe("created-desktop friendly rename", () => {
@@ -181,7 +245,7 @@ describe("created-desktop friendly rename", () => {
         const req = dispatchObserve(h);
         h.lastCall("DescribeWorld").callback(ACC("gen-1", req.source, req.nativeInvalid, "1", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: { kind: "output", out: "out-primary" }, order: 0, mode: "tiled", exist: true, hold: "" },
                 UNBOUND("wl-1", "out-secondary", 2),
             ],
             nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
@@ -197,15 +261,15 @@ describe("created-desktop friendly rename", () => {
         const r2 = dispatchObserve(h);
         h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.source, r2.nativeInvalid, "2", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-1", out: "out-secondary", bind: native.id, scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: { kind: "output", out: "out-primary" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-secondary", bind: native.id, scope: { kind: "output", out: "out-secondary" }, order: 2, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         assert.equal(h.world.created.length, 1, "rename never re-creates");
         dispatchObserve(h);
         // The core bind incorporates the receipt; the adapter reports native
-        // order/current with the views lane empty, never a logical receipt.
-        assertViewsEmpty(h);
+        // order/current with no logical views lane, never a logical receipt.
+        assertNoViews(h);
         const row = nativeOf(h).find((b) => b.out === "out-secondary");
         assert.ok(row !== undefined);
         assert.ok(row.order.includes(native.id), `expected created native in order, got ${JSON.stringify(nativeOf(h))}`);
@@ -219,7 +283,7 @@ describe("created-desktop friendly rename", () => {
         const req = dispatchObserve(h);
         h.lastCall("DescribeWorld").callback(ACC("gen-1", req.source, req.nativeInvalid, "1", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: { kind: "output", out: "out-primary" }, order: 0, mode: "tiled", exist: true, hold: "" },
                 UNBOUND("wl-1", "out-secondary", 2),
             ],
             nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
@@ -231,7 +295,7 @@ describe("created-desktop friendly rename", () => {
         const r2 = dispatchObserve(h);
         h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.source, r2.nativeInvalid, "2", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: { kind: "output", out: "out-primary" }, order: 0, mode: "tiled", exist: true, hold: "" },
                 UNBOUND("wl-1", "out-secondary", 2),
             ],
             nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
@@ -243,8 +307,8 @@ describe("created-desktop friendly rename", () => {
         showNative(h, "out-secondary", "native-9");
         dispatchObserve(h);
         // No binding: the native evidence rides without incorporation and
-        // the views lane stays empty.
-        assertViewsEmpty(h);
+        // no logical views lane rides.
+        assertNoViews(h);
         const shown = nativeOf(h).find((b) => b.out === "out-secondary");
         assert.ok(shown !== undefined && shown.order.includes("native-9"));
         assert.equal(shown.current, "native-9");
@@ -260,7 +324,7 @@ describe("created-desktop friendly rename", () => {
         h.world.desktops.push(desk("user-9", "User 9"));
         h.lastCall("DescribeWorld").callback(ACC("gen-1", req.source, req.nativeInvalid, "1", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: { kind: "output", out: "out-primary" }, order: 0, mode: "tiled", exist: true, hold: "" },
                 UNBOUND("wl-1", "out-secondary", 2),
             ],
             nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
@@ -291,12 +355,12 @@ describe("created-desktop friendly rename", () => {
         assert.notEqual(n1.id, n2.id, "no duplicate native binding");
         assert.equal(n1.name, "Desktop 3");
         assert.equal(n2.name, "Desktop 4", "second token uses its own enumerated position");
-        // No core bind yet: the views lane stays empty, but both ids are
+        // No core bind yet: no logical views lane rides, but both ids are
         // proven and distinctly renamed with no shared native.
         showNative(h, "out-secondary", n1.id);
         showNative(h, "out-primary", n2.id);
         dispatchObserve(h);
-        assertViewsEmpty(h);
+        assertNoViews(h);
         const rows = nativeOf(h);
         assert.ok(rows.find((b) => b.out === "out-secondary")?.order.includes(n1.id));
         assert.ok(rows.find((b) => b.out === "out-primary")?.order.includes(n2.id));
@@ -310,7 +374,7 @@ describe("created-desktop friendly rename", () => {
         const req = dispatchObserve(h);
         h.lastCall("DescribeWorld").callback(ACC("gen-1", req.source, req.nativeInvalid, "1", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: { kind: "output", out: "out-primary" }, order: 0, mode: "tiled", exist: true, hold: "" },
                 UNBOUND("wl-1", "out-secondary", 2),
             ],
             nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
@@ -319,20 +383,20 @@ describe("created-desktop friendly rename", () => {
         // The rename is best-effort: the id-based receipt (not the name) is
         // the proof, so it rides on while the core bind is pending.
         const r2 = dispatchObserve(h);
-        const payload = JSON.parse(h.lastCall("DescribeWorld").payload) as { report: { creationAttempts: Array<Record<string, unknown>> } };
-        assert.equal(payload.report.creationAttempts.length, 1, "failed rename keeps the receipt");
+        const payload = JSON.parse(h.lastCall("DescribeWorld").payload) as { report: { creationAttempts?: Array<Record<string, unknown>> } };
+        assert.equal((payload.report.creationAttempts ?? []).length, 1, "failed rename keeps the receipt");
         const created = (h.world.desktops.find((d) => d.id === h.world.created[0]) as FakeDesktop).id;
         showNative(h, "out-secondary", created);
         h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.source, r2.nativeInvalid, "2", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-1", out: "out-secondary", bind: created, scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: { kind: "output", out: "out-primary" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-secondary", bind: created, scope: { kind: "output", out: "out-secondary" }, order: 2, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         dispatchObserve(h);
         // The core bind incorporates the receipt; the adapter reports native
-        // order/current with the views lane empty.
-        assertViewsEmpty(h);
+        // order/current with no logical views lane.
+        assertNoViews(h);
         const row = nativeOf(h).find((b) => b.out === "out-secondary");
         assert.ok(row !== undefined);
         assert.ok(row.order.includes(created), `expected created native in order, got ${JSON.stringify(nativeOf(h))}`);
