@@ -374,4 +374,36 @@
   shortcut records were left as ordinary lifecycle residue. No crash or repeated
    non-fixture actuation was observed. Remaining corpus migration,
    loaded-effect nested proof, independent review and widened gates
-  are still required before K1 acceptance.
+   are still required before K1 acceptance.
+
+## Loaded-effect and opaque restart evidence
+
+- A host-matched native build and private nested compositor passed the
+  config/data/cache/state/runtime/HOME/bus/socket isolation checkpoint, used its
+  own configuration and exited with exact owned process/socket cleanup. The
+  owned outline exposed a real normal internal window with `pid=-1` and empty
+  resource class: it crosses the normal-window boundary but not the fixture-class
+  boundary. Captured-fact classifier exclusion remains pending.
+- Two fixture processes joined uniquely by sentinel, PID and native UUID. The
+  built scoped script and service exchanged correlated v4 handshake, settings,
+  reports and replies; independent frames showed side-by-side ordinary tiles.
+  The loaded native endpoint positively accepted hidden presentation before and
+  after native changes and a service/script replacement. No border-visible
+  setter or visible edge appeared. Two transient stale-coverage refusals during
+  mutation recovered to accepted hidden setters; this is not a zero-diagnostic
+  claim. The absent tray still produced transport errors. Group underlay and
+  drag-preview rendering remain unproved.
+- A real queued float command produced core intent writes and a nonempty opaque
+  store. Replacing the service and script in the same compositor session returned
+  exactly the stored record bytes before the first accepted report, retained the
+  floating subject and resumed native capture/application. Complete wire retained
+  32 joined Planner call/reply pairs; only two parked waits remained at teardown.
+- This leg exposed the retired `operation` wrapper on float commands; both float
+  emitters now send the direct v4 `toggle-float` shape. Another execution exposed
+  lost durability when native input superseded an accepted reply before its
+  callback: accepted opaque writes now persist through the serial queue while
+  the stale native apply stays fenced. The new regression also proves exact
+  out-of-scope retention and restart hydration. Typecheck, all 50 native-toggle
+  tests and all 13 entry-persistence tests pass. Independent read-only review
+  found no defect in these fixes. Other stale harnesses and the integrated
+  migration review remain open; K1 is incomplete.

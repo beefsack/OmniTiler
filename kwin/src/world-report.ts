@@ -41,6 +41,7 @@ export type WorldCommand =
     | { op: "set-workspace-tiling"; out: string; ws: string; tiled: boolean }
     | { op: "toggle-workspace-tiling"; out: string; ws: string }
     | { op: "toggle-maximize"; win: string }
+    | { op: "toggle-float"; win: string; rect: [number, number, number, number] | null }
     | { op: "migrate-workspace"; from: string; to: string; ws: string }
     | { op: "focus-directional"; win: string; direction: string }
     | { op: "move-directional"; win: string; direction: string; sameAxis: string }

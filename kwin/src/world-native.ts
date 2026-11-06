@@ -417,7 +417,7 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         }
         const rect: [number, number, number, number] = [frame.x, frame.y, frame.w, frame.h];
         if (!env.submitSettledCommand(
-            { op: "operation", command: { op: "toggle-float", win, rect } },
+            { op: "toggle-float", win, rect },
             "float",
         )) {
             refuse("submit-refused");
@@ -738,7 +738,7 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
             }
             rect = [live.x, live.y, live.w, live.h];
         }
-        if (!env.submitCommand({ op: "operation", command: { op: "toggle-float", win: w, rect } }, "float")) {
+        if (!env.submitCommand({ op: "toggle-float", win: w, rect }, "float")) {
             env.shortcutFailed(label);
             return false;
         }

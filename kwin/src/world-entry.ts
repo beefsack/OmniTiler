@@ -4476,6 +4476,28 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // superseded, so no setters run on it. Follow-up
                         // observes the newer watermark (dirty is set).
                         log("omnitiler:world:stale reason=superseded-during-flight recovery=catchup");
+                        // K1 durability: accepted core intentWrites still
+                        // incorporate and persist even when superseded. The
+                        // queued waiter carries the superseded watermark so
+                        // its run never actuates (the persist gate drops it
+                        // as superseded); only the serial persist runs.
+                        if (intentStore.incorporateWrites(parsed.intentWrites)) {
+                            intentNondurable = true;
+                            if (intentPersistBusy) {
+                                intentChangedDuringPersist = true;
+                            }
+                            intentPersistWaiters.push({
+                                run: () => {
+                                    if (state.dirty || pendingQueue.length > 0) {
+                                        scheduleDispatch();
+                                    }
+                                    wakeFollowup();
+                                },
+                                gen: parsed.gen, watermark: flight.watermark, rev: parsed.rev,
+                                settingsRev: settingsAcceptedRev, persist: true,
+                            });
+                            pumpIntentPersistQueue();
+                        }
                         // Active-drag preview continuity: a superseded
                         // accepted reply still drives a preview-only
                         // presentation read. The broker already cached this

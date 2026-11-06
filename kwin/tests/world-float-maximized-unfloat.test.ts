@@ -326,8 +326,7 @@ describe("world B9 deferred maximized unfloat", () => {
         h.calls
             .filter((c) => c.method === "QueueWorldCommand")
             .map((c) => h.commandOf(c.payload))
-            .filter((cmdVal) => cmdVal !== null && (cmdVal["op"] as unknown) === "operation")
-            .filter((op) => ((op as Record<string, unknown>)["command"] as Record<string, unknown>)["op"] === "toggle-float")
+            .filter((cmdVal) => cmdVal !== null && (cmdVal["op"] as unknown) === "toggle-float")
             .length;
 
     const boundaryReply = (h: ReturnType<typeof makeHarness>, rev: string): void => {
@@ -353,7 +352,7 @@ describe("world B9 deferred maximized unfloat", () => {
         const syncCalls = h.calls.filter((c) => c.method === "QueueWorldCommand");
         const syncCommands = syncCalls
             .map((c) => h.commandOf(c.payload))
-            .filter((cmd) => cmd !== null && (cmd["op"] as unknown) === "operation");
+            .filter((cmd) => cmd !== null && (cmd["op"] as unknown) === "toggle-float");
         assert.equal(syncCommands.length, 1, "only the seed float command exists synchronously");
         assert.ok(!h.logs.some((l) => l.includes("outcome=observed-cleared")), "no same-stack admission");
         // Next report observes the cleared mode and admits exactly once.
@@ -362,9 +361,7 @@ describe("world B9 deferred maximized unfloat", () => {
         h.runTimers();
         const admittedQ = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         const cmd = admittedQ["command"] as Record<string, unknown>;
-        assert.equal(cmd["op"], "operation");
-        assert.deepEqual((cmd["command"] as Record<string, unknown>)["op"], "toggle-float");
-        assert.deepEqual((cmd["command"] as Record<string, unknown>)["rect"], [...FLOAT_A]);
+        assert.deepEqual(cmd, { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] });
         assert.ok(h.logs.some((l) => l.includes("outcome=observed-cleared")), "deferred admission after observed clear");
         assert.equal(toggleCount(h), 2, "seed float plus exactly one deferred unfloat command");
     });
@@ -388,8 +385,7 @@ describe("world B9 deferred maximized unfloat", () => {
         h.runTimers();
         const retryQ = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         const retryCmd = retryQ["command"] as Record<string, unknown>;
-        assert.equal((retryCmd["command"] as Record<string, unknown>)["op"], "toggle-float");
-        assert.deepEqual((retryCmd["command"] as Record<string, unknown>)["rect"], [...FLOAT_A]);
+        assert.deepEqual(retryCmd, { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] });
         assert.equal(toggleCount(h), 2, "seed float plus exactly one retried unfloat command");
     });
 
@@ -574,8 +570,7 @@ describe("world B9 deferred maximized unfloat", () => {
         JSON.parse(call.payload);
         const immQ = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         const cmd = immQ["command"] as Record<string, unknown>;
-        assert.equal(cmd["op"], "operation");
-        assert.deepEqual(cmd["command"], { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] });
+        assert.deepEqual(cmd, { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] });
         assert.ok(!h.logs.some((l) => l.includes("float-unfloat-maximize-clear") && l.includes("outcome=issued")));
     });
 });

@@ -660,4 +660,77 @@ describe("world entry opaque intent persistence", () => {
         assert.equal(JSON.stringify(flow.geometryOf("win-a")), geometryBefore);
         flow.handle.stop();
     });
+    it("superseded accepted intentWrites still persist with no native apply", () => {
+        const bus = {
+            stored: [
+                { win: "win-a", data: DATA_A },
+                { win: "win-b", data: DATA_B },
+                { win: "ghost", data: DATA_GHOST },
+            ],
+            degradeReads: false, holdWrites: true,
+        };
+        const flow = startFlow(bus);
+        answerHandshake(flow);
+        answerSettings(flow);
+        // The bus auto-answers ReadFloatIntent from bus.stored, so no
+        // manual answerRead: a late second callback would not reseed the
+        // already-hydrated map and would drop the out-of-scope ghost.
+        flow.pump(120);
+        const appliedBefore = flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length;
+        const geometryBefore = JSON.stringify(flow.geometryOf("win-a"));
+        const envelope = firstCapture(flow);
+        // Native input lands during flight: the watermark advances before
+        // the accepted reply arrives, so the observation is superseded.
+        flow.fireConfigChanged();
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
+            { win: "win-a", data: DATA_B },
+            { win: "win-b", data: null },
+        ], "1"));
+        assert.ok(flow.logs.some((l) => l.includes("superseded-during-flight")), flow.logs.join("\n"));
+        // The superseded accept still persists the exact core writes.
+        assert.equal(flow.calls.filter((c) => c.method === "WriteFloatIntent").length, 1);
+        const writeBody = JSON.parse(flow.lastCall("WriteFloatIntent").payload) as Record<string, unknown>;
+        assert.deepEqual(writeBody["records"], [
+            { win: "win-a", data: DATA_B },
+            { win: "ghost", data: DATA_GHOST },
+        ]);
+        assert.deepEqual(
+            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
+            appliedBefore,
+        );
+        assert.equal(JSON.stringify(flow.geometryOf("win-a")), geometryBefore);
+        // The correlated persist success stays durable but applies nothing:
+        // the waiter carries the superseded watermark.
+        answerWrite(flow, storedWriteReply(flow, 2));
+        assert.deepEqual(bus.stored, [
+            { win: "win-a", data: DATA_B },
+            { win: "ghost", data: DATA_GHOST },
+        ]);
+        assert.deepEqual(
+            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
+            appliedBefore,
+        );
+        assert.equal(JSON.stringify(flow.geometryOf("win-a")), geometryBefore);
+        // Follow-up fresh capture carries the persisted intent live-joined,
+        // and its unchanged acceptance applies normally.
+        flow.pump(120);
+        const second = JSON.parse(flow.lastCall("DescribeWorld").payload) as Record<string, unknown>;
+        assert.deepEqual(
+            (second["report"] as Record<string, unknown>)["intentRecords"],
+            [{ win: "win-a", data: DATA_B }],
+        );
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [], "2"));
+        assert.equal(
+            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
+            appliedBefore + 1,
+        );
+        flow.handle.stop();
+        // Restart rereads the persisted snapshot into its first report.
+        const revived = startFlow(bus);
+        answerHandshake(revived);
+        answerSettings(revived);
+        revived.pump(120);
+        assert.deepEqual(innerIntentRecords(revived), [{ win: "win-a", data: DATA_B }]);
+        revived.handle.stop();
+    });
 });

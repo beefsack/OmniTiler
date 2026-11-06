@@ -311,7 +311,7 @@ describe("world unfloat immediate retile", () => {
         let body = JSON.parse(call.payload) as Record<string, unknown>;
         const filedFloat = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
-            (filedFloat["command"] as Record<string, unknown>)["command"],
+            filedFloat["command"] as Record<string, unknown>,
             { op: "toggle-float", win: WIN_A, rect: null },
         );
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
@@ -335,7 +335,7 @@ describe("world unfloat immediate retile", () => {
         body = JSON.parse(call.payload) as Record<string, unknown>;
         const filedUnfloat = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
-            (filedUnfloat["command"] as Record<string, unknown>)["command"],
+            filedUnfloat["command"] as Record<string, unknown>,
             { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] },
         );
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
@@ -400,7 +400,7 @@ describe("world unfloat immediate retile", () => {
         const body = JSON.parse(call.payload) as Record<string, unknown>;
         const filedFixed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
-            (filedFixed["command"] as Record<string, unknown>)["command"],
+            filedFixed["command"] as Record<string, unknown>,
             { op: "toggle-float", win: WIN_F, rect: [...FLOAT_F] },
         );
         const writesBefore = h.geometryWrites.length;

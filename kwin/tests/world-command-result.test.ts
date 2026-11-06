@@ -594,10 +594,7 @@ describe("world command result entry", () => {
         const sent = [...h.calls].reverse().find((c) => c.method === "QueueWorldCommand");
         assert.ok(sent !== undefined);
         const cmd = (JSON.parse((sent as { payload: string }).payload) as Record<string, unknown>)["command"] as Record<string, unknown>;
-        assert.equal(cmd["op"], "operation");
-        const inner = cmd["command"] as Record<string, unknown>;
-        assert.equal(inner["op"], "toggle-float");
-        assert.ok(Array.isArray(inner["rect"]), "unfloat carries the live frame");
+        assert.deepEqual(cmd, { op: "toggle-float", win: "win-a", rect: [162, 122, 475, 355] });
         const capture = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
         assert.ok(capture !== undefined);
         const envelope = JSON.parse((capture as { payload: string }).payload) as Record<string, unknown>;

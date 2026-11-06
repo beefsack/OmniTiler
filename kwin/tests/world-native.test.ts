@@ -153,7 +153,7 @@ describe("world native toggles", () => {
         const h = setup(ref, order);
         assert.equal(h.toggles.submitFloat("float"), true);
         assert.equal(h.calls.length, 1);
-        assert.deepEqual((h.calls[0] as { command: Record<string, unknown> }).command, {
+        assert.deepEqual(h.calls[0], {
             op: "toggle-float", win: "win-a", rect: null,
         });
     });
@@ -182,7 +182,7 @@ describe("world native toggles", () => {
         assert.ok(h.logs.some((l) => l.includes("float-unfloat-maximize-clear") && l.includes("outcome=issued")));
         h.toggles.pollPendingUnfloat(freshWith("win-a", "out-1", "ws-1") as never, false);
         assert.equal(h.calls.length, 1, "exactly one command after observed clear");
-        assert.deepEqual((h.calls[0] as { command: Record<string, unknown> }).command, {
+        assert.deepEqual(h.calls[0], {
             op: "toggle-float", win: "win-a", rect: [0, 0, 100, 100],
         });
         assert.ok(h.logs.some((l) => l.includes("outcome=observed-cleared")));
@@ -262,7 +262,7 @@ describe("world native toggles", () => {
         const h = setup(ref, []);
         h.env.setFloating(true);
         assert.equal(h.toggles.submitFloat("float"), true);
-        assert.deepEqual((h.calls[0] as { command: Record<string, unknown> }).command, {
+        assert.deepEqual(h.calls[0], {
             op: "toggle-float", win: "win-a", rect: [11, 22, 333, 444],
         });
     });
@@ -282,7 +282,7 @@ describe("world native toggles", () => {
         const h = setup(ref, order);
         h.env.setFloating(false);
         assert.equal(h.toggles.submitFloat("float"), true);
-        assert.deepEqual((h.calls[0] as { command: Record<string, unknown> }).command, {
+        assert.deepEqual(h.calls[0], {
             op: "toggle-float", win: "win-a", rect: null,
         });
         assert.equal(ref.maximizeMode, 0, "no B9 clear runs under fullscreen");
@@ -295,7 +295,7 @@ describe("world native toggles", () => {
         const h = setup(ref, order);
         h.env.setFloating(true);
         assert.equal(h.toggles.submitFloat("float"), true);
-        assert.deepEqual((h.calls[0] as { command: Record<string, unknown> }).command, {
+        assert.deepEqual(h.calls[0], {
             op: "toggle-float", win: "win-a", rect: null,
         }, "fullscreen frame never becomes the retained float frame");
         assert.equal(ref.maximizeMode, 0);
@@ -307,7 +307,7 @@ describe("world native toggles", () => {
         const h = setup(ref, order);
         h.env.setFloating(true);
         assert.equal(h.toggles.submitFloat("float"), true, "adapter submits; maximized core refusal owns the verdict");
-        assert.deepEqual((h.calls[0] as { command: Record<string, unknown> }).command, {
+        assert.deepEqual(h.calls[0], {
             op: "toggle-float", win: "win-a", rect: null,
         });
         assert.equal(ref.maximizeMode, 3, "D5: no native state write to the fullscreen subject");
@@ -322,7 +322,7 @@ describe("world native toggles", () => {
         const h = setup(ref, order);
         h.env.setFloating(false);
         assert.equal(h.toggles.submitFloat("float"), true, "adapter submits; maximized core refusal owns the verdict");
-        assert.deepEqual((h.calls[0] as { command: Record<string, unknown> }).command, {
+        assert.deepEqual(h.calls[0], {
             op: "toggle-float", win: "win-a", rect: null,
         });
         assert.equal(ref.maximizeMode, 3, "D5: no native state write to the fullscreen subject");

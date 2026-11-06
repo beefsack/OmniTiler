@@ -686,13 +686,16 @@ async function runFixedTileLeg(intervening: 0 | 2, t: TestContext): Promise<void
         h.runTimers();
         const newQueues = h.queueBodies().slice(queuesBeforeTile);
         assert.equal(newQueues.length, 1, `immediate tile files exactly one command, got ${JSON.stringify(newQueues.map((q) => queueOpOf(q.body)))}`);
-        assert.equal(queueOpOf((newQueues[0] as { body: Record<string, unknown> }).body), "operation:toggle-float", "immediate command is the explicit toggle-float");
-        const nested = (((newQueues[0] as { body: Record<string, unknown> }).body["command"] as Record<string, unknown>)["command"] as Record<string, unknown>);
-        assert.equal(nested["win"], WIN_F, "explicit tile names the stable fixed client (bare id on the wire)");
+        assert.equal(queueOpOf((newQueues[0] as { body: Record<string, unknown> }).body), "toggle-float", "immediate command is the explicit toggle-float");
+        const direct = ((newQueues[0] as { body: Record<string, unknown> }).body["command"] as Record<string, unknown>);
+        assert.equal(direct["op"], "toggle-float", "immediate command is the direct toggle-float");
+        assert.ok(!("command" in direct), "direct v4 shape carries no operation wrapper");
+        assert.equal(direct["win"], WIN_F, "explicit tile names the stable fixed client (bare id on the wire)");
+        assert.ok(Array.isArray(direct["rect"]), "floating fixed unfloat carries the live frame");
         assert.equal(describeCount(h) - describesBeforeTile, 1, "press queues exactly one DescribeWorld before the tile flush (no silent extra rounds)");
         const tileRound = await h.flushOne();
         if (tileRound.parsed["outcome"] === "rejected") {
-            failWithTrace(t, h, "complete-report explicit fixed tile refused; STOP (candidate: float target/mismatch/maximized or lifecycle subject/peer; no production fix here)", tileRound, { intervening, nested });
+            failWithTrace(t, h, "complete-report explicit fixed tile refused; STOP (candidate: float target/mismatch/maximized or lifecycle subject/peer; no production fix here)", tileRound, { intervening, direct });
         }
         assertBoundTransport(tileRound, JSON.parse(tileRound.envelope) as Record<string, unknown>);
         const tileLogical = assertExactBindings(h, tileRound, "tile");
@@ -719,7 +722,7 @@ async function runFixedTileLeg(intervening: 0 | 2, t: TestContext): Promise<void
         h.fire("windowActivated");
         h.runTimers();
         await h.flushAll();
-        assert.equal(countQueueOp(h, "operation:toggle-float"), 1, "explicit tile never replays after settlement");
+        assert.equal(countQueueOp(h, "toggle-float"), 1, "explicit tile never replays after settlement");
         const settledWrites = h.storeWrites.map((raw) => JSON.parse(raw) as Record<string, unknown>);
         assert.ok(settledWrites.length >= 1, `expected settled store writes, got ${settledWrites.length}`);
         const lastWrite = settledWrites[settledWrites.length - 1] as Record<string, unknown>;

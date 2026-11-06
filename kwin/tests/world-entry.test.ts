@@ -889,8 +889,7 @@ describe("world entry discovery and observation", () => {
         req = requestOf(h);
         const filed = JSON.parse(queueOf(h)) as Record<string, unknown>;
         const cmd = filed["command"] as Record<string, unknown>;
-        assert.equal(cmd["op"], "operation");
-        assert.equal((cmd["command"] as Record<string, unknown>)["op"], "toggle-float");
+        assert.deepEqual(cmd, { op: "toggle-float", win: "win-a", rect: null });
         assert.equal((target as FakeWindow).maximizeMode, 0);
         assert.ok(h.logs.some((l) => l.includes("outcome=observed-cleared")));
     });

@@ -451,7 +451,7 @@ describe("world fullscreen float toggle", () => {
         let body = JSON.parse(call.payload) as Record<string, unknown>;
         const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
-            (filed["command"] as Record<string, unknown>)["command"],
+            filed["command"] as Record<string, unknown>,
             { op: "toggle-float", win: WIN_A, rect: null },
             "fullscreen float carries no rect, never the fullscreen frame",
         );
@@ -508,7 +508,7 @@ describe("world fullscreen float toggle", () => {
         body = JSON.parse(call.payload) as Record<string, unknown>;
         const filedUnfloat = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
-            (filedUnfloat["command"] as Record<string, unknown>)["command"],
+            filedUnfloat["command"] as Record<string, unknown>,
             { op: "toggle-float", win: WIN_A, rect: null },
             "fullscreen unfloat carries no rect, never the fullscreen frame",
         );
@@ -536,7 +536,7 @@ describe("world fullscreen float toggle", () => {
         body = JSON.parse(call.payload) as Record<string, unknown>;
         const filedRefloat = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
-            (filedRefloat["command"] as Record<string, unknown>)["command"],
+            filedRefloat["command"] as Record<string, unknown>,
             { op: "toggle-float", win: WIN_A, rect: null },
             "refloat still carries no rect (core reuses the retained placement)",
         );
@@ -654,7 +654,7 @@ describe("world fullscreen float toggle", () => {
         h.runTimers();
         const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
-            (filed["command"] as Record<string, unknown>)["command"],
+            filed["command"] as Record<string, unknown>,
             { op: "toggle-float", win: WIN_A, rect: null },
         );
         assert.deepEqual(h.subjectWrites(`{${WIN_A}}`), [], "no geometry write to the fullscreen maximized subject");
