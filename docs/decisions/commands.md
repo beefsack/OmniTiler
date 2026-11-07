@@ -17,11 +17,11 @@
 - Status: active, 2026-10-27
 - Evidence: [directional focus without a window](../changes/archive/directional-focus-without-window.md).
 
-### KDE rapid directional input
-- Decision: production KDE tiled directional focus/move preserves unsent presses FIFO, resolving subject from settled native focus at dispatch, including focus-then-move. Native observation invalidation fences stale setters; sent command never replays; generation changes discard old contexts. Non-directional and native float/sticky actions retain fail-closed behavior.
-- Why: not recorded.
-- Assumes / revisit if: Tier 1 per-press dispatch evidence/regression/native outcomes remain pending; queue policy for other paths is not selected.
-- Status: tentative, 2026-10-19
+### KDE rapid input
+- Decision: every KDE user command press queues FIFO in press order, with no busy refusal. A window-targeting command resolves its subject from settled native focus at dispatch, unless it is an explicit press-time-subject route. Native observation invalidation fences stale setters; a sent command never replays; generation changes discard old contexts. Internal drag-verdict and unfloat continuations keep their own path.
+- Why: i3, sway, Hyprland and COSMIC dispatch every matched press sequentially; one queue removes the directional-only branch and the busy refusal.
+- Assumes / revisit if: physical-key and perceived-latency acceptance remain pending. Production currently queues only directional focus/move; extending the queue is pending work.
+- Status: active, 2026-11-08 (user decision; supersedes the 2026-10-19 directional-only tentative entry)
 - Evidence: [change record](../changes/archive/kde-rapid-input-geometry.md).
 
 - Cross-output gesture release placement lives only in [world-rendering.md](world-rendering.md#cross-output-gesture-release-placement).
