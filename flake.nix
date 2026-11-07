@@ -66,9 +66,12 @@
           ./kwin/metadata.json
           # Shared Stage 5 recorded fixtures: the recovery regression test
           # reads these at test time (baked fixture dir, source tree
-          # locally and Nix source store here). Nothing else in
-          # test-fixtures enters the effect source.
+          # locally and Nix source store here).
           ./test-fixtures/stage5
+          # Stage 5 v2 dispatch siblings: native recovery now consumes the
+          # genuine v2 dispatch files alongside the shared stage5 tree.
+          # No other test-fixtures enter the effect source.
+          ./test-fixtures/stage5-v2
           # All workspace manifests/targets: Cargo requires every member
           # manifest+targets to resolve the workspace even when building
           # only -p omnitiler. Unrelated trees (kwin script

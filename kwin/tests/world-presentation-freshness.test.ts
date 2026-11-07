@@ -12,10 +12,9 @@ import { isWorldPresentationReply, parseWorldReply } from "../src/world-report";
 const GEN = "gen-1";
 
 // STRICT V4 SYNTHETIC projection (hand-authored inline, never real-core
-// output): causal coverage plus renderer hides. K1 settled-hidden border:
-// the wire carries a valid hidden anchored descriptor (never absolute
-// inner/outer); the native formatter projects it hidden. Underlay/preview
-// retained; native proof never claimed here.
+// output): causal coverage plus renderer hides. Hidden anchored border
+// forwards verbatim as the exact v2 descriptor (never absolute
+// inner/outer). Underlay/preview retained; native proof never claimed here.
 const HIDDEN_BORDER = {
     visible: false, reason: "disabled", subject: null, outsets: null,
     width: null, radius: null, witness: null,

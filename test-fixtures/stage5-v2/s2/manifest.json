@@ -1,9 +1,15 @@
 {
   "tool": "world-stage5-v4-record",
   "bridge": "broker_world_eval",
+  "dispatchProvenance": {
+    "tool": "world-stage5-v4-record+production-subscriber",
+    "route": "broker-projection->createWorldPresentationSubscriber->SetPresentation",
+    "reqRekeyed": true,
+    "crossed": "dispatch-a3-b.json renders projection-a3.json with B/1 live gesture"
+  },
   "chain": "s2",
   "adapter": "kwin-stage5-v4",
-  "gen": "w-1794045035746835768-2492742-0",
+  "gen": "w-1794048326430076860-2519572-0",
   "volatile": [
     "gen",
     "source",
@@ -17,6 +23,9 @@
     {
       "name": "p5",
       "projection": "projection-p5.json",
+      "dispatches": [
+        "dispatch-p5.json"
+      ],
       "envelopes": [
         "envelope-p5-0.json"
       ],
@@ -31,6 +40,9 @@
     {
       "name": "p6",
       "projection": "projection-p6.json",
+      "dispatches": [
+        "dispatch-p6.json"
+      ],
       "envelopes": [
         "envelope-p6-0.json"
       ],
@@ -43,6 +55,9 @@
     {
       "name": "cover",
       "projection": "projection-cover.json",
+      "dispatches": [
+        "dispatch-cover.json"
+      ],
       "envelopes": [
         "envelope-cover-0.json"
       ],
@@ -57,6 +72,9 @@
     {
       "name": "preview",
       "projection": "projection-preview.json",
+      "dispatches": [
+        "dispatch-preview.json"
+      ],
       "envelopes": [
         "envelope-preview-0.json"
       ],
@@ -71,6 +89,9 @@
     {
       "name": "s2",
       "projection": "projection-s2.json",
+      "dispatches": [
+        "dispatch-s2.json"
+      ],
       "envelopes": [
         "envelope-s2-0.json",
         "envelope-s2-1.json"

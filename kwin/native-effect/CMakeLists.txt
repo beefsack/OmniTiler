@@ -245,11 +245,31 @@ if(BUILD_TESTING)
         Qt6::Gui)
     target_compile_options(omnitiler-active-border-stage5-recovery-test PRIVATE -Wall -Wextra -Werror)
     target_compile_definitions(omnitiler-active-border-stage5-recovery-test PRIVATE
-        STAGE5_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../test-fixtures/stage5")
+        STAGE5_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../test-fixtures/stage5"
+        STAGE5_V2_FULL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../test-fixtures/stage5-v2/full"
+        STAGE5_V2_S2_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../test-fixtures/stage5-v2/s2")
 
     add_test(NAME native-effect-stage5-recovery
         COMMAND ${DBUS_RUN_SESSION} ${DBUS_RUN_SESSION_ARGS} $<TARGET_FILE:omnitiler-active-border-stage5-recovery-test>)
     set_tests_properties(native-effect-stage5-recovery PROPERTIES TIMEOUT 120)
+
+    # BORDER-ONLY anchor-chain regression (Qt-only, no fixtures, no bus):
+    # the exact production PresentationStage5/PresentationRouter seam with
+    # a hand-authored v2 payload. No session bus: the stage runs with a
+    # null facts source and the router namespace is seeded directly.
+    add_executable(omnitiler-active-border-chain-test
+        presentation_borderchain_test.cpp
+        presentation_stage5.cpp
+        presentationfacts.cpp
+    )
+    target_link_libraries(omnitiler-active-border-chain-test PRIVATE
+        Qt6::Core
+        Qt6::DBus
+        Qt6::Gui)
+    target_compile_options(omnitiler-active-border-chain-test PRIVATE -Wall -Wextra -Werror)
+
+    add_test(NAME native-effect-border-chain
+        COMMAND omnitiler-active-border-chain-test)
 
     # Offline transport test for the versioned script facts waiter: the
     # exact production PresentationFactsSource class (no test fake) driven

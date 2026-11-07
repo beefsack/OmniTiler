@@ -26,6 +26,7 @@ import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
+import { createWorldPresentationSubscriber } from "../src/world-presentation";
 import { isCanonicalU64 } from "../src/world-seq";
 import {
     isCoreWorldReply,
@@ -141,6 +142,87 @@ export interface Stage5V4RecordedExchange {
     readonly bytes: string;
 }
 
+export interface Stage5V4RecordedDispatch extends Stage5V4RecordedExchange {
+    readonly gestureInstance: string | null;
+    readonly gestureSerial: string | null;
+}
+
+// Live gesture identity for dispatch rendering (coreId never rides the
+// dispatch bytes; the subscriber only compares instance/serial). Values
+// match the fixture-test constants so regenerated dispatches stay
+// comparable.
+export function dispatchLiveGesture(
+    step: string,
+    variant: "normal" | "crossed-b" = "normal",
+): { readonly instance: string; readonly serial: string; readonly coreId: string } | null {
+    if (variant === "crossed-b") {
+        return { instance: STAGE5_V4_B_INSTANCE, serial: "1", coreId: "2" };
+    }
+    const expected = STAGE5_V4_PREVIEW_EXPECTATION[step] ?? null;
+    if (expected === null) {
+        return null;
+    }
+    if (expected.instance === STAGE5_V4_B_INSTANCE) {
+        return { instance: STAGE5_V4_B_INSTANCE, serial: "1", coreId: "2" };
+    }
+    if (expected.serial === "2") {
+        return { instance: STAGE5_V4_GESTURE_A, serial: "2", coreId: "9" };
+    }
+    return { instance: STAGE5_V4_GESTURE_A, serial: "1", coreId: "1" };
+}
+
+// Shared production-subscriber dispatch renderer: replays one genuine
+// broker projection through the real `createWorldPresentationSubscriber`
+// (req re-keyed, no direct formatter calls) and returns the exact
+// `SetPresentation` dispatch bytes. Used by the recorder and reused by the
+// fixture tests so both prove the same route.
+export function renderPresentationDispatch(
+    projectionBytes: string,
+    invalidation: { readonly instance: string; readonly counter: string },
+    gesture: { readonly instance: string; readonly serial: string; readonly coreId: string } | null,
+): string {
+    const proj = JSON.parse(projectionBytes) as { gen: unknown };
+    if (typeof proj.gen !== "string") {
+        throw new Error("projection carries no gen");
+    }
+    const pending: Array<{ payload: string; callback: (reply: unknown) => void }> = [];
+    const paints: string[] = [];
+    const logs: string[] = [];
+    const sub = createWorldPresentationSubscriber({
+        callDbus: (_s, _p, _i, _m, payload, callback) => {
+            pending.push({ payload, callback });
+        },
+        getGeneration: () => proj.gen as string,
+        getInvalidation: () => ({ instance: invalidation.instance, counter: invalidation.counter }),
+        getGestureIdentity: () => gesture,
+        isStopped: () => false,
+        log: (m) => { logs.push(m); },
+        scheduleOnce: () => () => undefined,
+        renderer: {
+            renderPresentation: (payload) => {
+                paints.push(payload);
+                return true;
+            },
+            hidePresentation: () => undefined,
+            clearPresentation: () => undefined,
+        },
+    });
+    sub.notifyGeneration(proj.gen as string);
+    if (pending.length !== 1) {
+        throw new Error(`dispatch render expected one read, got ${pending.length}`);
+    }
+    const call = pending.splice(0)[0] as { payload: string; callback: (reply: unknown) => void };
+    const issued = (JSON.parse(call.payload) as { req: string }).req;
+    const recorded = JSON.parse(projectionBytes) as Record<string, unknown>;
+    recorded["req"] = issued;
+    call.callback(JSON.stringify(recorded));
+    sub.stop();
+    if (paints.length !== 1) {
+        throw new Error(`dispatch render expected one paint, got ${paints.length} logs=${logs.join("; ")}`);
+    }
+    return paints[0] as string;
+}
+
 export interface Stage5V4ChainResult {
     readonly chain: Stage5V4ChainName;
     readonly adapter: string;
@@ -149,6 +231,7 @@ export interface Stage5V4ChainResult {
     readonly envelopes: ReadonlyArray<Stage5V4RecordedExchange>;
     readonly replies: ReadonlyArray<Stage5V4RecordedExchange>;
     readonly projections: ReadonlyArray<Stage5V4RecordedExchange>;
+    readonly dispatches: ReadonlyArray<Stage5V4RecordedDispatch>;
     readonly factsInputs: ReadonlyArray<Stage5V4RecordedExchange>;
     readonly gestureInputs: ReadonlyArray<Stage5V4RecordedExchange>;
     readonly internalReads: number;
@@ -464,6 +547,7 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
     const envelopes: Stage5V4RecordedExchange[] = [];
     const replies: Stage5V4RecordedExchange[] = [];
     const projections: Stage5V4RecordedExchange[] = [];
+    const dispatches: Stage5V4RecordedDispatch[] = [];
     const factsInputs: Stage5V4RecordedExchange[] = [];
     const gestureInputs: Stage5V4RecordedExchange[] = [];
     let internalReads = 0;
@@ -743,6 +827,33 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
         const expected = STAGE5_V4_PREVIEW_EXPECTATION[step] ?? null;
         assertPresentationProjection(replyText, req, step, expected);
         projections.push({ step, file: `projection-${step}.json`, bytes: replyText });
+        if (latestWitness === null) {
+            throw new Error(`dispatch render at step ${step} has no answered facts witness`);
+        }
+        const invalidation = { instance: latestWitness.instance, counter: latestWitness.counter };
+        const gesture = dispatchLiveGesture(step, "normal");
+        const dispatchBytes = renderPresentationDispatch(replyText, invalidation, gesture);
+        dispatches.push({
+            step,
+            file: `dispatch-${step}.json`,
+            bytes: dispatchBytes,
+            gestureInstance: gesture === null ? null : gesture.instance,
+            gestureSerial: gesture === null ? null : gesture.serial,
+        });
+        if (options.chain === "full" && step === "a3") {
+            const crossed = dispatchLiveGesture(step, "crossed-b");
+            if (crossed === null) {
+                throw new Error("crossed-b gesture missing for a3");
+            }
+            const crossedBytes = renderPresentationDispatch(replyText, invalidation, crossed);
+            dispatches.push({
+                step: "a3-b",
+                file: "dispatch-a3-b.json",
+                bytes: crossedBytes,
+                gestureInstance: crossed.instance,
+                gestureSerial: crossed.serial,
+            });
+        }
     };
 
     const handle = startWorldAdapterEntry({
@@ -877,6 +988,7 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
             envelopes,
             replies,
             projections,
+            dispatches,
             factsInputs,
             gestureInputs,
             internalReads,
@@ -894,6 +1006,7 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
             envelopes,
             replies,
             projections,
+            dispatches,
             factsInputs,
             gestureInputs,
             internalReads,
@@ -953,9 +1066,18 @@ export function writeStage5V4Chain(outDir: string, result: Stage5V4ChainResult, 
     for (const entry of result.projections) {
         write(entry.file, entry.bytes);
     }
+    for (const entry of result.dispatches) {
+        write(entry.file, entry.bytes);
+    }
     const manifest = {
         tool: "world-stage5-v4-record",
         bridge: "broker_world_eval",
+        dispatchProvenance: {
+            tool: "world-stage5-v4-record+production-subscriber",
+            route: "broker-projection->createWorldPresentationSubscriber->SetPresentation",
+            reqRekeyed: true,
+            crossed: "dispatch-a3-b.json renders projection-a3.json with B/1 live gesture",
+        },
         chain: result.chain,
         adapter: result.adapter,
         gen: result.gen,
@@ -965,6 +1087,7 @@ export function writeStage5V4Chain(outDir: string, result: Stage5V4ChainResult, 
         steps: result.projections.map((projection) => ({
             name: projection.step,
             projection: projection.file,
+            dispatches: result.dispatches.filter((entry) => entry.step === projection.step || (projection.step === "a3" && entry.step === "a3-b")).map((entry) => entry.file),
             envelopes: result.envelopes.filter((entry) => entry.step === projection.step).map((entry) => entry.file),
             replies: result.replies.filter((entry) => entry.step === projection.step).map((entry) => entry.file),
             facts: result.factsInputs.filter((entry) => entry.step === projection.step).map((entry) => entry.file),

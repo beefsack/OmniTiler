@@ -1,12 +1,14 @@
-// Read-only presentation consumer offline tests (Stage 5): strict parse,
-// generation/(revision, observation) fencing with fence retention across
-// display-only hides, geometry-dirt floors with strictly-newer clearing,
-// underlay anchor inputs, preview publication/clear plus gesture-latch
-// clearing, no one-shot authority, value-based integer checks, the exact
-// border stroke derivation, and native styling independence. Pure Qt, no
-// KWin scene, no session bus, no Rust staticlib: policy lives in core,
-// geometry derivation is deleted, and this test pins the renderer-only
-// contract.
+// Read-only presentation consumer offline tests (Stage 5, strict v2): exact
+// 10-key shape, 7-key border descriptor, 4-key witness, generation plus
+// (revision, observation) fencing with fence retention across display-only
+// hides, geometry-dirt floors with strictly-newer clearing, underlay anchor
+// inputs, preview publication/clear plus gesture-latch clearing, no one-shot
+// authority, value-based integer checks, asymmetric/negative outsets (no
+// uniform/non-negative clamp), null/dangling witness narrow-hide shapes,
+// the Math.round quantization for live frames, the exact border stroke
+// derivation, and native styling independence. Pure Qt, no KWin scene, no
+// session bus, no Rust staticlib: policy lives in core, geometry derivation
+// is deleted, and this test pins the renderer-only contract.
 
 #include "presentation_consumer.h"
 #include "presentation_router.h"
@@ -14,6 +16,7 @@
 #include <QCoreApplication>
 #include <QString>
 
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -34,22 +37,31 @@ void check(bool condition, const char *expression, const char *file, int line)
 
 #define CHECK(expression) check(expression, #expression, __FILE__, __LINE__)
 
+// Strict v2 found paint: visible border with the complete descriptor,
+// found underlay, null preview. Mirrors the real accepted broker bytes
+// (test-fixtures/stage5-v2): boolean visible, closed reason, nullable
+// subject/outsets/width/radius/witness shapes.
 std::string foundPayload(const std::string &gen, const std::string &rev, const std::string &obs = "4",
     const std::string &covered = "5")
 {
-    return "{\"v\":1,\"gen\":\"" + gen + "\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\"effect-1\","
+    return "{\"v\":2,\"gen\":\"" + gen + "\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\"effect-1\","
         "\"coveredInvalid\":\"" + covered + "\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":1,\"inner\":[10,10,300,300],\"outer\":[8,8,304,304]},"
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
         "\"underlay\":{\"status\":\"found\",\"win\":\"win-2\",\"outer\":[0,0,1200,800],"
         "\"members\":[\"win-1\",\"win-2\"]},\"preview\":null}";
 }
 
+// Strict v2 preview paint: hidden border (closed reason, null descriptor),
+// hidden underlay, proven producer preview.
 std::string previewPayload(const std::string &gen, const std::string &rev, const std::string &obs = "7",
     const std::string &covered = "5", const char *producerInstance = "gesture-1", const char *producerSerial = "1")
 {
-    return "{\"v\":1,\"gen\":\"" + gen + "\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\"effect-1\","
+    return "{\"v\":2,\"gen\":\"" + gen + "\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\"effect-1\","
         "\"coveredInvalid\":\"" + covered + "\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":0,\"inner\":null,\"outer\":null},"
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
         "\"underlay\":{\"status\":\"hidden\"},"
         "\"preview\":{\"rect\":[0,0,396,600],\"sourceOut\":\"out-1\",\"sourceWs\":\"ws-1\",\"win\":\"win-a\","
         "\"producerInstance\":\"" + std::string(producerInstance) + "\",\"producerSerial\":\"" + std::string(producerSerial) + "\"}}";
@@ -58,9 +70,10 @@ std::string previewPayload(const std::string &gen, const std::string &rev, const
 std::string unprovenPreviewPayload(const std::string &gen, const std::string &rev, const std::string &obs = "7",
     const std::string &covered = "5")
 {
-    return "{\"v\":1,\"gen\":\"" + gen + "\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\"effect-1\","
+    return "{\"v\":2,\"gen\":\"" + gen + "\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\"effect-1\","
         "\"coveredInvalid\":\"" + covered + "\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":0,\"inner\":null,\"outer\":null},"
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
         "\"underlay\":{\"status\":\"hidden\"},"
         "\"preview\":{\"rect\":[0,0,396,600],\"sourceOut\":\"out-1\",\"sourceWs\":\"ws-1\",\"win\":\"win-a\","
         "\"producerInstance\":null,\"producerSerial\":null}}";
@@ -92,8 +105,23 @@ void validFoundAppliesCompleteShapes()
     CHECK(state.obs == 9);
     CHECK(state.foreground == QByteArray("win-2"));
     CHECK(state.borderVisible);
-    CHECK(state.borderInner == QRect(10, 10, 300, 300));
-    CHECK(state.borderOuter == QRect(8, 8, 304, 304));
+    CHECK(state.borderReason.isEmpty());
+    CHECK(state.borderSubject == QByteArray("win-2"));
+    CHECK(state.borderHasOutsets);
+    CHECK(state.borderOutsetLeft == 3);
+    CHECK(state.borderOutsetTop == 3);
+    CHECK(state.borderOutsetRight == 3);
+    CHECK(state.borderOutsetBottom == 3);
+    CHECK(state.borderHasWidth);
+    CHECK(state.borderWidth == 3);
+    CHECK(state.borderHasRadius);
+    CHECK(state.borderRadius == 6);
+    CHECK(state.borderHasWitness);
+    CHECK(state.witnessWin == QByteArray("win-2"));
+    CHECK(state.witnessObs == QStringLiteral("3"));
+    CHECK(state.witnessObsValue == 3);
+    CHECK(state.witnessFrame == QRect(10, 10, 300, 300));
+    CHECK(state.witnessForeground == QByteArray("win-2"));
     CHECK(state.underlayFound);
     CHECK(state.underlayWin == QByteArray("win-2"));
     CHECK(state.underlayOuter == QRect(0, 0, 1200, 800));
@@ -119,6 +147,11 @@ void previewPublishesTrimmedGeometryOnly()
     CHECK(state.previewSourceOut == QByteArray("out-1"));
     CHECK(state.previewSourceWs == QByteArray("ws-1"));
     CHECK(state.previewWin == QByteArray("win-a"));
+    // The hidden border still parses its closed reason; the underlay is
+    // hidden alongside.
+    CHECK(!state.borderVisible);
+    CHECK(state.borderReason == QStringLiteral("no-target"));
+    CHECK(!state.underlayFound);
     // The producing native gesture rides alongside: the latch arms only
     // for a matching live open gesture, never for the insertion neighbor.
     CHECK(state.previewProducerInstance == QByteArray("gesture-1"));
@@ -146,7 +179,7 @@ void newerRevisionReplacesOlderIgnored()
     // Same (rev, obs) redelivers idempotently (reconnect seed repaint).
     CHECK(applyStr(&state, foundPayload("gen-1", "10", "10")) == KWin::PresentationApply::Accepted);
     CHECK(state.rev == 10);
-    // Same revision with a newer observation applies: different
+    // Same revision with a newer observation is still newer: different
     // observations under the same state revision can change presentation.
     CHECK(applyStr(&state, previewPayload("gen-1", "10", "11"), "gesture-1", "1") == KWin::PresentationApply::Accepted);
     CHECK(state.previewHas);
@@ -338,33 +371,125 @@ void malformedShapesFailClosedToDisplayClear()
     const char *cases[] = {
         "not-json",
         "",
-        "{\"v\":1}",
-        // Unknown keys refuse (no one-shot, write, or result lanes).
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":1,\"inner\":[10,10,300,300],\"outer\":[8,8,304,304]},"
+        "{\"v\":2}",
+        // Unknown top-level keys refuse (no one-shot, write, or result
+        // lanes): the wire is exactly the 10 accepted keys.
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
         "\"underlay\":{\"status\":\"hidden\"},\"preview\":null,\"result\":null}",
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":1,\"inner\":[10,10,300,300],\"outer\":[8,8,304,304]},"
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
         "\"underlay\":{\"status\":\"hidden\"},\"preview\":null,\"transfers\":[]}",
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":1,\"inner\":[10,10,300,300],\"outer\":[8,8,304,304]},"
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
         "\"underlay\":{\"status\":\"hidden\"},\"preview\":null,\"warpCursor\":null}",
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":1,\"inner\":[10,10,300,300],\"outer\":[8,8,304,304]},"
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
         "\"underlay\":{\"status\":\"hidden\"},\"preview\":null,\"frame_op\":\"x\"}",
         // Missing obs refuses (the order key is incomplete).
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":0,\"inner\":null,\"outer\":null},"
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
         "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
-        // Schema version and revision gates.
-        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":0,\"inner\":null,\"outer\":null},"
+        // Schema version gates: the retired v1 shape and any other version
+        // refuse, even when the rest of the shape is well formed.
+        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
         "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"04\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":0,\"inner\":null,\"outer\":null},"
+        "{\"v\":3,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
         "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"-1\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":0,\"inner\":null,\"outer\":null},"
+        "{\"v\":\"2\",\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
+        "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
+        // Non-canonical order and coverage tokens refuse.
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"04\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
+        "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"-1\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
+        "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"05\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
+        "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
+        // The border is exactly 7 keys: a 6-key border refuses.
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6},"
+        "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
+        // Visible is boolean, never 0/1.
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":1,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
+        "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
+        // A visible border never carries a hide reason; the reason set is
+        // closed.
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"disabled\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
+        "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":false,\"reason\":\"bogus\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
+        "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
+        // The witness is exactly 4 keys with typed values.
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300]}},"
+        "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
+        // Negative sizes refuse; the producer pair is all or nothing.
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":-1,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
+        "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
+        "\"underlay\":{\"status\":\"hidden\"},"
+        "\"preview\":{\"rect\":[0,0,396,600],\"sourceOut\":\"out-1\",\"sourceWs\":\"ws-1\",\"win\":\"win-a\","
+        "\"producerInstance\":\"gesture-1\",\"producerSerial\":\"0\"}}",
+        // The foreground is empty (no target) or an opaque id.
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\","
+        "\"foreground\":\"!!\","
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
         "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}",
         nullptr,
     };
@@ -381,6 +506,166 @@ void malformedShapesFailClosedToDisplayClear()
     }
 }
 
+void v1ProducerPayloadFailsClosedHideAll()
+{
+    // A stale v1 producer (numeric visible, absolute inner/outer rects, no
+    // witness channel, no coverage witness) is a mismatched version: the
+    // whole display hides, never a partial paint, and the fence survives.
+    KWin::PresentationPaint state;
+    seedLive(&state, "effect-1", 5);
+    CHECK(applyStr(&state, foundPayload("gen-1", "4", "4")) == KWin::PresentationApply::Accepted);
+    const std::string v1 = "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"coveredInstance\":\"effect-1\","
+        "\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":1,\"inner\":[10,10,300,300],\"outer\":[8,8,304,304]},"
+        "\"underlay\":{\"status\":\"found\",\"win\":\"win-2\",\"outer\":[0,0,1200,800],"
+        "\"members\":[\"win-1\",\"win-2\"]},\"preview\":null}";
+    CHECK(applyStr(&state, v1) == KWin::PresentationApply::Malformed);
+    CHECK(!state.has);
+    CHECK(state.fence.set);
+    CHECK(state.fence.rev == 4);
+    CHECK(applyStr(&state, foundPayload("gen-1", "4", "4")) == KWin::PresentationApply::Accepted);
+    CHECK(state.has);
+}
+
+void closedReasonsApplyHidden()
+{
+    // The reason set is closed: every non-empty reason arrives hidden and
+    // parses; visible always pairs with the empty reason.
+    const char *reasons[] = {
+        "disabled", "no-target", "minimized", "maximized", "fullscreen",
+        "host-hidden", "hidden-workspace", "shell", "suspended",
+    };
+    for (const char *reason : reasons) {
+        KWin::PresentationPaint state;
+        seedLive(&state, "effect-1", 5);
+        const std::string payload = "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+            "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+            "\"border\":{\"visible\":false,\"reason\":\"" + std::string(reason) + "\",\"subject\":null,"
+            "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
+            "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}";
+        CHECK(applyStr(&state, payload) == KWin::PresentationApply::Accepted);
+        CHECK(!state.borderVisible);
+        CHECK(state.borderReason == QString::fromUtf8(reason));
+    }
+}
+
+void visibleBorderNullDescriptorNarrowsHides()
+{
+    // A visible border with null descriptor parts is a valid shape (the
+    // core forwards it unchanged; native event authority owns the narrow
+    // hide): accepted and held, with the has-flags down. Never a malformed
+    // rejection.
+    KWin::PresentationPaint state;
+    seedLive(&state, "effect-1", 5);
+    const std::string payload = "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+        "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
+        "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}";
+    CHECK(applyStr(&state, payload) == KWin::PresentationApply::Accepted);
+    CHECK(state.has);
+    CHECK(state.borderVisible);
+    CHECK(!state.borderHasOutsets);
+    CHECK(!state.borderHasWidth);
+    CHECK(!state.borderHasRadius);
+    CHECK(!state.borderHasWitness);
+}
+
+void nullAndDanglingWitnessAcceptedNarrowly()
+{
+    // Null witness: accepted, held without witness proof (the native side
+    // narrowly hides the border while underlay/preview keep their gates).
+    {
+        KWin::PresentationPaint state;
+        seedLive(&state, "effect-1", 5);
+        const std::string payload = "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+            "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+            "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+            "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,\"witness\":null},"
+            "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}";
+        CHECK(applyStr(&state, payload) == KWin::PresentationApply::Accepted);
+        CHECK(state.has);
+        CHECK(state.borderVisible);
+        CHECK(!state.borderHasWitness);
+    }
+    // Dangling witness (names a window the paint never joins): accepted
+    // verbatim. The consumer never joins, filters, or drops it; native
+    // event authority owns the narrow hide.
+    {
+        KWin::PresentationPaint state;
+        seedLive(&state, "effect-1", 5);
+        const std::string payload = "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+            "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+            "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+            "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+            "\"witness\":{\"win\":\"win-9\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-9\"}},"
+            "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}";
+        CHECK(applyStr(&state, payload) == KWin::PresentationApply::Accepted);
+        CHECK(state.has);
+        CHECK(state.borderHasWitness);
+        CHECK(state.witnessWin == QByteArray("win-9"));
+        CHECK(state.witnessForeground == QByteArray("win-9"));
+    }
+}
+
+void asymmetricAndNegativeOutsetsAccepted()
+{
+    // No uniform-outset or non-negative-outset clamp on the wire: the core
+    // emitter owns those invariants, the consumer carries them verbatim.
+    // Asymmetric and negative outsets parse exactly once.
+    {
+        KWin::PresentationPaint state;
+        seedLive(&state, "effect-1", 5);
+        const std::string payload = "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+            "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+            "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+            "\"outsets\":[1,2,3,4],\"width\":3,\"radius\":6,"
+            "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
+            "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}";
+        CHECK(applyStr(&state, payload) == KWin::PresentationApply::Accepted);
+        CHECK(state.borderHasOutsets);
+        CHECK(state.borderOutsetLeft == 1);
+        CHECK(state.borderOutsetTop == 2);
+        CHECK(state.borderOutsetRight == 3);
+        CHECK(state.borderOutsetBottom == 4);
+    }
+    {
+        KWin::PresentationPaint state;
+        seedLive(&state, "effect-1", 5);
+        const std::string payload = "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"5\",\"obs\":\"5\","
+            "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+            "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+            "\"outsets\":[-2,-2,-2,-2],\"width\":3,\"radius\":6,"
+            "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
+            "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}";
+        CHECK(applyStr(&state, payload) == KWin::PresentationApply::Accepted);
+        CHECK(state.borderHasOutsets);
+        CHECK(state.borderOutsetLeft == -2);
+    }
+}
+
+void missingRadiusNarrowsHides()
+{
+    // A missing required descriptor part stays a valid shape (accepted)
+    // yet narrowly hides only the border: the has-flag is down while the
+    // rest of the paint rides intact.
+    KWin::PresentationPaint state;
+    seedLive(&state, "effect-1", 5);
+    const std::string payload = "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+        "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":null,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
+        "\"underlay\":{\"status\":\"found\",\"win\":\"win-2\",\"outer\":[0,0,1200,800],"
+        "\"members\":[\"win-1\",\"win-2\"]},\"preview\":null}";
+    CHECK(applyStr(&state, payload) == KWin::PresentationApply::Accepted);
+    CHECK(state.has);
+    CHECK(state.borderVisible);
+    CHECK(!state.borderHasRadius);
+    CHECK(state.borderHasWidth);
+    CHECK(state.underlayFound);
+}
+
 void intValuesRejectHugeFractionalAndOutOfRange()
 {
     // Finding B: value-based integer check. Qt parses every JSON number
@@ -391,67 +676,82 @@ void intValuesRejectHugeFractionalAndOutOfRange()
     seedLive(&state, "effect-1", 5);
     // Huge finite doubles reject (would overflow int).
     CHECK(applyStr(&state,
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":1,\"inner\":[1e30,10,300,300],\"outer\":[8,8,304,304]},"
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+        "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[1e30,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
         "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}")
         == KWin::PresentationApply::Malformed);
     CHECK(!state.has);
     CHECK(applyStr(&state,
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":1,\"inner\":[10,10,300,300],\"outer\":[-1e30,8,304,304]},"
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+        "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[-1e30,10,300,300],\"foreground\":\"win-2\"}},"
         "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}")
         == KWin::PresentationApply::Malformed);
     // Fractions reject even when in bound.
     CHECK(applyStr(&state,
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":1,\"inner\":[10.5,10,300,300],\"outer\":[8,8,304,304]},"
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+        "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[10.5,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
         "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}")
         == KWin::PresentationApply::Malformed);
     // Integral-valued exponents are integral values: 1e3 is the value
-    // 1000, in bound, so it paints exactly that rect.
+    // 1000, in bound, so it paints exactly that outset.
     {
         KWin::PresentationPaint exp;
         seedLive(&exp, "effect-1", 5);
         CHECK(applyStr(&exp,
-            "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+            "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
             "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
-            "\"border\":{\"visible\":1,\"inner\":[1e3,10,300,300],\"outer\":[8,8,1312,304]},"
+            "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+            "\"outsets\":[1e3,3,3,3],\"width\":3,\"radius\":6,"
+            "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
             "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}")
             == KWin::PresentationApply::Accepted);
-        CHECK(exp.borderInner == QRect(1000, 10, 300, 300));
+        CHECK(exp.borderOutsetLeft == 1000);
     }
     // Out-of-bound geometry refuses.
     CHECK(applyStr(&state,
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":1,\"inner\":[10,10,300,300],\"outer\":[8,8,304,304]},"
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+        "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+        "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+        "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
         "\"underlay\":{\"status\":\"found\",\"win\":\"win-2\",\"outer\":[0,0,99999,800],"
         "\"members\":[\"win-2\"]},\"preview\":null}")
         == KWin::PresentationApply::Malformed);
     // Empty/duplicate member lists refuse (no anchor, no paint).
     CHECK(applyStr(&state,
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":0,\"inner\":null,\"outer\":null},"
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+        "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
         "\"underlay\":{\"status\":\"found\",\"win\":\"win-2\",\"outer\":[0,0,100,100],"
         "\"members\":[]},\"preview\":null}")
         == KWin::PresentationApply::Malformed);
     CHECK(applyStr(&state,
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":0,\"inner\":null,\"outer\":null},"
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+        "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
         "\"underlay\":{\"status\":\"found\",\"win\":\"win-2\",\"outer\":[0,0,100,100],"
         "\"members\":[\"win-2\",\"win-2\"]},\"preview\":null}")
         == KWin::PresentationApply::Malformed);
     // Preview with a missing subject identity refuses.
     CHECK(applyStr(&state,
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":0,\"inner\":null,\"outer\":null},"
+        "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+        "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+        "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+        "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
         "\"underlay\":{\"status\":\"hidden\"},"
-        "\"preview\":{\"rect\":[0,0,10,10],\"sourceOut\":\"out-1\",\"sourceWs\":\"ws-1\",\"win\":\"\"}}")
-        == KWin::PresentationApply::Malformed);
-    // Visible border without complete geometry refuses.
-    CHECK(applyStr(&state,
-        "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\",\"foreground\":\"win-2\","
-        "\"border\":{\"visible\":1,\"inner\":null,\"outer\":[8,8,304,304]},"
-        "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}")
+        "\"preview\":{\"rect\":[0,0,10,10],\"sourceOut\":\"out-1\",\"sourceWs\":\"ws-1\",\"win\":\"\","
+        "\"producerInstance\":null,\"producerSerial\":null}}")
         == KWin::PresentationApply::Malformed);
     CHECK(applyStr(&state, foundPayload("gen-1", "4", "4")) == KWin::PresentationApply::Accepted);
     CHECK(state.has);
@@ -488,21 +788,143 @@ void borderStrokeReproducesPublishedOuterExactly()
     CHECK(*drifted == 5.0);
 }
 
+void borderGeometryExtremeOutsetsOverflowNarrowlyHides()
+{
+    // Ordinary, asymmetric, and negative descriptors resolve verbatim.
+    {
+        QRect outer;
+        QRect inner;
+        CHECK(KWin::borderGeometryFromLiveFrame(QRect(10, 10, 300, 300), 3, 3, 3, 3, 3, &outer, &inner));
+        CHECK(outer == QRect(7, 7, 306, 306));
+        CHECK(inner == QRect(10, 10, 300, 300));
+    }
+    {
+        QRect outer;
+        QRect inner;
+        CHECK(KWin::borderGeometryFromLiveFrame(QRect(10, 10, 300, 300), 1, 2, 3, 4, 3, &outer, &inner));
+        CHECK(outer == QRect(9, 8, 304, 306));
+        CHECK(inner == QRect(12, 11, 298, 300));
+    }
+    {
+        QRect outer;
+        QRect inner;
+        CHECK(KWin::borderGeometryFromLiveFrame(QRect(10, 10, 300, 300), -2, -2, -2, -2, 3, &outer, &inner));
+        CHECK(outer == QRect(12, 12, 296, 296));
+        CHECK(inner == QRect(15, 15, 290, 290));
+    }
+    // Extreme i32 metrics overflow int arithmetic: the helper must fail
+    // closed (narrow border hide) instead of wrapping to a nonsense rect.
+    {
+        QRect outer;
+        QRect inner;
+        CHECK(!KWin::borderGeometryFromLiveFrame(QRect(10, 10, 300, 300), 3, 3, 3, 3, INT_MAX, &outer, &inner));
+    }
+    {
+        QRect outer;
+        QRect inner;
+        CHECK(!KWin::borderGeometryFromLiveFrame(QRect(10, 10, 300, 300), INT_MIN, 3, 3, 3, 3, &outer, &inner));
+    }
+    {
+        QRect outer;
+        QRect inner;
+        CHECK(!KWin::borderGeometryFromLiveFrame(QRect(10, 10, 300, 300), 3, 3, INT_MAX, 3, 3, &outer, &inner));
+    }
+    {
+        QRect outer;
+        QRect inner;
+        CHECK(!KWin::borderGeometryFromLiveFrame(QRect(10, 10, 300, 300), INT_MIN, INT_MAX, INT_MIN, INT_MAX,
+            INT_MAX, &outer, &inner));
+    }
+    // The parser still accepts the full valid i32 descriptor (no wire
+    // clamp): the accepted paint rides intact while only the border
+    // geometry gate hides; underlay and preview are unchanged.
+    {
+        KWin::PresentationPaint state;
+        seedLive(&state, "effect-1", 5);
+        const std::string payload = "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"4\",\"obs\":\"4\","
+            "\"coveredInstance\":\"effect-1\",\"coveredInvalid\":\"5\",\"foreground\":\"win-2\","
+            "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+            "\"outsets\":[-2147483648,0,2147483647,0],\"width\":2147483647,\"radius\":6,"
+            "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
+            "\"underlay\":{\"status\":\"found\",\"win\":\"win-2\",\"outer\":[0,0,1200,800],"
+            "\"members\":[\"win-1\",\"win-2\"]},\"preview\":null}";
+        CHECK(applyStr(&state, payload) == KWin::PresentationApply::Accepted);
+        CHECK(state.has);
+        CHECK(state.borderHasOutsets);
+        CHECK(state.borderOutsetLeft == INT_MIN);
+        CHECK(state.borderOutsetRight == INT_MAX);
+        CHECK(state.borderHasWidth);
+        CHECK(state.borderWidth == INT_MAX);
+        CHECK(state.underlayFound);
+        CHECK(state.underlayOuter == QRect(0, 0, 1200, 800));
+        CHECK(!state.previewHas);
+        QRect outer;
+        QRect inner;
+        CHECK(!KWin::borderGeometryFromLiveFrame(QRect(10, 10, 300, 300), state.borderOutsetLeft,
+            state.borderOutsetTop, state.borderOutsetRight, state.borderOutsetBottom, state.borderWidth, &outer,
+            &inner));
+        CHECK(state.underlayFound);
+        CHECK(!state.previewHas);
+    }
+    // A truly representable near-boundary rect still resolves.
+    {
+        QRect outer;
+        QRect inner;
+        CHECK(KWin::borderGeometryFromLiveFrame(QRect(INT_MAX - 10, 0, 5, 5), 0, 0, 0, 0, 1, &outer, &inner));
+        CHECK(outer == QRect(INT_MAX - 10, 0, 5, 5));
+        CHECK(inner == QRect(INT_MAX - 9, 1, 3, 3));
+    }
+    // Exact INT_MAX right/bottom edge: ordinary live input with valid i32
+    // outsets yields a large-but-valid outer and a small valid inner. The
+    // expected rects use the corner constructor too: the (x, y, w, h)
+    // form derives the corner as left + width - 1, whose intermediate
+    // sum overflows (aborting a debug Qt build) when the mathematically
+    // right corner is exactly INT_MAX.
+    {
+        QRect outer;
+        QRect inner;
+        const int edgeOutset = INT_MAX - 309; // 10 + 300 - 1 + outset == INT_MAX
+        CHECK(KWin::borderGeometryFromLiveFrame(
+            QRect(10, 10, 300, 300), 3, 3, edgeOutset, edgeOutset, 3, &outer, &inner));
+        CHECK(outer == QRect(QPoint(7, 7), QPoint(INT_MAX, INT_MAX)));
+        CHECK(inner == QRect(QPoint(10, 10), QPoint(INT_MAX - 3, INT_MAX - 3)));
+    }
+}
+
+void quantizeNegativeHalvesRoundTowardPositiveInfinity()
+{
+    // TS Math.round quantization for the live native frame (halves toward
+    // +infinity): std::floor(v + 0.5). Differs from std::lround on negative
+    // halves (Math.round(-10.5) == -10, lround gives -11). The adapter
+    // rounds fractional natives once at capture with this semantics;
+    // native re-quantizes the live frame the same way before joining to
+    // the witness.
+    CHECK(KWin::quantizeMathRound(10.5) == 11);
+    CHECK(KWin::quantizeMathRound(10.4) == 10);
+    CHECK(KWin::quantizeMathRound(-10.5) == -10);
+    CHECK(KWin::quantizeMathRound(-10.6) == -11);
+    CHECK(KWin::quantizeMathRound(-0.5) == 0);
+    CHECK(KWin::quantizeMathRound(0.5) == 1);
+    CHECK(KWin::quantizeFrameForWitness(-10.5, 3.5, 300.2, 99.5) == QRect(-10, 4, 300, 100));
+}
+
 void noStylingInputsInPayload()
 {
     // Native styling independence: the renderer payload carries geometry
-    // plus order fencing only. Those tokens must not appear anywhere in
-    // the consumer header (which defines the whole accepted vocabulary).
+    // plus order fencing only. Width, radius, and outsets are the held
+    // border geometry descriptor (proven by the stroke helper above), not
+    // style: no color, theme, or gap tokens may appear anywhere in the
+    // consumer header (which defines the whole accepted vocabulary).
     const std::string payload = foundPayload("gen-1", "4", "4");
     CHECK(payload.find("color") == std::string::npos);
     CHECK(payload.find("Color") == std::string::npos);
-    CHECK(payload.find("width") == std::string::npos);
-    CHECK(payload.find("Width") == std::string::npos);
-    CHECK(payload.find("gap") == std::string::npos);
-    CHECK(payload.find("Gap") == std::string::npos);
     CHECK(payload.find("theme") == std::string::npos);
     CHECK(payload.find("Theme") == std::string::npos);
-    CHECK(payload.find("radius") == std::string::npos);
+    CHECK(payload.find("gap") == std::string::npos);
+    CHECK(payload.find("Gap") == std::string::npos);
+    CHECK(payload.find("\"width\"") != std::string::npos);
+    CHECK(payload.find("\"radius\"") != std::string::npos);
+    CHECK(payload.find("\"outsets\"") != std::string::npos);
     KWin::PresentationPaint state;
     seedLive(&state, "effect-1", 5);
     CHECK(applyStr(&state, payload) == KWin::PresentationApply::Accepted);
@@ -872,8 +1294,16 @@ int main(int argc, char **argv)
     nullPreviewWithOpenGestureClearsLatchOnly();
     outOfOrderCallbacksNeverResurrectCleared();
     malformedShapesFailClosedToDisplayClear();
+    v1ProducerPayloadFailsClosedHideAll();
+    closedReasonsApplyHidden();
+    visibleBorderNullDescriptorNarrowsHides();
+    nullAndDanglingWitnessAcceptedNarrowly();
+    asymmetricAndNegativeOutsetsAccepted();
+    missingRadiusNarrowsHides();
     intValuesRejectHugeFractionalAndOutOfRange();
     borderStrokeReproducesPublishedOuterExactly();
+    borderGeometryExtremeOutsetsOverflowNarrowlyHides();
+    quantizeNegativeHalvesRoundTowardPositiveInfinity();
     noStylingInputsInPayload();
     nullStateIsUsageError();
     stage5GeometryDirtRequiresCoveredWitness();

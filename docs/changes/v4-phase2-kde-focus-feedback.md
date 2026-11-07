@@ -314,3 +314,54 @@
   Independent source review and a fresh gate rerun found no blocking issue.
   Native rendering, motion continuity and normal-interaction dropout measurement
   are not yet accepted.
+
+## Native v2 integration in progress
+
+- The formatter now validates and forwards the unchanged anchored descriptor.
+  Integrated entry/broker/subscriber recording produces v2 dispatch siblings,
+  including crossed-preview producer bytes. Each recorded chain checks its raw
+  generation consistently across captures, projections, replies and dispatches.
+- The native port compiles against the current supported ABI. The Nix source
+  fileset now includes the v2 siblings; genuine v2 recovery runs and passes with
+  all prior show/hide, preview, order, coverage and facts assertions retained.
+  Updated static checks pin live-frame geometry and held core width/radius in
+  place of the removed absolute-border calls. Typecheck and all 1065 adapter
+  tests pass, with zero skips; scoped Rust tests, formatting and strict clippy
+  also pass. Legacy fixture and Rust source trees remain unchanged.
+- The replacement regression first reproduced a border-authority gap: arm at
+  coverage 7, advance the same anchor by one native motion event to 8, then
+  accept a newer-order coverage-7 paint with a changed witness frame. Blanket
+  retention incorrectly adopted the new witness under the old chain. Clearing
+  every such paint or requiring full witness equality would also interrupt
+  valid motion continuity; gesture invalidations change the captured watermark
+  and moving frames differ.
+- The corrected transition retains the same accepted border descriptor,
+  including its original arming witness, only while the chain is current and
+  the stream and all anchor inputs match. The older paint establishes no join;
+  its underlay, preview, order and coverage still apply normally. Changed anchor
+  inputs or a hidden border clear the chain; exact-current paint clears then
+  re-proves against its own witness and live facts.
+- A separate regression reproduced unconditional chain loss at gesture start.
+  Start and released/cancelled finish now reuse the existing one-bump chain
+  advancement proof only for the live tracked boundary window. Preview latch
+  clearing, structural ticks and publication remain unchanged; deleted,
+  unknown, foreign, ineligible, changed-output/scale or gapped authority clears.
+  The offline sequence keeps the border through start, translated and resized
+  frames, older-coverage paints and finish while preserving the original
+  witness. Native checks now pass all 38; current ABI compilation, typecheck
+  and all 1065 adapter tests pass. No live dropout rate or duration has been
+  measured. The minimal
+  [replacement discriminator](../spec/reference-outcomes.md#anchored-border-in-flight-replacement)
+  retains native acceptance as TBD.
+- Integrated review found extreme valid i32 border metrics could overflow native
+  rectangle arithmetic. Real Qt regression first reproduced three failures;
+  promoted corner/dimension checks now narrowly hide unrepresentable geometry
+  without rejecting the DTO or affecting underlay/preview. Checked-corner
+  construction also avoids Qt debug-assert overflow at an exact integer edge;
+  that debug consequence is source-verified, not a debug-runtime claim. All 38
+  native checks and current ABI compilation pass after the correction.
+- Independent integrated source review, including recording/recovery assertion
+  equivalence and the geometry correction, has no unresolved offline finding.
+- No native witness-join or normal-interaction dropout live proof has run for
+  this port. Final integrated review and the separate obsolete-helper removal
+  remain pending.

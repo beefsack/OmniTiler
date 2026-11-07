@@ -11,6 +11,7 @@
 #include <KSharedConfig>
 
 #include <core/inputdevice.h>
+#include <core/output.h>
 #include <effect/effecthandler.h>
 #include <input.h>
 #include <input_event.h>
@@ -222,14 +223,14 @@ GesturePointer gesturePointerNow()
     return GesturePointer{true, QPoint(static_cast<int>(x), static_cast<int>(y))};
 }
 
-// Native ring artwork for one exact width (finding C): the color, theme
-// selection, and corner radius stay live host styling; only the stroke
-// comes from the published inner/outer pair (never live config width, so
+// Native ring artwork for one exact width and radius (finding C): the
+// color stays live host styling; the stroke and corner radius come from
+// the held core descriptor (never live config width/radius, so
 // capture-vs-live config drift cannot move the drawn outer edge). The
-// theme/override predicate lives in activeborderlogic.h (shared test seam);
-// the underlay and drop-preview fills below read their own config colors
-// and never this predicate.
-BorderOutline ringOutlineForWidth(double width)
+// theme/override predicate lives in activeborderlogic.h (shared test
+// seam); the underlay and drop-preview fills below read their own config
+// colors and never this predicate.
+BorderOutline ringOutlineForWidth(double width, double radius)
 {
     const QColor fallback = ActiveBorderConfig::borderColor();
     const bool useThemeColor = ActiveBorderConfig::useThemeColor();
@@ -240,8 +241,83 @@ BorderOutline ringOutlineForWidth(double width)
             ? KColorScheme(QPalette::Active, KColorScheme::Selection, colorConfig).background().color()
             : QColor();
     }
-    return BorderOutline(width, presentationBorderColor(themeColor, fallback, useThemeColor),
-        BorderRadius(ActiveBorderConfig::borderRadius()));
+    return BorderOutline(width, presentationBorderColor(themeColor, fallback, useThemeColor), BorderRadius(radius));
+}
+
+// Live tracked frame for the border anchor (read-only): the tracked
+// window's frameGeometry quantized with TS Math.round semantics
+// (floor(v + 0.5), halves toward +infinity), guarded finite and in int
+// range. Unknown (never zeroed) on deleted windows, unreadable geometry,
+// or non-finite/out-of-range values: the border hides until a proven
+// frame arrives. Never a fallback, never a substitute for the chain.
+struct LiveTrackedFrame {
+    bool known = false;
+    QRect frame;
+};
+
+// Live tracked output for the border anchor (read-only): the tracked
+// window's real current output, read fresh on every use (inner Window
+// output authoritative, EffectWindow screen fallback). Annotated unknown
+// (never the cached subscription pointer, never a fallback guess) when
+// unreadable: the border hides until a proven output arrives. The cached
+// m_trackedOutput pointer keeps serving only the scale/geometry
+// subscriptions retargeted on outputChanged.
+LogicalOutput *liveTrackedOutput(EffectWindow *window)
+{
+    if (window == nullptr || window->isDeleted()) {
+        return nullptr;
+    }
+    LogicalOutput *output = nullptr;
+    try {
+        if (Window *inner = window->window()) {
+            output = inner->output();
+        }
+    } catch (...) {
+        output = nullptr;
+    }
+    if (output == nullptr) {
+        try {
+            output = window->screen();
+        } catch (...) {
+            output = nullptr;
+        }
+    }
+    return output;
+}
+
+LiveTrackedFrame liveTrackedFrame(EffectWindow *window)
+{
+    if (window == nullptr || window->isDeleted()) {
+        return LiveTrackedFrame{};
+    }
+    double x = 0.0;
+    double y = 0.0;
+    double w = 0.0;
+    double h = 0.0;
+    try {
+        const auto geometry = window->frameGeometry();
+        x = static_cast<double>(geometry.x());
+        y = static_cast<double>(geometry.y());
+        w = static_cast<double>(geometry.width());
+        h = static_cast<double>(geometry.height());
+    } catch (...) {
+        return LiveTrackedFrame{};
+    }
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h)) {
+        return LiveTrackedFrame{};
+    }
+    const double values[4] = {x, y, w, h};
+    for (const double value : values) {
+        const double rounded = std::floor(value + 0.5);
+        if (rounded < static_cast<double>(INT_MIN) || rounded > static_cast<double>(INT_MAX)) {
+            return LiveTrackedFrame{};
+        }
+    }
+    const QRect frame = KWin::quantizeFrameForWitness(x, y, w, h);
+    if (frame.width() <= 0 || frame.height() <= 0) {
+        return LiveTrackedFrame{};
+    }
+    return LiveTrackedFrame{true, frame};
 }
 
 // Single fixed reason token for the computed active-border visibility.
@@ -507,7 +583,8 @@ void ActiveWindowBorderEffect::reconfigure(ReconfigureFlags)
 
 void ActiveWindowBorderEffect::updateOutline()
 {
-    m_borderItem.setOutline(ringOutlineForWidth(ActiveBorderConfig::borderWidth()));
+    m_borderItem.setOutline(
+        ringOutlineForWidth(ActiveBorderConfig::borderWidth(), ActiveBorderConfig::borderRadius()));
 }
 
 void ActiveWindowBorderEffect::updateGroupUnderlayFill()
@@ -611,6 +688,13 @@ void ActiveWindowBorderEffect::setTrackedWindow(EffectWindow *window)
         // subscriptions stay connected across tracked switches.
         disconnect(m_trackedWindow, &EffectWindow::windowFrameGeometryChanged, this,
             &ActiveWindowBorderEffect::onTrackedFrameChanged);
+        disconnect(m_trackedOutputConnection);
+        m_trackedOutputConnection = QMetaObject::Connection{};
+        disconnect(m_trackedScaleConnection);
+        m_trackedScaleConnection = QMetaObject::Connection{};
+        disconnect(m_trackedGeometryConnection);
+        m_trackedGeometryConnection = QMetaObject::Connection{};
+        m_trackedOutput.clear();
         disconnect(m_trackedWindow, &EffectWindow::minimizedChanged, this, &ActiveWindowBorderEffect::updateBorder);
         disconnect(m_trackedWindow, &EffectWindow::windowFullScreenChanged, this,
             &ActiveWindowBorderEffect::updateBorder);
@@ -628,6 +712,25 @@ void ActiveWindowBorderEffect::setTrackedWindow(EffectWindow *window)
         // rect may be stale, so the ring hides until a strictly newer
         // accepted paint arrives.
         connect(m_trackedWindow, &EffectWindow::windowFrameGeometryChanged, this, &ActiveWindowBorderEffect::onTrackedFrameChanged);
+        // Output moves retarget the tracked-output subscriptions below and
+        // run one structural invalidation: the held shapes were computed
+        // for the previous output and scale. The Window::outputChanged
+        // signal carries the old output on 6.8 and no argument on 6.6; the
+        // argless lambda compiles against both.
+        try {
+            if (Window *inner = m_trackedWindow->window()) {
+                m_trackedOutputConnection = connect(inner, &Window::outputChanged, this, [this]() {
+                    retargetTrackedOutput();
+                    const Stage5Refresh refresh = m_stage.onLayoutChanged();
+                    if (!m_isOpenGL) {
+                        return;
+                    }
+                    applyStageRefresh(refresh);
+                    emitPresentationTransitionDiag();
+                });
+            }
+        } catch (...) {
+        }
         connect(m_trackedWindow, &EffectWindow::minimizedChanged, this, &ActiveWindowBorderEffect::updateBorder);
         connect(m_trackedWindow, &EffectWindow::windowFullScreenChanged, this, &ActiveWindowBorderEffect::updateBorder);
         // Fullscreen-mode transitions (enter or exit) invalidate across all
@@ -644,6 +747,61 @@ void ActiveWindowBorderEffect::setTrackedWindow(EffectWindow *window)
     } else {
         m_borderItem.setParentItem(effects->scene()->overlayItem());
     }
+    retargetTrackedOutput();
+}
+
+void ActiveWindowBorderEffect::retargetTrackedOutput()
+{
+    // Tracked-output retarget (verified at both pins: EffectWindow::screen
+    // plus LogicalOutput scale/geometryChanged/scaleChanged): the inner
+    // Window output is authoritative, falling back to the EffectWindow
+    // screen when the inner window is unavailable. The output (not the
+    // config) owns the live scale the border anchor proves against; any
+    // output or scale change reaches the router as a structural event.
+    disconnect(m_trackedScaleConnection);
+    m_trackedScaleConnection = QMetaObject::Connection{};
+    disconnect(m_trackedGeometryConnection);
+    m_trackedGeometryConnection = QMetaObject::Connection{};
+    m_trackedOutput.clear();
+    LogicalOutput *output = nullptr;
+    if (m_trackedWindow != nullptr && !m_trackedWindow->isDeleted()) {
+        try {
+            if (Window *inner = m_trackedWindow->window()) {
+                output = inner->output();
+            }
+        } catch (...) {
+            output = nullptr;
+        }
+        if (output == nullptr) {
+            try {
+                output = m_trackedWindow->screen();
+            } catch (...) {
+                output = nullptr;
+            }
+        }
+    }
+    if (output == nullptr) {
+        return;
+    }
+    m_trackedOutput = output;
+    m_trackedScaleConnection = connect(output, &LogicalOutput::scaleChanged, this,
+        &ActiveWindowBorderEffect::onTrackedOutputChanged);
+    m_trackedGeometryConnection = connect(output, &LogicalOutput::geometryChanged, this,
+        &ActiveWindowBorderEffect::onTrackedOutputChanged);
+}
+
+void ActiveWindowBorderEffect::onTrackedOutputChanged()
+{
+    // Output or scale change without a frame: the held shapes were computed
+    // for the previous output and scale, so the existing structural route
+    // (union scope plus tick, chain clear) hides them until the covering
+    // capture lands. No skipped bump, no chain advance.
+    const Stage5Refresh refresh = m_stage.onLayoutChanged();
+    if (!m_isOpenGL) {
+        return;
+    }
+    applyStageRefresh(refresh);
+    emitPresentationTransitionDiag();
 }
 
 void ActiveWindowBorderEffect::subscribeMaximize(EffectWindow *window)
@@ -991,8 +1149,15 @@ void ActiveWindowBorderEffect::onGestureDragStart(EffectWindow *window)
     }
     // A new gesture drops any held drop-preview latch immediately: the
     // latch belongs to exactly one live gesture, and a late
-    // previous-gesture paint must not reseed the new one.
-    applyStageRefresh(m_stage.onGestureBoundary());
+    // previous-gesture paint must not reseed the new one. The same-anchor
+    // border chain advances by event proof only when the boundary window
+    // is the live tracked window; any other window clears it (foreground
+    // facts alone from an unrelated gesture must not preserve it).
+    if (window == m_trackedWindow) {
+        applyStageRefresh(m_stage.onGestureBoundary(currentHostView()));
+    } else {
+        applyStageRefresh(m_stage.onGestureBoundary());
+    }
     updateGroupMoveArm(window);
     const QString id =
         QString::fromUtf8(window->internalId().toString(QUuid::WithoutBraces).toUtf8());
@@ -1057,7 +1222,14 @@ void ActiveWindowBorderEffect::onGestureDragFinish(EffectWindow *window)
         }
     }
     if (boundary) {
-        applyStageRefresh(m_stage.onGestureBoundary());
+        // Released/cancelled finishes preserve the same-anchor chain only
+        // when the finishing window is the live tracked window; deleted,
+        // foreign, or untracked windows clear (unknown facts).
+        if (window != nullptr && window == m_trackedWindow && !window->isDeleted()) {
+            applyStageRefresh(m_stage.onGestureBoundary(currentHostView()));
+        } else {
+            applyStageRefresh(m_stage.onGestureBoundary());
+        }
         emitPresentationTransitionDiag();
     }
 }
@@ -1125,9 +1297,12 @@ void ActiveWindowBorderEffect::onTrackedFrameChanged()
     // once; the member slot skips the tracked window on the same emission.
     // Genuine mover motion takes the monotonic-only route (the
     // same-gesture preview persists); every other tracked frame is
-    // structural.
+    // structural. Both carry the live anchor facts so the border chain can
+    // continue by event proof; the router still clears on any gap, source
+    // change, or identity/eligibility/output-scale mismatch.
+    const Stage5HostView host = currentHostView();
     const Stage5Refresh refresh =
-        isGenuineMoverFrame(m_trackedWindow) ? m_stage.onMotionFrame(true) : m_stage.onTrackedFrame();
+        isGenuineMoverFrame(m_trackedWindow) ? m_stage.onMotionFrame(true, host) : m_stage.onTrackedFrame(host);
     if (!m_isOpenGL) {
         return;
     }
@@ -1157,12 +1332,26 @@ void ActiveWindowBorderEffect::updateMaximizedState(EffectWindow *window, bool m
     if (window == nullptr) {
         return;
     }
+    const bool changed = maximized != m_maximizedWindows.contains(window);
     if (maximized) {
         m_maximizedWindows.insert(window);
     } else {
         m_maximizedWindows.remove(window);
     }
     if (m_trackedWindow == window) {
+        if (changed) {
+            // Maximize transitions change the held shapes' validity with no
+            // guaranteed frame signal: run the structural route so the
+            // anchor chain clears and coverage requires fresh paint. Without
+            // this a maximize/restore pair with no frame event would leave
+            // a stale eligible chain armed across the veto flap and the old
+            // paint would show on restore with no covering capture.
+            const Stage5Refresh refresh = m_stage.onLayoutChanged();
+            if (m_isOpenGL) {
+                applyStageRefresh(refresh);
+                emitPresentationTransitionDiag();
+            }
+        }
         updateBorder();
         // A displayed paint must hide immediately on maximize and may only
         // return on the restore transition; the live veto below keeps a
@@ -1511,19 +1700,56 @@ Stage5HostView ActiveWindowBorderEffect::currentHostView()
 {
     // One injected host view for the extracted Stage 5 visibility
     // decision. Every field is a live read: endpoint, foreground match,
-    // liveness, anchor, move, plus the live open gesture identity ("0"
-    // serial names no open gesture). Geometry and identity stay opaque
-    // strings/flags; no derivation happens here.
+    // liveness, anchor, move, the live open gesture identity ("0" serial
+    // names no open gesture), plus the border anchor authority (live
+    // tracked/active identity, tracked output identity, quantized tracked
+    // frame, live eligibility, live output scale). Geometry and identity
+    // stay opaque strings/flags; no derivation happens here.
     Stage5HostView host;
     host.endpointAvailable = m_groupDbusAvailable;
     host.foregroundMatches = foregroundMatchesNow();
     host.liveEligible = isLiveEligibleNow();
+    host.liveEligibleKnown = true;
     host.anchorOk = !m_groupAnchor.isNull() && m_groupAnchor->windowItem() != nullptr
         && !m_router.paint.underlayMembers.isEmpty();
     host.moveLive = groupMoveLiveNow();
     if (m_gestureSource != nullptr) {
         host.liveGestureInstance = m_gestureSource->instance();
         host.liveGestureSerial = m_gestureSource->openSerial();
+    }
+    if (effects->activeWindow() != nullptr && !effects->activeWindow()->isDeleted()) {
+        try {
+            host.liveActiveId =
+                QString::fromUtf8(effects->activeWindow()->internalId().toString(QUuid::WithoutBraces).toUtf8());
+        } catch (...) {
+        }
+    }
+    if (m_trackedWindow != nullptr && !m_trackedWindow->isDeleted()) {
+        try {
+            host.trackedId =
+                QString::fromUtf8(m_trackedWindow->internalId().toString(QUuid::WithoutBraces).toUtf8());
+        } catch (...) {
+        }
+        const LiveTrackedFrame liveFrame = liveTrackedFrame(m_trackedWindow);
+        host.trackedFrame = liveFrame.frame;
+        host.trackedFrameKnown = liveFrame.known;
+    }
+    // Fresh live output for the border anchor facts (never the cached
+    // subscription pointer above, which only feeds the scale/geometry
+    // subscriptions): a frame event may be delivered before the
+    // outputChanged retarget runs, and only the real current output proves
+    // the arm/advance/draw output match. Unknown stays unknown (fail
+    // closed, border hides).
+    if (LogicalOutput *liveOutput = liveTrackedOutput(m_trackedWindow)) {
+        try {
+            host.outputId = liveOutput->name();
+            const qreal scale = liveOutput->scale();
+            if (std::isfinite(scale) && scale > 0.0) {
+                host.outputScale = scale;
+                host.outputScaleKnown = true;
+            }
+        } catch (...) {
+        }
     }
     return host;
 }
@@ -1553,24 +1779,33 @@ void ActiveWindowBorderEffect::updateBorder()
         return;
     }
 
-    // Pure renderer: the held accepted border shape paints only on a live
-    // foreground match, a fresh (geometry-clean) paint, held coverage
-    // equal to the actual latest witness, plus the hide-only vetoes. No
-    // eligibility or geometry derivation: inner/outer arrive complete in
-    // KWin logical units. The ring replays the published outer exactly:
-    // its stroke is derived strictly from the published pair (finding C),
-    // so capture-vs-live config drift cannot move the drawn edge; color
-    // and radius stay live host styling. The gate itself is decided by the
-    // extracted Stage 5 handler from one injected host view; only the
-    // item application stays here.
+    // Pure renderer: the held accepted border shape paints only on the
+    // decided gate from one injected host view (live foreground match,
+    // known eligibility, current anchor chain, complete held descriptor,
+    // exact live tracked/active identity, matching live output
+    // identity/scale, valid live geometry). The geometry resolves once
+    // from the live tracked frame plus the held outsets and width
+    // verbatim (no config, no second scale): outer is the live frame
+    // expanded by each outset, inner is outer inset by the held width, and
+    // the ring replays the held width and radius, so capture-vs-live
+    // config drift cannot move the drawn edge. Only item-space translation
+    // (scene to anchor-local) happens here.
     EffectWindow *window = effects->activeWindow();
     const bool foregroundMatches = foregroundMatchesNow();
     const bool nativeMaximized = window ? m_maximizedWindows.contains(window) : false;
     const bool fullScreen = window ? window->isFullScreen() : false;
     const bool appletPopup = window ? window->isAppletPopup() : false;
-    const Stage5Visibility visibility = m_stage.decide(currentHostView());
-    const bool visible = visibility.border;
+    const Stage5HostView host = currentHostView();
+    const Stage5Visibility visibility = m_stage.decide(host);
     const bool hasPaint = m_router.paint.has && m_router.paint.borderVisible && m_groupDbusAvailable;
+    QRect outer;
+    QRect inner;
+    const bool geometryOk = hasPaint && m_router.paint.borderHasOutsets && m_router.paint.borderHasWidth
+        && host.trackedFrameKnown
+        && KWin::borderGeometryFromLiveFrame(host.trackedFrame, m_router.paint.borderOutsetLeft,
+            m_router.paint.borderOutsetTop, m_router.paint.borderOutsetRight, m_router.paint.borderOutsetBottom,
+            m_router.paint.borderWidth, &outer, &inner);
+    const bool visible = visibility.border && geometryOk;
     // Transition diagnostic only: first evaluation plus visibility flips.
     // Never affects the border or repaint decision below.
     emitActiveBorderVisible(visible,
@@ -1578,21 +1813,18 @@ void ActiveWindowBorderEffect::updateBorder()
             window ? window->isMinimized() : false, fullScreen, nativeMaximized, appletPopup, m_groupDbusAvailable),
         appletPopup);
     if (visible) {
-        // Item-local anchoring translation only: the stored inner rect
+        // Item-local anchoring translation only: the resolved inner rect
         // (scene space, KWin logical pixels) maps into the tracked window
         // item. This is a space translation, not a geometric outset: no
         // gap, width, DPI, or device scaling is applied here. The outline
-        // replays the published stroke so the drawn outer edge equals the
-        // published outer rect exactly. Decided visible above implies the
-        // published pair derives a uniform positive stroke.
-        double stroke = 0.0;
-        if (const auto derived =
-                KWin::borderStrokeFromPublished(m_router.paint.borderInner, m_router.paint.borderOuter)) {
-            stroke = *derived;
-        }
-        const QRectF innerRect(static_cast<qreal>(m_router.paint.borderInner.x()), static_cast<qreal>(m_router.paint.borderInner.y()),
-            static_cast<qreal>(m_router.paint.borderInner.width()), static_cast<qreal>(m_router.paint.borderInner.height()));
-        m_borderItem.setOutline(ringOutlineForWidth(stroke));
+        // replays the held width and radius, so the drawn outer edge
+        // equals the resolved outer rect exactly. Decided visible above
+        // implies the held descriptor is complete and the live geometry
+        // resolved.
+        const QRectF innerRect(static_cast<qreal>(inner.x()), static_cast<qreal>(inner.y()),
+            static_cast<qreal>(inner.width()), static_cast<qreal>(inner.height()));
+        m_borderItem.setOutline(
+            ringOutlineForWidth(static_cast<double>(m_router.paint.borderWidth), m_router.paint.borderRadius));
         m_borderItem.setInnerRect(window ? window->windowItem()->mapFromScene(innerRect) : RectF());
     }
     m_borderItem.setVisible(visible);
@@ -1611,10 +1843,13 @@ void ActiveWindowBorderEffect::applyPresentation(const QString &payload)
         syncPresentationTransitionDiag();
         return;
     }
-    // The exact live open native gesture identity at the endpoint: a
-    // proven preview arms only when its producer matches it. The extracted
-    // handler re-seeds the order-independent latest witness from effect
-    // authority first, so no arriving paint can establish it.
+    // The exact live open native gesture identity at the endpoint plus the
+    // live border anchor facts for the same endpoint path: a proven
+    // preview arms only when its producer matches it, and the border chain
+    // arms only with exact current coverage plus exact live anchor
+    // authority. The extracted handler re-seeds the order-independent
+    // latest witness from effect authority first, so no arriving paint can
+    // establish it.
     QString liveGestureInstance;
     QString liveGestureSerial = QStringLiteral("0");
     if (m_gestureSource != nullptr) {
@@ -1622,7 +1857,7 @@ void ActiveWindowBorderEffect::applyPresentation(const QString &payload)
         liveGestureSerial = m_gestureSource->openSerial();
     }
     const PresentationStage5::EndpointResult result =
-        m_stage.applyEndpoint(payload, liveGestureInstance, liveGestureSerial);
+        m_stage.applyEndpoint(payload, liveGestureInstance, liveGestureSerial, currentHostView());
     if (result.apply == PresentationApply::StaleIgnored) {
         // Older revision, no live source, or coverage that is not exactly
         // the live source plus counter: ignored without touching the newer
@@ -1639,7 +1874,12 @@ void ActiveWindowBorderEffect::applyPresentation(const QString &payload)
         effects->addRepaintFull();
     }
     if (result.apply == PresentationApply::Malformed) {
-        emitPresentationSetterDiag("malformed");
+        // A stale wire version (a v1 producer against the strict v2
+        // endpoint) hides quietly: no repetitive malformed diagnostic for
+        // the version mismatch itself.
+        if (!KWin::presentationPayloadVersionMismatch(payload)) {
+            emitPresentationSetterDiag("malformed");
+        }
     } else {
         emitPresentationSetterDiag("accepted");
     }

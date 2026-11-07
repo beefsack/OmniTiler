@@ -450,9 +450,9 @@ describe("world command result entry", () => {
             accept["gestureAssoc"] = { instance: "gesture-1", serial: "1", coreId: "1" };
         });
         // Answer every presentation read with an accepted projection
-        // carrying a found underlay, a K1-hidden border, and gesture A's
-        // producing drop preview. The take-lane preview result must
-        // never paint beside it.
+        // carrying a found underlay, a valid visible border with unknown
+        // witness (passed through exactly; native authority pending), and
+        // gesture A's producing drop preview.
         const answerPresentations = (): void => {
             // Drain in a loop: a reply invalidated during flight is
             // skipped, not painted (finding E), and the chained refetch
@@ -509,11 +509,14 @@ describe("world command result entry", () => {
         assert.ok(sets.length >= 1, "accepted projection paints");
         const first = sets[sets.length - 1] as { args: ReadonlyArray<unknown> };
         const payload = JSON.parse(first.args[0] as string) as Record<string, unknown>;
-        assert.equal(payload["v"], 1);
+        assert.equal(payload["v"], 2);
         assert.equal(payload["gen"], "gen-1");
         assert.equal(payload["rev"], "12");
         assert.equal(payload["foreground"], "win-a");
-        assert.deepEqual(payload["border"], { visible: 0, inner: null, outer: null });
+        assert.deepEqual(payload["border"], {
+            visible: true, reason: "", subject: null,
+            outsets: [8, 8, 304, 304], width: null, radius: null, witness: null,
+        });
         assert.deepEqual(payload["underlay"], {
             status: "found", win: "win-a", outer: [0, 0, 800, 600], members: ["win-b", "win-a"],
         });

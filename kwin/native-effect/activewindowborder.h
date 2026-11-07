@@ -13,6 +13,7 @@
 
 #include <QDBusConnection>
 #include <QHash>
+#include <QMetaObject>
 #include <QPointF>
 #include <QPointer>
 #include <QRect>
@@ -26,6 +27,7 @@ namespace KWin
 
 class GestureEscFence;
 class GestureFactsSource;
+class LogicalOutput;
 
 class ActiveWindowBorderEffect : public Effect
 {
@@ -71,6 +73,14 @@ private:
     // pins this exact body.
     void onWindowActivated();
     void setTrackedWindow(EffectWindow *window);
+    // Tracked-output retarget: the border anchor follows the tracked
+    // window across outputs. The inner Window output change retargets the
+    // LogicalOutput scale/geometry subscriptions; any output or scale
+    // change is structural (union scope plus tick, chain clear) through
+    // the existing layout route. Precise disconnects on retarget and
+    // teardown.
+    void retargetTrackedOutput();
+    void onTrackedOutputChanged();
     void subscribeMaximize(EffectWindow *window);
     void unsubscribeMaximize(EffectWindow *window);
     // Group member visibility observation: every window subscribes its
@@ -241,6 +251,14 @@ private:
     QRect m_dragPreviewRect;
     bool m_dragPreviewVisible = false;
     QPointer<EffectWindow> m_trackedWindow;
+    // Live tracked output plus its exact signal subscriptions: retargeted
+    // on tracked-window switches and inner-Window output changes,
+    // disconnected on teardown. The output (not the config) owns the live
+    // scale the border anchor proves against.
+    QPointer<LogicalOutput> m_trackedOutput;
+    QMetaObject::Connection m_trackedOutputConnection;
+    QMetaObject::Connection m_trackedScaleConnection;
+    QMetaObject::Connection m_trackedGeometryConnection;
     QSet<EffectWindow *> m_maximizedWindows;
     QSet<EffectWindow *> m_maximizeSubscribed;
     QSet<EffectWindow *> m_groupVisibilitySubscribed;

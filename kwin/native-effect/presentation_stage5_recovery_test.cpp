@@ -5,11 +5,12 @@
 // the real PresentationFactsSource over a private bus in the production
 // cross-connection topology (effect-owned dedicated connection serving the
 // facts object, script caller via the session bus holding org.kde.KWin), fed
-// the RECORDED cross-language fixture bytes from test-fixtures/stage5 (real
-// broker output over the real JS route: P5, pre-move P6, post-move covering
-// paints, proven A preview and drains, valid-B repaint, and the rapid
-// same-source serial-B covering capture), and asserting on
-// the stubbed item state the production refresh actually re-evaluates.
+// the RECORDED cross-language fixture bytes (real broker output over the
+// real JS route: the stage5-v2 full chain P5, pre-move P6, post-move
+// covering paints, proven A preview and drains, valid-B repaint, and the
+// rapid same-source serial-B covering capture on the stage5-v2 s2 chain),
+// and asserting on the stubbed item state the production refresh actually
+// re-evaluates.
 //
 // Publication is proven through the real waiter, never a getter: the first
 // handler event runs while a waiter armed with the current instance/rev is
@@ -45,16 +46,27 @@
 // byte-equal by the broker leg); dispatch-*.json are the real
 // formatPresentationPayload outputs for those projections (asserted
 // byte-equal by the JS subscriber leg); dispatch-a3-b.json is the real
-// crossed-B subscriber render of projection-a3.json. Identity seams
-// (disclosed): the native facts instance is a fresh random UUID per leg
-// while the fixtures carry "effect-1", so each leg substitutes its live
-// instance into the dispatch bytes before applying (opaque-id shape
-// preserved, never a producer replacement); source/sourceSeq/nativeInvalid
-// are per-run transport tokens normalized at record time. The gesture-B
-// producer is a realistic UUID fixture identity.
+// crossed-B subscriber render of projection-a3.json. Dispatch bytes come
+// from test-fixtures/stage5-v2 (strict v2): the full chain (P5, P6, cover,
+// preview, cover2, A2, A3, A3-B, preview-B; frozen revs cover=5,
+// cover2=8) and the independent s2 chain (P5, P6, cover, preview, S2).
+// Full and s2 raw generations differ (legitimate independent chains); each
+// leg stays within one chain, so no stream reset is needed for switching.
+// Identity seams (disclosed): the native facts instance is a fresh random
+// UUID per leg while the fixtures carry "effect-1", so each leg
+// substitutes its live instance into the dispatch bytes before applying
+// (opaque-id shape preserved, never a producer replacement);
+// source/sourceSeq/nativeInvalid are per-run transport tokens normalized
+// at record time. The gesture-B producer is a realistic UUID fixture
+// identity. The facts snapshots stay the legacy test-fixtures/stage5
+// bytes (facts source shape unchanged): facts-seed plus the three advanced
+// snapshots the publication path must reproduce exactly.
 //
-// Fixture location is baked at build time via STAGE5_FIXTURE_DIR (source
-// tree locally, Nix source store in the fileset build).
+// Fixture locations are baked at build time (source tree locally, Nix
+// source store in the fileset build): STAGE5_FIXTURE_DIR for the legacy
+// facts snapshots, STAGE5_V2_FULL_DIR/STAGE5_V2_S2_DIR for the genuine v2
+// dispatch chains. Each leg aliases its chain dir as dispatchDir; legacy
+// facts keep the old dir.
 
 #include "presentation_stage5.h"
 
@@ -81,6 +93,12 @@
 
 #ifndef STAGE5_FIXTURE_DIR
 #error "STAGE5_FIXTURE_DIR must be provided by the build"
+#endif
+#ifndef STAGE5_V2_FULL_DIR
+#error "STAGE5_V2_FULL_DIR must be provided by the build"
+#endif
+#ifndef STAGE5_V2_S2_DIR
+#error "STAGE5_V2_S2_DIR must be provided by the build"
 #endif
 
 namespace
@@ -131,8 +149,20 @@ KWin::Stage5HostView allLiveHost()
     host.endpointAvailable = true;
     host.foregroundMatches = true;
     host.liveEligible = true;
+    host.liveEligibleKnown = true;
     host.anchorOk = true;
     host.moveLive = true;
+    // Live border-anchor authority matching the recorded v2 dispatch bytes
+    // (subject win-a, witness frame [404,8,388,584]): endpoint applies arm
+    // the chain on exact-current coverage with these facts; frame routes
+    // below run without them (unknown authority) and clear it.
+    host.trackedId = QStringLiteral("win-a");
+    host.liveActiveId = QStringLiteral("win-a");
+    host.outputId = QStringLiteral("DP-1");
+    host.trackedFrame = QRect(404, 8, 388, 584);
+    host.trackedFrameKnown = true;
+    host.outputScale = 1.0;
+    host.outputScaleKnown = true;
     return host;
 }
 
@@ -333,9 +363,10 @@ void seed(Leg &leg)
 }
 
 KWin::PresentationStage5::EndpointResult applyStr(
-    Leg &leg, const QString &payload, const char *liveInstance, const char *liveSerial)
+    Leg &leg, const QString &payload, const char *liveInstance, const char *liveSerial,
+    const KWin::Stage5HostView &host = allLiveHost())
 {
-    return leg.stage->applyEndpoint(payload, QString::fromUtf8(liveInstance), QString::fromUtf8(liveSerial));
+    return leg.stage->applyEndpoint(payload, QString::fromUtf8(liveInstance), QString::fromUtf8(liveSerial), host);
 }
 
 // Real post-event facts must equal the recorded advanced fixture after the
@@ -362,6 +393,8 @@ int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
     const QString fixtureDir = QString::fromUtf8(STAGE5_FIXTURE_DIR);
+    const QString v2FullDir = QString::fromUtf8(STAGE5_V2_FULL_DIR);
+    const QString v2S2Dir = QString::fromUtf8(STAGE5_V2_S2_DIR);
 
     QTimer watchdog;
     watchdog.setSingleShot(true);
@@ -426,6 +459,7 @@ int main(int argc, char **argv)
         initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorder1"));
         SurfaceStub stub;
         seed(leg);
+        const QString dispatchDir = v2FullDir;
         CHECK(leg.router.counter == 0);
         CHECK(leg.facts->invalidation() == 0);
         CHECK(leg.facts->revision() == 1);
@@ -437,7 +471,7 @@ int main(int argc, char **argv)
             CHECK(normalized == fixtureBytes(fixtureDir, "facts-seed.json"));
         }
         const QString inst = leg.instance;
-        const auto p5 = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p5.json", inst), "", "0");
+        const auto p5 = applyStr(leg, dispatchBytes(dispatchDir, "dispatch-p5.json", inst), "", "0");
         CHECK(p5.apply == KWin::PresentationApply::Accepted);
         stub.apply(p5.refresh, leg.stage->decide(allLiveHost()));
         CHECK(stub.border);
@@ -468,7 +502,7 @@ int main(int argc, char **argv)
         // any post-move capture is accepted. Coverage rejects it: no stale
         // paint, no display touch, fence retained for the covering capture.
         {
-            const auto stale = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p6.json", inst), "", "0");
+            const auto stale = applyStr(leg, dispatchBytes(dispatchDir, "dispatch-p6.json", inst), "", "0");
             CHECK(stale.apply == KWin::PresentationApply::StaleIgnored);
             CHECK(!stale.refresh.border);
             CHECK(!stale.refresh.repaint);
@@ -476,13 +510,13 @@ int main(int argc, char **argv)
             CHECK(!stub.underlay);
         }
         const auto cover =
-            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-cover.json", inst), "", "0");
+            applyStr(leg, dispatchBytes(dispatchDir, "dispatch-cover.json", inst), "", "0");
         CHECK(cover.apply == KWin::PresentationApply::Accepted);
         stub.apply(cover.refresh, leg.stage->decide(allLiveHost()));
         CHECK(stub.border);
         CHECK(stub.underlay);
         const auto preview =
-            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-preview.json", inst), "gesture-1", "1");
+            applyStr(leg, dispatchBytes(dispatchDir, "dispatch-preview.json", inst), "gesture-1", "1");
         CHECK(preview.apply == KWin::PresentationApply::Accepted);
         {
             const KWin::Stage5Visibility live = leg.stage->decide(gestureHost("gesture-1", "1"));
@@ -513,7 +547,7 @@ int main(int argc, char **argv)
         // published witness) recovers all three surfaces through the full
         // endpoint refresh: the endpoint machinery itself is intact.
         const auto drain =
-            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-a2.json", inst), "gesture-1", "1");
+            applyStr(leg, dispatchBytes(dispatchDir, "dispatch-a2.json", inst), "gesture-1", "1");
         CHECK(drain.apply == KWin::PresentationApply::Accepted);
         stub.apply(drain.refresh, leg.stage->decide(gestureHost("gesture-1", "1")));
         CHECK(stub.border);
@@ -534,8 +568,9 @@ int main(int argc, char **argv)
         initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorder2"));
         SurfaceStub stub;
         seed(leg);
+        const QString dispatchDir = v2FullDir;
         const QString inst = leg.instance;
-        const auto p5 = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p5.json", inst), "", "0");
+        const auto p5 = applyStr(leg, dispatchBytes(dispatchDir, "dispatch-p5.json", inst), "", "0");
         CHECK(p5.apply == KWin::PresentationApply::Accepted);
         stub.apply(p5.refresh, leg.stage->decide(allLiveHost()));
         CHECK(stub.border);
@@ -551,18 +586,18 @@ int main(int argc, char **argv)
         // any post-move capture is accepted. Coverage rejects it: no stale
         // paint, no resurrection of the hidden underlay.
         {
-            const auto stale = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p6.json", inst), "", "0");
+            const auto stale = applyStr(leg, dispatchBytes(dispatchDir, "dispatch-p6.json", inst), "", "0");
             CHECK(stale.apply == KWin::PresentationApply::StaleIgnored);
             CHECK(!stale.refresh.border);
             CHECK(!stale.refresh.repaint);
             CHECK(!stub.underlay);
         }
         const auto cover =
-            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-cover.json", inst), "", "0");
+            applyStr(leg, dispatchBytes(dispatchDir, "dispatch-cover.json", inst), "", "0");
         CHECK(cover.apply == KWin::PresentationApply::Accepted);
         stub.apply(cover.refresh, leg.stage->decide(allLiveHost()));
         const auto preview =
-            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-preview.json", inst), "gesture-1", "1");
+            applyStr(leg, dispatchBytes(dispatchDir, "dispatch-preview.json", inst), "gesture-1", "1");
         CHECK(preview.apply == KWin::PresentationApply::Accepted);
         stub.apply(preview.refresh, leg.stage->decide(gestureHost("gesture-1", "1")));
         CHECK(stub.border);
@@ -583,7 +618,7 @@ int main(int argc, char **argv)
 
         // The later recorded drain repaints (recovery leg).
         const auto drain =
-            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-a2.json", inst), "gesture-1", "1");
+            applyStr(leg, dispatchBytes(dispatchDir, "dispatch-a2.json", inst), "gesture-1", "1");
         CHECK(drain.apply == KWin::PresentationApply::Accepted);
         stub.apply(drain.refresh, leg.stage->decide(gestureHost("gesture-1", "1")));
         CHECK(stub.border);
@@ -618,8 +653,9 @@ int main(int argc, char **argv)
         initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorder3"));
         SurfaceStub stub;
         seed(leg);
+        const QString dispatchDir = v2FullDir;
         const QString inst = leg.instance;
-        const auto p5 = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p5.json", inst), "", "0");
+        const auto p5 = applyStr(leg, dispatchBytes(dispatchDir, "dispatch-p5.json", inst), "", "0");
         CHECK(p5.apply == KWin::PresentationApply::Accepted);
         stub.apply(p5.refresh, leg.stage->decide(allLiveHost()));
         // The covering capture for the earlier tracked move lands first.
@@ -628,7 +664,7 @@ int main(int argc, char **argv)
         stub.apply(track, leg.stage->decide(allLiveHost()));
         checkAdvancedFacts(immediateSnapshot(leg.path), inst, fixtureDir, "facts-cover.json", "2", "1");
         const auto cover =
-            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-cover.json", inst), "", "0");
+            applyStr(leg, dispatchBytes(dispatchDir, "dispatch-cover.json", inst), "", "0");
         CHECK(cover.apply == KWin::PresentationApply::Accepted);
         stub.apply(cover.refresh, leg.stage->decide(allLiveHost()));
         CHECK(stub.border);
@@ -637,7 +673,7 @@ int main(int argc, char **argv)
         // Gesture A opens: the proven preview (live gesture-1/1) shows
         // alongside the border and the underlay.
         const auto preview =
-            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-preview.json", inst), "gesture-1", "1");
+            applyStr(leg, dispatchBytes(dispatchDir, "dispatch-preview.json", inst), "gesture-1", "1");
         CHECK(preview.apply == KWin::PresentationApply::Accepted);
         {
             const KWin::Stage5Visibility live = leg.stage->decide(gestureHost("gesture-1", "1"));
@@ -670,7 +706,7 @@ int main(int argc, char **argv)
         // paints in B.
         {
             const auto crossed =
-                applyStr(leg, dispatchBytes(fixtureDir, "dispatch-preview.json", inst), kBInstance, "1");
+                applyStr(leg, dispatchBytes(dispatchDir, "dispatch-preview.json", inst), kBInstance, "1");
             CHECK(crossed.apply == KWin::PresentationApply::StaleIgnored);
             CHECK(!crossed.refresh.preview);
             CHECK(!crossed.refresh.repaint);
@@ -683,7 +719,7 @@ int main(int argc, char **argv)
         // projection; the preview never arms for the foreign producer.
         {
             const auto drain =
-                applyStr(leg, dispatchBytes(fixtureDir, "dispatch-a2.json", inst), kBInstance, "1");
+                applyStr(leg, dispatchBytes(dispatchDir, "dispatch-a2.json", inst), kBInstance, "1");
             CHECK(drain.apply == KWin::PresentationApply::Accepted);
             CHECK(drain.refresh.border);
             CHECK(drain.refresh.preview);
@@ -713,7 +749,7 @@ int main(int argc, char **argv)
         // the preview isolated.
         {
             const auto drain =
-                applyStr(leg, dispatchBytes(fixtureDir, "dispatch-a3.json", inst), kBInstance, "1");
+                applyStr(leg, dispatchBytes(dispatchDir, "dispatch-a3.json", inst), kBInstance, "1");
             CHECK(drain.apply == KWin::PresentationApply::Accepted);
             stub.apply(drain.refresh, leg.stage->decide(gestureHost(kBInstance, "1")));
             CHECK(stub.border);
@@ -725,7 +761,7 @@ int main(int argc, char **argv)
         // producer matching the live B gesture repaints all three.
         {
             const auto valid =
-                applyStr(leg, dispatchBytes(fixtureDir, "dispatch-preview-b.json", inst), kBInstance, "1");
+                applyStr(leg, dispatchBytes(dispatchDir, "dispatch-preview-b.json", inst), kBInstance, "1");
             CHECK(valid.apply == KWin::PresentationApply::Accepted);
             stub.apply(valid.refresh, leg.stage->decide(gestureHost(kBInstance, "1")));
             CHECK(stub.border);
@@ -748,8 +784,9 @@ int main(int argc, char **argv)
         initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorder4"));
         SurfaceStub stub;
         seed(leg);
+        const QString dispatchDir = v2FullDir;
         const QString inst = leg.instance;
-        const auto p5 = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p5.json", inst), "", "0");
+        const auto p5 = applyStr(leg, dispatchBytes(dispatchDir, "dispatch-p5.json", inst), "", "0");
         CHECK(p5.apply == KWin::PresentationApply::Accepted);
         stub.apply(p5.refresh, leg.stage->decide(allLiveHost()));
         CHECK(stub.border);
@@ -767,21 +804,22 @@ int main(int argc, char **argv)
         // In-transit old A paint (newer rev/obs than P5, stale coverage)
         // delivered after the activation, before any post-activation
         // capture: must not resurrect the cleared paint.
-        const auto stale = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p6.json", inst), "", "0");
+        const auto stale = applyStr(leg, dispatchBytes(dispatchDir, "dispatch-p6.json", inst), "", "0");
         CHECK(stale.apply == KWin::PresentationApply::StaleIgnored);
         CHECK(!stale.refresh.border);
         CHECK(!stale.refresh.repaint);
         CHECK(!stub.border);
 
-        // First covering capture repaints; the fence advances to it.
+        // First covering capture repaints; the fence advances to the
+        // recorded v2 rev (frozen raw record: cover rev 5).
         const auto cover =
-            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-cover.json", inst), "", "0");
+            applyStr(leg, dispatchBytes(dispatchDir, "dispatch-cover.json", inst), "", "0");
         CHECK(cover.apply == KWin::PresentationApply::Accepted);
         stub.apply(cover.refresh, leg.stage->decide(allLiveHost()));
         CHECK(stub.border);
         CHECK(stub.underlay);
         CHECK(leg.router.paint.fence.set);
-        CHECK(leg.router.paint.fence.rev == 3);
+        CHECK(leg.router.paint.fence.rev == 5);
 
         // Return to A: the second activation hides display-only again plus
         // the all-scope bump (published); only the recorded
@@ -795,19 +833,20 @@ int main(int argc, char **argv)
         // In-transit pre-return paint (rev/obs newer than the cover fence,
         // stale coverage) delivered after the second activation, before the
         // return capture: must not resurrect the cleared paint.
-        const auto stale2 = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-preview.json", inst), "", "0");
+        const auto stale2 = applyStr(leg, dispatchBytes(dispatchDir, "dispatch-preview.json", inst), "", "0");
         CHECK(stale2.apply == KWin::PresentationApply::StaleIgnored);
         CHECK(!stale2.refresh.border);
         CHECK(!stale2.refresh.repaint);
         CHECK(!stub.border);
         const auto cover2 =
-            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-cover2.json", inst), "", "0");
+            applyStr(leg, dispatchBytes(dispatchDir, "dispatch-cover2.json", inst), "", "0");
         CHECK(cover2.apply == KWin::PresentationApply::Accepted);
         stub.apply(cover2.refresh, leg.stage->decide(allLiveHost()));
         CHECK(stub.border);
         CHECK(stub.underlay);
         CHECK(leg.router.paint.fence.set);
-        CHECK(leg.router.paint.fence.rev == 5);
+        // Frozen raw record: the second covering capture is v2 rev 8.
+        CHECK(leg.router.paint.fence.rev == 8);
 
         // Error-hide path: malformed clears display-only with a full
         // refresh while the fence survives; a further old A paint still
@@ -816,16 +855,16 @@ int main(int argc, char **argv)
         CHECK(malformed.apply == KWin::PresentationApply::Malformed);
         CHECK(malformed.refresh.border);
         CHECK(leg.router.paint.fence.set);
-        CHECK(leg.router.paint.fence.rev == 5);
+        CHECK(leg.router.paint.fence.rev == 8);
         stub.apply(malformed.refresh, leg.stage->decide(allLiveHost()));
         CHECK(!stub.border);
-        const auto afterError = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p6.json", inst), "", "0");
+        const auto afterError = applyStr(leg, dispatchBytes(dispatchDir, "dispatch-p6.json", inst), "", "0");
         CHECK(afterError.apply == KWin::PresentationApply::StaleIgnored);
         CHECK(!stub.border);
 
         // A foreign witness instance never applies (reused counters across
         // instances never compare).
-        QString foreign = dispatchBytes(fixtureDir, "dispatch-cover2.json", inst);
+        QString foreign = dispatchBytes(dispatchDir, "dispatch-cover2.json", inst);
         foreign.replace(inst, QStringLiteral("other-instance"));
         const auto foreignCover = applyStr(leg, foreign, "", "0");
         CHECK(foreignCover.apply == KWin::PresentationApply::StaleIgnored);
@@ -850,8 +889,11 @@ int main(int argc, char **argv)
         initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorder5"));
         SurfaceStub stub;
         seed(leg);
+        // The rapid-handover leg runs entirely on the independent s2 chain
+        // (own generation namespace); no stream reset is involved.
+        const QString dispatchDir = v2S2Dir;
         const QString inst = leg.instance;
-        const auto p5 = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p5.json", inst), "", "0");
+        const auto p5 = applyStr(leg, dispatchBytes(dispatchDir, "dispatch-p5.json", inst), "", "0");
         CHECK(p5.apply == KWin::PresentationApply::Accepted);
         stub.apply(p5.refresh, leg.stage->decide(allLiveHost()));
         CHECK(stub.border);
@@ -865,13 +907,13 @@ int main(int argc, char **argv)
         stub.apply(bump1, leg.stage->decide(allLiveHost()));
         CHECK(!stub.border);
         const auto cover =
-            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-cover.json", inst), "", "0");
+            applyStr(leg, dispatchBytes(dispatchDir, "dispatch-cover.json", inst), "", "0");
         CHECK(cover.apply == KWin::PresentationApply::Accepted);
         stub.apply(cover.refresh, leg.stage->decide(allLiveHost()));
         CHECK(stub.border);
         CHECK(stub.underlay);
         const auto preview =
-            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-preview.json", inst), "gesture-1", "1");
+            applyStr(leg, dispatchBytes(dispatchDir, "dispatch-preview.json", inst), "gesture-1", "1");
         CHECK(preview.apply == KWin::PresentationApply::Accepted);
         stub.apply(preview.refresh, leg.stage->decide(gestureHost("gesture-1", "1")));
         CHECK(stub.border);
@@ -885,7 +927,7 @@ int main(int argc, char **argv)
         // still repaint from the accepted projection.
         {
             const auto crossed =
-                applyStr(leg, dispatchBytes(fixtureDir, "dispatch-preview.json", inst), "gesture-1", "2");
+                applyStr(leg, dispatchBytes(dispatchDir, "dispatch-preview.json", inst), "gesture-1", "2");
             CHECK(crossed.apply == KWin::PresentationApply::Accepted);
             CHECK(crossed.refresh.preview);
             stub.apply(crossed.refresh, leg.stage->decide(gestureHost("gesture-1", "2")));
@@ -916,7 +958,7 @@ int main(int argc, char **argv)
         // endpoint refresh.
         {
             const auto valid =
-                applyStr(leg, dispatchBytes(fixtureDir, "dispatch-s2.json", inst), "gesture-1", "2");
+                applyStr(leg, dispatchBytes(dispatchDir, "dispatch-s2.json", inst), "gesture-1", "2");
             CHECK(valid.apply == KWin::PresentationApply::Accepted);
             stub.apply(valid.refresh, leg.stage->decide(gestureHost("gesture-1", "2")));
             CHECK(stub.border);

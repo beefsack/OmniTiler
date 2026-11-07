@@ -69,21 +69,44 @@ struct Stage5Refresh {
 // injected input: the effect supplies them from live window/scene state,
 // the offline test fabricates them. No identity, geometry, or policy
 // derivation happens here; the foreground match and liveness arrive
-// precomputed from live reads.
+// precomputed from live reads. Border anchor authority (tracked/active
+// identity, output identity, frame, eligibility-known, output scale)
+// rides the same seam for the actual endpoint/event path; underlay/preview
+// never consult it.
 struct Stage5HostView {
     bool endpointAvailable = false;
     bool foregroundMatches = false;
     bool liveEligible = false;
+    bool liveEligibleKnown = false;
     bool anchorOk = false;
     bool moveLive = false;
     QString liveGestureInstance;
     QString liveGestureSerial = QStringLiteral("0");
+    QString trackedId;
+    // Actual live active-window identity (bare UUID): the arm/advance/draw
+    // proof requires subject == witness == held foreground == tracked ==
+    // live-active, never the derived foreground-match flag alone.
+    QString liveActiveId;
+    // Tracked output identity (live output name) plus its scale: the draw
+    // gate requires the current live facts to match the output identity
+    // and scale proven at arm time.
+    QString outputId;
+    QRect trackedFrame;
+    bool trackedFrameKnown = false;
+    qreal outputScale = 0.0;
+    bool outputScaleKnown = false;
 };
 
 // Decided visibility per surface, from the held accepted paint plus one
-// injected host view. Drawn borders/underlay additionally require held
-// coverage equal to the actual latest witness; the drawn preview requires
-// coverage at or past the structural floor instead (same instance).
+// injected host view. Drawn underlay requires held coverage equal to the
+// actual latest witness; the drawn preview requires coverage at or past
+// the structural floor instead (same instance). The drawn border needs its
+// anchor chain current (router-owned, advanced only on delivered
+// same-anchor frame or lifecycle-boundary events with live proof) plus
+// live vetoes and valid live geometry
+// (outer from live frame plus held outsets, inner inset by held width,
+// held radius for the ring); unknown frame/subject/eligibility/scale hides
+// only the border.
 struct Stage5Visibility {
     bool border = false;
     bool underlay = false;
@@ -118,11 +141,18 @@ public:
     // route is the exception: it bumps monotonically with the union scope
     // but WITHOUT the structural tick (the valid same-gesture preview
     // persists) and refreshes only its dirtied border/underlay surfaces;
-    // the preview is never refreshed there (it stays visible).
+    // the preview is never refreshed there (it stays visible). The
+    // tracked-frame and tracked-motion routes accept optional live anchor
+    // facts (unknown by default): with them the border chain advances by
+    // event proof, without them it clears, while the global
+    // bump/tick/publish accounting stays identical for the other surfaces.
+    // The gesture-boundary route takes the same optional same-anchor facts:
+    // same-window proof advances the chain by the same one-bump rule,
+    // unknown or mismatched facts clear it with no new join.
     Stage5Refresh onActivation();
-    Stage5Refresh onTrackedFrame();
+    Stage5Refresh onTrackedFrame(const Stage5HostView &host = Stage5HostView{});
     Stage5Refresh onMemberFrame();
-    Stage5Refresh onMotionFrame(bool tracked);
+    Stage5Refresh onMotionFrame(bool tracked, const Stage5HostView &host = Stage5HostView{});
     Stage5Refresh onLayoutChanged();
     // Member visibility route (minimize/restore, hide/show): union scope
     // plus the structural tick, unconditionally, then border/underlay/
@@ -130,7 +160,7 @@ public:
     // onMemberVisibility below.
     Stage5Refresh onVisibilityChanged(const QString &bareId);
     Stage5Refresh onFullscreenChanged();
-    Stage5Refresh onGestureBoundary();
+    Stage5Refresh onGestureBoundary(const Stage5HostView &host = Stage5HostView{});
     // Member visibility change: no bump, re-anchor plus underlay only, and
     // only when the bare id names a held paint member (empty refresh
     // otherwise: no refresh, no transition).
@@ -141,29 +171,42 @@ public:
         Stage5Refresh refresh;
     };
     // Accepted-presentation coverage for one SetPresentation payload with
-    // the exact live open native gesture identity at the endpoint. The
-    // caller gates endpoint loss before this (display-only hide there).
+    // the exact live open native gesture identity at the endpoint plus the
+    // live border anchor facts for the same endpoint path. The caller
+    // gates endpoint loss before this (display-only hide there).
     // Accepted/malformed refresh every surface (plus repaint); stale
-    // coverage refreshes nothing and preserves the held display.
+    // coverage refreshes nothing and preserves the held display. The
+    // border chain re-proves only on newly accepted exact-current coverage
+    // with exact live anchor authority (clearing first); a structurally
+    // accepted paint with older coverage preserves a proven chain by prior
+    // event proof, so only the floored shapes hide. Without a proven
+    // chain only the border hides. The anchor facts default to unknown
+    // for callers without live authority.
     EndpointResult applyEndpoint(const QString &payload, const QString &liveGestureInstance,
-        const QString &liveGestureSerial);
+        const QString &liveGestureSerial, const Stage5HostView &hostForBorder = Stage5HostView{});
     // Endpoint-loss hide (display-only, retaining order/invalidation
     // evidence) and stream-resetting clear. Both refresh every surface;
     // repaint is requested exactly when paint was held.
     Stage5Refresh hideForEndpointLoss();
     Stage5Refresh resetStream();
 
-    // Pure-renderer visibility decisions: the held accepted border and
-    // underlay shapes show only on the live foreground match, the
-    // geometry-fresh floors, held coverage equal to the actual latest
-    // witness, plus the hide-only vetoes. The underlay needs the same plus
-    // a valid anchor (the core Found already encodes the trigger). The
-    // preview needs structurally current coverage (covered at or past the
-    // structural floor in the same instance: motion bumps the monotonic
-    // witness without touching the floor, so the valid same-gesture
-    // preview persists while strict borders hide) plus the matching live
-    // producer, live move liveness, and the endpoint gate. No eligibility
-    // or geometry derivation.
+    // Pure-renderer visibility decisions: the held accepted underlay
+    // shows only on the live foreground match, the geometry-fresh floor,
+    // held coverage equal to the actual latest witness, plus the hide-only
+    // vetoes and a valid anchor (the core Found already encodes the
+    // trigger). The preview needs structurally current coverage (covered
+    // at or past the structural floor in the same instance: motion bumps
+    // the monotonic witness without touching the floor, so the valid
+    // same-gesture preview persists while strict underlay hides) plus the
+    // matching live producer, live move liveness, and the endpoint gate.
+    // The held accepted border shows only on the live foreground match,
+    // live eligibility (known), its anchor chain current, the complete
+    // held descriptor (outsets, width, radius all present), exact live
+    // tracked/active identity against subject/witness/held foreground, the
+    // current live output identity and scale matching the arm-time proof,
+    // and valid live geometry (live frame plus held outsets/width produce
+    // a non-empty outer/inner); underlay/preview keep the existing global
+    // coverage/floor gates. No eligibility or geometry derivation.
     Stage5Visibility decide(const Stage5HostView &host) const;
 
 private:

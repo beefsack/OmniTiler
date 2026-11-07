@@ -20,16 +20,19 @@
 //
 // Payload contract (built by the script subscriber from the accepted broker
 // projection, exact keys, no unknown fields, no trailing data):
-//   {"v":1,"gen":"<opaque>","rev":"<canonical-u64>","obs":"<canonical-u64>",
+//   {"v":2,"gen":"<opaque>","rev":"<canonical-u64>","obs":"<canonical-u64>",
 //    "coveredInstance":"<opaque>","coveredInvalid":"<canonical-u64>",
 //    "foreground":"<id-or-empty>",
-//    "border":{"visible":0/1,"inner":[x,y,w,h]|null,"outer":[x,y,w,h]|null},
+//    "border":{"visible":<bool>,"reason":"<closed>","subject":"<id>"|null,
+//              "outsets":[l,t,r,b]|null,"width":<i32>=0|null,"radius":<i32>=0|null,
+//              "witness":{"win":"<id>","obs":"<canonical-u64>",
+//                         "frame":[x,y,w,h],"foreground":"<id>"}|null},
 //    "underlay":{"status":"found","win":"<id>","outer":[x,y,w,h],
 //                "members":["<id>",...]}|{"status":"hidden"},
 //    "preview":{"rect":[x,y,w,h],"sourceOut":"<id>","sourceWs":"<id>",
 //               "win":"<id>","producerInstance":"<id>"|null,
 //               "producerSerial":"<canonical-u64>"|null}|null}
-// - `v` is exactly the integer 1 (value-based: integral finite double).
+// - `v` is exactly the integer 2 (value-based: integral finite double).
 // - `rev`/`obs` are canonical decimal u64 strings (no leading zeros, no
 //   sign). The `(rev, obs)` pair is the order key: different observations
 //   under the same state revision can change presentation, so ordering uses
@@ -41,12 +44,16 @@
 //   resurrects, and a foreign instance with a set latest never applies.
 //   Never inferred from timing, geometry, or age.
 // - `foreground` is empty (no eligible target) or an opaque window id.
-// - Rect value check (Qt parses every JSON number as double, so lexical
-//   spelling is unobservable here): finite, integral, in int range, then
-//   the carried-geometry bound (x/y in -16384..16384, w/h in 1..16384,
-//   matching the retired group/preview gates and the core GEOMETRY_BOUND).
-//   Out of bound, fractional, non-finite, or out-of-int-range numbers fail
-//   closed (clear).
+// - Border value check (Qt parses every JSON number as double, so lexical
+//   spelling is unobservable here): outsets/width/radius are finite,
+//   integral, in i32 range (width/radius additionally >= 0 when non-null;
+//   no uniform, non-negative-outset, or 1024 clamp). Witness frame uses
+//   the carried-geometry bound (x/y in -16384..16384, w/h in 1..16384).
+//   Reason is the closed v4 set; visible=>reason=="". Nullable
+//   subject/outsets/width/radius/witness pass unchanged even when null,
+//   dangling, or unjoined: native border narrowly hides while
+//   underlay/preview can still paint. Mismatched version or malformed DTO
+//   hides all three quietly.
 // - `members` is a non-empty unique opaque-id list (the renderer anchors
 //   the already-verbatim outer rect at the lowest-stacked renderable
 //   member; member rects never cross). Empty/duplicate/non-id members fail
@@ -172,6 +179,36 @@ inline bool paintOrderLess(const PaintOrder &a, const PaintOrder &b)
     return a.obs < b.obs;
 }
 
+// Quiet version-mismatch peek for the SetPresentation endpoint: true when
+// the payload declares an integral version other than the strict v2 the
+// consumer requires. Lets the endpoint hide without the repetitive
+// malformed diagnostic a stale v1 producer would otherwise emit on every
+// receipt; any other shape still takes the normal malformed path.
+inline bool presentationPayloadVersionMismatch(const QString &payload)
+{
+    if (payload.isEmpty() || payload.size() > 65536) {
+        return false;
+    }
+    QJsonParseError error{};
+    const QJsonDocument document = QJsonDocument::fromJson(payload.toUtf8(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject()) {
+        return false;
+    }
+    const QJsonObject root = document.object();
+    const QJsonValue version = root.value(QStringLiteral("v"));
+    if (!version.isDouble()) {
+        return false;
+    }
+    const double raw = version.toDouble();
+    if (!std::isfinite(raw) || std::trunc(raw) != raw) {
+        return false;
+    }
+    if (raw < static_cast<double>(INT_MIN) || raw > static_cast<double>(INT_MAX)) {
+        return false;
+    }
+    return static_cast<int>(raw) != 2;
+}
+
 struct PresentationPaint {
     bool has = false;
     QString gen;
@@ -179,8 +216,23 @@ struct PresentationPaint {
     quint64 obs = 0;
     QByteArray foreground;
     bool borderVisible = false;
-    QRect borderInner;
-    QRect borderOuter;
+    QString borderReason;
+    QByteArray borderSubject;
+    bool borderHasOutsets = false;
+    int borderOutsetLeft = 0;
+    int borderOutsetTop = 0;
+    int borderOutsetRight = 0;
+    int borderOutsetBottom = 0;
+    bool borderHasWidth = false;
+    int borderWidth = 0;
+    bool borderHasRadius = false;
+    int borderRadius = 0;
+    bool borderHasWitness = false;
+    QByteArray witnessWin;
+    QString witnessObs;
+    quint64 witnessObsValue = 0;
+    QRect witnessFrame;
+    QByteArray witnessForeground;
     bool underlayFound = false;
     QByteArray underlayWin;
     QRect underlayOuter;
@@ -408,6 +460,80 @@ inline std::optional<double> borderStrokeFromPublished(const QRect &inner, const
     return static_cast<double>(left);
 }
 
+// TS Math.round quantization for the live native frame (halves toward
+// +infinity): std::floor(v + 0.5). Differs from std::lround on negative
+// halves (Math.round(-10.5) == -10, lround gives -11). The adapter rounds
+// fractional natives once at capture with this semantics; native
+// re-quantizes the live frame the same way before joining to the witness.
+inline int quantizeMathRound(double value)
+{
+    return static_cast<int>(std::floor(value + 0.5));
+}
+
+inline QRect quantizeFrameForWitness(double x, double y, double width, double height)
+{
+    return QRect(quantizeMathRound(x), quantizeMathRound(y), quantizeMathRound(width), quantizeMathRound(height));
+}
+
+// Live border geometry from the quantized live frame plus the held
+// outsets/width verbatim (no config, no second scale): outer is the live
+// frame expanded by each outset, inner is outer inset by width once.
+// Returns false on width 0 or invalid metrics (narrow hide, never a parser
+// rejection: the accepted shape stays for underlay/preview).
+inline bool borderGeometryFromLiveFrame(
+    const QRect &liveFrame, int outsetLeft, int outsetTop, int outsetRight, int outsetBottom, int width,
+    QRect *outer, QRect *inner)
+{
+    if (liveFrame.width() <= 0 || liveFrame.height() <= 0 || width <= 0) {
+        return false;
+    }
+    // Promoted bounds before any arithmetic: int outset/width extremes
+    // (INT_MIN negation, INT_MAX sums) must fail closed instead of
+    // wrapping through QRect::adjusted int math to a nonsense rect.
+    const qint64 x1 = static_cast<qint64>(liveFrame.x()) - static_cast<qint64>(outsetLeft);
+    const qint64 y1 = static_cast<qint64>(liveFrame.y()) - static_cast<qint64>(outsetTop);
+    const qint64 x2 = static_cast<qint64>(liveFrame.x()) + static_cast<qint64>(liveFrame.width()) - 1
+        + static_cast<qint64>(outsetRight);
+    const qint64 y2 = static_cast<qint64>(liveFrame.y()) + static_cast<qint64>(liveFrame.height()) - 1
+        + static_cast<qint64>(outsetBottom);
+    if (x1 < INT_MIN || x1 > INT_MAX || y1 < INT_MIN || y1 > INT_MAX || x2 < INT_MIN || x2 > INT_MAX
+        || y2 < INT_MIN || y2 > INT_MAX || x2 < x1 || y2 < y1) {
+        return false;
+    }
+    const qint64 outerW = x2 - x1 + 1;
+    const qint64 outerH = y2 - y1 + 1;
+    if (outerW <= 0 || outerW > INT_MAX || outerH <= 0 || outerH > INT_MAX) {
+        return false;
+    }
+    const qint64 ix1 = x1 + static_cast<qint64>(width);
+    const qint64 iy1 = y1 + static_cast<qint64>(width);
+    const qint64 ix2 = x2 - static_cast<qint64>(width);
+    const qint64 iy2 = y2 - static_cast<qint64>(width);
+    if (ix1 < INT_MIN || ix1 > INT_MAX || iy1 < INT_MIN || iy1 > INT_MAX || ix2 < INT_MIN || ix2 > INT_MAX
+        || iy2 < INT_MIN || iy2 > INT_MAX || ix2 < ix1 || iy2 < iy1) {
+        return false;
+    }
+    const qint64 innerW = ix2 - ix1 + 1;
+    const qint64 innerH = iy2 - iy1 + 1;
+    if (innerW <= 0 || innerW > INT_MAX || innerH <= 0 || innerH > INT_MAX) {
+        return false;
+    }
+    // Corner construction: QRect(x, y, w, h) derives the corner as
+    // left + width - 1, whose intermediate sum can overflow (and abort a
+    // debug Qt build) when the mathematically right corner is exactly
+    // INT_MAX. The corners above are already validated, so build from
+    // them directly.
+    if (outer != nullptr) {
+        *outer = QRect(QPoint(static_cast<int>(x1), static_cast<int>(y1)),
+            QPoint(static_cast<int>(x2), static_cast<int>(y2)));
+    }
+    if (inner != nullptr) {
+        *inner = QRect(QPoint(static_cast<int>(ix1), static_cast<int>(iy1)),
+            QPoint(static_cast<int>(ix2), static_cast<int>(iy2)));
+    }
+    return true;
+}
+
 namespace PresentationConsumerDetail
 {
 
@@ -549,7 +675,7 @@ inline PresentationApply applyPresentationPaint(
         || !o.contains(QStringLiteral("preview"))) {
         return failClosed();
     }
-    if (!isJsonIntValue(o.value(QStringLiteral("v")), nullptr) || o.value(QStringLiteral("v")).toInt(-1) != 1) {
+    if (!isJsonIntValue(o.value(QStringLiteral("v")), nullptr) || o.value(QStringLiteral("v")).toInt(-1) != 2) {
         return failClosed();
     }
     const QString gen = o.value(QStringLiteral("gen")).toString();
@@ -578,38 +704,117 @@ inline PresentationApply applyPresentationPaint(
         return failClosed();
     }
     const QJsonObject border = borderValue.toObject();
-    if (border.size() != 3 || !border.contains(QStringLiteral("visible")) || !border.contains(QStringLiteral("inner"))
-        || !border.contains(QStringLiteral("outer"))) {
+    if (border.size() != 7 || !border.contains(QStringLiteral("visible")) || !border.contains(QStringLiteral("reason"))
+        || !border.contains(QStringLiteral("subject")) || !border.contains(QStringLiteral("outsets"))
+        || !border.contains(QStringLiteral("width")) || !border.contains(QStringLiteral("radius"))
+        || !border.contains(QStringLiteral("witness"))) {
         return failClosed();
     }
     const QJsonValue visibleValue = border.value(QStringLiteral("visible"));
-    if (!isJsonIntValue(visibleValue, nullptr)) {
+    if (!visibleValue.isBool()) {
         return failClosed();
     }
-    const int visibleInt = visibleValue.toInt(-1);
-    if (visibleInt != 0 && visibleInt != 1) {
+    const bool borderVisible = visibleValue.toBool(false);
+    const QString borderReason = border.value(QStringLiteral("reason")).toString(QStringLiteral("\u0000"));
+    const bool reasonOk = borderReason == QStringLiteral("") || borderReason == QStringLiteral("disabled")
+        || borderReason == QStringLiteral("no-target") || borderReason == QStringLiteral("minimized")
+        || borderReason == QStringLiteral("maximized") || borderReason == QStringLiteral("fullscreen")
+        || borderReason == QStringLiteral("host-hidden") || borderReason == QStringLiteral("hidden-workspace")
+        || borderReason == QStringLiteral("shell") || borderReason == QStringLiteral("suspended");
+    if (!reasonOk) {
         return failClosed();
     }
-    QRect inner;
-    QRect outer;
-    bool hasInner = false;
-    bool hasOuter = false;
-    const QJsonValue innerValue = border.value(QStringLiteral("inner"));
-    const QJsonValue outerValue = border.value(QStringLiteral("outer"));
-    if (!innerValue.isNull()) {
-        if (!parseRect(innerValue, &inner)) {
+    if (borderVisible && borderReason != QStringLiteral("")) {
+        return failClosed();
+    }
+    const QJsonValue subjectValue = border.value(QStringLiteral("subject"));
+    QByteArray borderSubject;
+    if (!subjectValue.isNull()) {
+        if (!subjectValue.isString() || !isOpaqueId(subjectValue.toString())) {
             return failClosed();
         }
-        hasInner = true;
+        borderSubject = subjectValue.toString().toUtf8();
     }
-    if (!outerValue.isNull()) {
-        if (!parseRect(outerValue, &outer)) {
+    const QJsonValue outsetsValue = border.value(QStringLiteral("outsets"));
+    bool borderHasOutsets = false;
+    int outsetLeft = 0;
+    int outsetTop = 0;
+    int outsetRight = 0;
+    int outsetBottom = 0;
+    if (!outsetsValue.isNull()) {
+        if (!outsetsValue.isArray() || outsetsValue.toArray().size() != 4) {
             return failClosed();
         }
-        hasOuter = true;
+        const QJsonArray outsetsArray = outsetsValue.toArray();
+        int parsed[4] = {0, 0, 0, 0};
+        for (int i = 0; i < 4; ++i) {
+            if (!isJsonIntValue(outsetsArray.at(i), &parsed[i])) {
+                return failClosed();
+            }
+        }
+        borderHasOutsets = true;
+        outsetLeft = parsed[0];
+        outsetTop = parsed[1];
+        outsetRight = parsed[2];
+        outsetBottom = parsed[3];
     }
-    if (visibleInt == 1 && (!hasInner || !hasOuter)) {
-        return failClosed();
+    const QJsonValue widthValue = border.value(QStringLiteral("width"));
+    bool borderHasWidth = false;
+    int borderWidth = 0;
+    if (!widthValue.isNull()) {
+        int parsedWidth = 0;
+        if (!isJsonIntValue(widthValue, &parsedWidth) || parsedWidth < 0) {
+            return failClosed();
+        }
+        borderHasWidth = true;
+        borderWidth = parsedWidth;
+    }
+    const QJsonValue radiusValue = border.value(QStringLiteral("radius"));
+    bool borderHasRadius = false;
+    int borderRadius = 0;
+    if (!radiusValue.isNull()) {
+        int parsedRadius = 0;
+        if (!isJsonIntValue(radiusValue, &parsedRadius) || parsedRadius < 0) {
+            return failClosed();
+        }
+        borderHasRadius = true;
+        borderRadius = parsedRadius;
+    }
+    const QJsonValue witnessValue = border.value(QStringLiteral("witness"));
+    bool borderHasWitness = false;
+    QByteArray witnessWin;
+    QString witnessObs;
+    quint64 witnessObsValue = 0;
+    QRect witnessFrame;
+    QByteArray witnessForeground;
+    if (!witnessValue.isNull()) {
+        if (!witnessValue.isObject()) {
+            return failClosed();
+        }
+        const QJsonObject witness = witnessValue.toObject();
+        if (witness.size() != 4 || !witness.contains(QStringLiteral("win")) || !witness.contains(QStringLiteral("obs"))
+            || !witness.contains(QStringLiteral("frame")) || !witness.contains(QStringLiteral("foreground"))) {
+            return failClosed();
+        }
+        const QString winStr = witness.value(QStringLiteral("win")).toString();
+        quint64 obsVal = 0;
+        if (!isOpaqueId(winStr) || !isCanonicalU64(witness.value(QStringLiteral("obs")).toString(), &obsVal)) {
+            return failClosed();
+        }
+        QRect frameRect;
+        if (!parseRect(witness.value(QStringLiteral("frame")), &frameRect)) {
+            return failClosed();
+        }
+        const QString fgStr = witness.value(QStringLiteral("foreground")).toString();
+        if (!isOpaqueId(fgStr)) {
+            return failClosed();
+        }
+        borderHasWitness = true;
+        witnessWin = winStr.toUtf8();
+        witnessObs = witness.value(QStringLiteral("obs")).toString();
+        witnessObsValue = obsVal;
+        witnessFrame = frameRect;
+        witnessForeground = fgStr.toUtf8();
     }
     const QJsonValue underlayValue = o.value(QStringLiteral("underlay"));
     if (!underlayValue.isObject()) {
@@ -761,9 +966,24 @@ inline PresentationApply applyPresentationPaint(
     state->obs = obs;
     state->covered = incomingCover;
     state->foreground = foreground.toUtf8();
-    state->borderVisible = visibleInt == 1;
-    state->borderInner = inner;
-    state->borderOuter = outer;
+    state->borderVisible = borderVisible;
+    state->borderReason = borderReason;
+    state->borderSubject = borderSubject;
+    state->borderHasOutsets = borderHasOutsets;
+    state->borderOutsetLeft = outsetLeft;
+    state->borderOutsetTop = outsetTop;
+    state->borderOutsetRight = outsetRight;
+    state->borderOutsetBottom = outsetBottom;
+    state->borderHasWidth = borderHasWidth;
+    state->borderWidth = borderWidth;
+    state->borderHasRadius = borderHasRadius;
+    state->borderRadius = borderRadius;
+    state->borderHasWitness = borderHasWitness;
+    state->witnessWin = witnessWin;
+    state->witnessObs = witnessObs;
+    state->witnessObsValue = witnessObsValue;
+    state->witnessFrame = witnessFrame;
+    state->witnessForeground = witnessForeground;
     state->underlayFound = found;
     state->underlayWin = underlayWin;
     state->underlayOuter = underlayOuter;

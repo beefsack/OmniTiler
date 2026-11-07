@@ -33,9 +33,15 @@
 // routed through the real `createWorldPresentationSubscriber`; each rendered
 // native DTO must equal an independent expected payload built in this test
 // from the projection fields under the documented `SetPresentation`
-// formatter contract (never by calling the production formatter). The
-// hidden border stays hidden (K1 settled off): every paint asserts
-// `visible:0` only.
+// formatter contract (never by calling the production formatter). The v2
+// border forwards the exact anchored descriptor (boolean `visible`).
+//
+// V2 dispatch siblings: `test-fixtures/stage5-v2/{full,s2}/dispatch-*.json`
+// are the genuine v2 subscriber renders of the checked-in v2 projections
+// (produced by the dispatch recorder through the same production
+// subscriber, `req` re-keyed, no direct formatter calls). Each v2 case
+// below also byte-compares the paint to its dispatch sibling with only the
+// volatile `gen` normalized.
 //
 // Correlation seam (disclosed, shape-preserving): the subscriber mints a
 // per-read `req` nonce, so each read is answered with the recorded
@@ -44,14 +50,17 @@
 
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 import {
+    dispatchLiveGesture,
     recordStage5V4Chain,
+    renderPresentationDispatch,
     STAGE5_V4_ADAPTER,
     STAGE5_V4_B_INSTANCE,
     STAGE5_V4_GESTURE_A,
+    STAGE5_V4_PREVIEW_EXPECTATION,
     type Stage5V4ChainResult,
 } from "./world-stage5-v4-record";
 import { createWorldPresentationSubscriber } from "../src/world-presentation";
@@ -478,6 +487,20 @@ interface V4Projection {
     readonly coveredInvalid: string | null;
     readonly presentation: {
         readonly foreground: string;
+        readonly border: {
+            readonly visible: boolean;
+            readonly reason: string;
+            readonly subject: string | null;
+            readonly outsets: ReadonlyArray<number> | null;
+            readonly width: number | null;
+            readonly radius: number | null;
+            readonly witness: {
+                readonly win: string;
+                readonly obs: string;
+                readonly frame: ReadonlyArray<number>;
+                readonly foreground: string;
+            } | null;
+        };
         readonly underlay: {
             readonly status: string;
             readonly win: unknown;
@@ -505,12 +528,31 @@ interface RenderedPayload {
 // Independent expected-payload oracle: rebuilds the exact native
 // `SetPresentation` DTO from the genuine projection fields following the
 // documented formatter contract
-// ({v:1,gen,rev,obs,coveredInstance,coveredInvalid,foreground,
-// border:{visible:0,inner:null,outer:null},
+// ({v:2,gen,rev,obs,coveredInstance,coveredInvalid,foreground,
+// border:{visible,reason,subject,outsets,width,radius,witness},
 // underlay:{status:"found",win,outer,members:[win,...]}|{status:"hidden"},
 // preview:{rect,sourceOut,sourceWs,win,producerInstance,producerSerial}|null}),
 // never by calling the production formatter. Full DTO equality, all keys.
+// The border forwards exactly unchanged, even with null or unjoined
+// witness; native event authority owns the narrow hide.
 function expectedNativePayload(proj: V4Projection, includePreview: boolean): string {
+    const borderIn = proj.presentation.border;
+    const borderOut: unknown = {
+        visible: borderIn.visible,
+        reason: borderIn.reason,
+        subject: borderIn.subject,
+        outsets: borderIn.outsets === null ? null : [...borderIn.outsets],
+        width: borderIn.width,
+        radius: borderIn.radius,
+        witness: borderIn.witness === null
+            ? null
+            : {
+                win: borderIn.witness.win,
+                obs: borderIn.witness.obs,
+                frame: [...borderIn.witness.frame],
+                foreground: borderIn.witness.foreground,
+            },
+    };
     const underlay = proj.presentation.underlay;
     let underlayOut: unknown;
     if (underlay.status === "found") {
@@ -536,14 +578,14 @@ function expectedNativePayload(proj: V4Projection, includePreview: boolean): str
             producerSerial: sourcePreview.producerSerial,
         };
     return JSON.stringify({
-        v: 1,
+        v: 2,
         gen: proj.gen,
         rev: proj.rev,
         obs: proj.obs,
         coveredInstance: proj.coveredInstance,
         coveredInvalid: proj.coveredInvalid,
         foreground: proj.presentation.foreground,
-        border: { visible: 0, inner: null, outer: null },
+        border: borderOut,
         underlay: underlayOut,
         preview: previewOut,
     });
@@ -637,8 +679,9 @@ function runSubscriberCase(spec: SubscriberCase, where: string): void {
         assert.ok(paint !== undefined, `${where} painted`);
         assert.equal(paint, expectedNativePayload(proj, spec.expectPreview), `${where} native DTO bytes`);
         const rendered = JSON.parse(paint) as RenderedPayload;
-        // K1 settled off: the hidden border is the only honest shape.
-        assert.deepEqual(rendered.border, { visible: 0, inner: null, outer: null }, `${where} border hidden`);
+        // V2 forwards the exact anchored descriptor (boolean visible).
+        const expectedBorder = JSON.parse(expectedNativePayload(proj, spec.expectPreview)) as RenderedPayload;
+        assert.deepEqual(rendered.border, expectedBorder.border, `${where} border forwarded`);
         // Real underlay: found for the tiled win-a group with both members
         // and verbatim outer geometry, intact even when preview strips.
         assert.equal(rendered.underlay["status"], "found", `${where} underlay found`);
@@ -688,6 +731,109 @@ const GESTURE_A1 = { instance: GESTURE_A, serial: "1", coreId: "1" };
 const GESTURE_A2 = { instance: GESTURE_A, serial: "2", coreId: "9" };
 const GESTURE_B = { instance: B_INSTANCE, serial: "1", coreId: "2" };
 
+function dispatchFixture(chain: ChainName, name: string): string {
+    return readFileSync(resolve("..", "test-fixtures", "stage5-v2", chain, name), "utf8");
+}
+
+function assertPaintEqualsDispatchGenNormalized(paint: string, dispatchText: string, where: string): void {
+    const actual = JSON.parse(paint) as Record<string, unknown>;
+    const expected = JSON.parse(dispatchText) as Record<string, unknown>;
+    assert.ok(typeof actual["gen"] === "string", `${where} paint carries gen`);
+    assert.ok(typeof expected["gen"] === "string", `${where} dispatch carries gen`);
+    actual["gen"] = expected["gen"];
+    assert.deepEqual(actual, expected, `${where} dispatch sibling bytes (gen normalized)`);
+}
+
+interface V2DispatchCase {
+    readonly chain: ChainName;
+    readonly projection: string;
+    readonly dispatch: string;
+    readonly witness: string;
+    readonly gesture: { readonly instance: string; readonly serial: string; readonly coreId: string } | null;
+    readonly expectPreview: boolean;
+}
+
+function runV2DispatchCase(spec: V2DispatchCase, where: string): void {
+    const proj = JSON.parse(v2Fixture(spec.chain, spec.projection)) as V4Projection;
+    assert.equal(proj.coveredInstance, "effect-1", `${where} genuine coverage instance`);
+    assert.equal(proj.coveredInvalid, spec.witness, `${where} genuine coverage witness`);
+    const wantHold = proj.preview === null ? "" : "gesture-barrier";
+    assert.ok(proj.windows.length > 0, `${where} genuine projection carries window rows`);
+    for (const row of proj.windows) {
+        assert.equal(row.frame_hold, wantHold, `${where} row ${row.win} frame_hold`);
+    }
+    const step = spec.projection.replace("projection-", "").replace(".json", "");
+    const variant = spec.dispatch === "dispatch-a3-b.json" ? "crossed-b" as const : "normal" as const;
+    const live = dispatchLiveGesture(step, variant);
+    assert.deepEqual(live, spec.gesture, `${where} shared live-gesture mapping matches the case`);
+    const paint = renderPresentationDispatch(
+        v2Fixture(spec.chain, spec.projection),
+        { instance: "effect-1", counter: spec.witness },
+        live,
+    );
+    assert.equal(paint, expectedNativePayload(proj, spec.expectPreview), `${where} native DTO bytes`);
+    assertPaintEqualsDispatchGenNormalized(paint, dispatchFixture(spec.chain, spec.dispatch), where);
+    const rendered = JSON.parse(paint) as RenderedPayload;
+    const expectedBorder = JSON.parse(expectedNativePayload(proj, spec.expectPreview)) as RenderedPayload;
+    assert.deepEqual(rendered.border, expectedBorder.border, `${where} border forwarded`);
+    assert.equal(rendered.underlay["status"], "found", `${where} underlay found`);
+}
+
+function checkDispatches(chain: ChainName): void {
+    const result = requireChain(chain);
+    assert.ok(result.dispatches.length > 0, `${chain} recorded dispatches exist`);
+    for (const dispatch of result.dispatches) {
+        const sibling = dispatchFixture(chain, dispatch.file);
+        assertPaintEqualsDispatchGenNormalized(dispatch.bytes, sibling, `${chain} ${dispatch.file} producer dispatch`);
+        const projStep = dispatch.step === "a3-b" ? "a3" : dispatch.step;
+        const projection = result.projections.find((entry) => entry.step === projStep);
+        assert.ok(projection !== undefined, `${chain} ${dispatch.file} has a regenerated projection`);
+        const proj = JSON.parse(projection.bytes) as V4Projection;
+        const expectedLive = dispatch.step === "a3-b"
+            ? dispatchLiveGesture("a3", "crossed-b")
+            : dispatchLiveGesture(projStep, "normal");
+        assert.deepEqual(
+            { instance: dispatch.gestureInstance, serial: dispatch.gestureSerial },
+            {
+                instance: expectedLive === null ? null : expectedLive.instance,
+                serial: expectedLive === null ? null : expectedLive.serial,
+            },
+            `${chain} ${dispatch.file} live gesture matches the shared mapping`,
+        );
+        const previewExpectation = STAGE5_V4_PREVIEW_EXPECTATION[projStep] ?? null;
+        void previewExpectation;
+        const includePreview = proj.preview !== null &&
+            dispatch.gestureInstance !== null &&
+            proj.preview.producerInstance === dispatch.gestureInstance &&
+            proj.preview.producerSerial === dispatch.gestureSerial;
+        assert.equal(dispatch.bytes, expectedNativePayload(proj, includePreview), `${chain} ${dispatch.file} oracle DTO bytes`);
+    }
+}
+
+// Internal fixture coherence: the checked-in manifest gen is the raw
+// single-session generation, so every recorded sibling carrying a gen
+// (discovery settings/handshake reply, envelopes, replies, projections,
+// dispatches) must carry exactly that gen with no normalization.
+function checkManifestGenConsistency(chain: ChainName): void {
+    const manifest = JSON.parse(v2Fixture(chain, "manifest.json")) as { gen: unknown };
+    assert.ok(typeof manifest.gen === "string" && manifest.gen !== "", `${chain} manifest carries a gen`);
+    const dir = resolve("..", "test-fixtures", "stage5-v2", chain);
+    const names = readdirSync(dir).filter((name) => name.endsWith(".json")).sort();
+    let checked = 0;
+    for (const name of names) {
+        if (name === "manifest.json") {
+            continue;
+        }
+        const value = JSON.parse(readFileSync(join(dir, name), "utf8")) as Record<string, unknown>;
+        if (typeof value["gen"] !== "string") {
+            continue;
+        }
+        assert.equal(value["gen"], manifest.gen, `${chain} ${name} gen matches the manifest`);
+        checked += 1;
+    }
+    assert.ok(checked > 0, `${chain} checked at least one gen-carrying sibling`);
+}
+
 describe("stage5 v4 genuine bridge (actual entry recording)", () => {
     before(async () => {
         // One recording per chain, shared by every test below: each run
@@ -708,6 +854,14 @@ describe("stage5 v4 genuine bridge (actual entry recording)", () => {
         checkSteps("full", FULL_WITNESS);
     });
 
+    it("full recorded dispatches match siblings and the oracle", () => {
+        checkDispatches("full");
+    });
+
+    it("full manifest generation matches every recorded sibling", () => {
+        checkManifestGenConsistency("full");
+    });
+
     it("s2 discovery handshake and settings match the genuine fixtures", () => {
         checkDiscovery("s2");
     });
@@ -718,6 +872,14 @@ describe("stage5 v4 genuine bridge (actual entry recording)", () => {
 
     it("s2 step envelopes and projections match the genuine fixtures", () => {
         checkSteps("s2", S2_WITNESS);
+    });
+
+    it("s2 recorded dispatches match siblings and the oracle", () => {
+        checkDispatches("s2");
+    });
+
+    it("s2 manifest generation matches every recorded sibling", () => {
+        checkManifestGenConsistency("s2");
     });
 });
 
@@ -803,6 +965,78 @@ describe("stage5 v4 recorded projections (production subscriber route)", () => {
         runSubscriberCase(
             { chain: "full", projection: "projection-cover.json", witness: "2", covered: "1", gesture: null, expectPreview: false, expectPaints: 0 },
             "stale cover",
+        );
+    });
+});
+
+describe("stage5 v2 recorded dispatches (production subscriber route)", () => {
+    it("genuine visible p5 paints with dispatch sibling", () => {
+        runV2DispatchCase(
+            { chain: "full", projection: "projection-p5.json", dispatch: "dispatch-p5.json", witness: "0", gesture: null, expectPreview: false },
+            "v2 p5",
+        );
+    });
+
+    it("genuine visible p6 paints with dispatch sibling", () => {
+        runV2DispatchCase(
+            { chain: "full", projection: "projection-p6.json", dispatch: "dispatch-p6.json", witness: "0", gesture: null, expectPreview: false },
+            "v2 p6",
+        );
+    });
+
+    it("genuine visible covering projection paints with dispatch sibling", () => {
+        runV2DispatchCase(
+            { chain: "full", projection: "projection-cover.json", dispatch: "dispatch-cover.json", witness: "1", gesture: null, expectPreview: false },
+            "v2 cover",
+        );
+    });
+
+    it("genuine visible live-gesture preview paints with dispatch sibling", () => {
+        runV2DispatchCase(
+            { chain: "full", projection: "projection-preview.json", dispatch: "dispatch-preview.json", witness: "1", gesture: GESTURE_A1, expectPreview: true },
+            "v2 preview A/1",
+        );
+    });
+
+    it("genuine visible second-activation projection paints with dispatch sibling", () => {
+        runV2DispatchCase(
+            { chain: "full", projection: "projection-cover2.json", dispatch: "dispatch-cover2.json", witness: "2", gesture: null, expectPreview: false },
+            "v2 cover2",
+        );
+    });
+
+    it("genuine visible coverage-current A drain paints with dispatch sibling", () => {
+        runV2DispatchCase(
+            { chain: "full", projection: "projection-a2.json", dispatch: "dispatch-a2.json", witness: "2", gesture: GESTURE_A1, expectPreview: true },
+            "v2 a2 drain",
+        );
+    });
+
+    it("genuine visible new-step A projection paints with dispatch sibling", () => {
+        runV2DispatchCase(
+            { chain: "full", projection: "projection-a3.json", dispatch: "dispatch-a3.json", witness: "3", gesture: GESTURE_A1, expectPreview: true },
+            "v2 a3",
+        );
+    });
+
+    it("genuine visible A drain crossed into B strips preview with dispatch-a3-b sibling", () => {
+        runV2DispatchCase(
+            { chain: "full", projection: "projection-a3.json", dispatch: "dispatch-a3-b.json", witness: "3", gesture: GESTURE_B, expectPreview: false },
+            "v2 a3 crossed into B",
+        );
+    });
+
+    it("genuine visible new-instance B projection paints with dispatch sibling", () => {
+        runV2DispatchCase(
+            { chain: "full", projection: "projection-preview-b.json", dispatch: "dispatch-preview-b.json", witness: "3", gesture: GESTURE_B, expectPreview: true },
+            "v2 preview B/1",
+        );
+    });
+
+    it("genuine visible s2 serial-2 projection paints with dispatch sibling", () => {
+        runV2DispatchCase(
+            { chain: "s2", projection: "projection-s2.json", dispatch: "dispatch-s2.json", witness: "2", gesture: GESTURE_A2, expectPreview: true },
+            "v2 s2",
         );
     });
 });

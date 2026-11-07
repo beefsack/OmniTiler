@@ -45,6 +45,7 @@
 
 import {
     buildPresentationReadRequest,
+    parsePresentationBorder,
     isWorldPresentationReply,
     isWorldRejection,
     parseWorldReply,
@@ -137,34 +138,26 @@ export interface WorldPresentationSubscriber {
 // endpoint parses. Carries only accepted core shapes plus the serving
 // generation/revision/observation for native order fencing and the causal
 // coverage witness:
-//   {v:1,gen,rev,obs,coveredInstance,coveredInvalid,foreground,
-//    border:{visible:0/1,inner:[x,y,w,h]|null,outer:[x,y,w,h]|null},
+//   {v:2,gen,rev,obs,coveredInstance,coveredInvalid,foreground,
+//    border:{visible,reason,subject,outsets,width,radius,witness},
 //    underlay:{status:"found",win,outer:[x,y,w,h],members:[win,...]}|
 //             {status:"hidden"},
 //    preview:{rect,sourceOut,sourceWs,win,producerInstance,producerSerial}|null}
-// V4 anchored border: the wire carries
-// `visible,reason,subject,outsets,width,radius,witness`, never absolute
-// `inner`/`outer`. K1 shows no OmniTiler active border (the native
-// anchored-descriptor consumer port moves to the focus-feedback slice;
-// KWin's own focus indication stands in until then): every accepted row,
-// hidden or visible, projects to `visible:0` with null rects (no drawable
-// geometry, nothing to resolve). Resolving `inner`/`outer` in script from
-// a live read would fabricate geometry outside the native
-// lifetime/freshness floors, and the DTO carries no
-// subject/outsets/width/radius channel for the native side to resolve
-// itself, so a visible anchored row never paints a border here: it sends
-// the same honest hidden shape instead of failing the whole projection.
-// Member rects never cross: anchoring matches member window ids in native
-// stacking order against the already-verbatim core outer rect. `preview.win`
-// is the insertion neighbor, never the mover identity; the producer
-// identity names the actual producing native gesture. All coordinates ride
-// through verbatim in KWin logical units: no rounding, outset, DPI, or
-// device scaling at this site (fractional rounding happened once at
-// capture with TS Math.round, halves toward +inf; style units converted
-// once at ingress). `includePreview=false` paints border/underlay only
-// (cross-gesture or unproven-producer strip): hiding, never fabrication.
-// Missing or invalid coverage fails closed to null (never sent: no
-// drawable coverage without proof).
+// V2 validated pass-through: the wire descriptor forwards exactly
+// unchanged (boolean `visible`, never 0/1 or absolute `inner`/`outer`),
+// even with null or unjoined witness; native event authority owns the
+// narrow border hide. Malformed border shapes fail closed to null (the
+// caller hides instead of sending). Member rects never cross:
+// anchoring matches member window ids in native stacking order against the
+// already-verbatim core outer rect. `preview.win` is the insertion neighbor,
+// never the mover identity; the producer identity names the actual
+// producing native gesture. All coordinates ride through verbatim in KWin
+// logical units: no rounding, outset, DPI, or device scaling at this site
+// (fractional rounding happened once at capture with TS Math.round, halves
+// toward +inf; style units converted once at ingress). `includePreview=false`
+// paints border/underlay only (cross-gesture or unproven-producer strip):
+// hiding, never fabrication. Missing or invalid coverage fails closed to
+// null (never sent: no drawable coverage without proof).
 // Returns null on any unexpected shape (the caller hides instead of
 // sending).
 export function formatPresentationPayload(reply: WorldPresentationReply, includePreview = true): string | null {
@@ -175,14 +168,25 @@ export function formatPresentationPayload(reply: WorldPresentationReply, include
         if (reply.coveredInstance === null || reply.coveredInvalid === null) {
             return null;
         }
-        // K1 disabled border: visible anchored rows project to the same
-        // honest hidden shape (no active border), preserving the
-        // underlay/preview gates below on their own proof.
-        const borderOut = {
-            visible: 0,
-            inner: null as null,
-            outer: null as null,
-        };
+        const borderOut = (() => {
+            const b = parsePresentationBorder(reply.presentation.border as unknown);
+            return {
+                visible: b.visible,
+                reason: b.reason,
+                subject: b.subject,
+                outsets: b.outsets === null ? null : [...b.outsets],
+                width: b.width,
+                radius: b.radius,
+                witness: b.witness === null
+                    ? null
+                    : {
+                        win: b.witness.win,
+                        obs: b.witness.obs,
+                        frame: [...b.witness.frame],
+                        foreground: b.witness.foreground,
+                    },
+            };
+        })();
         const underlay = reply.presentation.underlay;
         const underlayOut = underlay.status === "found"
             ? {
@@ -197,9 +201,6 @@ export function formatPresentationPayload(reply: WorldPresentationReply, include
         const ints = (v: unknown): boolean =>
             Array.isArray(v) && v.length === 4 &&
             (v as ReadonlyArray<unknown>).every((n) => typeof n === "number" && Number.isInteger(n));
-        if (!(borderOut.inner === null || ints(borderOut.inner)) || !(borderOut.outer === null || ints(borderOut.outer))) {
-            return null;
-        }
         if (underlayOut.status === "found") {
             const found = underlayOut as { status: string; win: unknown; outer: unknown; members: unknown };
             if (!isOpaqueId(found.win) || !ints(found.outer) || !Array.isArray(found.members)) {
@@ -233,7 +234,7 @@ export function formatPresentationPayload(reply: WorldPresentationReply, include
             return null;
         }
         return JSON.stringify({
-            v: 1,
+            v: 2,
             gen: reply.gen,
             rev: reply.rev,
             obs: reply.obs,

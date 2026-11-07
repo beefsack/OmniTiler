@@ -287,7 +287,7 @@ endif()
 # Consumer contract: the shared consumer header owns strict shape plus
 # order fencing; native styling stays out of the payload (independent
 # colors, live system accent default, never core-derived).
-foreach(PRES_CONSUMER_KEY "\"v\":1" "\"gen\"" "\"rev\"" "\"obs\"" "\"coveredInstance\"" "\"coveredInvalid\"" "\"foreground\"" "\"border\"" "\"underlay\"" "\"preview\"" "\"producerInstance\"" "\"producerSerial\"" "\"status\"" "\"members\"" "StaleIgnored" "Malformed" "16384" "isJsonIntValue" "clearPaintDisplay" "clearPaintPreview" "borderStrokeFromPublished" "presentationBorderFresh" "presentationUnderlayFresh" "presentationCoveredCurrent" "paintOrderGreater" "PaintOrder" "coverClearsFloor")
+foreach(PRES_CONSUMER_KEY "\"v\":2" "\"gen\"" "\"rev\"" "\"obs\"" "\"coveredInstance\"" "\"coveredInvalid\"" "\"foreground\"" "\"border\"" "\"visible\"" "\"reason\"" "\"subject\"" "\"outsets\"" "\"witness\"" "\"win\"" "\"frame\"" "\"underlay\"" "\"preview\"" "\"producerInstance\"" "\"producerSerial\"" "\"status\"" "\"members\"" "StaleIgnored" "Malformed" "16384" "isJsonIntValue" "clearPaintDisplay" "clearPaintPreview" "borderStrokeFromPublished" "presentationBorderFresh" "presentationUnderlayFresh" "presentationCoveredCurrent" "paintOrderGreater" "PaintOrder" "coverClearsFloor")
     string(FIND "${PRES_CONSUMER_TEXT}" "${PRES_CONSUMER_KEY}" PRES_CONSUMER_KEY_POS)
     if(PRES_CONSUMER_KEY_POS EQUAL -1)
         message(FATAL_ERROR "presentation consumer validation failed: '${PRES_CONSUMER_KEY}' not found in consumer header")

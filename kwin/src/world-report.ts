@@ -758,6 +758,80 @@ const BORDER_V4_REASONS = new Set([
     "", "disabled", "no-target", "minimized", "maximized", "fullscreen",
     "host-hidden", "hidden-workspace", "shell", "suspended",
 ]);
+
+// Shared anchored-border parser: the exact strict v4 border shape used by
+// both the presentation decoder and the v2 script formatter (exact 7 keys,
+// boolean visible, closed reason set, visible=>reason=="", nullable
+// subject/outsets/width/radius/witness shapes). Throws on malformed; the
+// formatter catches and fails closed to null. No eligibility or join
+// policy: valid descriptors pass unchanged even with null or unjoined
+// witness; native event authority owns the narrow border hide.
+export function parsePresentationBorder(value: unknown): WorldPresentationBorder {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error("presentation-border");
+    }
+    const b = value as Record<string, unknown>;
+    if (!hasExactKeys(b, ["visible", "reason", "subject", "outsets", "width", "radius", "witness"])) {
+        throw new Error("presentation-border-keys");
+    }
+    if (
+        typeof b["visible"] !== "boolean" || typeof b["reason"] !== "string" ||
+        !BORDER_V4_REASONS.has(b["reason"] as string)
+    ) {
+        throw new Error("presentation-border-shape");
+    }
+    if ((b["visible"] as boolean) && (b["reason"] as string) !== "") {
+        throw new Error("presentation-border-visible-reason");
+    }
+    const subject = b["subject"];
+    if (subject !== null && !isOpaqueId(subject)) {
+        throw new Error("presentation-border-subject");
+    }
+    const outsets = b["outsets"];
+    if (outsets !== null) {
+        if (!Array.isArray(outsets) || outsets.length !== 4 || !(outsets as ReadonlyArray<unknown>).every(isI32)) {
+            throw new Error("presentation-border-outsets");
+        }
+    }
+    for (const k of ["width", "radius"] as const) {
+        const v = b[k];
+        if (v !== null && (!isI32(v) || (v as number) < 0)) {
+            throw new Error("presentation-border-size");
+        }
+    }
+    const witnessRaw = b["witness"];
+    let witness: WorldPresentationBorder["witness"] = null;
+    if (witnessRaw !== null && witnessRaw !== undefined) {
+        if (typeof witnessRaw !== "object" || Array.isArray(witnessRaw)) {
+            throw new Error("presentation-witness");
+        }
+        const w = witnessRaw as Record<string, unknown>;
+        if (!hasExactKeys(w, ["win", "obs", "frame", "foreground"])) {
+            throw new Error("presentation-witness-keys");
+        }
+        if (
+            !isOpaqueId(w["win"]) ||
+            typeof w["obs"] !== "string" || !isCanonicalU64(w["obs"] as string) ||
+            !isCarriedRect(w["frame"]) || !isOpaqueId(w["foreground"])
+        ) {
+            throw new Error("presentation-witness");
+        }
+        witness = {
+            win: w["win"] as string, obs: w["obs"] as string,
+            frame: w["frame"] as [number, number, number, number],
+            foreground: w["foreground"] as string,
+        };
+    }
+    return {
+        visible: b["visible"] as boolean,
+        reason: b["reason"] as WorldPresentationBorder["reason"],
+        subject: subject as string | null,
+        outsets: outsets as [number, number, number, number] | null,
+        width: b["width"] as number | null,
+        radius: b["radius"] as number | null,
+        witness,
+    };
+}
 const STATE_PROPERTIES = new Set(["fullscreen", "maximized", "sticky", "above"]);
 const DRAG_EDGES = new Set(["left", "right", "top", "bottom", "center"]);
 
@@ -1708,62 +1782,7 @@ function parsePresentation(value: unknown): WorldPresentation {
         throw new Error("presentation-foreground");
     }
     const borderRaw = o["border"];
-    if (typeof borderRaw !== "object" || borderRaw === null || Array.isArray(borderRaw)) {
-        throw new Error("presentation-border");
-    }
-    const b = borderRaw as Record<string, unknown>;
-    if (!hasExactKeys(b, ["visible", "reason", "subject", "outsets", "width", "radius", "witness"])) {
-        throw new Error("presentation-border-keys");
-    }
-    if (
-        typeof b["visible"] !== "boolean" || typeof b["reason"] !== "string" ||
-        !BORDER_V4_REASONS.has(b["reason"] as string)
-    ) {
-        throw new Error("presentation-border-shape");
-    }
-    // A visible border never carries a hide reason.
-    if ((b["visible"] as boolean) && (b["reason"] as string) !== "") {
-        throw new Error("presentation-border-visible-reason");
-    }
-    const subject = b["subject"];
-    if (subject !== null && !isOpaqueId(subject)) {
-        throw new Error("presentation-border-subject");
-    }
-    const outsets = b["outsets"];
-    if (outsets !== null) {
-        if (!Array.isArray(outsets) || outsets.length !== 4 || !(outsets as ReadonlyArray<unknown>).every(isI32)) {
-            throw new Error("presentation-border-outsets");
-        }
-    }
-    for (const k of ["width", "radius"] as const) {
-        const v = b[k];
-        if (v !== null && (!isI32(v) || (v as number) < 0)) {
-            throw new Error("presentation-border-size");
-        }
-    }
-    const witnessRaw = b["witness"];
-    let witness: WorldPresentationBorder["witness"] = null;
-    if (witnessRaw !== null && witnessRaw !== undefined) {
-        if (typeof witnessRaw !== "object" || Array.isArray(witnessRaw)) {
-            throw new Error("presentation-witness");
-        }
-        const w = witnessRaw as Record<string, unknown>;
-        if (!hasExactKeys(w, ["win", "obs", "frame", "foreground"])) {
-            throw new Error("presentation-witness-keys");
-        }
-        if (
-            !isOpaqueId(w["win"]) ||
-            typeof w["obs"] !== "string" || !isCanonicalU64(w["obs"] as string) ||
-            !isCarriedRect(w["frame"]) || !isOpaqueId(w["foreground"])
-        ) {
-            throw new Error("presentation-witness");
-        }
-        witness = {
-            win: w["win"] as string, obs: w["obs"] as string,
-            frame: w["frame"] as [number, number, number, number],
-            foreground: w["foreground"] as string,
-        };
-    }
+    const border = parsePresentationBorder(borderRaw);
     const underlayRaw = o["underlay"];
     if (typeof underlayRaw !== "object" || underlayRaw === null || Array.isArray(underlayRaw)) {
         throw new Error("presentation-underlay");
@@ -1921,14 +1940,7 @@ function parsePresentation(value: unknown): WorldPresentation {
         foreground: o["foreground"] as string,
         rev: o["rev"] as string,
         suspendedOutput,
-        border: {
-            visible: b["visible"] as boolean, reason: b["reason"] as WorldPresentationBorder["reason"],
-            subject: (b["subject"] as string | null) ?? null,
-            outsets: (b["outsets"] as [number, number, number, number] | null) ?? null,
-            width: (b["width"] as number | null) ?? null,
-            radius: (b["radius"] as number | null) ?? null,
-            witness,
-        },
+        border,
         underlay,
         pager,
     };

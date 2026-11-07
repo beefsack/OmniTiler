@@ -155,7 +155,7 @@ describe("world presentation subscriber", () => {
         h.answerAll((r) => projection(r, "12", "12"));
         assert.equal(h.paints.length, 1);
         const painted = JSON.parse(h.paints[0] as string) as Record<string, unknown>;
-        assert.equal(painted["v"], 1);
+        assert.equal(painted["v"], 2);
         assert.equal(painted["gen"], GEN);
         assert.equal(painted["rev"], "12");
         assert.equal(painted["foreground"], "win-a");
@@ -163,9 +163,11 @@ describe("world presentation subscriber", () => {
         // fences it too.
         assert.equal(painted["coveredInstance"], "effect-1");
         assert.equal(painted["coveredInvalid"], "5");
-        // K1 shows no OmniTiler active border: every accepted row projects
-        // to visible:0 with null rects (no drawable geometry).
-        assert.deepEqual(painted["border"], { visible: 0, inner: null, outer: null });
+        // V2 forwards the exact anchored descriptor (boolean visible).
+        assert.deepEqual(painted["border"], {
+            visible: false, reason: "no-target", subject: null,
+            outsets: null, width: null, radius: null, witness: null,
+        });
         // Underlay anchoring inputs ride verbatim: the held member id list
         // plus the already-verbatim core outer rect. Member rects never
         // cross; the native anchor matches ids in stacking order.
@@ -409,11 +411,16 @@ describe("world presentation subscriber", () => {
         h.answerAll((r) => projection(r, "12", "12"));
         assert.equal(h.paints.length, 1);
         const text = h.paints[0] as string;
-        for (const token of ["color", "Color", "width", "Width", "gap", "theme", "Theme", "radius"]) {
-            // "width"/"gap" name no payload field: the geometry rides
-            // precomputed rects, and style units converted once at ingress.
+        // V2 legitimately carries the anchored descriptor (subject/outsets/
+        // width/radius/witness/reason): core-computed inputs, never script
+        // styling. Only free-form styling tokens stay absent, and the legacy
+        // absolute border rects never ride (underlay keeps its own outer).
+        for (const token of ["color", "Color", "theme", "Theme"]) {
             assert.ok(!text.includes(`"${token}"`), token);
         }
+        assert.ok(!text.includes("\"inner\""), "legacy border inner never rides");
+        const body = JSON.parse(text) as Record<string, unknown>;
+        assert.equal(body["v"], 2);
     });
 
     it("stays dirty on transport failure and retries on the next event without polling", () => {

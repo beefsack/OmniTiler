@@ -4,16 +4,20 @@
 // real PresentationRouter and the real PresentationFactsSource plus
 // fabricated host views and stubbed surfaces. Pins the current
 // event-to-counter behavior, publication on every invalidation advance, the
-// structural floor for preview continuity, and full-surface refresh
-// (tracked-frame, member-frame, layout, and gesture routes refresh every
-// surface so no stale item remains visible; the mover-motion route
-// refreshes only its dirtied surfaces so the valid same-gesture preview
-// persists).
+// structural floor for preview continuity, the BORDER-ONLY anchor chain
+// (armed on accepted exact-current coverage with live anchor authority,
+// continued across delivered same-anchor frames including genuine moves
+// and resizes, cleared on gaps/output/scale/eligibility loss), and
+// full-surface refresh (tracked-frame, member-frame, layout, and gesture
+// routes refresh every surface so no stale item remains visible; the
+// mover-motion route refreshes only its dirtied surfaces so the valid
+// same-gesture preview persists).
 //
 // The harness provides the private bus (run the binary under
-// dbus-run-session); no KWin, no live state. Payloads use the exact
-// SetPresentation wire shape (same keys as presentationconsumer_test.cpp),
-// so this route stays suited to the shared recorded fixture bytes.
+// dbus-run-session); no KWin, no live state. Payloads use the exact strict
+// v2 SetPresentation wire shape (same keys as the recorded stage5-v2
+// dispatch bytes), so this route stays suited to the shared recorded
+// fixture bytes.
 
 #include "presentation_stage5.h"
 
@@ -74,18 +78,55 @@ KWin::Stage5HostView allLiveHost()
     host.endpointAvailable = true;
     host.foregroundMatches = true;
     host.liveEligible = true;
+    host.liveEligibleKnown = true;
     host.anchorOk = true;
     host.moveLive = true;
     return host;
 }
 
+// Live border-anchor authority for the accepted v2 paints below (subject
+// win-2, witness frame [10,10,300,300], output out-1 at scale 1): the
+// endpoint/draw path proves the held descriptor against exactly these
+// live facts. Frame routes driven with this host continue the chain by
+// event proof; routes driven without it (unknown authority) clear it.
+KWin::Stage5HostView anchorHost()
+{
+    KWin::Stage5HostView host = allLiveHost();
+    host.trackedId = QStringLiteral("win-2");
+    host.liveActiveId = QStringLiteral("win-2");
+    host.outputId = QStringLiteral("out-1");
+    host.trackedFrame = QRect(10, 10, 300, 300);
+    host.trackedFrameKnown = true;
+    host.outputScale = 1.0;
+    host.outputScaleKnown = true;
+    return host;
+}
+
+KWin::Stage5HostView gestureAnchorHost(const char *instance, const char *serial)
+{
+    KWin::Stage5HostView host = anchorHost();
+    host.liveGestureInstance = QString::fromUtf8(instance);
+    host.liveGestureSerial = QString::fromUtf8(serial);
+    return host;
+}
+
+// The anchor host all endpoint applies default to. Endpoint routes driven
+// with an explicit unknown host pin the fail-closed path: accepted
+// coverage still paints underlay/preview while the border never arms.
+const KWin::Stage5HostView kAnchorHost = anchorHost();
+
+// Strict v2 found paint: visible border with the complete descriptor for
+// win-2, found underlay, optional proven preview. The witness frame equals
+// the anchor host frame so the arm path proves on delivery.
 std::string foundPayload(const std::string &coveredInstance, quint64 coveredInvalid, const std::string &rev = "4",
     const std::string &obs = "9", bool withPreview = false)
 {
-    return "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\""
+    return "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\""
         + coveredInstance + "\",\"coveredInvalid\":\"" + std::to_string(coveredInvalid)
         + "\",\"foreground\":\"win-2\","
-          "\"border\":{\"visible\":1,\"inner\":[10,10,300,300],\"outer\":[8,8,304,304]},"
+          "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+          "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,"
+          "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
           "\"underlay\":{\"status\":\"found\",\"win\":\"win-2\",\"outer\":[0,0,1200,800],"
           "\"members\":[\"win-1\",\"win-2\"]},"
         + (withPreview
@@ -94,33 +135,39 @@ std::string foundPayload(const std::string &coveredInstance, quint64 coveredInva
             : std::string("\"preview\":null}"));
 }
 
+// Strict v2 preview paint: hidden border and underlay, proven preview.
 std::string previewPayload(const std::string &coveredInstance, quint64 coveredInvalid, const std::string &rev = "5",
     const std::string &obs = "1")
 {
-    return "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\""
+    return "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\""
         + coveredInstance + "\",\"coveredInvalid\":\"" + std::to_string(coveredInvalid)
         + "\",\"foreground\":\"win-2\","
-          "\"border\":{\"visible\":0,\"inner\":null,\"outer\":null},"
+          "\"border\":{\"visible\":false,\"reason\":\"no-target\",\"subject\":null,"
+          "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
           "\"underlay\":{\"status\":\"hidden\"},"
           "\"preview\":{\"rect\":[0,0,396,600],\"sourceOut\":\"out-1\",\"sourceWs\":\"ws-1\",\"win\":\"win-a\","
           "\"producerInstance\":\"gesture-9\",\"producerSerial\":\"7\"}}";
 }
 
+// Strict v2 hidden paint: hidden border (suspended), hidden underlay, null
+// preview. Covering ENTER/exit captures carry exactly this shape.
 std::string hiddenPayload(const std::string &coveredInstance, quint64 coveredInvalid, const std::string &rev,
     const std::string &obs)
 {
-    return "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\""
+    return "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\""
         + coveredInstance + "\",\"coveredInvalid\":\"" + std::to_string(coveredInvalid)
         + "\",\"foreground\":\"win-2\","
-          "\"border\":{\"visible\":0,\"inner\":null,\"outer\":null},"
+          "\"border\":{\"visible\":false,\"reason\":\"suspended\",\"subject\":null,"
+          "\"outsets\":null,\"width\":null,\"radius\":null,\"witness\":null},"
           "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}";
 }
 
 KWin::PresentationStage5::EndpointResult applyStr(KWin::PresentationStage5 &stage, const std::string &payload,
-    const char *liveInstance = "", const char *liveSerial = "0")
+    const char *liveInstance = "", const char *liveSerial = "0",
+    const KWin::Stage5HostView &host = kAnchorHost)
 {
     return stage.applyEndpoint(QString::fromStdString(payload), QString::fromUtf8(liveInstance),
-        QString::fromUtf8(liveSerial));
+        QString::fromUtf8(liveSerial), host);
 }
 
 } // namespace
@@ -145,8 +192,9 @@ int main(int argc, char **argv)
     CHECK(facts.revision() == 0);
     CHECK(stage.factsInstance() == facts.instance());
 
-    // Accepted coverage with a fabricated all-live host: border and
-    // underlay show, the unproven preview stays hidden.
+    // Accepted coverage with a fabricated all-live anchored host: the
+    // chain arms on exact current coverage plus live anchor authority, so
+    // border and underlay show; the unproven preview stays hidden.
     {
         const auto result = applyStr(stage, foundPayload(inst, 0));
         CHECK(result.apply == KWin::PresentationApply::Accepted);
@@ -155,7 +203,8 @@ int main(int argc, char **argv)
         CHECK(result.refresh.underlay);
         CHECK(result.refresh.preview);
         CHECK(result.refresh.repaint);
-        const KWin::Stage5Visibility visibility = stage.decide(allLiveHost());
+        CHECK(router.borderChainCurrent());
+        const KWin::Stage5Visibility visibility = stage.decide(anchorHost());
         CHECK(visibility.border);
         CHECK(visibility.underlay);
         CHECK(!visibility.preview);
@@ -166,15 +215,19 @@ int main(int argc, char **argv)
         CHECK(stub.repaints == 1);
     }
 
-    // Tracked-frame route: union-scope bump (Border plus Underlay: the
-    // tracked window is always group-subscribed, so the member handler
-    // skips it on the same emission), published so the next actual facts
-    // capture covers it, plus the structural tick. One frame advances the
-    // witness exactly once, setting both floors at the same pre-bump
-    // point. Every surface refreshed; the decision already hides border
-    // and underlay; the stub follows.
+    // Tracked-frame route with the same anchor: union-scope bump (Border
+    // plus Underlay: the tracked window is always group-subscribed, so the
+    // member handler skips it on the same emission), published so the next
+    // actual facts capture covers it, plus the structural tick. One frame
+    // advances the witness exactly once, setting both floors at the same
+    // pre-bump point. The border chain continues by event proof (prior
+    // chain equals the actual pre-event cover, same output/scale,
+    // eligibility known), so the anchored border persists while the
+    // floored underlay hides: the inherited hide-on-frame becomes the
+    // stronger anchored continuation, not a blanket drop. Every surface
+    // refreshed; the stub follows.
     {
-        const KWin::Stage5Refresh refresh = stage.onTrackedFrame();
+        const KWin::Stage5Refresh refresh = stage.onTrackedFrame(anchorHost());
         CHECK(router.counter == 1);
         CHECK(router.structuralFloor == 1);
         CHECK(refresh.border);
@@ -190,21 +243,26 @@ int main(int argc, char **argv)
         CHECK(router.paint.underlayFloor.set);
         CHECK(router.paint.underlayFloor.counter == 0);
         CHECK(router.paint.underlayFloor.instance == facts.instance());
-        const KWin::Stage5Visibility visibility = stage.decide(allLiveHost());
-        CHECK(!visibility.border);
+        CHECK(router.borderChainCurrent());
+        CHECK(router.borderChain.counter == 1);
+        CHECK(router.paint.covered.set && router.paint.covered.counter == 0);
+        const KWin::Stage5Visibility visibility = stage.decide(anchorHost());
+        CHECK(visibility.border);
         CHECK(!visibility.underlay);
         stub.apply(refresh, visibility);
-        CHECK(!stub.border);
+        CHECK(stub.border);
         CHECK(!stub.underlay);
         CHECK(stub.repaints == 1);
     }
 
-    // Fresh covering paint recovers the ring and clears the floor.
+    // Fresh covering paint recovers the underlay and clears the floors;
+    // the chain re-arms on the accepted exact-current cover.
     {
         const auto result = applyStr(stage, foundPayload(inst, 1, "4", "10"));
         CHECK(result.apply == KWin::PresentationApply::Accepted);
         CHECK(!router.paint.borderFloor.set);
-        const KWin::Stage5Visibility visibility = stage.decide(allLiveHost());
+        CHECK(router.borderChainCurrent());
+        const KWin::Stage5Visibility visibility = stage.decide(anchorHost());
         CHECK(visibility.border);
         CHECK(visibility.underlay);
         stub.apply(result.refresh, visibility);
@@ -215,8 +273,8 @@ int main(int argc, char **argv)
 
     // Member-frame route: underlay scope bump plus the structural tick,
     // published so the next actual facts capture covers it, and every
-    // surface refreshed. The decision already hides border and underlay;
-    // the stub follows.
+    // surface refreshed. The member route always clears the border chain;
+    // the decision already hides border and underlay; the stub follows.
     {
         const KWin::Stage5Refresh refresh = stage.onMemberFrame();
         CHECK(router.counter == 2);
@@ -230,7 +288,7 @@ int main(int argc, char **argv)
         CHECK(facts.revision() == 2);
         CHECK(router.paint.underlayFloor.set);
         CHECK(router.paint.underlayFloor.counter == 1);
-        const KWin::Stage5Visibility visibility = stage.decide(allLiveHost());
+        const KWin::Stage5Visibility visibility = stage.decide(anchorHost());
         CHECK(!visibility.border);
         CHECK(!visibility.underlay);
         stub.apply(refresh, visibility);
@@ -264,9 +322,7 @@ int main(int argc, char **argv)
         const auto accept = applyStr(stage, previewPayload(inst, 2), "gesture-9", "7");
         CHECK(accept.apply == KWin::PresentationApply::Accepted);
         CHECK(router.paint.previewHas);
-        KWin::Stage5HostView host = allLiveHost();
-        host.liveGestureInstance = QStringLiteral("gesture-9");
-        host.liveGestureSerial = QStringLiteral("7");
+        KWin::Stage5HostView host = gestureAnchorHost("gesture-9", "7");
         CHECK(stage.decide(host).preview);
         stub.apply(accept.refresh, stage.decide(host));
         CHECK(stub.preview);
@@ -317,7 +373,7 @@ int main(int argc, char **argv)
     {
         const auto accept = applyStr(stage, foundPayload(inst, 4, "6", "1"));
         CHECK(accept.apply == KWin::PresentationApply::Accepted);
-        stub.apply(accept.refresh, stage.decide(allLiveHost()));
+        stub.apply(accept.refresh, stage.decide(anchorHost()));
         CHECK(stub.border);
         const int repaintsBeforeHide = stub.repaints;
         const KWin::Stage5Refresh hide = stage.hideForEndpointLoss();
@@ -361,7 +417,7 @@ int main(int argc, char **argv)
     {
         const auto fresh = applyStr(stage, foundPayload(inst, 4, "7", "2"));
         CHECK(fresh.apply == KWin::PresentationApply::Accepted);
-        stub.apply(fresh.refresh, stage.decide(allLiveHost()));
+        stub.apply(fresh.refresh, stage.decide(anchorHost()));
         CHECK(stub.border);
         const auto older = applyStr(stage, foundPayload(inst, 4, "6", "9"));
         CHECK(older.apply == KWin::PresentationApply::StaleIgnored);
@@ -393,9 +449,7 @@ int main(int argc, char **argv)
     CHECK(facts.invalidation() == router.counter);
     CHECK(facts.revision() == 4);
 
-    KWin::Stage5HostView fullscreenHost = allLiveHost();
-    fullscreenHost.liveGestureInstance = QStringLiteral("gesture-9");
-    fullscreenHost.liveGestureSerial = QStringLiteral("7");
+    KWin::Stage5HostView fullscreenHost = gestureAnchorHost("gesture-9", "7");
     const auto beforeEnter = applyStr(stage, previewPayload(inst, 4, "8", "9"), "gesture-9", "7");
     CHECK(beforeEnter.apply == KWin::PresentationApply::Accepted);
     stub.apply(beforeEnter.refresh, stage.decide(fullscreenHost));
@@ -405,7 +459,7 @@ int main(int argc, char **argv)
     // next actual facts capture covers it, every surface refreshed (no
     // repaint flag), and both floors set so no stale pre-enter paint
     // applies. A pre-transition covering paint is stale-ignored and
-    // refreshes nothing; a covering ENTER payload with hidden shapes stays
+    // refreshes nothing; a covering ENTER paint with hidden shapes stays
     // hidden after it applies.
     {
         const KWin::Stage5Refresh refresh = stage.onFullscreenChanged();
@@ -481,12 +535,12 @@ int main(int argc, char **argv)
         CHECK(!stale.refresh.preview);
         CHECK(!stale.refresh.repaint);
         // Covering EXIT paint carries visible shapes: it applies, clears
-        // the floors, and restores the display.
+        // the floors, re-arms the chain, and restores the display.
         const auto covering = applyStr(stage, foundPayload(inst, 6, "9", "4"));
         CHECK(covering.apply == KWin::PresentationApply::Accepted);
         CHECK(!router.paint.borderFloor.set);
         CHECK(!router.paint.underlayFloor.set);
-        stub.apply(covering.refresh, stage.decide(allLiveHost()));
+        stub.apply(covering.refresh, stage.decide(anchorHost()));
         CHECK(stub.border);
         CHECK(stub.underlay);
         const auto preview = applyStr(stage, previewPayload(inst, 6, "9", "5"), "gesture-9", "7");
@@ -532,7 +586,7 @@ int main(int argc, char **argv)
     {
         const auto accept = applyStr(stage, foundPayload(inst, 6, "10", "1"));
         CHECK(accept.apply == KWin::PresentationApply::Accepted);
-        stub.apply(accept.refresh, stage.decide(allLiveHost()));
+        stub.apply(accept.refresh, stage.decide(anchorHost()));
         CHECK(stub.border);
         CHECK(stub.underlay);
         const KWin::Stage5Refresh refresh = stage.onLayoutChanged();
@@ -554,24 +608,23 @@ int main(int argc, char **argv)
         CHECK(!stub.underlay);
         const auto covering = applyStr(stage, foundPayload(inst, 7, "10", "2"));
         CHECK(covering.apply == KWin::PresentationApply::Accepted);
-        stub.apply(covering.refresh, stage.decide(allLiveHost()));
+        stub.apply(covering.refresh, stage.decide(anchorHost()));
         CHECK(stub.border);
         CHECK(stub.underlay);
     }
 
     // Active-drag mover motion with all three shapes visible: exactly one
     // monotonic bump with the union scope (both floors set at the same
-    // pre-bump point), published, WITHOUT the structural tick. Strict
-    // border/underlay hide while the structurally covered preview persists.
-    // A newer-order paint captured pre-motion is accepted on the structural
-    // path yet keeps both visible strict shapes hidden (its cover predates
-    // the bump); only the exact post-motion cover restores them. A later
-    // structural frame hides everything immediately and pre-event paint
-    // cannot repaint it.
+    // pre-bump point), published, WITHOUT the structural tick. The
+    // anchored border continues by event proof while the floored underlay
+    // hides and the structurally covered preview persists. A newer-order
+    // paint captured pre-motion is accepted on the structural path yet
+    // keeps the visible strict underlay hidden (its cover predates the
+    // bump) while the same-gesture preview remains. Only the exact
+    // post-motion cover restores the underlay. A later structural frame
+    // hides everything immediately and pre-event paint cannot repaint it.
     {
-        KWin::Stage5HostView host = allLiveHost();
-        host.liveGestureInstance = QStringLiteral("gesture-9");
-        host.liveGestureSerial = QStringLiteral("7");
+        KWin::Stage5HostView host = gestureAnchorHost("gesture-9", "7");
         const auto accept = applyStr(stage, foundPayload(inst, 7, "11", "1", true), "gesture-9", "7");
         CHECK(accept.apply == KWin::PresentationApply::Accepted);
         CHECK(router.paint.previewHas);
@@ -581,7 +634,7 @@ int main(int argc, char **argv)
         CHECK(stub.border);
         CHECK(stub.underlay);
         CHECK(stub.preview);
-        const KWin::Stage5Refresh motion = stage.onMotionFrame(true);
+        const KWin::Stage5Refresh motion = stage.onMotionFrame(true, host);
         CHECK(router.counter == 8);
         CHECK(router.structuralFloor == 7);
         CHECK(facts.invalidation() == 8);
@@ -596,25 +649,27 @@ int main(int argc, char **argv)
         CHECK(router.paint.underlayFloor.set);
         CHECK(router.paint.underlayFloor.counter == 7);
         CHECK(router.paint.previewHas);
+        CHECK(router.borderChainCurrent());
         stub.apply(motion, stage.decide(host));
-        CHECK(!stub.border);
+        CHECK(stub.border);
         CHECK(!stub.underlay);
         CHECK(stub.preview);
         // Newer-order pre-motion paint with visible strict shapes: accepted
         // on the structural path (cover reaches the untouched floor) yet
-        // both shapes stay hidden (cover predates the bump) while the
-        // same-gesture preview remains. The held paint still carries the
-        // visible shapes; only the gates hide them.
+        // the floored underlay stays hidden (cover predates the bump)
+        // while the same-gesture preview remains and the anchored border
+        // persists. The held paint still carries the visible shapes; only
+        // the gates hide the underlay.
         const auto older = applyStr(stage, foundPayload(inst, 7, "11", "2", true), "gesture-9", "7");
         CHECK(older.apply == KWin::PresentationApply::Accepted);
         CHECK(router.paint.borderVisible);
         CHECK(router.paint.underlayFound);
         CHECK(router.paint.previewHas);
         stub.apply(older.refresh, stage.decide(host));
-        CHECK(!stub.border);
+        CHECK(stub.border);
         CHECK(!stub.underlay);
         CHECK(stub.preview);
-        // Post-motion exact cover restores both strict shapes.
+        // Post-motion exact cover restores the underlay.
         const auto covering = applyStr(stage, foundPayload(inst, 8, "11", "3", true), "gesture-9", "7");
         CHECK(covering.apply == KWin::PresentationApply::Accepted);
         CHECK(!router.paint.borderFloor.set);
@@ -623,9 +678,10 @@ int main(int argc, char **argv)
         CHECK(stub.border);
         CHECK(stub.underlay);
         CHECK(stub.preview);
-        // Structural frame: the floor moves past pre-event coverage, so all
-        // shapes hide immediately and pre-event paint (even with visible
-        // strict shapes and a live preview) cannot repaint them.
+        // Structural frame: the floor moves past pre-event coverage, so the
+        // underlay hides immediately; the unknown-authority route also
+        // clears the chain, so the border hides too. Pre-event paint (even
+        // with visible strict shapes and a live preview) cannot repaint.
         const KWin::Stage5Refresh structural = stage.onTrackedFrame();
         CHECK(router.counter == 9);
         CHECK(router.structuralFloor == 9);
@@ -675,7 +731,7 @@ int main(int argc, char **argv)
     {
         const auto accept = applyStr(stage, foundPayload(inst, 10, "12", "1"));
         CHECK(accept.apply == KWin::PresentationApply::Accepted);
-        stub.apply(accept.refresh, stage.decide(allLiveHost()));
+        stub.apply(accept.refresh, stage.decide(anchorHost()));
         CHECK(stub.border);
         CHECK(stub.underlay);
         const KWin::Stage5Refresh refresh = stage.onVisibilityChanged(QStringLiteral("win-1"));
@@ -697,7 +753,7 @@ int main(int argc, char **argv)
         CHECK(covering.apply == KWin::PresentationApply::Accepted);
         CHECK(!router.paint.borderFloor.set);
         CHECK(!router.paint.underlayFloor.set);
-        stub.apply(covering.refresh, stage.decide(allLiveHost()));
+        stub.apply(covering.refresh, stage.decide(anchorHost()));
         CHECK(stub.border);
         CHECK(stub.underlay);
         // A non-member visibility change still bumps (no membership gate
@@ -716,9 +772,7 @@ int main(int argc, char **argv)
     // immediately with the tick and pre-event paint cannot repaint it;
     // the covering paint restores it.
     {
-        KWin::Stage5HostView host = allLiveHost();
-        host.liveGestureInstance = QStringLiteral("gesture-9");
-        host.liveGestureSerial = QStringLiteral("7");
+        KWin::Stage5HostView host = gestureAnchorHost("gesture-9", "7");
         const auto accept = applyStr(stage, previewPayload(inst, 12, "13", "1"), "gesture-9", "7");
         CHECK(accept.apply == KWin::PresentationApply::Accepted);
         stub.apply(accept.refresh, stage.decide(host));
@@ -735,6 +789,179 @@ int main(int argc, char **argv)
         CHECK(covering.apply == KWin::PresentationApply::Accepted);
         stub.apply(covering.refresh, stage.decide(host));
         CHECK(stub.preview);
+    }
+
+    // Anchored continuation across genuine geometry changes: the delivered
+    // frames move and resize versus the held witness, yet the event proves
+    // the same anchor (the advance never re-reads the frame), so the
+    // chain follows, the global counter/floors/facts publication still
+    // advance exactly once per frame, the old underlay hides behind its
+    // floor, and the fresh covering paint restores it.
+    {
+        const quint64 base = router.counter;
+        CHECK(facts.invalidation() == base);
+        // Arm the chain with an exact-current found paint first: the prior
+        // preview leg holds a hidden border, so no chain proves until this
+        // fresh cover lands. The endpoint never bumps, so base still marks
+        // the pre-move cover for the moves below.
+        const auto arm = applyStr(stage, foundPayload(inst, base, "20", "0"), "gesture-9", "7");
+        CHECK(arm.apply == KWin::PresentationApply::Accepted);
+        CHECK(router.borderChainCurrent());
+        stub.apply(arm.refresh, stage.decide(anchorHost()));
+        CHECK(stub.border);
+        KWin::Stage5HostView moved = gestureAnchorHost("gesture-9", "7");
+        moved.trackedFrame = QRect(14, 12, 300, 300);
+        const KWin::Stage5Refresh moveRefresh = stage.onTrackedFrame(moved);
+        CHECK(router.counter == base + 1);
+        CHECK(facts.invalidation() == base + 1);
+        CHECK(router.borderChainCurrent());
+        CHECK(router.borderChain.counter == base + 1);
+        CHECK(moveRefresh.border);
+        CHECK(moveRefresh.underlay);
+        const KWin::Stage5Visibility movedVisible = stage.decide(moved);
+        CHECK(movedVisible.border);
+        CHECK(!movedVisible.underlay);
+        stub.apply(moveRefresh, movedVisible);
+        CHECK(stub.border);
+        CHECK(!stub.underlay);
+        // A genuine resize on the same anchor continues the same way.
+        KWin::Stage5HostView resized = gestureAnchorHost("gesture-9", "7");
+        resized.trackedFrame = QRect(10, 10, 340, 310);
+        const KWin::Stage5Refresh resizeRefresh = stage.onTrackedFrame(resized);
+        CHECK(router.counter == base + 2);
+        CHECK(facts.invalidation() == base + 2);
+        CHECK(router.borderChainCurrent());
+        const KWin::Stage5Visibility resizedVisible = stage.decide(resized);
+        CHECK(resizedVisible.border);
+        CHECK(!resizedVisible.underlay);
+        stub.apply(resizeRefresh, resizedVisible);
+        CHECK(stub.border);
+        CHECK(!stub.underlay);
+        // The covering paint restores the underlay and re-arms the chain.
+        const auto covering = applyStr(stage, foundPayload(inst, base + 2, "20", "1"), "gesture-9", "7");
+        CHECK(covering.apply == KWin::PresentationApply::Accepted);
+        CHECK(!router.paint.borderFloor.set);
+        CHECK(!router.paint.underlayFloor.set);
+        CHECK(router.borderChainCurrent());
+        stub.apply(covering.refresh, stage.decide(anchorHost()));
+        CHECK(stub.border);
+        CHECK(stub.underlay);
+    }
+
+    // Asymmetric outsets with the held radius and bounds: accepted once,
+    // armed on exact-current coverage, and drawn from the live frame plus
+    // the held descriptor (no uniform-outset clamp anywhere).
+    {
+        const quint64 latest = router.counter;
+        const std::string payload = "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"21\",\"obs\":\"1\","
+            "\"coveredInstance\":\"" + inst + "\",\"coveredInvalid\":\"" + std::to_string(latest)
+            + "\",\"foreground\":\"win-2\","
+              "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+              "\"outsets\":[1,2,3,4],\"width\":3,\"radius\":6,"
+              "\"witness\":{\"win\":\"win-2\",\"obs\":\"3\",\"frame\":[10,10,300,300],\"foreground\":\"win-2\"}},"
+              "\"underlay\":{\"status\":\"found\",\"win\":\"win-2\",\"outer\":[0,0,1200,800],"
+              "\"members\":[\"win-1\",\"win-2\"]},\"preview\":null}";
+        const auto accepted = applyStr(stage, payload);
+        CHECK(accepted.apply == KWin::PresentationApply::Accepted);
+        CHECK(router.paint.borderHasOutsets);
+        CHECK(router.paint.borderOutsetLeft == 1);
+        CHECK(router.paint.borderOutsetTop == 2);
+        CHECK(router.paint.borderOutsetRight == 3);
+        CHECK(router.paint.borderOutsetBottom == 4);
+        CHECK(router.paint.borderHasWidth);
+        CHECK(router.paint.borderWidth == 3);
+        CHECK(router.paint.borderHasRadius);
+        CHECK(router.paint.borderRadius == 6);
+        CHECK(router.borderChainCurrent());
+        // The live outer resolves from the live frame plus the held
+        // asymmetric outsets; the ring replays the held width/radius.
+        const KWin::Stage5Visibility visibility = stage.decide(anchorHost());
+        CHECK(visibility.border);
+        CHECK(visibility.underlay);
+        stub.apply(accepted.refresh, visibility);
+        CHECK(stub.border);
+        CHECK(stub.underlay);
+    }
+
+    // Null-witness narrow hide: accepted and held, but the chain cannot
+    // arm without witness proof, so only the border hides while the
+    // underlay keeps painting; the witnessed restore re-arms.
+    {
+        const quint64 latest = router.counter;
+        const std::string payload = "{\"v\":2,\"gen\":\"gen-1\",\"rev\":\"22\",\"obs\":\"1\","
+            "\"coveredInstance\":\"" + inst + "\",\"coveredInvalid\":\"" + std::to_string(latest)
+            + "\",\"foreground\":\"win-2\","
+              "\"border\":{\"visible\":true,\"reason\":\"\",\"subject\":\"win-2\","
+              "\"outsets\":[3,3,3,3],\"width\":3,\"radius\":6,\"witness\":null},"
+              "\"underlay\":{\"status\":\"found\",\"win\":\"win-2\",\"outer\":[0,0,1200,800],"
+              "\"members\":[\"win-1\",\"win-2\"]},\"preview\":null}";
+        const auto accepted = applyStr(stage, payload);
+        CHECK(accepted.apply == KWin::PresentationApply::Accepted);
+        CHECK(!router.paint.borderHasWitness);
+        CHECK(!router.borderChainCurrent());
+        const KWin::Stage5Visibility visibility = stage.decide(anchorHost());
+        CHECK(!visibility.border);
+        CHECK(visibility.underlay);
+        stub.apply(accepted.refresh, visibility);
+        CHECK(!stub.border);
+        CHECK(stub.underlay);
+        // The witnessed covering paint re-arms and restores the border.
+        const auto restore = applyStr(stage, foundPayload(inst, latest, "22", "2"));
+        CHECK(restore.apply == KWin::PresentationApply::Accepted);
+        CHECK(router.borderChainCurrent());
+        stub.apply(restore.refresh, stage.decide(anchorHost()));
+        CHECK(stub.border);
+        CHECK(stub.underlay);
+    }
+
+    // Known-ineligible authority (the maximize-hide analog): an accepted
+    // paint cannot arm while eligibility is known false, an ineligible
+    // frame event clears, and only a fresh covering paint after eligibility
+    // returns re-arms. No stale eligible chain rearms.
+    {
+        const quint64 latest = router.counter;
+        KWin::Stage5HostView ineligible = anchorHost();
+        ineligible.liveEligible = false;
+        const auto accepted = applyStr(stage, foundPayload(inst, latest, "23", "1"), "", "0", ineligible);
+        CHECK(accepted.apply == KWin::PresentationApply::Accepted);
+        CHECK(!router.borderChainCurrent());
+        CHECK(!stage.decide(ineligible).border);
+        CHECK(!stage.decide(anchorHost()).border);
+        // The ineligible event clears; pre-event coverage cannot repaint.
+        const KWin::Stage5Refresh clear = stage.onTrackedFrame(ineligible);
+        CHECK(clear.border);
+        CHECK(clear.anchor);
+        CHECK(clear.underlay);
+        CHECK(clear.preview);
+        CHECK(!clear.repaint);
+        stub.apply(clear, stage.decide(ineligible));
+        CHECK(!stub.border);
+        CHECK(router.counter == latest + 1);
+        CHECK(!router.borderChainCurrent());
+        const auto stale = applyStr(stage, foundPayload(inst, latest, "23", "2"));
+        CHECK(stale.apply == KWin::PresentationApply::StaleIgnored);
+        // Fresh covering paint after eligibility returns re-arms.
+        const auto covering = applyStr(stage, foundPayload(inst, latest + 1, "23", "3"));
+        CHECK(covering.apply == KWin::PresentationApply::Accepted);
+        CHECK(router.borderChainCurrent());
+        stub.apply(covering.refresh, stage.decide(anchorHost()));
+        CHECK(stub.border);
+    }
+
+    // Unknown authority (the default caller route) fails closed for the
+    // border only: accepted coverage still paints the underlay while the
+    // border never arms.
+    {
+        const quint64 latest = router.counter;
+        const auto accepted = applyStr(stage, foundPayload(inst, latest, "24", "1"), "", "0", KWin::Stage5HostView{});
+        CHECK(accepted.apply == KWin::PresentationApply::Accepted);
+        CHECK(!router.borderChainCurrent());
+        const KWin::Stage5Visibility visibility = stage.decide(anchorHost());
+        CHECK(!visibility.border);
+        CHECK(visibility.underlay);
+        stub.apply(accepted.refresh, visibility);
+        CHECK(!stub.border);
+        CHECK(stub.underlay);
     }
 
     if (failures != 0) {

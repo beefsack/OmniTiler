@@ -176,26 +176,33 @@ describe("presentation native static contract", () => {
         assert.match(effectImpl, /m_borderItem\.setZ\(-1\)/);
         assert.match(effectImpl, /m_borderItem\.setParentItem\(m_trackedWindow->windowItem\(\)\)/);
         assert.match(effectImpl, /m_borderItem\.setParentItem\(effects->scene\(\)->overlayItem\(\)\)/);
-        // The held accepted inner rect maps into the tracked window item
-        // without a second outset; visibility is core paint plus live
-        // foreground plus hide-only vetoes, never derived eligibility.
-        // The gate itself lives in the extracted stage (decided from one
-        // injected host view); the effect only applies it to the items.
-        assert.match(effectImpl, /m_router\.paint\.borderInner/);
+        // The held accepted border descriptor maps into the tracked
+        // window item without a second outset; visibility is core paint
+        // plus live foreground plus hide-only vetoes, never derived
+        // eligibility. The gate itself lives in the extracted stage
+        // (decided from one injected host view); the effect only applies
+        // it to the items.
+        assert.doesNotMatch(effectImpl, /m_router\.paint\.borderInner/);
+        assert.doesNotMatch(effectImpl, /m_router\.paint\.borderOuter/);
+        assert.match(effectImpl, /m_router\.paint\.borderHasOutsets/);
+        assert.match(effectImpl, /m_router\.paint\.borderHasWidth/);
         assert.match(effectImpl, /m_borderItem\.setInnerRect\(window \? window->windowItem\(\)->mapFromScene\(innerRect\) : RectF\(\)\)/);
         assert.match(stageImpl, /visibility\.border = hasPaint && paint\.borderVisible && host\.endpointAvailable && host\.foregroundMatches/);
-        assert.match(stageImpl, /host\.liveEligible && strokeOk && fresh && current;/);
-        // The ring replays the published outer exactly: its stroke is
-        // derived strictly from the published inner/outer pair (half the
-        // uniform inset), never live config width; a set geometry floor
-        // hides stale shapes until a strictly covering paint arrives, and
-        // every drawn surface additionally requires held coverage equal
-        // to the actual latest witness.
-        assert.match(stageImpl, /borderStrokeFromPublished\(paint\.borderInner, paint\.borderOuter\)/);
-        assert.match(stageImpl, /presentationBorderFresh\(&paint\)/);
+        assert.match(stageImpl, /host\.liveEligibleKnown && chainCurrent && borderAnchorOk && borderGeometryOk/);
+        // The ring replays the held width and radius exactly: geometry
+        // resolves once from the live tracked frame plus the held outsets
+        // and width verbatim (no config, no second scale), so
+        // capture-vs-live config drift cannot move the drawn edge. The
+        // anchor chain (not a geometry floor) proves current coverage by
+        // event, while the underlay keeps the held-coverage gate below.
+        assert.match(effectImpl, /borderGeometryFromLiveFrame\(host\.trackedFrame, m_router\.paint\.borderOutsetLeft,/);
+        assert.match(stageImpl, /borderGeometryFromLiveFrame\(host\.trackedFrame, paint\.borderOutsetLeft, paint\.borderOutsetTop,/);
+        assert.match(effectImpl, /ringOutlineForWidth\(static_cast<double>\(m_router\.paint\.borderWidth\), m_router\.paint\.borderRadius\)/);
+        assert.match(effectImpl, /BorderRadius\(radius\)/);
         assert.match(stageImpl, /presentationUnderlayFresh\(&paint\)/);
         assert.match(stageImpl, /presentationCoveredCurrent\(&paint\)/);
-        assert.match(effectImpl, /setOutline\(ringOutlineForWidth\(stroke\)\)/);
+        assert.doesNotMatch(stageImpl, /borderStrokeFromPublished/);
+        assert.doesNotMatch(stageImpl, /presentationBorderFresh/);
         // Frame dirt advances the causal witness even with no held paint:
         // tracked/member-frame signals route through the extracted KWin-free
         // stage (same production handlers the offline stage test drives),
@@ -207,10 +214,10 @@ describe("presentation native static contract", () => {
         assert.match(stageImpl, /m_router->onTrackedFrame\(/);
         {
             const trackedBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onTrackedFrameChanged(");
-            assert.match(trackedBody, /m_stage\.onTrackedFrame\(\)/);
+            assert.match(trackedBody, /m_stage\.onTrackedFrame\(host\)/);
             assert.match(trackedBody, /applyStageRefresh\(refresh\)/);
             assert.doesNotMatch(trackedBody, /m_router\.onTrackedFrame\(/);
-            const trackedStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onTrackedFrame()");
+            const trackedStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onTrackedFrame(const Stage5HostView");
             assert.match(trackedStage, /refresh\.border = true/);
             assert.match(trackedStage, /refresh\.anchor = true/);
             assert.match(trackedStage, /refresh\.underlay = true/);
@@ -655,20 +662,28 @@ describe("presentation native static contract", () => {
         // through the production router's causal bump: the counter is
         // native facts lifecycle, not the renderer move latch.
         assert.match(effectImpl, /updateGroupMoveArm\(window\)/);
-        assert.match(effectImpl, /m_stage\.onGestureBoundary\(\)/);
-        assert.match(stageImpl, /m_router->onGestureBoundary\(factsInstance\(\)\)/);
+        assert.match(effectImpl, /m_stage\.onGestureBoundary\(/);
+        assert.match(stageImpl, /m_router->onGestureBoundary\(factsInstance\(\), anchorFactsFromHost\(host\)\)/);
         {
             const startBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGestureDragStart(");
+            assert.match(startBody, /m_stage\.onGestureBoundary\(currentHostView\(\)\)/);
             assert.match(startBody, /m_stage\.onGestureBoundary\(\)/);
+            assert.match(startBody, /window == m_trackedWindow/);
             assert.doesNotMatch(startBody, /m_router\.onGestureBoundary\(/);
             const finishBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGestureDragFinish(");
+            assert.match(finishBody, /m_stage\.onGestureBoundary\(currentHostView\(\)\)/);
             assert.match(finishBody, /m_stage\.onGestureBoundary\(\)/);
+            assert.match(finishBody, /window == m_trackedWindow/);
             assert.match(finishBody, /applyStageRefresh\(/);
             assert.doesNotMatch(finishBody, /m_router\.onGestureBoundary\(/);
             const forgetBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::forgetGestureWindow(");
             assert.match(forgetBody, /m_stage\.onGestureBoundary\(\)/);
+            assert.doesNotMatch(forgetBody, /currentHostView\(\)/);
             assert.doesNotMatch(forgetBody, /m_router\.onGestureBoundary\(/);
-            const gestureStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onGestureBoundary()");
+            const gestureStage = extractBody(
+                stageImpl,
+                "Stage5Refresh PresentationStage5::onGestureBoundary(const Stage5HostView &host)"
+            );
             assert.match(gestureStage, /publishInvalidation\(\)/);
             assert.match(gestureStage, /refresh\.preview = true/);
             assert.match(gestureStage, /refresh\.border = true/);

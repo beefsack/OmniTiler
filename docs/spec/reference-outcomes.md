@@ -34,6 +34,12 @@ trivially different start state.
 | --- | --- | --- |
 | Tile three windows; select their populated workspace; grow right repeatedly, shrink right, then shrink/grow left; repeat across native-effect presentation changes | Core diagnostics retain the detailed refusal and bounded command/focus/layout/geometry/hint context while preserving requester-visible `operation-refused`. Typed-v4 singleton no-neighbor refusal is `unchanged` internally | Native split between legitimate edge/minimum/limit refusals and defects remains TBD; the earlier summary-only dogfood log cannot recover that split. No user-facing refusal feedback behavior is selected. [Investigation](../changes/kde-resize-refusal-diagnostics.md) |
 
+### Anchored border in-flight replacement
+
+| Minimal action sequence | Existing offline evidence | Unsupported outcome / remaining gate |
+| --- | --- | --- |
+| Accept a border at native coverage N; start a same-anchor gesture; deliver motion and only older-coverage paints, changing witness watermark/frame separately from subject/metrics; finish | Offline stage proofs retain the original accepted descriptor and arming witness when the current chain, stream and anchor inputs match; the older paint makes no new join. Changed anchor inputs or hidden border clear. Same-anchor start/finish advance the existing chain while preview latch clearing, order, coverage and underlay fences remain unchanged | Native continuity and normal move/resize dropout rate/duration remain TBD. Preserve the exact capture/native-chain join and event-driven accepted-anchor motion required by [R20](../decisions/contract.md#anchored-border-r20). [Investigation](../changes/v4-phase2-kde-focus-feedback.md#native-v2-integration-in-progress) |
+
 ### Workspace-floating classification diagnostic
 
 | Minimal action sequence | Existing core evidence | Unsupported outcome / decision |

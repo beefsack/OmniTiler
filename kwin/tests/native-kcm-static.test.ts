@@ -381,7 +381,8 @@ describe("native KCM static contract", () => {
         // active ring keeps its own border color/theme tokens, default live
         // system accent, independently overridable from the underlay/drop
         // colors). No shared visual FFI or border-eligibility derivation
-        // remains: the held accepted border rects paint verbatim.
+        // remains: the held accepted border descriptor (outsets, width,
+        // radius) paints verbatim against the live tracked frame.
         assert.match(effect, /presentationBorderColor\(themeColor, fallback, useThemeColor\)/);
         assert.doesNotMatch(unified, /UseThemeColor/);
         assert.match(effect, /KColorScheme::isColorSetSupported\(colorConfig, KColorScheme::Selection\)/);
@@ -395,12 +396,19 @@ describe("native KCM static contract", () => {
         // neither of the others.
         assert.match(effect, /fill\(ActiveBorderConfig::groupUnderlayColor\(\)\)/);
         assert.match(effect, /fill\(ActiveBorderConfig::dragPreviewColor\(\)\)/);
-        const ringBody = effect.match(/BorderOutline ringOutlineForWidth\(double width\)[\s\S]*?\n\}/)?.[0] ?? "";
+        const ringBody = effect.match(/BorderOutline ringOutlineForWidth\(double width, double radius\)[\s\S]*?\n\}/)?.[0] ?? "";
         assert.ok(ringBody.length > 0, "ring outline body found");
         assert.doesNotMatch(ringBody, /[Uu]nderlay|[Pp]review/);
+        assert.match(ringBody, /BorderRadius\(radius\)/);
+        assert.doesNotMatch(ringBody, /ActiveBorderConfig::borderRadius/);
         assert.doesNotMatch(logic, /activeBorderColor/);
         assert.doesNotMatch(logic, /visual_policy_ffi/);
-        assert.match(effect, /m_router\.paint\.borderInner/);
+        assert.doesNotMatch(effect, /m_router\.paint\.borderInner/);
+        assert.doesNotMatch(effect, /m_router\.paint\.borderOuter/);
+        assert.match(effect, /m_router\.paint\.borderHasOutsets/);
+        assert.match(effect, /m_router\.paint\.borderWidth/);
+        assert.match(effect, /borderGeometryFromLiveFrame\(host\.trackedFrame, m_router\.paint\.borderOutsetLeft,/);
+        assert.match(effect, /ringOutlineForWidth\(static_cast<double>\(m_router\.paint\.borderWidth\), m_router\.paint\.borderRadius\)/);
         assert.match(effect, /setInnerRect\(window \? window->windowItem\(\)->mapFromScene\(innerRect\) : RectF\(\)\)/);
         assert.match(effect, /m_stage\.decide\(currentHostView\(\)\)/);
         assert.match(effect, /visibility\.border/);

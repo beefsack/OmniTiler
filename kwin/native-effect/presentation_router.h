@@ -10,22 +10,46 @@
 // Single ownership: the router owns the held paint, the effect-owned
 // monotonic invalidation counter, the separately minted structural floor
 // (monotonic value as of the last structural invalidation), the
-// facts-instance namespace it was seeded with, and the exhaustion latch.
-// The effect only passes observed facts (frames, activation, gesture
-// boundaries, endpoint payloads) in; the router decides every
-// witness/floor/latch/order transition. Native show predicates (foreground
-// match, liveness, endpoint) stay in the effect, which additionally gates
-// drawn borders/underlay on held coverage equal to the actual latest and
-// the held preview on coverage at or past the structural floor (motion
-// advances the monotonic witness without touching the floor, so the valid
-// same-gesture preview persists while strict shapes hide).
+// facts-instance namespace it was seeded with, the exhaustion latch, and
+// the BORDER-ONLY accepted anchor chain (no duplicate descriptor fields:
+// the chain reuses the held border descriptor plus one cover plus the
+// anchor/output-scale authority). The effect only passes observed facts
+// (frames, activation, gesture boundaries, endpoint payloads) in; the
+// router decides every witness/floor/latch/order/chain transition. Native
+// show predicates (foreground match, liveness, endpoint) stay in the
+// effect, which additionally gates drawn underlay on held coverage equal
+// to the actual latest and the held preview on coverage at or past the
+// structural floor (motion advances the monotonic witness without touching
+// the floor, so the valid same-gesture preview persists while strict
+// underlay hides). The drawn border needs its anchor chain current plus
+// live vetoes instead of the global coverage/floor gates.
 
 #include "presentation_consumer.h"
 
+#include <QRect>
 #include <QString>
 
 namespace KWin
 {
+
+// Live border-anchor facts for one endpoint/event (Qt-only seam input):
+// the actual live tracked/active/output identity plus the quantized live
+// frame, eligibility, and output scale observed around the delivered
+// event. Unknown by default (which clears the chain); the router
+// re-proves every field against the held descriptor on each use and
+// stores only the output identity/scale captured at arm time.
+struct BorderAnchorFacts {
+    bool known = false;
+    QString trackedId;
+    QString liveActiveId;
+    QString outputId;
+    QRect liveFrame;
+    bool liveFrameKnown = false;
+    bool liveEligible = false;
+    bool liveEligibleKnown = false;
+    qreal outputScale = 0.0;
+    bool outputScaleKnown = false;
+};
 
 class PresentationRouter
 {
@@ -60,6 +84,44 @@ public:
     // (hide, record nothing further) until an explicit fresh source
     // instance recovers the namespace.
     bool exhausted = false;
+    // BORDER-ONLY accepted anchor chain: the proven native coverage for
+    // the held border descriptor (same instance namespace as the counter).
+    // Armed only on a newly accepted v2 endpoint with exact current native
+    // coverage plus exact live anchor authority; advanced only on a
+    // delivered same-anchor event (frame or gesture-lifecycle boundary with
+    // live same-window proof) whose prior chain equals the actual pre-event
+    // native cover; cleared on any missed gap, unproven event,
+    // source/clear/reset/endpoint-loss/malformed, exhaustion, output-scale
+    // change, or unknown eligibility. Reuses the
+    // held descriptor (no duplicate descriptor fields) plus the proven
+    // output identity/scale. Never mutates paint.covered; the chain is
+    // the border's own current-proof.
+    CoverWitness borderChain;
+    // Proven output identity/scale captured at arm time. The draw gate
+    // requires the current live facts to match these exactly; any output
+    // or scale change arrives as a structural event that clears the chain.
+    QString borderOutputId;
+    qreal borderOutputScale = 0.0;
+    bool borderOutputScaleKnown = false;
+
+    // Seed (or re-seed on proven replacement) the witness namespace from
+    // the live facts object. A changed instance restarts the epoch
+    // explicitly: the counter restarts, exhaustion clears, and stale
+    // floors (incomparable across instances) drop. The subscriber-driven
+    // stream reset already clears the paint on replacement; this never
+    // paints, hides, or fabricates coverage.
+    void clearBorderChain()
+    {
+        borderChain = CoverWitness{};
+        borderOutputId.clear();
+        borderOutputScaleKnown = false;
+    }
+
+    bool borderChainCurrent() const
+    {
+        return borderChain.set && paint.latest.set && borderChain.instance == paint.latest.instance
+            && borderChain.counter == paint.latest.counter;
+    }
 
     // Seed (or re-seed on proven replacement) the witness namespace from
     // the live facts object. A changed instance restarts the epoch
@@ -78,6 +140,7 @@ public:
         structuralFloor = 0;
         paint.borderFloor = CoverWitness{};
         paint.underlayFloor = CoverWitness{};
+        clearBorderChain();
     }
 
     // Record one native invalidation for the affected scope and advance
@@ -104,6 +167,7 @@ public:
             if (scope == InvalidationScope::Underlay || scope == InvalidationScope::All) {
                 paint.underlayFloor = fin;
             }
+            clearBorderChain();
             return;
         }
         noteNativeInvalidation(&paint, instance, ++counter, scope);
@@ -115,6 +179,7 @@ public:
     void onActivation(const QString &inst)
     {
         clearPaintDisplay(&paint);
+        clearBorderChain();
         invalidate(InvalidationScope::All, inst);
         tickStructural();
     }
@@ -125,11 +190,24 @@ public:
     // twice (once here, once via the member route); the member handler
     // skips the tracked window and this single bump carries both floors,
     // exactly the floors the retired double bump set. One frame advances
-    // the witness exactly once.
-    void onTrackedFrame(const QString &inst)
+    // the witness exactly once. With live anchor facts the border chain
+    // advances by event proof when the prior chain equals the actual
+    // pre-event native cover and identity/eligibility/output-scale are
+    // unchanged and known; unknown facts (the default for callers without
+    // live authority) clear the chain while the global accounting below
+    // stays identical for the other surfaces.
+    void onTrackedFrame(const QString &inst, const BorderAnchorFacts &facts = BorderAnchorFacts{})
     {
+        const CoverWitness preChain = borderChain;
+        const QString preInstance = instance;
+        const quint64 preCounter = counter;
         invalidate(InvalidationScope::All, inst);
         tickStructural();
+        if (!facts.known) {
+            clearBorderChain();
+            return;
+        }
+        advanceBorderChain(preChain, preInstance, preCounter, facts);
     }
 
     // Production member-frame route: underlay dirt plus the causal bump
@@ -138,6 +216,7 @@ public:
     // pre-first-paint geometry count).
     void onMemberFrame(const QString &inst)
     {
+        clearBorderChain();
         invalidate(InvalidationScope::Underlay, inst);
         tickStructural();
     }
@@ -151,10 +230,21 @@ public:
     // by live gesture identity plus the interactive-move flag (never
     // timing, geometry, or cursor matching); anything else takes the
     // structural routes above. Publishes through the stage like every
-    // other bump.
-    void onMotionFrame(bool tracked, const QString &inst)
+    // other bump. Member motion (tracked false) never advances the border
+    // chain; tracked motion advances it only with live anchor facts under
+    // the same gap/identity/eligibility/scale rules as the structural
+    // route above.
+    void onMotionFrame(bool tracked, const QString &inst, const BorderAnchorFacts &facts = BorderAnchorFacts{})
     {
+        const CoverWitness preChain = borderChain;
+        const QString preInstance = instance;
+        const quint64 preCounter = counter;
         invalidate(tracked ? InvalidationScope::All : InvalidationScope::Underlay, inst);
+        if (!tracked || !facts.known) {
+            clearBorderChain();
+            return;
+        }
+        advanceBorderChain(preChain, preInstance, preCounter, facts);
     }
 
     // Structural tick: record the post-bump monotonic counter as the floor
@@ -178,6 +268,7 @@ public:
     // and the producer match still gates the preview.
     void onFullscreenChanged(const QString &inst)
     {
+        clearBorderChain();
         invalidate(InvalidationScope::All, inst);
         tickStructural();
     }
@@ -191,6 +282,7 @@ public:
     // older-covered paint resurrect a stale preview).
     void onVisibilityChanged(const QString &inst)
     {
+        clearBorderChain();
         invalidate(InvalidationScope::All, inst);
         tickStructural();
     }
@@ -203,19 +295,34 @@ public:
     // match, but pre-event coverage hides immediately with no repaint.
     void onLayoutChanged(const QString &inst)
     {
+        clearBorderChain();
         invalidate(InvalidationScope::All, inst);
         tickStructural();
     }
 
     // Production gesture-boundary route: drop the held drop-preview latch
-    // (it belongs to exactly one live gesture) plus the causal bump with
-    // no floors. Cancellation/terminal semantics are untouched (no
-    // terminal fabricated here - transitions only).
-    void onGestureBoundary(const QString &inst)
+    // (it belongs to exactly one live gesture) plus the causal bump and
+    // the structural tick (no shape floors: the None scope snapshots none;
+    // the preview latch clears separately and the producer match gates it).
+    // With live anchor facts for the same tracked window the border chain
+    // advances by the same event proof as frame routes; unknown facts (the
+    // default for callers without same-window proof) clear the chain while
+    // the global bump/tick stays identical.
+    // Cancellation/terminal semantics are untouched (no terminal
+    // fabricated here - transitions only).
+    void onGestureBoundary(const QString &inst, const BorderAnchorFacts &facts = BorderAnchorFacts{})
     {
+        const CoverWitness preChain = borderChain;
+        const QString preInstance = instance;
+        const quint64 preCounter = counter;
         clearPaintPreview(&paint);
         invalidate(InvalidationScope::None, inst);
         tickStructural();
+        if (!facts.known) {
+            clearBorderChain();
+            return;
+        }
+        advanceBorderChain(preChain, preInstance, preCounter, facts);
     }
 
     // Explicit stream replacement: generation rotation, unbind, stop, or
@@ -225,6 +332,7 @@ public:
     void onStreamReset()
     {
         clearPresentationPaint(&paint);
+        clearBorderChain();
     }
 
     // Display-only hide: clears the visible paint while retaining the
@@ -232,6 +340,48 @@ public:
     void onDisplayHide()
     {
         clearPaintDisplay(&paint);
+        clearBorderChain();
+    }
+
+    // BORDER-ONLY arm: called by the stage after a newly accepted v2
+    // endpoint with the live anchor facts for the same endpoint path.
+    // Reuses the held descriptor (no duplicate descriptor fields) and
+    // stores only the proven output identity/scale. Re-arms only on exact
+    // current coverage (clearing first); a structurally accepted paint
+    // with older coverage is handled inside applyEndpointPaint below
+    // (retention by prior event proof), so this safely no-ops there.
+    // Returns true when armed; unknown facts or any
+    // identity/eligibility/frame/scale gap leave the chain cleared so only
+    // the border hides.
+    bool tryArmBorderChain(const BorderAnchorFacts &facts)
+    {
+        // Only exact-current coverage re-arms: a structurally accepted
+        // paint whose coverage predates the actual latest preserves a
+        // proven chain (continuity by prior event proof), so the anchored
+        // border persists while the floored underlay hides. Exact-current
+        // coverage clears first, then re-proves below.
+        if (!paint.covered.set || !paint.latest.set || paint.covered.instance != paint.latest.instance
+            || paint.covered.counter != paint.latest.counter) {
+            return false;
+        }
+        clearBorderChain();
+        if (exhausted || instance.isEmpty()) {
+            return false;
+        }
+        if (!paint.has || !paint.borderVisible || !paint.borderHasWitness) {
+            return false;
+        }
+        if (paint.covered.instance != instance) {
+            return false;
+        }
+        if (!proveBorderAnchor(facts, true)) {
+            return false;
+        }
+        borderChain = paint.covered;
+        borderOutputId = facts.outputId;
+        borderOutputScale = facts.outputScale;
+        borderOutputScaleKnown = true;
+        return true;
     }
 
     // Production endpoint dispatch: re-seed the order-independent latest
@@ -240,7 +390,13 @@ public:
     // parse/apply. Paints prove against true live source plus counter
     // (exact cover) or against the seeded floor in the same instance
     // (structural path for pre-motion paint) even after a stream reset or
-    // before any first paint.
+    // before any first paint. A structurally accepted older-coverage paint
+    // is never a new join: the held border descriptor (kept verbatim) and
+    // the chain survive only when the chain is already current, the stream
+    // generation matches, and every anchor input equals the held one; any
+    // mismatch clears the chain with no new join while
+    // underlay/preview/order/coverage adopt the new paint. The new witness
+    // obs/frame authorize nothing and are restored to the held values.
     PresentationApply applyEndpointPaint(const QString &payload, const QString &liveGestureInstance,
         const QString &liveGestureSerial)
     {
@@ -249,9 +405,141 @@ public:
             paint.structuralFloor = CoverWitness{instance, structuralFloor, true};
         }
         if (exhausted) {
+            clearBorderChain();
             return PresentationApply::StaleIgnored;
         }
-        return applyPresentationPaint(&paint, payload, liveGestureInstance, liveGestureSerial);
+        const PresentationPaint pre = paint;
+        const bool preCurrent = borderChainCurrent();
+        const PresentationApply result = applyPresentationPaint(&paint, payload, liveGestureInstance, liveGestureSerial);
+        if (result == PresentationApply::Malformed) {
+            clearBorderChain();
+            return result;
+        }
+        if (result == PresentationApply::StaleIgnored) {
+            return result;
+        }
+        const bool exactCurrent = paint.covered.set && paint.latest.set
+            && paint.covered.instance == paint.latest.instance && paint.covered.counter == paint.latest.counter;
+        if (!exactCurrent
+            && (!preCurrent || !paint.has || !pre.has || paint.gen.isEmpty() || paint.gen != pre.gen
+                || !sameBorderAnchor(pre, paint))) {
+            clearBorderChain();
+            return result;
+        }
+        if (!exactCurrent) {
+            paint.witnessObs = pre.witnessObs;
+            paint.witnessObsValue = pre.witnessObsValue;
+            paint.witnessFrame = pre.witnessFrame;
+            if (!borderChainCurrent()) {
+                clearBorderChain();
+            }
+        }
+        return result;
+    }
+
+private:
+    // Same-anchor predicate for structural retention (witness obs/frame
+    // excluded: the new witness authorizes nothing and is restored to the
+    // held values by the caller). All other border anchor inputs must match
+    // exactly, including has-flag/null presence.
+    static bool sameBorderAnchor(const PresentationPaint &held, const PresentationPaint &incoming)
+    {
+        return held.borderVisible && incoming.borderVisible && held.borderReason == incoming.borderReason
+            && !held.borderSubject.isEmpty() && held.borderSubject == incoming.borderSubject
+            && held.borderHasOutsets && incoming.borderHasOutsets
+            && held.borderOutsetLeft == incoming.borderOutsetLeft
+            && held.borderOutsetTop == incoming.borderOutsetTop
+            && held.borderOutsetRight == incoming.borderOutsetRight
+            && held.borderOutsetBottom == incoming.borderOutsetBottom && held.borderHasWidth
+            && incoming.borderHasWidth && held.borderWidth == incoming.borderWidth && held.borderHasRadius
+            && incoming.borderHasRadius && held.borderRadius == incoming.borderRadius && held.borderHasWitness
+            && incoming.borderHasWitness && !held.witnessWin.isEmpty() && held.witnessWin == incoming.witnessWin
+            && !held.witnessForeground.isEmpty() && held.witnessForeground == incoming.witnessForeground
+            && !held.foreground.isEmpty() && held.foreground == incoming.foreground;
+    }
+    // Shared live-anchor proof against the held descriptor: every identity
+    // (tracked, live-active, subject, witness window/foreground, held
+    // foreground) names the same window, eligibility/scale are known live
+    // facts, the scale is finite positive, and the full border descriptor
+    // (outsets, width, radius) is present. The arm path additionally
+    // requires the current live frame to equal the witness frame; the
+    // advance path proves continuity by the delivered event itself, never
+    // by re-reading the frame.
+    bool proveBorderAnchor(const BorderAnchorFacts &facts, bool requireFrame) const
+    {
+        if (!facts.known) {
+            return false;
+        }
+        if (facts.trackedId.isEmpty() || facts.liveActiveId.isEmpty() || facts.outputId.isEmpty()) {
+            return false;
+        }
+        if (!facts.liveFrameKnown || !facts.liveEligibleKnown || !facts.liveEligible) {
+            return false;
+        }
+        if (!facts.outputScaleKnown || !std::isfinite(facts.outputScale) || !(facts.outputScale > 0.0)) {
+            return false;
+        }
+        if (!paint.has || !paint.borderVisible || !paint.borderHasWitness) {
+            return false;
+        }
+        if (!paint.borderHasOutsets || !paint.borderHasWidth || !paint.borderHasRadius) {
+            return false;
+        }
+        const QString subject = QString::fromUtf8(paint.borderSubject);
+        const QString win = QString::fromUtf8(paint.witnessWin);
+        const QString fg = QString::fromUtf8(paint.witnessForeground);
+        const QString heldFg = QString::fromUtf8(paint.foreground);
+        if (subject.isEmpty() || win.isEmpty() || fg.isEmpty() || heldFg.isEmpty()) {
+            return false;
+        }
+        if (facts.trackedId != subject || facts.liveActiveId != subject) {
+            return false;
+        }
+        if (facts.trackedId != win || facts.trackedId != fg || facts.trackedId != heldFg) {
+            return false;
+        }
+        if (requireFrame && facts.liveFrame != paint.witnessFrame) {
+            return false;
+        }
+        return true;
+    }
+
+    // BORDER-ONLY advance on a delivered same-anchor geometry event: the
+    // caller already ran the existing global bump exactly once. Advances
+    // only when the prior chain equals the actual pre-event instance and
+    // counter (no missed gap, no source change), the post-event latest is
+    // exactly that one bump, and the live anchor still proves the held
+    // descriptor on the same output and scale. Never mutates
+    // paint.covered; the chain takes the post-event latest by event proof.
+    bool advanceBorderChain(
+        const CoverWitness &preChain, const QString &preInstance, quint64 preCounter, const BorderAnchorFacts &facts)
+    {
+        if (exhausted || instance.isEmpty()) {
+            clearBorderChain();
+            return false;
+        }
+        if (!preChain.set || preChain.instance != preInstance || preChain.counter != preCounter) {
+            clearBorderChain();
+            return false;
+        }
+        if (preInstance != instance || counter != preCounter + 1) {
+            clearBorderChain();
+            return false;
+        }
+        if (!paint.latest.set || paint.latest.instance != instance || paint.latest.counter != counter) {
+            clearBorderChain();
+            return false;
+        }
+        if (!proveBorderAnchor(facts, false)) {
+            clearBorderChain();
+            return false;
+        }
+        if (!borderOutputScaleKnown || facts.outputId != borderOutputId || facts.outputScale != borderOutputScale) {
+            clearBorderChain();
+            return false;
+        }
+        borderChain = paint.latest;
+        return true;
     }
 };
 
