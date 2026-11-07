@@ -7,7 +7,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { captureWorldObservation, type WorldObservation } from "../src/world-observe";
-import { buildWorldInnerReportJson } from "../src/world-report";
 
 interface FakeWin {
     id: string;
@@ -81,12 +80,6 @@ function observe(wins: FakeWin[], knownClosed: string[] = []): WorldObservation 
     });
 }
 
-function minimalObservation(): WorldObservation {
-    const obs = observe([]);
-    assert.ok(obs !== null);
-    return obs;
-}
-
 describe("lifecycle boundary observation carriage", () => {
     it("closes enumerated deleted windows on identity plus lifecycle alone", () => {
         const obs = observe([{ id: "win-gone", managed: true, deleted: true }]);
@@ -142,62 +135,5 @@ describe("lifecycle boundary observation carriage", () => {
         assert.deepEqual(missing.closed, [], "unknown lifecycle closes nothing");
         // A missing-managed row is dropped by the hold (no rawFacts, no close).
         assert.ok(missing.windowFacts.every((w) => w.win !== "win-x"));
-    });
-});
-
-describe("lifecycle boundary report carriage", () => {
-    it("keeps raw managed and deleted flags in the capture envelope", () => {
-        const obs = minimalObservation();
-        const row = {
-            win: "win-popup",
-            out: "out-1",
-            frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
-            clientGeometry: null,
-            minSize: null,
-            maxSize: null,
-            desktops: ["ws-1"],
-            normalWindow: true,
-            managed: false,
-            deleted: false,
-            transient: false,
-            transientFor: null,
-            dialog: false,
-            modal: false,
-            wantsInput: true,
-            fullScreen: false,
-            maximizeMode: 0,
-            onAllDesktops: false,
-            minimized: false,
-            hidden: false,
-            rectV4: { x: 0, y: 0, w: 200, h: 200 },
-            hintsV4: { minW: null, minH: null, maxW: null, maxH: null },
-            nativeWsV4: "ws-1",
-            resizable: null,
-            above: null,
-            below: null,
-            role: null,
-            appId: null,
-            processId: null,
-            class: null,
-            title: null,
-            windowType: "normal",
-        };
-        const json = buildWorldInnerReportJson({
-            observation: { ...obs, windowFacts: [row] },
-            defaultTiled: true,
-            refill: "last-remaining-workspace",
-            bornMaximized: "tile-on-launch",
-            anchorFallback: "closest-splittable-relative",
-            noSpaceResult: "allow-overlap",
-            creationAttempts: [],
-            frameAttempts: [],
-            memberAttempts: [],
-            viewAttempts: [],
-            clearAttempts: [],
-        });
-        const body = JSON.parse(json as string) as { windows: Array<Record<string, unknown>> };
-        assert.equal(body.windows.length, 1);
-        assert.equal(body.windows[0]?.["managed"], false);
-        assert.equal(body.windows[0]?.["deleted"], false);
     });
 });

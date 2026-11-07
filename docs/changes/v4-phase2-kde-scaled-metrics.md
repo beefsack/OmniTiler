@@ -2,6 +2,7 @@
 
 ## Goal and scope
 
+- Status: offline acceptance complete; native scale/rendering acceptance open.
 - Recheck ordinary KDE tiling and presentation across output reconfiguration
   under the approved [per-output metric contract](../porting/world-contract.md#scale-and-rounding).
 - KDE coordinates are logical pixels: report `scale:1`, never native device
@@ -60,13 +61,21 @@
   `cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture --nocapture`;
   `cargo build --locked -p tiler-core -p tiler-protocol -p omnitiler`;
   `cargo clippy -q -p tiler-core -p tiler-protocol -p omnitiler --all-targets -- -D warnings`;
-  `npm --prefix kwin run typecheck`; `npm --prefix kwin test` (1148 passed,
+  `npm --prefix kwin run typecheck`; `npm --prefix kwin test` (1147 passed,
   zero skipped); `env OMNITILER_SCOPE_CLASS= npm --prefix kwin run build`.
   Rust results have zero failures/ignored tests and only the named exclusion.
   Private-bus logs contain actual storage/queue/take/presentation outcomes with
   no skip diagnostics. Immutable wire and stage5 recordings are unchanged.
-- V3 builder removal remains pending as a separate increment. No production
-  scale conversion or new signal/harness was necessary for the KDE slice.
+- Separate cleanup removes the unused `WorldInnerReportInput` and
+  `buildWorldInnerReportJson` v3 builder. Repository-wide references were only
+  its definition and one dead-envelope test; all seven active lifecycle
+  observation tests remain. The dead test and orphan helper/imports are gone:
+  275 lines removed, no replacement path. All gates above passed again after
+  removal; the adapter count decreased by exactly that one obsolete test.
+- A named `cargo test -p omnitiler --test stage5-fixture-route -- --nocapture`
+  run also passes both enabled production-route proofs and the witness join
+  (3 passed, zero ignored). No production scale conversion or new signal/harness
+  was necessary for the KDE slice.
 - Native-only remainder: actual compositor scale/mode notification, ordinary
   frame convergence and physical border/underlay paint after the change. Smallest
   check: two fixture windows on one output, observe frames and loaded-effect
