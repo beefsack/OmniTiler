@@ -22,16 +22,15 @@ export type SendSource =
     | { explicit: string }
     | { implicit: "home-then-action" };
 
-// Exact v3 command vocabulary (tiler-protocol world_protocol.rs
-// decode_command). direction-only intents carry no endpoint; selection
+// Exact v4 command vocabulary (tiler-protocol world_protocol.rs
+// decode_command_v4). direction-only intents carry no endpoint; selection
 // outputs are null for core-resolved (cursor-first) or an opaque id for a
 // genuinely semantic explicit output; send-numbered index 0 is the trailing
 // path; migrate-directional is direction-only (the core resolves the action
 // source from the neutral report facts).
 export type WorldCommand =
-    | { op: "focus"; win: string; direction: string }
+    | { op: "focus"; win: string }
     | { op: "send"; win: string; out: string; ws: string; follow: boolean }
-    | { op: "switch-view"; out: string; ws: string }
     | { op: "select-workspace"; out: string; ws: string }
     | { op: "select-numbered"; out: string | null; index: number }
     | { op: "select-relative"; out: string | null; delta: -1 | 1 }
@@ -49,8 +48,7 @@ export type WorldCommand =
     | { op: "focus-directional"; win: string; direction: string }
     | { op: "move-directional"; win: string; direction: string; sameAxis: string }
     | { op: "send-directional"; win: string; direction: string; follow: boolean }
-    | { op: "migrate-directional"; direction: string }
-    | { op: "operation"; command: Record<string, unknown> };
+    | { op: "migrate-directional"; direction: string };
 
 export type WorldAuthorityScope =
     | { kind: "output"; out: string }
@@ -833,14 +831,8 @@ export function cmdMigrateDirectional(direction: string): WorldCommand | null {
     }
     return { op: "migrate-directional", direction };
 }
-export function cmdSwitchView(out: string, ws: string): WorldCommand {
-    return { op: "switch-view", out, ws };
-}
-export function cmdFocus(win: string, direction: string): WorldCommand | null {
-    if (!DIRECTIONS.has(direction)) {
-        return null;
-    }
-    return { op: "focus", win, direction };
+export function cmdFocus(win: string): WorldCommand {
+    return { op: "focus", win };
 }
 
 // Strict bootstrap/discovery reply parse: the core bootstrap shape with

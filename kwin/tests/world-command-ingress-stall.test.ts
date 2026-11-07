@@ -13,6 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { startWorldAdapterEntry } from "../src/world-entry";
 import { createMiniBroker } from "./world-wire-harness";
 import {
+    cmdFocus,
     cmdFocusDirectional,
     cmdMigrateDirectional,
     cmdMoveDirectional,
@@ -301,6 +302,7 @@ describe("kde command ingress stall", () => {
                 candidates.push({ op, command: command as Record<string, unknown> });
             };
             const home = implicitSource("home-then-action");
+            push(cmdFocus("win-a"), "focus");
             push(cmdFocusDirectional("win-a", "left"), "focus-directional");
             push(cmdMoveDirectional("win-a", "right", "swap-with-neighbor"), "move-directional");
             push(cmdResize("win-a", "left", "inwards", 0), "resize");

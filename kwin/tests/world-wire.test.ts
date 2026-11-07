@@ -889,7 +889,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.ok(isWorldQueueReply(parseWorldReply(
             '{"v":4,"outcome":"queued","gen":"gen-1","client":"c","clientCmd":"1","globalCmd":"9"}',
         )));
-        const queueReq = JSON.parse(buildQueueRequest("c", "gen-1", "1", { op: "focus", win: "w", direction: "left" })) as Record<string, unknown>;
-        assert.deepEqual(queueReq, { v: 4, gen: "gen-1", client: "c", clientCmd: "1", command: { op: "focus", win: "w", direction: "left" } });
+        const queueReq = JSON.parse(buildQueueRequest("c", "gen-1", "1", { op: "focus", win: "w" })) as Record<string, unknown>;
+        assert.deepEqual(queueReq, { v: 4, gen: "gen-1", client: "c", clientCmd: "1", command: { op: "focus", win: "w" } });
     });
 });

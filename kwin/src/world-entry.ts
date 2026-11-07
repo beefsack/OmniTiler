@@ -1190,13 +1190,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (typeof rec["win"] === "string") {
             return rec["win"] as string;
         }
-        if (rec["op"] === "operation") {
-            const inner = rec["command"];
-            if (typeof inner === "object" && inner !== null &&
-                typeof (inner as Record<string, unknown>)["win"] === "string") {
-                return (inner as Record<string, unknown>)["win"] as string;
-            }
-        }
         return null;
     };
     const windowInScope = (win: string): boolean => {

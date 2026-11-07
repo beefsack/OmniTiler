@@ -536,11 +536,11 @@ function drain(h: Harness, rev: { n: number }): void {
 // transport): every filed command uses the exact v2 vocabulary with no
 // invented routing keys.
 const KNOWN_OPS = new Set([
-    "focus", "send", "switch-view", "select-workspace", "select-numbered",
+    "focus", "send", "select-workspace", "select-numbered",
     "select-relative", "select-previous", "select-trailing", "send-relative",
     "send-numbered", "set-workspace-tiling", "toggle-workspace-tiling", "migrate-workspace",
     "focus-directional", "move-directional", "send-directional",
-    "migrate-directional", "operation",
+    "migrate-directional",
 ]);
 
 function noInventedQueueOps(h: Harness): void {
