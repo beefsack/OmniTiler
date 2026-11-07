@@ -1,23 +1,20 @@
-// Native state toggles for the world adapter: float with deferred B9
-// maximized-unfloat parity plus sticky/maximize/fullscreen. Each toggle
-// fences outstanding world applies BEFORE setters (no races) and reports an
+// Native float toggle for the world adapter: float with deferred B9
+// maximized-unfloat parity (sticky/maximize/fullscreen/state-tables are
+// core Controlled state targets now, driven by world-native-state.ts;
+// startup recovery lives in world-native-recovery.ts). The toggle fences
+// outstanding world applies BEFORE setters (no races) and reports an
 // explicit outcome line; applied writes invalidate synchronously BEFORE the
 // first setter so the next full report carries the authoritative
-// observation. Sticky choreography keeps legacy parity natively (floating
-// origin plus keepAbove/keepBelow); fullscreen/maximized overlays refuse
-// for sticky, and game safety wins over parity. Explicit float toggles
-// route fullscreen subjects through core (no adapter fullscreen refusal):
-// the core owns membership beneath the retained overlay, and D5 forbids
-// every subject write (native state, geometry, focus, stacking) while
-// fullscreen holds. Setters use the exact KWin names (`setMaximize`,
-// `fullScreen`, `onAllDesktops`, `maximizeMode` readback); a successful
-// maximize/fullscreen issuance arms a pending attempt confirmed at the
-// first fresh accepted observation (never the setter boolean, never a
-// same-stack readback). Sticky stays synchronous with immediate readback.
-// No workspace policy: core
+// observation. Explicit float toggles route fullscreen subjects through
+// core (no adapter fullscreen refusal): the core owns membership beneath
+// the retained overlay, and D5 forbids every subject write (native state,
+// geometry, focus, stacking) while fullscreen holds. The B9 clear uses
+// the exact KWin name (`setMaximize`); a successful clear arms a pending
+// attempt confirmed at the first fresh accepted observation (never the
+// setter boolean, never a same-stack readback). No workspace policy: core
 // converges the tiling consequences from the next full report.
 
-import type { WorldCommand, WorldReplyResult } from "./world-report";
+import type { WorldCommand } from "./world-report";
 import type { ApplyEnv } from "./world-apply";
 import { readDesktopForOutput, writeDesktopForOutput } from "./workspace-native";
 import { isOpaqueId } from "./world-seq";
@@ -48,8 +45,6 @@ export interface WorldNativeEnv {
     // toggles fail closed until it settles.
     isWorldBusy: () => boolean;
     isFloating: (win: string) => boolean;
-    noteFloating: (win: string) => void;
-    clearFloating: (win: string) => void;
     activeWindowId: () => string | null;
     activeWindowRef: () => object | null;
     // Stable-id live ref resolution (renewed wrappers per enumeration):
@@ -59,15 +54,6 @@ export interface WorldNativeEnv {
 
 export interface WorldNativeToggles {
     readonly submitFloat: (label: string) => boolean;
-    readonly setStickyNative: (ref: object, id: string, sticky: boolean) => boolean;
-    readonly setMaximizedNative: (ref: object, maximized: boolean, label?: string) => boolean;
-    readonly setFullscreenNative: (ref: object, fullscreen: boolean, label?: string) => boolean;
-    // Authorized maximize for a Planner toggle-maximize result. True on
-    // successful issuance (pending the first fresh accepted observation
-    // boundary); false on genuine pre-write fences and on genuine
-    // invocation failure. Never same-stack readback, never retried. No
-    // geometry/focus/stack writes.
-    readonly applyAuthorizedMaximize: (result: Extract<WorldReplyResult, { op: "maximize" }>) => boolean;
     // B9 pending-unfloat settlement probe (entry-driven, exactly once on
     // the first accepted full-state report after the issued clear): the
     // first fresh report is the settlement boundary. A cleared window
@@ -80,30 +66,6 @@ export interface WorldNativeToggles {
     // "newer-input" logs a supersede outcome without failing the old
     // label; any other cause fails that label narrowly.
     readonly cancelPendingUnfloat: (cause?: string) => void;
-    // Pending native-state settlement (maximize/fullscreen): each setter
-    // issues exactly once, then confirms exactly once at the first fresh
-    // accepted observation boundary after issuance, never on the capture
-    // that issued it. Successful issuance returns pending-compatible
-    // true; genuine invocation failure returns false. A settled boundary
-    // logs applied; a silent no-op refusal fails the caller label once.
-    // One native attempt only, no retries/replay/timers. Stable
-    // canonical ids only, scope from real output/desktops, accepted
-    // observation authoritative. New commands supersede silently.
-    readonly pollPendingNativeState: (fresh: WorldObservation, gesture: boolean) => void;
-    readonly cancelPendingNativeState: (cause?: string) => void;
-    // Automatic fixed-size float stacking (option A): project-owned
-    // keepAbove above tiles, driven per accepted report with the fresh
-    // observation. No geometry or focus writes, never a keepBelow write.
-    readonly syncAutomaticFloatStacking: (fresh: WorldObservation) => void;
-    // Releases project-owned keepAbove for one window (explicit unfloat
-    // tile path). Closed/replaced references take zero cleanup writes;
-    // an already-cleared above (later keepBelow exclusivity included)
-    // releases with zero writes.
-    readonly releaseAutomaticFloat: (id: string, reason: string) => void;
-    // Best-effort release of all owned keepAbove on explicit stop only
-    // (handle.stop(); the actual KWin script unload path is unharnessed
-    // and makes no claim through this function).
-    readonly releaseAllAutomaticFloats: (reason: string) => void;
 }
 
 // Exact KWin reads with the offline lowercase fallback only when the
@@ -131,20 +93,6 @@ function readFullscreen(readProp: WorldNativeEnv["readProp"], ref: object): bool
             return native;
         }
         const legacy = readNativeAlias(readProp, ref, "fullscreen");
-        return typeof legacy === "boolean" ? legacy : null;
-    } catch (error) {
-        void error;
-        return null;
-    }
-}
-
-function readSticky(readProp: WorldNativeEnv["readProp"], ref: object): boolean | null {
-    try {
-        const native = readProp(ref, "onAllDesktops");
-        if (typeof native === "boolean") {
-            return native;
-        }
-        const legacy = readNativeAlias(readProp, ref, "sticky");
         return typeof legacy === "boolean" ? legacy : null;
     } catch (error) {
         void error;
@@ -223,18 +171,6 @@ export function isLiveWindowListed(surface: object, readProp: NativeReadProp, re
 
 export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggles {
     const { surface, log, token, readProp } = env;
-    // Sticky origins: floating membership before a sticky-on, plus
-    // keepAbove/keepBelow before it, restored on sticky-off.
-    const stickyPrevFloating = new Map<string, boolean>();
-    const stickyPrevAbove = new Map<string, { above: boolean; below: boolean }>();
-    // Automatic fixed-size float stacking (option A): project-owned
-    // keepAbove above tiles. Win-keyed ownership with no stored refs;
-    // every write goes through the freshly resolved live ref after a
-    // live overlay recheck, so stale captures never write. Preexisting
-    // below admits nothing; preexisting above stays untouched/unowned.
-    const autoOwned = new Set<string>();
-    const autoNoReacquire = new Set<string>();
-    const autoSkipNoted = new Set<string>();
 
     // Fence outstanding world applies BEFORE setters (no races): an
     // in-flight DescribeWorld or a queued command fails the toggle closed
@@ -266,20 +202,6 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
     // submitted command. Stable canonical ids only, never ref identity
     // (wrappers renew per enumeration).
     let pendingUnfloat: { win: string; label: string; scope: string } | null = null;
-
-    // Pending native-state settlement (maximize/fullscreen/authorized):
-    // the same first-fresh-boundary discipline as B9 above. Armed after
-    // successful issuance with the caller label plus the wanted flags;
-    // the entry polls on the first accepted full-state report AFTER the
-    // arming capture (poll runs before new issuance there, so the same
-    // capture never confirms). Scope fences to the arming capture.
-    let pendingNative: {
-        win: string;
-        label: string;
-        wantMaximized: boolean | null;
-        wantFullscreen: boolean | null;
-        scope: string;
-    } | null = null;
 
     // Live scope (`out/ws`) of a ref through the exact KWin names,
     // mirroring the apply host: null when unreadable (arm refuses).
@@ -441,209 +363,6 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         cancelPending(cause);
     };
 
-    // Pending native-state settlement helpers. Supersession is silent
-    // (the newer press owns its own outcome); terminal/lifecycle
-    // failures fail the arming label once, exactly like B9 above.
-    const dropPendingNative = (): void => {
-        pendingNative = null;
-    };
-
-    const supersedePendingNative = (): void => {
-        const pending = pendingNative;
-        if (pending === null) {
-            return;
-        }
-        dropPendingNative();
-        log(`omnitiler:world:native-pending-superseded window=${token(pending.win)} outcome=newer-input-superseded`);
-    };
-
-    const cancelPendingNativeState = (cause?: string): void => {
-        const pending = pendingNative;
-        if (pending === null) {
-            return;
-        }
-        if (cause === undefined) {
-            dropPendingNative();
-            return;
-        }
-        if (cause === "newer-input") {
-            supersedePendingNative();
-            return;
-        }
-        dropPendingNative();
-        const target = pending.wantFullscreen !== null && pending.wantMaximized !== null
-            ? "maximized"
-            : pending.wantFullscreen !== null
-                ? (pending.wantFullscreen ? "fullscreen" : "restored")
-                : (pending.wantMaximized === true ? "maximized" : "restored");
-        const kind = pending.wantFullscreen !== null && pending.wantMaximized === null
-            ? "fullscreen"
-            : "maximize";
-        log(`omnitiler:world:${kind}-refused target=${target} window=${token(pending.win)} reason=${cause}`);
-        env.shortcutFailed(pending.label);
-    };
-
-    // First-report settlement boundary for an issued native setter.
-    // Consumes exactly once; every fence terminates narrowly with the
-    // arming label failed once, except supersession (which never reaches
-    // here: newer input drops silently before the boundary).
-    const pollPendingNativeState = (fresh: WorldObservation, gesture: boolean): void => {
-        const pending = pendingNative;
-        if (pending === null) {
-            return;
-        }
-        const win = pending.win;
-        const label = pending.label;
-        dropPendingNative();
-        const kind = pending.wantFullscreen !== null && pending.wantMaximized === null
-            ? "fullscreen"
-            : "maximize";
-        const target = pending.wantFullscreen !== null && pending.wantMaximized !== null
-            ? "maximized"
-            : pending.wantFullscreen !== null
-                ? (pending.wantFullscreen ? "fullscreen" : "restored")
-                : (pending.wantMaximized === true ? "maximized" : "restored");
-        const refuse = (cause: string): void => {
-            log(`omnitiler:world:${kind}-refused target=${target} window=${token(win)} reason=${cause}`);
-            env.shortcutFailed(label);
-        };
-        if (env.isWorldBusy()) {
-            refuse("busy");
-            return;
-        }
-        if (gesture) {
-            refuse("gesture-raced");
-            return;
-        }
-        if (env.activeWindowId() !== win) {
-            refuse("focus-raced");
-            return;
-        }
-        // Live focus ref must resolve to the same canonical win (mirrors
-        // the applyAuthorizedMaximize focus fence); a probe failure fails
-        // closed with no writes.
-        let focused: object | null = null;
-        try {
-            focused = env.activeWindowRef();
-        } catch (error) {
-            void error;
-            focused = null;
-        }
-        if (focused === null || liveWindowId(readProp, focused) !== win) {
-            refuse("focus-raced");
-            return;
-        }
-        let live: object | null = null;
-        try {
-            live = env.liveRefById(win);
-        } catch (error) {
-            void error;
-            live = null;
-        }
-        if (live === null || liveWindowId(readProp, live) !== win || !isListed(live)) {
-            refuse("observe-missing");
-            return;
-        }
-        // A held or incomplete capture is never authoritative: consume
-        // once and refuse narrowly, never wait or retry.
-        if (fresh.complete !== true) {
-            refuse("observation-held");
-            return;
-        }
-        let scope: string | null = null;
-        let domainHeld = false;
-        for (const domain of fresh.domains) {
-            for (const entry of domain.windows) {
-                if (entry.win === win) {
-                    scope = `${domain.id}/${entry.ws}`;
-                    domainHeld = domain.hold !== "" || domain.readable !== true || domain.complete !== true;
-                    break;
-                }
-            }
-            if (scope !== null) {
-                break;
-            }
-        }
-        if (scope === null) {
-            refuse("observe-missing");
-            return;
-        }
-        if (domainHeld) {
-            refuse("observation-held");
-            return;
-        }
-        if (scope !== pending.scope) {
-            refuse("scope-raced");
-            return;
-        }
-        // Topology must completely cover the target output; a missing or
-        // incomplete topology entry is held, never authoritative.
-        let topoOk = false;
-        for (const t of fresh.topology) {
-            if (t.out === scope.slice(0, scope.indexOf("/"))) {
-                topoOk = t.complete === true;
-                break;
-            }
-        }
-        if (!topoOk) {
-            refuse("observation-held");
-            return;
-        }
-        // Re-read the live scope at settlement: applyWorldReply may have
-        // moved the window after issuance. Unreadable or mismatched live
-        // scope rejects in addition to the capture scope above.
-        const liveScope = readScopeOf(live);
-        if (liveScope === null) {
-            refuse("observe-missing");
-            return;
-        }
-        if (liveScope !== pending.scope) {
-            refuse("scope-raced");
-            return;
-        }
-        const liveFullscreen = readFullscreen(readProp, live);
-        const liveMaximized = readMaximized(readProp, live);
-        if (pending.wantFullscreen !== null && pending.wantMaximized !== null) {
-            if (liveFullscreen === null || liveMaximized === null) {
-                refuse("observe-missing");
-                return;
-            }
-            if (liveFullscreen === pending.wantFullscreen && liveMaximized === pending.wantMaximized) {
-                log(`omnitiler:world:maximize-applied target=maximized window=${token(win)} clear=fullscreen`);
-                return;
-            }
-            refuse("silent-refusal");
-            return;
-        }
-        if (pending.wantFullscreen !== null) {
-            if (liveFullscreen === null) {
-                refuse("observe-missing");
-                return;
-            }
-            if (liveFullscreen === pending.wantFullscreen) {
-                log(`omnitiler:world:fullscreen-applied target=${target} window=${token(win)} outcome=applied`);
-                return;
-            }
-            refuse("silent-refusal");
-            return;
-        }
-        if (liveMaximized === null) {
-            refuse("observe-missing");
-            return;
-        }
-        // An ordinary maximize racing into fullscreen is a race, not a
-        // silent host no-op: report it narrowly like the B9 guard.
-        if (liveFullscreen === true) {
-            refuse("fullscreen-raced");
-            return;
-        }
-        if (liveMaximized === pending.wantMaximized) {
-            log(`omnitiler:world:maximize-applied target=${target} window=${token(win)} outcome=applied`);
-            return;
-        }
-        refuse("silent-refusal");
-    };
-
     // Float toggle with B9 maximized-unfloat parity (native only). Fence
     // order is load-bearing: busy fence, then the maximize clear (when a
     // floating maximized non-fullscreen window needs it), and only then
@@ -668,7 +387,6 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
             if (pendingUnfloat !== null) {
                 cancelPendingSilent("newer-input-superseded");
             }
-            supersedePendingNative();
             env.shortcutFailed(label);
             return false;
         }
@@ -676,7 +394,6 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
             if (pendingUnfloat !== null) {
                 cancelPendingSilent("newer-input-superseded");
             }
-            supersedePendingNative();
             env.shortcutFailed(label);
             return false;
         }
@@ -687,7 +404,6 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
             if (pendingUnfloat !== null) {
                 cancelPendingSilent("newer-input-superseded");
             }
-            supersedePendingNative();
             log(`omnitiler:world:float-unfloat-maximize-clear window=${token(w)} outcome=issued`);
             env.invalidate();
             let invoked = false;
@@ -717,7 +433,6 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         if (pendingUnfloat !== null) {
             cancelPendingSilent("newer-input-superseded");
         }
-        supersedePendingNative();
         // Unfloat carries the live frame, except a fullscreen subject
         // carries no rect (D5: the observed fullscreen frame is never the
         // retained float frame); float carries no rect (session retained
@@ -745,606 +460,7 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         return true;
     };
 
-    const setStickyNative = (ref: object, id: string, sticky: boolean): boolean => {
-        try {
-            // Newer direct input supersedes a pending native settlement
-            // even when this press later refuses (registered shortcuts
-            // bypass the entry cancel hook).
-            supersedePendingNative();
-            if (worldApplyFenced("sticky")) {
-                return false;
-            }
-            if (!isListed(ref)) {
-                return false;
-            }
-            if (readFullscreen(readProp, ref) === true || readMaximized(readProp, ref) === true) {
-                log(`omnitiler:world:sticky-refused-overlay window=${token(id)}`);
-                return false;
-            }
-            if (sticky) {
-                if (readSticky(readProp, ref) === true) {
-                    return true;
-                }
-                stickyPrevFloating.set(id, env.isFloating(id));
-                const above = readProp(ref, "keepAbove");
-                const below = readProp(ref, "keepBelow");
-                if (typeof above === "boolean" && typeof below === "boolean") {
-                    stickyPrevAbove.set(id, { above, below });
-                }
-                // Synchronous invalidation BEFORE the first setter so the
-                // next full report carries the authoritative observation.
-                env.invalidate();
-                let invoked = false;
-                try {
-                    invoked = Reflect.set(ref, "onAllDesktops", true) === true;
-                } catch (error) {
-                    void error;
-                    invoked = false;
-                }
-                if (typeof above === "boolean") {
-                    try {
-                        Reflect.set(ref, "keepAbove", true);
-                    } catch (error) {
-                        void error;
-                    }
-                }
-                // Truthful readback: the setter boolean alone is not proof.
-                if (invoked && readSticky(readProp, ref) === true) {
-                    env.noteFloating(id);
-                    env.scheduleDispatch();
-                    log(`omnitiler:world:sticky-applied window=${token(id)} target=sticky outcome=applied`);
-                    return true;
-                }
-                log(`omnitiler:world:sticky-refused window=${token(id)} target=sticky outcome=refused`);
-                return false;
-            }
-            if (readSticky(readProp, ref) !== true) {
-                return true;
-            }
-            env.invalidate();
-            let invoked = false;
-            try {
-                invoked = Reflect.set(ref, "onAllDesktops", false) === true;
-            } catch (error) {
-                void error;
-                invoked = false;
-            }
-            if (!invoked || readSticky(readProp, ref) === true) {
-                log(`omnitiler:world:sticky-refused window=${token(id)} target=unsticky outcome=refused`);
-                return false;
-            }
-            const prev = stickyPrevAbove.get(id);
-            stickyPrevAbove.delete(id);
-            const wasFloating = stickyPrevFloating.get(id);
-            stickyPrevFloating.delete(id);
-            try {
-                if (prev !== undefined) {
-                    Reflect.set(ref, "keepAbove", prev.above);
-                    try {
-                        if (readProp(ref, "keepBelow") !== prev.below) {
-                            Reflect.set(ref, "keepBelow", prev.below);
-                        }
-                    } catch (error) {
-                        void error;
-                    }
-                }
-            } catch (error) {
-                void error;
-            }
-            if (wasFloating === false) {
-                env.clearFloating(id);
-            }
-            env.scheduleDispatch();
-            log(`omnitiler:world:sticky-applied window=${token(id)} target=unsticky outcome=applied`);
-            return true;
-        } catch (error) {
-            void error;
-            return false;
-        }
-    };
-
-    const setMaximizedNative = (ref: object, maximized: boolean, label = "maximize"): boolean => {
-        try {
-            // Newer direct input supersedes any pending settlement first
-            // (the new press owns its own outcome below).
-            supersedePendingNative();
-            if (worldApplyFenced("maximize")) {
-                return false;
-            }
-            if (!isListed(ref) || readFullscreen(readProp, ref) === true) {
-                return false;
-            }
-            const win = liveWindowId(readProp, ref);
-            if (win === null) {
-                return false;
-            }
-            // Synchronous invalidation BEFORE the first setter.
-            env.invalidate();
-            if (!invokeMaximize(readProp, ref, maximized)) {
-                log(`omnitiler:world:maximize-refused target=${maximized ? "maximized" : "restored"} window=${token(win)} reason=native-write-refused`);
-                return false;
-            }
-            // Arm scope fences the continuation to the current capture:
-            // an unreadable scope refuses immediately (unobserved). No
-            // same-stack readback: async settlement arrives after return.
-            const scope = readScopeOf(ref);
-            if (scope === null) {
-                log(`omnitiler:world:maximize-refused target=${maximized ? "maximized" : "restored"} window=${token(win)} reason=observe-missing`);
-                return false;
-            }
-            env.scheduleDispatch();
-            pendingNative = { win, label, wantMaximized: maximized, wantFullscreen: null, scope };
-            log(`omnitiler:world:maximize-pending target=${maximized ? "maximized" : "restored"} window=${token(win)} outcome=issued`);
-            return true;
-        } catch (error) {
-            void error;
-            return false;
-        }
-    };
-
-    const setFullscreenNative = (ref: object, fullscreen: boolean, label = "toggle-fullscreen"): boolean => {
-        try {
-            supersedePendingNative();
-            if (worldApplyFenced("fullscreen")) {
-                return false;
-            }
-            if (!isListed(ref)) {
-                return false;
-            }
-            const win = liveWindowId(readProp, ref);
-            if (win === null) {
-                return false;
-            }
-            // Synchronous invalidation BEFORE the first setter.
-            env.invalidate();
-            let invoked = false;
-            try {
-                if (readProp(ref, "fullScreen") === undefined) {
-                    return false;
-                }
-                invoked = Reflect.set(ref, "fullScreen", fullscreen);
-            } catch (error) {
-                void error;
-                return false;
-            }
-            if (!invoked) {
-                log(`omnitiler:world:fullscreen-refused target=${fullscreen ? "fullscreen" : "restored"} window=${token(win)} reason=native-write-refused`);
-                return false;
-            }
-            const scope = readScopeOf(ref);
-            if (scope === null) {
-                log(`omnitiler:world:fullscreen-refused target=${fullscreen ? "fullscreen" : "restored"} window=${token(win)} reason=observe-missing`);
-                return false;
-            }
-            env.scheduleDispatch();
-            pendingNative = { win, label, wantMaximized: null, wantFullscreen: fullscreen, scope };
-            log(`omnitiler:world:fullscreen-pending target=${fullscreen ? "fullscreen" : "restored"} window=${token(win)} outcome=issued`);
-            return true;
-        } catch (error) {
-            void error;
-            return false;
-        }
-    };
-
-    // Authorized maximize for the Planner toggle-maximize result. Fresh
-    // identity/ref/list/focus/source-flag fences run before any write so no
-    // stale accepted capture can actuate; worldApplyFenced runs once before
-    // writes. Ordinary results delegate to setMaximizedNative (setMaximize
-    // bool/bool only, never a fullscreen property write). The fullscreen
-    // branch clears first through the exact KWin name (`fullScreen`) then
-    // invokes maximize back-to-back with NO applied readback required
-    // between the setters: script `fullScreen` reads the APPLIED flag
-    // (window.h:332) while the WRITE setter flips the REQUESTED flag
-    // synchronously (xdgshellwindow.cpp:1737), which is what isResizable()
-    // reads (:682) and maximize() requires (:1773) before staging
-    // m_nextStates plus scheduleConfigure (:879, :890). Applied flags
-    // update only on client ack (:1080), so an applied-full readback
-    // between setters would always abort on Wayland; the legacy
-    // fullscreen guard is NOT reused here. Same-requested-mode maximize
-    // is a host no-op, so both-flags clears full and retains max. Tags v6.7.4 (same mechanism at v6.8.1):
-    // https://invent.kde.org/plasma/kwin/-/blob/v6.7.4/src/xdgshellwindow.cpp
-    // https://invent.kde.org/plasma/kwin/-/blob/v6.7.4/src/window.h
-    const applyAuthorizedMaximize = (result: Extract<WorldReplyResult, { op: "maximize" }>): boolean => {
-        try {
-            const target = result.maximized ? "maximized" : "restored";
-            if (env.activeWindowId() !== result.win) {
-                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=focus-raced`);
-                return false;
-            }
-            let live: object | null = null;
-            try {
-                live = env.liveRefById(result.win);
-            } catch (error) {
-                void error;
-                live = null;
-            }
-            if (live === null || liveWindowId(readProp, live) !== result.win || !isListed(live)) {
-                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=observe-missing`);
-                return false;
-            }
-            let focused: object | null = null;
-            try {
-                focused = env.activeWindowRef();
-            } catch (error) {
-                void error;
-                focused = null;
-            }
-            if (focused === null || liveWindowId(readProp, focused) !== result.win) {
-                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=focus-raced`);
-                return false;
-            }
-            // Source preimage: clearFullscreen IS the source fullscreen.
-            const sourceFullscreen = readFullscreen(readProp, live);
-            const sourceMaximized = readMaximized(readProp, live);
-            if (sourceFullscreen === null || sourceMaximized === null ||
-                sourceFullscreen !== result.clearFullscreen || sourceMaximized !== result.wasMaximized) {
-                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=source-raced`);
-                return false;
-            }
-            if (!result.clearFullscreen) {
-                return setMaximizedNative(live, result.maximized, "maximize");
-            }
-            // A newer authorized result supersedes any pending settlement;
-            // the old press ends silently, the new one arms below.
-            supersedePendingNative();
-            if (worldApplyFenced("maximize")) {
-                return false;
-            }
-            // Synchronous invalidation BEFORE the first setter.
-            env.invalidate();
-            let cleared = false;
-            try {
-                cleared = Reflect.set(live, "fullScreen", false);
-            } catch (error) {
-                void error;
-                cleared = false;
-            }
-            if (!cleared) {
-                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=clear-refused`);
-                return false;
-            }
-            let invoked = false;
-            try {
-                invoked = invokeMaximize(readProp, live, result.maximized);
-            } catch (error) {
-                void error;
-                invoked = false;
-            }
-            if (!invoked) {
-                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=native-write-refused`);
-                return false;
-            }
-            // Arm scope fences the continuation to the current capture;
-            // unreadable scope refuses immediately. NO applied-fullscreen
-            // gate between the back-to-back setters above (requested vs
-            // applied flags), and NO same-stack final readback here: the
-            // first fresh accepted boundary settles the attempt.
-            const scope = readScopeOf(live);
-            if (scope === null) {
-                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=observe-missing`);
-                return false;
-            }
-            env.scheduleDispatch();
-            pendingNative = {
-                win: result.win,
-                label: "maximize",
-                wantMaximized: result.maximized,
-                wantFullscreen: false,
-                scope,
-            };
-            log(`omnitiler:world:maximize-pending target=${target} window=${token(result.win)} clear=fullscreen outcome=issued`);
-            return true;
-        } catch (error) {
-            void error;
-            return false;
-        }
-    };
-
-    // Automatic fixed-size float stacking driver (option A). `fresh`
-    // carries classification flags only; every stacking write re-reads
-    // live overlay state first and resolves a fresh live ref, so a stale
-    // capture never writes. A live-fullscreen target takes no write on
-    // any path; a scope with live-verified fullscreen focus suspends
-    // owned above and admits nothing.
-    const resolveAutoLive = (win: string): object | null => {
-        let live: object | null = null;
-        try {
-            live = env.liveRefById(win);
-        } catch (error) {
-            void error;
-            return null;
-        }
-        if (live === null || !isListed(live)) {
-            return null;
-        }
-        if (liveWindowId(readProp, live) !== win) {
-            return null;
-        }
-        return live;
-    };
-
-    // Live overlay recheck immediately before every stacking write
-    // (exact KWin names, offline alias fallback). Null or any overlay
-    // fails closed with zero writes; ownership is retained for retry.
-    // Native hidden aliases into live minimized (immediate eligibility,
-    // not native minimization); a missing/unreadable hidden fails closed.
-    const readAutoSafety = (ref: object): { fullscreen: boolean; maximized: boolean; minimized: boolean; sticky: boolean } | null => {
-        try {
-            const fsRaw = readProp(ref, "fullScreen");
-            const fullscreen = typeof fsRaw === "boolean" ? fsRaw : readNativeAlias(readProp, ref, "fullscreen");
-            const modeRaw = readProp(ref, "maximizeMode");
-            const maximized = typeof modeRaw === "number" ? modeRaw !== 0 : readNativeAlias(readProp, ref, "maximized");
-            const minimizedRaw = readProp(ref, "minimized");
-            const hiddenRaw = readProp(ref, "hidden");
-            const stickyRaw = readProp(ref, "onAllDesktops");
-            const sticky = typeof stickyRaw === "boolean" ? stickyRaw : readNativeAlias(readProp, ref, "sticky");
-            if (typeof fullscreen !== "boolean" || typeof maximized !== "boolean" ||
-                typeof minimizedRaw !== "boolean" || typeof hiddenRaw !== "boolean" || typeof sticky !== "boolean") {
-                return null;
-            }
-            return { fullscreen, maximized, minimized: minimizedRaw || hiddenRaw, sticky };
-        } catch (error) {
-            void error;
-            return null;
-        }
-    };
-
-    const writeAutoAbove = (live: object, win: string, want: boolean, target: string): boolean => {
-        const safety = readAutoSafety(live);
-        if (safety === null || safety.fullscreen || safety.maximized || safety.minimized || safety.sticky) {
-            log(`omnitiler:world:automatic-keep-above window=${token(win)} target=${target} outcome=refused`);
-            return false;
-        }
-        let invoked = false;
-        try {
-            invoked = Reflect.set(live, "keepAbove", want);
-        } catch (error) {
-            void error;
-            invoked = false;
-        }
-        const state = readAutoAboveBelow(readProp, live);
-        const ok = invoked && state !== null && state.above === want && (want === false || state.below === false);
-        log(`omnitiler:world:automatic-keep-above window=${token(win)} target=${target} outcome=${ok ? "applied" : "refused"}`);
-        return ok;
-    };
-
-    const dropAutoWin = (win: string): void => {
-        autoOwned.delete(win);
-        autoNoReacquire.delete(win);
-        autoSkipNoted.delete(`${win} below`);
-        autoSkipNoted.delete(`${win} suspended`);
-    };
-
-    const releaseAutomaticFloat = (id: string, reason: string): void => {
-        try {
-            if (!autoOwned.has(id)) {
-                return;
-            }
-            const live = resolveAutoLive(id);
-            if (live === null) {
-                dropAutoWin(id);
-                return;
-            }
-            const flags = readAutoAboveBelow(readProp, live);
-            if (flags === null || !flags.above) {
-                autoOwned.delete(id);
-                if (flags !== null && flags.below) {
-                    autoNoReacquire.add(id);
-                }
-                return;
-            }
-            // A refused write (live overlay) retains ownership for a
-            // later retry with zero writes; only success drops it.
-            if (writeAutoAbove(live, id, false, `restore-${reason}`)) {
-                autoOwned.delete(id);
-            }
-        } catch (error) {
-            void error;
-        }
-    };
-
-    // Best-effort release of all owned keepAbove on explicit stop only.
-    // Safety-guarded restores; refused targets stay owned but unwritten.
-    // This covers handle.stop(); the actual KWin script unload path is
-    // unharnessed and makes no claim through this function.
-    const releaseAllAutomaticFloats = (reason: string): void => {
-        try {
-            for (const win of [...autoOwned]) {
-                const live = resolveAutoLive(win);
-                if (live === null) {
-                    dropAutoWin(win);
-                    continue;
-                }
-                const flags = readAutoAboveBelow(readProp, live);
-                if (flags === null || !flags.above) {
-                    autoOwned.delete(win);
-                    continue;
-                }
-                if (writeAutoAbove(live, win, false, `restore-${reason}`)) {
-                    autoOwned.delete(win);
-                }
-            }
-            autoNoReacquire.clear();
-            autoSkipNoted.clear();
-        } catch (error) {
-            void error;
-        }
-    };
-
-    const syncAutomaticFloatStacking = (fresh: WorldObservation): void => {
-        try {
-            const entries = new Map<string, { entry: WorldObservation["domains"][number]["windows"][number]; scope: string }>();
-            for (const domain of fresh.domains) {
-                const scope = `${domain.id}/${domain.ws}`;
-                for (const w of domain.windows) {
-                    if (!entries.has(w.win)) {
-                        entries.set(w.win, { entry: w, scope });
-                    }
-                }
-            }
-            for (const m of fresh.minimized) {
-                if (!entries.has(m.win)) {
-                    entries.set(m.win, { entry: m, scope: `${m.out}/${m.ws}` });
-                }
-            }
-            // Suspend scopes with live-verified fullscreen focus; the
-            // stale capture is only a fallback when live focus is
-            // unreadable. Scopes use the live `out/ws` form with the
-            // observation scope as fallback.
-            const suspendScopes = new Set<string>();
-            let liveFocusRead = false;
-            try {
-                const liveId = env.activeWindowId();
-                if (liveId !== null) {
-                    const liveRef = env.liveRefById(liveId);
-                    if (liveRef !== null) {
-                        const safety = readAutoSafety(liveRef);
-                        if (safety !== null) {
-                            liveFocusRead = true;
-                            if (safety.fullscreen) {
-                                const scope = readScopeOf(liveRef) ?? entries.get(liveId)?.scope ?? null;
-                                if (scope !== null) {
-                                    suspendScopes.add(scope);
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (error) {
-                void error;
-            }
-            if (!liveFocusRead) {
-                const focusedId = fresh.focusedGlobal;
-                if (typeof focusedId === "string" && focusedId !== "") {
-                    const focused = entries.get(focusedId);
-                    if (focused !== undefined && focused.entry.fullscreen === true) {
-                        suspendScopes.add(focused.scope);
-                    }
-                }
-            }
-            for (const win of [...autoOwned]) {
-                const live = resolveAutoLive(win);
-                if (live === null) {
-                    dropAutoWin(win);
-                    continue;
-                }
-                const flags = readAutoAboveBelow(readProp, live);
-                if (flags === null) {
-                    continue;
-                }
-                if (flags.below) {
-                    autoOwned.delete(win);
-                    autoNoReacquire.add(win);
-                    log(`omnitiler:world:automatic-keep-above window=${token(win)} target=release reason=below-wins outcome=released`);
-                    continue;
-                }
-                const current = entries.get(win);
-                if (current !== undefined && (current.entry.fixedAuto !== true || current.entry.fixedSuppress === true)) {
-                    // Lost automatic classification restores owned above
-                    // once; a refused write retains for a later retry.
-                    if (flags.above && !writeAutoAbove(live, win, false, "restore-classification-lost")) {
-                        continue;
-                    }
-                    autoOwned.delete(win);
-                    continue;
-                }
-                const scope = readScopeOf(live) ?? current?.scope ?? null;
-                if (flags.above && scope !== null && suspendScopes.has(scope)) {
-                    // A refused write (live overlay, including a
-                    // fullscreen target itself) retains for retry.
-                    if (!writeAutoAbove(live, win, false, "restore-suspended-fullscreen")) {
-                        continue;
-                    }
-                    autoOwned.delete(win);
-                    continue;
-                }
-                if (
-                    current !== undefined &&
-                    (current.entry.sticky === true || current.entry.fullscreen === true ||
-                        current.entry.maximized === true || current.entry.minimized === true)
-                ) {
-                    continue;
-                }
-                if (!flags.above) {
-                    autoOwned.delete(win);
-                    autoNoReacquire.add(win);
-                    log(`omnitiler:world:automatic-keep-above window=${token(win)} target=release reason=external-clear outcome=released`);
-                    continue;
-                }
-            }
-            for (const [win, current] of entries) {
-                if (autoOwned.has(win)) {
-                    continue;
-                }
-                const entry = current.entry;
-                if (entry.fixedAuto !== true || entry.fixedSuppress === true) {
-                    continue;
-                }
-                if (entry.floating !== true || entry.sticky === true || entry.fullscreen === true ||
-                    entry.maximized === true || entry.minimized === true) {
-                    continue;
-                }
-                const live = resolveAutoLive(win);
-                if (live === null) {
-                    continue;
-                }
-                const flags = readAutoAboveBelow(readProp, live);
-                if (flags === null) {
-                    log(`omnitiler:world:automatic-keep-above window=${token(win)} target=above outcome=missing`);
-                    continue;
-                }
-                if (flags.below) {
-                    const key = `${win} below`;
-                    if (!autoSkipNoted.has(key)) {
-                        autoSkipNoted.add(key);
-                        log(`omnitiler:world:automatic-keep-above window=${token(win)} target=above outcome=skipped reason=preexisting-below`);
-                    }
-                    continue;
-                }
-                if (flags.above) {
-                    // Preowned above stays untouched and untracked; an
-                    // ended lifetime becomes eligible again below.
-                    autoNoReacquire.delete(win);
-                    continue;
-                }
-                if (autoNoReacquire.has(win)) {
-                    continue;
-                }
-                const applicantScope = readScopeOf(live) ?? current.scope;
-                if (suspendScopes.has(applicantScope)) {
-                    const key = `${win} suspended`;
-                    if (!autoSkipNoted.has(key)) {
-                        autoSkipNoted.add(key);
-                        log(`omnitiler:world:automatic-keep-above window=${token(win)} target=above outcome=skipped reason=fullscreen-sibling`);
-                    }
-                    continue;
-                }
-                autoSkipNoted.delete(`${win} below`);
-                autoSkipNoted.delete(`${win} suspended`);
-                if (writeAutoAbove(live, win, true, "above")) {
-                    autoOwned.add(win);
-                }
-            }
-        } catch (error) {
-            void error;
-        }
-    };
-
-    return { submitFloat, setStickyNative, setMaximizedNative, setFullscreenNative, applyAuthorizedMaximize, pollPendingUnfloat, cancelPendingUnfloat, pollPendingNativeState, cancelPendingNativeState, syncAutomaticFloatStacking, releaseAutomaticFloat, releaseAllAutomaticFloats };
-}
-
-function readAutoAboveBelow(readProp: WorldNativeEnv["readProp"], ref: object): { above: boolean; below: boolean } | null {
-    try {
-        const above = readProp(ref, "keepAbove");
-        const below = readProp(ref, "keepBelow");
-        if (typeof above !== "boolean" || typeof below !== "boolean") {
-            return null;
-        }
-        return { above, below };
-    } catch (error) {
-        void error;
-        return null;
-    }
+    return { submitFloat, pollPendingUnfloat, cancelPendingUnfloat };
 }
 
 // Native host bindings for the shared apply loop (moved verbatim from the

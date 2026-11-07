@@ -290,3 +290,18 @@
   `workspace_unsafe_posture` case is excluded. All 38 native-effect offline tests
   pass in a fresh build. Separate obsolete-helper cull and fixture-only native
   proof remain next. No live testing has run.
+
+## Verified obsolete-helper cull
+
+- Removed dormant local sticky/fullscreen/maximize setters, result-driven
+  maximize handling, pending-native settlement and automatic-above ownership.
+  Caller closure proves their only remaining cancellation/release callers were
+  no-ops: no production path could populate the removed state.
+- Preserved native float/B9 maximized-unfloat handling and the apply host. B9
+  invokes its maximize clear directly, not through the removed maximize helper.
+  Migrated entry/executor/recovery scenario coverage remains unchanged; only
+  helper-only tests and dead environment fields were removed.
+- The five-file cull removes 1748 net lines. Typechecking, 1148/1148 adapter tests
+  with zero skips and the unscoped/non-trace build pass. Fixtures, Rust and
+  native-effect sources remain unchanged. Fixture-only native proof remains
+  next; no live testing has run.

@@ -2610,11 +2610,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } catch (error) {
             void error;
         }
-        try {
-            native.cancelPendingNativeState(cause);
-        } catch (error) {
-            void error;
-        }
     };
 
     // Dead-generation intent drop: queued intents belong to the superseded
@@ -4331,16 +4326,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             ) {
                                 tileIds.add(takeResult.win);
                                 floatingIds.delete(takeResult.win);
-                                // Explicit unfloat of an automatic float
-                                // releases owned keepAbove once (the
-                                // suppress pin above holds the tile; never
-                                // a keepBelow write). Never throws into
-                                // the accept path.
-                                try {
-                                    native.releaseAutomaticFloat(takeResult.win, "explicit-unfloat");
-                                } catch (error) {
-                                    void error;
-                                }
                             } else if (
                                 takeResult !== null && takeResult.op === "toggle-float" &&
                                 takeResult.rect === null && takeResult.noSpace === true
@@ -4632,7 +4617,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // accepted reply's controlled state rows arm/store/flush
                     // through the preimage executor (persist-before-write,
                     // exact live join). Legacy take-result maximize and
-                    // automatic keepAbove writes stay dormant (functions stay);
+                    // automatic keepAbove writes stay removed;
                     // no local above classification writes.
                     lastAcceptedReply = parsed;
                     try {
@@ -4640,10 +4625,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     } catch (error) {
                         void error;
                     }
-                    // Legacy competing writers stay dormant (helpers
-                    // retained for the separate cull): no pending native
-                    // poll, no descriptive take-result maximize, no
-                    // automatic keepAbove classification writes.
+                    // Legacy competing writers stay removed:
+                    // no pending native poll, no descriptive take-result
+                    // maximize, no automatic keepAbove classification writes.
                     // Terminal drop-attempt diagnostic (tracked window only):
                     // pending-report rows for the NEXT report. The accepted
                     // ack retires only exactly-equal delivered rows, so no
@@ -4670,8 +4654,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         onNativeInvalidation();
                     }
                     // Retired automatic float stacking (option A removed):
-                    // no local keepAbove classification writes; the helper
-                    // stays dormant for the separate cull.
+                    // no local keepAbove classification writes.
                     log(`omnitiler:world:applied rev=${token(parsed.rev)} geom=${applied.geometryWrites} member=${applied.membershipWrites} views=${applied.viewWrites} mk=${applied.creations} rm=${applied.removals} fx=${applied.effects} held=${applied.held}`);
                     // B9 single-observation boundary: the first accepted
                     // full-state report after the issued clear decides the
@@ -6262,12 +6245,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         scheduleDispatch,
         isWorldBusy: () => state.inFlight !== null || pendingQueue.length > 0,
         isFloating: (win) => floatingIds.has(win),
-        noteFloating: (win) => {
-            floatingIds.add(win);
-        },
-        clearFloating: (win) => {
-            floatingIds.delete(win);
-        },
         activeWindowId,
         activeWindowRef,
         liveRefById,
@@ -6297,11 +6274,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     cancelPendingForNewerInput = (): void => {
         try {
             native.cancelPendingUnfloat("newer-input");
-        } catch (error) {
-            void error;
-        }
-        try {
-            native.cancelPendingNativeState("newer-input");
         } catch (error) {
             void error;
         }
@@ -6456,19 +6428,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             } catch (error) {
                 void error;
             }
-            try {
-                native.cancelPendingNativeState();
-            } catch (error) {
-                void error;
-            }
-            // Best-effort release of owned automatic keepAbove on
-            // explicit stop only; the actual KWin script unload path is
-            // unharnessed and makes no claim here.
-            try {
-                native.releaseAllAutomaticFloats("stop");
-            } catch (error) {
-                void error;
-            }
             if (dispatchTimerCancel !== null) {
                 try {
                     dispatchTimerCancel();
@@ -6560,11 +6519,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             try {
                 native.cancelPendingUnfloat("newer-input");
-            } catch (error) {
-                void error;
-            }
-            try {
-                native.cancelPendingNativeState("newer-input");
             } catch (error) {
                 void error;
             }
