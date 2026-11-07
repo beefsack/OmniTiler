@@ -568,3 +568,9 @@
   underlay and preview assertions remain, with the intentionally hidden K1 border.
   Cursor tests retain no polling, no warp writes and refusal logging while checking
   that the retired report capability lane is absent. No fixture bytes changed.
+- Native-gesture lifecycle and broker-cutover harnesses now strict-parse their
+  synthetic v4 accepts. All 22 tests and strict TypeScript pass, retaining exact
+  identity/acknowledgement, terminal replay, bounded fast/host retry, stale callback,
+  wrong-lane and stop-cancellation checks. Raw native snapshots remain unchanged;
+  the retired script-minted ingress lane is asserted absent, not null. These are
+  offline transport tests, not physical-input or native gesture acceptance.

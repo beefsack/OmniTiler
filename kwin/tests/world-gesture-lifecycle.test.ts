@@ -8,6 +8,8 @@ import assert from "node:assert/strict";
 
 import { startWorldAdapterEntry } from "../src/world-entry";
 import { parseNativeGesture, rawNativeGestureJson } from "../src/world-gesture";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 function gestureSnapshot(over: Record<string, unknown> = {}): string {
     return JSON.stringify({
@@ -114,14 +116,18 @@ describe("native gesture lifecycle transport", () => {
             callDbus: (_s, _p, _i, method, payload, callback) => {
                 calls.push({ method, payload, callback });
                 if (method === "DiscoverWorld") {
-                    const body = JSON.parse(payload) as { req: string };
-                    callback(JSON.stringify({
-                        v: 3, adapter: "broker-1", gen: "gen-1", req: body.req, obs: "0", rev: "0",
-                        ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-                        windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
-                        operationSettled: [], nativeCreations: [], warpCursor: null,
-                        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-                    }));
+                    const body = JSON.parse(payload) as Record<string, unknown>;
+                    if (body["type"] === "handshake") {
+                        callback(JSON.stringify({
+                            type: "handshake-reply", v: 4, adapter: "test-adapter",
+                            req: body["req"], ready: false, kind: "", gen: "gen-1",
+                        }));
+                    } else if (body["type"] === "settings") {
+                        callback(JSON.stringify({
+                            type: "settings-reply", v: 4, adapter: "test-adapter", gen: "gen-1",
+                            req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+                        }));
+                    }
                 } else if (method === "DescribeWorld") {
                     const body = JSON.parse(payload) as { source: string; nativeInvalid: string };
                     describeRev += 1;
@@ -135,16 +141,21 @@ describe("native gesture lifecycle transport", () => {
                             coreId: (globalThis as Record<string, unknown>)["__gestureCoreId"] as string ?? "1",
                         }
                         : null;
-                    callback(JSON.stringify({
-                        v: 3, adapter: "broker-1", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
+                    // Strict v4 synthetic accept: producer adapter, serving generation, source/watermark binding, hidden presentation, null take-lane result.
+                    const text = JSON.stringify({
+                        v: 4, adapter: "test-adapter", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
                         ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                         windows: [], transfers: [], effects: [], result: null,
                         gestureSettled: (globalThis as Record<string, unknown>)["__gestureSettled"] ?? null,
                         gestureAssoc: assoc,
                         operationSettled: [], nativeCreations: [], warpCursor: null,
+                        intentWrites: [], switchSettled: [], diagnostics: [],
                         source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
-                        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-                    }));
+                        presentation: DISABLED_PRESENTATION,
+                    });
+                    const parsed = parseWorldReply(text);
+                    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored capture accept binds strict v4");
+                    callback(text);
                 }
             },
             gestureCallDbus: (_s, _p, _i, method, payload, callback) => {
@@ -175,22 +186,14 @@ describe("native gesture lifecycle transport", () => {
                 }
             }
         };
-        // Discovery + auto observation (idle: no ingress lane content).
-        calls.find((c) => c.method === "DiscoverWorld")?.callback;
-        const discover = calls.find((c) => c.method === "DiscoverWorld");
-        assert.ok(discover !== undefined);
-        discover.callback(JSON.stringify({
-            v: 3, adapter: "broker-1", gen: "gen-1", req: JSON.parse(discover.payload).req, obs: "0", rev: "0",
-            ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-            windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
-            operationSettled: [], nativeCreations: [], warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        }));
+        // Synchronous mocks already answered discovery during startup, so the
+        // auto observation capture is already dispatched; flush the debounce.
         runTimers();
         const auto = last(calls.filter((c) => c.method === "DescribeWorld"));
         assert.ok(auto !== undefined);
         const autoReport = JSON.parse(auto.payload).report as Record<string, unknown>;
-        assert.equal(autoReport["gestureIngress"], null);
+        assert.equal("gestureIngress" in autoReport, false);
+        assert.equal(autoReport["gestureIngress"], undefined);
         assert.equal(autoReport["nativeGesture"], null);
         assert.equal(autoReport["gesture"], false);
         (globalThis as Record<string, unknown>)["__gestureSettled"] = undefined;
@@ -203,7 +206,8 @@ describe("native gesture lifecycle transport", () => {
         // No new dispatch is forced by script signals alone, and any report
         // still carries no ingress.
         const scriptReport = JSON.parse(afterScript.payload).report as Record<string, unknown>;
-        assert.equal(scriptReport["gestureIngress"], null);
+        assert.equal("gestureIngress" in scriptReport, false);
+        assert.equal(scriptReport["gestureIngress"], undefined);
         assert.equal(scriptReport["nativeGesture"], null);
 
         // Native START arrives through the held waiter: next capture carries it raw.
@@ -221,7 +225,8 @@ describe("native gesture lifecycle transport", () => {
         assert.equal(raw["kind"], "move");
         assert.equal(raw["phase"], "started");
         assert.deepEqual(raw["startRect"], [0, 0, 200, 200]);
-        assert.equal(startedReport["gestureIngress"], null);
+        assert.equal("gestureIngress" in startedReport, false);
+        assert.equal(startedReport["gestureIngress"], undefined);
         assert.equal(startedReport["gesture"], true);
 
         // Native terminal: released ingress; ack only after exact settlement.
@@ -244,7 +249,8 @@ describe("native gesture lifecycle transport", () => {
         const releasedReport = JSON.parse(released.payload).report as Record<string, unknown>;
         assert.equal((releasedReport["nativeGesture"] as Record<string, unknown>)["phase"], "released");
         assert.deepEqual((releasedReport["nativeGesture"] as Record<string, unknown>)["cursor"], [30, 30]);
-        assert.equal(releasedReport["gestureIngress"], null);
+        assert.equal("gestureIngress" in releasedReport, false);
+        assert.equal(releasedReport["gestureIngress"], undefined);
         const acks = gestureCalls.filter((c) => c.method === "AckGesture");
         assert.equal(acks.length, 1);
         assert.deepEqual(JSON.parse(acks[0]?.payload as string), { instance: "gesture-1", serial: "1" });
@@ -316,14 +322,19 @@ describe("native gesture broker cutover", () => {
             const report = JSON.parse(payload).report as Record<string, unknown>;
             const assoc = harnessAssocFor(report);
             const settled = opts.settledHook?.(report, assoc) ?? null;
-            callback(JSON.stringify({
-                v: 3, adapter: "broker-1", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
+            // Strict v4 synthetic accept: producer adapter, serving generation, source/watermark binding, hidden presentation, null take-lane result.
+            const text = JSON.stringify({
+                v: 4, adapter: "test-adapter", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                 windows: [], transfers: [], effects: [], result: null,
                 gestureSettled: settled, gestureAssoc: assoc, operationSettled: [], nativeCreations: [], warpCursor: null,
+                intentWrites: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
-                presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-            }));
+                presentation: DISABLED_PRESENTATION,
+            });
+            const parsed = parseWorldReply(text);
+            assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored capture accept binds strict v4");
+            callback(text);
         };
         const answerHeld = (index?: number): void => {
             const at = index ?? heldDescribes.length - 1;
@@ -381,14 +392,18 @@ describe("native gesture broker cutover", () => {
             callDbus: (_s, _p, _i, method, payload, callback) => {
                 calls.push({ method, payload, callback });
                 if (method === "DiscoverWorld") {
-                    const body = JSON.parse(payload) as { req: string };
-                    callback(JSON.stringify({
-                        v: 3, adapter: "broker-1", gen: "gen-1", req: body.req, obs: "0", rev: "0",
-                        ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-                        windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
-                        operationSettled: [], nativeCreations: [], warpCursor: null,
-                        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-                    }));
+                    const body = JSON.parse(payload) as Record<string, unknown>;
+                    if (body["type"] === "handshake") {
+                        callback(JSON.stringify({
+                            type: "handshake-reply", v: 4, adapter: "test-adapter",
+                            req: body["req"], ready: false, kind: "", gen: "gen-1",
+                        }));
+                    } else if (body["type"] === "settings") {
+                        callback(JSON.stringify({
+                            type: "settings-reply", v: 4, adapter: "test-adapter", gen: "gen-1",
+                            req: body["req"], rev: body["rev"], status: "accepted", diagnostics: [],
+                        }));
+                    }
                 } else if (method === "DescribeWorld") {
                     if (opts.manualDescribe === true) {
                         heldDescribes.push({ payload, callback });
@@ -418,16 +433,7 @@ describe("native gesture broker cutover", () => {
                 }
             }
         };
-        // Bind the generation synchronously like the production discovery.
-        const discover = calls.find((c) => c.method === "DiscoverWorld");
-        assert.ok(discover !== undefined);
-        discover.callback(JSON.stringify({
-            v: 3, adapter: "broker-1", gen: "gen-1", req: JSON.parse(discover.payload).req, obs: "0", rev: "0",
-            ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-            windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
-            operationSettled: [], nativeCreations: [], warpCursor: null,
-            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        }));
+        // Synchronous mocks already answered discovery during startup; flush the debounce.
         fireDelay(120);
         return {
             calls, gestureCalls, fireDelay, globalCalls, heldDescribes, answerHeld,
@@ -474,7 +480,8 @@ describe("native gesture broker cutover", () => {
             const started = last(h.calls.filter((c) => c.method === "DescribeWorld"));
             assert.ok(started !== undefined);
             const report = rawReport(started.payload);
-            assert.equal(report["gestureIngress"], null);
+            assert.equal("gestureIngress" in report, false);
+            assert.equal(report["gestureIngress"], undefined);
             const raw = report["nativeGesture"] as Record<string, unknown>;
             assert.equal(raw["instance"], "gesture-1");
             assert.equal(raw["serial"], "1");
@@ -650,7 +657,9 @@ describe("native gesture broker cutover", () => {
             const raw = rawReport(latest.payload)["nativeGesture"] as Record<string, unknown>;
             assert.equal(raw["serial"], "10");
             assert.equal(raw["phase"], "started");
-            assert.equal(rawReport(latest.payload)["gestureIngress"], null);
+            const staleReport = rawReport(latest.payload);
+            assert.equal("gestureIngress" in staleReport, false);
+            assert.equal(staleReport["gestureIngress"], undefined);
         } finally {
             h.stop();
         }
@@ -683,7 +692,9 @@ describe("native gesture broker cutover", () => {
             latest = last(h.calls.filter((c) => c.method === "DescribeWorld"));
             assert.ok(latest !== undefined);
             assert.equal(rawReport(latest.payload)["nativeGesture"], null);
-            assert.equal(rawReport(latest.payload)["gestureIngress"], null);
+            const unavailReport = rawReport(latest.payload);
+            assert.equal("gestureIngress" in unavailReport, false);
+            assert.equal(unavailReport["gestureIngress"], undefined);
             // The lane recovers without reset: the next serial maps and its
             // terminal settles by exact identity. The recovery chain owns
             // the re-arm (host-deadline cadence, never a hot loop).
@@ -1182,7 +1193,7 @@ describe("native gesture broker cutover", () => {
         let nextCore = 1;
         const settledKeys = new Set<string>();
         const cachedBySource = new Map<string, string>();
-        const presentation = { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] };
+        const presentation = DISABLED_PRESENTATION;
         const replyFor = (payload: string): string => {
             const body = JSON.parse(payload) as { source: string; nativeInvalid: string; gen: string };
             const hit = cachedBySource.get(body.source);
@@ -1215,14 +1226,18 @@ describe("native gesture broker cutover", () => {
                     }
                 }
             }
+            // Strict v4 synthetic faithful-broker accept: consume-once settlement with byte-identical cached replay, null take-lane result.
             const text = JSON.stringify({
-                v: 3, adapter: "broker-1", gen: body.gen, req: body.source, obs: String(obs), rev: String(rev),
+                v: 4, adapter: "test-adapter", gen: body.gen, req: body.source, obs: String(obs), rev: String(rev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                 windows: [], transfers: [], effects: [], result: null,
                 gestureSettled: settled, gestureAssoc: assoc, operationSettled: [], nativeCreations: [], warpCursor: null,
+                intentWrites: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 presentation,
             });
+            const parsed = parseWorldReply(text);
+            assert.ok(parsed !== null && isCoreWorldReply(parsed), "faithful broker accept binds strict v4");
             cachedBySource.set(body.source, text);
             return text;
         };
@@ -1462,7 +1477,7 @@ describe("native gesture broker cutover", () => {
             assert.ok(first !== undefined);
             h.heldDescribes.splice(0, 1);
             first.callback(JSON.stringify({
-                v: 3, outcome: "queued", gen: "gen-1",
+                v: 4, outcome: "queued", gen: "gen-1",
                 client: "test-adapter", clientCmd: "1", globalCmd: "1",
             }));
             assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "wrong lane never acks");
