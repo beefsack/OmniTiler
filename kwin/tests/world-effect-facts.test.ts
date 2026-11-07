@@ -174,6 +174,13 @@ function makeHarness() {
     // world-presentation-subscriber.test.ts.
     const isPresentationTimer = (t: { delay: number; cb: () => void }): boolean =>
         (t.cb as unknown as Record<string, unknown>)["presentationReadWatchdog"] === true;
+    // Preimage-store seed/flush timeouts are genuine product timers, but
+    // this lane-isolating sweep excludes them exactly like the
+    // presentation watchdog: this harness never answers ReadNativePreimage,
+    // so the seed timeout would otherwise consume the capped host pass.
+    const isSkippedTimer = (t: { delay: number; cb: () => void }): boolean =>
+        isPresentationTimer(t) ||
+        (t.cb as unknown as Record<string, unknown>)["preimageStoreTimer"] === true;
     const runTimers = (maxDelay = 120, cap = Number.POSITIVE_INFINITY): void => {
         // Capped sweep (B1 host-timer discipline): firing a 25 s watchdog
         // re-arms another 25 s timer, so an uncapped pass would cascade
@@ -181,7 +188,7 @@ function makeHarness() {
         let fired = 0;
         for (let i = 0; i < timers.length && fired < cap; i += 1) {
             const t = timers[i] as { delay: number; cb: () => void };
-            if (t.delay <= maxDelay && !isPresentationTimer(t)) {
+            if (t.delay <= maxDelay && !isSkippedTimer(t)) {
                 timers.splice(i, 1);
                 i -= 1;
                 fired += 1;
@@ -205,7 +212,7 @@ function makeHarness() {
     const fireLastHostTimer = (): boolean => {
         for (let i = timers.length - 1; i >= 0; i -= 1) {
             const t = timers[i] as { delay: number; cb: () => void };
-            if (t.delay === 25000 && !isPresentationTimer(t)) {
+            if (t.delay === 25000 && !isSkippedTimer(t)) {
                 timers.splice(i, 1);
                 t.cb();
                 return true;

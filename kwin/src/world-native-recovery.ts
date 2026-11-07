@@ -637,6 +637,14 @@ export function createNativeRecoveryCoordinator(deps: NativeRecoveryDeps): Nativ
                 }
                 slots.delete(key);
                 log(`omnitiler:world:native-recovery-complete slot=${slot} outcome=stored`);
+                // Durable clear unblocks the executor lane: schedule one
+                // fresh observation so the waiting Controlled target runs
+                // without new external input (fenced by the checks above).
+                try {
+                    deps.requestObservation();
+                } catch (error) {
+                    void error;
+                }
             });
         } catch (error) {
             void error;

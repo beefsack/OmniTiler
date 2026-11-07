@@ -1426,25 +1426,36 @@ describe("world entry discovery and observation", () => {
         assert.ok(settled.length >= 2);
     });
 
-    it("toggles sticky off with keep-above restore and refuses overlays", () => {
+    it("routes sticky/fullscreen toggles as core commands with zero direct native writes", () => {
         const h = makeHarness();
         discover(h);
         const ref = h.world.wins.find((w) => w.internalId === "win-a") as unknown as Record<string, unknown>;
         ref["keepAbove"] = false;
         ref["keepBelow"] = false;
+        const onAllBefore = ref["onAllDesktops"];
+        const fsBefore = ref["fullScreen"];
         h.handle?.requestSticky();
-        assert.equal(ref["onAllDesktops"], true);
-        assert.equal(ref["keepAbove"], true);
-        h.handle?.requestSticky();
-        assert.equal(ref["onAllDesktops"], false);
+        h.runTimers();
+        const stickyFiled = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        assert.deepEqual(stickyFiled["command"], { op: "toggle-sticky", win: "win-a" });
+        // No direct native setter: the command owns the verdict; the
+        // accepted state rows drive the single executor.
+        assert.equal(ref["onAllDesktops"], onAllBefore);
         assert.equal(ref["keepAbove"], false);
-        // Fullscreen overlay refuses with no write.
-        ref["fullScreen"] = true;
-        const logsBefore = h.logs.length;
-        h.handle?.requestSticky();
-        assert.equal(ref["onAllDesktops"], false);
-        assert.ok(h.logs.slice(logsBefore).some((l) => l.includes("sticky")));
-        ref["fullScreen"] = false;
+        // Settle the sticky flight, then the fullscreen toggle files its
+        // own command with zero direct writes as well.
+        h.runTimers();
+        const stickyReq = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply(
+            "gen-1", stickyReq["source"] as string, stickyReq["nativeInvalid"] as string, "1",
+        ));
+        h.handle?.requestFullscreen();
+        h.runTimers();
+        const fsFiled = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        assert.deepEqual(fsFiled["command"], { op: "toggle-fullscreen", win: "win-a" });
+        assert.equal(ref["fullScreen"], fsBefore);
+        assert.equal(h.world.membershipWrites.length, 0);
+        assert.equal(h.world.geometryWrites.length, 0);
     });
 
     it("registers the legacy directional and toggle shortcut catalog", () => {

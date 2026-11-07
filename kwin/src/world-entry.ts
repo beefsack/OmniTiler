@@ -16,8 +16,9 @@
 
 import { connectSignal, readSignal } from "./signal-capability";
 import { registerWorldShortcuts } from "./world-shortcuts";
-import { createNativePreimageStore } from "./world-native-preimage";
-import { createNativeRecoveryCoordinator } from "./world-native-recovery";
+import { createNativePreimageStore, mapWorldStatePropertyToPreimage } from "./world-native-preimage";
+import { createNativeRecoveryCoordinator, type NativeRecoveryHost } from "./world-native-recovery";
+import { createNativeStateExecutor, createNativeStateHost } from "./world-native-state";
 import { createWorldApplyHost, createWorldNativeToggles } from "./world-native";
 import {
     createWorldPresentationSubscriber,
@@ -106,6 +107,8 @@ import {
     cmdSendNumbered,
     cmdSendRelative,
     cmdToggleMaximize,
+    cmdToggleSticky,
+    cmdToggleFullscreen,
     cmdToggleOrientation,
     cmdToggleWorkspaceTiling,
     implicitSource,
@@ -137,7 +140,6 @@ import { WorldAdapterState, type CaptureFlight, type QueuedIntent } from "./worl
 import { applyWorldReply } from "./world-apply";
 import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
-import { readNativeAlias } from "./native-alias";
 import { createWorldCloseTracker } from "./world-close-tracker";
 import { isSeparateWorkspaceMode, readPerOutputVirtualDesktopsFlag, supportsPerOutputDesktops } from "./workspace-native";
 import { createWorldCommandContext } from "./world-command-context";
@@ -1703,10 +1705,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         overrides.floatIntent === true,
     );
 
-    // Staged recovery seam (inert): store plus coordinator bind the
-    // lifecycle (coordinator seed/reset/stop only). No store seed, no
-    // restoring run, no legacy change until the atomic migration wires
-    // them together. Zero bus/timer/log footprint while unseeded.
+    // Native preimage store plus recovery coordinator: the dispatch
+    // gate seeds the store per generation (ordinary tiling never gates
+    // on it), restorePending runs persist-gated inside every runApply,
+    // and fresh readbacks complete durable clears. A degraded store
+    // disables only the native lanes.
     const nativePreimageStore = createNativePreimageStore(
         {
             route: {
@@ -1723,7 +1726,19 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     void error;
                 }
             },
-            scheduleOnce,
+            scheduleOnce: (delay, cb) => {
+                // Tag store timers so lane-isolating harnesses can skip
+                // them exactly like the presentation watchdog (same
+                // precedent: world-presentation.ts marks its watchdog).
+                // The seed/flush timeout is a genuine product timer;
+                // the tag only lets effect-lane sweeps exclude it.
+                try {
+                    (cb as unknown as Record<string, unknown>).preimageStoreTimer = true;
+                } catch (error) {
+                    void error;
+                }
+                return scheduleOnce(delay, cb);
+            },
             log,
             isStopped: () => stopped,
             getGeneration: () => state.boundGen,
@@ -1747,13 +1762,277 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             stopped,
         }),
         // Fresh capture after a restore run (real invalidate plus
-        // dispatch, never fabricated evidence). Wired but never fired
-        // until the atomic migration invokes the restoring run.
+        // dispatch, never fabricated evidence). Fires after every
+        // restore batch with >=1 attempt and after each durable
+        // recovery completion.
         requestObservation: () => {
             state.invalidate();
             scheduleDispatch();
         },
         log,
+    });
+    // Scoped native StateTarget hosts plus the production executor: the
+    // roster joins the exact live UUID namespace and drops scope-foreign
+    // windows when a scope class is built (ordinary tiling stays usable:
+    // unreadable scope fails the lane closed, never the report).
+    const nativeStateBase = createNativeStateHost(surface, readProp, log);
+    const inStateScope = (ref: object): boolean | null => {
+        if (scopeClass.length === 0) {
+            return true;
+        }
+        try {
+            return windowMatchesScopeClass(readProp, ref, scopeClass);
+        } catch (error) {
+            void error;
+            return null;
+        }
+    };
+    const scopedRoster = (): ReturnType<typeof nativeStateBase.roster> => {
+        let list: ReturnType<typeof nativeStateBase.roster>;
+        try {
+            list = nativeStateBase.roster();
+        } catch (error) {
+            void error;
+            return null;
+        }
+        if (list === null || scopeClass.length === 0) {
+            return list;
+        }
+        const out: NonNullable<typeof list> = [];
+        for (const entry of list) {
+            let ok: boolean | null = null;
+            try {
+                ok = windowMatchesScopeClass(readProp, entry.ref, scopeClass);
+            } catch (error) {
+                void error;
+                return null;
+            }
+            if (ok === null) {
+                return null;
+            }
+            if (ok) {
+                out.push(entry);
+            }
+        }
+        return out;
+    };
+    const scopedIsStillListed = (ref: object): boolean => {
+        try {
+            if (!nativeStateBase.isStillListed(ref)) {
+                return false;
+            }
+        } catch (error) {
+            void error;
+            return false;
+        }
+        const scoped = inStateScope(ref);
+        return scoped === true;
+    };
+    const scopedStateHost = {
+        ...nativeStateBase,
+        roster: scopedRoster,
+        isStillListed: scopedIsStillListed,
+    };
+    const listRecoveryDesktops = (): ReturnType<NativeRecoveryHost["listDesktops"]> => {
+        try {
+            const all = decodeList(readProp(surface, "desktops"), 4096);
+            if (all === null || all.length === 0) {
+                return null;
+            }
+            const out: Array<{ id: string | null; ref: object }> = [];
+            const seen = new Set<string>();
+            for (const d of all) {
+                if (typeof d !== "object" || d === null) {
+                    return null;
+                }
+                let id: unknown = null;
+                try {
+                    id = readProp(d as object, "id");
+                } catch (error) {
+                    void error;
+                    return null;
+                }
+                if (typeof id !== "string" || !isOpaqueId(id) || seen.has(id)) {
+                    return null;
+                }
+                seen.add(id);
+                out.push({ id, ref: d as object });
+            }
+            return out;
+        } catch (error) {
+            void error;
+            return null;
+        }
+    };
+    const nativeRecoveryHost: NativeRecoveryHost = {
+        readProp,
+        log,
+        roster: scopedRoster,
+        isStillListed: scopedIsStillListed,
+        readWindowId: (ref) => nativeStateBase.readWindowId(ref),
+        readMaximizeMode: (ref) => nativeStateBase.readMaximizeMode(ref),
+        readFullscreen: (ref) => nativeStateBase.readFullscreen(ref),
+        readDesktops: (ref) => nativeStateBase.readDesktops(ref),
+        readStacking: (ref) => nativeStateBase.readStacking(ref),
+        listDesktops: listRecoveryDesktops,
+        setMaximize: (ref, vertical, horizontal) => nativeStateBase.setMaximize(ref, vertical, horizontal),
+        setFullscreen: (ref, value) => nativeStateBase.setFullscreen(ref, value),
+        setDesktops: (ref, desktops) => {
+            try {
+                if (readProp(ref, "desktops") === undefined) {
+                    return false;
+                }
+                return Reflect.set(ref, "desktops", [...desktops]);
+            } catch (error) {
+                void error;
+                return false;
+            }
+        },
+        setKeepAbove: (ref, value) => nativeStateBase.setKeepAbove(ref, value),
+        setKeepBelow: (ref, value) => nativeStateBase.setKeepBelow(ref, value),
+    };
+    // Latest accepted reply for executor authority rechecks: the exact
+    // current Controlled property lane plus lifetime/current reply plus
+    // recovery/store gates. Set on every accepted capture before run.
+    let lastAcceptedReply: import("./world-report").WorldReply | null = null;
+    const statePropertyToRecoverySlot = (property: string): string => {
+        if (
+            property === "maximized" || property === "fullscreen" ||
+            property === "sticky" || property === "above"
+        ) {
+            return mapWorldStatePropertyToPreimage(
+                property as "maximized" | "fullscreen" | "sticky" | "above",
+            );
+        }
+        return property;
+    };
+    const nativeExecutor = createNativeStateExecutor({
+        state,
+        store: nativePreimageStore,
+        host: scopedStateHost,
+        getFences: () => ({
+            generation: state.boundGen,
+            settingsRev,
+            acceptedRev: state.lastAcceptedRev,
+            watermark: state.currentInvalid,
+            clock: state.lastClock,
+            stopped,
+        }),
+        isStillAuthorized: (win, property) => {
+            try {
+                if (stopped || state.boundGen === null) {
+                    return false;
+                }
+                const reply = lastAcceptedReply;
+                if (reply === null || reply.gen !== state.boundGen) {
+                    return false;
+                }
+                if (reply.rev !== state.lastAcceptedRev) {
+                    return false;
+                }
+                // Settings must be accepted for this generation with no
+                // send outstanding and no drift since acceptance: the
+                // per-call fences alone reuse the captured settingsRev,
+                // so the live accepted tuple is rechecked here.
+                if (settingsAcceptedGen !== state.boundGen) {
+                    return false;
+                }
+                if (pendingSettings !== null && pendingSettings.gen === state.boundGen) {
+                    return false;
+                }
+                if (settingsRev === null || settingsAcceptedRev === null ||
+                    settingsRev !== settingsAcceptedRev) {
+                    return false;
+                }
+                // Fresh watermark + lifetime: no newer native input since
+                // the armed lane, adapter still live on this generation.
+                if (!isCanonicalU64(state.currentInvalid) || !isCanonicalU64(state.lastClock)) {
+                    return false;
+                }
+                let gesture = false;
+                try {
+                    gesture = gestureActive();
+                } catch (error) {
+                    void error;
+                    return false;
+                }
+                if (gesture) {
+                    return false;
+                }
+                let row: import("./world-report").WorldReply["windows"][number] | null = null;
+                for (const r of reply.windows) {
+                    if (r.win === win) {
+                        row = r;
+                        break;
+                    }
+                }
+                if (row === null) {
+                    return false;
+                }
+                let lane: { auth: string; reason: string; value: unknown; cmdSeq: unknown } | null = null;
+                for (const t of row.state) {
+                    if (t.property === property) {
+                        lane = t;
+                        break;
+                    }
+                }
+                // Same-property target identity: the current reply must
+                // still carry this exact property Controlled with a bound
+                // boolean target and a canonical (or null) correlation.
+                if (lane === null || lane.auth !== "controlled" || lane.reason !== "") {
+                    return false;
+                }
+                if (typeof lane.value !== "boolean") {
+                    return false;
+                }
+                if (lane.cmdSeq !== null && !isCanonicalU64(lane.cmdSeq as string)) {
+                    return false;
+                }
+                const slot = statePropertyToRecoverySlot(property);
+                try {
+                    if (nativeRecovery.isBlocked(win, slot, state.boundGen)) {
+                        return false;
+                    }
+                } catch (error) {
+                    void error;
+                    return false;
+                }
+                try {
+                    if (!nativePreimageStore.isAvailable(state.boundGen)) {
+                        return false;
+                    }
+                } catch (error) {
+                    void error;
+                    return false;
+                }
+                let ref: object | null = null;
+                try {
+                    ref = liveRefById(win);
+                } catch (error) {
+                    void error;
+                    return false;
+                }
+                if (ref === null) {
+                    return false;
+                }
+                const scoped = inStateScope(ref);
+                if (scoped !== true) {
+                    return false;
+                }
+                try {
+                    if (!scopedIsStillListed(ref)) {
+                        return false;
+                    }
+                } catch (error) {
+                    void error;
+                    return false;
+                }
+                return true;
+            } catch (error) {
+                void error;
+                return false;
+            }
+        },
     });
 
     // Native effect renderer calls (never workspace policy): the presentation
@@ -1981,11 +2260,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // first admissible report carries it. The superseded
                         // round (if any) fences on its nonce.
                         intentStore.seed(parsed.gen);
-                        // Recovery rotation cleanup for the new generation
-                        // (read-only: no arm/clear/flush, no store seed, no
-                        // restoring run). The store seed arrives with the
-                        // atomic migration.
+                        // Native preimage seed alongside intent: one bounded
+                        // read per generation; degraded Store disables only
+                        // native lanes, never ordinary tiling.
+                        try {
+                            nativePreimageStore.seed(parsed.gen);
+                        } catch (error) {
+                            void error;
+                        }
+                        nativeRecovery.seed(parsed.gen);
                         nativeRecovery.reset(parsed.gen);
+                        try {
+                            nativeExecutor.reset(parsed.gen);
+                        } catch (error) {
+                            void error;
+                        }
+                        lastAcceptedReply = null;
                         // New generation: queued intents belong to the dead
                         // generation and drop with one diagnostic; the
                         // binding snapshot and one-shot native effects
@@ -3842,6 +4132,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         takeResult: WorldReplyResult | null,
     ): void => {
                     const runApply = (): void => {
+                    // Startup native recovery: restore durable originals once
+                    // per fresh accepted run (fenced inside; no-op when the
+                    // store is degraded). After the opaque-intent persist
+                    // gate, so no native write precedes durable intent.
+                    try {
+                        nativeRecovery.restorePending(nativeRecoveryHost);
+                    } catch (error) {
+                        void error;
+                    }
                     // Proven bound association (broker-only): every accepted
                     // reply carrying one refreshes the read-only identity,
                     // open or terminal, so the NEXT package exposes the
@@ -4060,6 +4359,56 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         log("omnitiler:world:observe-invalid recovery=on-next-event");
                         return;
                     }
+                    // Fresh readback for startup recovery: actual later
+                    // capture facts per exact slot (strict-newer gate inside
+                    // drops pre-restoration facts). No fabricated evidence.
+                    try {
+                        const fences = {
+                            generation: state.boundGen,
+                            settingsRev,
+                            acceptedRev: state.lastAcceptedRev,
+                            watermark: state.currentInvalid,
+                            clock: state.lastClock,
+                            stopped,
+                        };
+                        for (const wf of fresh.windowFacts) {
+                            const win = wf.win;
+                            const mode = wf.maximizeMode;
+                            if (Number.isInteger(mode) && mode >= 0 && mode <= 3) {
+                                try {
+                                    nativeRecovery.noteObservation(win, "maximize_mode", mode, fences);
+                                } catch (error) {
+                                    void error;
+                                }
+                            }
+                            const fs = wf.fullScreen;
+                            try {
+                                nativeRecovery.noteObservation(win, "fullscreen", fs, fences);
+                            } catch (error) {
+                                void error;
+                            }
+                            const desks = wf.desktops;
+                            try {
+                                nativeRecovery.noteObservation(win, "desktops", [...desks], fences);
+                            } catch (error) {
+                                void error;
+                            }
+                            const above = wf.above;
+                            const below = wf.below;
+                            if (typeof above === "boolean" && typeof below === "boolean") {
+                                try {
+                                    nativeRecovery.noteObservation(win, "stacking", { above, below }, fences);
+                                } catch (error) {
+                                    void error;
+                                }
+                            } else if (wf.onAllDesktops && above === null && below === null) {
+                                // Sticky readback rides desktops above; null
+                                // stacking stays silent (never fabricated).
+                            }
+                        }
+                    } catch (error) {
+                        void error;
+                    }
                     // Terminal drop diagnostic: pre-apply, so the observed
                     // frame and source homing are pre-actuation evidence.
                     logDropDiagnostics(parsed, flight, fresh);
@@ -4117,6 +4466,40 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         const freshHeld = !fresh.complete ||
                             fresh.domains.some((d) => d.hold !== "" || !d.readable || !d.complete) ||
                             fresh.topology.some((t) => !t.complete);
+                        // Native lifetime proof comes from the FULL UNSCOPED
+                        // native UUID roster (exact normalized ids, unique):
+                        // the scoped observation intentionally excludes
+                        // foreign/unreadable-class windows without holding,
+                        // so its absence never proves a lifetime ended. No
+                        // class read feeds this proof: a present UUID
+                        // retains regardless of class. An unreadable, null,
+                        // duplicate, or malformed full roster over-retains
+                        // with no native cleanup that round. A proven-gone
+                        // UUID (absent a complete fresh plus a complete
+                        // full roster) prunes; the same generation never
+                        // reuses a UUID.
+                        let fullLive: Set<string> | null = null;
+                        try {
+                            const roster = nativeStateBase.roster();
+                            if (roster !== null) {
+                                const seen = new Set<string>();
+                                let valid = true;
+                                for (const entry of roster) {
+                                    const id = entry.id;
+                                    if (typeof id !== "string" || id.length === 0 || seen.has(id)) {
+                                        valid = false;
+                                        break;
+                                    }
+                                    seen.add(id);
+                                }
+                                if (valid) {
+                                    fullLive = seen;
+                                }
+                            }
+                        } catch (error) {
+                            void error;
+                            fullLive = null;
+                        }
                         if (!freshHeld) {
                             for (const id of [...floatingIds]) {
                                 if (!obsWins.has(id)) {
@@ -4129,6 +4512,49 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             for (const id of [...tileIds]) {
                                 if (!obsWins.has(id)) {
                                     tileIds.delete(id);
+                                }
+                            }
+                            // Native lane prune on proven-ended lifetimes
+                            // only: complete scoped fresh plus a complete
+                            // full unscoped roster absent the id. Scoped
+                            // absence alone (foreign/out-of-scope) never
+                            // prunes; held/incomplete or an invalid full
+                            // roster over-retains.
+                            if (fullLive !== null) {
+                                try {
+                                    nativeRecovery.prune(fullLive);
+                                } catch (error) {
+                                    void error;
+                                }
+                                try {
+                                    nativeExecutor.prune(fullLive);
+                                } catch (error) {
+                                    void error;
+                                }
+                                let runtimeCleared = false;
+                                for (const id of [...nativePreimageStore.snapshot().map((r) => r.win)]) {
+                                    if (!fullLive.has(id)) {
+                                        try {
+                                            if (nativePreimageStore.clear(id)) {
+                                                runtimeCleared = true;
+                                            }
+                                        } catch (error) {
+                                            void error;
+                                        }
+                                    }
+                                }
+                                // Persist the proven-ended runtime removal
+                                // once with housekeeping: no retry, no blind
+                                // native writes. The recovery prune above
+                                // already queues its own flush for startup
+                                // records; this covers runtime-armed slots
+                                // it never owned.
+                                if (runtimeCleared) {
+                                    try {
+                                        nativePreimageStore.flush([]);
+                                    } catch (error) {
+                                        void error;
+                                    }
                                 }
                             }
                         }
@@ -4202,31 +4628,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         focusWindow: (ref) =>
                             withFocusSuppression(ref, () => applyHostBase.focusWindow(ref)),
                     });
-                    // Authorized maximize actuation: the take result for this
-                    // exact flight's clientCmd is the settlement of the
-                    // command this flight filed (the head was consumed at
-                    // file-send, so no later reply can replay it; the take
-                    // lane already fenced generation/revision/input staleness).
-                    // Only a maximize result on a command-carrying flight
-                    // actuates, against the exact result window under fresh
-                    // native fences inside. Pending native settlement polls
-                    // BEFORE issuance so the same accepted capture never
-                    // confirms the attempt it just armed: only the next
-                    // fresh accepted boundary settles it.
+                    // Core StateTarget actuation (atomic migration): the
+                    // accepted reply's controlled state rows arm/store/flush
+                    // through the preimage executor (persist-before-write,
+                    // exact live join). Legacy take-result maximize and
+                    // automatic keepAbove writes stay dormant (functions stay);
+                    // no local above classification writes.
+                    lastAcceptedReply = parsed;
                     try {
-                        native.pollPendingNativeState(fresh, gestureActive());
+                        nativeExecutor.run(parsed);
                     } catch (error) {
                         void error;
                     }
-                    try {
-                        if (flight.clientCmd !== null && takeResult !== null && takeResult.op === "maximize") {
-                            if (!native.applyAuthorizedMaximize(takeResult)) {
-                                shortcutFailed("maximize");
-                            }
-                        }
-                    } catch (error) {
-                        void error;
-                    }
+                    // Legacy competing writers stay dormant (helpers
+                    // retained for the separate cull): no pending native
+                    // poll, no descriptive take-result maximize, no
+                    // automatic keepAbove classification writes.
                     // Terminal drop-attempt diagnostic (tracked window only):
                     // pending-report rows for the NEXT report. The accepted
                     // ack retires only exactly-equal delivered rows, so no
@@ -4252,15 +4669,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         deferredOwnViewFocus = false;
                         onNativeInvalidation();
                     }
-                    // Automatic fixed-size float stacking (option A):
-                    // project-owned keepAbove above tiles from the fresh
-                    // capture, with no geometry, focus, or keepBelow
-                    // writes. Never throws into the accept path.
-                    try {
-                        native.syncAutomaticFloatStacking(fresh);
-                    } catch (error) {
-                        void error;
-                    }
+                    // Retired automatic float stacking (option A removed):
+                    // no local keepAbove classification writes; the helper
+                    // stays dormant for the separate cull.
                     log(`omnitiler:world:applied rev=${token(parsed.rev)} geom=${applied.geometryWrites} member=${applied.membershipWrites} views=${applied.viewWrites} mk=${applied.creations} rm=${applied.removals} fx=${applied.effects} held=${applied.held}`);
                     // B9 single-observation boundary: the first accepted
                     // full-state report after the issued clear decides the
@@ -5119,10 +5530,24 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // on the single hydration kick, never a poll or retry.
         if (!intentStore.isHydrated(state.boundGen)) {
             intentStore.seed(state.boundGen);
-            // Read-only recovery rebind (zero bus/timer footprint); the
-            // store seed stays deferred to the atomic migration.
+            try {
+                nativePreimageStore.seed(state.boundGen);
+            } catch (error) {
+                void error;
+            }
             nativeRecovery.seed(state.boundGen);
             return;
+        }
+        // Native preimage seed rides alongside intent hydration without
+        // gating ordinary tiling: a missing/degraded seed disables only
+        // native lanes (executor/recovery drop closed); the single
+        // hydration kick redispatches for native lanes.
+        try {
+            if (!nativePreimageStore.isHydrated(state.boundGen)) {
+                nativePreimageStore.seed(state.boundGen);
+            }
+        } catch (error) {
+            void error;
         }
         const observation = capture();
         if (observation === null) {
@@ -5800,12 +6225,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
 
     // Authenticated generation discovery on start; restart/poison paths
-    // re-enter through the generation-mismatch branch above. Opaque intent
-    // seeds from the runtime store before the first dispatch when enabled.
-    intentStore.seed(state.boundGen);
-    // Read-only recovery bind (zero footprint); the preimage store seed
-    // and the restoring run arrive with the atomic migration.
-    nativeRecovery.seed(state.boundGen);
+    // re-enter through the generation-mismatch branch above. No null-gen
+    // seed: hydration starts only after the real generation binds (the
+    // dispatch gate seeds intent + preimage + recovery then). A degraded
+    // store disables only native lanes; ordinary tiling stays usable.
+    if (state.boundGen !== null) {
+        intentStore.seed(state.boundGen);
+        nativeRecovery.seed(state.boundGen);
+    }
     discover();
     log(`omnitiler:world:ready ${state.describeForLog()} source=${resolveSourceRev()}`);
 
@@ -5888,8 +6315,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         submitOutputSend,
         submitMigration,
         submitFloat: (label) => native.submitFloat(label),
-        setStickyNative: (ref, id, sticky) => native.setStickyNative(ref, id, sticky),
-        setFullscreenNative: (ref, fullscreen, label) => native.setFullscreenNative(ref, fullscreen, label ?? "toggle-fullscreen"),
         activeOutputName,
         activeWindowId,
         activeWindowRef,
@@ -5918,6 +6343,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             try {
                 nativeRecovery.stop();
+            } catch (error) {
+                void error;
+            }
+            try {
+                nativeExecutor.stop();
             } catch (error) {
                 void error;
             }
@@ -6109,34 +6539,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         requestFloat: () => {
             native.submitFloat("float");
         },
-        // Sticky/fullscreen have no Planner command route: they are
-        // synchronous native state toggles applied here with pre-setter
-        // safety rechecks, then observed authoritatively on the next full
-        // report (core converges the tiling consequences). Maximize routes
-        // a Planner toggle-maximize command instead. Fullscreen and
-        // maximized overlays refuse exactly like the legacy guards; game
-        // safety wins over parity. Sticky restores floating origin plus
-        // keepAbove/keepBelow on off.
+        // Sticky/fullscreen/maximize route Planner toggle commands;
+        // the core owns the verdict and the accepted state rows drive
+        // the single native executor (no direct native setters here).
         requestSticky: () => {
             const id = activeWindowId();
-            const ref = activeWindowRef();
-            if (id === null || ref === null) {
+            if (id === null) {
                 shortcutFailed("sticky");
                 return;
             }
-            try {
-                native.cancelPendingUnfloat("newer-input");
-            } catch (error) {
-                void error;
-            }
-            try {
-                native.cancelPendingNativeState("newer-input");
-            } catch (error) {
-                void error;
-            }
-            const stickyRaw = readProp(ref, "onAllDesktops");
-            const want = (typeof stickyRaw === "boolean" ? stickyRaw : readNativeAlias(readProp, ref, "sticky")) !== true;
-            if (!native.setStickyNative(ref, id, want)) {
+            if (!submitCommand(cmdToggleSticky(id), "sticky")) {
                 shortcutFailed("sticky");
             }
         },
@@ -6161,24 +6573,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
         },
         requestFullscreen: () => {
-            const ref = activeWindowRef();
-            if (ref === null) {
+            const id = activeWindowId();
+            if (id === null) {
                 shortcutFailed("fullscreen");
                 return;
             }
-            try {
-                native.cancelPendingUnfloat("newer-input");
-            } catch (error) {
-                void error;
-            }
-            try {
-                native.cancelPendingNativeState("newer-input");
-            } catch (error) {
-                void error;
-            }
-            const fsRaw = readProp(ref, "fullScreen");
-            const want = (typeof fsRaw === "boolean" ? fsRaw : readNativeAlias(readProp, ref, "fullscreen") === true) !== true;
-            if (!native.setFullscreenNative(ref, want, "fullscreen")) {
+            if (!submitCommand(cmdToggleFullscreen(id), "fullscreen")) {
                 shortcutFailed("fullscreen");
             }
         },

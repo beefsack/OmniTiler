@@ -250,3 +250,43 @@
   Typechecking, 1177/1177 adapter tests with zero skips and the unscoped/non-trace
   build pass. The recovery module is 732 lines. Startup/native restoration is
   still unproved live; migration and integrated authorization review remain next.
+
+## Verified atomic migration
+
+- The migration enables the scoped executor/recovery hosts and
+  above capability, queues sticky/fullscreen commands and removes the legacy
+  result-driven maximize and automatic-stacking callers. Dormant helpers have
+  not been culled. Native durability and transitions remain live acceptance work.
+- Fourteen new production-entry tests cover persist-before-write, raw attempts,
+  recovery ordering, scope and callback fences. A regression reproduced runtime
+  arming during a pending recovery clear, which permanently blocked the lane;
+  the executor now checks current authority/recovery readiness before arming as
+  well as before the setter.
+- Integrated review reproduced deletion of a live foreign window's durable
+  preimage: a complete scoped observation excludes foreign windows, so its
+  absence cannot prove lifetime end. Native cleanup now uses a separately
+  validated full native UUID roster as well as the complete fresh-capture gate.
+  Malformed/duplicate/unreadable inventories over-retain; live foreign records
+  survive every persisted snapshot. Proven-ended runtime slots are cleared and
+  persisted. Red/green production-entry tests cover all of these cases.
+- Regenerated the five KDE byte goldens through the genuine entry/Rust path.
+  Their complete diff is the above capability, removal of local `win-fixed`
+  above facts in three reports and its Controlled above target in the Observe
+  reply. The retired automatic-stacking admission previously wrote the native
+  flag from fixed-float classification; the observer now reports its unchanged
+  false value. The unmodified byte oracle passes 6/6; typechecking and the
+  unscoped/non-trace build pass.
+- Updated only the full/s2 discovery handshake requests in stage5-v2 from fresh
+  genuine recordings: `above:false` becomes `above:true`. This is the
+  current-production recording lineage, updated because the adapter now owns
+  the recoverable above lane. Every other stage5-v2 byte remains unchanged;
+  stage5, stage5-v4 and world-wire/v4 remain immutable. The unchanged final
+  proofs compare all other envelopes/projections/dispatches with above enabled;
+  all 31 stage5 checks pass without masking, overrides or relaxed assertions.
+- Independent follow-up review leaves no serious unresolved finding. Final
+  typechecking, 1191/1191 adapter tests with zero skips and the unscoped/non-trace
+  build pass. Scoped core/protocol/service tests, locked build, formatting and
+  all-target clippy with warnings denied pass; only the documented
+  `workspace_unsafe_posture` case is excluded. All 38 native-effect offline tests
+  pass in a fresh build. Separate obsolete-helper cull and fixture-only native
+  proof remain next. No live testing has run.

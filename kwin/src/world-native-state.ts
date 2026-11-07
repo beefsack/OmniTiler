@@ -1,4 +1,4 @@
-// Native StateTarget executor (offline-testable, NOT production-wired).
+// Native StateTarget executor (production-wired through the world entry).
 //
 // Runs the four parsed `reply.windows[].state[]` targets (fullscreen,
 // maximized, sticky, above) via the accepted preimage client: arm the
@@ -978,6 +978,24 @@ export function createNativeStateExecutor(deps: NativeStateExecutorDeps): Native
                 }
                 if (t.property === "above" && !t.value && !ownedAbove.has(win)) {
                     dropped(win, t.property, "unowned-release");
+                    continue;
+                }
+                // Pre-arm authority/recovery gate (same-design gating as the
+                // actual setter): a slot blocked by startup recovery or
+                // refused by the live authority check must not arm or flush.
+                // During a pending recovery clear-housekeeping ack, arming
+                // here would rewrite the slot the ack verifies cleared and
+                // wedge the lane permanently. Presence/spent/pending
+                // semantics above are untouched; this only refuses fresh arms.
+                let authorized = false;
+                try {
+                    authorized = deps.isStillAuthorized(win, t.property);
+                } catch (error) {
+                    void error;
+                    authorized = false;
+                }
+                if (!authorized) {
+                    dropped(win, t.property, "stale");
                     continue;
                 }
                 const captured = armPayload(live, t.property);

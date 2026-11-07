@@ -904,6 +904,24 @@ function makeEntryHarness(qmlLists = false): EntryHarness {
                 } else {
                     callback(JSON.stringify({ v: 4, outcome: "pending", gen: takeGen }));
                 }
+            } else if (method === "ReadNativePreimage") {
+                // Synchronous empty-seed ack (v1 exact keys): the store
+                // hydrates for the live generation with zero retained rows.
+                const seedBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({
+                    v: 1, correlation_id: seedBody["correlation_id"],
+                    outcome: "ok", records: [], stored: 0, returned: 0,
+                }));
+            } else if (method === "WriteNativePreimage") {
+                // Synchronous stored ack (v1 exact keys): the sent snapshot
+                // landed, so the count echoes the request record length.
+                const writeBody = JSON.parse(payload) as Record<string, unknown>;
+                const rows = writeBody["records"];
+                const stored = Array.isArray(rows) ? rows.length : 0;
+                callback(JSON.stringify({
+                    v: 1, correlation_id: writeBody["correlation_id"],
+                    outcome: "stored", stored,
+                }));
             }
         },
         scheduleOnce: (delay, cb) => {
@@ -1034,16 +1052,20 @@ function entryRound(h: EntryHarness, extra: Record<string, unknown> = {}): void 
 }
 
 describe("world entry automatic-float stacking", () => {
-    it("admits the automatic float above exactly once with zero frame, focus or below writes", () => {
+    it("admits the automatic float with zero stacking writes", () => {
         const h = makeEntryHarness();
         entryDiscover(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true"], "admission writes keepAbove exactly once");
+        // Automatic keepAbove stacking is retired on the production
+        // entry (the sync helper stays for the separate cull): admission
+        // writes neither above nor below.
+        assert.deepEqual(h.aboveWrites, [], "admission writes no keepAbove");
         assert.deepEqual(h.belowWrites, [], "zero keepBelow writes");
         assert.ok(!h.world.geometryWrites.some((w) => w.startsWith("win-b@")), "zero frame writes to the float");
         assert.deepEqual(h.world.focused, [], "zero focus writes");
         entryRound(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true"], "retained observation adds no stacking writes");
-        assert.ok(h.logs.some((l) => l.includes("automatic-keep-above") && l.includes("outcome=applied")), "applied diagnostic");
+        assert.deepEqual(h.aboveWrites, [], "retained observation adds no stacking writes");
+        assert.deepEqual(h.belowWrites, [], "still zero below writes");
+        assert.ok(!h.logs.some((l) => l.includes("automatic-keep-above")), "no automatic stacking actuation");
     });
 
     it("a focused automatic float survives a survivor-focus reconcile with no activation", () => {
@@ -1068,97 +1090,107 @@ describe("world entry automatic-float stacking", () => {
         assert.ok(!h.logs.some((l) => l.includes("focus-skipped")), "no preservation skip for explicit focus");
     });
 
-    it("explicit unfloat releases owned above once, then tiles with suppression and no below write", () => {
+    it("explicit unfloat tiles with zero stacking writes and no below write", () => {
         const h = makeEntryHarness();
         entryDiscover(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true"]);
+        assert.deepEqual(h.aboveWrites, [], "admission writes nothing");
         entryRound(h, {
             // Strict v4 toggle-float success is the exact 3-key shape
             // (world-report.ts result-float-keys): present-but-false
             // noSpace refuses, so success omits the key entirely.
             result: { op: "toggle-float", win: "win-b", rect: null },
         });
-        assert.deepEqual(h.aboveWrites, ["win-b=true", "win-b=false"], "explicit tile releases once");
+        // The explicit-unfloat release is a no-op with nothing owned
+        // (retired automatic stacking): the tile proceeds with zero
+        // stacking writes and never a keepBelow write.
+        assert.deepEqual(h.aboveWrites, [], "explicit tile writes no above");
         assert.deepEqual(h.belowWrites, [], "tile never writes below");
         entryRound(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true", "win-b=false"], "no repeat writes");
+        assert.deepEqual(h.aboveWrites, [], "no repeat writes");
+        assert.deepEqual(h.belowWrites, [], "still zero below writes");
     });
 
-    it("a replaced native reference under a reused id re-admits fresh with no stale writes", () => {
+    it("a replaced native reference under a reused id stays silent with no stale writes", () => {
         const h = makeEntryHarness();
         entryDiscover(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true"]);
+        assert.deepEqual(h.aboveWrites, [], "admission writes nothing");
         // Close gap: the float leaves the inventory for one accepted round.
         const closed = h.wins.find((w) => w.internalId === "win-b");
         assert.ok(closed !== undefined);
         h.wins.splice(h.wins.indexOf(closed), 1);
         entryRound(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true"], "closed ref takes no cleanup write");
+        assert.deepEqual(h.aboveWrites, [], "closed ref takes no cleanup write");
         // A fresh native reference arrives under the reused id.
         const ws1 = h.world.desktops[0] as EntryDesk;
         const fresh = entryWin("win-b", "out", ws1, true, h.aboveWrites, h.belowWrites);
         h.wins.push(fresh);
         entryRound(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true", "win-b=true"], "only the fresh ref acquires");
-        assert.equal((fresh as unknown as Record<string, unknown>)["keepAbove"], true);
+        assert.deepEqual(h.aboveWrites, [], "the fresh ref acquires nothing");
+        assert.equal((fresh as unknown as Record<string, unknown>)["keepAbove"], false);
     });
 
-    it("restart after explicit stop re-admits fresh with exactly one write", () => {
+    it("restart after explicit stop stays silent with zero stacking writes", () => {
         const h = makeEntryHarness();
         entryDiscover(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true"]);
-        // Explicit stop best-effort releases; a later restart over the
-        // same live clients re-admits the automatic float exactly once.
+        assert.deepEqual(h.aboveWrites, [], "admission writes nothing");
+        // Explicit stop releases nothing (nothing is owned under retired
+        // automatic stacking); a restart over the same live clients
+        // re-admits with zero writes as well.
         h.handle?.stop();
-        assert.deepEqual(h.aboveWrites, ["win-b=true", "win-b=false"]);
+        assert.deepEqual(h.aboveWrites, [], "stop writes nothing");
         const h2 = makeEntryHarness();
         h2.wins.splice(0, h2.wins.length, ...h.wins);
         h2.world.activeWindow = h.wins[0] ?? null;
         entryDiscover(h2);
-        assert.deepEqual(h.aboveWrites, ["win-b=true", "win-b=false", "win-b=true"], "restart re-admits once");
+        assert.deepEqual(h.aboveWrites, [], "restart re-admits with zero writes");
         assert.deepEqual(h2.aboveWrites, [], "restart instance wrote nothing itself");
         assert.deepEqual(h2.belowWrites, [], "zero below writes");
         entryRound(h2);
-        assert.deepEqual(h.aboveWrites, ["win-b=true", "win-b=false", "win-b=true"], "retained adds nothing");
+        assert.deepEqual(h.aboveWrites, [], "retained adds nothing");
         h2.handle?.stop();
     });
 
-    it("a focused fullscreen game suspends owned floats with zero writes to the game", () => {
+    it("a focused fullscreen game takes zero stacking writes on suspend and exit", () => {
         const h = makeEntryHarness();
         entryDiscover(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true"]);
+        assert.deepEqual(h.aboveWrites, [], "admission writes nothing");
+        // With nothing owned under retired automatic stacking, a focused
+        // fullscreen game suspends nothing and re-acquires nothing: zero
+        // writes to the game and to the float on both transitions.
         const game = h.wins.find((w) => w.internalId === "win-a") as EntryWin;
         game.fullScreen = true;
         h.world.activeWindow = game;
         entryRound(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true", "win-b=false"], "owned float suspends");
+        assert.deepEqual(h.aboveWrites, [], "game focus suspends nothing");
         assert.deepEqual(h.belowWrites, [], "no below writes");
         assert.deepEqual(h.world.focused, [], "no focus writes to the game");
         assert.ok(!h.world.geometryWrites.some((w) => w.startsWith("win-a@")), "no frame writes to the game");
-        // Game exit re-acquires the same lifetime.
+        // Game exit re-acquires nothing.
         game.fullScreen = false;
         entryRound(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true", "win-b=false", "win-b=true"], "exit re-acquires");
+        assert.deepEqual(h.aboveWrites, [], "exit acquires nothing");
     });
 
-    it("explicit stop best-effort releases owned above (handle.stop only, not KWin unload)", () => {
+    it("explicit stop writes nothing (handle.stop only, not KWin unload)", () => {
         const h = makeEntryHarness();
         entryDiscover(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true"]);
+        assert.deepEqual(h.aboveWrites, [], "admission writes nothing");
         // handle.stop() is the only harnessed teardown: the actual KWin
         // script unload path is unharnessed and makes no claim here.
+        // With nothing owned under retired automatic stacking, stop
+        // releases nothing.
         h.handle?.stop();
-        assert.deepEqual(h.aboveWrites, ["win-b=true", "win-b=false"], "stop releases owned above once");
+        assert.deepEqual(h.aboveWrites, [], "stop releases nothing");
         assert.deepEqual(h.belowWrites, [], "stop never writes below");
     });
 
-    it("explicit stop writes nothing to a live-fullscreen owned float", () => {
+    it("explicit stop writes nothing for a live-fullscreen float", () => {
         const h = makeEntryHarness();
         entryDiscover(h);
         const owned = h.wins.find((w) => w.internalId === "win-b") as EntryWin;
         owned.fullScreen = true;
         h.handle?.stop();
-        assert.deepEqual(h.aboveWrites, ["win-b=true"], "zero writes to the fullscreen client on stop");
+        assert.deepEqual(h.aboveWrites, [], "zero writes to the fullscreen client on stop");
         assert.deepEqual(h.belowWrites, [], "zero below writes");
     });
 
@@ -1181,10 +1213,10 @@ describe("world entry automatic-float stacking", () => {
         assert.deepEqual(h.writes.above, ["win-b=true", "win-b=false"], "second success is a no-op");
     });
 
-    it("admits above tiles through QML-shaped array-like inventories", () => {
+    it("admits tiles with zero stacking writes through QML-shaped array-like inventories", () => {
         const h = makeEntryHarness(true);
         entryDiscover(h);
-        assert.deepEqual(h.aboveWrites, ["win-b=true"], "array-like windowList still converges");
+        assert.deepEqual(h.aboveWrites, [], "array-like windowList still converges with zero writes");
         assert.deepEqual(h.belowWrites, [], "zero keepBelow writes");
         assert.ok(!h.world.geometryWrites.some((w) => w.startsWith("win-b@")), "zero frame writes to the float");
         assert.deepEqual(h.world.focused, [], "zero focus writes");

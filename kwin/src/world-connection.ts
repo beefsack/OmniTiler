@@ -70,10 +70,11 @@ export const FACT_NAME_CATALOG: ReadonlyArray<string> = [
 // adapter owns no minimize/hide setter, minimized windows hold fail-closed
 // in world-apply, and native `hidden` only aliases into eligibility, so
 // windowSuppression is false and selection rides the host-owned native
-// route. The core above-owner route is NOT claimed either: the adapter
-// carries no StateTarget/visibility actuation and no persist-before-write
-// preimages (world_above's adapter obligation), while the automatic
-// keepAbove in world-native is float stacking only, so above is false.
+// route. The core above-owner route IS claimed: the adapter carries
+// StateTarget actuation plus persist-before-write preimages, while the
+// automatic keepAbove in world-native is retired (dormant helpers stay
+// for the separate cull; no local classification writes), so above is
+// true.
 // Native maximize (setMaximize/maximizeMode), fullscreen (fullScreen),
 // sticky (onAllDesktops), and tiled-float transfer (float intent store)
 // have real actuators and stay true; cursor warp is false (the adapter
@@ -124,7 +125,7 @@ export function defaultKwinCapabilities(nativePerOutput: boolean = false): KwinH
         maximize: true,
         fullscreen: true,
         nativeSticky: true,
-        above: false,
+        above: true,
         warp: false,
         tiledFloatTransfer: true,
         unavailableFacts: [...KWIN_UNAVAILABLE_FACTS],

@@ -41,6 +41,8 @@ export type WorldCommand =
     | { op: "set-workspace-tiling"; out: string; ws: string; tiled: boolean }
     | { op: "toggle-workspace-tiling"; out: string; ws: string }
     | { op: "toggle-maximize"; win: string }
+    | { op: "toggle-sticky"; win: string }
+    | { op: "toggle-fullscreen"; win: string }
     | { op: "toggle-orientation"; win: string }
     | { op: "resize"; win: string; direction: string; mode: string; press: number }
     | { op: "toggle-float"; win: string; rect: [number, number, number, number] | null }
@@ -923,6 +925,12 @@ export function cmdToggleWorkspaceTiling(out: string, ws: string): WorldCommand 
 }
 export function cmdToggleMaximize(win: string): WorldCommand {
     return { op: "toggle-maximize", win };
+}
+export function cmdToggleSticky(win: string): WorldCommand {
+    return { op: "toggle-sticky", win };
+}
+export function cmdToggleFullscreen(win: string): WorldCommand {
+    return { op: "toggle-fullscreen", win };
 }
 export function cmdToggleOrientation(win: string): WorldCommand {
     return { op: "toggle-orientation", win };

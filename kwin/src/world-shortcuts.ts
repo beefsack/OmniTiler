@@ -15,13 +15,14 @@ import {
     cmdSelectTrailing,
     cmdSendRelative,
     cmdToggleMaximize,
+    cmdToggleSticky,
+    cmdToggleFullscreen,
     cmdToggleOrientation,
     cmdToggleWorkspaceTiling,
     implicitSource,
     type WorldCommand,
 } from "./world-report";
 import { workspaceShortcutCatalog } from "./workspace-native";
-import { readNativeAlias } from "./native-alias";
 
 export type WorldShortcutRegisterFn =
     | ((name: string, text: string, sequence: string, callback: () => void) => boolean)
@@ -92,8 +93,6 @@ export interface WorldShortcutsEnv {
     submitOutputSend: (direction: string, follow: boolean) => boolean;
     submitMigration: (direction: string) => boolean;
     submitFloat: (label: string) => boolean;
-    setStickyNative: (ref: object, id: string, sticky: boolean) => boolean;
-    setFullscreenNative: (ref: object, fullscreen: boolean, label?: string) => boolean;
     activeOutputName: () => string | null;
     activeWindowId: () => string | null;
     activeWindowRef: () => object | null;
@@ -108,10 +107,9 @@ export interface WorldShortcutsEnv {
 
 export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
     const {
-        readProp, isDirection, shortcutFailed, submitCommand,
+        isDirection, shortcutFailed, submitCommand,
         submitCatalogMove, submitOutputSend, submitMigration, submitFloat,
-        setStickyNative, setFullscreenNative,
-        activeOutputName, activeWindowId, activeWindowRef,
+        activeOutputName, activeWindowId,
         currentScopeId,
     } = env;
     const register = env.registerShortcutFn ?? ((() => {
@@ -224,19 +222,15 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
                 }
             });
         }
-        // Window-state toggles (legacy parity): float/maximize/orientation
-        // route the same handlers as the facade. Sticky is synchronous;
-        // fullscreen issues natively and confirms at the next accepted
-        // observation. Float/maximize/orientation are world commands.
+        // Window-state toggles route Planner commands; the accepted
+        // state rows drive the single native executor (no direct
+        // native setters here).
         tryRegister("omnitiler-toggle-float", "Toggle floating window", "Meta+G", () => {
             submitFloat("toggle-float");
         });
         tryRegister("omnitiler-toggle-sticky", "Toggle sticky floating window", "Meta+Shift+G", () => {
             const id = activeWindowId();
-            const ref = activeWindowRef();
-            const stickyRaw = ref !== null ? readProp(ref, "onAllDesktops") : undefined;
-            const sticky = typeof stickyRaw === "boolean" ? stickyRaw : ref !== null ? readNativeAlias(readProp, ref, "sticky") : undefined;
-            if (id === null || ref === null || !setStickyNative(ref, id, sticky !== true)) {
+            if (id === null || !submitCommand(cmdToggleSticky(id), "toggle-sticky")) {
                 shortcutFailed("toggle-sticky");
             }
         });
@@ -247,10 +241,8 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
             }
         });
         tryRegister("omnitiler-toggle-fullscreen", "Toggle fullscreen window", "Meta+F11", () => {
-            const ref = activeWindowRef();
-            const fsRaw = ref !== null ? readProp(ref, "fullScreen") : undefined;
-            const fullscreen = typeof fsRaw === "boolean" ? fsRaw : ref !== null ? readNativeAlias(readProp, ref, "fullscreen") === true : false;
-            if (ref === null || !setFullscreenNative(ref, !fullscreen, "toggle-fullscreen")) {
+            const id = activeWindowId();
+            if (id === null || !submitCommand(cmdToggleFullscreen(id), "toggle-fullscreen")) {
                 shortcutFailed("toggle-fullscreen");
             }
         });

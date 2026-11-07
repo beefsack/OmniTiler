@@ -53,7 +53,7 @@ describe("v4 connection codecs (handshake + settings)", () => {
         assert.ok(isOpaqueId(OWN_PROCESS_ID_TOKEN), "fixed token is Id grammar-valid");
     });
 
-    it("capabilities are truthful host limits with floor-true scope and no unowned hide/above", () => {
+    it("capabilities are truthful host limits with floor-true scope and no unowned hide", () => {
         // Floor default (KWin 6.6 has no per-output API): all-outputs.
         const floor = defaultKwinCapabilities();
         assert.equal(floor.nativeSelectorScope, "all-outputs");
@@ -69,11 +69,11 @@ describe("v4 connection codecs (handshake + settings)", () => {
         // No independent recoverable per-window hide actuator exists
         // (minimized holds fail closed; hidden only aliases eligibility),
         // so suppression stays false and selection rides the host-owned
-        // native route. No StateTarget/visibility actuation or
-        // persist-before-write preimages exist either (the automatic
-        // keepAbove is float stacking only), so above stays false.
+        // native route. StateTarget actuation plus persist-before-write
+        // preimages are production-wired (the automatic keepAbove is
+        // retired), so above is true.
         assert.equal(caps.windowSuppression, false);
-        assert.equal(caps.above, false);
+        assert.equal(caps.above, true);
         assert.deepEqual([...caps.unavailableFacts], [...KWIN_UNAVAILABLE_FACTS]);
         const order = [
             "privileged", "managed", "acceptsInput", "activationInhibited", "toolWindow", "owned",
