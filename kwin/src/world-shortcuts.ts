@@ -301,7 +301,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
                 const follow = kind === "send-relative";
                 tryRegister(row.action, row.text, row.sequence, () => {
                     const w = focusedWin();
-                    const cmd = w === null ? null : cmdSendRelative(w, implicitSource("home-then-cached-live"), delta, follow);
+                    const cmd = w === null ? null : cmdSendRelative(w, implicitSource("home-then-action"), delta, follow);
                     if (cmd === null || !submitCommand(cmd, row.action)) {
                         shortcutFailed(row.action);
                     }

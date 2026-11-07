@@ -576,7 +576,7 @@ describe("command-only directional intents for float subjects", () => {
         assert.deepEqual(lastCommand(seen), {
             op: "send-relative",
             win: "win-f",
-            source: { implicit: "home-then-cached-live" },
+            source: { implicit: "home-then-action" },
             delta: 1,
             follow: true,
         });
@@ -587,7 +587,7 @@ describe("command-only directional intents for float subjects", () => {
         assert.deepEqual(lastCommand(seen), {
             op: "send-numbered",
             win: "win-f",
-            source: { implicit: "home-then-cached-live" },
+            source: { implicit: "home-then-action" },
             index: 0,
             follow: false,
         });

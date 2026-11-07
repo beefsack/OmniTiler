@@ -499,7 +499,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.equal(command["win"], "win-a");
         assert.equal(command["index"], 0);
         assert.equal(command["follow"], false);
-        assert.deepEqual(command["source"], { implicit: "home-then-cached-live" });
+        assert.deepEqual(command["source"], { implicit: "home-then-action" });
         // Reply queued: the entry drains with a fresh commandless capture.
         queue.callback(JSON.stringify({
             v: 4, outcome: "queued", gen: "gen-1",

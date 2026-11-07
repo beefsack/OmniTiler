@@ -1362,7 +1362,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             shortcutFailed(action);
             return;
         }
-        const cmd = cmdSendNumbered(w, implicitSource("home-then-cached-live"), index, follow);
+        const cmd = cmdSendNumbered(w, implicitSource("home-then-action"), index, follow);
         if (cmd === null || !submitCommand(cmd, action)) {
             shortcutFailed(action);
         }
@@ -4638,10 +4638,27 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                                 return;
                             }
                             // In-band refusal proves the command never
-                            // filed: requeue the head at front (never a
-                            // replay, the server holds nothing) and wait
-                            // for the next native event. Never a retry
-                            // loop: no schedule here.
+                            // filed. A shape refusal (snapshot-invalid from
+                            // queue-time command_shape_valid, e.g. a retired
+                            // implicit source) is permanent: drop the head
+                            // narrowly so later commands can proceed instead
+                            // of requeueing the poison forever. Any other
+                            // refusal requeues at front (never a replay, the
+                            // server holds nothing) and waits for the next
+                            // native event. Never a retry loop: no schedule
+                            // on the requeue path.
+                            if (parsed.kind === "snapshot-invalid" && parsed.message === "command-invalid") {
+                                log(`omnitiler:world:command-dropped kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=on-next-event`);
+                                unackedQueue = null;
+                                state.noteRejectedOrTransportError();
+                                killPending("rejected");
+                                if (pendingQueue.length > 0) {
+                                    scheduleDispatch();
+                                } else {
+                                    wakeFollowup();
+                                }
+                                return;
+                            }
                             log(`omnitiler:world:queue-rejected kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=on-next-event`);
                             unackedQueue = null;
                             pendingQueue.unshift(head);
@@ -5760,7 +5777,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             const w = activeWindowId();
             const cmd = w === null || (delta !== -1 && delta !== 1)
                 ? null
-                : cmdSendRelative(w, implicitSource("home-then-cached-live"), delta, follow !== false);
+                : cmdSendRelative(w, implicitSource("home-then-action"), delta, follow !== false);
             if (cmd === null || !submitCommand(cmd, "workspace-relative-move")) {
                 shortcutFailed("workspace-relative-move");
             }

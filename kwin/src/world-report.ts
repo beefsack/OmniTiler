@@ -14,12 +14,13 @@ import type { MigrationSourceRefill } from "./world-settings-live";
 
 export type WorldMode = "per-output-local" | "global-unique" | "shared";
 
-// Typed send source (v3 exact): a genuinely semantic explicit output, or
-// one of the two core-owned implicit fallbacks. Legacy string/null `out`
-// payloads refuse server-side.
+// Typed send source (v4 exact): a genuinely semantic explicit output, or
+// the sole core-owned implicit fallback. Legacy string/null `out`
+// payloads refuse server-side; the retired `home-then-cached-live` token
+// refuses as an unknown value.
 export type SendSource =
     | { explicit: string }
-    | { implicit: "home-then-action" | "home-then-cached-live" };
+    | { implicit: "home-then-action" };
 
 // Exact v3 command vocabulary (tiler-protocol world_protocol.rs
 // decode_command). direction-only intents carry no endpoint; selection
@@ -740,7 +741,7 @@ export function cmdSend(win: string, out: string, ws: string, follow: boolean): 
 export function explicitSource(out: string): SendSource {
     return { explicit: out };
 }
-export function implicitSource(token: "home-then-action" | "home-then-cached-live"): SendSource {
+export function implicitSource(token: "home-then-action"): SendSource {
     return { implicit: token };
 }
 export function cmdSendRelative(win: string, source: SendSource, delta: number, follow: boolean): WorldCommand | null {
