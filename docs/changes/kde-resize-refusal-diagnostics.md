@@ -27,12 +27,12 @@
    detailed reasons are collapsed; retain the unchanged requester result.
 2. Verify correlation, sanitization, truncation, populated context and genuine
    v4 refusal behavior; run full adapter and scoped Rust gates without new skips.
-3. Reproduce the chord sequence using exact-scoped fixtures, including after a
-   populated selection and with native-effect churn in isolated nested KWin.
-   Use authoritative native state and complete correlated wire evidence.
-4. Classify observed reasons. If reproduction fails, retain diagnostics and give
-   an exact dogfood re-check; do not block the arrival slice. A feedback behavior
-   choice remains undecided rather than silently changing refusal semantics.
+3. Classify reasons from a user re-check with real keyboard shortcuts, including
+   after a populated selection. Preserve the complete `just dev` combined log.
+   A direct-ingress nested run would not exercise the shortcut callbacks.
+4. Leave classification pending until that evidence arrives; do not block the
+   arrival slice. A feedback behavior choice remains undecided rather than
+   silently changing refusal semantics.
 
 ## Current state
 
@@ -55,6 +55,12 @@
   protocol and service tests pass with 1,970 core unit tests, zero ignored tests,
   actual private-bus ownership/storage/queue/wait outcomes and enabled stage5
   proofs. Scoped locked build, strict all-target clippy and formatting pass.
+- Source confirms the stderr route into the `just dev` combined log:
+  `emit_resize_refusal` writes Planner stderr; `just/linux.just` launches the
+  Planner with stdout/stderr merged into its log, then tails every line through
+  the `[planner]` prefix and combined-log `tee`, without a Planner-side filter.
+  Expected evidence is `[planner] omnitiler:resize-refused ...` beside the command
+  dispatch/result. No logging change is needed.
 - The offline diagnostics increment is ready independently of native evidence.
-  Native reproduction, detailed reason classification and integrated review are
-  pending. No root-cause or resize defect fix is claimed.
+  Detailed classification awaits the user re-check and integrated review remains
+  pending. This note stays active. No root-cause or resize defect fix is claimed.
