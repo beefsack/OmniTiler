@@ -366,6 +366,30 @@ export interface WorldClearAttempt {
     post: boolean | null;
     attemptMs: string;
 }
+// Closed native-state property vocabulary (world-contract.md
+// "StateAttempt"): the four independent native properties. The one-shot
+// stack effect stays a distinct action, never `above`.
+export type WorldStateProperty = "fullscreen" | "maximized" | "sticky" | "above";
+// One normalized raw native-state attempt: the mechanical facts behind a
+// single native property write for one window under one authorizing
+// revision. `property`/`target` echo the exact core native-state target;
+// `rev` is the authorizing WorldReply rev (never the later report obs,
+// reqSeq, or the write stamp); `setter` is the actual native call
+// disposition; `pre`/`post` are the observed property immediately around
+// the call (null when unreadable, never a default); `attemptMs` is the
+// original canonical write stamp (redelivery reuses it, never restamps).
+// At most one latest-wins entry per window property: the core refuses two
+// rows for one property as duplicate-state-attempt.
+export interface WorldStateAttempt {
+    win: string;
+    property: WorldStateProperty;
+    target: boolean;
+    rev: string;
+    setter: FrameSetter;
+    pre: boolean | null;
+    post: boolean | null;
+    attemptMs: string;
+}
 // Mechanical disposition of one focus write: the native setter outcome or
 // `not-called` (no call is not a successful native call). Pure actuator
 // disposition, never a policy conclusion.
@@ -2771,10 +2795,8 @@ export interface WorldReportV4IntentRecord {
 
 // Minimal producer input for the v4 inner report. Attempt lanes ride the
 // retained mechanical evidence the apply loop keeps (latest-wins per
-// window/operation/phase); the producer emits only what it measured.
-// stateAttempts has no producer yet: the adapter performs no native-state
-// writes (fullscreen/maximized/sticky/above), so it rides its empty lane
-// until the lane migrates. rendererInput is never minted. focusFeedback
+// window/operation/phase, one row per window state property); the producer
+// emits only what it measured. rendererInput is never minted. focusFeedback
 // rides the retained one-shot focus correlation below (empty when nothing
 // was spent).
 export interface WorldReportV4Input {
@@ -2784,6 +2806,10 @@ export interface WorldReportV4Input {
     readonly memberAttempts: ReadonlyArray<WorldMemberAttempt>;
     readonly viewAttempts: ReadonlyArray<WorldViewAttempt>;
     readonly clearAttempts: ReadonlyArray<WorldClearAttempt>;
+    // Retained native-state evidence (empty when nothing was spent; the
+    // wire lane is required so empty rides the literal empty array, never
+    // an omission).
+    readonly stateAttempts: ReadonlyArray<WorldStateAttempt>;
     // Retained one-shot focus correlation (empty when nothing spent;
     // omitted lanes backfill the same empty default).
     readonly focusFeedbacks?: ReadonlyArray<WorldFocusFeedback>;
@@ -2929,6 +2955,20 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
         focusRows.push(bytes);
     }
     const focusLane = `"focusFeedback":[${focusRows.join(",")}]`;
+    // Retained native-state evidence rides verbatim in canonical key
+    // order (at most one entry per window property). The lane is
+    // required: empty rides the literal empty lane, never an omission. A
+    // row that cannot be spelled canonically fails the whole report
+    // closed, never a partial lane.
+    const stateRows: string[] = [];
+    for (const row of input.stateAttempts) {
+        const bytes = encodeV4StateAttempt(row);
+        if (bytes === null) {
+            return null;
+        }
+        stateRows.push(bytes);
+    }
+    const stateLane = `"stateAttempts":[${stateRows.join(",")}]`;
     return `{"v":${WORLD_CONTRACT_VERSION},` +
         `"screens":[${screens.join(",")}],"windows":[${windows.join(",")}],` +
         `"closed":[${closed.join(",")}],"native":[${native.join(",")}],` +
@@ -2938,7 +2978,7 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
         `"actionOutputs":[${actionOutputs.join(",")}],` +
         `"presentation":${presentation}${lanes},` +
         `"intentRecords":[${intentRecords.join(",")}],` +
-        `"stateAttempts":[],${focusLane},` +
+        `${stateLane},${focusLane},` +
         `"rendererInput":null,` +
         `"nativeGesture":${nativeGesture},"cursorWindow":${cursorWindow},` +
         `"nativeInvalidWitness":${witness}}`;
@@ -3159,6 +3199,47 @@ function encodeV4ClearAttempt(a: WorldClearAttempt): string | null {
     const flag = (v: boolean | null): string => (v === null ? "null" : encodeV4Bool(v));
     return `{"op":${encodeV4String(a.op)},"win":${encodeV4String(a.win)},` +
         `"setter":${encodeV4String(a.setter)},"pre":${flag(a.pre)},"post":${flag(a.post)},` +
+        `"attemptMs":${encodeV4String(a.attemptMs)}}`;
+}
+
+// Canonical v4 native-state attempt writer: the exact required keys in
+// canonical order. Any malformed shape fails the whole report closed:
+// bad window id, unknown property, non-boolean target, bad rev,
+// unknown setter, non-boolean-or-null pre/post, or a non-canonical
+// stamp. `target` is never nullable; `pre`/`post` ride null only when
+// unreadable.
+export function encodeV4StateAttempt(a: WorldStateAttempt): string | null {
+    if (typeof a !== "object" || a === null || Array.isArray(a)) {
+        return null;
+    }
+    if (!isOpaqueId(a.win)) {
+        return null;
+    }
+    if (typeof a.property !== "string" || !STATE_PROPERTIES.has(a.property)) {
+        return null;
+    }
+    if (typeof a.target !== "boolean") {
+        return null;
+    }
+    if (typeof a.rev !== "string" || !isCanonicalU64(a.rev)) {
+        return null;
+    }
+    if (a.setter !== "accepted" && a.setter !== "refused" && a.setter !== "threw") {
+        return null;
+    }
+    const flag = (v: unknown): string | null =>
+        (v === null ? "null" : (typeof v === "boolean" ? encodeV4Bool(v) : null));
+    const pre = flag(a.pre);
+    const post = flag(a.post);
+    if (pre === null || post === null) {
+        return null;
+    }
+    if (typeof a.attemptMs !== "string" || !isCanonicalU64(a.attemptMs)) {
+        return null;
+    }
+    return `{"win":${encodeV4String(a.win)},"property":${encodeV4String(a.property)},` +
+        `"target":${encodeV4Bool(a.target)},"rev":${encodeV4String(a.rev)},` +
+        `"setter":${encodeV4String(a.setter)},"pre":${pre},"post":${post},` +
         `"attemptMs":${encodeV4String(a.attemptMs)}}`;
 }
 

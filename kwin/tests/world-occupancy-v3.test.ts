@@ -219,6 +219,7 @@ describe("native occupancy encoding", () => {
             memberAttempts: [],
             viewAttempts: [],
             clearAttempts: [],
+            stateAttempts: [],
             intentRecords: [],
         });
         assert.ok(json !== null);

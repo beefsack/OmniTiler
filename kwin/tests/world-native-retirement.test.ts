@@ -251,6 +251,7 @@ async function roundtrip(
         memberAttempts: [],
         viewAttempts: [],
         clearAttempts: [],
+        stateAttempts: [],
         intentRecords: [],
     });
     assert.ok(inner !== null, "genuine v4 producer bytes encode");

@@ -168,6 +168,7 @@ describe("capacity settings connection carriage", () => {
             memberAttempts: [],
             viewAttempts: [],
             clearAttempts: [],
+            stateAttempts: [],
             intentRecords: [{ win: "win-a", data: "schema2-opaque" }],
         });
         assert.ok(json !== null, "genuine v4 producer bytes encode");

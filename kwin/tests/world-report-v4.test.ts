@@ -100,6 +100,7 @@ function buildInner(surface: object) {
         memberAttempts: [],
         viewAttempts: [],
         clearAttempts: [],
+        stateAttempts: [],
         intentRecords: [],
     });
     assert.ok(json !== null);
@@ -237,6 +238,7 @@ describe("v4 inner report shape", () => {
             memberAttempts: [],
             viewAttempts: [],
             clearAttempts: [],
+        stateAttempts: [],
             intentRecords: [],
         });
         assert.equal(json, null);
@@ -275,6 +277,7 @@ describe("v4 frame attempt lane", () => {
             memberAttempts: [],
             viewAttempts: [],
             clearAttempts: [],
+        stateAttempts: [],
             intentRecords: [],
         });
         return { json, value: json === null ? null : JSON.parse(json) as Record<string, unknown> };
@@ -360,6 +363,7 @@ describe("v4 member/view attempt lanes", () => {
             memberAttempts: members as never,
             viewAttempts: views as never,
             clearAttempts: [],
+        stateAttempts: [],
             intentRecords: [],
         });
         return { json, value: json === null ? null : JSON.parse(json) as Record<string, unknown> };
@@ -502,6 +506,7 @@ describe("v4 local frame witness (adapter-local watermark)", () => {
             memberAttempts: [],
             viewAttempts: [],
             clearAttempts: [],
+        stateAttempts: [],
             intentRecords: [],
         });
         assert.ok(json !== null);

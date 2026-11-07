@@ -9,6 +9,7 @@
 import { compareU64, incrementU64, isCanonicalU64, isOpaqueId } from "./world-seq";
 import {
     encodeV4FocusFeedback,
+    encodeV4StateAttempt,
     isWorldRejection,
     type FrameSetter,
     type WorldClearAttempt,
@@ -20,6 +21,7 @@ import {
     type WorldMemberRef,
     type WorldReply,
     type WorldReplyResult,
+    type WorldStateAttempt,
     type WorldViewAttempt,
     type WorldViewRef,
 } from "./world-report";
@@ -78,6 +80,7 @@ export interface AttemptFlight {
     members: WorldMemberAttempt[];
     views: WorldViewAttempt[];
     clears: WorldClearAttempt[];
+    states: WorldStateAttempt[];
     focus: WorldFocusFeedback[];
 }
 
@@ -90,6 +93,10 @@ const MAX_FRAME_ATTEMPTS = 1024;
 const MAX_MEMBER_ATTEMPTS = 1024;
 const MAX_VIEW_ATTEMPTS = 1024;
 const MAX_CLEAR_ATTEMPTS = 1024;
+// Latest-wins bound mirrors the core MAX_WORLD_STATE_ATTEMPTS cap: one
+// row per window property, oldest-first eviction past the cap so a report
+// can never refuse over-cap.
+const MAX_STATE_ATTEMPTS = 1024;
 // Latest-wins bound mirrors the core MAX_WORLD_FOCUS_FEEDBACK cap; the
 // total arrival-bracket bound mirrors MAX_ARRIVAL_BRACKETS_TOTAL. Both
 // evict oldest-first past the cap so a report can never refuse over-cap.
@@ -183,6 +190,15 @@ export class WorldAdapterState {
     memberAttempts = new Map<string, WorldMemberAttempt>();
     viewAttempts = new Map<string, WorldViewAttempt>();
     clearAttempts = new Map<string, WorldClearAttempt>();
+    // Raw native-state write/readback facts (latest-wins per window
+    // property) drained into every report until a bound ready reply
+    // consumes the delivered snapshot. Redelivery reuses the original
+    // write stamps; the core consumes each idempotently. Rows carry the
+    // exact core native-state target (property/target/authorizing rev),
+    // the actual setter disposition, and nullable pre/post property
+    // reads. No native spending happens here: this unit retains evidence
+    // only, for the later state-spending lane to record through.
+    stateAttempts = new Map<string, WorldStateAttempt>();
     // Correlated one-shot focus evidence (latest-wins per spent effect
     // id) drained into every report until a bound ready reply consumes
     // the delivered snapshot. Redelivery reuses the original write
@@ -540,6 +556,41 @@ export class WorldAdapterState {
         return true;
     }
 
+    // Record one raw native-state attempt. Latest-wins per (window,
+    // property): the core refuses two rows for one property as
+    // duplicate-state-attempt, so a newer tuple for the same property
+    // replaces its predecessor while an unrelated property (or window)
+    // rides alongside. A same-tuple replay (identical window, property,
+    // target, and authorizing rev) preserves the FIRST row: the original
+    // stamp is never replaced by contradictory replay evidence.
+    // Validation reuses the canonical wire writer (unknown property,
+    // non-boolean target, bad rev, unknown setter, non-boolean pre/post,
+    // or a non-canonical stamp refuses, never stored). Redelivery reuses
+    // the stored stamp: callers never restamp.
+    recordStateAttempt(attempt: WorldStateAttempt): boolean {
+        if (encodeV4StateAttempt(attempt) === null) {
+            return false;
+        }
+        const key = `${attempt.win}\u0000${attempt.property}`;
+        const live = this.stateAttempts.get(key);
+        if (
+            live !== undefined &&
+            live.target === attempt.target && live.rev === attempt.rev
+        ) {
+            return true;
+        }
+        this.stateAttempts.set(key, { ...attempt });
+        while (this.stateAttempts.size > MAX_STATE_ATTEMPTS) {
+            const oldest = this.stateAttempts.keys().next();
+            if (oldest.done === true) {
+                break;
+            }
+            this.stateAttempts.delete(oldest.value as string);
+        }
+        this.dirty = true;
+        return true;
+    }
+
     // Record one correlated one-shot focus evidence row. Latest-wins per
     // spent effect id. Validation reuses the canonical wire writer
     // (encodeV4FocusFeedback fails malformed rows closed: bad
@@ -610,6 +661,20 @@ export class WorldAdapterState {
             .sort((a, b) => {
                 const ka = `${a.op}\u0000${a.win}`;
                 const kb = `${b.op}\u0000${b.win}`;
+                return ka < kb ? -1 : ka > kb ? 1 : 0;
+            })
+            .map((a) => ({ ...a }));
+    }
+
+    // Ordered retained native-state rows for the report lane (sorted by
+    // window, property, target, then authorizing rev for determinism).
+    // Rows are flat facts, so a shallow copy snapshots each row: later
+    // mutation of a returned row cannot rewrite a delivered snapshot.
+    statesForReport(): WorldStateAttempt[] {
+        return [...this.stateAttempts.values()]
+            .sort((a, b) => {
+                const ka = `${a.win}\u0000${a.property}\u0000${a.target ? "1" : "0"}\u0000${a.rev}`;
+                const kb = `${b.win}\u0000${b.property}\u0000${b.target ? "1" : "0"}\u0000${b.rev}`;
                 return ka < kb ? -1 : ka > kb ? 1 : 0;
             })
             .map((a) => ({ ...a }));
@@ -692,6 +757,22 @@ export class WorldAdapterState {
             const live = this.clearAttempts.get(`${sent.op}\u0000${sent.win}`);
             if (live !== undefined && sameClear(live, sent)) {
                 this.clearAttempts.delete(`${sent.op}\u0000${sent.win}`);
+                retired += 1;
+            }
+        }
+        // State rows retire by exact full-row equality against the
+        // delivered snapshot: a newer tuple for the same window property
+        // never equals its predecessor, so it survives the older ack
+        // while an unchanged redelivery retires. Unrelated properties
+        // (different keys) are untouched by construction.
+        const sameState = (a: WorldStateAttempt, b: WorldStateAttempt): boolean =>
+            a.win === b.win && a.property === b.property && a.target === b.target &&
+            a.rev === b.rev && a.setter === b.setter &&
+            a.pre === b.pre && a.post === b.post && a.attemptMs === b.attemptMs;
+        for (const sent of this.inFlight.delivered.states) {
+            const live = this.stateAttempts.get(`${sent.win}\u0000${sent.property}`);
+            if (live !== undefined && sameState(live, sent)) {
+                this.stateAttempts.delete(`${sent.win}\u0000${sent.property}`);
                 retired += 1;
             }
         }
@@ -821,6 +902,7 @@ export class WorldAdapterState {
                 members: this.memberAttemptsForReport(),
                 views: this.viewAttemptsForReport(),
                 clears: this.clearAttemptsForReport(),
+                states: this.statesForReport(),
                 focus: this.focusFeedbacksForReport(),
             },
         };
@@ -878,6 +960,7 @@ export class WorldAdapterState {
         this.memberAttempts.clear();
         this.viewAttempts.clear();
         this.clearAttempts.clear();
+        this.stateAttempts.clear();
         this.focusFeedbacks.clear();
         return true;
     }
