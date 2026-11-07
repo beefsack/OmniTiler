@@ -132,32 +132,34 @@
   Service unit tests pass 219/219. No native property execution or restoration
   has run; the client executor and its persist-before-write gates remain next.
 
-## State-target revision blocker
+## Verified state-target revision correlation
 
-- Native execution cannot truthfully correlate a retained target first received
-  in a later publication. `world_state.rs` requires the internal original
-  target revision; all four producers retain it across observations, while
-  `world_sizing.rs` publishes no revision on StateTarget. Every accepted report
-  advances the enclosing reply revision. The requester take receipt carries
-  no original revision either, and commandless above has no command sequence.
-- Losing the authorizing reply R and first receiving the republished target in
-  R+1 leaves the adapter without R. Stamping R+1 is ignored by core; inferring
-  R or blindly retrying would violate the correlation rule. Existing focused
-  wrong-correlation tests confirm the mismatched revision remains unspent.
-  The minimal discriminator is recorded in `docs/spec/reference-outcomes.md`.
-- This needs a contract/core publication resolution before target execution is
-  enabled. Separate client storage/recovery plumbing can proceed independently;
-  no core, wire fixture or state-target schema change has been made here.
-- The selected resolution direction is core-only: accept the revision of the
-  acted-on publication, without changing the immutable wire shape or adding a
-  counter/history. The proposed interval from binding revision through latest
-  publication is not sufficient by itself: the same binding can publish Hold
-  between Controlled replies. The existing fullscreen
-  `held_scope_holds_entry_then_healthy_recovery_resumes_tuple` regression passes
-  and explicitly proves this unchanged-revision Hold/Controlled sequence.
-- Receipt-time readability is not publication-time authority. Rejecting attempts
-  merely because their receiving observation is held would discard legitimate
-  earlier evidence, contrary to retained settlement. Existing reply caches hold
-  only the latest publication, not authority for arbitrary intervening revisions.
-  A safe narrowing of the interval still needs resolution; no core settlement,
-  contract wording or correlation discriminator has been changed on that premise.
+- The original exact-revision rule ignored an R+1 attempt when the issuing reply
+  R was lost, despite a Controlled republished target. StateTarget carries no
+  original revision; commandless above has no command sequence to recover it.
+- Core now correlates `binding.target.revision <= attempt.revision <= latest
+  published revision`, retaining exact window/property/value/capability and
+  first-evidence/spent rules. Target replacement or withdrawal fences obsolete
+  evidence. No counter, history, reply-authority gate, wire, codec or fixture
+  change is needed.
+- The adapter acts only on a Controlled property row in its held reply; settle
+  correlates evidence of a write already performed, not permission to perform
+  it. Hold-stamped evidence records/spends without creating authority or a new
+  publication. Earlier authorized evidence survives held receipt. This is a
+  contract clarification awaiting user review.
+- Fullscreen commands can mint a binding on incomplete inventory while the
+  independent publication predicate emits Hold at that same revision. A new
+  regression passes under both the original exact check and the interval,
+  confirming that accepting such raw evidence is existing settlement behavior.
+- Real fullscreen and commandless-above republish tests fail under the original
+  exact check and pass under the interval. Regressions also cover initial and
+  republished Hold evidence, held receipt and record-free recovery, obsolete
+  true/false/true stamps, original/future bounds and immutable first facts/stamp.
+  Initial synthetic coverage was replaced with real producer/publication paths;
+  mislabeled held-receipt coverage was corrected before acceptance.
+- Scoped core/protocol/service tests, locked build, formatting and all-target
+  clippy with warnings denied pass; only `workspace_unsafe_posture` is excluded.
+  Core unit tests pass 1979/1979. Independent source/contract review has no
+  unresolved finding. Immutable window-state and other fixture bytes remain
+  unchanged. Adapter Hold/Untouched no-write coverage, native execution and
+  recovery remain next; no live work has run for this increment.

@@ -603,6 +603,95 @@ mod tests {
     }
 
     #[test]
+    fn lost_acquire_republish_accepts_republished_stamp() {
+        // Lost commandless acquire at R: the observation-only republish at
+        // R+1 carries the Controlled row (`command_seq: None`) with the
+        // same binding revision, and the first acted-on attempt stamps R+1
+        // and latches as the original raw evidence.
+        let mut engine = engine_above();
+        let first = accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![float_fact("win-a", "out-a", 100, 100)],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        let rev = first.state_revision;
+        let row = above_row(&first, "win-a").expect("acquire target");
+        assert!(row.value);
+        assert_eq!(row.authority, ScopeAuthority::Controlled);
+        assert_eq!(row.command_seq, None);
+        // The acquire reply is lost: native stays below, so the next
+        // observation-only reply republishes Controlled with the same
+        // binding revision.
+        let second = accepted(
+            &mut engine,
+            &report_full(
+                2,
+                2,
+                vec![screen("out-a", 0)],
+                vec![float_fact("win-a", "out-a", 100, 100)],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        assert_eq!(second.state_revision, rev + 1);
+        let row = above_row(&second, "win-a").expect("republished target");
+        assert!(row.value);
+        assert_eq!(row.authority, ScopeAuthority::Controlled);
+        assert_eq!(row.command_seq, None);
+        assert_eq!(
+            engine
+                .retained_states
+                .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
+                .expect("binding retained")
+                .target
+                .revision,
+            rev,
+        );
+        // First acted-on attempt stamps the republish revision R+1.
+        let mut shown = float_fact("win-a", "out-a", 100, 100);
+        shown.above = Some(true);
+        let mut proven = report_full(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![shown],
+            vec![],
+            "win-a",
+            None,
+            None,
+        );
+        let attempt_row = StateAttempt {
+            window: WindowId("win-a".to_owned()),
+            property: StateProperty::Above,
+            target: true,
+            revision: rev + 1,
+            setter: FrameSetter::Accepted,
+            pre: Some(false),
+            post: Some(true),
+            attempt_ms: 7,
+        };
+        proven.state_attempts = vec![attempt_row.clone()];
+        accepted(&mut engine, &proven);
+        let binding = engine
+            .retained_states
+            .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
+            .expect("binding retained");
+        assert!(binding.spent);
+        assert_eq!(binding.pending.as_ref(), Some(&attempt_row));
+        assert_eq!(binding.disposition, AttemptOutcome::Applied);
+    }
+
+    #[test]
     fn float_to_tile_releases_false_only_after_proof() {
         let mut engine = engine_above();
         let first = accepted(

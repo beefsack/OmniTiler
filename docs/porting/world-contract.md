@@ -959,10 +959,15 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `pre,post` | bool | yes | Observed property immediately around call. |
 | | `attemptMs` | Counter | no | Original stamp. |
 
-- StateAttempt `rev` is the authorizing WorldReply `rev`, not the later report's
-  `obs` or `reqSeq`, nor the write's `attemptMs`. Match the exact window,
-  property, target and authorizing revision; observation-only replies do not
-  reauthorize a spent write. The immutable `window-state` scenario pairs
+- StateAttempt `rev` is the acted-on WorldReply publication's `rev`, not the later
+  report's `obs` or `reqSeq`, nor the write's `attemptMs`. The adapter acts only
+  on that reply's Controlled property row. Settlement correlates raw evidence of
+  an already-performed write: match exact window, property, target and capability,
+  with `binding.target.revision <= attempt.revision <= latest published revision`.
+  Capture the first matching evidence as spent even under Hold; this creates no
+  authority or publication, and observation-only replies never reauthorize a
+  spent write. Preserve the original evidence and stamp on redelivery. The
+  immutable `window-state` scenario pairs
   `native-sticky-target` at revision 2 with `native-sticky-observed` at observation
   3 carrying attempt revision 2. See the
   [correlation discriminator](../spec/reference-outcomes.md#native-state-attempt-correlation).

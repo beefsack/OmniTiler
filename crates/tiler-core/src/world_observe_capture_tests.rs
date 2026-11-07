@@ -2432,6 +2432,10 @@ fn settle_state_gates_latch_first_evidence_then_recovers() {
         let refused = state_attempt(true, 1, FrameSetter::Refused, Some(false), Some(false));
         let mut engine = engine_settle();
         insert_state_binding(&mut engine, "win-a");
+        // The inserted binding was published at revision 1: restore the
+        // production invariant (`target.revision <= latest published`) the
+        // revision interval relies on. The stray rev-2 row stays future.
+        engine.state_revision = 1;
         // Superseded empty stage: settle must read the current capture.
         let (old_leg, old_v4) = pair_reports(0, Vec::new(), Vec::new());
         stage_either(&mut engine, v4, &old_leg, &old_v4);
@@ -2498,6 +2502,7 @@ fn settle_state_gates_latch_first_evidence_then_recovers() {
         ] {
             let mut gated = engine_settle();
             insert_state_binding(&mut gated, "win-a");
+            gated.state_revision = 1;
             stage_state(
                 &mut gated,
                 v4,

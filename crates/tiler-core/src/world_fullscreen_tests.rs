@@ -9,8 +9,8 @@ use crate::directional::WindowId;
 use crate::world_directional::tests::{accepted, fact, report_full, screen};
 use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
-    AttemptOutcome, CommandRejectKind, CommandResult, FrameSetter, ScopeAuthority, StateAttempt,
-    StateProperty, WorldCommand, WorldReport,
+    AttemptOutcome, CommandRejectKind, CommandResult, FrameSetter, HoldReason, ScopeAuthority,
+    StateAttempt, StateProperty, WorldCommand, WorldReport,
 };
 use crate::world_state::MAX_RETAINED_STATE_BINDINGS;
 
@@ -1154,6 +1154,353 @@ fn held_scope_holds_entry_then_healthy_recovery_resumes_tuple() {
             .revision,
         rev
     );
+}
+
+#[test]
+fn lost_issued_reply_republish_accepts_republished_stamp() {
+    // Lost R then first acted-on republish at R+1 through the real
+    // producer: the observation-only reply republishes the same binding
+    // revision as Controlled, and the R+1-stamped attempt latches as the
+    // original raw evidence.
+    let mut engine = fs_engine();
+    accepted(&mut engine, &bootstrap(vec![fs_fact("win-a", None, false)]));
+    let issued = accepted(
+        &mut engine,
+        &cmd(
+            2,
+            1,
+            vec![fs_fact("win-a", None, false)],
+            set_fullscreen("win-a", true),
+        ),
+    );
+    let (value, authority, seq) = target_row(&issued, "win-a").expect("issued target");
+    assert_eq!((value, seq), (true, Some(1)));
+    assert_eq!(authority, ScopeAuthority::Controlled);
+    let rev = issued.state_revision;
+    let binding_rev = |engine: &WorldEngine| {
+        engine
+            .retained_states
+            .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
+            .expect("binding")
+            .target
+            .revision
+    };
+    assert_eq!(binding_rev(&engine), rev);
+    // The issued reply is lost: native stays false, so the next
+    // observation-only reply republishes Controlled at R+1 with the same
+    // binding revision.
+    let republished = accepted(
+        &mut engine,
+        &observe(3, vec![fs_fact("win-a", None, false)]),
+    );
+    assert_eq!(republished.state_revision, rev + 1);
+    let (value, authority, seq) = target_row(&republished, "win-a").expect("republished target");
+    assert_eq!((value, seq), (true, Some(1)));
+    assert_eq!(authority, ScopeAuthority::Controlled);
+    assert_eq!(binding_rev(&engine), rev);
+    // First acted-on attempt stamps the republish revision R+1.
+    let row = attempt(
+        "win-a",
+        true,
+        rev + 1,
+        FrameSetter::Accepted,
+        Some(false),
+        Some(true),
+    );
+    let mut proof = observe(4, vec![fs_fact("win-a", None, true)]);
+    proof.state_attempts = vec![row.clone()];
+    accepted(&mut engine, &proof);
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
+        .expect("binding retained");
+    assert!(binding.spent);
+    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(binding.disposition, AttemptOutcome::Applied);
+}
+
+#[test]
+fn initial_hold_publication_attempt_records_evidence() {
+    // The initial publication is itself Hold: the command report arrives
+    // with incomplete inventory (the fullscreen pregates do not gate
+    // inventory; publication does), so the fresh binding publishes
+    // Hold(IncompleteInventory) at its own revision. The issued-revision
+    // stamp still correlates as raw evidence with no Controlled row and
+    // no new binding, and a later healthy report proves from it with no
+    // new attempt.
+    let mut engine = fs_engine();
+    accepted(&mut engine, &bootstrap(vec![fs_fact("win-a", None, false)]));
+    let mut commanded = cmd(
+        2,
+        1,
+        vec![fs_fact("win-a", None, false)],
+        set_fullscreen("win-a", true),
+    );
+    commanded.inventory_complete = false;
+    let issued = accepted(&mut engine, &commanded);
+    let rev = issued.state_revision;
+    let (value, authority, seq) = target_row(&issued, "win-a").expect("issued target");
+    assert!(value);
+    assert_eq!(
+        authority,
+        ScopeAuthority::Hold(HoldReason::IncompleteInventory)
+    );
+    assert_eq!(seq, Some(1));
+    assert_eq!(
+        engine
+            .retained_states
+            .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
+            .expect("binding")
+            .target
+            .revision,
+        rev,
+    );
+    // Attempt stamped with the issued Hold revision: raw evidence records
+    // first and marks spent; still no Controlled row, no new binding.
+    let row = attempt(
+        "win-a",
+        true,
+        rev,
+        FrameSetter::Accepted,
+        Some(false),
+        Some(true),
+    );
+    let mut incomplete = observe(3, vec![fs_fact("win-a", None, false)]);
+    incomplete.inventory_complete = false;
+    incomplete.state_attempts = vec![row.clone()];
+    let before = engine.retained_states.len();
+    let reply = accepted(&mut engine, &incomplete);
+    let (value, authority, _) = target_row(&reply, "win-a").expect("held target");
+    assert!(value);
+    assert!(matches!(authority, ScopeAuthority::Hold(_)));
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
+        .expect("binding retained");
+    assert_eq!(binding.target.revision, rev);
+    assert!(binding.spent);
+    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(binding.disposition, AttemptOutcome::PossiblyExecuted);
+    assert_eq!(engine.retained_states.len(), before);
+    // Later healthy report proves from the evidence with no new attempt.
+    accepted(&mut engine, &observe(4, vec![fs_fact("win-a", None, true)]));
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
+        .expect("binding retained");
+    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(binding.disposition, AttemptOutcome::Applied);
+}
+
+#[test]
+fn earlier_controlled_evidence_under_held_receipt() {
+    // Healthy Controlled issued at R, then a held (minimized) receipt at
+    // R+1 carries the earlier rev-R evidence: settle records it first and
+    // marks spent; the reply keeps the Hold row with the same binding
+    // revision and mints no new binding. A healthy recovery then proves
+    // from the held evidence, and a held redelivery of the same earlier
+    // evidence keeps the positive proof.
+    let mut engine = fs_engine();
+    accepted(&mut engine, &bootstrap(vec![fs_fact("win-a", None, false)]));
+    let issued = accepted(
+        &mut engine,
+        &cmd(
+            2,
+            1,
+            vec![fs_fact("win-a", None, false)],
+            set_fullscreen("win-a", true),
+        ),
+    );
+    let (value, authority, seq) = target_row(&issued, "win-a").expect("issued target");
+    assert_eq!((value, seq), (true, Some(1)));
+    assert_eq!(authority, ScopeAuthority::Controlled);
+    let rev = issued.state_revision;
+    let mut minimized = fs_fact("win-a", None, false);
+    minimized.minimized = Some(true);
+    let row = attempt(
+        "win-a",
+        true,
+        rev,
+        FrameSetter::Accepted,
+        Some(false),
+        Some(true),
+    );
+    let mut held = observe(3, vec![minimized]);
+    held.state_attempts = vec![row.clone()];
+    let before = engine.retained_states.len();
+    let reply = accepted(&mut engine, &held);
+    assert_eq!(reply.state_revision, rev + 1);
+    let (value, authority, seq) = target_row(&reply, "win-a").expect("held target");
+    assert!(value);
+    assert!(
+        matches!(authority, ScopeAuthority::Hold(_)),
+        "minimized publication never authorizes Controlled"
+    );
+    assert_eq!(seq, Some(1));
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
+        .expect("binding retained");
+    assert_eq!(binding.target.revision, rev);
+    assert!(binding.spent);
+    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(binding.disposition, AttemptOutcome::PossiblyExecuted);
+    assert_eq!(engine.retained_states.len(), before);
+    // Healthy recovery proves from the held evidence with no new attempt.
+    accepted(&mut engine, &observe(4, vec![fs_fact("win-a", None, true)]));
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
+        .expect("binding retained");
+    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(binding.disposition, AttemptOutcome::Applied);
+    // A held redelivery of the same earlier evidence keeps the proof.
+    let mut redelivered = fs_fact("win-a", None, true);
+    redelivered.minimized = Some(true);
+    let mut redelivery = observe(5, vec![redelivered]);
+    redelivery.state_attempts = vec![row.clone()];
+    let reply = accepted(&mut engine, &redelivery);
+    let (value, authority, _) = target_row(&reply, "win-a").expect("held target");
+    assert!(value);
+    assert!(matches!(authority, ScopeAuthority::Hold(_)));
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
+        .expect("binding retained");
+    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(binding.disposition, AttemptOutcome::Applied);
+    assert_eq!(engine.retained_states.len(), before);
+}
+
+#[test]
+fn held_republish_accepts_republished_stamp_without_authority() {
+    // Robustness against a misbehaving adapter writing a Hold row: the
+    // adapter must only write Controlled rows, but if it acts on a Hold
+    // publication anyway, settle still correlates the evidence without
+    // granting authority. Hold published across the republish: the first
+    // arrival under hold stamps R+1 and latches as raw evidence.
+    let mut engine = fs_engine();
+    accepted(&mut engine, &bootstrap(vec![fs_fact("win-a", None, false)]));
+    let issued = accepted(
+        &mut engine,
+        &cmd(
+            2,
+            1,
+            vec![fs_fact("win-a", None, false)],
+            set_fullscreen("win-a", true),
+        ),
+    );
+    let rev = issued.state_revision;
+    // First held receipt carries no attempt: reply R+1 publishes Hold and
+    // the binding stays unspent.
+    let mut minimized = fs_fact("win-a", None, false);
+    minimized.minimized = Some(true);
+    let reply = accepted(&mut engine, &observe(3, vec![minimized]));
+    assert_eq!(reply.state_revision, rev + 1);
+    let (_, authority, _) = target_row(&reply, "win-a").expect("held target");
+    assert!(matches!(authority, ScopeAuthority::Hold(_)));
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
+        .expect("binding retained");
+    assert_eq!(binding.target.revision, rev);
+    assert!(!binding.spent);
+    // Second held receipt carries the R+1 stamp: in-interval evidence
+    // latches spent with no new binding and no authority.
+    let row = attempt(
+        "win-a",
+        true,
+        rev + 1,
+        FrameSetter::Accepted,
+        Some(false),
+        Some(true),
+    );
+    let mut minimized = fs_fact("win-a", None, false);
+    minimized.minimized = Some(true);
+    let mut held = observe(4, vec![minimized]);
+    held.state_attempts = vec![row.clone()];
+    let before = engine.retained_states.len();
+    let reply = accepted(&mut engine, &held);
+    let (_, authority, _) = target_row(&reply, "win-a").expect("held target");
+    assert!(matches!(authority, ScopeAuthority::Hold(_)));
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
+        .expect("binding retained");
+    assert_eq!(binding.target.revision, rev);
+    assert!(binding.spent);
+    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(binding.disposition, AttemptOutcome::PossiblyExecuted);
+    assert_eq!(engine.retained_states.len(), before);
+}
+
+#[test]
+fn replaced_true_false_true_obsoletes_original_stamp() {
+    // Real producer replacements: entry, same-state exit (consumed with
+    // no write, obsolete entry binding removed), fresh entry. The
+    // original R stamp reads absent against the R+2 binding even though
+    // its value matches.
+    let mut engine = fs_engine();
+    accepted(&mut engine, &bootstrap(vec![fs_fact("win-a", None, false)]));
+    let first = accepted(
+        &mut engine,
+        &cmd(
+            2,
+            1,
+            vec![fs_fact("win-a", None, false)],
+            set_fullscreen("win-a", true),
+        ),
+    );
+    let rev = first.state_revision;
+    let second = accepted(
+        &mut engine,
+        &cmd(
+            3,
+            2,
+            vec![fs_fact("win-a", None, false)],
+            set_fullscreen("win-a", false),
+        ),
+    );
+    assert!(second.command_result.is_none());
+    assert!(
+        !engine
+            .retained_states
+            .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
+        "same-state exit removes the obsolete entry binding"
+    );
+    let third = accepted(
+        &mut engine,
+        &cmd(
+            4,
+            3,
+            vec![fs_fact("win-a", None, false)],
+            set_fullscreen("win-a", true),
+        ),
+    );
+    let (value, authority, seq) = target_row(&third, "win-a").expect("fresh entry target");
+    assert_eq!((value, seq), (true, Some(3)));
+    assert_eq!(authority, ScopeAuthority::Controlled);
+    let latest = third.state_revision;
+    assert_eq!(latest, rev + 2);
+    let mut proof = observe(5, vec![fs_fact("win-a", None, true)]);
+    proof.state_attempts = vec![attempt(
+        "win-a",
+        true,
+        rev,
+        FrameSetter::Accepted,
+        Some(false),
+        Some(true),
+    )];
+    let reply = accepted(&mut engine, &proof);
+    assert!(reply.diagnostics.is_empty());
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
+        .expect("binding retained");
+    assert_eq!(binding.target.revision, latest);
+    assert!(!binding.spent);
+    assert_eq!(binding.disposition, AttemptOutcome::Unattempted);
+    assert!(binding.pending.is_none());
 }
 
 #[test]

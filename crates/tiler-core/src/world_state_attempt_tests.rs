@@ -439,13 +439,17 @@ fn each_wrong_correlation_field_reads_absent() {
             "win-a",
             StateProperty::Above,
             true,
-            rev + 1,
+            u64::MAX,
             FrameSetter::Accepted,
             Some(false),
             Some(true),
             7,
         ),
     ];
+    // The future case stays a true future boundary (`u64::MAX`): an
+    // in-interval republish stamp such as `rev + 1` still correlates
+    // (covered by the real-producer republish tests in
+    // `world_fullscreen_tests` and `world_above`).
     for (i, row) in cases.into_iter().enumerate() {
         let seq = 2 + i as u64;
         let reply = accepted(
@@ -470,6 +474,214 @@ fn each_wrong_correlation_field_reads_absent() {
         assert_eq!(bound.disposition, AttemptOutcome::Unattempted);
         assert!(bound.pending.is_none());
     }
+}
+
+#[test]
+fn attempt_beyond_latest_published_revision_ignored() {
+    // A stamp newer than the latest prior published revision reads absent.
+    let mut engine = engine_with(caps_all());
+    let rev = accepted(
+        &mut engine,
+        &report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![base_fact_above("win-a", "out-a", Some(false))],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    )
+    .state_revision;
+    insert(&mut engine, "win-a", StateProperty::Above, true, rev);
+    let future = engine.state_revision + 1;
+    let reply = accepted(
+        &mut engine,
+        &with_attempts(
+            report_full(
+                2,
+                2,
+                vec![screen("out-a", 0)],
+                vec![base_fact_above("win-a", "out-a", Some(true))],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+            vec![attempt(
+                "win-a",
+                StateProperty::Above,
+                true,
+                future,
+                FrameSetter::Accepted,
+                Some(false),
+                Some(true),
+                7,
+            )],
+        ),
+    );
+    assert!(reply.diagnostics.is_empty());
+    let bound = binding(&engine, "win-a", StateProperty::Above).expect("binding retained");
+    assert!(!bound.spent);
+    assert_eq!(bound.disposition, AttemptOutcome::Unattempted);
+    assert!(bound.pending.is_none());
+}
+
+#[test]
+fn spent_second_attempt_keeps_first_raw_evidence() {
+    // A second in-interval attempt never replaces the first raw evidence:
+    // every raw fact plus the timestamp stays exactly the original.
+    let mut engine = engine_with(caps_all());
+    let rev = accepted(
+        &mut engine,
+        &report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![base_fact_above("win-a", "out-a", Some(false))],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    )
+    .state_revision;
+    insert(&mut engine, "win-a", StateProperty::Sticky, true, rev);
+    let first = attempt(
+        "win-a",
+        StateProperty::Sticky,
+        true,
+        rev,
+        FrameSetter::Accepted,
+        Some(false),
+        Some(true),
+        7,
+    );
+    let mut proven = fact("win-a", "out-a", 0);
+    proven.sticky = Some(true);
+    accepted(
+        &mut engine,
+        &with_attempts(
+            report_full(
+                2,
+                2,
+                vec![screen("out-a", 0)],
+                vec![proven.clone()],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+            vec![first.clone()],
+        ),
+    );
+    assert_eq!(
+        binding(&engine, "win-a", StateProperty::Sticky)
+            .expect("binding")
+            .disposition,
+        AttemptOutcome::Applied,
+    );
+    let latest = engine.state_revision;
+    let second = attempt(
+        "win-a",
+        StateProperty::Sticky,
+        true,
+        latest,
+        FrameSetter::Threw,
+        None,
+        None,
+        9,
+    );
+    accepted(
+        &mut engine,
+        &with_attempts(
+            report_full(
+                3,
+                3,
+                vec![screen("out-a", 0)],
+                vec![proven],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+            vec![second],
+        ),
+    );
+    let bound = binding(&engine, "win-a", StateProperty::Sticky).expect("binding retained");
+    assert!(bound.spent);
+    assert_eq!(bound.pending.as_ref(), Some(&first));
+    assert_eq!(bound.pending.as_ref().map(|row| row.attempt_ms), Some(7));
+    assert_eq!(bound.disposition, AttemptOutcome::Applied);
+}
+
+#[test]
+fn original_revision_accepts_after_later_publications() {
+    // The original R stamp still correlates after later publications: the
+    // lower bound is the binding revision, not the latest.
+    let mut engine = engine_with(caps_all());
+    let rev = accepted(
+        &mut engine,
+        &report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![base_fact_above("win-a", "out-a", Some(false))],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    )
+    .state_revision;
+    insert(&mut engine, "win-a", StateProperty::Above, true, rev);
+    for seq in 2..=3 {
+        accepted(
+            &mut engine,
+            &report_full(
+                seq,
+                seq,
+                vec![screen("out-a", 0)],
+                vec![base_fact_above("win-a", "out-a", Some(false))],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+    }
+    assert!(engine.state_revision > rev + 1);
+    let row = attempt(
+        "win-a",
+        StateProperty::Above,
+        true,
+        rev,
+        FrameSetter::Accepted,
+        Some(false),
+        Some(true),
+        7,
+    );
+    accepted(
+        &mut engine,
+        &with_attempts(
+            report_full(
+                4,
+                4,
+                vec![screen("out-a", 0)],
+                vec![base_fact_above("win-a", "out-a", Some(true))],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+            vec![row.clone()],
+        ),
+    );
+    let bound = binding(&engine, "win-a", StateProperty::Above).expect("binding retained");
+    assert!(bound.spent);
+    assert_eq!(bound.pending.as_ref(), Some(&row));
+    assert_eq!(bound.disposition, AttemptOutcome::Applied);
 }
 
 #[test]

@@ -150,6 +150,8 @@ impl WorldEngine {
         if self.retained_states.len() > MAX_RETAINED_STATE_BINDINGS {
             return;
         }
+        // Latest completed publication bounds incoming evidence.
+        let latest = self.state_revision;
         let attempts = &self.staged.observation.state_attempts;
         for attempt in attempts {
             if !state_property_supported(self.capabilities(), attempt.property) {
@@ -164,8 +166,18 @@ impl WorldEngine {
             {
                 continue;
             }
-            if binding.target.value != attempt.target || binding.target.revision != attempt.revision
-            {
+            if binding.target.value != attempt.target {
+                continue;
+            }
+            // Revision interval: the binding revision through the latest
+            // completed publication. A lost attempt's republished stamp
+            // still correlates while the binding is retained; an
+            // older-than-binding (superseded replacement) or
+            // newer-than-published (unseen future) stamp reads absent.
+            // Correlation performs no publication-authority check: held
+            // stamps are raw evidence like any other. First raw evidence
+            // wins; spent never reopens.
+            if attempt.revision < binding.target.revision || attempt.revision > latest {
                 continue;
             }
             if binding.spent {

@@ -786,8 +786,10 @@ pub struct ClearAttempt {
 ///
 /// - `window`/`property`/`target` echo the exact core native-state target
 ///   as correlation so the core matches the attempt to its desire.
-/// - `revision` is the world revision at target authorization, retained
-///   across observation-only replies (wire `rev`, quoted decimal).
+/// - `revision` is the acted-on `WorldReply` publication `rev`,
+///   preserved when redelivering the original evidence (wire `rev`,
+///   quoted decimal). The core correlates within the retained binding
+///   revision through the latest published revision.
 /// - `setter` is the mechanical disposition (`Accepted` never proves
 ///   completion by itself, `Refused` is an explicit native refusal,
 ///   `Threw` is a throwing/ambiguous call).
