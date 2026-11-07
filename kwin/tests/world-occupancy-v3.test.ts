@@ -1,16 +1,16 @@
-// Native occupancy v3: `native[].occupancy` counts every raw enumerated
+// Native occupancy v4: `native[].occupancy` counts every raw enumerated
 // window per ordered desktop (unmanaged, deleted, minimized, non-normal,
 // multi-desktop, and sticky windows all count; sticky counts toward every
 // ordered desktop). Unreadable membership yields explicit null counts, never
-// zero. The encoder carries the exact `occupancy` wire shape; v2 replies
-// refuse.
+// zero. The production v4 encoder carries the exact `occupancy` wire shape;
+// v2 and v3 replies refuse.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { captureWorldObservation, type WorldObservation } from "../src/world-observe";
 import {
     buildPresentationReadRequest,
-    buildWorldInnerReportJson,
+    buildWorldReportV4InnerJson,
     parseWorldReply,
 } from "../src/world-report";
 import { WORLD_CONTRACT_VERSION } from "../src/world-seq";
@@ -107,24 +107,30 @@ function occupancyOf(obs: WorldObservation): Array<{ native: string; count: numb
     return obs.native[0]?.occupancy ?? [];
 }
 
-describe("world v3 contract", () => {
-    it("rides contract version 3", () => {
-        assert.equal(WORLD_CONTRACT_VERSION, 3);
+describe("world v4 contract", () => {
+    it("rides contract version 4", () => {
+        assert.equal(WORLD_CONTRACT_VERSION, 4);
         const req = buildPresentationReadRequest("read-1");
         assert.ok(req !== null);
-        assert.equal((JSON.parse(req) as { v: number }).v, 3);
+        assert.equal((JSON.parse(req) as { v: number }).v, 4);
     });
 
-    it("refuses v2 replies", () => {
+    it("refuses v2 and v3 replies, accepts the genuine v4 shape", () => {
         assert.equal(
             parseWorldReply(
                 `{"v":2,"outcome":"rejected","kind":"k","message":"m","gen":"abc","source":"","nativeInvalid":"0","clock":"0"}`,
             ),
             null,
         );
-        assert.notEqual(
+        assert.equal(
             parseWorldReply(
                 `{"v":3,"outcome":"rejected","kind":"k","message":"m","gen":"abc","source":"","nativeInvalid":"0","clock":"0"}`,
+            ),
+            null,
+        );
+        assert.notEqual(
+            parseWorldReply(
+                `{"v":4,"outcome":"rejected","kind":"k","message":"m","gen":"abc","source":"","nativeInvalid":"0","clock":"0","gestureAssoc":null}`,
             ),
             null,
         );
@@ -200,25 +206,22 @@ describe("native occupancy observation", () => {
 });
 
 describe("native occupancy encoding", () => {
-    it("emits the exact v3 occupancy wire shape", () => {
+    it("emits the exact v4 occupancy wire shape", () => {
         const obs = observe([
             { id: "w1", desktops: [{ id: "ws-1" }] },
             { id: "w-sticky", onAllDesktops: true, desktops: [] },
         ]);
         assert.ok(obs !== null);
-        const json = buildWorldInnerReportJson({
+        const json = buildWorldReportV4InnerJson({
             observation: obs,
-            defaultTiled: true,
-            refill: "last-remaining-workspace",
-            bornMaximized: "tile-on-launch",
-            anchorFallback: "closest-splittable-relative",
-            noSpaceResult: "allow-overlap",
             creationAttempts: [],
             frameAttempts: [],
             memberAttempts: [],
             viewAttempts: [],
             clearAttempts: [],
+            intentRecords: [],
         });
+        assert.ok(json !== null);
         const body = JSON.parse(json as string) as {
             native: Array<{ out: string; order: string[]; current: string; occupancy: Array<{ native: string; count: number | null }> }>;
         };

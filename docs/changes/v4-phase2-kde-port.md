@@ -580,3 +580,11 @@
   settings, changed/equal snapshot behavior, restart-only mode/profile drift,
   shortcut carriage and resize-repeat accounting. Shortcut payload carriage alone
   does not prove core acceptance or native state-target/resize behavior.
+- Occupancy and result-parser coverage now uses v4 encoding and exact current
+  result vocabulary. All 12 tests and strict TypeScript pass, preserving raw
+  occupancy/sticky/null-count discriminators and malformed/counter/id refusal.
+  Both retired wire versions and retired group-result operations refuse. Bound
+  core results decode truthfully; requester-only actuator stripping remains a
+  broker obligation rather than a parser default. The latest full adapter build
+  succeeds with 984 tests: 957 pass, 27 fail, none skip, before these two migrations.
+  Remaining corpus failures, widened gates and integrated review keep K1 open.
