@@ -145,8 +145,8 @@
 - The adapter acts only on a Controlled property row in its held reply; settle
   correlates evidence of a write already performed, not permission to perform
   it. Hold-stamped evidence records/spends without creating authority or a new
-  publication. Earlier authorized evidence survives held receipt. This is a
-  contract clarification awaiting user review.
+  publication. Earlier authorized evidence survives held receipt. The user
+  approved this contract clarification on 2026-11-08.
 - Fullscreen commands can mint a binding on incomplete inventory while the
   independent publication predicate emits Hold at that same revision. A new
   regression passes under both the original exact check and the interval,
