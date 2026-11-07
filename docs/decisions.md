@@ -21,6 +21,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - 2026-11-08: User decision: retire the tentative KDE lifecycle and accepted vocabulary entry. Lifecycle normalization stays documented in the [KDE port notes](porting/kde-port-notes.md); the name list was stale and not product policy.
 - 2026-11-08: User decision: every KDE user command press queues FIFO in press order with no busy refusal, resolving window subjects from settled focus at dispatch ([KDE rapid input](decisions/commands.md#kde-rapid-input)).
 - 2026-11-08: User decision: retire aligned-grid lifecycle, destination replacement and aligned-only refill/spare rules in favor of the common v4 per-output model; retain displacement and physical return ([workspaces](decisions/workspaces.md#common-v4-per-output-workspaces)).
+- 2026-11-08: User decision: start the Windows port only after KDE phase 2 is complete offline including v3 removal, the user-run KDE state-target and reconnect live checks pass, and core scales resize minima, keyboard steps and group-edge zones per output; macOS follows Windows ([port start gate](decisions/contract.md#contract-authority-and-v4-migration)).
 
 ## Tentative decisions
 
