@@ -574,3 +574,9 @@
   wrong-lane and stop-cancellation checks. Raw native snapshots remain unchanged;
   the retired script-minted ingress lane is asserted absent, not null. These are
   offline transport tests, not physical-input or native gesture acceptance.
+- Settings reload and capacity-policy carriage now assert the separate revisioned
+  settings lane and absence of retired policy/sequencing fields from v4 reports.
+  All 17 tests and strict TypeScript pass, retaining validated defaults, live
+  settings, changed/equal snapshot behavior, restart-only mode/profile drift,
+  shortcut carriage and resize-repeat accounting. Shortcut payload carriage alone
+  does not prove core acceptance or native state-target/resize behavior.

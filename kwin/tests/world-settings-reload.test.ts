@@ -1,7 +1,6 @@
-// Production settings-reload coverage for the world adapter (legacy
-// parity): gaps re-resolve per capture (a deliberate Options reload applies
-// to subsequent layouts, never frozen at startup), same-axis move carries
-// the live validated token on every move command, and the resize
+// Strict v4 settings-reload coverage for the world adapter: gaps and
+// same-axis re-resolve per dispatch through the separate revisioned
+// DiscoverWorld settings lane (never the report lane), the resize
 // key-repeat index follows the legacy key + structural-signature rules
 // (0-based initial press per the core step schedule, reset on
 // window/direction/mode or confirmed membership/focus change, saturating
@@ -15,6 +14,9 @@ import {
     createResizePressCounter,
     RESIZE_PRESS_MAX,
 } from "../src/world-shortcuts";
+import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { parseSettingsReply } from "../src/world-connection";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 import {
     normalizeShortcutProfile,
@@ -112,6 +114,7 @@ interface Harness {
     calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }>;
     timers: Array<{ delay: number; cb: () => void }>;
     signals: Record<string, FakeSignal>;
+    configChanged: FakeSignal;
     handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
     runTimers: () => void;
     lastPayload: (method: string) => string;
@@ -134,6 +137,7 @@ function makeHarness(): Harness {
         windowRemoved: fakeSignal(),
         windowActivated: fakeSignal(),
     };
+    const configChanged = fakeSignal();
     const surface = {
         windowList: () => world.wins,
         screens: [{ name: "out", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }],
@@ -156,21 +160,23 @@ function makeHarness(): Harness {
     };
     const handle = startWorldAdapterEntry({
         workspace: surface,
+        options: { configChanged: configChanged.signal },
         owner: "owner-a",
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback) => {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
+                const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 4, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 4, outcome: "pending", gen: "gen-1" }));
                 }            }
         },
         scheduleOnce: (delay, cb) => {
@@ -207,6 +213,7 @@ function makeHarness(): Harness {
         calls,
         timers,
         signals,
+        configChanged,
         handle: handle as NonNullable<typeof handle>,
         runTimers,
         lastCall,
@@ -214,38 +221,84 @@ function makeHarness(): Harness {
     };
 }
 
+// Synthetic strict-v4 accepts; obs/rev are independent of nativeInvalid.
 function accept(gen: string, source: string, nativeInvalid: string, rev: string): string {
-    return JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req: source, obs: rev, rev,
+    const text = JSON.stringify({
+        v: 4, adapter: "test-adapter", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
         source,
         nativeInvalid,
-        clock: "0",
+        clock: "1",
         gestureSettled: null, gestureAssoc: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
+        intentWrites: [], switchSettled: [], diagnostics: [],
+        presentation: DISABLED_PRESENTATION,
+        scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
     });
+    const parsed = parseWorldReply(text);
+    assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
+    return text;
+}
+
+function handshakeAccept(adapter: string, req: string, gen: string): string {
+    return JSON.stringify({
+        type: "handshake-reply", v: 4, adapter, req, gen, ready: false, kind: "",
+    });
+}
+
+function settingsAccept(adapter: string, gen: string, req: string, rev: string): string {
+    return JSON.stringify({
+        type: "settings-reply", v: 4, adapter, gen, req, rev, status: "accepted", diagnostics: [],
+    });
+}
+
+function discoverCall(calls: Harness["calls"], type: string): { method: string; payload: string; callback: (reply: unknown) => void } {
+    const found = [...calls].reverse().find((c) => {
+        if (c.method !== "DiscoverWorld") {
+            return false;
+        }
+        try {
+            return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === type;
+        } catch {
+            return false;
+        }
+    });
+    assert.ok(found !== undefined, `expected DiscoverWorld/${type}`);
+    return found as { method: string; payload: string; callback: (reply: unknown) => void };
+}
+
+function settingsValues(h: Harness): Record<string, unknown> {
+    return JSON.parse(discoverCall(h.calls, "settings").payload)["values"] as Record<string, unknown>;
+}
+
+function settingsRev(h: Harness): string {
+    return JSON.parse(discoverCall(h.calls, "settings").payload)["rev"] as string;
+}
+
+function answerSettings(h: Harness, gen = "gen-1"): void {
+    const call = discoverCall(h.calls, "settings");
+    const body = JSON.parse(call.payload) as Record<string, unknown>;
+    const reply = settingsAccept("test-adapter", gen, body["req"] as string, body["rev"] as string);
+    assert.ok(parseSettingsReply(reply) !== null, "sent settings accept parses strict");
+    call.callback(reply);
 }
 
 function discover(h: Harness, gen = "gen-1"): void {
-    const call = h.lastCall("DiscoverWorld");
-    const body = JSON.parse(call.payload);
-    call.callback(JSON.stringify({
-        v: 3, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
-        ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-        gestureSettled: null,
-        operationSettled: [], nativeCreations: [],
-        warpCursor: null,
-        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        windows: [], transfers: [], effects: [], result: null,
-    }));
+    // Accept settings before the first report.
+    const hs = discoverCall(h.calls, "handshake");
+    const hsBody = JSON.parse(hs.payload) as Record<string, unknown>;
+    hs.callback(handshakeAccept("test-adapter", hsBody["req"] as string, gen));
+    answerSettings(h, gen);
+    h.runTimers();
+    // Settle the discovery-triggered observation report first so the test
+    // body starts from an idle flight.
     const auto = h.lastCall("DescribeWorld");
     const autoBody = JSON.parse(auto.payload);
-    assert.equal((autoBody["report"] as Record<string, unknown>)["command"], undefined, "inner reports never carry a command");
+    assert.equal(autoBody["command"], undefined, "captures never carry an inline command");
+    assert.equal((autoBody["report"] as Record<string, unknown>)["v"], 4);
     auto.callback(accept(gen, autoBody.source, autoBody.nativeInvalid, "0"));
 }
 
@@ -273,26 +326,57 @@ function settle(h: Harness, rev: string): void {
 }
 
 describe("world settings reload", () => {
-    it("re-resolves gaps per capture so a reload applies to later layouts", () => {
+    it("re-resolves gaps per dispatch so a reload applies via the settings lane", () => {
         const h = makeHarness();
         discover(h);
+        // Gap settings ride the separate revisioned settings snapshot,
+        // never the report lane.
+        assert.equal(settingsValues(h)["gap"], 8);
+        assert.equal(settingsValues(h)["outer"], 8);
+        const revBefore = settingsRev(h);
         h.handle.requestMove("right");
         h.runTimers();
-        let domains = ((JSON.parse(h.lastPayload("DescribeWorld")) as Record<string, unknown>)["report"] as Record<string, unknown>)["screens"] as Array<Record<string, unknown>>;
-        assert.equal(domains[0]?.["gap"], 8);
-        assert.equal(domains[0]?.["outer"], 8);
+        const inner = (JSON.parse(h.lastPayload("DescribeWorld")) as Record<string, unknown>)["report"] as Record<string, unknown>;
+        assert.ok(!("gap" in inner) && !("outer" in inner), "v4 report carries no gap settings");
         settle(h, "1");
-        // Deliberate reload: validated values apply to the next capture
-        // with no restart and no entry rebuild.
+        // Deliberate reload: validated values resend with a bumped
+        // revision on the deliberate configChanged edge, with no restart
+        // and no entry rebuild.
         h.settings.innerGap = 16;
         h.settings.outerGap = 20;
-        for (const handler of [...(h.signals.windowActivated as FakeSignal).handlers]) {
+        for (const handler of [...h.configChanged.handlers]) {
             handler();
         }
-        h.runTimers();
-        domains = ((JSON.parse(h.lastPayload("DescribeWorld")) as Record<string, unknown>)["report"] as Record<string, unknown>)["screens"] as Array<Record<string, unknown>>;
-        assert.equal(domains[0]?.["gap"], 16);
-        assert.equal(domains[0]?.["outer"], 20);
+        assert.equal(settingsValues(h)["gap"], 16);
+        assert.equal(settingsValues(h)["outer"], 20);
+        assert.notEqual(settingsRev(h), revBefore, "changed content bumps the settings revision");
+        answerSettings(h);
+        // Equal content retains the revision: a no-change edge resends
+        // nothing.
+        const sendsBefore = h.calls.filter((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+            } catch {
+                return false;
+            }
+        }).length;
+        for (const handler of [...h.configChanged.handlers]) {
+            handler();
+        }
+        const sendsAfter = h.calls.filter((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+            } catch {
+                return false;
+            }
+        }).length;
+        assert.equal(sendsAfter, sendsBefore, "equal snapshot resends no settings");
         h.handle.stop();
     });
 
@@ -505,15 +589,16 @@ describe("world workspace mode startup", () => {
                 calls.push({ method, payload, callback });
                 if (method === "QueueWorldCommand") {
                     const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                    callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
+                    const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                    callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
                         client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
                 } else if (method === "TakeCommandResult") {
                     const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                     if (stagedTake !== undefined) {
                         delete (globalThis as Record<string, unknown>)["__takeResult"];
-                        callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                        callback(JSON.stringify({ v: 4, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
                     } else {
-                        callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                        callback(JSON.stringify({ v: 4, outcome: "pending", gen: "gen-1" }));
                     }                }
             },
             scheduleOnce: (delay, cb) => {
@@ -543,18 +628,44 @@ describe("world workspace mode startup", () => {
                 }
             }
         };
+        const settingsCall = () => {
+            const found = [...calls].reverse().find((c) => {
+                if (c.method !== "DiscoverWorld") {
+                    return false;
+                }
+                try {
+                    return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+                } catch {
+                    return false;
+                }
+            });
+            assert.ok(found !== undefined, "expected DiscoverWorld/settings");
+            return found as { method: string; payload: string; callback: (reply: unknown) => void };
+        };
+        const answerSettingsNow = (gen = "gen-1"): void => {
+            const call = settingsCall();
+            const body = JSON.parse(call.payload) as Record<string, unknown>;
+            const reply = settingsAccept("test-adapter", gen, body["req"] as string, body["rev"] as string);
+            assert.ok(parseSettingsReply(reply) !== null, "sent settings accept parses strict");
+            call.callback(reply);
+        };
         const discoverNow = (gen = "gen-1"): void => {
-            const call = lastCall("DiscoverWorld");
-            const body = JSON.parse(call.payload);
-            call.callback(JSON.stringify({
-                v: 3, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
-                ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-                gestureSettled: null,
-                operationSettled: [], nativeCreations: [],
-                warpCursor: null,
-                presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-                windows: [], transfers: [], effects: [], result: null,
-            }));
+            const hs = [...calls].reverse().find((c) => {
+                if (c.method !== "DiscoverWorld") {
+                    return false;
+                }
+                try {
+                    return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+                } catch {
+                    return false;
+                }
+            });
+            assert.ok(hs !== undefined, "expected DiscoverWorld/handshake");
+            const hsBody = JSON.parse((hs as { payload: string }).payload) as Record<string, unknown>;
+            (hs as { callback: (reply: unknown) => void }).callback(
+                handshakeAccept("test-adapter", hsBody["req"] as string, gen),
+            );
+            answerSettingsNow(gen);
             const auto = lastCall("DescribeWorld");
             const autoBody = JSON.parse(auto.payload);
             auto.callback(accept(gen, autoBody.source, autoBody.nativeInvalid, "0"));
@@ -562,7 +673,17 @@ describe("world workspace mode startup", () => {
         return {
             calls, logs, configChanged, handle: handle as NonNullable<typeof handle>,
             lastCall, runTimers, discoverNow,
-            lastMode: (): unknown => ((JSON.parse(lastCall("DescribeWorld").payload) as Record<string, unknown>)["report"] as Record<string, unknown>)["mode"],
+            lastMode: (): unknown => (JSON.parse(settingsCall().payload)["values"] as Record<string, unknown>)["mode"],
+            settingsCount: (): number => calls.filter((c) => {
+                if (c.method !== "DiscoverWorld") {
+                    return false;
+                }
+                try {
+                    return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+                } catch {
+                    return false;
+                }
+            }).length,
         };
     }
 
@@ -572,8 +693,11 @@ describe("world workspace mode startup", () => {
         h.discoverNow();
         assert.equal(h.lastMode(), "per-output-local");
         // Deliberate reload to a new mode: logged restart-required, never
-        // adopted by the running activation.
+        // adopted by the running activation. Mode is startup-consumed, so
+        // the revisioned settings snapshot keeps the startup value and
+        // resends nothing.
         mode.value = "shared";
+        const settingsBefore = h.settingsCount();
         for (const fire of [...h.configChanged.handlers]) {
             fire();
         }
@@ -583,6 +707,7 @@ describe("world workspace mode startup", () => {
             "mode drift logged restart-required",
         );
         assert.equal(h.lastMode(), "per-output-local", "running activation keeps its startup mode");
+        assert.equal(h.settingsCount(), settingsBefore, "restart-only drift resends no settings");
         h.handle.stop();
         // A new instance adopts the changed value.
         const fresh = modeHarness(mode);
@@ -627,15 +752,16 @@ describe("world shortcut profile startup", () => {
                 calls.push({ method, payload, callback });
                 if (method === "QueueWorldCommand") {
                     const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                    callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
+                    const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
+                    callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
                         client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
                 } else if (method === "TakeCommandResult") {
                     const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                     if (stagedTake !== undefined) {
                         delete (globalThis as Record<string, unknown>)["__takeResult"];
-                        callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                        callback(JSON.stringify({ v: 4, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
                     } else {
-                        callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
+                        callback(JSON.stringify({ v: 4, outcome: "pending", gen: "gen-1" }));
                     }                }
             },
             scheduleOnce: () => () => undefined,
