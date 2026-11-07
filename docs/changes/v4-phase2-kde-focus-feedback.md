@@ -63,8 +63,8 @@
   distinct counters. Witness and arrival sampling must preserve their causal
   joins rather than equating them.
 - Host shown-witness acceptance and offline focus integration are complete.
-  Native focus/terminal acceptance, the anchored consumer and final integrated
-  review remain pending.
+  Native focus/terminal acceptance now has a bounded healthy sample. The
+  anchored consumer and final integrated review remain pending.
 
 ## Shown evidence
 
@@ -201,8 +201,50 @@
   read-back case, not an established native behavior.
 - Current typecheck and full adapter suite pass (1028 tests, zero skips).
   Independent source review found no blocking issue; the final view-lifetime
-  read-back was strengthened after review. Native healthy-switch acceptance and
-  actual arrival-predicate measurement remain pending.
+  read-back was strengthened after review. The subsequent native sample below
+  establishes bounded healthy-switch and arrival-predicate evidence.
+
+## Native healthy-switch evidence
+
+- The corrected fixture staging selected a desktop above freshly inventoried
+  sticky-inclusive occupancy before any fixture spawn or controller start. Two
+  Wayland and two XWayland fixtures joined by caller sentinel and PID to four
+  unique native lifetimes, on two populated test desktops.
+- Four alternating selections each produced one exactly correlated focus grant,
+  one target-specific native setter attempt/result, one accepted feedback row
+  and one `complete` / `proven` terminal with no failed members. All eight frozen
+  member checks matched desired frame, native home, lifetime, shown state and
+  observation brackets. Off-desktop unknown samples in the adapter's wider
+  bracket set were not frozen members and are not counted as failures.
+- This finite sample measured zero arrival-predicate failures, including zero
+  exact-frame failures. It does not prove arbitrary client hints, scaling,
+  multi-output behavior or physical shortcut delivery. Independent native
+  inventories after each selection confirm the target foreground and frames.
+- An earlier run admitted fixtures before moving above occupancy and is not
+  accepted as guide-compliant evidence. The corrected run's initial controller
+  startup lacked its planner and failed discovery; the later ready instance's
+  correlated evidence establishes the results above, not the failed startup.
+- Fixtures and helpers were removed, the controller and planner stopped, and
+  the unscoped non-trace bundle restored. Appended empty desktops remain.
+
+## Presentation freshness audit
+
+- Every accepted apply in the healthy-switch run had a stale-coverage read
+  (11 of 11). The native effect was absent: all effect-facts calls failed,
+  captures truthfully carried no native invalidation witness, and the broker
+  returned null coverage. The subscriber correctly sent no paint. This is not
+  evidence of a joining witness dropping during normal native rendering; K5
+  still needs an effect-loaded proof.
+- Presentation marker bodies reached the bus intact. A synchronous probe
+  wrapper completed with `undefined` before its asynchronous callback, so those
+  helper markers are not callback-delivery evidence. A correctly asynchronous
+  small marker joins to one exact return before the journey; no payload-size
+  failure is established. Future asynchronous probes must not use the
+  synchronous wrapper.
+- The causal view/focus guard was compared once with own-homing handling. The
+  latter has neither cross-entity view/activation payload validation nor final
+  read-back. No clear simplifying merge preserves those distinct checks;
+  post-apply observation is already shared.
 
 ## Approved native presentation port
 
@@ -212,10 +254,35 @@
   lifetime or witness mismatch, without polling or rescaling core metrics.
 - Use `SetPresentation` v2 only, preserving envelope, coverage, underlay and
   preview. Version mismatch hides all three surfaces without repeated noise.
-- The recovery test currently replays 19 v1 dispatch recordings. Establish their
+- The recovery test currently replays legacy v1 dispatch and facts recordings. Establish their
   real producer and record v2 siblings before changing parser dependencies;
   hand-written replacement bytes and modification of legacy fixtures are out of
   scope. Update metadata/static version pins with the port.
 - Remove `borderStrokeFromPublished` only after verifying no live callers, in a
   separate change with its active documentation updated. Historical records
   remain unchanged.
+
+## Real dispatch recording dependency
+
+- The existing real route is available offline:
+  `kwin/tests/world-stage5-v4-record.ts` drives `startWorldAdapterEntry` through
+  `broker_world_eval`; `world-stage5-fixture.test.ts` then drives the production
+  presentation subscriber against the genuine projections with an independent
+  complete-payload oracle. A new sibling recording can capture that subscriber's
+  renderer bytes. The legacy recovery test's visible/hide/restore border checks,
+  preview producer crossings, coverage fences and facts-source checks must all
+  remain intact.
+- Unchanged v4 projections are insufficient: they carry hidden borders because
+  `world-report.ts` still hardcodes `presentation.witness:null`. Merely recording
+  a v2 formatter would lose the legacy visible-border recovery assertions. The
+  native capture-to-witness join must be implemented and proved before recording
+  genuine visible anchored projections and repointing recovery.
+- The broker preserves the typed presentation witness unchanged while stamping
+  its own report observation, and separately strips/caches the effect-owned
+  invalidation witness. Neither broker stamping nor core border eligibility
+  currently creates the missing native witness. The capture identifier and its
+  exact join to effect coverage remain the next bounded investigation; no
+  counter equivalence or new wire format is established by this audit.
+- Existing fixture bytes remain unchanged. The new sibling must be generated
+  through the actual entry/broker/subscriber path, not by editing projections,
+  converting legacy payloads or weakening recovery assertions.
