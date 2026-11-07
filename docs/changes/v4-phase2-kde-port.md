@@ -605,3 +605,12 @@
   extreme geometry before actuation, and the later capture retains the explicit
   close. Hint/default/sentinel cases, the unchanged 4MiB no-truncation gate and
   bounded no-echo rejection logs remain covered. Old fixtures are untouched.
+- The remaining wire harness now uses strict v4 connection, native-fact reports,
+  bound replies, presentation projections and queue/take codecs. All 13 targeted
+  tests and strict TypeScript pass, retaining exact shapes, required bindings,
+  stale revision refusal, source-sequence independence from native invalidation,
+  redelivery, requester-only results and optional-field refusal discriminators.
+  The fresh full adapter gate builds successfully and passes all 983 tests with
+  no skips. The count drops by one because the two old outer-gap producer/golden
+  cases are one integrated genuine-engine carrier with both semantic oracles.
+  Widened Rust gates and integrated independent review remain open.
