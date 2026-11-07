@@ -1714,6 +1714,10 @@ describe("world admission focus on settled floats", () => {
             log: (m) => { setup.logs.push(m); },
             isStillListed: () => true,
             isActiveWindow: (ref) => ref === target,
+            // Fresh foreground/id readers track the fake activation above:
+            // unknown until the focus setter runs, then the target.
+            readActiveWindowId: () => (setup.focused.includes("win-b") ? "win-b" : null),
+            readWindowId: (ref) => (ref === target ? "win-b" : null),
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
             readLiveMembership: () => ({ out: "out", ws: "ws1" }),
             readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),

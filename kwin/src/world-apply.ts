@@ -21,7 +21,7 @@
 // from the fresh native facts.
 
 import type { ObservedWindow, WorldObservation } from "./world-observe";
-import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow, type WorldReplyResult, type FrameSetter, type WorldMemberRef, type WorldViewRef } from "./world-report";
+import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow, type WorldReplyResult, type FrameSetter, type WorldMemberRef, type WorldViewRef, type FocusReason, type FocusSetter, type WorldArrivalBracket, type WorldVisibilitySample } from "./world-report";
 import { isCanonicalU64, isOpaqueId } from "./world-seq";
 import { WorldAdapterState } from "./world-state";
 
@@ -45,6 +45,17 @@ export interface ApplyEnv {
     // Native setters through public KWin state only.
     isStillListed: (ref: object) => boolean;
     isActiveWindow: (ref: object) => boolean;
+    // Fresh exact native foreground id for focus pre/post correlation:
+    // the live active window translated through the stable internalId, or
+    // null when unreadable/absent (unknown, never a guess). Optional only
+    // for offline doubles (unknown); production always provides it.
+    readActiveWindowId?: () => string | null;
+    // Fresh exact native id for one live ref (the internalId CONSTANT
+    // source, normalized), or null when unreadable. Optional only for
+    // offline doubles; production always provides it. Lets arrival
+    // sampling bind the expected subject id to the ref's actual lifetime
+    // instead of trusting the listing alone.
+    readWindowId?: (ref: object) => string | null;
     readLiveRect: (ref: object) => { x: number; y: number; w: number; h: number } | null;
     readLiveMembership: (ref: object) => { out: string; ws: string } | null;
     // Native overlay lifetime recheck immediately before a setter: null
@@ -55,6 +66,19 @@ export interface ApplyEnv {
         fullscreen: boolean | null;
         maximized: boolean | null;
         sticky: boolean | null;
+    } | null;
+    // Narrow synchronous visibility facts for arrival brackets: RAW
+    // native minimized plus RAW native hostHidden (`m_hidden`, distinct
+    // from minimized) plus the frame-centre `workspace.windowAt(point,
+    // -1)` shown witness. Visible is false only on proven
+    // minimized||hostHidden, true only on a positive hit-test naming the
+    // exact listed live lifetime, else null (absence or unreadability,
+    // never a shown verdict). Optional only for offline doubles
+    // (unknown); production always provides it.
+    readLiveVisibility?: (ref: object) => {
+        minimized: boolean | null;
+        hostHidden: boolean | null;
+        visible: boolean | null;
     } | null;
     setGeometry: (ref: object, rect: { x: number; y: number; w: number; h: number }) => boolean;
     setMembership: (ref: object, wsNativeId: string, wsRef: object | null) => boolean;
@@ -2290,6 +2314,224 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         }
         return !liveViewShowsLogical(env, reply, t.out, t.ws);
     });
+    // Fresh exact native foreground id at the call site (the live active
+    // window through the stable internalId, opaque or null). Capture-time
+    // observation is never reused here: every focus row stamps the
+    // foreground read at its actual action/no-call instant. Null means
+    // unknown (unreadable/absent or an offline double without the reader),
+    // never a guess.
+    const readFgNow = (): string | null => {
+        try {
+            const id = env.readActiveWindowId?.() ?? null;
+            return typeof id === "string" && isOpaqueId(id) ? id : null;
+        } catch (error) {
+            void error;
+            return null;
+        }
+    };
+    // Fresh exact native id for one live ref (the internalId CONSTANT
+    // source), or null when unreadable/unavailable. Binds the expected
+    // subject id to the ref's actual lifetime wherever the listing alone
+    // could mislead across a reentrant probe.
+    const readWinIdNow = (ref: object): string | null => {
+        try {
+            const id = env.readWindowId?.(ref) ?? null;
+            return typeof id === "string" && id !== "" ? id : null;
+        } catch (error) {
+            void error;
+            return null;
+        }
+    };
+    // Setter-independent foreground proof: the fresh post id names the
+    // target AND the target lifetime still lists AND the ref's actual
+    // lifetime id names the target. A throw or a native refusal that
+    // nonetheless left the target foreground still proves (the core
+    // classifies proof from the ids, never from the setter disposition).
+    // Unknown never proves: a missing reader (offline doubles) or an
+    // unreadable production id (null) fails closed to false. The raw
+    // post rides regardless; only the bit gates.
+    const fgProvenFor = (post: string | null, target: ObservedWindow): boolean => {
+        if (post === null || post !== target.win) {
+            return false;
+        }
+        try {
+            if (!env.isStillListed(target.ref)) {
+                return false;
+            }
+        } catch (error) {
+            void error;
+            return false;
+        }
+        const selfId = readWinIdNow(target.ref);
+        return selfId !== null && selfId === target.win;
+    };
+    // The broker-owned observation counter shared by every arrival sample
+    // this apply mints. Never the local native-invalidation fence (which
+    // moves synchronously under setters and native input) and never
+    // assumed equal to it: the two counters are deliberately divergent in
+    // flight (reply.obs names the issuing observation, the fence names the
+    // current local watermark). Null when not canonical; then no bracket
+    // mints. The mechanical write stamp below stays the original
+    // broker-epoch dispatch clock (state.lastClock), never wall-clock.
+    const bracketObs: string | null = isCanonicalU64(reply.obs) ? reply.obs : null;
+    // One identity-bound visibility read at the broker watermark: RAW
+    // native minimized/hostHidden plus the shown witness from the narrow
+    // synchronous visibility read (null when unreadable or when the
+    // double provides no reader), and the lifetime match from the live
+    // listing bound to the ref's actual id. Suppression is never owned
+    // on this host. Null only when the local fence moved mid-read: the
+    // bracket discards, never half-reads.
+    const sampleVisibility = (win: string, ref: object): WorldVisibilitySample | null => {
+        if (bracketObs === null || midApplyStopped(env, entryObs)) {
+            return null;
+        }
+        let listed: boolean | null = null;
+        try {
+            listed = env.isStillListed(ref);
+        } catch (error) {
+            void error;
+            listed = null;
+        }
+        // Bind the expected subject id to the ref's actual lifetime: when
+        // the reader names a different lifetime than the subject, the
+        // lifetime demonstrably mismatches even though the ref still lists
+        // (a reentrant probe may have replaced the lifetime under a stable
+        // wrapper). Only a proven mismatch rides false; an unreadable id
+        // (missing reader or null production read) or a throwing list
+        // rides null (unknown), never matched.
+        const selfId = readWinIdNow(ref);
+        let lifetimeMatched: boolean | null = null;
+        if (listed === null) {
+            lifetimeMatched = null;
+        } else if (!listed) {
+            lifetimeMatched = false;
+        } else {
+            lifetimeMatched = selfId === null ? null : (selfId !== win ? false : true);
+        }
+        let visibility: { minimized: boolean | null; hostHidden: boolean | null; visible: boolean | null } | null = null;
+        try {
+            visibility = env.readLiveVisibility?.(ref) ?? null;
+        } catch (error) {
+            void error;
+            visibility = null;
+        }
+        const minimized = visibility?.minimized ?? null;
+        const hostHidden = visibility?.hostHidden ?? null;
+        const visible = visibility?.visible ?? null;
+        if (midApplyStopped(env, entryObs)) {
+            return null;
+        }
+        return {
+            obs: bracketObs,
+            lifetimeMatched,
+            visible,
+            suppressionOwned: false,
+            minimized,
+            hostHidden,
+        };
+    };
+    // One raw readiness bracket for one arrival subject: before/after
+    // visibility reads around the synchronous native-home and frame
+    // reads, all under the local fence. A fence move discards the bracket
+    // (null); an unreadable home/frame rides null as unknown evidence,
+    // never a guess. A listing plus subject-id mismatch rides
+    // lifetimeMatched false (the id binds the ref's actual lifetime);
+    // only a throwing list rides null.
+    const sampleBracket = (win: string, ref: object): WorldArrivalBracket | null => {
+        if (bracketObs === null) {
+            return null;
+        }
+        const before = sampleVisibility(win, ref);
+        if (before === null) {
+            return null;
+        }
+        let home: { out: string; ws: string } | null = null;
+        try {
+            const live = env.readLiveMembership(ref);
+            home = live !== null && isOpaqueId(live.out) && isOpaqueId(live.ws)
+                ? { out: live.out, ws: live.ws }
+                : null;
+        } catch (error) {
+            void error;
+            home = null;
+        }
+        if (midApplyStopped(env, entryObs)) {
+            return null;
+        }
+        let frame: [number, number, number, number] | null = null;
+        try {
+            const live = env.readLiveRect(ref);
+            frame = live !== null &&
+                Number.isInteger(live.x) && Number.isInteger(live.y) &&
+                Number.isInteger(live.w) && Number.isInteger(live.h)
+                ? [live.x, live.y, live.w, live.h]
+                : null;
+        } catch (error) {
+            void error;
+            frame = null;
+        }
+        const after = sampleVisibility(win, ref);
+        if (after === null) {
+            return null;
+        }
+        return { win, obs: bracketObs, before, home, frame, after };
+    };
+    // Bracket subjects for one awaitShown grant: the focus target first
+    // (never truncated away) plus every observed non-minimized window on
+    // the target's output. Over-approximation is harmless (the core
+    // matches frozen members by window); under-approximation fails proof,
+    // so the target plus the whole output rides, bounded by the remaining
+    // arrival budget across retained rows.
+    const sampleArrival = (target: string, targetOut: string, targetRef: object): WorldArrivalBracket[] => {
+        const subjects: Array<{ win: string; ref: object }> = [{ win: target, ref: targetRef }];
+        for (const w of byWin.values()) {
+            if (w.win === target || w.out !== targetOut || w.minimized) {
+                continue;
+            }
+            subjects.push({ win: w.win, ref: w.ref });
+        }
+        let retained = 0;
+        for (const row of state.focusFeedbacksForReport()) {
+            retained += row.arrival.length;
+        }
+        const budget = 10_000 - retained;
+        if (budget <= 0) {
+            return [];
+        }
+        const out: WorldArrivalBracket[] = [];
+        for (const s of subjects.slice(0, budget)) {
+            const bracket = sampleBracket(s.win, s.ref);
+            if (bracket !== null) {
+                out.push(bracket);
+            }
+            if (midApplyStopped(env, entryObs)) {
+                break;
+            }
+        }
+        return out;
+    };
+    // Narrow pre-setter failure reason: a listing/homing mismatch names
+    // identity-stale; anything else (unreadable safety) names unreadable.
+    const preSetterReason = (target: ObservedWindow): FocusReason => {
+        try {
+            if (!env.isStillListed(target.ref)) {
+                return "identity-stale";
+            }
+        } catch (error) {
+            void error;
+            return "unreadable";
+        }
+        try {
+            const live = env.readLiveMembership(target.ref);
+            if (live === null || live.out !== target.out || live.ws !== target.ws) {
+                return "identity-stale";
+            }
+        } catch (error) {
+            void error;
+            return "unreadable";
+        }
+        return "unreadable";
+    };
     for (const fx of reply.effects) {
         if (fx.kind !== "focus" && fx.kind !== "raise" && fx.kind !== "stack") {
             continue;
@@ -2297,15 +2539,56 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         if (!state.markEffectSpent(fx.id)) {
             continue;
         }
-        const observed = byWin.get(fx.target);
-        if (observed === undefined) {
+        if (fx.kind !== "focus") {
+            // Raise/stack spend at-most-once and hold with no row: they
+            // are not focus, so no focus-feedback row ever mints for them
+            // (including when their target is absent from the dispatch
+            // observation).
+            result.held += 1;
             continue;
         }
-        if (fx.kind !== "focus") {
+        const observed = byWin.get(fx.target);
+        // Every spent focus grant records exactly one correlated evidence
+        // row (call, refusal, throw, or factual no-call); the next report
+        // carries it and the bound ack retires it. Duplicates never reach
+        // here (spent above), so nothing replays. Raise/stack spend and
+        // hold with no row: they are not focus.
+        const recordFocusRow = (
+            setter: FocusSetter,
+            reason: FocusReason,
+            pre: string | null,
+            post: string | null,
+            proven: boolean,
+            arrival: WorldArrivalBracket[],
+        ): void => {
+            state.recordFocusFeedback({
+                id: fx.id,
+                target: fx.target,
+                rev: fx.rev,
+                setter,
+                reason,
+                pre,
+                post,
+                foregroundProven: proven,
+                arrival,
+                attemptMs: stamp,
+            });
+            state.noteFollowup();
+        };
+        if (observed === undefined) {
+            // Target absent from the dispatch observation: nocall under the
+            // issuing identity, never a guessed write. Foreground stamps
+            // the fresh live read at this no-call instant.
+            const fg = readFgNow();
+            recordFocusRow("not-called", "identity-stale", fg, fg, false, []);
             result.held += 1;
             continue;
         }
         if (followUnproven) {
+            // The follow transfer's target view is not yet live: the focus
+            // waits for view proof, never fires behind it.
+            const fg = readFgNow();
+            recordFocusRow("not-called", "scope-held", fg, fg, false, []);
             result.held += 1;
             continue;
         }
@@ -2326,6 +2609,8 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                         ? "automatic-active"
                         : "floating-active";
                 env.log(`omnitiler:world:focus-skipped kind=effect reason=${reason} window=${focusedId} target=${fx.target} id=${fx.id}`);
+                const fg = readFgNow();
+                recordFocusRow("not-called", "scope-held", fg, fg, false, []);
                 result.held += 1;
                 continue;
             }
@@ -2352,10 +2637,19 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             replyRow?.floating === true;
         if (admissionFloatTarget) {
             if (observed.fullscreen || observed.maximized || observed.sticky) {
+                const fg = readFgNow();
+                recordFocusRow("not-called", observed.fullscreen || observed.maximized ? "fullscreen" : "scope-held", fg, fg, false, []);
                 result.held += 1;
                 continue;
             }
         } else if (observed.fitExcluded || observed.fullscreen || observed.sticky || observed.floating) {
+            const reason: FocusReason = observed.fitExcluded
+                ? "unsupported"
+                : observed.fullscreen
+                    ? "fullscreen"
+                    : "scope-held";
+            const fg = readFgNow();
+            recordFocusRow("not-called", reason, fg, fg, false, []);
             result.held += 1;
             continue;
         }
@@ -2390,27 +2684,81 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 }
             });
             if (siblingBlocked === true) {
+                const fg = readFgNow();
+                recordFocusRow("not-called", "fullscreen", fg, fg, false, []);
                 result.held += 1;
                 continue;
             }
         }
         if (observation.gesture || !replyFresh(env, reply, entryObs)) {
             if (midApplyStopped(env, entryObs) || observation.gesture) {
+                // A moved local fence supersedes (foreground stamps the
+                // fresh live read); a gesture barrier holds the scope.
+                const moved = midApplyStopped(env, entryObs) && !observation.gesture;
+                const fg = readFgNow();
+                recordFocusRow("not-called", moved ? "superseded" : "scope-held", fg, fg, false, []);
                 result.held += 1;
                 continue;
             }
+            const fg = readFgNow();
+            recordFocusRow("not-called", "superseded", fg, fg, false, []);
             result.stoppedMidApply = true;
             break;
         }
         if (!preSetterOk(env, reply, entryObs, observed, false)) {
+            // A moved fence supersedes; otherwise the narrow
+            // listing/homing/safety reason rides. Foreground stamps the
+            // fresh live read.
+            const moved = midApplyStopped(env, entryObs);
+            const fg = readFgNow();
+            recordFocusRow("not-called", moved ? "superseded" : preSetterReason(observed), fg, fg, false, []);
             result.stoppedMidApply = true;
             break;
+        }
+        // Arrival brackets mint BEFORE the setter (normative apply rule 3):
+        // only explicit-command awaitShown grants carry them; every other
+        // focus rides empty. Brackets are factual accounting for the core's
+        // frozen arrival set, never adapter verdicts about exact frames:
+        // the adapter samples the focus target first plus the observed
+        // output, and the core proves readiness from the facts. Focus
+        // changes no visibility fact, so pre-setter after-reads stay valid
+        // past the write.
+        const pre = readFgNow();
+        const arrival = fx.awaitShown === true ? sampleArrival(fx.target, observed.out, observed.ref) : [];
+        // No required-show gate here: the native selector owns showing on
+        // this adapter, so arrival brackets stay pure core accounting and
+        // frame equality never changes activation policy.
+        // The bracket probes above are reentrant native reads: a probe may
+        // have moved the local fence (or replaced the lifetime under the
+        // ref). Recheck freshness and the pre-setter gate immediately
+        // before the setter; a moved fence emits a truthful superseded
+        // no-call with no actuation, never a write behind external input.
+        // A subject-id mismatch against the ref's actual lifetime fails the
+        // same way as a stale identity.
+        {
+            const selfId = readWinIdNow(observed.ref);
+            const lifetimeOk = selfId === null || selfId === observed.win;
+            if (midApplyStopped(env, entryObs) || !replyFresh(env, reply, entryObs) ||
+                !lifetimeOk || !preSetterOk(env, reply, entryObs, observed, false)) {
+                const fg = readFgNow();
+                // A moved fence supersedes; a replaced lifetime under a
+                // still-current fence names the stale identity; anything
+                // else rides the narrow listing/homing/safety reason.
+                const reason = midApplyStopped(env, entryObs)
+                    ? "superseded" as const
+                    : !lifetimeOk
+                        ? "identity-stale" as const
+                        : preSetterReason(observed);
+                recordFocusRow("not-called", reason, pre, fg, false, arrival);
+                result.stoppedMidApply = true;
+                break;
+            }
         }
         let ok = false;
         let threw = false;
         // Correlated attempt/result for focus setter runs: the outcome
         // reports synchronous setter acceptance only, with a separate
-        // native active token; accepted-but-not-activated is never
+        // native foreground read; accepted-but-not-activated is never
         // misreported as refused.
         env.log(`omnitiler:world:automatic-focus-attempt req=${reply.req} rev=${reply.rev} target=${fx.target} reason=planned-focus`);
         try {
@@ -2419,25 +2767,33 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             void error;
             threw = true;
         }
-        let active = false;
-        try {
-            active = env.isActiveWindow(observed.ref);
-        } catch (error) {
-            void error;
-            active = false;
-        }
-        env.log(`omnitiler:world:automatic-focus-result req=${reply.req} rev=${reply.rev} target=${fx.target} reason=planned-focus outcome=${threw ? "threw" : ok ? "setter-accepted" : "setter-refused"} active=${active ? "true" : "false"}`);
-        if (!threw && ok && active) {
+        // Fresh exact post at the action instant, never inferred from the
+        // setter disposition: a throw or a native refusal that nonetheless
+        // left the target foreground still preserves that fact, and the
+        // proof bit gates on the fresh post plus a live listing of the
+        // target lifetime (unknown post never proves).
+        const post = readFgNow();
+        const proven = fgProvenFor(post, observed);
+        env.log(`omnitiler:world:automatic-focus-result req=${reply.req} rev=${reply.rev} target=${fx.target} reason=planned-focus outcome=${threw ? "threw" : ok ? "setter-accepted" : "setter-refused"} proven=${proven ? "true" : "false"}`);
+        if (!threw && ok && proven) {
+            recordFocusRow("accepted", "", pre, post, true, arrival);
             result.effects += 1;
+        } else if (threw) {
+            // A throw may have executed: ambiguous, never a verdict. The
+            // fresh post still rides (proven when it names the listed
+            // target).
+            recordFocusRow("threw", "", pre, post, proven, arrival);
+            result.held += 1;
+        } else if (!ok) {
+            recordFocusRow("refused", "native-refused", pre, post, proven, arrival);
+            result.held += 1;
         } else {
-            // Refused, throw, or a claimed focus with no active proof:
-            // hold narrowly without a false applied claim. The effect
-            // stays spent (at-most-once), so nothing repeats. No outcome
-            // verdict is recorded: the trace lines above are the evidence.
-            // The follow-up observes the native outcome either way.
+            // Accepted-but-not-foreground: the setter claims success but
+            // the synchronous foreground proof disagrees. Never misreported
+            // as refused, never claimed proven.
+            recordFocusRow("accepted", "focus-unproven", pre, post, false, arrival);
             result.held += 1;
         }
-        state.noteFollowup();
         if (midApplyStopped(env, entryObs)) {
             result.stoppedMidApply = true;
             break;

@@ -1377,6 +1377,35 @@ export function createWorldApplyHost(
                 return false;
             }
         },
+        readActiveWindowId: () => {
+            // Fresh exact native foreground id for focus pre/post
+            // correlation: the live `surface.activeWindow` translated
+            // through the stable internalId, or null when unreadable or
+            // absent. Facts only, never a verdict.
+            try {
+                const active = readProp(surface, "activeWindow");
+                if (typeof active !== "object" || active === null) {
+                    return null;
+                }
+                return liveWindowId(readProp, active);
+            } catch (error) {
+                void error;
+                return null;
+            }
+        },
+        readWindowId: (ref) => {
+            // Fresh exact native id for one live ref (the QUuid
+            // internalId CONSTANT source, normalized): null when
+            // unreadable. Lets arrival sampling bind the expected subject
+            // id to the ref's actual lifetime instead of trusting the
+            // listing alone.
+            try {
+                return liveWindowId(readProp, ref);
+            } catch (error) {
+                void error;
+                return null;
+            }
+        },
         readLiveRect: (ref) => {
             try {
                 const g = readProp(ref, "frameGeometry") as Record<string, unknown> | undefined;
@@ -1466,6 +1495,67 @@ export function createWorldApplyHost(
                     maximized,
                     sticky,
                 };
+            } catch (error) {
+                void error;
+                return null;
+            }
+        },
+        readLiveVisibility: (ref) => {
+            // Narrow synchronous visibility facts for arrival brackets
+            // only: RAW native `minimized` plus RAW native `hidden`
+            // (`m_hidden`, distinct from minimized) plus the live frame
+            // centre through `workspace.windowAt(point, -1)`. `visible`
+            // is false only on proven minimized||hostHidden, true only on
+            // a positive hit-test naming the exact listed live lifetime
+            // among ALL matches (the host filters deleted, minimized,
+            // hidden, show-desktop-hidden, off-desktop and off-activity
+            // windows before hit-testing, and a negative count returns
+            // every match, so occlusion cannot falsify a positive).
+            // Absence or any unreadability of the witness rides null,
+            // never false and never a shown verdict by default. Facts
+            // only, never a readiness verdict.
+            try {
+                const minimizedRaw = readProp(ref, "minimized");
+                const hiddenRaw = readProp(ref, "hidden");
+                const minimized = typeof minimizedRaw === "boolean" ? minimizedRaw : null;
+                const hostHidden = typeof hiddenRaw === "boolean" ? hiddenRaw : null;
+                if (minimized === true || hostHidden === true) {
+                    return { minimized, hostHidden, visible: false };
+                }
+                const g = readProp(ref, "frameGeometry") as Record<string, unknown> | undefined;
+                if (typeof g !== "object" || g === null) {
+                    return { minimized, hostHidden, visible: null };
+                }
+                const x = g["x"];
+                const y = g["y"];
+                const w = g["width"] !== undefined ? g["width"] : g["w"];
+                const h = g["height"] !== undefined ? g["height"] : g["h"];
+                if (typeof x !== "number" || typeof y !== "number" || typeof w !== "number" || typeof h !== "number") {
+                    return { minimized, hostHidden, visible: null };
+                }
+                const fn = readProp(surface, "windowAt");
+                if (typeof fn !== "function") {
+                    return { minimized, hostHidden, visible: null };
+                }
+                const found = Reflect.apply(
+                    fn as (...a: ReadonlyArray<unknown>) => unknown,
+                    surface,
+                    [{ x: x + w / 2, y: y + h / 2 }, -1],
+                );
+                const items = decodeList(found, MAX_NATIVE_WINDOWS);
+                if (items === null) {
+                    return { minimized, hostHidden, visible: null };
+                }
+                const want = liveWindowId(readProp, ref);
+                if (want === null || !isLiveWindowListed(surface, readProp, ref)) {
+                    return { minimized, hostHidden, visible: null };
+                }
+                for (const item of items) {
+                    if (typeof item === "object" && item !== null && liveWindowId(readProp, item) === want) {
+                        return { minimized, hostHidden, visible: true };
+                    }
+                }
+                return { minimized, hostHidden, visible: null };
             } catch (error) {
                 void error;
                 return null;

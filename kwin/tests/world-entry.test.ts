@@ -3754,3 +3754,511 @@ describe("world entry trace probe", () => {
         h.handle?.stop();
     });
 });
+
+// Production-entry focus-feedback regression through the real decoder:
+// a populated workspace select files via the production
+// requestWorkspaceSelect -> cmdSelectNumbered callback, drains through
+// MiniBroker stamping plus raw_world_eval, and settles one terminal
+// switch event. Healthy shown witness proves focus; a missing windowAt
+// (witness null with healthy setter+foreground) fails it exactly once
+// with no upgrade on retry. No hand-built replies on asserted paths.
+describe("world entry focus feedback production regression", () => {
+    async function driveSelect(witnessPresent: boolean): Promise<{
+        selectReply: Record<string, unknown>;
+        feedbackWire: Array<Record<string, unknown>>;
+        feedbackId: unknown;
+        feedbackAttemptMs: string | null;
+        switchEvents: Array<Record<string, unknown>>;
+        laterSwitchEvents: Array<Record<string, unknown>>;
+        laterFeedbackWire: Array<Record<string, unknown>>;
+        restoredSwitch: Array<Record<string, unknown>>;
+        focusSets: number;
+        selectPayload: string;
+        feedbackPayload: string;
+    }> {
+        const { spawn } = await import("node:child_process");
+        const { existsSync } = await import("node:fs");
+        const { createInterface } = await import("node:readline");
+        const { dirname, join, resolve } = await import("node:path");
+        const repoRoot = (): string => {
+            let dir = resolve(process.cwd());
+            for (let depth = 0; depth < 4; depth += 1) {
+                if (existsSync(join(dir, "Cargo.toml"))) {
+                    return dir;
+                }
+                dir = dirname(dir);
+            }
+            throw new Error("fixture root not found");
+        };
+        interface EngineWaiter {
+            resolve: (reply: string) => void;
+            reject: (error: Error) => void;
+        }
+        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
+            cwd: repoRoot(),
+            stdio: ["pipe", "pipe", "pipe"],
+            env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
+        });
+        const waiters: EngineWaiter[] = [];
+        let engineFailed: Error | null = null;
+        const stderrChunks: string[] = [];
+        try {
+            proc.stderr?.on("data", (chunk: unknown) => {
+                stderrChunks.push(String(chunk));
+            });
+        } catch (error) {
+            void error;
+        }
+        const failEngine = (error: Error): void => {
+            if (engineFailed === null) {
+                engineFailed = error;
+            }
+            while (waiters.length > 0) {
+                waiters.shift()?.reject(error);
+            }
+        };
+        proc.on("error", (error: Error) => {
+            failEngine(error);
+        });
+        proc.on("exit", (code: number | null, signal: string | null) => {
+            failEngine(new Error(`raw_world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
+        });
+        const stdout = proc.stdout;
+        assert.ok(stdout !== null && stdout !== undefined, "raw_world_eval stdout unavailable");
+        const lines = createInterface({ input: stdout });
+        lines.on("line", (line: string) => {
+            waiters.shift()?.resolve(line);
+        });
+        const engineSend = (method: string, body: string): Promise<string> => new Promise<string>((resolvePromise, rejectPromise) => {
+            if (engineFailed !== null) {
+                rejectPromise(engineFailed);
+                return;
+            }
+            const timer = setTimeout(() => {
+                const index = waiters.findIndex((w) => w.resolve === resolvePromise);
+                if (index >= 0) {
+                    waiters.splice(index, 1);
+                }
+                rejectPromise(new Error(`raw_world_eval timeout method=${method}`));
+            }, 15000);
+            waiters.push({
+                resolve: (reply: string) => {
+                    clearTimeout(timer);
+                    resolvePromise(reply);
+                },
+                reject: (error: Error) => {
+                    clearTimeout(timer);
+                    rejectPromise(error);
+                },
+            });
+            try {
+                const ok = proc.stdin?.write(JSON.stringify({ method, body }) + "\n");
+                if (ok === false) {
+                    proc.stdin?.once("drain", () => undefined);
+                }
+            } catch (error) {
+                clearTimeout(timer);
+                rejectPromise(error instanceof Error ? error : new Error(String(error)));
+            }
+        });
+        const ws1 = desk("ws1");
+        const ws2 = desk("ws2");
+        const w1 = win("win-a", "out-a", ws1, 0);
+        const w2 = win("win-b", "out-a", ws2, 300);
+        const screens = [
+            { name: "out-a", geometry: { x: 0, y: 0, width: 800, height: 600 } },
+        ];
+        const currents = new Map([["out-a", "ws1"]]);
+        const setFrame = (w: FakeWindow, rect: { x: number; y: number; width: number; height: number }): void => {
+            (w as unknown as Record<string, unknown>)["frameGeometry"] = { ...rect };
+            (w as unknown as Record<string, unknown>)["clientGeometry"] = {
+                x: rect.x + 2, y: rect.y + 21,
+                width: Math.max(1, rect.width - 4), height: Math.max(1, rect.height - 22),
+            };
+        };
+        for (const w of [w1, w2]) {
+            const rec = w as unknown as Record<string, unknown>;
+            rec["pid"] = 1234;
+            rec["resourceClass"] = "Example";
+            rec["caption"] = "Window";
+            rec["windowRole"] = "normal";
+            rec["desktopFileName"] = "example.app";
+            rec["resizeable"] = true;
+        }
+        setFrame(w1, w1.frameGeometry);
+        setFrame(w2, w2.frameGeometry);
+        const broker = createMiniBroker();
+        const signals: Record<string, FakeSignal> = {
+            windowAdded: fakeSignal(),
+            windowRemoved: fakeSignal(),
+            windowActivated: fakeSignal(),
+            desktopsChanged: fakeSignal(),
+            screensChanged: fakeSignal(),
+            currentDesktopChanged: fakeSignal(),
+            activeScreenChanged: fakeSignal(),
+        };
+        const calls: CapturedCall[] = [];
+        const timers: Array<{ delay: number; cb: () => void }> = [];
+        let active: FakeWindow = w1;
+        let focusSets = 0;
+        const surface: Record<string, unknown> = {
+            windowList: () => [w1, w2],
+            screens,
+            desktops: [ws1, ws2],
+            activeScreen: { name: "out-a" },
+            get activeWindow() {
+                return active;
+            },
+            set activeWindow(ref: unknown) {
+                focusSets += 1;
+                active = ref as FakeWindow;
+            },
+            cursorPos: { x: 2, y: 100 },
+            windowAdded: (signals.windowAdded as FakeSignal).signal,
+            windowRemoved: (signals.windowRemoved as FakeSignal).signal,
+            windowActivated: (signals.windowActivated as FakeSignal).signal,
+            desktopsChanged: (signals.desktopsChanged as FakeSignal).signal,
+            screensChanged: (signals.screensChanged as FakeSignal).signal,
+            currentDesktopChanged: (signals.currentDesktopChanged as FakeSignal).signal,
+            activeScreenChanged: (signals.activeScreenChanged as FakeSignal).signal,
+            clientArea: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+            currentDesktopForScreen: (screen: { name: string }) => currents.get(screen.name) === "ws2" ? ws2 : ws1,
+            setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }) => {
+                currents.set(screen.name, (deskRef as { id: string }).id);
+            },
+            sendClientToScreen: () => undefined,
+            createDesktop: () => null,
+            removeDesktop: () => false,
+        };
+        if (witnessPresent) {
+            // Genuine shown witness: the live frame centre hit-tests the
+            // exact listed lifetime among all matches.
+            surface["windowAt"] = () => [w1, w2];
+        }
+        const handle = startWorldAdapterEntry({
+            workspace: surface,
+            owner: "owner-a",
+            adapter: "test-adapter",
+            callDbus: (_service, _path, _iface, method, payload, callback) => {
+                if (method === "ReadFloatIntent") {
+                    const body = JSON.parse(payload) as Record<string, unknown>;
+                    callback(JSON.stringify({
+                        v: 2,
+                        correlation_id: body["correlation_id"],
+                        outcome: "ok",
+                        records: [],
+                        stored: 0,
+                        returned: 0,
+                    }));
+                    return;
+                }
+                if (method === "WriteFloatIntent") {
+                    const body = JSON.parse(payload) as Record<string, unknown>;
+                    callback(JSON.stringify({
+                        v: 2,
+                        correlation_id: body["correlation_id"],
+                        outcome: "stored",
+                        stored: (body["records"] as Array<unknown>).length,
+                    }));
+                    return;
+                }
+                if (method === "DiscoverWorld" || method === "DescribeWorld") {
+                    calls.push({ method, payload, callback });
+                    return;
+                }
+                if (method === "QueueWorldCommand") {
+                    calls.push({ method, payload, callback });
+                    callback(broker.answerQueue(payload));
+                    return;
+                }
+                if (method === "TakeCommandResult") {
+                    calls.push({ method, payload, callback });
+                    callback(broker.answerTake(payload));
+                    return;
+                }
+            },
+            scheduleOnce: (delay, cb) => {
+                timers.push({ delay, cb });
+                return () => undefined;
+            },
+            log: () => undefined,
+            gestureActive: () => false,
+            registerShortcutFn: () => true,
+            readWorkspaceModeFn: () => "per-output-local",
+            readDefaultTiledFn: () => true,
+        });
+        assert.ok(handle !== null);
+        const runTimers = (maxDelay = 120): void => {
+            for (let i = 0; i < timers.length; i += 1) {
+                const t = timers[i] as { delay: number; cb: () => void };
+                if (t.delay <= maxDelay) {
+                    timers.splice(i, 1);
+                    i -= 1;
+                    t.cb();
+                }
+            }
+        };
+        // Signal-driven recapture: native view/foreground moves only
+        // re-observe on their signals, so fire them before each pump.
+        const fireAll = (): void => {
+            for (const key of ["windowActivated", "desktopsChanged", "currentDesktopChanged", "screensChanged", "activeScreenChanged"] as const) {
+                for (const handler of [...(signals[key] as FakeSignal).handlers]) {
+                    handler();
+                }
+            }
+        };
+        let flushed = 0;
+        const flushNextDescribe = async (): Promise<{ req: Record<string, unknown>; reply: Record<string, unknown>; rawReply: string }> => {
+            const at = calls.findIndex((c, i) => i >= flushed && c.method === "DescribeWorld");
+            assert.ok(at >= 0, `expected a queued DescribeWorld (flushed=${flushed} methods=${calls.map((c) => c.method).join(",")})`);
+            flushed = at + 1;
+            const envelope = calls[at]!.payload;
+            const stamped = broker.stampCapture(envelope);
+            const coreReply = await engineSend("DescribeWorld", stamped);
+            const rawReply = broker.bindReply(coreReply, envelope);
+            calls[at]!.callback(rawReply);
+            return { req: JSON.parse(calls[at]!.payload) as Record<string, unknown>, reply: JSON.parse(rawReply) as Record<string, unknown>, rawReply };
+        };
+        const closeEngine = async (): Promise<void> => {
+            try {
+                lines.close();
+            } catch (error) {
+                void error;
+            }
+            try {
+                proc.stdin?.end();
+            } catch (error) {
+                void error;
+            }
+            await new Promise<void>((resolvePromise) => {
+                const timer = setTimeout(() => {
+                    try {
+                        proc.kill("SIGKILL");
+                    } catch (error) {
+                        void error;
+                    }
+                    resolvePromise();
+                }, 3000);
+                proc.on("exit", () => {
+                    clearTimeout(timer);
+                    resolvePromise();
+                });
+                if (proc.exitCode !== null || proc.signalCode !== null) {
+                    clearTimeout(timer);
+                    resolvePromise();
+                }
+            });
+        };
+        try {
+            const hsAt = calls.findIndex((c) => {
+                if (c.method !== "DiscoverWorld") {
+                    return false;
+                }
+                try {
+                    return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "handshake";
+                } catch {
+                    return false;
+                }
+            });
+            assert.ok(hsAt >= 0, "entry discovers on start");
+            const engineHs = await engineSend("DiscoverWorld", calls[hsAt]!.payload);
+            calls[hsAt]!.callback(broker.bindDiscovery(engineHs));
+            const setAt = calls.findIndex((c, i) => {
+                if (i <= hsAt || c.method !== "DiscoverWorld") {
+                    return false;
+                }
+                try {
+                    return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+                } catch {
+                    return false;
+                }
+            });
+            assert.ok(setAt >= 0, "revisioned settings follow the handshake");
+            const engineSet = await engineSend("DiscoverWorld", calls[setAt]!.payload);
+            calls[setAt]!.callback(engineSet);
+            runTimers();
+            await flushNextDescribe();
+            // Production selection path: the entry files cmdSelectNumbered
+            // from this callback, never a test-built command.
+            handle!.requestWorkspaceSelect(2);
+            runTimers();
+            const selQueue = [...calls].reverse().find((c) => c.method === "QueueWorldCommand");
+            assert.ok(selQueue !== undefined, "select files a queue command");
+            const queuedCmd = JSON.parse(selQueue.payload) as Record<string, unknown>;
+            assert.equal((queuedCmd["command"] as Record<string, unknown>)["op"], "select-numbered");
+            runTimers();
+            const select = await flushNextDescribe();
+            const selectPayload = calls[flushed - 1]!.payload;
+            // The focus grant actuates synchronously on accept: the native
+            // foreground must name the selected home.
+            const fxRows = (select.reply["effects"] as Array<Record<string, unknown>>).filter((e) => e["kind"] === "focus");
+            assert.ok(fxRows.length >= 1, `select grants focus: ${select.rawReply.slice(0, 500)}`);
+            assert.equal(fxRows[0]!["awaitShown"], true, `populated select grants awaitShown focus: ${select.rawReply.slice(0, 500)}`);
+            const target = fxRows[0]!["target"] as string;
+            assert.equal((active as unknown as Record<string, unknown>)["internalId"], target, "production setter moves the native foreground");
+            assert.equal(focusSets, 1, "select grant actuates the native setter exactly once");
+            // Explicit duplicate redelivery of the accepted select reply
+            // through the real transport callback: the settled guard must
+            // neither re-actuate nor mint a second row.
+            calls[flushed - 1]!.callback(select.rawReply);
+            assert.equal(focusSets, 1, "duplicate select redelivery fires no second setter call");
+            // Real transport failure before the feedback accept: the next
+            // dispatched capture carries the genuine row, but its reply
+            // bytes are lost (non-string callback). Recovery must
+            // redispatch, and the retry must re-carry the identical row id
+            // with the identical dispatch-clock stamp, never a new row.
+            runTimers();
+            const dropAt = calls.findIndex((c, i) => i >= flushed && c.method === "DescribeWorld");
+            assert.ok(dropAt >= 0, `feedback capture must dispatch (methods=${calls.map((c) => c.method).join(",")})`);
+            flushed = dropAt + 1;
+            const dropEnvelope = calls[dropAt]!.payload;
+            // Request loss: the bytes go out (broker-stamped, like the
+            // wire) but the core never processes them and no reply comes
+            // back, so the retry below stays the core's first delivery of
+            // this feedback. (Reply loss would settle core-side on the
+            // discarded reply, which the test-side MiniBroker cannot
+            // re-retrieve, so settlement would be unobservable.)
+            void broker.stampCapture(dropEnvelope);
+            const dropInner = (JSON.parse(dropEnvelope) as Record<string, unknown>)["report"] as Record<string, unknown>;
+            const dropWire = (dropInner["focusFeedback"] ?? []) as Array<Record<string, unknown>>;
+            assert.equal(dropWire.length, 1, `dropped capture carries the one genuine row: ${dropEnvelope.slice(0, 800)}`);
+            const feedbackId = dropWire[0]!["id"];
+            assert.equal(dropWire[0]!["target"], target, "feedback names the granted target");
+            const attemptMs = dropWire[0]!["attemptMs"];
+            assert.ok(typeof attemptMs === "string" && attemptMs !== "", "feedback carries the dispatch-clock stamp");
+            calls[dropAt]!.callback(undefined);
+            // The retry is a real redispatch (signals plus queue pump
+            // drive it): it must arrive, never be silently skipped.
+            fireAll();
+            runTimers();
+            const feedback = await flushNextDescribe();
+            const feedbackPayload = calls[flushed - 1]!.payload;
+            const innerReport = (feedback.req["report"] ?? feedback.req) as Record<string, unknown>;
+            const feedbackWire = (innerReport["focusFeedback"] ?? []) as Array<Record<string, unknown>>;
+            assert.equal(feedbackWire.length, 1, `retry re-carries exactly one row: ${feedbackPayload.slice(0, 800)}`);
+            assert.equal(feedbackWire[0]!["id"], feedbackId, "retry carries the same row id");
+            assert.equal(feedbackWire[0]!["attemptMs"], attemptMs, "retry retains the original stamp");
+            // Settle: keep pumping until the core emits the terminal
+            // switch event. Every pump here must produce a real capture;
+            // a starved pump fails loudly, never silently.
+            let switchEvents: Array<Record<string, unknown>> = (select.reply["switchSettled"] ?? []) as Array<Record<string, unknown>>;
+            let last: { req: Record<string, unknown>; reply: Record<string, unknown>; rawReply: string } = feedback;
+            if (switchEvents.length === 0) {
+                switchEvents = (last.reply["switchSettled"] ?? []) as Array<Record<string, unknown>>;
+            }
+            for (let i = 0; i < 4 && switchEvents.length === 0; i += 1) {
+                fireAll();
+                runTimers();
+                last = await flushNextDescribe();
+                switchEvents = (last.reply["switchSettled"] ?? []) as Array<Record<string, unknown>>;
+            }
+            // Diagnostic context when the core never settles: surface the
+            // actual grant/visibility/focus lanes, never a bare count.
+            assert.ok(
+                switchEvents.length === 1,
+                `one terminal switch event, select=${select.rawReply.slice(0, 600)} feedbackReply=${last.rawReply.slice(0, 600)} feedbackWire=${JSON.stringify(feedbackWire).slice(0, 600)}`,
+            );
+            // Post-settlement capture: a real dispatch must follow, with
+            // NO additional switch events, no new feedback rows, and no
+            // second setter call.
+            fireAll();
+            runTimers();
+            const later = await flushNextDescribe();
+            const laterSwitchEvents = (later.reply["switchSettled"] ?? []) as Array<Record<string, unknown>>;
+            assert.equal(laterSwitchEvents.length, 0, `no switch event after the terminal one: ${later.rawReply.slice(0, 500)}`);
+            const laterInner = (later.req["report"] ?? later.req) as Record<string, unknown>;
+            const laterFeedbackWire = (laterInner["focusFeedback"] ?? []) as Array<Record<string, unknown>>;
+            assert.ok(
+                !laterFeedbackWire.some((row) => row["id"] !== feedbackId),
+                `no new feedback rows after settlement: ${JSON.stringify(laterFeedbackWire).slice(0, 500)}`,
+            );
+            for (const row of laterFeedbackWire) {
+                assert.equal(row["attemptMs"], attemptMs, "re-carried row retains the original stamp");
+            }
+            assert.equal(focusSets, 1, "no focus reissue after settlement");
+            let restoredSwitch: Array<Record<string, unknown>> = [];
+            if (!witnessPresent) {
+                // Healthy witness restored before the next accepted
+                // observation: the failed terminal must not upgrade and
+                // focus must not reissue.
+                surface["windowAt"] = () => [w1, w2];
+                fireAll();
+                runTimers();
+                const restored = await flushNextDescribe();
+                restoredSwitch = (restored.reply["switchSettled"] ?? []) as Array<Record<string, unknown>>;
+                for (const ev of restoredSwitch) {
+                    assert.equal(ev["outcome"], "completed-with-failures", `failed terminal never upgrades: ${JSON.stringify(ev).slice(0, 300)}`);
+                    assert.equal(ev["focus"], "unproven", `failed focus never proves late: ${JSON.stringify(ev).slice(0, 300)}`);
+                }
+                const restoredInner = (restored.req["report"] ?? restored.req) as Record<string, unknown>;
+                const restoredWire = (restoredInner["focusFeedback"] ?? []) as Array<Record<string, unknown>>;
+                assert.ok(
+                    !restoredWire.some((row) => row["id"] !== feedbackId),
+                    `no new focus rows on witness restore: ${JSON.stringify(restoredWire).slice(0, 500)}`,
+                );
+                assert.equal(focusSets, 1, "witness restore reissues no focus call");
+            }
+            return {
+                selectReply: select.reply,
+                feedbackWire,
+                feedbackId,
+                feedbackAttemptMs: attemptMs as string,
+                switchEvents,
+                laterSwitchEvents,
+                laterFeedbackWire,
+                restoredSwitch,
+                focusSets,
+                selectPayload,
+                feedbackPayload,
+            };
+        } finally {
+            try {
+                handle?.stop();
+            } catch (error) {
+                void error;
+            }
+            await closeEngine();
+        }
+    }
+
+    it("populated select settles complete/proven with genuine feedback and no replay", { timeout: 120000 }, async () => {
+        const driven = await driveSelect(true);
+        assert.equal(driven.switchEvents.length, 1, `one terminal switch event: ${JSON.stringify(driven.switchEvents).slice(0, 800)}`);
+        assert.equal(driven.switchEvents[0]!["outcome"], "complete", `healthy witness completes: ${JSON.stringify(driven.switchEvents[0]).slice(0, 500)}`);
+        assert.equal(driven.switchEvents[0]!["focus"], "proven", `healthy foreground proves focus: ${JSON.stringify(driven.switchEvents[0]).slice(0, 500)}`);
+        assert.deepEqual((driven.switchEvents[0]!["failed"] as Array<unknown>), [], "complete carries no failures");
+        assert.equal(driven.feedbackWire[0]!["setter"], "accepted", "production setter accepted");
+        assert.equal(driven.feedbackWire[0]!["foregroundProven"], true, "genuine foreground proof rides");
+        assert.ok(Array.isArray(driven.feedbackWire[0]!["arrival"]) && (driven.feedbackWire[0]!["arrival"] as Array<unknown>).length >= 1, "populated grant carries arrival brackets");
+        // Deterministic no-replay proof (driven inside the helper, never
+        // vacuous): a real post-settlement capture carried no further
+        // switch event, no new feedback row, and no second setter call.
+        assert.equal(driven.laterSwitchEvents.length, 0, "no switch event after the terminal one");
+        assert.equal(driven.focusSets, 1, "exactly one focus setter call end to end");
+    });
+
+    it("missing shown witness settles completed-with-failures/unproven once with no upgrade", { timeout: 120000 }, async () => {
+        const driven = await driveSelect(false);
+        assert.equal(driven.switchEvents.length, 1, `one terminal switch event: ${JSON.stringify(driven.switchEvents).slice(0, 800)}`);
+        assert.equal(driven.switchEvents[0]!["outcome"], "completed-with-failures", `null witness fails outcome: ${JSON.stringify(driven.switchEvents[0]).slice(0, 500)}`);
+        assert.equal(driven.switchEvents[0]!["focus"], "unproven", `null witness leaves focus unproven: ${JSON.stringify(driven.switchEvents[0]).slice(0, 500)}`);
+        // Healthy setter+foreground still ride the genuine row: only the
+        // arrival proof is missing, so the failure isolates to witness.
+        assert.equal(driven.feedbackWire[0]!["setter"], "accepted", "setter stays accepted without windowAt");
+        assert.equal(driven.feedbackWire[0]!["foregroundProven"], true, "foreground stays proven without windowAt");
+        assert.ok(
+            driven.feedbackWire[0]!["arrival"] !== undefined,
+            "arrival lane rides even when the witness is null",
+        );
+        // Deterministic no-upgrade proof (driven inside the helper): a
+        // real post-settlement capture carried no further switch event,
+        // and the witness restore afterwards upgraded nothing and
+        // reissued no focus call.
+        assert.equal(driven.laterSwitchEvents.length, 0, "no switch event after the terminal one");
+        for (const ev of driven.restoredSwitch) {
+            assert.equal(ev["outcome"], "completed-with-failures", "restored witness never upgrades the terminal");
+            assert.equal(ev["focus"], "unproven", "restored witness never proves focus late");
+        }
+        assert.equal(driven.focusSets, 1, "exactly one focus setter call end to end");
+    });
+});

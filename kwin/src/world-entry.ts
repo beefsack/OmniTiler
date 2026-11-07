@@ -4034,9 +4034,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // live-joined opaque snapshot: only records whose subject is in the
         // captured native set ride (exact native-id join, never PID/title
         // inference); out-of-scope records stay stored for later reports.
-        // stateAttempts/focusFeedback ride empty until the actuator/record
-        // slices land (K1b2: native state writes and focus correlation are
-        // not yet recorded).
+        // stateAttempts rides empty (no native-state producer yet);
+        // focusFeedback rides the retained one-shot focus correlation
+        // drained from the actuator state (empty when nothing was spent).
         const liveIntentWins = new Set<string>();
         for (const fact of observation.windowFacts) {
             liveIntentWins.add(fact.win);
@@ -4048,6 +4048,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             memberAttempts: state.memberAttemptsForReport(),
             viewAttempts: state.viewAttemptsForReport(),
             clearAttempts: state.clearAttemptsForReport(),
+            focusFeedbacks: state.focusFeedbacksForReport(),
             intentRecords: intentStore.recordsForReport(liveIntentWins),
         });
         if (inner === null) {

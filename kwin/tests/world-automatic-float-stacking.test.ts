@@ -599,13 +599,18 @@ describe("world apply automatic-float focus preservation", () => {
         const { state, flightWatermark, reply } = applyBoundReply("win-a", "fx-3", { cause: "explicit-command", cmdSeq: "1" });
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
+        // Truthful fake foreground: the native foreground starts on the
+        // floating focus and the fake setter moves it to the target.
+        let fg: string | null = "win-b";
         const result = applyWorldReply({ dispatchWatermark: flightWatermark, takeResult: null,
             state,
             observation,
             reply,
             log: (m) => { logs.push(m); },
             isStillListed: () => true,
-            isActiveWindow: (ref) => ref === refs.tileRef,
+            isActiveWindow: (ref) => ref === refs.tileRef && fg === "win-a",
+            readActiveWindowId: () => fg,
+            readWindowId: (ref) => ref === refs.tileRef ? "win-a" : ref === refs.floatRef ? "win-b" : null,
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
             readLiveMembership: () => ({ out: "out", ws: "ws" }),
             readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),
@@ -617,7 +622,7 @@ describe("world apply automatic-float focus preservation", () => {
             switchView: () => true,
             createDesktop: () => undefined,
             removeDesktop: () => false,
-            focusWindow: (ref) => { focusWrites.push(ref); return true; },
+            focusWindow: (ref) => { focusWrites.push(ref); if (ref === refs.tileRef) { fg = "win-a"; } return true; },
             desktopOccupants: () => ({ total: 0, readable: true }),
             desktopVisible: () => false,
             readLiveView: () => "ws",
@@ -634,13 +639,18 @@ describe("world apply automatic-float focus preservation", () => {
         const { state, flightWatermark, reply } = applyBoundReply("win-b", "fx-7", { cause: "explicit-command", cmdSeq: "1" });
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
+        // Truthful fake foreground: starts on win-a, the fake setter moves
+        // it to the win-b target.
+        let fg: string | null = "win-a";
         const result = applyWorldReply({ dispatchWatermark: flightWatermark, takeResult: null,
             state,
             observation,
             reply,
             log: (m) => { logs.push(m); },
             isStillListed: () => true,
-            isActiveWindow: (ref) => ref === refs.floatRef,
+            isActiveWindow: (ref) => ref === refs.floatRef && fg === "win-b",
+            readActiveWindowId: () => fg,
+            readWindowId: (ref) => ref === refs.tileRef ? "win-a" : ref === refs.floatRef ? "win-b" : null,
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
             readLiveMembership: () => ({ out: "out", ws: "ws" }),
             readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),
@@ -652,7 +662,7 @@ describe("world apply automatic-float focus preservation", () => {
             switchView: () => true,
             createDesktop: () => undefined,
             removeDesktop: () => false,
-            focusWindow: (ref) => { focusWrites.push(ref); return true; },
+            focusWindow: (ref) => { focusWrites.push(ref); if (ref === refs.floatRef) { fg = "win-b"; } return true; },
             desktopOccupants: () => ({ total: 0, readable: true }),
             desktopVisible: () => false,
             readLiveView: () => "ws",
@@ -662,14 +672,17 @@ describe("world apply automatic-float focus preservation", () => {
         assert.deepEqual(focusWrites, [refs.floatRef], "actuates the planned target");
         assert.equal(result.effects, 1);
         assert.ok(logs.some((l) => l.includes("automatic-focus-attempt") && l.includes("target=win-b")), "attempt logged");
-        assert.ok(logs.some((l) => l.includes("automatic-focus-result") && l.includes("target=win-b") && l.includes("outcome=setter-accepted active=true")), "acceptance logged");
+        assert.ok(logs.some((l) => l.includes("automatic-focus-result") && l.includes("target=win-b") && l.includes("outcome=setter-accepted proven=true")), "acceptance logged");
     });
 
-    it("an accepted setter without native activation reports active=false, not refused", () => {
+    it("an accepted setter without native activation reports proven=false, not refused", () => {
         const { observation, refs } = applyObservation("win-a", false);
         const { state, flightWatermark, reply } = applyBoundReply("win-b", "fx-7", { cause: "explicit-command", cmdSeq: "1" });
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
+        // Truthful fake foreground: the setter accepts but the native
+        // foreground never arrives, so proof fails closed.
+        const fg: string | null = "win-a";
         const result = applyWorldReply({ dispatchWatermark: flightWatermark, takeResult: null,
             state,
             observation,
@@ -678,8 +691,10 @@ describe("world apply automatic-float focus preservation", () => {
             isStillListed: () => true,
             // Setter accepts, but native activation never proves: the
             // outcome must stay setter-accepted with a separate false
-            // active token instead of degrading to setter-refused.
+            // proven token instead of degrading to setter-refused.
             isActiveWindow: () => false,
+            readActiveWindowId: () => fg,
+            readWindowId: (ref) => ref === refs.tileRef ? "win-a" : ref === refs.floatRef ? "win-b" : null,
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
             readLiveMembership: () => ({ out: "out", ws: "ws" }),
             readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),
@@ -700,7 +715,7 @@ describe("world apply automatic-float focus preservation", () => {
         });
         assert.deepEqual(focusWrites, [refs.floatRef], "setter ran once");
         assert.equal(result.effects, 0, "unproven activation counts nothing");
-        assert.ok(logs.some((l) => l.includes("automatic-focus-result") && l.includes("outcome=setter-accepted active=false")), "accepted without activation");
+        assert.ok(logs.some((l) => l.includes("automatic-focus-result") && l.includes("outcome=setter-accepted proven=false")), "accepted without activation");
         assert.ok(!logs.some((l) => l.includes("outcome=setter-refused")), "never misreported as refused");
     });
 });

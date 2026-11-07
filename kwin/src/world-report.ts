@@ -366,6 +366,61 @@ export interface WorldClearAttempt {
     post: boolean | null;
     attemptMs: string;
 }
+// Mechanical disposition of one focus write: the native setter outcome or
+// `not-called` (no call is not a successful native call). Pure actuator
+// disposition, never a policy conclusion.
+export type FocusSetter = "accepted" | "refused" | "threw" | "not-called";
+// Bounded typed mechanical reason for one focus write: empty on an
+// ordinary call, otherwise one of the closed tokens. Facts only.
+export type FocusReason =
+    | "" | "identity-stale" | "scope-held" | "unreadable" | "unsupported"
+    | "preimage-unavailable" | "foreground-changed" | "fullscreen" | "game"
+    | "show-blocked" | "focus-unproven" | "superseded" | "native-refused";
+// One identity-bound visibility read for an arrival bracket: the
+// broker-owned observation watermark at the read, the lifetime match, the
+// native shown state at the read, and the separate native ineligibility
+// facts. Facts only, never a readiness verdict.
+export interface WorldVisibilitySample {
+    obs: string;
+    lifetimeMatched: boolean | null;
+    visible: boolean | null;
+    suppressionOwned: boolean | null;
+    minimized: boolean | null;
+    hostHidden: boolean | null;
+}
+// One raw readiness bracket for an arrival subject: the subject window,
+// the broker-owned watermark shared with both samples, the first
+// lifetime/visibility read, the native home read between (null when
+// unreadable; KDE is host-owned so the native arm always rides), the
+// native frame read between (null when unreadable), and the final read.
+// Facts only, never a readiness verdict.
+export interface WorldArrivalBracket {
+    win: string;
+    obs: string;
+    before: WorldVisibilitySample;
+    home: { out: string; ws: string } | null;
+    frame: [number, number, number, number] | null;
+    after: WorldVisibilitySample;
+}
+// One correlated one-shot native focus evidence row: the spent focus
+// grant correlation (effect id, target, issuing revision) plus the
+// at-most-once call/no-call disposition, the mechanical reason, the
+// foreground before/after (null unknown, never empty), the foreground
+// proof, the readiness brackets (only explicit-command awaitShown grants
+// carry them; every other focus rides empty), and the original broker
+// dispatch-clock stamp. At most one latest-wins entry per effect id.
+export interface WorldFocusFeedback {
+    id: string;
+    target: string;
+    rev: string;
+    setter: FocusSetter;
+    reason: FocusReason;
+    pre: string | null;
+    post: string | null;
+    foregroundProven: boolean;
+    arrival: WorldArrivalBracket[];
+    attemptMs: string;
+}
 // Uniform per-reply presentation (mirrors
 // tiler-core world_sizing::encode_presentation exactly): the tick-time
 // foreground token the shapes were computed for (the renderer revalidates
@@ -2420,9 +2475,14 @@ function encodeV4WindowRow(w: RawWindowFact, hostOwned: boolean): string | null 
     // pins): !deleted && !hidden && !hiddenByShowDesktop && !minimized.
     // Deleted rows never reach this lane; minimized/hidden are
     // script-readable; hiddenByShowDesktop has no script Q_PROPERTY at
-    // either pin, so `true` is unprovable and rides null (honest unknown
-    // per the core VisibilityFact contract). `false` is proven whenever
-    // minimized||hidden. Never an inferred `true`.
+    // either pin, so `true` is unprovable on the general row and rides
+    // null (honest unknown per the core VisibilityFact contract).
+    // `false` is proven whenever minimized||hidden. Never an inferred
+    // `true` here: the narrower positive witness lives only in the
+    // focus-feedback arrival brackets, where a synchronous
+    // workspace.windowAt(frameCentre, -1) hit-test proves a listed live
+    // lifetime shown without reading the private show-desktop flag.
+    // Absence or unreadability there stays null, never false.
     const visible: boolean | null = (w.minimized || w.hidden) ? false : null;
     const esc = encodeV4String;
     const maximized = w.maximizeMode !== 0;
@@ -2623,10 +2683,11 @@ export interface WorldReportV4IntentRecord {
 // Minimal producer input for the v4 inner report. Attempt lanes ride the
 // retained mechanical evidence the apply loop keeps (latest-wins per
 // window/operation/phase); the producer emits only what it measured.
-// stateAttempts, focusFeedback, and rendererInput have no producer yet:
-// the adapter performs no visibility writes, keeps no focus correlation,
-// and never mints renderer targets, so they ride their empty lanes until
-// the actuator/record slices land (K1b2).
+// stateAttempts has no producer yet: the adapter performs no native-state
+// writes (fullscreen/maximized/sticky/above), so it rides its empty lane
+// until the lane migrates. rendererInput is never minted. focusFeedback
+// rides the retained one-shot focus correlation below (empty when nothing
+// was spent).
 export interface WorldReportV4Input {
     readonly observation: WorldObservation;
     readonly creationAttempts: ReadonlyArray<WorldCreationAttempt>;
@@ -2634,6 +2695,9 @@ export interface WorldReportV4Input {
     readonly memberAttempts: ReadonlyArray<WorldMemberAttempt>;
     readonly viewAttempts: ReadonlyArray<WorldViewAttempt>;
     readonly clearAttempts: ReadonlyArray<WorldClearAttempt>;
+    // Retained one-shot focus correlation (empty when nothing spent;
+    // omitted lanes backfill the same empty default).
+    readonly focusFeedbacks?: ReadonlyArray<WorldFocusFeedback>;
     readonly intentRecords: ReadonlyArray<WorldReportV4IntentRecord>;
 }
 
@@ -2764,6 +2828,18 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
         ? "null"
         : `{"instance":${esc((observation.nativeInvalidWitness as { instance: string }).instance)},` +
           `"counter":${esc((observation.nativeInvalidWitness as { counter: string }).counter)}}`;
+    // Retained one-shot focus correlation rides verbatim in canonical key
+    // order (at most one entry per spent effect id). Empty rides the
+    // literal empty lane, never an omission: the core requires the key.
+    const focusRows: string[] = [];
+    for (const row of input.focusFeedbacks ?? []) {
+        const bytes = encodeV4FocusFeedback(row);
+        if (bytes === null) {
+            return null;
+        }
+        focusRows.push(bytes);
+    }
+    const focusLane = `"focusFeedback":[${focusRows.join(",")}]`;
     return `{"v":${WORLD_CONTRACT_VERSION},` +
         `"screens":[${screens.join(",")}],"windows":[${windows.join(",")}],` +
         `"closed":[${closed.join(",")}],"native":[${native.join(",")}],` +
@@ -2773,9 +2849,123 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
         `"actionOutputs":[${actionOutputs.join(",")}],` +
         `"presentation":${presentation}${lanes},` +
         `"intentRecords":[${intentRecords.join(",")}],` +
-        `"stateAttempts":[],"focusFeedback":[],"rendererInput":null,` +
+        `"stateAttempts":[],${focusLane},` +
+        `"rendererInput":null,` +
         `"nativeGesture":${nativeGesture},"cursorWindow":${cursorWindow},` +
         `"nativeInvalidWitness":${witness}}`;
+}
+
+const FOCUS_SETTERS = new Set(["accepted", "refused", "threw", "not-called"]);
+const FOCUS_REASONS = new Set([
+    "", "identity-stale", "scope-held", "unreadable", "unsupported",
+    "preimage-unavailable", "foreground-changed", "fullscreen", "game",
+    "show-blocked", "focus-unproven", "superseded", "native-refused",
+]);
+
+// Canonical v4 visibility-sample writer: the broker-owned observation
+// watermark plus nullable lifetime/visibility/minimized/hostHidden facts
+// in canonical key order. Any malformed shape fails the row closed.
+function encodeV4VisibilitySample(s: WorldVisibilitySample): string | null {
+    if (typeof s !== "object" || s === null || Array.isArray(s)) {
+        return null;
+    }
+    if (typeof s.obs !== "string" || !isCanonicalU64(s.obs)) {
+        return null;
+    }
+    const optBool = (v: unknown): string | null => {
+        if (v === null) {
+            return "null";
+        }
+        return typeof v === "boolean" ? encodeV4NullableBool(v) : null;
+    };
+    const lifetimeMatched = optBool(s.lifetimeMatched);
+    const visible = optBool(s.visible);
+    const suppressionOwned = optBool(s.suppressionOwned);
+    const minimized = optBool(s.minimized);
+    const hostHidden = optBool(s.hostHidden);
+    if (lifetimeMatched === null || visible === null || suppressionOwned === null || minimized === null || hostHidden === null) {
+        return null;
+    }
+    return `{"obs":${encodeV4String(s.obs)},"lifetimeMatched":${lifetimeMatched},` +
+        `"visibility":{"visible":${visible},"suppressionOwned":${suppressionOwned}},` +
+        `"minimized":${minimized},"hostHidden":${hostHidden}}`;
+}
+
+// Canonical v4 arrival-bracket writer (native arm only: KDE is host-owned;
+// a logical arm has no wire spelling here and fails closed). The home
+// rides the native workspace namespace, or null when unreadable; the
+// frame rides the live rect tuple, or null when unreadable.
+function encodeV4ArrivalBracket(b: WorldArrivalBracket): string | null {
+    if (typeof b !== "object" || b === null || Array.isArray(b)) {
+        return null;
+    }
+    if (!isOpaqueId(b.win) || typeof b.obs !== "string" || !isCanonicalU64(b.obs)) {
+        return null;
+    }
+    const before = encodeV4VisibilitySample(b.before);
+    const after = encodeV4VisibilitySample(b.after);
+    if (before === null || after === null) {
+        return null;
+    }
+    let home: string | null = null;
+    if (b.home === null) {
+        home = "null";
+    } else if (typeof b.home === "object" && isOpaqueId(b.home.out) && isOpaqueId(b.home.ws)) {
+        home = `{"kind":"native","out":${encodeV4String(b.home.out)},"ws":${encodeV4String(b.home.ws)}}`;
+    } else {
+        return null;
+    }
+    const frame = encodeV4RectTuple(b.frame);
+    if (home === null || frame === null) {
+        return null;
+    }
+    return `{"win":${encodeV4String(b.win)},"obs":${encodeV4String(b.obs)},` +
+        `"before":${before},"kind":"native","home":${home},` +
+        `"frame":${frame},"after":${after}}`;
+}
+
+// Canonical v4 focus-feedback writer: the exact required keys in
+// canonical order. Any malformed shape fails the whole report closed.
+export function encodeV4FocusFeedback(f: WorldFocusFeedback): string | null {
+    if (typeof f !== "object" || f === null || Array.isArray(f)) {
+        return null;
+    }
+    if (!isOpaqueId(f.id) || !isOpaqueId(f.target)) {
+        return null;
+    }
+    if (typeof f.rev !== "string" || !isCanonicalU64(f.rev)) {
+        return null;
+    }
+    if (typeof f.setter !== "string" || !FOCUS_SETTERS.has(f.setter)) {
+        return null;
+    }
+    if (typeof f.reason !== "string" || !FOCUS_REASONS.has(f.reason)) {
+        return null;
+    }
+    const pre = encodeV4NullableId(f.pre);
+    const post = encodeV4NullableId(f.post);
+    if (pre === null || post === null || typeof f.foregroundProven !== "boolean") {
+        return null;
+    }
+    if (!Array.isArray(f.arrival)) {
+        return null;
+    }
+    const brackets: string[] = [];
+    for (const b of f.arrival) {
+        const bytes = encodeV4ArrivalBracket(b as WorldArrivalBracket);
+        if (bytes === null) {
+            return null;
+        }
+        brackets.push(bytes);
+    }
+    if (typeof f.attemptMs !== "string" || !isCanonicalU64(f.attemptMs)) {
+        return null;
+    }
+    return `{"id":${encodeV4String(f.id)},"target":${encodeV4String(f.target)},` +
+        `"rev":${encodeV4String(f.rev)},"setter":${encodeV4String(f.setter)},` +
+        `"reason":${encodeV4String(f.reason)},"pre":${pre},"post":${post},` +
+        `"foregroundProven":${encodeV4Bool(f.foregroundProven)},` +
+        `"arrival":[${brackets.join(",")}],"attemptMs":${encodeV4String(f.attemptMs)}}`;
 }
 
 // Retained mechanical attempt lanes ride verbatim in canonical key order.

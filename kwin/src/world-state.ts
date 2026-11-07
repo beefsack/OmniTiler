@@ -8,11 +8,13 @@
 
 import { compareU64, incrementU64, isCanonicalU64, isOpaqueId } from "./world-seq";
 import {
+    encodeV4FocusFeedback,
     isWorldRejection,
     type FrameSetter,
     type WorldClearAttempt,
     type WorldCommand,
     type WorldCreationAttempt,
+    type WorldFocusFeedback,
     type WorldFrameAttempt,
     type WorldMemberAttempt,
     type WorldMemberRef,
@@ -76,6 +78,7 @@ export interface AttemptFlight {
     members: WorldMemberAttempt[];
     views: WorldViewAttempt[];
     clears: WorldClearAttempt[];
+    focus: WorldFocusFeedback[];
 }
 
 // Latest-wins bounds mirror the core report caps (world_report.rs
@@ -87,6 +90,11 @@ const MAX_FRAME_ATTEMPTS = 1024;
 const MAX_MEMBER_ATTEMPTS = 1024;
 const MAX_VIEW_ATTEMPTS = 1024;
 const MAX_CLEAR_ATTEMPTS = 1024;
+// Latest-wins bound mirrors the core MAX_WORLD_FOCUS_FEEDBACK cap; the
+// total arrival-bracket bound mirrors MAX_ARRIVAL_BRACKETS_TOTAL. Both
+// evict oldest-first past the cap so a report can never refuse over-cap.
+const MAX_FOCUS_FEEDBACK = 1024;
+const MAX_FOCUS_ARRIVAL_TOTAL = 10_000;
 
 function isSetter(value: unknown): value is FrameSetter {
     return value === "accepted" || value === "refused" || value === "threw";
@@ -175,6 +183,12 @@ export class WorldAdapterState {
     memberAttempts = new Map<string, WorldMemberAttempt>();
     viewAttempts = new Map<string, WorldViewAttempt>();
     clearAttempts = new Map<string, WorldClearAttempt>();
+    // Correlated one-shot focus evidence (latest-wins per spent effect
+    // id) drained into every report until a bound ready reply consumes
+    // the delivered snapshot. Redelivery reuses the original write
+    // stamps; the core consumes each idempotently. Effects spend
+    // at-most-once per generation, so one id retries never.
+    focusFeedbacks = new Map<string, WorldFocusFeedback>();
     // Executed-but-unproven creation evidence (op spent, post-call
     // readback unavailable): never emitted, completed once against the
     // first successful later full native-order readback. Cleared with
@@ -526,6 +540,47 @@ export class WorldAdapterState {
         return true;
     }
 
+    // Record one correlated one-shot focus evidence row. Latest-wins per
+    // spent effect id. Validation reuses the canonical wire writer
+    // (encodeV4FocusFeedback fails malformed rows closed: bad
+    // id/target/rev, setter, reason, pre/post shapes, non-boolean proof,
+    // bad brackets, or stamp); invalid rows refuse, never stored.
+    // Redelivery reuses the stored stamp: callers never restamp.
+    // Oldest-first eviction keeps both the row cap and the total
+    // arrival-bracket cap so the report lane never refuses over-cap.
+    recordFocusFeedback(row: WorldFocusFeedback): boolean {
+        if (encodeV4FocusFeedback(row) === null) {
+            return false;
+        }
+        const clean: WorldFocusFeedback = {
+            ...row,
+            arrival: row.arrival.map((b) => ({
+                ...b,
+                before: { ...b.before },
+                after: { ...b.after },
+                home: b.home === null ? null : { ...b.home },
+                frame: b.frame === null ? null : [...b.frame] as [number, number, number, number],
+            })),
+        };
+        this.focusFeedbacks.set(clean.id, clean);
+        const arrivalTotal = (): number => {
+            let total = 0;
+            for (const r of this.focusFeedbacks.values()) {
+                total += r.arrival.length;
+            }
+            return total;
+        };
+        while (this.focusFeedbacks.size > MAX_FOCUS_FEEDBACK || arrivalTotal() > MAX_FOCUS_ARRIVAL_TOTAL) {
+            const oldest = this.focusFeedbacks.keys().next();
+            if (oldest.done === true) {
+                break;
+            }
+            this.focusFeedbacks.delete(oldest.value as string);
+        }
+        this.dirty = true;
+        return true;
+    }
+
     // Ordered retained facts for the report lane (sorted like the
     // Windows reference: windows, (operation, window), operations).
     framesForReport(): WorldFrameAttempt[] {
@@ -558,6 +613,24 @@ export class WorldAdapterState {
                 return ka < kb ? -1 : ka > kb ? 1 : 0;
             })
             .map((a) => ({ ...a }));
+    }
+
+    // Ordered retained focus rows for the report lane (sorted by effect
+    // id for determinism). Copies bracket tuples so later mutation of a
+    // retained row cannot rewrite a delivered snapshot.
+    focusFeedbacksForReport(): WorldFocusFeedback[] {
+        return [...this.focusFeedbacks.values()]
+            .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+            .map((a) => ({
+                ...a,
+                arrival: a.arrival.map((b) => ({
+                    ...b,
+                    before: { ...b.before },
+                    after: { ...b.after },
+                    home: b.home === null ? null : { ...b.home },
+                    frame: b.frame === null ? null : [...b.frame] as [number, number, number, number],
+                })),
+            }));
     }
 
     // Consume the delivered snapshot of one bound flight: a bound ready
@@ -619,6 +692,17 @@ export class WorldAdapterState {
             const live = this.clearAttempts.get(`${sent.op}\u0000${sent.win}`);
             if (live !== undefined && sameClear(live, sent)) {
                 this.clearAttempts.delete(`${sent.op}\u0000${sent.win}`);
+                retired += 1;
+            }
+        }
+        // Focus rows retire by exact full-row equality (effect correlation
+        // plus disposition plus brackets plus stamp): a newer row for the
+        // same effect id never exists (spent at-most-once), so equality
+        // against the delivered snapshot is sufficient.
+        for (const sent of this.inFlight.delivered.focus) {
+            const live = this.focusFeedbacks.get(sent.id);
+            if (live !== undefined && JSON.stringify(live) === JSON.stringify(sent)) {
+                this.focusFeedbacks.delete(sent.id);
                 retired += 1;
             }
         }
@@ -737,6 +821,7 @@ export class WorldAdapterState {
                 members: this.memberAttemptsForReport(),
                 views: this.viewAttemptsForReport(),
                 clears: this.clearAttemptsForReport(),
+                focus: this.focusFeedbacksForReport(),
             },
         };
         this.inFlight = flight;
@@ -793,6 +878,7 @@ export class WorldAdapterState {
         this.memberAttempts.clear();
         this.viewAttempts.clear();
         this.clearAttempts.clear();
+        this.focusFeedbacks.clear();
         return true;
     }
 
