@@ -223,6 +223,17 @@ describe("world ordinary frame engine carrier", () => {
         const winHiddenChanged = makeSignal();
         const winFrameChanged = makeSignal();
         let frame = { x: 0, y: 0, width: 200, height: 200 };
+        // Mutable fake output: logical full bounds plus a physical ratio
+        // the producer never reads (KDE reports logical units at scale:1).
+        // A DPR-only change must not churn; a logical bounds change, as a
+        // scale/mode reconfiguration can produce, must reflow (no exact
+        // physical ratio proof).
+        const outScreen = {
+            name: "out",
+            geometry: { x: 0, y: 0, width: 1920, height: 1080 },
+            devicePixelRatio: 1,
+        };
+        let workArea = { x: 0, y: 0, width: 1920, height: 1040 };
         // Truthful native decoration: stable nonnegative insets mirroring
         // the v4 reference (frame 8.4,8.6,800,600 -> client 10,30,796,578:
         // left 2, top 21, right 2, bottom 1; deltaW 4, deltaH 22). The tiler
@@ -302,7 +313,7 @@ describe("world ordinary frame engine carrier", () => {
         let activeRef: FakeWindow | null = win;
         const surface: Record<string, unknown> = {
             windowList: (): FakeWindow[] => [win],
-            screens: [{ name: "out", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }],
+            screens: [outScreen],
             desktops: [ws],
             activeScreen: { name: "out" },
             cursorPos: { x: 2, y: 100 },
@@ -321,7 +332,7 @@ describe("world ordinary frame engine carrier", () => {
                     activeRef = win;
                 }
             },
-            clientArea: (): Record<string, number> => ({ x: 0, y: 0, width: 1920, height: 1040 }),
+            clientArea: (): Record<string, number> => ({ ...workArea }),
             currentDesktopForScreen: (): FakeDesktop => ws,
             setCurrentDesktopForScreen: (): void => undefined,
             sendClientToScreen: (): void => undefined,
@@ -528,6 +539,83 @@ describe("world ordinary frame engine carrier", () => {
             const settledWrites = geometryWrites.length;
             await settle();
             assert.equal(geometryWrites.length, settledWrites, "converged frames stay silent: no churn, no replay");
+
+            // The single ordinary tile insets the work area by the default
+            // outer gap on every side: 1920x1040 at origin plans 8,8,1904,1024.
+            assert.deepEqual(planned, [8, 8, 1904, 1024], "single ordinary tile carries the default outer gap");
+            // Scaled-metric reconfiguration: a physical DPR change that
+            // preserves logical bounds must not churn. The fake output
+            // gains a ratio the producer never reads (encodeV4ScreenRow
+            // hardcodes scale:1); the entry already subscribes to
+            // screensChanged, so the signal refires capture.
+            const discoverBefore = calls.filter((call) => call.method === "DiscoverWorld").length;
+            const stampedBeforeDpr = stamped.length;
+            const writesBeforeDpr = geometryWrites.length;
+            outScreen.devicePixelRatio = 2;
+            for (const handler of [...(signals["screensChanged"] as FakeSignal).handlers]) {
+                handler();
+            }
+            await settle();
+            assert.ok(stamped.length > stampedBeforeDpr, "DPR-only screensChanged refires a fresh capture");
+            assert.equal(calls.filter((call) => call.method === "DiscoverWorld").length, discoverBefore, "unchanged logical bounds cause no rehandshake");
+            const dprStamped = JSON.parse(stamped[stamped.length - 1] as string) as Record<string, unknown>;
+            const dprScreens = dprStamped["screens"] as Array<Record<string, unknown>>;
+            assert.equal(dprScreens.length, 1, "single output rides");
+            assert.equal(dprScreens[0]?.["scale"], 1, "physical DPR never becomes wire scale");
+            assert.deepEqual(dprScreens[0]?.["full"], [0, 0, 1920, 1080], "logical full bounds preserved across the DPR-only signal");
+            assert.deepEqual(dprScreens[0]?.["work"], [0, 0, 1920, 1040], "logical work bounds preserved across the DPR-only signal");
+            assert.equal(geometryWrites.length, writesBeforeDpr, "unchanged logical bounds cause no geometry churn");
+            assert.deepEqual(frame, { x: planned[0], y: planned[1], width: planned[2], height: planned[3] }, "frame preserved across the DPR-only signal");
+            await settle();
+            assert.equal(geometryWrites.length, writesBeforeDpr, "DPR-only reflow settles silent");
+
+            // Logical shrink (a bounds change as a scale/mode reconfiguration
+            // can produce, with no exact physical ratio proof): the output
+            // reports smaller logical bounds, capture reflows to the exact
+            // default-gap tile with native-shaped readback, then silence.
+            const writesBeforeShrink = geometryWrites.length;
+            outScreen.geometry = { x: 0, y: 0, width: 1280, height: 720 };
+            workArea = { x: 0, y: 0, width: 1280, height: 680 };
+            for (const handler of [...(signals["screensChanged"] as FakeSignal).handlers]) {
+                handler();
+            }
+            await settle();
+            const shrinkStamped = JSON.parse(stamped[stamped.length - 1] as string) as Record<string, unknown>;
+            const shrinkScreens = shrinkStamped["screens"] as Array<Record<string, unknown>>;
+            assert.equal(shrinkScreens[0]?.["scale"], 1, "scale stays 1 across the logical shrink");
+            assert.deepEqual(shrinkScreens[0]?.["full"], [0, 0, 1280, 720], "shrunk logical full bounds ride");
+            assert.deepEqual(shrinkScreens[0]?.["work"], [0, 0, 1280, 680], "shrunk logical work bounds ride");
+            const shrinkReplyIndex = Math.max(...[...replies.keys()].filter((at) => (calls[at] as CapturedCall).method === "DescribeWorld"));
+            const shrinkReply = JSON.parse(replies.get(shrinkReplyIndex) as string) as Record<string, unknown>;
+            assert.equal(shrinkReply["outcome"] ?? "accepted", "accepted", "shrunk topology reply accepted");
+            const shrinkRows = (shrinkReply["windows"] as Array<Record<string, unknown>>).filter((entry) => entry["win"] === "win-a");
+            assert.equal(shrinkRows.length, 1, "engine still plans the fake window");
+            assert.deepEqual(shrinkRows[0]?.["frame"], [8, 8, 1264, 664], "shrunk ordinary tile insets the new work area by the default outer gap");
+            assert.deepEqual(frame, { x: 8, y: 8, width: 1264, height: 664 }, "fake-native readback converges to the shrunk tile");
+            assert.equal(calls.filter((call) => call.method === "DiscoverWorld").length, discoverBefore, "logical shrink causes no rehandshake");
+            assert.ok(geometryWrites.length > writesBeforeShrink, "logical shrink reflows through a fresh write");
+            await settle();
+            const settledAfterShrink = geometryWrites.length;
+            await settle();
+            assert.equal(geometryWrites.length, settledAfterShrink, "shrunk tile holds silent");
+            assert.deepEqual(frame, { x: 8, y: 8, width: 1264, height: 664 }, "shrunk frame holds after settle");
+
+            // Change back: restoring the logical bounds replays the exact
+            // original tile, proving the shrink reflow was pure geometry.
+            outScreen.geometry = { x: 0, y: 0, width: 1920, height: 1080 };
+            workArea = { x: 0, y: 0, width: 1920, height: 1040 };
+            outScreen.devicePixelRatio = 1;
+            for (const handler of [...(signals["screensChanged"] as FakeSignal).handlers]) {
+                handler();
+            }
+            await settle();
+            const backReplyIndex = Math.max(...[...replies.keys()].filter((at) => (calls[at] as CapturedCall).method === "DescribeWorld"));
+            const backReply = JSON.parse(replies.get(backReplyIndex) as string) as Record<string, unknown>;
+            const backRows = (backReply["windows"] as Array<Record<string, unknown>>).filter((entry) => entry["win"] === "win-a");
+            assert.deepEqual(backRows[0]?.["frame"], [8, 8, 1904, 1024], "restored bounds replay the original tile");
+            assert.deepEqual(frame, { x: 8, y: 8, width: 1904, height: 1024 }, "readback converges back to the original tile");
+            assert.equal(calls.filter((call) => call.method === "DiscoverWorld").length, discoverBefore, "restoring bounds causes no rehandshake");
+            await settle();
 
             // External perturbation reconverges through one restoring write:
             // the follow-up capture carries the diverged live fact and the

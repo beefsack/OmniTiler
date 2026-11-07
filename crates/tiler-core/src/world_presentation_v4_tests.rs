@@ -5,14 +5,16 @@
 use crate::connection::{FactName, HostCapabilities, RawSettingValue};
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
+use crate::ids::{CorrelationId, OwnerId};
 use crate::world_directional::tests::{accepted, fact, report_full, screen};
-use crate::world_engine::WorldEngine;
+use crate::world_engine::{EventIssue, WorldEngine};
 use crate::world_presentation::{GroupHideReason, PresentationUnderlay};
 use crate::world_report::{
     BorderHideReasonV4, PresentationIngressV4, PresentationPagerFrameV4, PresentationRowV4,
     RowDiagnosticKind, RowDiagnosticLane, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact,
-    WorldReportV4,
+    WorldReplyV4, WorldReportV4,
 };
+use crate::world_run_v4::V4RunOutcome;
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -1564,4 +1566,174 @@ fn scale_float_once_rejects_non_finite_overflow_and_cap() {
     assert_eq!(WorldEngine::scale_float_once(3.0, f64::INFINITY), None);
     assert_eq!(WorldEngine::scale_float_once(f64::NAN, 1.0), None);
     assert_eq!(WorldEngine::scale_float_once(f64::MAX, 2.0), None);
+}
+
+fn accepted_v4(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
+    let outcome = engine.handle_report_v4(
+        report,
+        &EventIssue {
+            owner: OwnerId::parse("adapter-1").expect("owner"),
+            correlation: CorrelationId::parse(&report.request_id).expect("correlation"),
+        },
+    );
+    match outcome {
+        V4RunOutcome::Accepted(reply) => {
+            assert_eq!(reply.based_on_observation_seq, report.observation_seq);
+            assert!(!reply.command_consumed);
+            reply
+        }
+        other => panic!("expected accepted v4 admission, got {other:?}"),
+    }
+}
+
+fn chord_ingress_v4(fg: &str, frame: Rect, seq: u64) -> PresentationIngressV4 {
+    let mut ingress = ingress_v4(fg);
+    ingress.foreground_frame = Some(frame);
+    ingress.chord_held = true;
+    ingress.witness = Some(crate::world_report::FrameWitness {
+        win: WindowId(fg.to_owned()),
+        obs: seq,
+        frame,
+        foreground: WindowId(fg.to_owned()),
+    });
+    ingress
+}
+
+fn settled_fact(window: &str, output: &str, frame: Rect) -> WindowFact {
+    let mut row = fact(window, output, 0);
+    row.rect = Some(frame);
+    row
+}
+
+fn effective_frame(reply: &WorldReplyV4, window: &str) -> Rect {
+    reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == window)
+        .unwrap_or_else(|| panic!("expected planned row for {window}"))
+        .effective_frame
+        .unwrap_or_else(|| panic!("expected effective frame for {window}"))
+}
+
+#[test]
+fn logical_topology_reflow_at_scale_one_through_admit() {
+    // Genuine v4 handle/report route (never stage-only): an ordinary tiled
+    // pair at scale 1, a logical bounds shrink, then settled native facts
+    // so the found underlay recomputes. Engine defaults hold throughout:
+    // inner/outer gap 8, border width 3, border gap 0, radius 6, and the
+    // underlay sentinel -1 (follows the border width).
+    let mut engine = engine_with(vec![]);
+    // out-a work (0,0,800,560) insets by outer 8 to (8,8,784,544); the pair
+    // splits the 784 width with one inner 8: (784-8)/2 = 388 per tile.
+    // Stack order puts win-b left and the focused win-a right.
+    let initial_a = rect(404, 8, 388, 544);
+    let initial_b = rect(8, 8, 388, 544);
+    let first = report_v4(
+        1,
+        screens_pair(),
+        facts_pair(),
+        "win-a",
+        chord_ingress_v4("win-a", rect(0, 0, 40, 90), 1),
+    );
+    assert_eq!(
+        first.screens[0].scale, 1.0,
+        "initial topology reports scale 1"
+    );
+    accepted_v4(&mut engine, &first);
+    // A second identical report latches managed focus before presentation
+    // reads the retained focus.
+    let second = report_v4(
+        2,
+        screens_pair(),
+        facts_pair(),
+        "win-a",
+        chord_ingress_v4("win-a", rect(0, 0, 40, 90), 2),
+    );
+    let settled = accepted_v4(&mut engine, &second);
+    assert_eq!(effective_frame(&settled, "win-a"), initial_a);
+    assert_eq!(effective_frame(&settled, "win-b"), initial_b);
+    assert!(settled.presentation.border.visible);
+    assert_eq!(
+        settled.presentation.border.subject,
+        Some(WindowId("win-a".to_owned()))
+    );
+    assert_eq!(settled.presentation.border.outsets, Some([3, 3, 3, 3]));
+    assert_eq!(settled.presentation.border.width, Some(3));
+    assert_eq!(settled.presentation.border.radius, Some(6));
+    match settled.presentation.underlay.clone() {
+        PresentationUnderlay::Found(found) => {
+            assert_eq!(found.focused_window, WindowId("win-a".to_owned()));
+            assert_eq!(found.members.len(), 2);
+            let mut member_rects: Vec<Rect> =
+                found.members.iter().map(|member| member.rect).collect();
+            member_rects.sort_by_key(|frame| (frame.x, frame.y));
+            let mut expected = vec![initial_a, initial_b];
+            expected.sort_by_key(|frame| (frame.x, frame.y));
+            assert_eq!(member_rects, expected);
+            assert_eq!(found.union_rect, rect(8, 8, 784, 544));
+            // gap 0 + width 3 + sentinel-width 3 = 6 at scale 1.
+            assert_eq!(found.outer_rect, rect(2, 2, 796, 556));
+        }
+        hidden => panic!("expected found underlay, got {hidden:?}"),
+    }
+
+    // Logical shrink (a bounds change as a scale/mode reconfiguration can
+    // produce, with no exact physical ratio proof): same scale 1, new
+    // bounds. The reply reflows to the exact shrunk tile.
+    let mut shrunk = screens_pair();
+    shrunk[0].full_rect = Some(rect(0, 0, 640, 480));
+    shrunk[0].work_area = Some(rect(0, 0, 640, 440));
+    assert_eq!(
+        shrunk[0].scale, 1.0,
+        "shrunk topology still reports scale 1"
+    );
+    // work (0,0,640,440) insets to (8,8,624,424); (624-8)/2 = 308 per tile.
+    let shrunk_a = rect(324, 8, 308, 424);
+    let shrunk_b = rect(8, 8, 308, 424);
+    let third = report_v4(
+        3,
+        shrunk.clone(),
+        facts_pair(),
+        "win-a",
+        chord_ingress_v4("win-a", rect(0, 0, 40, 90), 3),
+    );
+    let reflow = accepted_v4(&mut engine, &third);
+    assert_eq!(effective_frame(&reflow, "win-a"), shrunk_a);
+    assert_eq!(effective_frame(&reflow, "win-b"), shrunk_b);
+
+    // Settle the native facts to the reflowed plan so the found underlay
+    // recomputes on truthful observations instead of stale pre-shrink ones.
+    let fourth = report_v4(
+        4,
+        shrunk,
+        vec![
+            settled_fact("win-a", "out-a", shrunk_a),
+            settled_fact("win-b", "out-a", shrunk_b),
+            fact("win-c", "out-b", 800),
+        ],
+        "win-a",
+        chord_ingress_v4("win-a", shrunk_a, 4),
+    );
+    let reconverged = accepted_v4(&mut engine, &fourth);
+    assert_eq!(effective_frame(&reconverged, "win-a"), shrunk_a);
+    assert_eq!(effective_frame(&reconverged, "win-b"), shrunk_b);
+    assert!(reconverged.presentation.border.visible);
+    assert_eq!(reconverged.presentation.border.outsets, Some([3, 3, 3, 3]));
+    assert_eq!(reconverged.presentation.border.width, Some(3));
+    assert_eq!(reconverged.presentation.border.radius, Some(6));
+    match reconverged.presentation.underlay.clone() {
+        PresentationUnderlay::Found(found) => {
+            assert_eq!(found.focused_window, WindowId("win-a".to_owned()));
+            assert_eq!(found.members.len(), 2);
+            let mut member_rects: Vec<Rect> =
+                found.members.iter().map(|member| member.rect).collect();
+            member_rects.sort_by_key(|frame| (frame.x, frame.y));
+            let mut expected = vec![shrunk_a, shrunk_b];
+            expected.sort_by_key(|frame| (frame.x, frame.y));
+            assert_eq!(member_rects, expected);
+            assert_eq!(found.union_rect, rect(8, 8, 624, 424));
+            assert_eq!(found.outer_rect, rect(2, 2, 636, 436));
+        }
+        hidden => panic!("expected recomputed found underlay, got {hidden:?}"),
+    }
 }
