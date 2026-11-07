@@ -131,3 +131,20 @@
   with warnings denied pass; only `workspace_unsafe_posture` is excluded.
   Service unit tests pass 219/219. No native property execution or restoration
   has run; the client executor and its persist-before-write gates remain next.
+
+## State-target revision blocker
+
+- Native execution cannot truthfully correlate a retained target first received
+  in a later publication. `world_state.rs` requires the internal original
+  target revision; all four producers retain it across observations, while
+  `world_sizing.rs` publishes no revision on StateTarget. Every accepted report
+  advances the enclosing reply revision. The requester take receipt carries
+  no original revision either, and commandless above has no command sequence.
+- Losing the authorizing reply R and first receiving the republished target in
+  R+1 leaves the adapter without R. Stamping R+1 is ignored by core; inferring
+  R or blindly retrying would violate the correlation rule. Existing focused
+  wrong-correlation tests confirm the mismatched revision remains unspent.
+  The minimal discriminator is recorded in `docs/spec/reference-outcomes.md`.
+- This needs a contract/core publication resolution before target execution is
+  enabled. Separate client storage/recovery plumbing can proceed independently;
+  no core, wire fixture or state-target schema change has been made here.
