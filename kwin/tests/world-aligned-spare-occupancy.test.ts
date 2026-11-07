@@ -1,6 +1,6 @@
-// Occupancy-only spare lifecycle for aligned per-output workspaces.
+// Occupancy-only spare lifecycle for per-output workspaces.
 // Producer-shaped regression through the real `WorldEngine` (via the
-// test-only `raw_world_eval` example with `WORLD_EVAL_ALIGNED=1`) plus the
+// test-only `raw_world_eval` example) plus the
 // production entry/apply path with fresh serial replies: showing an empty
 // end (including via a production-shaped empty-list sticky anchor, homed
 // by the observer at its output's current) creates no spare, relative-next
@@ -77,7 +77,6 @@ class WorldBridge {
             spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
                 cwd: repoRoot(),
                 stdio: ["pipe", "pipe", "pipe"],
-                env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
             }),
         );
     }
@@ -518,7 +517,7 @@ function transfersOf(reply: Record<string, unknown>): Array<Record<string, unkno
     return (reply["transfers"] as Array<Record<string, unknown>>) ?? [];
 }
 
-describe("world aligned spare occupancy-only", () => {
+describe("world spare occupancy-only", () => {
     it("showing empty ends creates no spare on either output, forward next wraps, occupancy still extends", { timeout: 240000 }, async () => {
         const h = await makeSpareHarness();
         try {

@@ -1575,7 +1575,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     if (result.stoppedMidApply) {
         return result;
     }
-    // Native removal dedup: the aligned grid repeats one native per
+    // Native removal dedup: one native binding may repeat per
     // output, so several rows can name the same native binding. Every
     // gate below keys on the native id only, so the first row decides and
     // repeats skip silently (no duplicate native call, no double hold).

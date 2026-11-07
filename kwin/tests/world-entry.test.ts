@@ -1799,7 +1799,7 @@ describe("world entry rapid directional FIFO", () => {
     });
 });
 
-describe("world entry aligned bindings", () => {
+describe("world entry native bindings", () => {
     it("converges bindings per (output, native) and prunes non-live cells", () => {
         const h = makeHarness("per-output-local");
         discover(h);
@@ -2287,9 +2287,8 @@ const TILE_DATA = "{\"v\":1,\"float\":false,\"stickyPrior\":null}";
 describe("world entry restart float-intent preservation", () => {
     for (const holdMode of ["scoped", "global"] as const) {
     it(`holds settled float across a genuinely held first engine reply (${holdMode} hold)`, { timeout: 120000 }, async () => {
-        // Producer-shaped replay through the real WorldEngine (raw_world_eval
-        // with WORLD_EVAL_ALIGNED=1, same bridge as the aligned-migration
-        // engine test): no hand-built replies on the asserted paths.
+        // Producer-shaped replay through the real WorldEngine (raw_world_eval,
+        // same bridge as the migration engine test): no hand-built replies on the asserted paths.
         // Scoped hold is genuinely native: clientArea returns null for ws-1,
         // which world-observe turns into an explicit domain hold
         // "unreadable". Global hold poisons one live rect so the whole
@@ -2318,7 +2317,6 @@ describe("world entry restart float-intent preservation", () => {
         const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
             cwd: repoRoot(),
             stdio: ["pipe", "pipe", "pipe"],
-            env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
         });
         const waiters: EngineWaiter[] = [];
         let engineFailed: Error | null = null;
@@ -2759,7 +2757,7 @@ describe("world entry restart float-intent preservation", () => {
 describe("world entry script-restart sequence handover", () => {
     it("rotation hands a fresh generation and engine to the new producer lifetime", { timeout: 120000 }, async () => {
         // Producer-shaped restart replay through the real WorldEngine behind
-        // one raw_world_eval process (aligned, like production): the first
+        // one raw_world_eval process (like production): the first
         // producer advances request+command watermarks with a float + fixed
         // tile seed, then the restarted producer discovers as a NEW
         // lifetime. Like the real WorldBroker::discovery_body, the new
@@ -2788,7 +2786,6 @@ describe("world entry script-restart sequence handover", () => {
         const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
             cwd: repoRoot(),
             stdio: ["pipe", "pipe", "pipe"],
-            env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
         });
         const waiters: EngineWaiter[] = [];
         let engineFailed: Error | null = null;
@@ -4294,7 +4291,6 @@ describe("world entry focus feedback production regression", () => {
         const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
             cwd: repoRoot(),
             stdio: ["pipe", "pipe", "pipe"],
-            env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
         });
         const waiters: EngineWaiter[] = [];
         let engineFailed: Error | null = null;

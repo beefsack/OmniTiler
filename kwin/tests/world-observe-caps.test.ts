@@ -181,7 +181,7 @@ describe("world observation inventory bounds", () => {
     });
 });
 
-describe("world observation aligned binding replication", () => {
+describe("world observation per-output binding replication", () => {
     it("emits one binding per (output, native) with distinct logicals", () => {
         const { surface } = makeInventory(3, 3, 2);
         const obs = captureWorldObservation({

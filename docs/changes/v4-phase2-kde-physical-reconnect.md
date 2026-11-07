@@ -35,7 +35,7 @@
 | Displacement | `world_model.rs:657-803` preserves workspaces and uses retained disconnect-time geometry; `:817-840` binds focusless policy views | Extend proofs to renamed return, ambiguity and repeated topology changes |
 | Native bindings | `world_native.rs:64-87,1127-1174` maintains per-output native/logical bindings and a native-ordered bound prefix with unbound tail | Bindings do not implement the full aligned grid |
 | Migration/refill | `world_commands.rs:1440-1470` removes the source logical ID and inserts after destination current; `world_model.rs:950-991` excludes the migrated ID from refill | No aligned replacement-cell mechanism exists to apply the tentative D5 exclusion to |
-| Aligned helpers | `workspace_scope.rs` contains uncalled aligned ring/trailing/global-removal and history-rebind helpers | Remove in a separate verified cull under the retirement decision |
+| Aligned helpers | Removed uncalled aligned ring/trailing/global-removal and history-rebind helpers from `workspace_scope.rs` | Common trailing and history paths remain |
 | Minimized rehome | `world_observe.rs:1003-1029` resolves hidden membership using native evidence; `session/world.rs:1759-1778` consumes restore slots and checks old home | Destination restore has a guard already. The leave-and-return-before-restore discriminator still needs a reproducing regression before claiming a defect |
 
 - KWin source at `1b798c05c19b1124edb1e16623191fcd2c128fd0`:
@@ -62,6 +62,16 @@
 - Historical aligned-only discriminators and the earlier aligned record are
   marked retired. The renamed-return discriminator remains in
   [reference outcomes](../spec/reference-outcomes.md#kde-dual-output-admission-and-workspace-scope-discriminators).
+- Cull: removed `aligned_ring_ids`, `aligned_trailing_index`,
+  `resolve_aligned_trailing`, `aligned_removal_set` and
+  `ScopeHistory::invalidate_aligned_rebind`. Caller search found definitions
+  plus one internal helper call only, with no helper-only tests. Post-removal
+  source search has no hits. Existing migration/spare tests exercise common
+  behavior and remain; stale labels and the unread `WORLD_EVAL_ALIGNED`
+  environment selector are removed without changing their assertions.
+- Cull verification: Rust format check, filtered common trailing regressions
+  and adapter typecheck succeeded. A `workspace_scope` name filter selected
+  no tests and is not coverage evidence.
 
 ## Bounded implementation and verification
 

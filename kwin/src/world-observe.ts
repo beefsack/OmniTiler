@@ -634,11 +634,9 @@ export interface ObserveEnv {
     gestureActive: () => boolean;
     knownClosed: () => ReadonlyArray<string>;
     logicalBindingOf: (nativeId: string, out?: string) => { logical: string; out: string; pin: boolean; disp: boolean; managed: boolean } | null;
-    // Aligned per-output workspaces (KDE production): the same native
-    // desktop id exists on every output with a distinct logical identity
-    // per (output, native), so bindings replicate per output instead of
-    // collapsing through one native->logical row. Off preserves the
-    // disjoint single-row behavior for existing callers and tests.
+    // Per-output bindings can map the same native desktop to distinct
+    // logical identities. Preserve each (output, native) row instead of
+    // collapsing through one native->logical row.
     replicateBindingsPerOutput?: boolean;
     // Adapter-owned intentional-float membership (observation input, never
     // policy): converged from accepted Planner exception rows. Absent reads

@@ -4194,8 +4194,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // accepted Planner mapping (Planner-owned, D2), then
                     // prune to the current native inventory so stale
                     // bindings never survive removals/disconnects. Keyed
-                    // per (output, native): the aligned grid binds the same
-                    // native once per output with a distinct logical each.
+                    // per (output, native): one native binding may repeat
+                    // once per output with a distinct logical each.
                     for (const ws of parsed.workspaces) {
                         if (ws.bind !== "") {
                             logicalOfNative.set(bindingKey(ws.out, ws.bind), {
@@ -6160,7 +6160,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         const last = state.lastReply;
         if (last !== null) {
             for (const ws of last.workspaces) {
-                // The aligned grid repeats one native per output: scope
+                // One native binding may repeat per output: scope
                 // the match to the active output, never a same-native row
                 // from another output. Rows are keyed by stable core
                 // logical id, never the native binding.

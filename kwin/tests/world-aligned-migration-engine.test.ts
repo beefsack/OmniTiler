@@ -1,6 +1,6 @@
-// Aligned whole-workspace migration end to end through the production
+// Whole-workspace migration end to end through the production
 // entry against the real `WorldEngine` (via the test-only `raw_world_eval`
-// example with `WORLD_EVAL_ALIGNED=1`: same decode, retained engine,
+// example: same decode, retained engine,
 // codec and generation binding the shipped KDE world service uses; only
 // D-Bus and signals are stubbed). No hand-built wire replies on the
 // asserted paths: every reply is a fresh Engine report.
@@ -79,9 +79,6 @@ class WorldBridge {
             spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
                 cwd: repoRoot(),
                 stdio: ["pipe", "pipe", "pipe"],
-                // Test-only platform selection mirroring the KDE service
-                // construction (never a user setting).
-                env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
             }),
         );
     }
@@ -712,7 +709,7 @@ async function lagDirection(options: {
     }
 }
 
-describe("world aligned migration engine", () => {
+describe("world migration engine", () => {
     it("migrates through fresh Engine replies with replicated bindings, refill and settlement", { timeout: 120000 }, async () => {
         const h = await makeHarness();
         try {

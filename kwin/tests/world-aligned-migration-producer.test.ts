@@ -1,6 +1,6 @@
-// Producer-shaped aligned whole-workspace migration end to end through
+// Producer-shaped whole-workspace migration end to end through
 // the production entry against the real `WorldEngine` (via the test-only
-// `raw_world_eval` example with `WORLD_EVAL_ALIGNED=1`) with a faithful native
+// `raw_world_eval` example) with a faithful native
 // surface shaped like the pinned KWin semantics: two offset unequal
 // outputs (out-left 1000x800 at 0,0 plus out-right 900x700 at 1000,50),
 // the pinned `sendClientToScreen` echo (`window.cpp`
@@ -89,7 +89,6 @@ class WorldBridge {
             spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
                 cwd: repoRoot(),
                 stdio: ["pipe", "pipe", "pipe"],
-                env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
             }),
         );
     }
@@ -724,7 +723,7 @@ function debugState(h: Harness, tag: string): string {
         }))} viewWrites=${JSON.stringify(h.viewWrites.slice(-8))}`;
 }
 
-describe("world aligned migration producer", () => {
+describe("world migration producer", () => {
     it("migrates back and forth through the real Engine with echo, refill, empty move and settlement", { timeout: 240000 }, async () => {
         const h = await makeProducerHarness();
         try {

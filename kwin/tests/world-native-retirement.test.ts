@@ -67,7 +67,6 @@ class WorldBridge {
         return new WorldBridge(
             spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
                 stdio: ["pipe", "pipe", "pipe"],
-                env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
             }),
         );
     }
