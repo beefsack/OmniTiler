@@ -432,34 +432,6 @@ inline bool previewProducerMatchesLive(
         && state->previewProducerSerial == liveSerial.toUtf8();
 }
 
-// Exact-reproduction stroke for the native OutlinedBorderItem (finding C):
-// pinned KWin v6.7.4 `src/scene/borderoutline.h` inflates every side by
-// exactly the outline thickness, and `src/scene/outlinedborderitem.cpp`
-// sets the item geometry from `inflate(innerRect)`. The core publishes
-// `outer = inner` expanded by the capture-time width on every side
-// (`tiler-core/src/visual.rs::border_geometry`), so each uniform inset
-// already equals that exact width: drawing with it reproduces the
-// published outer rect exactly. Live config width is never consulted.
-// All four insets must be equal and positive, else nullopt (render hidden,
-// never approximated).
-inline std::optional<double> borderStrokeFromPublished(const QRect &inner, const QRect &outer)
-{
-    if (inner.width() <= 0 || inner.height() <= 0 || outer.width() <= 0 || outer.height() <= 0) {
-        return std::nullopt;
-    }
-    const int left = inner.x() - outer.x();
-    const int top = inner.y() - outer.y();
-    const int right = (outer.x() + outer.width()) - (inner.x() + inner.width());
-    const int bottom = (outer.y() + outer.height()) - (inner.y() + inner.height());
-    if (left <= 0 || top <= 0 || right <= 0 || bottom <= 0) {
-        return std::nullopt;
-    }
-    if (left != top || top != right || right != bottom) {
-        return std::nullopt;
-    }
-    return static_cast<double>(left);
-}
-
 // TS Math.round quantization for the live native frame (halves toward
 // +infinity): std::floor(v + 0.5). Differs from std::lround on negative
 // halves (Math.round(-10.5) == -10, lround gives -11). The adapter rounds

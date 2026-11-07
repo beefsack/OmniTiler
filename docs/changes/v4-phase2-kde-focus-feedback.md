@@ -373,8 +373,13 @@
   floating fixture resize, foreground change, minimize and maximize hide/re-arm,
   but did not isolate frame-follow from a broker round trip. Minimize restore
   and version-mismatch live checks were not completed. That run is not accepted
-  as native continuity or K5/R20 evidence. The separate obsolete-helper removal
-  and final offline records remain pending.
+  as native continuity or K5/R20 evidence. Final offline records remain pending.
+- The separate obsolete `borderStrokeFromPublished` helper was removed after
+  source search proved no production callers; only its own tests and static
+  existence checks used it. Live-frame anchored geometry coverage is retained.
+  Active licensing and port references were updated; historical records remain
+  unchanged. Native checks pass all 38, the targeted static suite passes all 18,
+  and adapter typecheck passes after removal.
 - Open user-run native acceptance check: tracked-frame border follow without a
   broker round trip; foreground change to the non-active fixture;
   minimize/restore; maximize eligibility hide/re-arm; version mismatch quietly

@@ -201,7 +201,6 @@ describe("presentation native static contract", () => {
         assert.match(effectImpl, /BorderRadius\(radius\)/);
         assert.match(stageImpl, /presentationUnderlayFresh\(&paint\)/);
         assert.match(stageImpl, /presentationCoveredCurrent\(&paint\)/);
-        assert.doesNotMatch(stageImpl, /borderStrokeFromPublished/);
         assert.doesNotMatch(stageImpl, /presentationBorderFresh/);
         // Frame dirt advances the causal witness even with no held paint:
         // tracked/member-frame signals route through the extracted KWin-free
@@ -473,8 +472,6 @@ describe("presentation native static contract", () => {
         assert.match(consumer, /presentationBorderFresh/);
         assert.match(consumer, /presentationUnderlayFresh/);
         assert.match(consumer, /presentationCoveredCurrent/);
-        // Finding C: the stroke derives strictly from the published pair.
-        assert.match(consumer, /borderStrokeFromPublished/);
         // The consumer header holds Qt-only parse plus order fencing: no
         // KWin/effect types, no styling inputs, no derivation.
         assert.doesNotMatch(consumer, /EffectWindow/);

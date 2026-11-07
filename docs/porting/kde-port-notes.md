@@ -335,11 +335,12 @@ request fixtures pin the JS producer, including populated raw attempts.
   `kde_raw.rs::math_round` agree on halves toward positive infinity
   (`-10.5 -> -10`); published integer rectangles pass through unchanged.
   Style values are converted once into the same logical units at ingress.
-  `presentation_consumer.h::borderStrokeFromPublished` accepts only equal
-  positive insets between core inner/outer. Pinned KWin `v6.7.4`
-  `src/scene/borderoutline.h` inflates each side by that thickness and
+  `presentation_consumer.h::borderGeometryFromLiveFrame` resolves the live
+  frame plus held outsets and width. Pinned KWin `v6.7.4`
+  `src/scene/borderoutline.h` inflates each side by the outline thickness and
   `outlinedborderitem.cpp` sets geometry from that inflation, reproducing
-  core outer independently of later config-width changes. Underlay/preview
+  the resolved border bounds with held width, independently of later
+  config-width changes. Underlay/preview
   use core outer/rect directly; `mapFromScene` only translates into the
   native item anchor. No additional DPI factor, outset or Windows frame
   compensation is applied. Freshness has separate accepted recorded-route

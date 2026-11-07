@@ -24,8 +24,7 @@ tray/planner binary, scripts, and packaging declare MIT.
 Exception: `activewindowborder.cpp`/`.h` include KWin headers and are
 `GPL-2.0-or-later`; the effect plugin metadata and combined binary also remain
 `GPL-2.0-or-later` (full text in `LICENSES/GPL-2.0-or-later.txt`). The 15
-audited KWin-free native-effect logic/test sources are MIT, including the
-independently implemented `borderStrokeFromPublished` behavior match. MIT
+audited KWin-free native-effect logic/test sources are MIT. MIT
 sources linked into the GPL-covered effect binary retain their source license.
 
 ## Quickstart

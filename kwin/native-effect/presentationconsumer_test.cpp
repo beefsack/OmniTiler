@@ -757,37 +757,6 @@ void intValuesRejectHugeFractionalAndOutOfRange()
     CHECK(state.has);
 }
 
-void borderStrokeReproducesPublishedOuterExactly()
-{
-    // Finding C: the native OutlinedBorderItem draws geometry from
-    // inflate(innerRect) (pinned v6.7.4 borderoutline.h), i.e. every side
-    // expanded by exactly the outline thickness. The core publishes
-    // outer = inner expanded by the capture-time width on every side, so
-    // the half-difference recovers that exact width without consulting
-    // live config. Drawing with the derived stroke reproduces the
-    // published outer rect exactly (proves the effective drawn bounds).
-    const auto stroke = KWin::borderStrokeFromPublished(QRect(10, 10, 300, 300), QRect(8, 8, 304, 304));
-    CHECK(stroke.has_value());
-    CHECK(*stroke == 2.0);
-    const QRect inner(10, 10, 300, 300);
-    const QRect drawn(inner.x() - static_cast<int>(*stroke), inner.y() - static_cast<int>(*stroke),
-        inner.width() + 2 * static_cast<int>(*stroke), inner.height() + 2 * static_cast<int>(*stroke));
-    CHECK(drawn == QRect(8, 8, 304, 304));
-    // Degenerate and non-uniform pairs fail closed (hidden, never
-    // approximated): zero/negative insets, mismatched sides, empty rects.
-    CHECK(!KWin::borderStrokeFromPublished(QRect(10, 10, 300, 300), QRect(10, 10, 300, 300)).has_value());
-    CHECK(!KWin::borderStrokeFromPublished(QRect(8, 8, 304, 304), QRect(10, 10, 300, 300)).has_value());
-    CHECK(!KWin::borderStrokeFromPublished(QRect(10, 10, 300, 300), QRect(8, 8, 306, 304)).has_value());
-    CHECK(!KWin::borderStrokeFromPublished(QRect(10, 10, 300, 300), QRect(8, 10, 304, 304)).has_value());
-    CHECK(!KWin::borderStrokeFromPublished(QRect(), QRect(8, 8, 304, 304)).has_value());
-    CHECK(!KWin::borderStrokeFromPublished(QRect(10, 10, 0, 300), QRect(8, 8, 304, 304)).has_value());
-    // Capture-vs-live config drift is ignored by construction: the helper
-    // takes no config input, only the published pair.
-    const auto drifted = KWin::borderStrokeFromPublished(QRect(0, 0, 100, 100), QRect(-5, -5, 110, 110));
-    CHECK(drifted.has_value());
-    CHECK(*drifted == 5.0);
-}
-
 void borderGeometryExtremeOutsetsOverflowNarrowlyHides()
 {
     // Ordinary, asymmetric, and negative descriptors resolve verbatim.
@@ -1301,7 +1270,6 @@ int main(int argc, char **argv)
     asymmetricAndNegativeOutsetsAccepted();
     missingRadiusNarrowsHides();
     intValuesRejectHugeFractionalAndOutOfRange();
-    borderStrokeReproducesPublishedOuterExactly();
     borderGeometryExtremeOutsetsOverflowNarrowlyHides();
     quantizeNegativeHalvesRoundTowardPositiveInfinity();
     noStylingInputsInPayload();
