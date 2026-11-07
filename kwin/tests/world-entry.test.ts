@@ -139,19 +139,19 @@ interface Harness {
 }
 
 interface FakeSignal {
-    readonly handlers: Array<() => void>;
-    readonly signal: { connect: (handler: () => void) => void; disconnect: (handler: () => void) => void };
+    readonly handlers: Array<(...args: Array<unknown>) => void>;
+    readonly signal: { connect: (handler: (...args: Array<unknown>) => void) => void; disconnect: (handler: (...args: Array<unknown>) => void) => void };
 }
 
 function fakeSignal(): FakeSignal {
-    const handlers: Array<() => void> = [];
+    const handlers: Array<(...args: Array<unknown>) => void> = [];
     return {
         handlers,
         signal: {
-            connect: (handler: () => void): void => {
+            connect: (handler: (...args: Array<unknown>) => void): void => {
                 handlers.push(handler);
             },
-            disconnect: (handler: () => void): void => {
+            disconnect: (handler: (...args: Array<unknown>) => void): void => {
                 const index = handlers.indexOf(handler);
                 if (index >= 0) {
                     handlers.splice(index, 1);
@@ -194,9 +194,32 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
             return world.activeWindow;
         },
         set activeWindow(ref: unknown) {
+            if ((world as unknown as Record<string, unknown>)["__throwFocus"] === true) {
+                throw new Error("activeWindow-unavailable");
+            }
             const found = world.wins.find((w) => (w as unknown) === ref);
             if (found) {
                 world.focused.push(found.internalId);
+                (world as { activeWindow: FakeWindow | null }).activeWindow = found;
+            }
+            const mode = (world as unknown as Record<string, unknown>)["__syncFocusEcho"];
+            if (mode !== undefined && mode !== null && mode !== false) {
+                const fire = (arg: unknown): void => {
+                    for (const handler of [...(signals.windowActivated as FakeSignal).handlers]) {
+                        (handler as (...args: Array<unknown>) => void)(arg);
+                    }
+                };
+                if (mode === "truthful") {
+                    fire(ref);
+                } else if (mode === "mismatched") {
+                    const other = world.wins.find((w) => (w as unknown) !== ref);
+                    if (other !== undefined) {
+                        (world as { activeWindow: FakeWindow | null }).activeWindow = other;
+                        fire(other as unknown);
+                    } else {
+                        fire(null);
+                    }
+                }
             }
         },
         get currentDesktop() {
@@ -212,9 +235,96 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         ...(perOutputSeam ? {
         currentDesktopForScreen: (_screen: unknown) => world.currentDesktop,
         setCurrentDesktopForScreen: (deskRef: unknown, _screen: unknown) => {
+            const oldDesk = world.currentDesktop;
             const found = world.desktops.find((d) => (d as unknown) === deskRef);
             if (found) {
                 world.currentDesktop = found;
+            }
+            const mode = (world as unknown as Record<string, unknown>)["__syncViewEcho"];
+            if (mode !== undefined && mode !== null && mode !== false) {
+                const outObj = (world.screens[0] as unknown) as object;
+                const newDesk = (found as unknown) ?? deskRef;
+                const fireView = (...args: Array<unknown>): void => {
+                    for (const handler of [...(signals.currentDesktopChanged as FakeSignal).handlers]) {
+                        (handler as (...args: Array<unknown>) => void)(...args);
+                    }
+                };
+                const fireActive = (arg: unknown): void => {
+                    for (const handler of [...(signals.windowActivated as FakeSignal).handlers]) {
+                        (handler as (...args: Array<unknown>) => void)(arg);
+                    }
+                };
+                if (mode === "truthful" || mode === "truthful-1arg") {
+                    // Native order: the workspace selector restores focus
+                    // (windowActivated) before the VDM currentChanged script
+                    // callback (currentDesktopChanged) reaches the wrapper.
+                    // The native chain may pick a different eligible member
+                    // than the granted focus target, so the last member on
+                    // the new view activates here and the core focus setter
+                    // corrects to its target afterwards.
+                    const members = world.wins.filter((w) => w.desktops[0] === (newDesk as FakeDesktop));
+                    const member = members.length > 0 ? members[members.length - 1] : undefined;
+                    if (member !== undefined) {
+                        (world as { activeWindow: FakeWindow | null }).activeWindow = member;
+                        fireActive(member as unknown);
+                    }
+                    if (mode === "truthful") {
+                        fireView(oldDesk as unknown, newDesk as unknown, outObj);
+                    } else {
+                        fireView(oldDesk as unknown);
+                    }
+                } else if (mode === "silent-home-change") {
+                    // Matched echoes, then a signal-free home change before
+                    // the setter returns: read-back contract defense (actual
+                    // native signal-free reachability unproven). The
+                    // post-setter validation must catch the drift and stop
+                    // the core focus setter.
+                    const members = world.wins.filter((w) => w.desktops[0] === (newDesk as FakeDesktop));
+                    const member = members.length > 0 ? members[members.length - 1] : undefined;
+                    if (member !== undefined) {
+                        (world as { activeWindow: FakeWindow | null }).activeWindow = member;
+                        fireActive(member as unknown);
+                    }
+                    fireView(oldDesk as unknown, newDesk as unknown, outObj);
+                    if (member !== undefined) {
+                        member.desktops = [oldDesk as FakeDesktop];
+                    }
+                } else if (mode === "mismatched-new") {
+                    const third = world.desktops.find((d) => (d as unknown) !== deskRef) ?? (newDesk as FakeDesktop);
+                    fireView(oldDesk as unknown, third as unknown, outObj);
+                } else if (mode === "two-arg") {
+                    fireView(oldDesk as unknown, newDesk as unknown);
+                } else if (mode === "third-output") {
+                    fireView(oldDesk as unknown, newDesk as unknown, { name: "out-else" } as unknown);
+                } else if (mode === "mismatched-active") {
+                    const other = world.wins.find((w) => w.desktops[0] !== (newDesk as FakeDesktop));
+                    if (other !== undefined) {
+                        fireActive(other as unknown);
+                    } else {
+                        fireActive(null);
+                    }
+                    fireView(oldDesk as unknown, newDesk as unknown, outObj);
+                } else if (mode === "foreground-mismatch") {
+                    const members = world.wins.filter((w) => w.desktops[0] === (newDesk as FakeDesktop));
+                    const member = members.length > 0 ? members[members.length - 1] : undefined;
+                    if (member !== undefined) {
+                        fireActive(member as unknown);
+                    }
+                    fireView(oldDesk as unknown, newDesk as unknown, outObj);
+                } else if (mode === "unlisted-active") {
+                    fireActive({ internalId: "ghost-win", output: { name: "out" }, desktops: [] } as unknown);
+                    fireView(oldDesk as unknown, newDesk as unknown, outObj);
+                } else if (mode === "replaced-active") {
+                    // Replaced lifetime: the live member's canonical id
+                    // changes, so the stale clone (old id) is no longer
+                    // listed even though it is a same-shape JS object.
+                    const live = world.wins.find((w) => w.internalId === "win-b");
+                    if (live !== undefined) {
+                        live.internalId = "win-b-next";
+                    }
+                    fireActive({ internalId: "win-b", output: { name: "out" }, desktops: [newDesk as unknown] } as unknown);
+                    fireView(oldDesk as unknown, newDesk as unknown, outObj);
+                }
             }
         },
         } : {}),
@@ -796,6 +906,382 @@ describe("world entry discovery and observation", () => {
             effects: [{ id: "fx-1", kind: "focus", target: "win-b", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false }],
         }));
         assert.equal(h.world.focused.length, 1);
+    });
+
+    it("defers truthful view+focus own echoes to one authorized focus dispatch", () => {
+        const h = makeHarness();
+        discover(h);
+        // The native focus chain picks its own eligible member on the new
+        // view (win-c), distinct from the granted core focus target
+        // (win-b); the core focus setter corrects afterwards.
+        const ws2 = h.world.desktops[1] as FakeDesktop;
+        h.world.wins.push(win("win-c", "out", ws2, 0));
+        (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "truthful";
+        (h.world as unknown as Record<string, unknown>)["__syncFocusEcho"] = "truthful";
+        try {
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const req = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                workspaces: [
+                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                ],
+                outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
+                transfers: [{ op: "op-view-1", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
+                effects: [{ id: "fx-view-1", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+            }));
+            assert.equal(h.world.currentDesktop.id, "ws2", "view switch actuates");
+            assert.deepEqual(h.world.focused, ["win-b"], "exactly one core-target focus setter");
+            h.runTimers();
+            const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
+            const row = wire.find((r) => r["id"] === "fx-view-1");
+            assert.ok(row !== undefined, "focus row rides the next report");
+            assert.equal(row["setter"], "accepted");
+            assert.equal(row["foregroundProven"], true);
+            assert.ok(Array.isArray(row["arrival"]) && (row["arrival"] as Array<unknown>).length >= 1, "arrival brackets ride");
+        } finally {
+            (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
+            (h.world as unknown as Record<string, unknown>)["__syncFocusEcho"] = false;
+            h.handle?.stop();
+        }
+    });
+
+    it("mismatched reentrant view signal invalidates instead of deferring", () => {
+        const h = makeHarness();
+        discover(h);
+        (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "mismatched-new";
+        try {
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const req = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                workspaces: [
+                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                ],
+                outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
+                transfers: [{ op: "op-view-2", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
+                effects: [{ id: "fx-view-2", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+            }));
+            assert.equal(h.world.focused.length, 0, "mismatched view echo stops the focus setter");
+            h.runTimers();
+            const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
+            const row = wire.find((r) => r["id"] === "fx-view-2");
+            assert.ok(row !== undefined, "superseded row rides");
+            assert.equal(row["setter"], "not-called");
+            assert.equal(row["reason"], "superseded");
+        } finally {
+            (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
+            h.handle?.stop();
+        }
+    });
+
+    it("mismatched reentrant focus activation never proves", () => {
+        const h = makeHarness();
+        discover(h);
+        (h.world as unknown as Record<string, unknown>)["__syncFocusEcho"] = "mismatched";
+        try {
+            h.handle?.requestFocus("left");
+            h.runTimers();
+            const req = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                effects: [{ id: "fx-mismatch-1", kind: "focus", target: "win-b", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false }],
+            }));
+            assert.equal(h.world.focused.length, 1, "setter still runs once");
+            h.runTimers();
+            const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
+            const row = wire.find((r) => r["id"] === "fx-mismatch-1");
+            assert.ok(row !== undefined);
+            assert.equal(row["setter"], "accepted", "setter ran");
+            assert.equal(row["foregroundProven"], false, "mismatched live never proves");
+        } finally {
+            (h.world as unknown as Record<string, unknown>)["__syncFocusEcho"] = false;
+            h.handle?.stop();
+        }
+    });
+
+    it("unlisted reentrant activation invalidates instead of deferring", () => {
+        const h = makeHarness();
+        discover(h);
+        (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "unlisted-active";
+        try {
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const req = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                workspaces: [
+                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                ],
+                outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
+                transfers: [{ op: "op-view-3", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
+                effects: [{ id: "fx-view-3", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+            }));
+            assert.equal(h.world.focused.length, 0, "unlisted activation stops focus");
+            h.runTimers();
+            const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
+            const row = wire.find((r) => r["id"] === "fx-view-3");
+            assert.ok(row !== undefined);
+            assert.equal(row["setter"], "not-called");
+            assert.equal(row["reason"], "superseded");
+        } finally {
+            (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
+            h.handle?.stop();
+        }
+    });
+
+    it("defers truthful 6.6 single-arg view echoes", () => {
+        const h = makeHarness();
+        discover(h);
+        (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "truthful-1arg";
+        (h.world as unknown as Record<string, unknown>)["__syncFocusEcho"] = "truthful";
+        try {
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const req = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                workspaces: [
+                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                ],
+                outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
+                transfers: [{ op: "op-view-6", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
+                effects: [{ id: "fx-view-6", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+            }));
+            assert.equal(h.world.currentDesktop.id, "ws2", "view switch actuates");
+            assert.deepEqual(h.world.focused, ["win-b"], "exactly one core-target focus setter");
+            h.runTimers();
+            const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
+            const row = wire.find((r) => r["id"] === "fx-view-6");
+            assert.ok(row !== undefined, "focus row rides the next report");
+            assert.equal(row["setter"], "accepted");
+            assert.equal(row["foregroundProven"], true);
+        } finally {
+            (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
+            (h.world as unknown as Record<string, unknown>)["__syncFocusEcho"] = false;
+            h.handle?.stop();
+        }
+    });
+
+    it("rejects a two-arg view signal as neither pin shape", () => {
+        const h = makeHarness();
+        discover(h);
+        (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "two-arg";
+        try {
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const req = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                workspaces: [
+                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                ],
+                outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
+                transfers: [{ op: "op-view-7", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
+                effects: [{ id: "fx-view-7", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+            }));
+            assert.equal(h.world.focused.length, 0, "rejected view echo stops the focus setter");
+            h.runTimers();
+            const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
+            const row = wire.find((r) => r["id"] === "fx-view-7");
+            assert.ok(row !== undefined, "superseded row rides");
+            assert.equal(row["setter"], "not-called");
+            assert.equal(row["reason"], "superseded");
+        } finally {
+            (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
+            h.handle?.stop();
+        }
+    });
+
+    it("mismatched-output view signal invalidates instead of deferring", () => {
+        const h = makeHarness();
+        discover(h);
+        (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "third-output";
+        try {
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const req = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                workspaces: [
+                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                ],
+                outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
+                transfers: [{ op: "op-view-8", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
+                effects: [{ id: "fx-view-8", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+            }));
+            assert.equal(h.world.focused.length, 0, "wrong-output echo stops the focus setter");
+            h.runTimers();
+            const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
+            const row = wire.find((r) => r["id"] === "fx-view-8");
+            assert.ok(row !== undefined, "superseded row rides");
+            assert.equal(row["setter"], "not-called");
+            assert.equal(row["reason"], "superseded");
+        } finally {
+            (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
+            h.handle?.stop();
+        }
+    });
+
+    it("foreign view activation invalidates instead of deferring", () => {
+        const h = makeHarness();
+        discover(h);
+        (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "mismatched-active";
+        try {
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const req = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                workspaces: [
+                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                ],
+                outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
+                transfers: [{ op: "op-view-9", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
+                effects: [{ id: "fx-view-9", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+            }));
+            assert.equal(h.world.focused.length, 0, "foreign activation stops the focus setter");
+            h.runTimers();
+            const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
+            const row = wire.find((r) => r["id"] === "fx-view-9");
+            assert.ok(row !== undefined, "superseded row rides");
+            assert.equal(row["setter"], "not-called");
+            assert.equal(row["reason"], "superseded");
+        } finally {
+            (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
+            h.handle?.stop();
+        }
+    });
+
+    it("view activation disagreeing with the foreground invalidates", () => {
+        const h = makeHarness();
+        discover(h);
+        (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "foreground-mismatch";
+        try {
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const req = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                workspaces: [
+                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                ],
+                outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
+                transfers: [{ op: "op-view-10", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
+                effects: [{ id: "fx-view-10", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+            }));
+            assert.equal(h.world.focused.length, 0, "activation naming a non-foreground member stops the focus setter");
+            h.runTimers();
+            const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
+            const row = wire.find((r) => r["id"] === "fx-view-10");
+            assert.ok(row !== undefined, "superseded row rides");
+            assert.equal(row["setter"], "not-called");
+            assert.equal(row["reason"], "superseded");
+        } finally {
+            (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
+            h.handle?.stop();
+        }
+    });
+
+    it("replaced view-activation lifetime invalidates instead of deferring", () => {
+        const h = makeHarness();
+        discover(h);
+        (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "replaced-active";
+        try {
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const req = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                workspaces: [
+                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                ],
+                outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
+                transfers: [{ op: "op-view-11", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
+                effects: [{ id: "fx-view-11", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+            }));
+            assert.equal(h.world.focused.length, 0, "stale-lifetime activation stops the focus setter");
+            h.runTimers();
+            const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
+            const row = wire.find((r) => r["id"] === "fx-view-11");
+            assert.ok(row !== undefined, "superseded row rides");
+            assert.equal(row["setter"], "not-called");
+            assert.equal(row["reason"], "superseded");
+        } finally {
+            (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
+            h.handle?.stop();
+        }
+    });
+
+    it("silent post-echo home drift invalidates and stops the focus setter", () => {
+        const h = makeHarness();
+        discover(h);
+        (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "silent-home-change";
+        try {
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const req = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                workspaces: [
+                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                ],
+                outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
+                transfers: [{ op: "op-view-12", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
+                effects: [{ id: "fx-view-12", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+            }));
+            assert.equal(h.world.focused.length, 0, "post-echo home drift stops the focus setter");
+            h.runTimers();
+            const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
+            const row = wire.find((r) => r["id"] === "fx-view-12");
+            assert.ok(row !== undefined, "superseded row rides");
+            assert.equal(row["setter"], "not-called");
+            assert.equal(row["reason"], "superseded");
+        } finally {
+            (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
+            h.handle?.stop();
+        }
+    });
+
+    it("records a throwing native focus setter truthfully instead of refusing", () => {
+        const h = makeHarness();
+        discover(h);
+        (h.world as unknown as Record<string, unknown>)["__throwFocus"] = true;
+        try {
+            h.handle?.requestFocus("left");
+            h.runTimers();
+            const req = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                effects: [{ id: "fx-throw-1", kind: "focus", target: "win-b", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false }],
+            }));
+            h.runTimers();
+            const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
+            const row = wire.find((r) => r["id"] === "fx-throw-1");
+            assert.ok(row !== undefined, "throw row rides the next report");
+            assert.equal(row["setter"], "threw");
+            assert.equal(row["foregroundProven"], false);
+        } finally {
+            (h.world as unknown as Record<string, unknown>)["__throwFocus"] = false;
+            h.handle?.stop();
+        }
+    });
+
+    it("external view/focus event outside the setter still invalidates", () => {
+        const h = makeHarness();
+        discover(h);
+        const before = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        const ws1 = h.world.desktops[0] as FakeDesktop;
+        const ws2 = h.world.desktops[1] as FakeDesktop;
+        for (const handler of [...(h.signals.currentDesktopChanged as FakeSignal).handlers]) {
+            (handler as (...args: Array<unknown>) => void)(ws1 as unknown, ws2 as unknown, h.world.screens[0] as unknown);
+        }
+        for (const handler of [...(h.signals.windowActivated as FakeSignal).handlers]) {
+            (handler as (...args: Array<unknown>) => void)(h.world.wins[0] as unknown);
+        }
+        h.runTimers();
+        assert.equal(h.calls.filter((c) => c.method === "DescribeWorld").length, before + 1, "outside-setter signals dispatch once coalesced");
+        h.handle?.stop();
     });
 
     it("settles refused transfers without repeating them", () => {
@@ -3902,9 +4388,11 @@ describe("world entry focus feedback production regression", () => {
         let active: FakeWindow = w1;
         let focusSets = 0;
         // Live KWin emits the selection signals synchronously inside the
-        // view setter and restores the view's focused client natively, so
-        // the focus setter never runs behind the moved fence.
-        const expectedFocusSets = syncViewSignals ? 0 : 1;
+        // view setter (VDM currentChanged old/new/output plus Workspace
+        // windowActivated ref) and restores the view's focused client
+        // natively; the scoped guard defers those exact own echoes so the
+        // authorized core-target focus setter still runs once.
+        const expectedFocusSets = 1;
         const surface: Record<string, unknown> = {
             windowList: () => [w1, w2],
             screens,
@@ -3928,13 +4416,16 @@ describe("world entry focus feedback production regression", () => {
             clientArea: () => ({ x: 0, y: 0, width: 800, height: 600 }),
             currentDesktopForScreen: (screen: { name: string }) => currents.get(screen.name) === "ws2" ? ws2 : ws1,
             setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }) => {
+                const oldId = currents.get(screen.name) ?? "ws1";
+                const oldDesk = oldId === "ws2" ? ws2 : ws1;
                 currents.set(screen.name, (deskRef as { id: string }).id);
                 if (syncViewSignals) {
                     active = w2;
-                    for (const key of ["currentDesktopChanged", "windowActivated"] as const) {
-                        for (const handler of [...(signals[key] as FakeSignal).handlers]) {
-                            handler();
-                        }
+                    for (const handler of [...(signals["currentDesktopChanged"] as FakeSignal).handlers]) {
+                        (handler as (...args: Array<unknown>) => void)(oldDesk, deskRef, screens[0]);
+                    }
+                    for (const handler of [...(signals["windowActivated"] as FakeSignal).handlers]) {
+                        (handler as (...args: Array<unknown>) => void)(w2);
                     }
                 }
             },
@@ -4274,25 +4765,24 @@ describe("world entry focus feedback production regression", () => {
         assert.equal(driven.focusSets, 1, "exactly one focus setter call end to end");
     });
 
-    it("sync view-switch signals supersede focus with one no-call row and one failed terminal, no upgrade", { timeout: 120000 }, async () => {
+    it("sync view-switch own echoes defer to one authorized focus dispatch and complete/proven", { timeout: 120000 }, async () => {
         const driven = await driveSelect(true, true);
-        assert.equal(driven.feedbackWire.length, 1, "one superseded row, no missing feedback");
-        assert.equal(driven.feedbackWire[0]!["setter"], "not-called");
-        assert.equal(driven.feedbackWire[0]!["reason"], "superseded");
+        assert.equal(driven.feedbackWire.length, 1, "one focus row, no missing feedback");
+        assert.equal(driven.feedbackWire[0]!["setter"], "accepted", "own-echo focus setter accepted");
         const fxTarget = ((driven.selectReply["effects"] as Array<Record<string, unknown>>).find((e) => e["kind"] === "focus")!)["target"];
-        assert.equal(driven.feedbackWire[0]!["target"], fxTarget, "no-call names the granted target");
-        assert.equal(driven.feedbackWire[0]!["post"], fxTarget, "no-call preserves the restored foreground");
-        assert.equal(driven.feedbackWire[0]!["foregroundProven"], false, "no proof without a valid causal bracket");
-        assert.deepEqual(driven.feedbackWire[0]!["arrival"], [], "no arrival fabricated after invalidation");
+        assert.equal(driven.feedbackWire[0]!["target"], fxTarget, "row names the granted target");
+        assert.equal(driven.feedbackWire[0]!["post"], fxTarget, "post names the granted foreground");
+        assert.equal(driven.feedbackWire[0]!["foregroundProven"], true, "own-echo foreground proves");
+        assert.ok(Array.isArray(driven.feedbackWire[0]!["arrival"]) && (driven.feedbackWire[0]!["arrival"] as Array<unknown>).length >= 1, "populated grant carries arrival brackets");
         assert.equal(driven.switchEvents.length, 1, "one terminal switch event");
-        assert.equal(driven.switchEvents[0]!["outcome"], "completed-with-failures", "superseded focus fails the terminal");
-        assert.equal(driven.switchEvents[0]!["focus"], "unproven", "superseded focus never proves");
+        assert.equal(driven.switchEvents[0]!["outcome"], "complete", "healthy own echoes complete");
+        assert.equal(driven.switchEvents[0]!["focus"], "proven", "healthy own echoes prove focus");
         assert.equal(driven.laterSwitchEvents.length, 0, "no switch event after the terminal one");
         assert.ok(!driven.laterFeedbackWire.some((row) => row["id"] !== driven.feedbackId), "no new feedback rows after settlement");
         for (const row of driven.laterFeedbackWire) {
             assert.equal(row["attemptMs"], driven.feedbackAttemptMs, "re-carried row retains the original stamp");
         }
-        assert.equal(driven.focusSets, 0, "superseded focus never touches the setter, end to end");
+        assert.equal(driven.focusSets, 1, "exactly one core-target setter end to end");
     });
 
 });

@@ -1165,6 +1165,180 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     let homingSuppressRef: object | null = null;
     let deferredOwnHoming = false;
     const applyHostBase = createWorldApplyHost(surface, readProp);
+    // Scoped view/focus echo guard (healthy KDE populated switch): the
+    // synchronous `windowActivated` then `currentDesktopChanged` echoes of
+    // our own `switchView`/`focusWindow` setters defer to one post-apply
+    // observation when they name exactly the requested native view/focus.
+    // View activation may name any live member homed on the requested view
+    // (native focus-chain choice); focus activation must name the exact
+    // requested lifetime with the view unchanged. Any unexpected, foreign,
+    // or unreadable signal invalidates immediately, never silently. A
+    // single active scope handles nesting by save/restore; each scope
+    // records its own deferred echoes (a second nested setter never
+    // inherits the first setter's record), and post-setter read-back
+    // re-invalidates when the final state left the target even if an
+    // early echo matched. An unexpected signal that already advanced the
+    // fence is preserved as-is, never re-invalidated.
+    type ViewFocusScope =
+        | { kind: "view"; out: string; ws: string; before: string; viewEchoed: boolean; activatedRef: object | null; activatedId: string | null }
+        | { kind: "focus"; win: string; ref: object; out: string; ws: string; viewBefore: string; activated: boolean };
+    let viewFocusScope: ViewFocusScope | null = null;
+    let viewFocusDepth = 0;
+    let deferredOwnViewFocus = false;
+    const desktopIdOf = (value: unknown): string | null => {
+        try {
+            if (typeof value === "object" && value !== null) {
+                const id = readProp(value as object, "id");
+                return isOpaqueId(id) ? (id as string) : null;
+            }
+            if (typeof value === "string" && isOpaqueId(value)) {
+                return value;
+            }
+        } catch (error) {
+            void error;
+        }
+        return null;
+    };
+    const outputNameOf = (value: unknown): string | null => {
+        try {
+            if (typeof value === "object" && value !== null) {
+                const name = readProp(value as object, "name");
+                return isOpaqueId(name) ? (name as string) : null;
+            }
+            if (typeof value === "string" && isOpaqueId(value)) {
+                return value;
+            }
+        } catch (error) {
+            void error;
+        }
+        return null;
+    };
+    const isOwnViewEcho = (args: ReadonlyArray<unknown>): boolean => {
+        if (viewFocusDepth <= 0 || viewFocusScope === null || viewFocusScope.kind !== "view") {
+            return false;
+        }
+        const exp = viewFocusScope;
+        try {
+            if (args.length === 3) {
+                // Pinned 6.8.1 shape: (previous, current, output).
+                const oldId = desktopIdOf(args[0]);
+                const newId = desktopIdOf(args[1]);
+                const outName = outputNameOf(args[2]);
+                if (oldId === null || newId === null || outName === null) {
+                    return false;
+                }
+                if (newId !== exp.ws || oldId !== exp.before || outName !== exp.out) {
+                    return false;
+                }
+            } else if (args.length === 1) {
+                // Pinned 6.6 shape: (previous) only; the new desktop is
+                // proven by live read-back below. A two-arg shape matches
+                // neither pin and fails closed.
+                const oldId = desktopIdOf(args[0]);
+                if (oldId === null || oldId !== exp.before) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+            const live = applyHostBase.readLiveView(exp.out);
+            if (live === null || live !== exp.ws) {
+                return false;
+            }
+            exp.viewEchoed = true;
+            return true;
+        } catch (error) {
+            void error;
+            return false;
+        }
+    };
+    const isOwnViewActivation = (args: ReadonlyArray<unknown>): boolean => {
+        if (viewFocusDepth <= 0 || viewFocusScope === null || viewFocusScope.kind !== "view") {
+            return false;
+        }
+        const exp = viewFocusScope;
+        if (args.length < 1) {
+            return false;
+        }
+        const ref = args[0];
+        if (typeof ref !== "object" || ref === null) {
+            return false;
+        }
+        // Stable-id liveness (not wrapper identity): isStillListed matches
+        // the ref's canonical internalId against the live windowList, so a
+        // same-id clone is intentionally listed while a replaced lifetime
+        // (changed canonical id, or none listed) fails here.
+        try {
+            if (!applyHostBase.isStillListed(ref as object)) {
+                return false;
+            }
+            const id = applyHostBase.readWindowId?.(ref as object) ?? null;
+            if (id === null) {
+                return false;
+            }
+            const home = applyHostBase.readLiveMembership(ref as object);
+            if (home === null || home.out !== exp.out || home.ws !== exp.ws) {
+                return false;
+            }
+            const live = applyHostBase.readLiveView(exp.out);
+            if (live === null || live !== exp.ws) {
+                return false;
+            }
+            const fg = applyHostBase.readActiveWindowId?.() ?? null;
+            if (fg === null || fg !== id) {
+                return false;
+            }
+            exp.activatedRef = ref as object;
+            exp.activatedId = id;
+            return true;
+        } catch (error) {
+            void error;
+            return false;
+        }
+    };
+    const isOwnFocusActivation = (args: ReadonlyArray<unknown>): boolean => {
+        if (viewFocusDepth <= 0 || viewFocusScope === null || viewFocusScope.kind !== "focus") {
+            return false;
+        }
+        const exp = viewFocusScope;
+        if (args.length < 1) {
+            return false;
+        }
+        const ref = args[0];
+        if (typeof ref !== "object" || ref === null) {
+            return false;
+        }
+        try {
+            if (!applyHostBase.isStillListed(ref as object)) {
+                return false;
+            }
+            const got = applyHostBase.readWindowId?.(ref as object) ?? null;
+            if (got !== exp.win) {
+                return false;
+            }
+            const expId = applyHostBase.readWindowId?.(exp.ref) ?? null;
+            if (expId !== exp.win || !applyHostBase.isStillListed(exp.ref)) {
+                return false;
+            }
+            const home = applyHostBase.readLiveMembership(ref as object);
+            if (home === null || home.out !== exp.out || home.ws !== exp.ws) {
+                return false;
+            }
+            const liveView = applyHostBase.readLiveView(exp.out);
+            if (liveView === null || liveView !== exp.viewBefore) {
+                return false;
+            }
+            const fg = applyHostBase.readActiveWindowId?.() ?? null;
+            if (fg === null || fg !== exp.win) {
+                return false;
+            }
+            exp.activated = true;
+            return true;
+        } catch (error) {
+            void error;
+            return false;
+        }
+    };
     const withHomingSuppression = (ref: object, run: () => boolean): boolean => {
         homingSuppressDepth += 1;
         homingSuppressRef = ref;
@@ -1175,6 +1349,113 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             if (homingSuppressDepth <= 0) {
                 homingSuppressDepth = 0;
                 homingSuppressRef = null;
+            }
+        }
+    };
+    const withViewSuppression = (desktopRef: object, outRef: object, run: () => boolean): boolean => {
+        let scope: Extract<ViewFocusScope, { kind: "view" }> | null = null;
+        try {
+            const out = outputNameOf(outRef);
+            const ws = desktopIdOf(desktopRef);
+            const before = out === null ? null : applyHostBase.readLiveView(out);
+            if (out !== null && ws !== null && before !== null) {
+                scope = { kind: "view", out, ws, before, viewEchoed: false, activatedRef: null, activatedId: null };
+            }
+        } catch (error) {
+            void error;
+            scope = null;
+        }
+        if (scope === null) {
+            return run();
+        }
+        const prev = viewFocusScope;
+        const prevDepth = viewFocusDepth;
+        viewFocusScope = scope;
+        viewFocusDepth = prevDepth + 1;
+        const invalidBefore = state.currentInvalid;
+        try {
+            return run();
+        } finally {
+            try {
+                if (state.currentInvalid === invalidBefore && (scope.viewEchoed || scope.activatedRef !== null)) {
+                    let ok = true;
+                    try {
+                        if (applyHostBase.readLiveView(scope.out) !== scope.ws) {
+                            ok = false;
+                        } else if (scope.activatedRef !== null) {
+                            const ref = scope.activatedRef;
+                            const id = applyHostBase.readWindowId?.(ref) ?? null;
+                            if (id === null || id !== scope.activatedId || !applyHostBase.isStillListed(ref)) {
+                                ok = false;
+                            } else {
+                                const home = applyHostBase.readLiveMembership(ref);
+                                if (home === null || home.out !== scope.out || home.ws !== scope.ws) {
+                                    ok = false;
+                                } else if ((applyHostBase.readActiveWindowId?.() ?? null) !== scope.activatedId) {
+                                    ok = false;
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        void error;
+                        ok = false;
+                    }
+                    if (!ok) {
+                        onNativeInvalidation();
+                    }
+                }
+            } finally {
+                viewFocusScope = prev;
+                viewFocusDepth = prevDepth;
+            }
+        }
+    };
+    const withFocusSuppression = (ref: object, run: () => boolean): boolean => {
+        let scope: Extract<ViewFocusScope, { kind: "focus" }> | null = null;
+        try {
+            const win = applyHostBase.readWindowId?.(ref) ?? null;
+            const home = win === null ? null : applyHostBase.readLiveMembership(ref);
+            const viewBefore = home === null ? null : applyHostBase.readLiveView(home.out);
+            if (win !== null && home !== null && viewBefore !== null) {
+                scope = { kind: "focus", win, ref, out: home.out, ws: home.ws, viewBefore, activated: false };
+            }
+        } catch (error) {
+            void error;
+            scope = null;
+        }
+        if (scope === null) {
+            return run();
+        }
+        const prev = viewFocusScope;
+        const prevDepth = viewFocusDepth;
+        viewFocusScope = scope;
+        viewFocusDepth = prevDepth + 1;
+        const invalidBefore = state.currentInvalid;
+        try {
+            return run();
+        } finally {
+            try {
+                if (state.currentInvalid === invalidBefore && scope.activated) {
+                    let ok = true;
+                    try {
+                        if ((applyHostBase.readActiveWindowId?.() ?? null) !== scope.win) {
+                            ok = false;
+                        } else if ((applyHostBase.readWindowId?.(scope.ref) ?? null) !== scope.win || !applyHostBase.isStillListed(scope.ref)) {
+                            ok = false;
+                        } else if (applyHostBase.readLiveView(scope.out) !== scope.viewBefore) {
+                            ok = false;
+                        }
+                    } catch (error) {
+                        void error;
+                        ok = false;
+                    }
+                    if (!ok) {
+                        onNativeInvalidation();
+                    }
+                }
+            } finally {
+                viewFocusScope = prev;
+                viewFocusDepth = prevDepth;
             }
         }
     };
@@ -3834,6 +4115,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             withHomingSuppression(ref, () => applyHostBase.setMembership(ref, wsNativeId, wsRef)),
                         sendToOutput: (ref, outRef) =>
                             withHomingSuppression(ref, () => applyHostBase.sendToOutput(ref, outRef)),
+                        switchView: (desktopRef, outRef) =>
+                            withViewSuppression(desktopRef, outRef, () => applyHostBase.switchView(desktopRef, outRef)),
+                        focusWindow: (ref) =>
+                            withFocusSuppression(ref, () => applyHostBase.focusWindow(ref)),
                     });
                     // Authorized maximize actuation: the take result for this
                     // exact flight's clientCmd is the settlement of the
@@ -3877,10 +4162,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         void error;
                     }
                     // Deferred own-echo observation: synchronous homing
-                    // echoes of the setters above coalesced here into one
-                    // post-apply invalidation (never mid-apply).
-                    if (deferredOwnHoming && !stopped) {
+                    // echoes plus the scoped view/focus echoes of the setters
+                    // above coalesced here into one post-apply invalidation
+                    // (never mid-apply).
+                    if ((deferredOwnHoming || deferredOwnViewFocus) && !stopped) {
                         deferredOwnHoming = false;
+                        deferredOwnViewFocus = false;
                         onNativeInvalidation();
                     }
                     // Automatic fixed-size float stacking (option A):
@@ -5201,7 +5488,57 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             void error;
         }
     };
-    for (const name of ["windowAdded", "windowActivated", "desktopsChanged", "screensChanged", "currentDesktopChanged", "activeScreenChanged"] as const) {
+    const attachVariadic = (name: string, handler: (...args: Array<unknown>) => void): void => {
+        try {
+            const detach = connectSignal(readSignal(surface, name), handler as (payload?: unknown) => void);
+            if (detach !== null) {
+                detaches.push(detach);
+            }
+        } catch (error) {
+            void error;
+        }
+    };
+    const onCurrentDesktopChanged = (...args: Array<unknown>): void => {
+        if (stopped) {
+            return;
+        }
+        if (viewFocusDepth > 0 && viewFocusScope !== null) {
+            if (viewFocusScope.kind !== "view") {
+                onNativeInvalidation();
+                return;
+            }
+            if (isOwnViewEcho(args)) {
+                deferredOwnViewFocus = true;
+                return;
+            }
+            onNativeInvalidation();
+            return;
+        }
+        onNativeInvalidation();
+    };
+    const onWindowActivated = (...args: Array<unknown>): void => {
+        if (stopped) {
+            return;
+        }
+        if (viewFocusDepth > 0 && viewFocusScope !== null) {
+            if (viewFocusScope.kind === "focus") {
+                if (isOwnFocusActivation(args)) {
+                    deferredOwnViewFocus = true;
+                    return;
+                }
+                onNativeInvalidation();
+                return;
+            }
+            if (isOwnViewActivation(args)) {
+                deferredOwnViewFocus = true;
+                return;
+            }
+            onNativeInvalidation();
+            return;
+        }
+        onNativeInvalidation();
+    };
+    for (const name of ["windowAdded", "desktopsChanged", "screensChanged", "activeScreenChanged"] as const) {
         if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" && name === "windowAdded") {
             // Admission truth lives on the invalidation handler: the probe
             // records the added window BEFORE the synchronous invalidation
@@ -5217,6 +5554,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             attach(name, onNativeInvalidation);
         }
     }
+    attachVariadic("windowActivated", onWindowActivated);
+    attachVariadic("currentDesktopChanged", onCurrentDesktopChanged);
     // Explicit close retention (D5): windowRemoved only arms the close
     // tracker; the payload is never read (its QObject may be dead). The
     // next provably complete full inventory promotes cached ids absent
@@ -5560,6 +5899,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             windowHomingDetaches.clear();
             deferredOwnHoming = false;
+            deferredOwnViewFocus = false;
+            viewFocusScope = null;
+            viewFocusDepth = 0;
             if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
                 worldTraceProbes.get(state)?.stop();
                 worldTraceProbes.delete(state);
