@@ -224,3 +224,219 @@ describe("world drag arrival", () => {
         assert.equal(world.membershipCalls.length, memberCalls, "no duplicate desktop set");
     });
 });
+
+// Same-output send with distinct logical workspace ids vs native desktop
+// bindings (the production hostOwned shape): logical `ws-a`/`ws-b` bind
+// `native-1`/`native-9`. The arrival gate must translate the transfer
+// target through the reply bindings before comparing against the native
+// homing; the raw logical-vs-native comparison never converges while the
+// transfer is retained. Setter acceptance alone never proves arrival.
+const NATIVE_SOURCE = "native-1";
+const NATIVE_TARGET = "native-9";
+const LOGICAL_SOURCE = "ws-a";
+const LOGICAL_TARGET = "ws-b";
+const SEND_OP = "op-87";
+
+function distinctSendReply(): WorldReply {
+    // One-output send derived from the cross-output fixture reply: same
+    // envelope, presentation, and correlation shape, only the homing rows
+    // change to logical `ws-a`/`ws-b` bound to native `native-1`/`native-9`.
+    return {
+        ...arrivalReply(),
+        scopes: [
+            { scope: { kind: "workspace", out: "out-a", ws: LOGICAL_SOURCE }, auth: "controlled", reason: "" },
+            { scope: { kind: "workspace", out: "out-a", ws: LOGICAL_TARGET }, auth: "controlled", reason: "" },
+        ],
+        workspaces: [
+            { id: LOGICAL_SOURCE, out: "out-a", bind: NATIVE_SOURCE, scope: { kind: "output", out: "out-a" }, order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
+            { id: LOGICAL_TARGET, out: "out-a", bind: NATIVE_TARGET, scope: { kind: "output", out: "out-a" }, order: 1, mode: "tiled", exist: true, hold: "", trailing: false },
+        ],
+        windows: [
+            {
+                win: "win-a", out: "out-a", ws: LOGICAL_TARGET,
+                alloc: [10, 10, 400, 300], frame: [10, 10, 400, 300],
+                frame_auth: "controlled", frame_hold: "",
+                member_auth: "controlled", member_hold: "",
+                frame_op: "",
+                clear_op: "",
+                floating: false, float_origin: "",
+                cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
+            },
+        ],
+        transfers: [
+            { op: SEND_OP, kind: "window", win: "win-a", out: "out-a", ws: LOGICAL_TARGET, follow: false, held: false, cmdSeq: null },
+        ],
+    };
+}
+
+function distinctWorld(): FakeWorld {
+    return {
+        homing: new Map([["win-a", { out: "out-a", ws: NATIVE_SOURCE }]]),
+        frames: new Map([["win-a", { x: 0, y: 0, w: 100, h: 100 }]]),
+        currents: new Map([["out-a", NATIVE_SOURCE]]),
+        sets: [], membershipCalls: [], outputCalls: [],
+    };
+}
+
+function distinctObservation(world: FakeWorld): WorldObservation {
+    // HostOwned one-output shape derived from the shared observation:
+    // keep the captured window carrier, re-home it to the live native
+    // homing, and project the single-output native topology.
+    const base = makeObservation(world);
+    const home = world.homing.get("win-a") ?? { out: "out-a", ws: NATIVE_SOURCE };
+    const template = base.domains[0]?.windows[0];
+    assert.ok(template !== undefined);
+    const current = world.currents.get("out-a") ?? NATIVE_SOURCE;
+    const counts = new Map<string, number>();
+    for (const h of world.homing.values()) {
+        counts.set(h.ws, (counts.get(h.ws) ?? 0) + 1);
+    }
+    return {
+        ...base,
+        topology: [
+            { out: home.out, order: [NATIVE_SOURCE, NATIVE_TARGET], current, complete: true, rect: { x: 0, y: 0, w: 800, h: 600 }, primary: true },
+        ],
+        domains: [
+            {
+                id: home.out, ws: home.ws,
+                bounds: { x: 0, y: 0, w: 800, h: 600 }, gap: 8, outer: 4,
+                focused: "win-a", readable: true, hold: "", adjacent: {},
+                windows: [{ ...template, out: home.out, ws: home.ws }],
+                closed: [], complete: true,
+            },
+        ],
+        hostOwned: true,
+        native: [{
+            out: home.out, order: [NATIVE_SOURCE, NATIVE_TARGET], current,
+            occupancy: [NATIVE_SOURCE, NATIVE_TARGET].map((n) => ({ native: n, count: counts.get(n) ?? 0 })),
+        }],
+    };
+}
+
+describe("world drag arrival distinct namespaces", () => {
+    it("moves membership with no source frame, then converges the destination frame on translated arrival", () => {
+        const reply = distinctSendReply();
+        const world = distinctWorld();
+        const state = freshState(reply);
+        const first = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
+            ...makeEnv(state, world),
+            observation: distinctObservation(world),
+            reply,
+        });
+        // Membership actuates to the translated native target; the
+        // destination frame does not land on the source homing.
+        assert.ok(world.membershipCalls.some((c) => c === `win-a->${NATIVE_TARGET}`), "desktop sets to translated native target");
+        assert.ok(!world.sets.some((c) => c.startsWith("win-a@")), "no frame until membership proof");
+        assert.deepEqual(world.homing.get("win-a"), { out: "out-a", ws: NATIVE_TARGET });
+        assert.ok(first.membershipWrites >= 1);
+        assert.deepEqual(world.outputCalls, [], "no output move on a same-output send");
+        // The retained transfer parent correlates the attempt: logical
+        // target on the row, exact native pre/post evidence beside it.
+        const attempts = state.memberAttemptsForReport().filter((a) => a.win === "win-a");
+        assert.equal(attempts.length, 1);
+        assert.equal(attempts[0]?.op, SEND_OP);
+        assert.equal(attempts[0]?.out, "out-a");
+        assert.equal(attempts[0]?.ws, LOGICAL_TARGET);
+        assert.equal(attempts[0]?.setter, "accepted");
+        assert.deepEqual(attempts[0]?.pre, { kind: "native", out: "out-a", ws: NATIVE_SOURCE });
+        assert.deepEqual(attempts[0]?.post, { kind: "native", out: "out-a", ws: NATIVE_TARGET });
+        // Fresh observation at the translated home with the transfer still
+        // retained: the destination frame converges with no second
+        // membership write.
+        const memberCalls = world.membershipCalls.length;
+        const second = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
+            ...makeEnv(state, world),
+            observation: distinctObservation(world),
+            reply,
+        });
+        assert.ok(world.sets.some((c) => c === "win-a@10,10,400,300"), "target frame converges post-arrival");
+        assert.ok(second.geometryWrites >= 1);
+        assert.equal(world.membershipCalls.length, memberCalls, "no duplicate desktop set");
+        assert.deepEqual(world.outputCalls, [], "still no output move");
+    });
+
+    it("an accepted setter without native homing change proves no arrival", () => {
+        const reply = distinctSendReply();
+        const world = distinctWorld();
+        const state = freshState(reply);
+        const env = {
+            ...makeEnv(state, world),
+            setMembership: (ref: object) => {
+                world.membershipCalls.push(`${(ref as { id: string }).id}->${NATIVE_TARGET}`);
+                return true;
+            },
+        };
+        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
+            ...env,
+            observation: distinctObservation(world),
+            reply,
+        });
+        // The setter claims success but the live homing never moved: the
+        // attempt records accepted-with-source-post, never arrival.
+        const attempts = state.memberAttemptsForReport().filter((a) => a.win === "win-a");
+        assert.equal(attempts.length, 1);
+        assert.equal(attempts[0]?.setter, "accepted");
+        assert.deepEqual(attempts[0]?.pre, { kind: "native", out: "out-a", ws: NATIVE_SOURCE });
+        assert.deepEqual(attempts[0]?.post, { kind: "native", out: "out-a", ws: NATIVE_SOURCE });
+        assert.deepEqual(world.homing.get("win-a"), { out: "out-a", ws: NATIVE_SOURCE });
+        assert.ok(!world.sets.some((c) => c.startsWith("win-a@")), "no frame without homing proof");
+        assert.ok(result.held >= 1);
+        assert.equal(state.appliedWindowTarget.has("win-a"), false, "no proven target recorded");
+    });
+
+    it("an unbound logical target holds with no write and no attempt", () => {
+        const reply = distinctSendReply();
+        reply.workspaces = reply.workspaces.map((w) => w.id === LOGICAL_TARGET ? { ...w, bind: "" } : w);
+        const world = distinctWorld();
+        const state = freshState(reply);
+        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
+            ...makeEnv(state, world),
+            observation: distinctObservation(world),
+            reply,
+        });
+        assert.deepEqual(world.membershipCalls, [], "no membership write to an unbound target");
+        assert.ok(!world.sets.some((c) => c.startsWith("win-a@")), "no frame for an unbound target");
+        assert.ok(result.held >= 1);
+        assert.deepEqual(state.memberAttemptsForReport(), [], "no attempt without a translated target");
+        assert.equal(state.isDispatched(SEND_OP), false, "untranslated op never arms");
+    });
+
+    it("a wrong native home or output does not release the frame gate", () => {
+        const reply = distinctSendReply();
+        for (const [name, home] of [
+            ["wrong desktop", { out: "out-a", ws: "native-wrong" }],
+            ["wrong output", { out: "out-bogus", ws: NATIVE_TARGET }],
+        ] as const) {
+            const world = distinctWorld();
+            world.homing.set("win-a", { ...home });
+            const state = freshState(reply);
+            state.markDispatched(SEND_OP);
+            const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
+                ...makeEnv(state, world),
+                observation: distinctObservation(world),
+                reply,
+            });
+            assert.ok(!world.sets.some((c) => c.startsWith("win-a@")), `${name} releases no frame`);
+            assert.deepEqual(world.membershipCalls, [], `${name}: dispatched op never re-actuates`);
+            assert.ok(result.held >= 1, `${name} holds`);
+        }
+    });
+
+    it("an unreadable live homing holds with no write", () => {
+        const reply = distinctSendReply();
+        const world = distinctWorld();
+        const state = freshState(reply);
+        const env = {
+            ...makeEnv(state, world),
+            readLiveMembership: () => null,
+        };
+        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
+            ...env,
+            observation: distinctObservation(world),
+            reply,
+        });
+        assert.deepEqual(world.membershipCalls, [], "no membership write on unreadable homing");
+        assert.ok(!world.sets.some((c) => c.startsWith("win-a@")), "no frame on unreadable homing");
+        assert.ok(result.held >= 1);
+    });
+});

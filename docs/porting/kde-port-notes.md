@@ -353,6 +353,12 @@ request fixtures pin the JS producer, including populated raw attempts.
   evidence before proposing a neutral settling representation. No new core
   signal is selected (see deferred work in
   [decisions](../decisions/kde.md#deferred-activities-support)).
+- The v4 member-arrival increment has an exact-scoped real-session send proof:
+  correlated native membership retires the transfer, then fresh native frame
+  facts prove destination convergence. Immediate Wayland setter readbacks can
+  still show the old frame. This is not shown-state, focus-feedback or populated
+  selection completion evidence; see the
+  [arrival evidence and limits](../changes/archive/v4-phase2-kde-arrival.md).
 
 ## Workspace modes on KDE (user-approved 2026-10-24)
 

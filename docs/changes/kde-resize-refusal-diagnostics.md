@@ -51,7 +51,7 @@
   staged focus/geometry/hints, non-resize silence, sanitization and both row/byte
   truncation. Initial test-only compilation omissions and a formatter argument
   lint were corrected; no refusal semantics changed.
-- Full adapter typecheck/build/test passes: 985 tests, zero skips. Scoped core,
+- Full adapter typecheck/build/test passes: 990 tests, zero skips. Scoped core,
   protocol and service tests pass with 1,970 core unit tests, zero ignored tests,
   actual private-bus ownership/storage/queue/wait outcomes and enabled stage5
   proofs. Scoped locked build, strict all-target clippy and formatting pass.
@@ -62,5 +62,6 @@
   Expected evidence is `[planner] omnitiler:resize-refused ...` beside the command
   dispatch/result. No logging change is needed.
 - The offline diagnostics increment is ready independently of native evidence.
-  Detailed classification awaits the user re-check and integrated review remains
-  pending. This note stays active. No root-cause or resize defect fix is claimed.
+  Independent integrated review found no in-scope blocker in the diagnostics or
+  unchanged requester mapping. Detailed classification awaits the user re-check.
+  This note stays active. No root-cause or resize defect fix is claimed.

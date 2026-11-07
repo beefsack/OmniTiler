@@ -712,8 +712,17 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         const arrivalTransfer = reply.transfers.find((t) =>
             t.kind === "window" && t.win === row.win,
         );
+        // Translate the logical transfer target through the reply bindings
+        // before comparing against the native observed homing (native
+        // setters, live reads, and observed homing all speak native ids).
+        // An unbound or unknown target keeps the gate pending, never a
+        // guess; the membership path below holds truthfully instead.
+        const arrivalNative = arrivalTransfer === undefined
+            ? null
+            : nativeWsOf(reply, arrivalTransfer.out, arrivalTransfer.ws);
         const arrivalPending = arrivalTransfer !== undefined &&
-            (arrivalTransfer.out !== observed.out || arrivalTransfer.ws !== observed.ws);
+            (arrivalNative === null ||
+                arrivalTransfer.out !== observed.out || arrivalNative !== observed.ws);
         if (arrivalPending) {
             // Fall through to the membership path below without a frame
             // write; never hold-count a correctly deferred frame.
