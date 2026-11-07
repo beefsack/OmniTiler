@@ -1708,7 +1708,7 @@ baseline above is unchanged. Record:
   native journey TBD.
   [Engine](../../../crates/tiler-core/src/engine.rs),
   [native map](../../../kwin/src/workspace-native.ts),
-  [aligned migration fixtures](../../../kwin/tests/world-aligned-migration-engine.test.ts).
+  [common-model migration fixtures](../../../kwin/tests/world-aligned-migration-engine.test.ts).
 - Then Ours Windows: active stable ID/tree/unequal shares/remembered focus
   retained via tiled Engine rekey; insert after target current, prior hidden,
   source refill shown and follow after verified transfer. Untiled mode stays
@@ -1886,7 +1886,7 @@ baseline above is unchanged. Record:
   never a member. Implemented offline (NORMATIVE D7, User 2026-10-08),
   native geometry TBD.
   [World actuation](../../../kwin/src/world-apply.ts),
-  [aligned migration fixtures](../../../kwin/tests/world-aligned-migration-engine.test.ts).
+  [common-model migration fixtures](../../../kwin/tests/world-aligned-migration-engine.test.ts).
 - Then Ours Windows: F carries via move-only native output remap with fresh
   arrival proof and retained class/origin; sticky S stays source and re-homes
   to source refill. Delivered offline 2026-10-14; physical native geometry TBD.
@@ -1970,7 +1970,7 @@ baseline above is unchanged. Record:
   mid-flight mode-change outcomes remain TBD for user testing.
   [World actuation](../../../kwin/src/world-apply.ts),
   [world migration fixtures](../../../kwin/tests/world-apply-migration.test.ts),
-  [aligned migration fixtures](../../../kwin/tests/world-aligned-migration-engine.test.ts),
+  [common-model migration fixtures](../../../kwin/tests/world-aligned-migration-engine.test.ts),
   [record](../../changes/archive/migration-overlay-carry.md).
 - Then Ours Windows: D8 carry delivered offline 2026-10-14: real max/fullscreen
   observations, overlay-only native remap, no ordinary overlay geometry or
@@ -2162,10 +2162,13 @@ baseline above is unchanged. Record:
 
 ## KDE aligned-grid discriminators (2026-10-18 decisions; evidence 2026-10-19)
 
-These rows supersede KDE's disjoint startup ownership and aligned-mode D4
-insertion only. Other profiles' exact outcomes remain TBD for these fixtures;
-the selected KDE behavior is not evidence of reference-WM equivalence.
-See the [active record](../../changes/kde-aligned-output-workspaces.md).
+Retired, 2026-11-08: the aligned-only rows below are historical discriminators,
+not current acceptance criteria. The [common v4 per-output model](../../decisions/workspaces.md#common-v4-per-output-workspaces)
+replaces full-grid numbering, occupied-extent trailing, global holes and
+trailing-cell migration/refill. Earlier evidence remains in the
+[retired record](../../changes/kde-aligned-output-workspaces.md); it proves no
+new native outcome for the common model. Native move and retained-arrival
+safety behavior remain independent of that retired grid.
 
 | Discriminator | Minimal action sequence | Selected KDE outcome and evidence |
 |---|---|---|
@@ -2173,7 +2176,7 @@ See the [active record](../../changes/kde-aligned-output-workspaces.md).
 | Unequal extent/padding | L occupies 1, R occupies 3; select L3, then trailing on each output | Both rings address every native position; L3 selects an empty cell without creating. L trailing is 2, R trailing is 4, not the same global-last cell. Offline pass; independent trailing native pass. |
 | Hole versus compaction | R occupies 2 while L2 is empty; then empty 2 on both and make it unshown/nontrailing/unprotected | Keep the hole while occupied anywhere; retire only after all-output guards pass, allowing native renumbering without window moves for compaction. Offline and bounded native lifecycle pass. |
 | Native output move | With different L/R currents, move A from source-current to the other output using native send; repeat by drag | Membership follows destination-current; observe the new cell without ownership theft or an extra project migration. Native send both ways passes after window-signal correction; physical drag TBD. |
-| Migration collision/rebinding | R1 occupied, L1 occupied and L trailing 2; migrate active R1 to L, then return | Land in L2, preserve the moved logical/tree/shares/focus/mode, refresh the source placeholder, refill source by D5, and wait for members plus both views. Offline producer and native round trip pass. D5 logical interpretation is tentative. |
+| Migration collision/rebinding (retired) | R1 occupied, L1 occupied and L trailing 2; migrate active R1 to L, then return | Historical aligned evidence: land in L2, preserve the logical/tree/shares/focus/mode, refresh the source placeholder, refill source, and wait for members plus both views. Aligned landing and tentative replacement-cell D5 are retired; current [common D5](../../decisions/workspaces.md#workspace-migration-d5-source-refill) has no replacement cell. |
 | Retained arrival/closure | Migrate A,B; delay B, make arrival unreadable, close a migrating member, then report fresh complete state; repeat reverse direction | Keep identity/topology and target reservation; no premature settlement, duplicate moves or feedback loop; explicit closure settles without inferring closure from absence. Core and real-producer regressions pass. |
-| Hotplug collision/return | L1 and R1 occupied; disconnect R, then reconnect | Selected: preserve origin logicals, displace into L trailing without merging, return then-current contents without individually pulling moved-away windows. Implementation/live outcomes TBD; parked probe placement question. |
+| Hotplug collision/return (common model retained) | L and R each show an occupied workspace; disconnect R, then reconnect | Preserve displaced logical workspaces separately on a survivor without merging; return then-current contents without individually pulling moved-away windows. No aligned trailing-cell landing requirement. Current offline/native evidence belongs to the [physical reconnect slice](../../changes/v4-phase2-kde-physical-reconnect.md). |
 | Minimum/lifecycle | Start with one empty native; fill the last occupied cell, then close/hide candidates | Grow to at least two total including trailing; coalesce global creation, preserve exact binding attribution and hold on incomplete evidence. Offline pass; native two-workspace floor retained. |

@@ -157,16 +157,14 @@
 - Evidence: [output selection](../changes/archive/position-based-output-selection.md).
 
 ### Workspace migration D4: destination
-- Decision: For independent sets, preserve backing ID, tree/order/shares, remembered focus and tiling mode; insert immediately after destination current, show moved workspace, retain prior destination workspace listed/hidden. KDE aligned mode supersedes insertion/backing-ID rule: move logical workspace into destination trailing empty, preserve logical identity/tree/shares/focus/mode, rebind only native desktop and never reorder other rings.
-- Why: not recorded.
-- Assumes / revisit if: empty migration remains allowed and retains backing ID; aligned mode uses destination trailing cell.
-- Status: active, 2026-10-18
-- Evidence: [aligned workspace replacement](../changes/kde-aligned-output-workspaces.md).
+- Decision: Retire the aligned trailing-cell destination replacement and its supersession of common insertion.
+- Why: The aligned grid is replaced by the [common v4 per-output model](#common-v4-per-output-workspaces).
+- Status: retired, 2026-11-08.
 
 ### Workspace migration D5: source refill
 - Decision: Setting defaults to `last-remaining-workspace`, alternative `most-recently-used-workspace`; KDE `migrationSourceRefill`, Windows `core.migration_source_refill` schema-v1 missing defaults to last-remaining, no migration. Apply affects later migrations. MRU uses per-output history; snapshot previous stable ID before map mutation, eligible only if live, still assigned to source remaining ring and not migrated. Surviving empties qualify; missing/removed/migrated/out-of-scope falls back to last remaining. In both modes preserve a still-scoped live source current. Empty migration allowed, retaining its backing ID.
 - Why: not recorded.
-- Assumes / revisit if: native lifecycle timing remains user testing. The separate aligned-mode D5 rule is tentative and supersedes only its source refill behavior.
+- Assumes / revisit if: native lifecycle timing remains user testing.
 - Status: active, 2026-10-10
 - Evidence: [migration settings](../changes/archive/reference-comparison-implementation.md), [Windows migration](../changes/archive/windows-workspace-output-migration.md).
 
@@ -199,39 +197,42 @@
 - Evidence: [REQ-WS-12](../spec/functional-spec.md#workspaces).
 
 ### KDE aligned workspace lifecycle
-- Decision: Internal aligned mode applies only to per-output-local; each output selects the full native-position ring and its trailing empty follows its last occupied cell. Keep holes while occupied elsewhere. Startup adopts native grid without conversion; minimum is two total including trailing empty. Remove only globally empty, non-trailing, non-view, unprotected cells. Exact creation attribution remains; friendly names are presentation, never identity. Shared keeps literal native-order trailing empty. Sticky all-desktop windows do not occupy backing cells for spare purposes, but their homed cells stay protected, including minimized-sticky lifetimes.
-- Why: not recorded.
-- Assumes / revisit if: Occupied (including floating/fullscreen/maximized), visible, flight-pinned, displaced and unmapped desktops remain protected; unmapped remain outside management. Reconnect selection does not consult history; observed hotplug changes still enter ordinary history. Session-local only, with no restart-persistent mapping or return guarantee.
-- Status: active, 2026-10-18.
-- Evidence: [aligned workspaces](../changes/kde-aligned-output-workspaces.md), [discriminator](../spec/reference-outcomes.md#kde-dual-output-admission-and-workspace-scope-discriminators).
+- Decision: Retire the full native-position grid, per-output occupied-extent trailing cell and global hole/removal rules.
+- Why: Replace platform-specific aligned lifecycle with the [common v4 per-output model](#common-v4-per-output-workspaces).
+- Status: retired, 2026-11-08.
 
-### KDE aligned output disconnection
+### Common v4 per-output workspaces
+- Decision: Per-output rings use stable logical workspace identities. Workspace migration inserts the moved logical workspace after destination current, preserving its contents, layout, tiling mode and remembered focus; native backing is resolved separately. Reuse an existing empty final spare: showing/selecting it creates no additional spare. Occupying it supplies the next spare through ordinary lifecycle.
+- Why: One common per-output model replaces the aligned-grid special cases.
+- Assumes / revisit if: Native backing and physical delivery still require their own evidence; shared mode retains its shared ring.
+- Status: active, 2026-11-08.
+- Evidence: `world_commands.rs` migration/selection, `workspace_scope.rs::resolve_trailing`, `workspace.rs::plan_trailing`; [selection regressions](../../crates/tiler-core/src/world_selection_await_tests.rs), [workspace policy tests](../../crates/tiler-core/tests/workspace_scope.rs).
+
+### KDE common-model output disconnection
+<a id="kde-aligned-output-disconnection"></a>
 - Decision: On disconnect, preserve displaced layout in separate workspace(s), never merge it into the remaining layout. If the disconnected monitor's active window survives, show its relocated workspace retaining focus; a surviving-monitor active window preserves its view and focus. Commandless policy views bind as focusless selections under their existing `op-dpv-*` parent, with no invented `cmdSeq` or focus effect, and retire through the common completion; native focus stays untouched.
 - Why: not recorded.
 - Assumes / revisit if: Focus continuity deliberately keeps the window in use visible; selection among multiple survivors follows the reconnect rule.
 - Status: active, 2026-10-18.
-- Evidence: [aligned workspaces](../changes/kde-aligned-output-workspaces.md).
+- Evidence: [physical reconnect/rehome](../changes/v4-phase2-kde-physical-reconnect.md); earlier [workspace record](../changes/kde-aligned-output-workspaces.md).
 
-### KDE aligned output reconnection
+### KDE common-model output reconnection
+<a id="kde-aligned-output-reconnection"></a>
 - Decision: Return displaced workspaces automatically to their original monitor with then-current contents; do not restore a snapshot or pull back individually moved windows. Choose among multiple survivors by nearest disconnect-time geometry, falling back to current primary then output order; never use post-disconnect frame geometry. Show the returning active workspace with focus retained; preserve surviving-output active views/focus without stealing focus. Commandless return-policy views use the same focusless binding under their existing `op-dpv-*` parent, without an invented `cmdSeq` or focus effect, and retire through the common completion with native focus untouched.
 - Why: not recorded.
 - Assumes / revisit if: Reconnect selection never restores prior-view history; observed hotplug changes enter ordinary history. Spatial proximity is a deliberate COSMIC/six-reference deviation, discriminating only with 3+ outputs. No restart-persistent mapping or return guarantee.
 - Status: active, 2026-10-18.
-- Evidence: [aligned workspaces](../changes/kde-aligned-output-workspaces.md), [discriminator](../spec/reference-outcomes.md#kde-dual-output-admission-and-workspace-scope-discriminators).
+- Evidence: [physical reconnect/rehome](../changes/v4-phase2-kde-physical-reconnect.md), [discriminator](../spec/reference-outcomes.md#kde-dual-output-admission-and-workspace-scope-discriminators).
 
 ### Tentative aligned migration D5 source refill
-- Decision: Exclude moved logical workspace and its newly empty replacement cell from source refill. MRU selects a surviving previous source cell, else last remaining; a separate valid source current stays. Retained native binding does not mean moved logical remains on source.
-- Why: not recorded.
-- Assumes / revisit if: user review pending; no policy selected from current evidence.
-- Status: tentative, 2026-10-19.
-- Evidence: [aligned workspace discriminator](../spec/reference-outcomes.md#kde-dual-output-admission-and-workspace-scope-discriminators).
+- Decision: Retire the aligned replacement-cell exclusion.
+- Why: The [common v4 model](#common-v4-per-output-workspaces) has no replacement cell; [common D5 refill](#workspace-migration-d5-source-refill) applies.
+- Status: retired, 2026-11-08.
 
 ### Tentative aligned empty-cell and spare lifecycle
-- Decision: Selecting/showing empty aligned cell, including trailing empty/ring end, creates no spare. Relative-next from empty ring end wraps under existing wrap setting. Occupying trailing empty creates next spare; showing it does not. Sticky all-desktop windows, including minimized-sticky lifetimes, do not count as spare occupancy but their homed cells are protected until close/unhome. Normal global empty-cell retirement and minimum-two floor unchanged.
-- Why: not recorded.
-- Assumes / revisit if: user review pending. COSMIC occupied/pinned-last creation and sticky exclusion, and Hyprland missing-selected-target-only behavior, support this boundary; reference/native unsupported outcomes remain TBD.
-- Status: tentative, 2026-10-19.
-- Evidence: [aligned workspace discriminator](../spec/reference-outcomes.md#kde-dual-output-admission-and-workspace-scope-discriminators).
+- Decision: Retire aligned-cell/global-hole lifecycle refinements; retain existing empty-spare reuse and occupy-to-create-spare in the common model.
+- Why: Aligned-only cell policy is replaced by [common v4 lifecycle](#common-v4-per-output-workspaces), not a new selection or sticky policy.
+- Status: retired, 2026-11-08.
 
 ### Windows owner, workspace storage and recovery
 - Decision: Use one normal single per-user/session owner executable with standalone stop/restore. Persist `core.workspace.default_tiled` in schema-v1 Windows settings; older files backfill true. Tray changes only the saved field and settings polling confirms runtime adoption. Recovery ledger v4 stores min/max show state without geometry; readers accept v1-v3. The window-lifetime membership property is inert and distrusted.

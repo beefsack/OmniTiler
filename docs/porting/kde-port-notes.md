@@ -36,6 +36,16 @@ Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
 
 ## V4 connection and recovery
 
+- Physical output metadata: capture scripting `manufacturer`, `model` and
+  `serialNumber` as neutral facts, normalizing native empty strings to
+  null only at the KDE boundary; preserve other strings, including literal
+  `unknown`. At KWin `v6.8.1`, `src/utils/edid.cpp` returns empty absent
+  manufacturer/serial data, while `src/backends/drm/drm_connector.cpp::modelName`
+  uses connector/name data without reaching `nameString()`'s translated unknown
+  fallback. Connector remains null: DRM-derived output names do not prove
+  scripting-wide physical connection normalization. Core/codec empty-string
+  preservation is unchanged; ambiguous physical return holds.
+
 - The producer lifetime is v4 `adapter`; there is no separate broker incarnation.
   KWin sends its real handshake and separate revisioned settings messages through
   authenticated `DiscoverWorld`, dispatched by `type` through

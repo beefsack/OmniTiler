@@ -1,5 +1,11 @@
 # KDE aligned per-output workspaces
 
+- Status: aligned-grid rules retired, 2026-11-08; historical evidence below is
+  not current policy. The [common v4 per-output model](../decisions/workspaces.md#common-v4-per-output-workspaces)
+  replaces aligned lifecycle, trailing-cell migration and aligned-only refill/
+  spare refinements. No-merge displacement and then-current-content return
+  continue under the common model.
+
 ## Goal and boundaries
 
 - KDE keeps one global desktop list (count, order, positions) with a

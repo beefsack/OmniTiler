@@ -20,13 +20,13 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - 2026-11-04: After presentation revision, complete two-way v4 codecs/legacy-envelope removal/version bump, then a development-only KDE vertical slice before scaled metrics, reconnect/rehome and remaining core work. Core quality takes priority; host findings require shared-core design discussion, never KDE-specific workarounds. Sequential platform conformance and live release gates remain unchanged ([v4 migration order and principles](decisions/contract.md#contract-authority-and-v4-migration)).
 - 2026-11-08: User decision: retire the tentative KDE lifecycle and accepted vocabulary entry. Lifecycle normalization stays documented in the [KDE port notes](porting/kde-port-notes.md); the name list was stale and not product policy.
 - 2026-11-08: User decision: every KDE user command press queues FIFO in press order with no busy refusal, resolving window subjects from settled focus at dispatch ([KDE rapid input](decisions/commands.md#kde-rapid-input)).
+- 2026-11-08: User decision: retire aligned-grid lifecycle, destination replacement and aligned-only refill/spare rules in favor of the common v4 per-output model; retain displacement and physical return ([workspaces](decisions/workspaces.md#common-v4-per-output-workspaces)).
 
 ## Tentative decisions
 
 - Floating/exception/non-leaf command-memory storage remains parked ([Windows decisions](decisions/windows.md#windows-decision-set)).
 - macOS preview entry point and preview configuration/observation recovery remain tentative ([development](decisions/development.md#tentative-macos-development-preview); [macOS](decisions/macos.md#fixture-and-scoped-input-defaults)).
 - macOS preview presets and native shortcut ownership remain tentative ([shortcuts](decisions/reference-and-shortcuts.md#macos-preview-presets-and-native-shortcut-ownership)).
-- Aligned migration D5 refill and empty-cell spare behavior remain tentative ([workspaces](decisions/workspaces.md#tentative-aligned-migration-d5-source-refill); [spare lifecycle](decisions/workspaces.md#tentative-aligned-empty-cell-and-spare-lifecycle)).
 - KDE unload/restart ownership-restoration question remains open ([fixed-size](decisions/layout-and-admission.md#automatic-fixed-float-stacking-and-gaming-safety)).
 - KDE world placement traces remain tentative ([observability](decisions/observability.md#kde-world-placement-traces)).
 - Activities defaults remain tentative ([KDE](decisions/kde.md#deferred-activities-support)).

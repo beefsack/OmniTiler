@@ -1041,8 +1041,8 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   their existing `op-dpv-*` parent, without an invented `cmdSeq` or focus effect,
   and retire through the same completion. Native focus stays untouched. Internal
   parent/correlation carriers do not add a wire identity or receipt predicate.
-  [Disconnect](../decisions/workspaces.md#kde-aligned-output-disconnection),
-  [return](../decisions/workspaces.md#kde-aligned-output-reconnection).
+  [Disconnect](../decisions/workspaces.md#kde-common-model-output-disconnection),
+  [return](../decisions/workspaces.md#kde-common-model-output-reconnection).
 - Cross-output follow-send and same-output follow-send take the same frozen
   selection binding as an ordinary explicit selection. Window membership
   settles the transfer independently; the binding owns destination visibility

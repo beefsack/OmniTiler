@@ -1,6 +1,6 @@
 # v4 phase-2 KDE physical reconnect/rehome
 
-- Status: implementation scope pending workspace-model decision.
+- Status: offline implementation in progress; aligned rules retired, 2026-11-08.
 - Goal: supply truthful physical output facts and prove disconnect, reconnect
   and rehome offline without regressing the prior dogfoodable slices.
 - Native acceptance remains unrun; offline evidence cannot establish physical
@@ -22,6 +22,9 @@
 - Preserve logical-coordinate scale=1 and the settled metric/state-target
   contracts. Physical connector provenance and native metadata readability
   must not be inferred from an output-name spelling.
+- The common v4 per-output model replaces aligned lifecycle/D4 and aligned-only
+  D5/empty-cell refinements. Displacement/return semantics remain unchanged;
+  no acceptance claim depends on the retired aligned grid.
 
 ## Established implementation
 
@@ -32,7 +35,7 @@
 | Displacement | `world_model.rs:657-803` preserves workspaces and uses retained disconnect-time geometry; `:817-840` binds focusless policy views | Extend proofs to renamed return, ambiguity and repeated topology changes |
 | Native bindings | `world_native.rs:64-87,1127-1174` maintains per-output native/logical bindings and a native-ordered bound prefix with unbound tail | Bindings do not implement the full aligned grid |
 | Migration/refill | `world_commands.rs:1440-1470` removes the source logical ID and inserts after destination current; `world_model.rs:950-991` excludes the migrated ID from refill | No aligned replacement-cell mechanism exists to apply the tentative D5 exclusion to |
-| Aligned helpers | `workspace_scope.rs:368-428` contains aligned ring/trailing/global-removal helpers without production callers | Disposition depends on the workspace-model decision; absence of callers does not retire approved behavior |
+| Aligned helpers | `workspace_scope.rs` contains uncalled aligned ring/trailing/global-removal and history-rebind helpers | Remove in a separate verified cull under the retirement decision |
 | Minimized rehome | `world_observe.rs:1003-1029` resolves hidden membership using native evidence; `session/world.rs:1759-1778` consumes restore slots and checks old home | Destination restore has a guard already. The leave-and-return-before-restore discriminator still needs a reproducing regression before claiming a defect |
 
 - KWin source at `1b798c05c19b1124edb1e16623191fcd2c128fd0`:
@@ -41,40 +44,30 @@
   scripting connector property: other backends use synthetic names. The
   `Output` name property alone does not discriminate those backends.
 - `OutputIdentity` (`world_report.rs:1122-1131`) preserves supplied empty
-  strings rather than normalizing them to unknown. Native absent-metadata
-  sentinels need an explicit boundary interpretation, not a codec change.
-- No new tests have been run and no new behavior is implemented by this record.
+  strings rather than normalizing them to unknown. KDE normalizes native empty
+  metadata to null at capture; nonempty literal identifiers remain unchanged.
+  Connector stays null; no core or codec normalization changes are needed.
 
-## Workspace-model decision
+## Workspace-model retirement
 
-- [Active aligned lifecycle and D4](../decisions/workspaces.md#kde-aligned-workspace-lifecycle)
-  require a full native-position grid, holes and trailing-cell migration.
-  Current v4 bindings/migration are not that model. This is a broader mismatch
-  than the two tentative rules alone.
-- [Tentative D5](../decisions/workspaces.md#tentative-aligned-migration-d5-source-refill)
-  excludes a newly empty replacement cell. Current v4 migration creates no such
-  cell, so that special case currently has no production trigger.
-- [Tentative empty-cell lifecycle](../decisions/workspaces.md#tentative-aligned-empty-cell-and-spare-lifecycle)
-  combines common behavior with aligned-only global hole/removal policy.
-  `workspace_scope.rs:429-447` already reuses an existing empty trailing cell;
-  creation when no spare exists is not evidence that showing an existing empty
-  cell creates another spare. Keep those questions separate.
-
-| Option | Consequence |
-| --- | --- |
-| Simplify around v4's common per-output model | Retire aligned-only replacement-cell/global-hole special cases and reconcile the active aligned lifecycle/D4 decisions explicitly; preserve common empty-show reuse and occupy-to-create-spare behavior |
-| Restore the active aligned grid | Port grid/trailing-landing/global-hole behavior before judging the tentative D5 and empty-cell refinements; materially larger than physical identity matching |
-| Limit this slice to reconnect facts and core return | Leave the aligned decision mismatch explicitly deferred; do not claim aligned lifecycle/migration acceptance |
-
-- Recommendation: simplify around the common v4 model, subject to an explicit
-  decision covering active aligned lifecycle/D4 as well as the two tentative
-  entries. Do not silently treat a missing port as evidence that old behavior
-  was retired. The renamed-return discriminator is recorded in
+- User decision, 2026-11-08: retire aligned lifecycle, aligned D4 destination
+  replacement, tentative D5 replacement-cell exclusion and aligned-only
+  empty-cell/global-hole refinements in favor of the
+  [common v4 per-output model](../decisions/workspaces.md#common-v4-per-output-workspaces).
+- Current migration creates no replacement cell; common trailing selection
+  reuses an existing empty final spare, and occupying it supplies the next spare.
+  These implemented behaviors stay active, without introducing sticky or
+  selection policy. Displacement/return decisions are reworded to the common
+  model without changing their behavior; old anchors remain valid.
+- Historical aligned-only discriminators and the earlier aligned record are
+  marked retired. The renamed-return discriminator remains in
   [reference outcomes](../spec/reference-outcomes.md#kde-dual-output-admission-and-workspace-scope-discriminators).
 
 ## Bounded implementation and verification
 
-1. Resolve workspace-model scope and metadata sentinel interpretation.
+1. Retire aligned rules in decisions and point-of-use docs; separately remove
+   uncalled aligned mechanisms with caller evidence. Normalize KDE-native empty
+   metadata to null without changing core/codec string preservation.
 2. Produce metadata and implement core physical return matching with targeted
    unknown/duplicate/renamed-output and disconnect/reconnect tests. Keep
    connector null without a proved source; unique metadata does not require

@@ -1,5 +1,9 @@
 # KDE dual-output live testing and fixes
 
+- 2026-11-08: aligned-grid policy cited below is retired. Rebase remaining
+  journeys onto the [common v4 per-output model](../decisions/workspaces.md#common-v4-per-output-workspaces);
+  earlier aligned-grid results remain historical, not current acceptance.
+
 Status 2026-10-24: this is pre-v2 KDE acceptance history, including retired
 Plan-route citations and the later v1 world-route continuation. Shared core
 and Windows have completed v2; KDE has not. Rebase remaining native/physical
