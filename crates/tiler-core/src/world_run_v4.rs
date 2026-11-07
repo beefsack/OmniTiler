@@ -447,6 +447,9 @@ impl WorldEngine {
                         return V4RunOutcome::Rejected { kind, message };
                     }
                     *self = precommand;
+                    if let Some(line) = self.resize_refusal_diagnostic_v4(report, kind) {
+                        crate::world_engine::emit_resize_refusal(line);
+                    }
                     self.note_command(command_seq);
                     let typed = CommandRejectKind::parse(kind)
                         .unwrap_or(CommandRejectKind::OperationRefused);

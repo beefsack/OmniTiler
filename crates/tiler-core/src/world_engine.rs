@@ -150,6 +150,263 @@ pub(crate) fn inset_world_domain(domain: &OutputDomain, outer_gap: i32) -> Optio
     })
 }
 
+/// Diagnostic bound for one resize-refusal stderr line, suffix included.
+const RESIZE_REFUSAL_DIAG_MAX: usize = 960;
+/// Staged domain rows rendered into one resize-refusal line.
+const RESIZE_REFUSAL_DIAG_ROWS: usize = 4;
+/// Root shares rendered into one resize-refusal line.
+const RESIZE_REFUSAL_DIAG_SHARES: usize = 8;
+/// Leaves scanned to locate the focused leaf.
+const RESIZE_REFUSAL_DIAG_LEAVES: usize = 16;
+/// Truncation marker; the byte cap reserves exactly this length.
+const RESIZE_REFUSAL_DIAG_CUT: &str = "...";
+
+/// Sanitized opaque id for diagnostics: the validated value or `-`.
+fn diag_id(value: &str) -> &str {
+    if crate::bounds::is_opaque_id(value) {
+        value
+    } else {
+        "-"
+    }
+}
+
+/// Sanitized closed-vocabulary token for diagnostics: lowercase/dash or `-`.
+fn diag_token(value: &str, max: usize) -> &str {
+    if !value.is_empty()
+        && value.len() <= max
+        && value.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+    {
+        value
+    } else {
+        "-"
+    }
+}
+
+/// Root tree shape for diagnostics: axis, child count, capped shares, and
+/// the focused position as a capped-DFS leaf index (not a root-child
+/// index). Nested groups stay unexpanded, so this never classifies
+/// nested-neighbor geometry and never re-derives policy selection.
+fn diag_tree(
+    node: &crate::directional::Node,
+    focus: Option<&crate::directional::NodeId>,
+) -> String {
+    fn leaves_capped(node: &crate::directional::Node, out: &mut Vec<crate::directional::NodeId>) {
+        if out.len() >= RESIZE_REFUSAL_DIAG_LEAVES {
+            return;
+        }
+        match node {
+            crate::directional::Node::Leaf { id } => out.push(id.clone()),
+            crate::directional::Node::Group { children, .. } => {
+                for child in children {
+                    leaves_capped(child, out);
+                    if out.len() >= RESIZE_REFUSAL_DIAG_LEAVES {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    let mut leaves = Vec::new();
+    leaves_capped(node, &mut leaves);
+    let focus_pos = focus.and_then(|id| leaves.iter().position(|leaf| leaf == id));
+    let shape = match node {
+        crate::directional::Node::Leaf { .. } => "leaf".to_owned(),
+        crate::directional::Node::Group {
+            axis,
+            children,
+            shares,
+            ..
+        } => {
+            let axis = match axis {
+                crate::directional::Axis::Horizontal => "H",
+                crate::directional::Axis::Vertical => "V",
+            };
+            let mut shown: Vec<String> = shares
+                .iter()
+                .take(RESIZE_REFUSAL_DIAG_SHARES)
+                .map(|s| s.to_string())
+                .collect();
+            if shares.len() > RESIZE_REFUSAL_DIAG_SHARES {
+                shown.push(format!("+{}", shares.len() - RESIZE_REFUSAL_DIAG_SHARES));
+            }
+            format!(
+                "axis:{axis}/kids:{}/shares:[{}]",
+                children.len(),
+                shown.join(",")
+            )
+        }
+    };
+    match focus_pos {
+        Some(pos) => format!("{shape}/leafIndex@{pos}"),
+        None => format!("{shape}/leafIndex@-"),
+    }
+}
+
+/// Meaningful min/max hints for diagnostics, one `-` per absent bound.
+fn diag_hints(hints: crate::size_hints::WindowSizeHints) -> String {
+    let opt = |v: Option<i32>| v.map(|n| n.to_string()).unwrap_or_else(|| "-".to_owned());
+    format!(
+        "min{}x{}/max{}x{}",
+        opt(hints.meaningful_min_w()),
+        opt(hints.meaningful_min_h()),
+        opt(hints.meaningful_max_w()),
+        opt(hints.meaningful_max_h()),
+    )
+}
+
+/// Best-effort diagnostic write; stderr failure never fails the command.
+pub(crate) fn emit_resize_refusal(line: String) {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
+
+impl WorldEngine {
+    /// Diagnostic-only keyboard-resize refusal line for the generic collapse:
+    /// the verbatim internal `kind`, the same `parse`-or-default wire token
+    /// production maps to, request correlation, observed/retained focus, root
+    /// tree shape, and bounded current geometry with min/max hints. Pure
+    /// formatting; the caller owns the stderr write and the requester
+    /// outcome is untouched. `None` for non-resize commands. `rows` are
+    /// staged domain rows, never the selected resize pair; the subject
+    /// always renders separately with its own geometry and hints. Ids pass
+    /// the opaque gate, tokens the closed gate; no titles or process fields.
+    pub(crate) fn resize_refusal_diagnostic(
+        &self,
+        report: &WorldReport,
+        kind: &str,
+    ) -> Option<String> {
+        self.resize_refusal_line(
+            report.command.as_ref()?,
+            &report.request_id,
+            report.request_seq,
+            report.observation_seq,
+            report.command_seq,
+            kind,
+        )
+    }
+
+    /// v4 counterpart of [`WorldEngine::resize_refusal_diagnostic`].
+    pub(crate) fn resize_refusal_diagnostic_v4(
+        &self,
+        report: &WorldReportV4,
+        kind: &str,
+    ) -> Option<String> {
+        self.resize_refusal_line(
+            report.command.as_ref()?,
+            &report.request_id,
+            report.request_seq,
+            report.observation_seq,
+            report.command_seq,
+            kind,
+        )
+    }
+
+    fn resize_refusal_line(
+        &self,
+        command: &WorldCommand,
+        request_id: &str,
+        request_seq: u64,
+        observation_seq: u64,
+        command_seq: Option<u64>,
+        kind: &str,
+    ) -> Option<String> {
+        let WorldCommand::Operation(crate::boundary::CoreCommand::Resize {
+            window,
+            direction,
+            mode,
+            press_index,
+        }) = command
+        else {
+            return None;
+        };
+        let subject = crate::directional::WindowId(window.clone());
+        let homing = self.staged.homing.get(&subject).cloned();
+        let homing_token = homing
+            .as_ref()
+            .map(|key| format!("{}/{}", diag_id(&key.output.0), diag_id(&key.workspace.0)))
+            .unwrap_or_else(|| "-".to_owned());
+        let (focus_leaf, tree_token) = homing
+            .as_ref()
+            .and_then(|key| self.engine.session(key).map(|session| (key, session)))
+            .map(|(key, session)| {
+                let (_, leaf) = session.focus();
+                let leaf_token = leaf
+                    .as_ref()
+                    .map(|id| diag_id(&id.0).to_owned())
+                    .unwrap_or_else(|| "-".to_owned());
+                let tree = session
+                    .tree_for(key)
+                    .map(|node| diag_tree(node, leaf.as_ref()))
+                    .unwrap_or_else(|| "-".to_owned());
+                (leaf_token, tree)
+            })
+            .unwrap_or_else(|| ("-".to_owned(), "-".to_owned()));
+        let (subj_geom, subj_hints) = self
+            .staged
+            .facts
+            .get(&subject)
+            .map(|fact| {
+                let geom = fact
+                    .rect
+                    .map(|rect| format!("{},{},{}x{}", rect.x, rect.y, rect.w, rect.h))
+                    .unwrap_or_else(|| "-".to_owned());
+                let hints = fact.hints.map(diag_hints).unwrap_or_else(|| "-".to_owned());
+                (geom, hints)
+            })
+            .unwrap_or_else(|| ("-".to_owned(), "-".to_owned()));
+        let mut rows = Vec::new();
+        let mut rows_total = 0;
+        if let Some(key) = homing.as_ref()
+            && let Some(domain) = self.staged.domains.iter().find(|d| &d.key == key)
+        {
+            rows_total = domain.windows.len();
+            for row in domain.windows.iter().take(RESIZE_REFUSAL_DIAG_ROWS) {
+                rows.push(format!(
+                    "{}@{},{},{}x{}/{}",
+                    diag_id(&row.window.0),
+                    row.rect.x,
+                    row.rect.y,
+                    row.rect.w,
+                    row.rect.h,
+                    diag_hints(row.hints),
+                ));
+            }
+        }
+        let rows_shown = rows.len();
+        if rows_total > rows_shown {
+            rows.push(format!("+{}-more", rows_total - rows_shown));
+        }
+        let wire = CommandRejectKind::parse(kind)
+            .unwrap_or(CommandRejectKind::OperationRefused)
+            .as_str();
+        let mut line = format!(
+            "omnitiler:resize-refused req={} reqseq={} obsseq={} cmdseq={} op=resize subject={} dir={} mode={} press={} internal={} wire={wire} focused={} homing={homing_token} focus={focus_leaf} tree={tree_token} subjgeom={subj_geom} subjhints={subj_hints} rowsTotal={rows_total} rowsShown={rows_shown} rows=[{}]",
+            diag_id(request_id),
+            request_seq,
+            observation_seq,
+            command_seq
+                .map(|seq| seq.to_string())
+                .unwrap_or_else(|| "-".to_owned()),
+            diag_id(window),
+            diag_token(direction, 16),
+            diag_token(mode, 16),
+            press_index,
+            diag_token(kind, 32),
+            diag_id(&self.staged.observation.focused_global),
+            rows.join(" "),
+        );
+        if line.len() > RESIZE_REFUSAL_DIAG_MAX {
+            let mut end = RESIZE_REFUSAL_DIAG_MAX - RESIZE_REFUSAL_DIAG_CUT.len();
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            line.truncate(end);
+            line.push_str(RESIZE_REFUSAL_DIAG_CUT);
+        }
+        Some(line)
+    }
+}
+
 /// Exact post-send source focus for one retained stay transfer (see
 /// [`WorldEngine::stay_source_focus`]): a resident source window, a
 /// proven-empty source, or an unknown/unprovable read that must refuse.
@@ -3652,6 +3909,9 @@ impl WorldEngine {
                     // attempts, frames, transfers, and admission effects
                     // stay; the command sequence still consumes.
                     *self = precommand;
+                    if let Some(line) = self.resize_refusal_diagnostic(report, kind) {
+                        emit_resize_refusal(line);
+                    }
                     self.note_command(command_seq);
                     let typed = CommandRejectKind::parse(kind)
                         .unwrap_or(CommandRejectKind::OperationRefused);

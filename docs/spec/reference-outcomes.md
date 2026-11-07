@@ -28,6 +28,12 @@ trivially different start state.
 | --- | --- | --- | --- |
 | X11 urgency hint versus attention state | With B active, request critical attention on A; clear A's attention; activate A | WM_HINTS urgency clears, but KWin DEMANDS_ATTENTION persists until activation. Accepted clear is a client-hint acknowledgement, not compositor-state withdrawal | Other hosts/reference WMs and visual urgency presentation TBD; no tiler urgency policy changed. [Evidence](../changes/archive/kde-dev-scope-fixture-integration.md#tiler-findings-and-host-limits) |
 
+### Keyboard resize refusal discriminator
+
+| Minimal action sequence | Existing evidence | Unsupported outcome / remaining gate |
+| --- | --- | --- |
+| Tile three windows; select their populated workspace; grow right repeatedly, shrink right, then shrink/grow left; repeat across native-effect presentation changes | Core diagnostics retain the detailed refusal and bounded command/focus/layout/geometry/hint context while preserving requester-visible `operation-refused`. Typed-v4 singleton no-neighbor refusal is `unchanged` internally | Native split between legitimate edge/minimum/limit refusals and defects remains TBD; the earlier summary-only dogfood log cannot recover that split. No user-facing refusal feedback behavior is selected. [Investigation](../changes/kde-resize-refusal-diagnostics.md) |
+
 ### Workspace-floating classification diagnostic
 
 | Minimal action sequence | Existing core evidence | Unsupported outcome / decision |

@@ -1,14 +1,19 @@
 //! Accepted-report command rejection: observations incorporate, command
 //! refuses with a typed result, sequence consumes, no partial mutation.
 
+use std::collections::BTreeSet;
+
 use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
+use crate::ids::{CorrelationId, OwnerId};
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_commands::CommandApplied;
+use crate::world_engine::{EventIssue, LegacyWorldOutcome, WorldEngine};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, FrameAttempt, FrameSetter, ScopeAuthority, ScreenReport,
-    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, FrameAttempt, FrameSetter, PresentationIngressV4,
+    PresentationRowV4, ScopeAuthority, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReport, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -741,4 +746,456 @@ fn sticky_trailing_create_refusal_rolls_back_creation() {
         "refused sticky leaves no flight: {:?}",
         engine.retained
     );
+}
+
+#[test]
+fn keyboard_resize_unknown_subject_stays_operation_refused() {
+    let mut engine = engine();
+    match engine.handle_report_legacy(&report(
+        1,
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        vec![],
+        None,
+        None,
+    )) {
+        LegacyWorldOutcome::Accepted(_) => {}
+        other => panic!("base accepted, got {other:?}"),
+    }
+    // Unknown-subject keyboard resize surfaces a legacy session refusal
+    // string (unknown-window), which is not in the closed command catalog.
+    let reply = match engine.handle_report_legacy(&report(
+        2,
+        vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+        "w0",
+        vec![],
+        Some(2),
+        Some(WorldCommand::Operation(CoreCommand::Resize {
+            window: "w-ghost".to_owned(),
+            direction: "left".to_owned(),
+            mode: "outwards".to_owned(),
+            press_index: 0,
+        })),
+    )) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
+        other => panic!("legacy refusal must accept with mapping, got {other:?}"),
+    };
+    assert_eq!(
+        reply.command_result,
+        Some(CommandResult::Rejected {
+            kind: CommandRejectKind::OperationRefused
+        }),
+        "non-catalog resize maps to operation-refused"
+    );
+    assert!(
+        reply.transfers.is_empty(),
+        "no transfer minted on refusal: {:?}",
+        reply.transfers
+    );
+    assert!(
+        row_window_ids(&reply).contains(&"w1".to_owned()),
+        "observation still incorporates: {:?}",
+        row_window_ids(&reply)
+    );
+}
+
+#[test]
+fn keyboard_resize_singleton_no_neighbor_stays_operation_refused() {
+    let mut engine = engine();
+    match engine.handle_report_legacy(&report(
+        1,
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        vec![],
+        None,
+        None,
+    )) {
+        LegacyWorldOutcome::Accepted(_) => {}
+        other => panic!("base accepted, got {other:?}"),
+    }
+    // A singleton tile has no resize neighbor in any direction: the
+    // legitimate refusal keeps the generic wire kind without mutation.
+    let reply = match engine.handle_report_legacy(&report(
+        2,
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        vec![],
+        Some(2),
+        Some(WorldCommand::Operation(CoreCommand::Resize {
+            window: "w0".to_owned(),
+            direction: "left".to_owned(),
+            mode: "outwards".to_owned(),
+            press_index: 0,
+        })),
+    )) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
+        other => panic!("legacy refusal must accept with mapping, got {other:?}"),
+    };
+    assert_eq!(
+        reply.command_result,
+        Some(CommandResult::Rejected {
+            kind: CommandRejectKind::OperationRefused
+        }),
+        "no-neighbor resize maps to operation-refused"
+    );
+    assert!(
+        reply.transfers.is_empty(),
+        "no transfer minted on refusal: {:?}",
+        reply.transfers
+    );
+    assert!(
+        row_window_ids(&reply).contains(&"w0".to_owned()),
+        "observation still incorporates: {:?}",
+        row_window_ids(&reply)
+    );
+}
+
+#[test]
+fn resize_refusal_diagnostic_none_for_non_resize() {
+    let engine = engine();
+    let plain = report(7, vec![fact("w0", "out-a", 0)], "w0", vec![], None, None);
+    assert_eq!(engine.resize_refusal_diagnostic(&plain, "unchanged"), None);
+    let focus = report(
+        7,
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        vec![],
+        Some(9),
+        Some(WorldCommand::Focus {
+            window: WindowId("w0".to_owned()),
+            direction: "left".to_owned(),
+        }),
+    );
+    assert_eq!(
+        engine.resize_refusal_diagnostic(&focus, "focus-unknown"),
+        None
+    );
+}
+
+#[test]
+fn resize_refusal_diagnostic_sanitizes_injection() {
+    let engine = engine();
+    let mut resize = report(
+        7,
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        vec![],
+        Some(9),
+        Some(WorldCommand::Operation(CoreCommand::Resize {
+            window: "w\n0".to_owned(),
+            direction: "LEFT".to_owned(),
+            mode: "out\nwards".to_owned(),
+            press_index: 0,
+        })),
+    );
+    resize.request_id = "evil\nid".to_owned();
+    let line = engine
+        .resize_refusal_diagnostic(&resize, "weird kind!")
+        .expect("diagnostic");
+    assert!(!line.contains('\n'), "no log injection: {line:?}");
+    for token in ["req=-", "subject=-", "dir=-", "mode=-", "internal=-"] {
+        assert!(line.contains(token), "sanitized to {token}: {line}");
+    }
+    assert!(
+        !line.contains("evil") && !line.contains("weird"),
+        "raw injected text never echoes: {line}"
+    );
+}
+
+#[test]
+fn resize_refusal_diagnostic_reports_actual_internal_cause_with_context() {
+    let mut engine = engine();
+    match engine.handle_report_legacy(&report(
+        1,
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        vec![],
+        None,
+        None,
+    )) {
+        LegacyWorldOutcome::Accepted(_) => {}
+        other => panic!("base accepted, got {other:?}"),
+    }
+    // The verbatim internal cause comes from the command seam itself,
+    // never from a hand-picked test string.
+    let command = WorldCommand::Operation(CoreCommand::Resize {
+        window: "w0".to_owned(),
+        direction: "left".to_owned(),
+        mode: "outwards".to_owned(),
+        press_index: 0,
+    });
+    let issue = EventIssue {
+        owner: OwnerId::parse("adapter-1").expect("owner"),
+        correlation: CorrelationId::parse("req-1").expect("correlation"),
+    };
+    let kind = match engine.execute_command(&issue, 2, &command, &BTreeSet::new(), None, None) {
+        CommandApplied::Rejected { kind, .. } => kind,
+        CommandApplied::NoEffect => panic!("singleton resize refuses, got NoEffect"),
+        CommandApplied::Effect(_) => panic!("singleton resize refuses, got Effect"),
+    };
+    let probe = report(
+        2,
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        vec![],
+        Some(2),
+        Some(command),
+    );
+    let line = engine
+        .resize_refusal_diagnostic(&probe, kind)
+        .expect("diagnostic");
+    let wire = CommandRejectKind::parse(kind)
+        .unwrap_or(CommandRejectKind::OperationRefused)
+        .as_str();
+    assert!(
+        line.contains(&format!("internal={kind}")),
+        "actual cause: {line}"
+    );
+    assert!(
+        line.contains(&format!("wire={wire}")),
+        "honest mapping: {line}"
+    );
+    for token in [
+        "subject=w0",
+        "dir=left",
+        "mode=outwards",
+        "homing=out-a/",
+        "subjgeom=0,0,40x90",
+        "subjhints=min-x-/max-x-",
+        "w0@0,0,40x90/min-x-/max-x-",
+        "rowsTotal=1 rowsShown=1",
+    ] {
+        assert!(line.contains(token), "staged context {token}: {line}");
+    }
+    assert!(
+        !line.contains("focus=-") && !line.contains("tree=-"),
+        "retained focus renders: {line}"
+    );
+    assert!(
+        !line.contains('\n') && line.len() <= 960,
+        "bounded line: {line:?}"
+    );
+    assert!(
+        !line.contains("synthetic.exe") && !line.contains("foreign-pid"),
+        "no process metadata: {line}"
+    );
+}
+
+fn staged_domain_rows(engine: &WorldEngine, window: &str) -> usize {
+    let key = engine
+        .staged
+        .homing
+        .get(&WindowId(window.to_owned()))
+        .expect("homed subject")
+        .clone();
+    engine
+        .staged
+        .domains
+        .iter()
+        .find(|d| d.key == key)
+        .map(|d| d.windows.len())
+        .unwrap_or(0)
+}
+
+#[test]
+fn resize_refusal_diagnostic_counts_row_truncation() {
+    let mut engine = engine();
+    let ids: Vec<String> = (0..6).map(|i| format!("w{i}")).collect();
+    let windows: Vec<WindowFact> = ids
+        .iter()
+        .enumerate()
+        .map(|(i, w)| fact(w, "out-a", (i as i32) * 100))
+        .collect();
+    match engine.handle_report_legacy(&report(1, windows, "w0", vec![], None, None)) {
+        LegacyWorldOutcome::Accepted(_) => {}
+        other => panic!("base accepted, got {other:?}"),
+    }
+    let total = staged_domain_rows(&engine, "w0");
+    let probe = report(
+        2,
+        ids.iter()
+            .enumerate()
+            .map(|(i, w)| fact(w, "out-a", (i as i32) * 100))
+            .collect(),
+        "w0",
+        vec![],
+        Some(2),
+        Some(WorldCommand::Operation(CoreCommand::Resize {
+            window: "w0".to_owned(),
+            direction: "left".to_owned(),
+            mode: "outwards".to_owned(),
+            press_index: 0,
+        })),
+    );
+    let line = engine
+        .resize_refusal_diagnostic(&probe, "unchanged")
+        .expect("diagnostic");
+    assert!(line.contains(&format!("rowsTotal={total}")));
+    assert!(line.contains(&format!("rowsShown={}", total.min(4))));
+    assert!(line.len() <= 960);
+    if total > 4 {
+        assert!(line.contains(&format!("+{}-more", total - 4)));
+        assert!(
+            !line.ends_with("..."),
+            "count cut needs no byte cut: {line}"
+        );
+    }
+}
+
+#[test]
+fn resize_refusal_diagnostic_byte_truncates_long_ids() {
+    // 127-char opaque ids plus a 128-char request force the byte cap with
+    // staged rows present.
+    let mut engine = engine();
+    let ids: Vec<String> = (0..6)
+        .map(|i| format!("w{i}-{}", "p".repeat(124)))
+        .collect();
+    let windows: Vec<WindowFact> = ids
+        .iter()
+        .enumerate()
+        .map(|(i, w)| fact(w, "out-a", (i as i32) * 100))
+        .collect();
+    match engine.handle_report_legacy(&report(1, windows, &ids[0], vec![], None, None)) {
+        LegacyWorldOutcome::Accepted(_) => {}
+        other => panic!("base accepted, got {other:?}"),
+    }
+    let total = staged_domain_rows(&engine, &ids[0]);
+    let mut probe = report(
+        2,
+        ids.iter()
+            .enumerate()
+            .map(|(i, w)| fact(w, "out-a", (i as i32) * 100))
+            .collect(),
+        &ids[0],
+        vec![],
+        Some(2),
+        Some(WorldCommand::Operation(CoreCommand::Resize {
+            window: ids[0].clone(),
+            direction: "left".to_owned(),
+            mode: "outwards".to_owned(),
+            press_index: 0,
+        })),
+    );
+    probe.request_id = "r".repeat(128);
+    let line = engine
+        .resize_refusal_diagnostic(&probe, "pair-below-minimum")
+        .expect("diagnostic");
+    assert_eq!(line.len(), 960, "byte cap is exact");
+    assert!(line.ends_with("..."), "cut marker: {line:?}");
+    assert!(!line.contains('\n'));
+    assert!(
+        line.contains(&format!("rowsTotal={total}")),
+        "counts precede the cut"
+    );
+    assert!(line.contains("internal=pair-below-minimum"));
+}
+
+fn v4ingress(fg: &str) -> PresentationIngressV4 {
+    PresentationIngressV4 {
+        foreground: fg.to_owned(),
+        foreground_minimized: Some(false),
+        foreground_maximized: Some(false),
+        foreground_fullscreen: Some(false),
+        foreground_host_hidden: Some(false),
+        foreground_hidden_workspace: Some(false),
+        foreground_frame: if fg.is_empty() {
+            None
+        } else {
+            Some(rect(0, 0, 40, 90))
+        },
+        chord_held: false,
+        move_window: String::new(),
+        pager_order: Vec::new(),
+        pager_frames: Vec::new(),
+        witness: None,
+        foreground_out: if fg.is_empty() {
+            None
+        } else {
+            Some(OutputId("out-a".to_owned()))
+        },
+    }
+}
+
+fn v4report(
+    seq: u64,
+    windows: Vec<WindowFact>,
+    focused: &str,
+    command_seq: Option<u64>,
+    command: Option<WorldCommand>,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
+        adapter_incarnation: "adapter-1".to_owned(),
+        core_generation: "gen-1".to_owned(),
+        observation_seq: seq,
+        request_seq: seq,
+        request_id: format!("req-{seq}"),
+        command_seq,
+        command,
+        screens: vec![screen("out-a", 0)],
+        held_screens: Vec::new(),
+        windows,
+        held_windows: Vec::new(),
+        closed: Vec::new(),
+        native: Vec::new(),
+        held_native: Vec::new(),
+        cursor: None,
+        cursor_hit: None,
+        focused_global: focused.to_owned(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
+        primary_output: None,
+        inventory_complete: true,
+        gesture_barrier: false,
+        gesture: None,
+        monotonic_ms: 0,
+        frames: Vec::new(),
+        member_attempts: Vec::new(),
+        view_attempts: Vec::new(),
+        clear_attempts: Vec::new(),
+        creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
+        state_attempts: Vec::new(),
+        focus_feedback: Vec::new(),
+        presentation: PresentationRowV4::Valid(v4ingress(focused)),
+        intent_records: Vec::new(),
+        renderer_input: None,
+    }
+}
+
+#[test]
+fn keyboard_resize_singleton_no_neighbor_v4_stays_operation_refused() {
+    let mut engine = engine();
+    match engine.handle_report_v4_for_test(&v4report(
+        1,
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        None,
+        None,
+    )) {
+        Ok(_) => {}
+        Err((kind, message)) => panic!("v4 base accepted, got {kind}: {message}"),
+    }
+    match engine.handle_report_v4_for_test(&v4report(
+        2,
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        Some(2),
+        Some(WorldCommand::Operation(CoreCommand::Resize {
+            window: "w0".to_owned(),
+            direction: "left".to_owned(),
+            mode: "outwards".to_owned(),
+            press_index: 0,
+        })),
+    )) {
+        Ok(reply) => assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused
+            }),
+            "v4 no-neighbor resize maps to operation-refused"
+        ),
+        Err((kind, message)) => panic!("v4 refusal maps in-band, got {kind}: {message}"),
+    }
 }
