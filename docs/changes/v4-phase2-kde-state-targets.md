@@ -355,3 +355,22 @@
   Adapter typechecking, 1148/1148 tests with zero skips and the unscoped/non-trace
   build pass. Native state transitions and startup recovery remain live proof
   work, not established by these offline gates.
+
+## Corrected-code observation; native proof incomplete
+
+- Fresh occupancy included sticky shell windows across the entire existing
+  desktop roster; the fixture workspace was appended beyond that roster.
+  Native fixture facts were collected only after the exact fixture-class check.
+- The helper lifecycle gate failed: it invoked the exact script's `stop`, then
+  required `unloadScript` to return true; the latter returned false. Pinned
+  KWin 6.8.1 source shows `AbstractScript::stop()` schedules deletion and
+  `unloadScript()` returns false when the named script is already absent.
+  Subsequent absence checks do not make the failed run accepted evidence.
+- The retained corrected-code startup capture contains a correlated successful
+  native preimage read and positive `preimage-seed outcome=ok` line, alongside
+  the existing handled degraded-corrupt intent read. This is an observation,
+  not accepted live feature proof. No native state toggle or recovery journey
+  ran, and none of their remaining acceptance conditions is closed.
+- Exact controller, Planner, fixture and capture teardown completed; dev status
+  is down and the unscoped/non-trace bundle is restored. The native proof remains
+  incomplete and this note remains active.
