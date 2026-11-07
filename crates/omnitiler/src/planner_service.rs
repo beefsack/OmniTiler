@@ -16,10 +16,12 @@
 //! persistence beyond the session-scoped opaque intent snapshot plus the
 //! separate native preimage snapshot, no
 //! tray coupling, no autostart, no native mutation. Bounded single-flight
-//! endpoint handling via independent world-capture and intent non-queuing
-//! async locks (the query/command routes are short broker critical sections
-//! under the backend mutex and never take the capture lock, so they stay
-//! responsive during a capture flight). Name acquisition uses `DoNotQueue`;
+//! endpoint handling via independent world-capture, intent, and preimage
+//! non-queuing async locks (the query/command routes are short broker
+//! critical sections under the backend mutex and never take the capture
+//! lock, so they stay responsive during a capture flight; the intent and
+//! preimage slots persist to different files and never exclude each other,
+//! so back-to-back seed reads admit together). Name acquisition uses `DoNotQueue`;
 //! name loss is terminal. Capture/discovery calls authorize fail-closed: the
 //! caller unique name's Unix UID must equal the Planner geteuid AND the
 //! caller must be the current KWin unique owner (single live sender). The
@@ -160,6 +162,13 @@ pub struct PlannerEndpoint {
     /// settled-intent call cannot make `DescribeWorld` go busy. Concurrent
     /// intent calls fail fast as busy on this mutex instead of queueing.
     intent_lock: Arc<async_lock::Mutex<()>>,
+    /// Separate preimage single-flight: the native-preimage slot uses its
+    /// own non-queuing mutex, independent of the opaque-intent mutex and the
+    /// world lock. The two slots persist to different files with different
+    /// temp prefixes through atomic replace, so they need no cross-store
+    /// exclusion; back-to-back seed reads (intent plus preimage) admit
+    /// together instead of the second surfacing busy.
+    preimage_lock: Arc<async_lock::Mutex<()>>,
 }
 
 impl PlannerEndpoint {
@@ -170,6 +179,7 @@ impl PlannerEndpoint {
             intent_store: FloatIntentStore::from_runtime_dir(),
             preimage_store: NativePreimageStore::from_runtime_dir(),
             intent_lock: Arc::new(async_lock::Mutex::new(())),
+            preimage_lock: Arc::new(async_lock::Mutex::new(())),
         }
     }
 
@@ -182,6 +192,7 @@ impl PlannerEndpoint {
             intent_store: Some(FloatIntentStore::with_root(root.clone())),
             preimage_store: Some(NativePreimageStore::with_root(root)),
             intent_lock: Arc::new(async_lock::Mutex::new(())),
+            preimage_lock: Arc::new(async_lock::Mutex::new(())),
         }
     }
 
@@ -195,6 +206,7 @@ impl PlannerEndpoint {
             intent_store: None,
             preimage_store: None,
             intent_lock: Arc::new(async_lock::Mutex::new(())),
+            preimage_lock: Arc::new(async_lock::Mutex::new(())),
         }
     }
 }
@@ -239,14 +251,17 @@ async fn resolve_intent_namespace(connection: &zbus::Connection) -> Option<Inten
     IntentNamespace::parse(&bus_id, &owner)
 }
 
-/// Shared admission gate for the intent methods: bounded non-queuing
-/// single-flight on the intent lock (never the plan lock, so a settled-intent
-/// call awaiting credential/namespace queries cannot make the regular plan
-/// route go busy) with same-UID verification and connection-loss checks.
-/// Returns the held guard plus the verified sender on admission, an
-/// in-band-rejection marker for authorization failures (each method re-emits
-/// it in its own wire version), or a terminal D-Bus error for busy/closed/
-/// oversize. Early exits reuse the fixed uncorrelated summaries.
+/// Shared admission gate for the intent and preimage methods: bounded
+/// non-queuing single-flight on the caller-supplied per-store lock (never
+/// the plan lock, so a settled call awaiting credential/namespace queries
+/// cannot make the regular plan route go busy) with same-UID verification
+/// and connection-loss checks. Intent routes pass the intent lock,
+/// preimage routes the preimage lock; the two slots persist to different
+/// files and never exclude each other. Returns the held guard plus the
+/// verified sender on admission, an in-band-rejection marker for
+/// authorization failures (each method re-emits it in its own wire
+/// version), or a terminal D-Bus error for busy/closed/oversize. Early
+/// exits reuse the fixed uncorrelated summaries.
 enum IntentAdmission<'a> {
     Admitted {
         _guard: async_lock::MutexGuard<'a, ()>,
@@ -257,14 +272,14 @@ enum IntentAdmission<'a> {
 }
 
 async fn admit_intent_call<'a>(
-    endpoint: &'a PlannerEndpoint,
+    store_lock: &'a Arc<async_lock::Mutex<()>>,
     request_len: usize,
     caller: Option<&str>,
     connection: &zbus::Connection,
 ) -> IntentAdmission<'a> {
     use crate::float_intent_store::emit_intent_diag;
     if request_len > INTENT_MAX_REQUEST_BYTES {
-        let Some(_guard) = endpoint.intent_lock.try_lock() else {
+        let Some(_guard) = store_lock.try_lock() else {
             emit_intent_diag(plan_early_exit_summary(PlanEarlyExit::Busy));
             return IntentAdmission::Fail(PlannerError::Unavailable("planner is busy".to_owned()));
         };
@@ -274,7 +289,7 @@ async fn admit_intent_call<'a>(
             "request exceeds size bound".to_owned(),
         ));
     }
-    let Some(_guard) = endpoint.intent_lock.try_lock() else {
+    let Some(_guard) = store_lock.try_lock() else {
         emit_intent_diag(plan_early_exit_summary(PlanEarlyExit::Busy));
         return IntentAdmission::Fail(PlannerError::Unavailable("planner is busy".to_owned()));
     };
@@ -747,14 +762,18 @@ impl PlannerEndpoint {
             read_degraded_reply, read_ok_reply,
         };
         let caller = header.sender().map(ToString::to_string);
-        let (guard, sender) =
-            match admit_intent_call(self, request.len(), caller.as_deref(), emitter.connection())
-                .await
-            {
-                IntentAdmission::Admitted { _guard, sender } => (_guard, sender),
-                IntentAdmission::Reject => return Ok(intent_rejection("-", "unauthorized")),
-                IntentAdmission::Fail(error) => return Err(error),
-            };
+        let (guard, sender) = match admit_intent_call(
+            &self.intent_lock,
+            request.len(),
+            caller.as_deref(),
+            emitter.connection(),
+        )
+        .await
+        {
+            IntentAdmission::Admitted { _guard, sender } => (_guard, sender),
+            IntentAdmission::Reject => return Ok(intent_rejection("-", "unauthorized")),
+            IntentAdmission::Fail(error) => return Err(error),
+        };
         // Emits the terminal summary after the intent lock releases, then
         // returns the in-band reply. Logging never changes the result.
         let finish = |guard: async_lock::MutexGuard<'_, ()>,
@@ -881,14 +900,18 @@ impl PlannerEndpoint {
             write_failed_reply, write_stored_reply,
         };
         let caller = header.sender().map(ToString::to_string);
-        let (guard, sender) =
-            match admit_intent_call(self, request.len(), caller.as_deref(), emitter.connection())
-                .await
-            {
-                IntentAdmission::Admitted { _guard, sender } => (_guard, sender),
-                IntentAdmission::Reject => return Ok(intent_rejection("-", "unauthorized")),
-                IntentAdmission::Fail(error) => return Err(error),
-            };
+        let (guard, sender) = match admit_intent_call(
+            &self.intent_lock,
+            request.len(),
+            caller.as_deref(),
+            emitter.connection(),
+        )
+        .await
+        {
+            IntentAdmission::Admitted { _guard, sender } => (_guard, sender),
+            IntentAdmission::Reject => return Ok(intent_rejection("-", "unauthorized")),
+            IntentAdmission::Fail(error) => return Err(error),
+        };
         // Emits the terminal summary after the intent lock releases, then
         // returns the in-band reply. Logging never changes the result.
         let finish = |guard: async_lock::MutexGuard<'_, ()>,
@@ -1015,14 +1038,18 @@ impl PlannerEndpoint {
             preimage_rejection,
         };
         let caller = header.sender().map(ToString::to_string);
-        let (guard, sender) =
-            match admit_intent_call(self, request.len(), caller.as_deref(), emitter.connection())
-                .await
-            {
-                IntentAdmission::Admitted { _guard, sender } => (_guard, sender),
-                IntentAdmission::Reject => return Ok(preimage_rejection("-", "unauthorized")),
-                IntentAdmission::Fail(error) => return Err(error),
-            };
+        let (guard, sender) = match admit_intent_call(
+            &self.preimage_lock,
+            request.len(),
+            caller.as_deref(),
+            emitter.connection(),
+        )
+        .await
+        {
+            IntentAdmission::Admitted { _guard, sender } => (_guard, sender),
+            IntentAdmission::Reject => return Ok(preimage_rejection("-", "unauthorized")),
+            IntentAdmission::Fail(error) => return Err(error),
+        };
         // Emits the terminal summary after the intent lock releases, then
         // returns the in-band reply. Logging never changes the result.
         let finish = |guard: async_lock::MutexGuard<'_, ()>,
@@ -1149,14 +1176,18 @@ impl PlannerEndpoint {
             preimage_stored_reply,
         };
         let caller = header.sender().map(ToString::to_string);
-        let (guard, sender) =
-            match admit_intent_call(self, request.len(), caller.as_deref(), emitter.connection())
-                .await
-            {
-                IntentAdmission::Admitted { _guard, sender } => (_guard, sender),
-                IntentAdmission::Reject => return Ok(preimage_rejection("-", "unauthorized")),
-                IntentAdmission::Fail(error) => return Err(error),
-            };
+        let (guard, sender) = match admit_intent_call(
+            &self.preimage_lock,
+            request.len(),
+            caller.as_deref(),
+            emitter.connection(),
+        )
+        .await
+        {
+            IntentAdmission::Admitted { _guard, sender } => (_guard, sender),
+            IntentAdmission::Reject => return Ok(preimage_rejection("-", "unauthorized")),
+            IntentAdmission::Fail(error) => return Err(error),
+        };
         // Emits the terminal summary after the intent lock releases, then
         // returns the in-band reply. Logging never changes the result.
         let finish = |guard: async_lock::MutexGuard<'_, ()>,
@@ -1477,6 +1508,11 @@ mod tests {
         let endpoint = PlannerEndpoint::new();
         let cloned = endpoint.clone();
         assert!(Arc::ptr_eq(&endpoint.intent_lock, &cloned.intent_lock));
+        assert!(Arc::ptr_eq(&endpoint.preimage_lock, &cloned.preimage_lock));
+        assert!(
+            !Arc::ptr_eq(&endpoint.intent_lock, &endpoint.preimage_lock),
+            "intent and preimage slots admit on independent locks"
+        );
         assert_eq!(
             endpoint.world.generation(),
             cloned.world.generation(),
@@ -2033,6 +2069,63 @@ mod tests {
         .expect("write reply is JSON");
         assert_eq!(stored["outcome"], "stored");
         assert_eq!(stored["stored"], 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn private_bus_cross_store_reads_do_not_contend_same_store_stays_busy() {
+        use crate::float_intent_store::READ_METHOD as INTENT_READ;
+        use crate::native_preimage_store::READ_METHOD as PREIMAGE_READ;
+        let Some(bus) = PrivateBus::start() else {
+            panic!("dbus-daemon unavailable for hermetic cross-store test");
+        };
+        let Some(server) = bus.session() else {
+            panic!("private bus daemon never listened");
+        };
+        let Some(root) = fresh_intent_root() else {
+            panic!("temp dir unavailable for hermetic cross-store test");
+        };
+        let endpoint = PlannerEndpoint::with_intent_root(root.clone());
+        // Simulate one in-flight intent read holding its single-flight
+        // guard across the endpoint authorization await: a second read on
+        // the other store must still be admitted (independent locks), while
+        // a second read on the same store must stay busy. The guard is held
+        // through a cloned endpoint so the serving endpoint can move into
+        // the object server; the follow-up calls run the real D-Bus
+        // admission path including the same-UID plus KWin-owner awaits.
+        let held = endpoint.clone();
+        let _intent_guard = held
+            .intent_lock
+            .try_lock()
+            .expect("intent lock idle in test");
+        serve_intent_endpoint(&server, endpoint);
+        let Some(client) = bus.session() else {
+            panic!("private bus daemon dropped the second connection");
+        };
+        claim_kwin_name(&client);
+        let proxy = intent_proxy(&client);
+        // Same store stays non-queuing busy while its guard is held.
+        let busy: Result<(String,), zbus::Error> = proxy.call(
+            INTENT_READ,
+            &(r#"{"v":2,"correlation_id":"intent-cross-busy"}"#.to_owned(),),
+        );
+        let busy_error = busy.expect_err("same-store intent read must stay busy");
+        assert!(
+            busy_error.to_string().contains("planner is busy"),
+            "same-store busy keeps the fixed message, got {busy_error}"
+        );
+        // Cross store must not contend the held intent guard: the real
+        // preimage read runs its own admission plus authorization awaits
+        // and answers ok (missing content reads plain empty).
+        let cross: Result<(String,), zbus::Error> = proxy.call(
+            PREIMAGE_READ,
+            &(r#"{"v":1,"correlation_id":"preimage-cross-1"}"#.to_owned(),),
+        );
+        let (reply,) = cross.expect("preimage read must not contend the intent lock");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&reply).expect("preimage reply is JSON");
+        assert_eq!(parsed["outcome"], "ok");
+        assert_eq!(parsed["correlation_id"], "preimage-cross-1");
         let _ = std::fs::remove_dir_all(&root);
     }
 

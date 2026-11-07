@@ -305,3 +305,53 @@
   with zero skips and the unscoped/non-trace build pass. Fixtures, Rust and
   native-effect sources remain unchanged. Fixture-only native proof remains
   next; no live testing has run.
+
+## Native proof blocked by storage admission
+
+- A fixture-only run established exact sentinel/PID/native-UUID joins, scoped
+  controller evaluation and accepted two-window layout dispatches. Native state
+  transitions and startup restoration were not exercised, so their acceptance
+  remains open.
+- The generation-bound entry starts `ReadFloatIntent` and `ReadNativePreimage`
+  back-to-back. Both share the service's non-queuing `intent_lock`, held across
+  asynchronous credential/namespace checks. The captured native seed call
+  received `Unavailable: planner is busy` while the intent seed was outstanding.
+  KWin did not deliver that D-Bus error to the script callback; the native seed
+  subsequently timed out and correctly disabled native lanes without retry.
+- Source review confirms the admission collision occurs before reading the
+  native preimage file; the separate intent seed's degraded-corrupt result does
+  not establish its cause. The same shared admission covers both stores' writes,
+  so a correction must address cross-store contention beyond startup timing.
+- Controller, Planner and fixture teardown completed, dev status is down and
+  the unscoped/non-trace bundle is restored. No native transition, persistence
+  or recovery pass is claimed; this note remains active.
+
+## Verified independent storage admission
+
+- Opaque intent and native preimage now use separate service admission locks.
+  Each remains bounded, non-queuing and shared across endpoint clones, with
+  unchanged same-UID/current-KWin authorization. Both remain independent of the
+  world lock. Distinct files and atomic-replace temporary prefixes require no
+  cross-store exclusion; no adapter coordination, retries or wire changes were
+  introduced.
+- A private-bus regression fails before the correction: while the intent lock
+  is held across real admission/authorization calls, the native read receives
+  busy. It passes after the split while the same-store read still receives
+  busy. Independent review finds no serious unresolved correction finding.
+- Client audit does not establish one total outstanding call per store across
+  generations. Seed supersession cannot cancel a host RPC; a new seed can overlap
+  an old write. Intent persists also permit concurrent writes. Native flushes
+  serialize until acknowledgement or deadline, but a timed-out RPC can outlive
+  that deadline. Same-store busy still degrades/disables native lanes or fails
+  intent persistence, without gating ordinary tiling. An old native write's
+  timeout can disable its lanes after generation rotation. Occurrence frequency
+  is unmeasured; no additional coordination or retry mechanism was added.
+- Pinned KWin 6.8.1 scripting source logs D-Bus errors and returns without
+  invoking the JS callback; there is no error-callback parameter. Immediate
+  correlated error settlement is therefore unavailable through this API. The
+  existing bounded timeout and fail-closed result remain unchanged.
+- Formatting, scoped core/protocol/service tests, locked build and all-target
+  clippy with warnings denied pass; only `workspace_unsafe_posture` is excluded.
+  Adapter typechecking, 1148/1148 tests with zero skips and the unscoped/non-trace
+  build pass. Native state transitions and startup recovery remain live proof
+  work, not established by these offline gates.
