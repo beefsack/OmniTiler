@@ -53,7 +53,9 @@ default above.
   proceeds only after independent checkpoint isolation proof (exact private
   `HOME`/`XDG_*`/`KDEHOME`/bus/socket plus canonical wrapper identity,
   PID/start-tick, and workdir, with no host config path retained in the
-  checkpoint environ/cmdline/known FDs/maps). Checkpoint-only: the proof
+  checkpoint environ/cmdline/known FDs/maps). If wrapper privileges prevent
+  checkpoint reads, identify its underlying executable and choose that direct
+  launch route before starting. Checkpoint-only: the proof
   validates retained state at that instant and does not prove against host
   config opened then closed (or mapped then unmapped) before the checkpoint.
   Confirm that the nested run created and used its own private `kwinrc`.

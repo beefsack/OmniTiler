@@ -369,6 +369,24 @@
   not retained as accepted evidence; the partial run does not close K5/R20.
   Receipt-bound teardown removed the owned controller, effect and processes;
   process absence and an empty private compositor runtime were verified. The
-  unscoped non-trace bundle was rebuilt. A valid nested witness-join and normal
-  interaction measurement, the separate obsolete-helper removal and final
-  records remain pending.
+  unscoped non-trace bundle was rebuilt. A later partial nested run reported a
+  floating fixture resize, foreground change, minimize and maximize hide/re-arm,
+  but did not isolate frame-follow from a broker round trip. Minimize restore
+  and version-mismatch live checks were not completed. That run is not accepted
+  as native continuity or K5/R20 evidence. The separate obsolete-helper removal
+  and final offline records remain pending.
+- Open user-run native acceptance check: tracked-frame border follow without a
+  broker round trip; foreground change to the non-active fixture;
+  minimize/restore; maximize eligibility hide/re-arm; version mismatch quietly
+  hiding border, underlay and preview while tiling continues; the K5/R20
+  witness/native-chain join; and genuine interactive move/resize dropout rate
+  and duration. All live native gates remain open, not accepted results.
+  Recheck with the native effect delivered through `just dev-native-setup` and
+  a fresh login (or the chosen supported delivery route). Use
+  `just dev trace --scope-class OmniTilerTestWindow` for the scoped trace run.
+  Retain timestamped
+  `omnitiler:active-border:visible`, presentation setter/transition and world
+  trace lines, correlated with the physical gesture and native frame changes.
+  Record each unexpected hidden interval and its duration separately from
+  expected foreground, minimize and maximize vetoes. Keep this note active
+  until the complete native check is resolved.
