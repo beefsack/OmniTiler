@@ -72,13 +72,6 @@
 - Status: active, 2026-10-27
 - Evidence: [Ordering and Races](../principles.md#ordering-and-races), [Stage 5 outcome](../changes/kde-world-v2-port.md#stage-5-renderer-causal-freshness-accepted-offline-2026-10-27).
 
-### KDE lifecycle and accepted vocabulary
-- Decision: KWin `deleted` maps to close; `managed=false` (override-redirect) maps to absent. Preserve raw facts for Rust normalization; select no core controllability/liveness fields. Accepted KDE-only names include `with_focused_fullscreen_presentation_suspension()`, `suspended_output`/`suspendedOutput`, `structuralFloor`, invalidation witnesses/coverage fields and `RetainedMembership { membership, eligible }`; these are not shared-core protocol.
-- Why: not recorded.
-- Assumes / revisit if: lifecycle mapping remains a tentative technical choice; explicit tile intent overrides automatic transient float.
-- Status: tentative, 2026-10-26
-- Evidence: [N6 outcome](../changes/kde-world-v2-port.md#n6-core-intents-outcome-and-blocker-2026-10-26), [KDE port decisions](../changes/kde-world-v2-port.md).
-
 ### Other accepted KDE package decisions
 - Decision: accept Stage 6 bounded `windowAt` decoding (count one) and border-selector test seam; Stage 7 read-only per-output desktop detection, navigation-only Virtual Desktops opener and tooltip-distinguished shared labels.
 - Why: not recorded.

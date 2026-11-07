@@ -18,6 +18,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - 2026-11-03: Pending native maximize-on/off is held while newer fullscreen-on is pending or active, then applied after exit; settled maximize preservation and explicit R-MAX-11 replacement remain unchanged ([fullscreen and maximize overlays](decisions/window-state.md#fullscreen-and-maximize-overlays)).
 - 2026-11-04: Focusless switches use focus=unproven and complete once their visibility obligations are satisfied, including zero-member and native-owned selections; focus-bearing switches still require proven focus ([focusless switch completion](decisions/workspaces.md#focusless-switch-completion)).
 - 2026-11-04: After presentation revision, complete two-way v4 codecs/legacy-envelope removal/version bump, then a development-only KDE vertical slice before scaled metrics, reconnect/rehome and remaining core work. Core quality takes priority; host findings require shared-core design discussion, never KDE-specific workarounds. Sequential platform conformance and live release gates remain unchanged ([v4 migration order and principles](decisions/contract.md#contract-authority-and-v4-migration)).
+- 2026-11-08: User decision: retire the tentative KDE lifecycle and accepted vocabulary entry. Lifecycle normalization stays documented in the [KDE port notes](porting/kde-port-notes.md); the name list was stale and not product policy.
 
 ## Tentative decisions
 
