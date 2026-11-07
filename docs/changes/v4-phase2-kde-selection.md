@@ -4,8 +4,8 @@
 
 - Port workspace selection and its acknowledgement/correlation to the native
   KDE adapter while retaining K1 ordinary tiling. Status: direct
-  resize/orientation repair passes offline gates; selection acceptance scope
-  needs resolution against its deferred focus/arrival dependency.
+  resize/orientation repair passes offline gates; selection native proof and
+  open-binding verification remain pending.
 - Start from the [K1 closeout](archive/v4-phase2-kde-port.md#k1-final-outcome).
   The [phase-1 note](v4-phase1-core-protocol.md) remains active and unchanged.
 - First repair resize and toggle-orientation emitters to use the existing direct
@@ -13,8 +13,10 @@
 
 ## Scope and non-goals
 
-- Selection command ingress, native selector execution, exact original view
-  attempt retention and terminal acknowledgement/correlation belong here.
+- Product decision: this slice covers native selector/readback, exact original
+  view-attempt correlation and focusless terminal proof. Focus-bearing terminal
+  completion stays in the arrival/focus-feedback slices, preserving their order.
+  Core completion is unchanged; no acknowledgements or feedback are fabricated.
 - Retain the authenticated v4 connection, native observation fences, opaque
   intent storage, core-owned policy and ordinary tile/reflow path.
 - Arrival, focus feedback, state targets, scaled metrics, reconnect/rehome,
@@ -39,6 +41,9 @@
 - Selection reaches the intended native desktop with authoritative native
   observations and correlated view attempts/terminal events, not setter success.
 - Ordinary fixture tiling and reflow continue across selection. No new skips.
+- An open populated-selection binding must not block later selections, commands,
+  capture/reply flow or tiling. Retention must remain bounded under repeated
+  populated switches; missing/pending requester outcomes are reported exactly.
 - Sequential declared-environment adapter typecheck/build/full tests and widened
   scoped Rust tests/build/clippy/formatting remain green; unsafe workspace tests,
   ignored forcing and legacy fixture generation are excluded.
@@ -74,7 +79,31 @@
   Proven focus completion also requires arrival readiness. Both ports belong to
   later slices; no synthetic success, changed core predicate or local settlement
   is permitted here.
-- Open scope question: whether this slice accepts native selector/readback and
-  view-attempt correlation with focusless terminal proof, explicitly retaining
-  populated-workspace focus settlement as deferred, or must wait for the later
-  arrival/focus-feedback work. No dependency expansion has been implemented.
+- The accepted scope above retains populated-workspace focus settlement as
+  deferred. Native switching and non-wedging bounded retention still require
+  direct proof before acceptance.
+
+## Open-binding evidence
+
+- Core source replaces the prior view flight per output in `retain_view_inner`,
+  prunes overlapping selection bindings on changed selection, and stores at
+  most one selection binding per focus output. Native target/raw maps are
+  bounded by the affected outputs; supersession silently drops the old parent.
+- A new direct-v4 core regression passes four alternating populated switches,
+  each with a fresh prior native echo and native-tagged attempt. It verifies one
+  retained binding/scope/view flight, empty feedback and terminal lanes, fresh
+  command correlation, subsequent observation acceptance and a real orientation
+  frame change while the final focus-bearing binding remains open.
+- Initial harness failures used a stale native current (making a selection
+  redundant), then a non-focused orientation subject (legitimate refusal).
+  Coherent native echoes and the actual focused subject correct those inputs;
+  no product behavior or completion rule changed.
+- Widened scoped Rust tests pass with the new regression and both stage5 proofs
+  enabled. Actual private-bus ownership, opaque storage, queue/take and wait-wake
+  outcomes execute without skip diagnostics. Scoped build, strict all-target
+  clippy and formatting pass; native proof and integrated review remain open.
+- Degraded protocol outcome: accepted select replies can carry `result:null`
+  and `switchSettled:[]` indefinitely while their focus-bearing binding is open.
+  The empty terminal lane is not a failed terminal or a selection-success
+  receipt. A superseded open parent emits no terminal. Queue/take readiness is
+  report-result delivery, not switch completion; native proof remains required.

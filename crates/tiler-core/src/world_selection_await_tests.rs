@@ -7906,6 +7906,300 @@ fn host_owned_focus_bearing_supersession_drops_without_event() {
 }
 
 #[test]
+fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switches() {
+    // KDE v4 wedge guard on the real v4 admission path: the lane always sends
+    // `focusFeedback: []`, and each report carries the previous selection's
+    // fresh native echo plus its native-tagged attempt.
+    let host_v4 = |seq: u64,
+                   windows: Vec<WindowFact>,
+                   current: &str,
+                   command_seq: Option<u64>,
+                   command: Option<WorldCommand>,
+                   focused: &str,
+                   view_attempts: Vec<crate::world_report::ViewAttempt>|
+     -> crate::world_report::WorldReportV4 {
+        crate::world_report::WorldReportV4 {
+            contract_version: crate::world_report::WORLD_CONTRACT_VERSION_V4,
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            observation_seq: seq,
+            request_seq: seq,
+            request_id: format!("req-{seq}"),
+            command_seq,
+            command,
+            screens: vec![screen("out-a", 0)],
+            held_screens: Vec::new(),
+            windows,
+            held_windows: Vec::new(),
+            closed: Vec::new(),
+            native: vec![crate::world_report::NativeObservation {
+                output: OutputId("out-a".to_owned()),
+                native_order: vec!["n0".to_owned(), "n1".to_owned()],
+                current_native: Some(current.to_owned()),
+                occupancy: vec![
+                    crate::world_report::NativeOccupancy {
+                        native: "n0".to_owned(),
+                        count: None,
+                    },
+                    crate::world_report::NativeOccupancy {
+                        native: "n1".to_owned(),
+                        count: None,
+                    },
+                ],
+            }],
+            held_native: Vec::new(),
+            cursor: None,
+            cursor_hit: None,
+            focused_global: focused.to_owned(),
+            action_foreground: None,
+            action_cached: None,
+            action_outputs: Vec::new(),
+            primary_output: None,
+            inventory_complete: true,
+            gesture_barrier: false,
+            gesture: None,
+            monotonic_ms: 0,
+            frames: Vec::new(),
+            member_attempts: Vec::new(),
+            view_attempts,
+            clear_attempts: Vec::new(),
+            creation_attempts: Vec::new(),
+            held_attempts: Vec::new(),
+            state_attempts: Vec::new(),
+            focus_feedback: Vec::new(),
+            presentation: crate::world_report::PresentationRowV4::Valid(
+                crate::world_report::PresentationIngressV4::default(),
+            ),
+            intent_records: Vec::new(),
+            renderer_input: None,
+        }
+    };
+    let accepted_v4 = |engine: &mut WorldEngine,
+                       report: &crate::world_report::WorldReportV4|
+     -> crate::world_report::WorldReplyV4 {
+        match engine.handle_report_v4_for_test(report) {
+            Ok(reply) => reply,
+            Err((kind, message)) => panic!("expected accepted v4, got {kind}: {message}"),
+        }
+    };
+    // Native-tagged attempt: logical target with native pre/post/baseline.
+    let attempt_for =
+        |op: &str, target: &str, pre: &str, post: &str| crate::world_report::ViewAttempt {
+            operation_id: op.to_owned(),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: target.to_owned(),
+            setter: FrameSetter::Accepted,
+            pre: Some(native_ref(pre)),
+            post: Some(native_ref(post)),
+            baseline: Some(native_ref(pre)),
+            attempt_ms: 7,
+        };
+    let staged = || host_proof_windows(true);
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted_v4(
+        &mut engine,
+        &host_v4(1, vec![], "n0", None, None, "", vec![]),
+    );
+    assert_eq!(
+        boot.contract_version,
+        crate::world_report::WORLD_CONTRACT_VERSION_V4
+    );
+    let away = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n1"))
+        .expect("n1-backed workspace")
+        .id
+        .clone();
+    let home = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0-backed workspace")
+        .id
+        .clone();
+    let _ = accepted_v4(
+        &mut engine,
+        &host_v4(2, staged(), "n0", None, None, "w2", vec![]),
+    );
+    let grant = accepted_v4(
+        &mut engine,
+        &host_v4(
+            3,
+            staged(),
+            "n0",
+            Some(3),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away.clone(),
+            }),
+            "w2",
+            vec![],
+        ),
+    );
+    assert_eq!(grant.effects.len(), 1);
+    assert!(grant.effects[0].await_shown);
+    assert_eq!(grant.effects[0].command_seq, Some(3));
+    assert!(grant.switch_settled.is_empty());
+    assert!(!grant.command_consumed);
+    assert!(grant.command_result.is_none());
+    let binding = engine
+        .retained_selection
+        .get(&OutputId("out-a".to_owned()))
+        .expect("selection binding retained");
+    assert!(binding.effect.is_some());
+    assert!(!binding.members.is_empty());
+    assert!(binding.switch_members.is_empty());
+    assert_eq!(binding.view_targets.len(), 1);
+    // Four populated switches: each carries the previous selection's echo
+    // plus its native-tagged attempt, then supersedes it silently.
+    let mut prev_native = "n0".to_owned();
+    let mut prev_target_native = "n1".to_owned();
+    let mut prev_op = "op-3".to_owned();
+    let mut prev_logical = away.clone();
+    for i in 0..4_u64 {
+        let seq = 4 + i;
+        let (target, focus, target_native) = if i % 2 == 0 {
+            (home.clone(), "w0", "n0".to_owned())
+        } else {
+            (away.clone(), "w2", "n1".to_owned())
+        };
+        let reply = accepted_v4(
+            &mut engine,
+            &host_v4(
+                seq,
+                staged(),
+                &prev_target_native,
+                Some(seq),
+                Some(WorldCommand::SelectWorkspace {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: target.clone(),
+                }),
+                focus,
+                vec![attempt_for(
+                    &prev_op,
+                    &prev_logical,
+                    &prev_native,
+                    &prev_target_native,
+                )],
+            ),
+        );
+        assert_eq!(
+            reply.contract_version,
+            crate::world_report::WORLD_CONTRACT_VERSION_V4
+        );
+        assert!(reply.switch_settled.is_empty());
+        assert_eq!(reply.effects.len(), 1);
+        assert!(reply.effects[0].await_shown);
+        assert_eq!(reply.effects[0].command_seq, Some(seq));
+        assert!(!reply.command_consumed);
+        assert!(reply.command_result.is_none());
+        assert_eq!(engine.retained_selection.len(), 1);
+        let binding = engine
+            .retained_selection
+            .get(&OutputId("out-a".to_owned()))
+            .expect("open binding retained");
+        assert_eq!(binding.parent_op, format!("op-{seq}"));
+        assert!(binding.effect.is_some());
+        assert!(!binding.members.is_empty());
+        assert!(binding.switch_members.is_empty());
+        assert!(binding.switch_evidence.is_empty());
+        assert_eq!(binding.view_targets.len(), 1);
+        assert!(binding.view_raw.is_empty());
+        assert!(binding.feedback.is_none());
+        assert_eq!(engine.selection_scopes.len(), 1);
+        assert!(engine.selection_targets.is_empty());
+        let views = engine
+            .retained
+            .iter()
+            .filter(|r| {
+                matches!(r.target.kind, crate::world_report::TransferKind::View)
+                    && r.target.target_output == OutputId("out-a".to_owned())
+            })
+            .count();
+        assert_eq!(views, 1);
+        assert!(
+            reply
+                .transfers
+                .iter()
+                .any(|t| t.operation_id == format!("op-{seq}"))
+        );
+        assert!(!reply.windows.is_empty());
+        for window in ["w0", "w1", "w2"] {
+            let row = reply
+                .windows
+                .iter()
+                .find(|row| row.lifetime.0 == window)
+                .unwrap_or_else(|| panic!("missing managed row {window} (iter {i})"));
+            assert!(row.effective_frame.is_some());
+        }
+        prev_native = prev_target_native;
+        prev_target_native = target_native;
+        prev_op = format!("op-{seq}");
+        prev_logical = target;
+    }
+    // Fresh observation holds the last open binding; a real orientation
+    // mutation behind it must replan frames without touching selection.
+    let frame_in = |reply: &crate::world_report::WorldReplyV4, window: &str| {
+        reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == window)
+            .unwrap_or_else(|| panic!("missing managed row {window}"))
+            .effective_frame
+    };
+    let quiet = accepted_v4(
+        &mut engine,
+        &host_v4(100, staged(), "n1", None, None, "w2", vec![]),
+    );
+    assert!(quiet.switch_settled.is_empty());
+    assert!(
+        engine
+            .retained_selection
+            .values()
+            .any(|binding| binding.parent_op == "op-7")
+    );
+    let (before1, before2) = (frame_in(&quiet, "w1"), frame_in(&quiet, "w2"));
+    let other = accepted_v4(
+        &mut engine,
+        &host_v4(
+            101,
+            staged(),
+            "n1",
+            Some(101),
+            Some(WorldCommand::Operation(
+                crate::boundary::CoreCommand::ToggleOrientation {
+                    window: "w2".to_owned(),
+                },
+            )),
+            "w2",
+            vec![],
+        ),
+    );
+    assert!(other.switch_settled.is_empty());
+    assert!(!other.command_consumed);
+    assert!(other.command_result.is_none());
+    assert!(other.effects.is_empty());
+    assert!(
+        engine
+            .retained_selection
+            .values()
+            .any(|binding| binding.parent_op == "op-7")
+    );
+    assert_eq!(engine.retained_selection.len(), 1);
+    assert_eq!(engine.selection_scopes.len(), 1);
+    let (after1, after2) = (frame_in(&other, "w1"), frame_in(&other, "w2"));
+    assert!((before1, before2) != (after1, after2));
+    for (window, frame) in [
+        ("w0", frame_in(&other, "w0")),
+        ("w1", after1),
+        ("w2", after2),
+    ] {
+        assert!(frame.is_some(), "frame planned for {window}");
+    }
+}
+
+#[test]
 fn host_owned_focus_bearing_close_drops_without_event() {
     let (mut engine, _away, _grant) = host_focus_grant();
     // Explicit close of the focus target drops the finite grant without an
