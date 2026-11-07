@@ -148,3 +148,16 @@
 - This needs a contract/core publication resolution before target execution is
   enabled. Separate client storage/recovery plumbing can proceed independently;
   no core, wire fixture or state-target schema change has been made here.
+- The selected resolution direction is core-only: accept the revision of the
+  acted-on publication, without changing the immutable wire shape or adding a
+  counter/history. The proposed interval from binding revision through latest
+  publication is not sufficient by itself: the same binding can publish Hold
+  between Controlled replies. The existing fullscreen
+  `held_scope_holds_entry_then_healthy_recovery_resumes_tuple` regression passes
+  and explicitly proves this unchanged-revision Hold/Controlled sequence.
+- Receipt-time readability is not publication-time authority. Rejecting attempts
+  merely because their receiving observation is held would discard legitimate
+  earlier evidence, contrary to retained settlement. Existing reply caches hold
+  only the latest publication, not authority for arbitrary intervening revisions.
+  A safe narrowing of the interval still needs resolution; no core settlement,
+  contract wording or correlation discriminator has been changed on that premise.
