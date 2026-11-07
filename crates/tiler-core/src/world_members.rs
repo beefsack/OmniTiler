@@ -267,6 +267,73 @@ impl WorldEngine {
         self.prune_members_off_live(&live_outputs);
     }
 
+    /// D23 option B: forget the restore slot on the first confirmed
+    /// per-window minimized rehome (receipt-proven staged home differs
+    /// from a retained slot home). Unknown receipts, in-flight window
+    /// transfers, migrations, displaced sources, and closes never
+    /// confirm. Applied post-sweep, so same-turn minimize+rehome is
+    /// covered too. Revision-neutral.
+    pub(crate) fn confirmed_minimized_rehomes(&self) -> Vec<(DomainKey, WindowId)> {
+        if !self.staged.observation.inventory_complete {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (window, fact) in &self.staged.facts {
+            if fact.minimized != Some(true) {
+                continue;
+            }
+            if self.staged.closes.contains(window) {
+                continue;
+            }
+            let Some(output) = fact.output.clone() else {
+                continue;
+            };
+            let Some(receipt) = self.effective_logical_receipt(fact) else {
+                continue;
+            };
+            if !self.known_workspace(&output, &receipt) {
+                continue;
+            }
+            let Some(dest) = self.staged.homing.get(window) else {
+                continue;
+            };
+            if dest.output != output || dest.workspace.0 != receipt {
+                continue;
+            }
+            if self.retained.iter().any(
+                |retained| matches!(&retained.target.kind, TransferKind::Window(w) if w == window),
+            ) {
+                continue;
+            }
+            for key in self.engine.domain_keys() {
+                if key == *dest {
+                    continue;
+                }
+                if self.displaced.contains_key(&key.output.0) {
+                    continue;
+                }
+                let slot_here = self
+                    .engine
+                    .session(&key)
+                    .is_some_and(|session| session.minimized_slot(window).is_some());
+                if !slot_here {
+                    continue;
+                }
+                if self.retained.iter().any(|retained| {
+                    matches!(retained.target.kind, TransferKind::Migration)
+                        && (retained.source_workspace == key.workspace.0
+                            && retained.source_output == key.output
+                            || retained.target.target_workspace == dest.workspace.0
+                                && retained.target.target_output == dest.output)
+                }) {
+                    continue;
+                }
+                out.push((key, window.clone()));
+            }
+        }
+        out
+    }
+
     /// Read-only hostability probe for [`WorldEngine::relocate_session_for_move`]:
     /// whether the relocate would succeed without mutating. Empty or absent
     /// sources always host (nothing stateful to carry); otherwise the target

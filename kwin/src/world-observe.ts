@@ -165,6 +165,12 @@ export interface ObservedScreenFact {
     outer: number;
     complete: boolean;
     primary: boolean;
+    // Neutral LogicalOutput manufacturer/model/serialNumber (v6.8.1):
+    // null when unknown/unreadable/overbound, never ""; overbound holds
+    // the screen incomplete. Connector rides null (report lane).
+    manufacturer: string | null;
+    model: string | null;
+    serial: string | null;
 }
 
 export interface ObservedViewFact {
@@ -701,6 +707,24 @@ function readScreenGeometry(ref: object): { x: number; y: number; w: number; h: 
         return null;
     }
     return { x, y, w, h };
+}
+
+// LogicalOutput manufacturer/model/serialNumber (v6.8.1 src/core/output.h,
+// src/utils/edid.cpp, src/backends/drm/drm_connector.cpp): native unknown
+// is "" on all three arms, read as null. Overbound text passes through;
+// the screen row site holds the screen for it, never truncates.
+function readScreenIdentityText(ref: object, property: string): string | null {
+    let raw: unknown;
+    try {
+        raw = readProp(ref, property);
+    } catch (error) {
+        void error;
+        return null;
+    }
+    if (typeof raw !== "string" || raw === "") {
+        return null;
+    }
+    return raw;
 }
 
 // Capture the full world: every output's current desktop plus every known
@@ -1521,11 +1545,23 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         // The core refuses partial screen rectangles outright: an
         // unreadable work area makes the whole screen explicitly
         // unreadable (never a fabricated work area, never a partial pair).
-        const readable = full !== null && work !== null;
+        // Overbound identity (contract <=256 UTF-8 bytes) holds the same
+        // way: complete=false with null arms, never a silent null on a
+        // complete screen.
+        const manufacturer = readScreenIdentityText(s.ref, "manufacturer");
+        const model = readScreenIdentityText(s.ref, "model");
+        const serial = readScreenIdentityText(s.ref, "serialNumber");
+        const identityOverbound = [manufacturer, model, serial].some(
+            (v) => v !== null && utf8ByteLength(v) > 256,
+        );
+        const readable = full !== null && work !== null && !identityOverbound;
         return {
             out: s.name, full: readable ? full : null, work: readable ? work : null, gap, outer,
             complete: readable,
             primary: activeName !== null && activeName === s.name,
+            manufacturer: identityOverbound ? null : manufacturer,
+            model: identityOverbound ? null : model,
+            serial: identityOverbound ? null : serial,
         };
     });
     const windowFacts: RawWindowFact[] = rawFacts;

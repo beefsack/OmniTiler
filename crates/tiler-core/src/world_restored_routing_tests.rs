@@ -2892,3 +2892,2035 @@ fn explicit_output_send_fences_match_output_route() {
         );
     }
 }
+
+fn identity_panel(tag: &str) -> crate::world_report::OutputIdentity {
+    crate::world_report::OutputIdentity {
+        manufacturer: Some("SynthMfg".to_owned()),
+        model: Some(format!("SynthModel-{tag}")),
+        serial: Some(format!("serial-{tag}")),
+        connector: None,
+    }
+}
+
+fn screen_panel(output: &str, full: Rect, tag: &str) -> ScreenReport {
+    ScreenReport {
+        output: OutputId(output.to_owned()),
+        full_rect: Some(full),
+        work_area: Some(full),
+        complete: true,
+        scale: 1.0,
+        identity: identity_panel(tag),
+    }
+}
+
+fn screen_same_name_new_panel(output: &str, full: Rect) -> ScreenReport {
+    screen_panel(output, full, &format!("other-{output}"))
+}
+
+#[test]
+fn physical_return_same_panel_new_handle_reclaims() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_panel("out-a", rect(0, 0, 800, 600), "a"),
+                screen_panel("out-b", rect(800, 0, 800, 600), "b"),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_b = output_view(&first, "out-b").expect("view b");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_panel("out-a", rect(0, 0, 800, 600), "a")],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"), "unit displaced");
+    let back = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                screen_panel("out-a", rect(0, 0, 800, 600), "a"),
+                screen_panel("out-c", rect(800, 0, 800, 600), "b"),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-c", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-b"),
+        "same panel under a new handle reclaims: {:?}",
+        engine.displaced
+    );
+    let units: Vec<_> = back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_b)
+        .collect();
+    assert_eq!(units.len(), 1, "unit hosted exactly once: {units:?}");
+    assert_eq!(
+        units[0].output.0, "out-c",
+        "matched handle hosts: {units:?}"
+    );
+}
+
+#[test]
+fn physical_return_same_name_different_panel_holds() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_panel("out-a", rect(0, 0, 800, 600), "a"),
+                screen_panel("out-b", rect(800, 0, 800, 600), "b"),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_b = output_view(&first, "out-b").expect("view b");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_panel("out-a", rect(0, 0, 800, 600), "a")],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"));
+    let back = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                screen_panel("out-a", rect(0, 0, 800, 600), "a"),
+                screen_same_name_new_panel("out-b", rect(800, 0, 800, 600)),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.contains_key("out-b"),
+        "different panel under the same name must hold: {:?}",
+        engine.displaced
+    );
+    let units: Vec<_> = back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_b)
+        .collect();
+    assert_eq!(units.len(), 1, "old unit stays hosted once: {units:?}");
+    assert_eq!(
+        units[0].output.0, "out-a",
+        "old unit stays on survivor: {units:?}"
+    );
+}
+
+#[test]
+fn physical_return_unknown_identity_holds_by_name() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_full("out-a", rect(0, 0, 800, 600)),
+                screen_full("out-b", rect(800, 0, 800, 600)),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_b = output_view(&first, "out-b").expect("view b");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_full("out-a", rect(0, 0, 800, 600))],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"));
+    let back = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                screen_full("out-a", rect(0, 0, 800, 600)),
+                screen_full("out-b", rect(800, 0, 800, 600)),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.contains_key("out-b"),
+        "unknown identity must hold even under the same name: {:?}",
+        engine.displaced
+    );
+    let units: Vec<_> = back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_b)
+        .collect();
+    assert_eq!(
+        units.len(),
+        1,
+        "displaced unit stays hosted once: {units:?}"
+    );
+    assert_eq!(units[0].output.0, "out-a", "{units:?}");
+}
+
+fn screen_ident(
+    output: &str,
+    full: Rect,
+    identity: crate::world_report::OutputIdentity,
+) -> ScreenReport {
+    ScreenReport {
+        output: OutputId(output.to_owned()),
+        full_rect: Some(full),
+        work_area: Some(full),
+        complete: true,
+        scale: 1.0,
+        identity,
+    }
+}
+
+fn tuple_only(tag: &str) -> crate::world_report::OutputIdentity {
+    crate::world_report::OutputIdentity {
+        manufacturer: Some("SynthMfg".to_owned()),
+        model: Some(format!("SynthModel-{tag}")),
+        serial: Some(format!("serial-{tag}")),
+        connector: None,
+    }
+}
+
+fn tuple_conn(tag: &str, conn: &str) -> crate::world_report::OutputIdentity {
+    crate::world_report::OutputIdentity {
+        manufacturer: Some("SynthMfg".to_owned()),
+        model: Some(format!("SynthModel-{tag}")),
+        serial: Some(format!("serial-{tag}")),
+        connector: Some(conn.to_owned()),
+    }
+}
+
+fn unknown_conn(conn: Option<&str>) -> crate::world_report::OutputIdentity {
+    crate::world_report::OutputIdentity {
+        manufacturer: None,
+        model: None,
+        serial: None,
+        connector: conn.map(str::to_owned),
+    }
+}
+
+#[test]
+fn physical_return_duplicate_tuple_holds_without_connector() {
+    // Two live screens claim the same tuple with null connectors (the KDE
+    // shape): ambiguous reconnect holds rather than picking a candidate.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), tuple_only("a")),
+                screen_ident("out-b", rect(800, 0, 800, 600), tuple_only("b")),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_b = output_view(&first, "out-b").expect("view b");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_ident("out-a", rect(0, 0, 800, 600), tuple_only("a"))],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"));
+    let back = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), tuple_only("a")),
+                screen_ident("out-b", rect(800, 0, 800, 600), tuple_only("b")),
+                screen_ident("out-c", rect(1600, 0, 800, 600), tuple_only("b")),
+            ],
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-b", 800),
+                fact("win-c", "out-c", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.contains_key("out-b"),
+        "duplicated tuple with null connectors must hold: {:?}",
+        engine.displaced
+    );
+    let units: Vec<_> = back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_b)
+        .collect();
+    assert_eq!(units.len(), 1, "{units:?}");
+    assert_eq!(
+        units[0].output.0, "out-a",
+        "unit stays on survivor: {units:?}"
+    );
+}
+
+#[test]
+fn physical_return_duplicate_tuple_connector_fallback_returns() {
+    // Duplicated tuple with proved distinct connectors: the connector lane
+    // disambiguates the return onto the matching live handle.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), tuple_conn("a", "conn-a")),
+                screen_ident("out-b", rect(800, 0, 800, 600), tuple_conn("b", "conn-b")),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_b = output_view(&first, "out-b").expect("view b");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_ident(
+                "out-a",
+                rect(0, 0, 800, 600),
+                tuple_conn("a", "conn-a"),
+            )],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"));
+    let back = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), tuple_conn("a", "conn-a")),
+                screen_ident("out-b", rect(800, 0, 800, 600), tuple_conn("b", "conn-b")),
+                screen_ident("out-c", rect(1600, 0, 800, 600), tuple_conn("b", "conn-x")),
+            ],
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-b", 800),
+                fact("win-c", "out-c", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-b"),
+        "connector lane disambiguates: {:?}",
+        engine.displaced
+    );
+    let units: Vec<_> = back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_b)
+        .collect();
+    assert_eq!(units.len(), 1, "{units:?}");
+    assert_eq!(units[0].output.0, "out-b", "{units:?}");
+}
+
+#[test]
+fn physical_return_connector_fallback_unknown_tuple_renamed() {
+    // Unreadable tuple with a proved connector reclaims under a new live
+    // handle; a null connector under a new handle holds (never an
+    // arbitrary candidate, never the live name).
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), unknown_conn(Some("conn-a"))),
+                screen_ident(
+                    "out-b",
+                    rect(800, 0, 800, 600),
+                    unknown_conn(Some("conn-b")),
+                ),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_ident(
+                "out-a",
+                rect(0, 0, 800, 600),
+                unknown_conn(Some("conn-a")),
+            )],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"));
+    let back = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), unknown_conn(Some("conn-a"))),
+                screen_ident(
+                    "out-c",
+                    rect(800, 0, 800, 600),
+                    unknown_conn(Some("conn-b")),
+                ),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-c", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-b"),
+        "proved connector reclaims under a new handle: {:?}",
+        engine.displaced
+    );
+    assert!(
+        back.workspaces.iter().any(|row| row.output.0 == "out-c"),
+        "matched handle hosts: {:?}",
+        back.workspaces
+    );
+
+    // Null connector variant: same shape but nothing proved must hold.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), unknown_conn(None)),
+                screen_ident("out-b", rect(800, 0, 800, 600), unknown_conn(None)),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_ident(
+                "out-a",
+                rect(0, 0, 800, 600),
+                unknown_conn(None),
+            )],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), unknown_conn(None)),
+                screen_ident("out-z", rect(800, 0, 800, 600), unknown_conn(None)),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-z", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.contains_key("out-b"),
+        "unproved connector never takes an arbitrary candidate: {:?}",
+        engine.displaced
+    );
+    assert!(
+        back.workspaces.iter().any(|row| row.output.0 == "out-z"),
+        "new handle bootstraps its own ring: {:?}",
+        back.workspaces
+    );
+}
+
+#[test]
+fn physical_return_unplug_replug_cycles_keep_unit_and_views() {
+    // Repeated unplug/replug of the same panel preserves the unit id and
+    // contents, keeps the survivor view stable, and mints no focus effects.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_panel("out-a", rect(0, 0, 800, 600), "a"),
+                screen_panel("out-b", rect(800, 0, 800, 600), "b"),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_a = output_view(&first, "out-a").expect("view a");
+    let view_b = output_view(&first, "out-b").expect("view b");
+    for cycle in 0..2 {
+        let seq = 2 + cycle * 2;
+        let away = accepted(
+            &mut engine,
+            &report(
+                seq,
+                seq,
+                vec![screen_panel("out-a", rect(0, 0, 800, 600), "a")],
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+                "",
+                None,
+                None,
+            ),
+        );
+        assert!(
+            engine.displaced.contains_key("out-b"),
+            "cycle {cycle}: displaced"
+        );
+        assert!(
+            away.effects.is_empty(),
+            "cycle {cycle}: displacement mints no focus effects: {:?}",
+            away.effects
+        );
+        assert_eq!(
+            output_view(&away, "out-a"),
+            Some(view_a.clone()),
+            "cycle {cycle}: survivor view continuity"
+        );
+        let back = accepted(
+            &mut engine,
+            &report(
+                seq + 1,
+                seq + 1,
+                vec![
+                    screen_panel("out-a", rect(0, 0, 800, 600), "a"),
+                    screen_panel("out-b", rect(800, 0, 800, 600), "b"),
+                ],
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+                "",
+                None,
+                None,
+            ),
+        );
+        assert!(
+            !engine.displaced.contains_key("out-b"),
+            "cycle {cycle}: reclaimed: {:?}",
+            engine.displaced
+        );
+        assert!(
+            back.effects.is_empty(),
+            "cycle {cycle}: return mints no focus effects: {:?}",
+            back.effects
+        );
+        let units: Vec<_> = back
+            .workspaces
+            .iter()
+            .filter(|row| row.id == view_b)
+            .collect();
+        assert_eq!(units.len(), 1, "cycle {cycle}: unit id stable: {units:?}");
+        assert_eq!(units[0].output.0, "out-b", "cycle {cycle}: {units:?}");
+        let rows: Vec<_> = back
+            .windows
+            .iter()
+            .filter(|row| row.lifetime.0 == "win-b")
+            .collect();
+        assert_eq!(rows.len(), 1, "cycle {cycle}: exactly one homing: {rows:?}");
+        assert_eq!(
+            rows[0].workspace, view_b,
+            "cycle {cycle}: contents ride: {rows:?}"
+        );
+    }
+}
+
+#[test]
+fn physical_return_explicit_send_away_not_pulled_back() {
+    // A member explicitly sent to the survivor's own workspace while its
+    // unit is displaced stays where sent: the return reclaims the unit
+    // but issues no policy pull-back for the departed member.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_panel("out-a", rect(0, 0, 800, 600), "a"),
+                screen_panel("out-b", rect(800, 0, 800, 600), "b"),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_a = output_view(&first, "out-a").expect("view a");
+    let _view_b = output_view(&first, "out-b").expect("view b");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_panel("out-a", rect(0, 0, 800, 600), "a")],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"));
+    // Explicitly send the displaced member onto the survivor's own unit.
+    // The mover must be the observed focus for the transfer to issue.
+    let sent = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen_panel("out-a", rect(0, 0, 800, 600), "a")],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "win-b",
+            Some(11),
+            Some(crate::world_report::WorldCommand::Send {
+                window: WindowId("win-b".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: view_a.clone(),
+                follow: false,
+            }),
+        ),
+    );
+    assert!(
+        sent.transfers.iter().any(|t| t.operation_id == "op-11"),
+        "explicit send executes: {:?}",
+        sent.transfers
+    );
+    // The panel returns while the explicit departure flight is still
+    // outstanding: the departed member stays where sent and the return
+    // issues no policy pull-back for it.
+    let back = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![
+                screen_panel("out-a", rect(0, 0, 800, 600), "a"),
+                screen_panel("out-b", rect(800, 0, 800, 600), "b"),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-b"),
+        "unit still reclaims: {:?}",
+        engine.displaced
+    );
+    let rows: Vec<_> = back
+        .windows
+        .iter()
+        .filter(|row| row.lifetime.0 == "win-b")
+        .collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0].workspace, view_a,
+        "departed member not pulled back: {rows:?}"
+    );
+    assert_eq!(rows[0].output.0, "out-a", "{rows:?}");
+    assert!(
+        back.transfers.iter().all(
+            |t| !(matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b")
+                && t.operation_id.starts_with("op-hp-"))
+        ),
+        "no pull-back flight for the departed member: {:?}",
+        back.transfers
+    );
+    assert!(
+        back.transfers.iter().any(|t| t.operation_id == "op-11"),
+        "explicit departure association survives the return: {:?}",
+        back.transfers
+    );
+    // The reclaimed unit itself is empty now (its only member was sent
+    // away), so trailing lifecycle may trim its id; the panel itself is
+    // live again with its own ring while the departed member stays put.
+    assert!(
+        !engine
+            .mapping
+            .get("out-b")
+            .unwrap_or(&Vec::new())
+            .is_empty(),
+        "returned panel hosts a live ring: {:?}",
+        engine.mapping
+    );
+}
+
+#[test]
+fn physical_disconnect_no_survivor_holds_unit_for_retry() {
+    // The last screen disconnects with no survivor: the ring is kept
+    // untouched (no placement, no loss, no focus effects) and the next
+    // report with the same panel restores it.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen_panel("out-a", rect(0, 0, 800, 600), "a")],
+            vec![fact("win-a", "out-a", 0)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_a = output_view(&first, "out-a").expect("view a");
+    let empty = report(
+        2,
+        2,
+        Vec::new(),
+        vec![fact("win-a", "out-a", 0)],
+        "",
+        None,
+        None,
+    );
+    let held = match engine.handle_report_legacy(&empty) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
+        other => panic!("empty-screen disconnect must hold, got {other:?}"),
+    };
+    assert!(
+        held.effects.is_empty(),
+        "no-survivor displacement mints no focus effects: {:?}",
+        held.effects
+    );
+    assert!(
+        held.transfers.is_empty(),
+        "no-survivor displacement mints no flights: {:?}",
+        held.transfers
+    );
+    assert!(
+        engine
+            .mapping
+            .get("out-a")
+            .is_some_and(|ring| ring.contains(&view_a)),
+        "unit kept untouched for retry: {:?}",
+        engine.mapping
+    );
+    assert!(
+        engine.displaced.is_empty(),
+        "nothing displaced without a survivor: {:?}",
+        engine.displaced
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen_panel("out-a", rect(0, 0, 800, 600), "a")],
+            vec![fact("win-a", "out-a", 0)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let units: Vec<_> = back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_a)
+        .collect();
+    assert_eq!(units.len(), 1, "same panel restores its unit: {units:?}");
+    assert_eq!(units[0].output.0, "out-a", "{units:?}");
+}
+
+#[test]
+fn physical_return_shared_tuple_solo_intermediate_holds_null() {
+    // A and B share one tuple with null connectors. B disconnects; later
+    // A-only reports must not consume B's association onto A: the tuple
+    // never uniquely identified B.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), tuple_only("dup")),
+                screen_ident("out-b", rect(800, 0, 800, 600), tuple_only("dup")),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_b = output_view(&first, "out-b").expect("view b");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_ident(
+                "out-a",
+                rect(0, 0, 800, 600),
+                tuple_only("dup"),
+            )],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"), "B displaced");
+    // Intermediate A-only report while B is still absent: hold, keep the
+    // association and the units on the survivor.
+    let mid = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen_ident(
+                "out-a",
+                rect(0, 0, 800, 600),
+                tuple_only("dup"),
+            )],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.contains_key("out-b"),
+        "shared tuple must not reclaim onto the peer: {:?}",
+        engine.displaced
+    );
+    let units: Vec<_> = mid
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_b)
+        .collect();
+    assert_eq!(units.len(), 1, "{units:?}");
+    assert_eq!(
+        units[0].output.0, "out-a",
+        "unit stays on survivor: {units:?}"
+    );
+}
+
+#[test]
+fn physical_return_shared_tuple_solo_intermediate_holds_distinct_connector() {
+    // Same shape with proved distinct connectors: A-only intermediates hold
+    // (connector mismatch), and the true B later reclaims via its connector.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), tuple_conn("dup", "conn-a")),
+                screen_ident("out-b", rect(800, 0, 800, 600), tuple_conn("dup", "conn-b")),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_b = output_view(&first, "out-b").expect("view b");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_ident(
+                "out-a",
+                rect(0, 0, 800, 600),
+                tuple_conn("dup", "conn-a"),
+            )],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"), "B displaced");
+    let mid = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen_ident(
+                "out-a",
+                rect(0, 0, 800, 600),
+                tuple_conn("dup", "conn-a"),
+            )],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.contains_key("out-b"),
+        "connector mismatch must hold: {:?}",
+        engine.displaced
+    );
+    assert!(
+        mid.workspaces
+            .iter()
+            .any(|row| row.id == view_b && row.output.0 == "out-a"),
+        "unit stays on survivor: {:?}",
+        mid.workspaces
+    );
+    // The true B returns alongside A: the connector lane disambiguates.
+    let back = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), tuple_conn("dup", "conn-a")),
+                screen_ident("out-b", rect(800, 0, 800, 600), tuple_conn("dup", "conn-b")),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-b"),
+        "true panel reclaims via connector: {:?}",
+        engine.displaced
+    );
+    assert!(
+        back.workspaces
+            .iter()
+            .any(|row| row.id == view_b && row.output.0 == "out-b"),
+        "unit reclaimed onto B: {:?}",
+        back.workspaces
+    );
+}
+
+#[test]
+fn physical_return_shared_tuple_solo_b_returns_after_a_leaves() {
+    // Distinct connectors: A leaves too and only B is live; the connector
+    // lane still honors the true return.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), tuple_conn("dup", "conn-a")),
+                screen_ident("out-b", rect(800, 0, 800, 600), tuple_conn("dup", "conn-b")),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_b = output_view(&first, "out-b").expect("view b");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_ident(
+                "out-a",
+                rect(0, 0, 800, 600),
+                tuple_conn("dup", "conn-a"),
+            )],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"), "B displaced");
+    // A leaves as well while B returns solo: B reclaims, A displaces.
+    let back = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen_ident(
+                "out-b",
+                rect(800, 0, 800, 600),
+                tuple_conn("dup", "conn-b"),
+            )],
+            vec![fact("win-a", "out-b", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-b"),
+        "solo true panel reclaims: {:?}",
+        engine.displaced
+    );
+    assert!(
+        back.workspaces
+            .iter()
+            .any(|row| row.id == view_b && row.output.0 == "out-b"),
+        "unit reclaimed onto B: {:?}",
+        back.workspaces
+    );
+}
+
+#[test]
+fn physical_return_cross_lane_same_target_holds() {
+    // Two displaced origins claim one live panel through different lanes
+    // (tuple vs connector): reclaiming both would conflate two physical
+    // identities, so both claims hold.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-s", rect(0, 0, 800, 600), tuple_only("s")),
+                screen_ident("out-x", rect(800, 0, 800, 600), tuple_conn("x", "conn-x")),
+                screen_ident(
+                    "out-y",
+                    rect(1600, 0, 800, 600),
+                    unknown_conn(Some("conn-y")),
+                ),
+            ],
+            vec![
+                fact("win-s", "out-s", 0),
+                fact("win-x", "out-x", 800),
+                fact("win-y", "out-y", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_ident("out-s", rect(0, 0, 800, 600), tuple_only("s"))],
+            vec![
+                fact("win-s", "out-s", 0),
+                fact("win-x", "out-s", 100),
+                fact("win-y", "out-s", 200),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-x"), "X displaced");
+    assert!(engine.displaced.contains_key("out-y"), "Y displaced");
+    // out-p carries X's tuple with Y's connector: both lanes hit one panel.
+    let mixed = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                screen_ident("out-s", rect(0, 0, 800, 600), tuple_only("s")),
+                screen_ident(
+                    "out-p",
+                    rect(800, 0, 800, 600),
+                    crate::world_report::OutputIdentity {
+                        manufacturer: Some("SynthMfg".to_owned()),
+                        model: Some("SynthModel-x".to_owned()),
+                        serial: Some("serial-x".to_owned()),
+                        connector: Some("conn-y".to_owned()),
+                    },
+                ),
+            ],
+            vec![
+                fact("win-s", "out-s", 0),
+                fact("win-x", "out-p", 800),
+                fact("win-y", "out-p", 900),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.contains_key("out-x") && engine.displaced.contains_key("out-y"),
+        "colliding claims must both hold: {:?}",
+        engine.displaced
+    );
+    assert!(
+        mixed
+            .transfers
+            .iter()
+            .all(|t| !t.operation_id.starts_with("op-hp-")),
+        "no policy pull-back on ambiguity: {:?}",
+        mixed.transfers
+    );
+}
+
+#[test]
+fn physical_return_connector_fallback_live_tuple_unreadable() {
+    // Origin snapshot has a readable tuple plus a proved connector; the
+    // returned panel proves the same connector but one tuple arm is null.
+    // Unreadable either side still falls back to the connector lane.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), tuple_only("a")),
+                screen_ident("out-b", rect(800, 0, 800, 600), tuple_conn("b", "conn-b")),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_b = output_view(&first, "out-b").expect("view b");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_ident("out-a", rect(0, 0, 800, 600), tuple_only("a"))],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"), "B displaced");
+    let partial = crate::world_report::OutputIdentity {
+        manufacturer: None,
+        model: Some("SynthModel-b".to_owned()),
+        serial: Some("serial-b".to_owned()),
+        connector: Some("conn-b".to_owned()),
+    };
+    let back = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), tuple_only("a")),
+                screen_ident("out-b2", rect(800, 0, 800, 600), partial),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b2", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-b"),
+        "connector reclaim works with live tuple unreadable: {:?}",
+        engine.displaced
+    );
+    assert!(
+        back.workspaces
+            .iter()
+            .any(|row| row.id == view_b && row.output.0 == "out-b2"),
+        "unit reclaimed onto renamed panel: {:?}",
+        back.workspaces
+    );
+}
+
+#[test]
+fn physical_return_connector_fallback_readable_mismatch_holds() {
+    // Control: the same connector carrying a READABLE different tuple is
+    // a different physical panel, never a connector reclaim.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), tuple_only("a")),
+                screen_ident("out-b", rect(800, 0, 800, 600), tuple_conn("b", "conn-b")),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_b = output_view(&first, "out-b").expect("view b");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen_ident("out-a", rect(0, 0, 800, 600), tuple_only("a"))],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"), "B displaced");
+    let back = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                screen_ident("out-a", rect(0, 0, 800, 600), tuple_only("a")),
+                screen_ident(
+                    "out-x",
+                    rect(800, 0, 800, 600),
+                    tuple_conn("other", "conn-b"),
+                ),
+            ],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-x", 800)],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.contains_key("out-b"),
+        "readable different tuple must hold: {:?}",
+        engine.displaced
+    );
+    assert!(
+        back.workspaces
+            .iter()
+            .any(|row| row.id == view_b && row.output.0 == "out-a"),
+        "old unit stays on survivor: {:?}",
+        back.workspaces
+    );
+    assert!(
+        back.workspaces.iter().any(|row| row.output.0 == "out-x"),
+        "new panel bootstraps its own ring: {:?}",
+        back.workspaces
+    );
+}
+
+#[test]
+fn physical_return_survivor_leaves_then_origin_returns_renamed() {
+    // S displaces onto T, T leaves (chain onto U), then S returns renamed:
+    // the exact viewed unit id, its tiling, and its contents restore.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-s", rect(0, 0, 800, 600), tuple_only("s")),
+                screen_ident("out-t", rect(800, 0, 800, 600), tuple_only("t")),
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+            ],
+            vec![
+                fact("win-s", "out-s", 0),
+                fact("win-t", "out-t", 800),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_s = output_view(&first, "out-s").expect("view s");
+    let tiling_s = first
+        .workspaces
+        .iter()
+        .find(|row| row.id == view_s)
+        .map(|row| row.tiling_mode)
+        .expect("tiling s");
+    let away = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![
+                screen_ident("out-t", rect(800, 0, 800, 600), tuple_only("t")),
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+            ],
+            vec![
+                fact("win-s", "out-t", 800),
+                fact("win-t", "out-t", 900),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        engine.displaced.get("out-s").map(|e| e.dest.as_str()),
+        Some("out-t")
+    );
+    assert!(
+        away.effects.is_empty(),
+        "first displacement mints no focus: {:?}",
+        away.effects
+    );
+    let chained = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen_ident(
+                "out-u",
+                rect(1600, 0, 800, 600),
+                tuple_only("u"),
+            )],
+            vec![
+                fact("win-s", "out-u", 1600),
+                fact("win-t", "out-u", 1700),
+                fact("win-u", "out-u", 1800),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.contains_key("out-s"),
+        "S association survives"
+    );
+    assert!(
+        engine.displaced.contains_key("out-t"),
+        "T displaces in turn"
+    );
+    assert_eq!(
+        engine.displaced.get("out-s").map(|e| e.dest.as_str()),
+        Some("out-u"),
+        "chain refresh tracks the live host: {:?}",
+        engine.displaced
+    );
+    assert!(
+        chained.effects.is_empty(),
+        "chained displacement mints no focus: {:?}",
+        chained.effects
+    );
+    let s_units: Vec<String> = engine
+        .displaced
+        .get("out-s")
+        .map(|entry| entry.workspaces.clone())
+        .unwrap_or_default();
+    assert!(
+        s_units.contains(&view_s),
+        "displaced record keeps the viewed unit: {s_units:?}",
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+                screen_ident("out-s2", rect(0, 0, 800, 600), tuple_only("s")),
+            ],
+            vec![
+                fact("win-s", "out-s2", 0),
+                fact("win-t", "out-u", 1700),
+                fact("win-u", "out-u", 1800),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-s"),
+        "renamed S reclaims: {:?}",
+        engine.displaced
+    );
+    // Chained reclaim restores the exact viewed unit with its tiling
+    // and contents; every member stays exactly homed once and the return
+    // mints no focus effects or pull-back flights. The fresh handle
+    // keeps its bootstrap ring alongside the restored unit, as in the
+    // single-hop renamed return; the viewed id itself must survive.
+    let restored_rows: Vec<_> = back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_s)
+        .collect();
+    assert_eq!(
+        restored_rows.len(),
+        1,
+        "viewed unit hosted exactly once: {:?}",
+        back.workspaces
+    );
+    assert_eq!(
+        restored_rows[0].output.0, "out-s2",
+        "viewed unit hosts on the renamed panel: {:?}",
+        restored_rows[0],
+    );
+    assert_eq!(
+        restored_rows[0].tiling_mode, tiling_s,
+        "tiling rides the chain: {:?}",
+        restored_rows[0],
+    );
+    let rows: Vec<_> = back
+        .windows
+        .iter()
+        .filter(|row| ["win-s", "win-t", "win-u"].contains(&row.lifetime.0.as_str()))
+        .collect();
+    assert_eq!(rows.len(), 3, "every member exactly homed once: {rows:?}");
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-s"
+            && row.output.0 == "out-s2"
+            && row.workspace == view_s),
+        "S member rides its exact unit home: {rows:?}",
+    );
+    assert!(
+        back.effects.is_empty(),
+        "renamed return mints no focus: {:?}",
+        back.effects
+    );
+    assert!(
+        back.transfers
+            .iter()
+            .all(|t| !t.operation_id.starts_with("op-hp-")),
+        "no pull-back flights: {:?}",
+        back.transfers
+    );
+}
+
+#[test]
+#[ignore = "Known failure: overlapping displacement loses S unit when T returns; see v4-phase2-kde-physical-reconnect note"]
+fn physical_chain_return_s_first_then_t_keeps_exact_affinity() {
+    // S -> T -> U chain, then S returns renamed, then T returns renamed.
+    // Final affinity must be exact: each viewed unit hosted once on its
+    // own panel with its own member and tiling, no yank of the already
+    // reclaimed S unit when T returns.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-s", rect(0, 0, 800, 600), tuple_only("s")),
+                screen_ident("out-t", rect(800, 0, 800, 600), tuple_only("t")),
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+            ],
+            vec![
+                fact("win-s", "out-s", 0),
+                fact("win-t", "out-t", 800),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_s = output_view(&first, "out-s").expect("view s");
+    let view_t = output_view(&first, "out-t").expect("view t");
+    let view_u = output_view(&first, "out-u").expect("view u");
+    let tiling_s = first
+        .workspaces
+        .iter()
+        .find(|row| row.id == view_s)
+        .map(|row| row.tiling_mode)
+        .expect("tiling s");
+    let tiling_t = first
+        .workspaces
+        .iter()
+        .find(|row| row.id == view_t)
+        .map(|row| row.tiling_mode)
+        .expect("tiling t");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![
+                screen_ident("out-t", rect(800, 0, 800, 600), tuple_only("t")),
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+            ],
+            vec![
+                fact("win-s", "out-t", 800),
+                fact("win-t", "out-t", 900),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        engine.displaced.get("out-s").map(|e| e.dest.as_str()),
+        Some("out-t")
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen_ident(
+                "out-u",
+                rect(1600, 0, 800, 600),
+                tuple_only("u"),
+            )],
+            vec![
+                fact("win-s", "out-u", 1600),
+                fact("win-t", "out-u", 1700),
+                fact("win-u", "out-u", 1800),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        engine.displaced.get("out-s").map(|e| e.dest.as_str()),
+        Some("out-u"),
+        "chain refresh tracks the live host: {:?}",
+        engine.displaced
+    );
+    assert_eq!(
+        engine.displaced.get("out-t").map(|e| e.dest.as_str()),
+        Some("out-u")
+    );
+    assert!(
+        engine
+            .displaced
+            .get("out-t")
+            .map(|entry| entry.workspaces.contains(&view_s))
+            .unwrap_or(false),
+        "chained T record overlaps the S unit: {:?}",
+        engine.displaced
+    );
+    let s_back = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+                screen_ident("out-s2", rect(0, 0, 800, 600), tuple_only("s")),
+            ],
+            vec![
+                fact("win-s", "out-s2", 0),
+                fact("win-t", "out-u", 1700),
+                fact("win-u", "out-u", 1800),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-s"),
+        "renamed S reclaims: {:?}",
+        engine.displaced
+    );
+    assert!(
+        engine.displaced.contains_key("out-t"),
+        "T still displaced: {:?}",
+        engine.displaced
+    );
+    let s_rows: Vec<_> = s_back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_s)
+        .collect();
+    assert_eq!(
+        s_rows.len(),
+        1,
+        "viewed S unit hosted once: {:?}",
+        s_back.workspaces
+    );
+    assert_eq!(s_rows[0].output.0, "out-s2", "{:?}", s_rows[0]);
+    assert_eq!(s_rows[0].tiling_mode, tiling_s, "{:?}", s_rows[0]);
+    let s_members: Vec<_> = s_back
+        .windows
+        .iter()
+        .filter(|row| ["win-s", "win-t", "win-u"].contains(&row.lifetime.0.as_str()))
+        .collect();
+    assert_eq!(
+        s_members.len(),
+        3,
+        "every member exactly homed once: {s_members:?}"
+    );
+    assert!(
+        s_members.iter().any(|row| row.lifetime.0 == "win-s"
+            && row.output.0 == "out-s2"
+            && row.workspace == view_s),
+        "S member rides its exact unit home: {s_members:?}"
+    );
+    assert!(
+        s_members.iter().any(|row| row.lifetime.0 == "win-t"
+            && row.output.0 == "out-u"
+            && row.workspace == view_t),
+        "T member waits on the survivor unit: {s_members:?}"
+    );
+    assert!(
+        s_members.iter().any(|row| row.lifetime.0 == "win-u"
+            && row.output.0 == "out-u"
+            && row.workspace == view_u),
+        "U member stays on its unit: {s_members:?}"
+    );
+    assert!(
+        s_back
+            .transfers
+            .iter()
+            .all(|t| !t.operation_id.starts_with("op-hp-")),
+        "no pull-back flights: {:?}",
+        s_back.transfers
+    );
+    let both_back = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+                screen_ident("out-s2", rect(0, 0, 800, 600), tuple_only("s")),
+                screen_ident("out-t2", rect(800, 0, 800, 600), tuple_only("t")),
+            ],
+            vec![
+                fact("win-s", "out-s2", 0),
+                fact("win-t", "out-t2", 800),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.is_empty(),
+        "both origins reclaim: {:?}",
+        engine.displaced
+    );
+    for (id, output, tiling) in [(&view_s, "out-s2", tiling_s), (&view_t, "out-t2", tiling_t)] {
+        let rows: Vec<_> = both_back
+            .workspaces
+            .iter()
+            .filter(|row| &row.id == id)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "unit {id} hosted exactly once: {:?}",
+            both_back.workspaces
+        );
+        assert_eq!(rows[0].output.0, output, "{:?}", rows[0]);
+        assert_eq!(rows[0].tiling_mode, tiling, "{:?}", rows[0]);
+    }
+    let u_rows: Vec<_> = both_back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_u)
+        .collect();
+    assert_eq!(
+        u_rows.len(),
+        1,
+        "viewed U unit hosted once: {:?}",
+        both_back.workspaces
+    );
+    assert_eq!(u_rows[0].output.0, "out-u", "{:?}", u_rows[0]);
+    let rows: Vec<_> = both_back
+        .windows
+        .iter()
+        .filter(|row| ["win-s", "win-t", "win-u"].contains(&row.lifetime.0.as_str()))
+        .collect();
+    assert_eq!(rows.len(), 3, "every member exactly homed once: {rows:?}");
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-s"
+            && row.output.0 == "out-s2"
+            && row.workspace == view_s),
+        "S member stays home after T returns: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-t"
+            && row.output.0 == "out-t2"
+            && row.workspace == view_t),
+        "T member rides its exact unit home: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-u"
+            && row.output.0 == "out-u"
+            && row.workspace == view_u),
+        "U member stays on its unit: {rows:?}"
+    );
+    assert!(
+        both_back.effects.is_empty(),
+        "returns mint no focus: {:?}",
+        both_back.effects
+    );
+    assert!(
+        both_back
+            .transfers
+            .iter()
+            .all(|t| !t.operation_id.starts_with("op-hp-")),
+        "no pull-back flights: {:?}",
+        both_back.transfers
+    );
+}
+
+#[test]
+#[ignore = "Known failure: overlapping displacement loses S unit when T returns; see v4-phase2-kde-physical-reconnect note"]
+fn physical_chain_return_t_first_then_s_keeps_exact_affinity() {
+    // Same S -> T -> U chain, opposite return order: T returns renamed
+    // first while S is still absent. The S unit must stay on the survivor
+    // until S itself returns; the final partition is exact.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-s", rect(0, 0, 800, 600), tuple_only("s")),
+                screen_ident("out-t", rect(800, 0, 800, 600), tuple_only("t")),
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+            ],
+            vec![
+                fact("win-s", "out-s", 0),
+                fact("win-t", "out-t", 800),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_s = output_view(&first, "out-s").expect("view s");
+    let view_t = output_view(&first, "out-t").expect("view t");
+    let view_u = output_view(&first, "out-u").expect("view u");
+    let tiling_s = first
+        .workspaces
+        .iter()
+        .find(|row| row.id == view_s)
+        .map(|row| row.tiling_mode)
+        .expect("tiling s");
+    let tiling_t = first
+        .workspaces
+        .iter()
+        .find(|row| row.id == view_t)
+        .map(|row| row.tiling_mode)
+        .expect("tiling t");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![
+                screen_ident("out-t", rect(800, 0, 800, 600), tuple_only("t")),
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+            ],
+            vec![
+                fact("win-s", "out-t", 800),
+                fact("win-t", "out-t", 900),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen_ident(
+                "out-u",
+                rect(1600, 0, 800, 600),
+                tuple_only("u"),
+            )],
+            vec![
+                fact("win-s", "out-u", 1600),
+                fact("win-t", "out-u", 1700),
+                fact("win-u", "out-u", 1800),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .displaced
+            .get("out-t")
+            .map(|entry| entry.workspaces.contains(&view_s))
+            .unwrap_or(false),
+        "chained T record overlaps the S unit: {:?}",
+        engine.displaced
+    );
+    let t_back = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+                screen_ident("out-t2", rect(800, 0, 800, 600), tuple_only("t")),
+            ],
+            vec![
+                fact("win-s", "out-u", 1600),
+                fact("win-t", "out-t2", 800),
+                fact("win-u", "out-u", 1800),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-t"),
+        "renamed T reclaims: {:?}",
+        engine.displaced
+    );
+    assert!(
+        engine.displaced.contains_key("out-s"),
+        "S still displaced: {:?}",
+        engine.displaced
+    );
+    let s_rows: Vec<_> = t_back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_s)
+        .collect();
+    assert_eq!(
+        s_rows.len(),
+        1,
+        "S unit hosted exactly once: {:?}",
+        t_back.workspaces
+    );
+    assert_eq!(
+        s_rows[0].output.0, "out-u",
+        "S unit waits on survivor: {:?}",
+        s_rows[0]
+    );
+    let t_rows: Vec<_> = t_back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_t)
+        .collect();
+    assert_eq!(
+        t_rows.len(),
+        1,
+        "T unit hosted exactly once: {:?}",
+        t_back.workspaces
+    );
+    assert_eq!(t_rows[0].output.0, "out-t2", "{:?}", t_rows[0]);
+    assert_eq!(t_rows[0].tiling_mode, tiling_t, "{:?}", t_rows[0]);
+    let members: Vec<_> = t_back
+        .windows
+        .iter()
+        .filter(|row| ["win-s", "win-t", "win-u"].contains(&row.lifetime.0.as_str()))
+        .collect();
+    assert_eq!(
+        members.len(),
+        3,
+        "every member exactly homed once: {members:?}"
+    );
+    assert!(
+        members.iter().any(|row| row.lifetime.0 == "win-s"
+            && row.output.0 == "out-u"
+            && row.workspace == view_s),
+        "S member waits on the survivor unit: {members:?}"
+    );
+    assert!(
+        members.iter().any(|row| row.lifetime.0 == "win-t"
+            && row.output.0 == "out-t2"
+            && row.workspace == view_t),
+        "T member rides its exact unit home: {members:?}"
+    );
+    assert!(
+        members.iter().any(|row| row.lifetime.0 == "win-u"
+            && row.output.0 == "out-u"
+            && row.workspace == view_u),
+        "U member stays on its unit: {members:?}"
+    );
+    assert!(
+        t_back
+            .transfers
+            .iter()
+            .all(|t| !t.operation_id.starts_with("op-hp-")),
+        "no pull-back flights: {:?}",
+        t_back.transfers
+    );
+    let both_back = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+                screen_ident("out-t2", rect(800, 0, 800, 600), tuple_only("t")),
+                screen_ident("out-s2", rect(0, 0, 800, 600), tuple_only("s")),
+            ],
+            vec![
+                fact("win-s", "out-s2", 0),
+                fact("win-t", "out-t2", 800),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.is_empty(),
+        "both origins reclaim: {:?}",
+        engine.displaced
+    );
+    for (id, output, tiling) in [(&view_s, "out-s2", tiling_s), (&view_t, "out-t2", tiling_t)] {
+        let rows: Vec<_> = both_back
+            .workspaces
+            .iter()
+            .filter(|row| &row.id == id)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "unit {id} hosted exactly once: {:?}",
+            both_back.workspaces
+        );
+        assert_eq!(rows[0].output.0, output, "{:?}", rows[0]);
+        assert_eq!(rows[0].tiling_mode, tiling, "{:?}", rows[0]);
+    }
+    let u_rows: Vec<_> = both_back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_u)
+        .collect();
+    assert_eq!(
+        u_rows.len(),
+        1,
+        "viewed U unit hosted once: {:?}",
+        both_back.workspaces
+    );
+    assert_eq!(u_rows[0].output.0, "out-u", "{:?}", u_rows[0]);
+    let rows: Vec<_> = both_back
+        .windows
+        .iter()
+        .filter(|row| ["win-s", "win-t", "win-u"].contains(&row.lifetime.0.as_str()))
+        .collect();
+    assert_eq!(rows.len(), 3, "every member exactly homed once: {rows:?}");
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-s"
+            && row.output.0 == "out-s2"
+            && row.workspace == view_s),
+        "S member rides its exact unit home: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-t"
+            && row.output.0 == "out-t2"
+            && row.workspace == view_t),
+        "T member stays home after S returns: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-u"
+            && row.output.0 == "out-u"
+            && row.workspace == view_u),
+        "U member stays on its unit: {rows:?}"
+    );
+    assert!(
+        both_back.effects.is_empty(),
+        "returns mint no focus: {:?}",
+        both_back.effects
+    );
+    assert!(
+        both_back
+            .transfers
+            .iter()
+            .all(|t| !t.operation_id.starts_with("op-hp-")),
+        "no pull-back flights: {:?}",
+        both_back.transfers
+    );
+}

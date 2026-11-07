@@ -102,7 +102,7 @@ run '{"v":1,"request_id":"get-s0","op":"get","ids":["a","b"]}'
 - S7 minimize/rejoin (D23), no rehome experiment.
   - Setup: flat A/B/C; click A, C, B in that order. Keep C's MRU identity in the capture.
   - Steps: minimize B using its native minimize control; inspect survivor reflow and focus. Restore B using the fixture `set` operation `mode:"windowed"` (not a taskbar activation), then inspect before clicking B. If desired, use `run '{"v":1,"request_id":"restore-s7","op":"set","ids":["b"],"patch":{"mode":"windowed"}}'` from T2; the terminal click means focus must be assessed as no tiler focus setter, not proof C stayed active. Use O4 for the sole-window leg.
-  - Expected: B releases allocation, C is MRU fallback; restore best-effort rejoins near the former neighbor on stored side/group/index with comparable old share, no OmniTiler focus write. Exact-share equality only on the fast path. COSMIC source-backed selection; slot memory is session-only. Do not move a minimized client to another workspace: the newer rehome policy is not implemented.
+  - Expected: B releases allocation, C is MRU fallback; restore best-effort rejoins near the former neighbor on stored side/group/index with comparable old share, no OmniTiler focus write. Exact-share equality only on the fast path. COSMIC source-backed selection; slot memory is session-only. Do not move a minimized client to another workspace in this row: the [rehome follow-up](v4-phase2-kde-physical-reconnect.md) has offline coverage but its separate native journey remains unrun.
   - Result: UNRUN - PASS/FAIL + removed allocation, minimize focus, restored tree/share and any restore focus setter; distinguish native activation from tiler action.
   - Closes: backlog D23/native best-effort-rejoin queue (original lines 1043, 1052-1054), [D23 delivery](archive/d23-rework.md), [R-MNZ-01/02](../spec/reference-outcomes/minimize.md#r-mnz-01-native-minimize-of-a-middle-tile). Internal-slot/sole-iconic and rehome coverage not claimed.
 
@@ -182,7 +182,7 @@ run '{"v":1,"request_id":"get-s0","op":"get","ids":["a","b"]}'
 - Stage 4/5 coverage here is bounded to physical float/maximize/fullscreen commands, existing-workspace sends and paint/drag observations. No claim for every fullscreen window action, sticky/multi-desktop changes, late-reply race or R-MAX-02 directional focus.
 - No real-game, born-fullscreen initial-hold, activation-token, fixed-size or automatic-dialog/Steam acceptance. No fresh keep-above ownership experiment: [floating-dialog work is BLOCKED](kde-automatic-float-stacking.md).
 - No effect installation/loading for hide/reveal or mapped-effect-identity proof. User observation plus native joins helps physical acceptance but does not replace the separate compositor-visibility audit. Two-output and all-mode rows remain conditional; third-output selection, hotplug and Activities investigations are not folded into them.
-- No D23 minimized rehome test: the option-B source-slot follow-up is approved but not implemented. Exact native trees and slot internals without authoritative evidence remain TBD, even if the screen looks correct.
+- No D23 minimized rehome test here: the [option-B source-slot follow-up](v4-phase2-kde-physical-reconnect.md) is implemented and covered offline; native destination-restore and return-still-minimized routes remain unrun. Exact native trees and slot internals without authoritative evidence remain TBD, even if the screen looks correct.
 
 ## Inventory verification
 

@@ -209,16 +209,22 @@ pub fn claim_visible_currents(
 
 /// One disconnected output's preserved workspace unit: the live native
 /// ids that belonged to the removed origin plus the surviving output
-/// currently hosting them. Workspaces move as a unit with then-current
-/// contents (never a saved snapshot, never merged into the survivor
-/// layout); the record drops when the origin returns or its ids leave
-/// the live set. Session-local only, never restart-persistent.
+/// currently hosting them. Session-local only, never restart-persistent.
+/// `origin_identity` snapshots the panel identity at displacement; the
+/// contention flags snapshot whether a peer shared the tuple/connector
+/// then, so a later solo lookalike never reclaims by itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplacedEntry {
     /// Live native workspace ids displaced from the origin.
     pub workspaces: Vec<String>,
     /// Stable key of the surviving output hosting them.
     pub dest: String,
+    /// Disconnect-time panel identity of the origin.
+    pub origin_identity: crate::world_report::OutputIdentity,
+    /// A peer shared the readable tuple at displacement.
+    pub origin_tuple_contested: bool,
+    /// A peer shared the proved connector at displacement.
+    pub origin_connector_contested: bool,
 }
 
 /// Last observed native facts for one output: live geometry when
@@ -227,12 +233,16 @@ pub struct DisplacedEntry {
 /// disconnect-time rect for nearest-survivor placement (never a
 /// post-disconnect window frame proxy). Pruned with its displacement
 /// record on return, or when the output no longer needs placement.
+/// `identity` carries the last live panel identity for physical reconnect
+/// matching; held (unreadable) rows record unknown, never stale evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputFacts {
     /// Last live native geometry, when observed.
     pub rect: Option<crate::geometry::Rect>,
     /// Whether it was the active screen when last observed.
     pub primary: bool,
+    /// Last live physical panel identity, when observed.
+    pub identity: crate::world_report::OutputIdentity,
 }
 
 /// One surviving output candidate for displaced-workspace placement.
@@ -292,6 +302,100 @@ pub fn choose_displaced_destination(
         return Some(primary.to_owned());
     }
     survivors.first().map(|first| first.key.clone())
+}
+
+fn tuple_readable(id: &crate::world_report::OutputIdentity) -> bool {
+    id.manufacturer
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+        && id.model.as_deref().is_some_and(|value| !value.is_empty())
+        && id.serial.as_deref().is_some_and(|value| !value.is_empty())
+}
+
+fn connector_proved(id: &crate::world_report::OutputIdentity) -> bool {
+    id.connector
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+}
+
+fn tuples_equal(
+    left: &crate::world_report::OutputIdentity,
+    right: &crate::world_report::OutputIdentity,
+) -> bool {
+    left.manufacturer == right.manufacturer
+        && left.model == right.model
+        && left.serial == right.serial
+}
+
+/// Physical reconnect match for one displaced origin, or `None` to hold.
+/// A readable tuple matches across changed handles unless contested at
+/// displacement or duplicated now; otherwise the connector lane applies
+/// for a proved nonempty connector when either side's tuple is
+/// unreadable. A readable different tuple on one connector is a
+/// different panel and never reclaims. Colliding claims hold.
+#[must_use]
+pub(crate) fn match_physical_return(
+    entry: &DisplacedEntry,
+    live: &[(&str, &crate::world_report::OutputIdentity)],
+    siblings: &[&crate::world_report::OutputIdentity],
+) -> Option<String> {
+    let origin = &entry.origin_identity;
+    if tuple_readable(origin) && !entry.origin_tuple_contested {
+        let mut hits = live
+            .iter()
+            .filter(|(_, id)| tuple_readable(id) && tuples_equal(origin, id));
+        let first = hits.next();
+        let unique = hits.next().is_none()
+            && !siblings
+                .iter()
+                .any(|sibling| tuple_readable(sibling) && tuples_equal(origin, sibling));
+        if unique && first.is_some() {
+            return first.map(|(handle, _)| (*handle).to_owned());
+        }
+        // Zero hits or duplicated now: connector lane below. A readable
+        // live tuple differing from the origin is a different panel, so
+        // the lane only admits unreadable-or-equal live tuples.
+    }
+    if connector_proved(origin) && !entry.origin_connector_contested {
+        let mut hits = live.iter().filter(|(_, id)| {
+            connector_proved(id)
+                && id.connector == origin.connector
+                && (!tuple_readable(origin) || !tuple_readable(id) || tuples_equal(origin, id))
+        });
+        let first = hits.next();
+        if hits.next().is_none()
+            && !siblings
+                .iter()
+                .any(|sibling| connector_proved(sibling) && sibling.connector == origin.connector)
+        {
+            return first.map(|(handle, _)| (*handle).to_owned());
+        }
+    }
+    None
+}
+
+/// Disconnect-time contention for a fresh displacement: whether another
+/// retained panel shared the origin's readable tuple or proved connector.
+/// Scanned from retained facts (live peers just updated, absent peers
+/// retained), never from later overwritten rows.
+pub(crate) fn snapshot_contention(
+    facts: &BTreeMap<String, OutputFacts>,
+    origin: &str,
+) -> (bool, bool) {
+    let Some(identity) = facts.get(origin).map(|record| &record.identity) else {
+        return (false, false);
+    };
+    let tuple = tuple_readable(identity)
+        && facts
+            .iter()
+            .any(|(key, record)| key != origin && tuples_equal(&record.identity, identity));
+    let connector = connector_proved(identity)
+        && facts.iter().any(|(key, record)| {
+            key != origin
+                && connector_proved(&record.identity)
+                && record.identity.connector == identity.connector
+        });
+    (tuple, connector)
 }
 
 /// Scoped ring ids: every existing scoped id in order, including the

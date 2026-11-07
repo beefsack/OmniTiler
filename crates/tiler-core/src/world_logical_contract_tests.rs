@@ -27,7 +27,15 @@ fn screen(output: &str, x: i32) -> ScreenReport {
         work_area: Some(rect(x, 0, 800, 560)),
         complete: true,
         scale: 1.0,
-        identity: crate::world_report::OutputIdentity::unknown(),
+        // Honest synthetic known identity per live handle: these return
+        // tests exercise the same-panel same-name premise, which physical
+        // reconnect matching proves via the tuple rather than the name.
+        identity: crate::world_report::OutputIdentity {
+            manufacturer: Some("SynthMfg".to_owned()),
+            model: Some(format!("SynthModel-{output}")),
+            serial: Some(format!("serial-{output}")),
+            connector: None,
+        },
     }
 }
 
@@ -3740,6 +3748,11 @@ fn hotplug_displacement_preserves_logical_units_on_the_survivor() {
             true,
             false,
         ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-b"),
+        "same-panel return reclaims by physical identity: {:?}",
+        engine.displaced
     );
     assert!(!workspace_ids(&back, "out-b").is_empty());
 }

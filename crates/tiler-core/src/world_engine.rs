@@ -3808,6 +3808,9 @@ impl WorldEngine {
         for (key, window) in std::mem::take(&mut self.pending_forget) {
             self.engine.forget_minimized_slot(&key, &window);
         }
+        for (key, window) in self.confirmed_minimized_rehomes() {
+            self.engine.forget_minimized_slot(&key, &window);
+        }
         // Stage-4a gesture ingress before admission focus and commands:
         // preview and release read the swept observation; a committed
         // release resweeps and restages exactly like the command path so

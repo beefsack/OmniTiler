@@ -25,7 +25,15 @@ fn screen(output: &str, x: i32) -> ScreenReport {
         work_area: Some(rect(x, 0, 800, 560)),
         complete: true,
         scale: 1.0,
-        identity: crate::world_report::OutputIdentity::unknown(),
+        // Honest synthetic known identity per live handle: this return
+        // test exercises the same-panel same-name premise, which physical
+        // reconnect matching proves via the tuple rather than the name.
+        identity: crate::world_report::OutputIdentity {
+            manufacturer: Some("SynthMfg".to_owned()),
+            model: Some(format!("SynthModel-{output}")),
+            serial: Some(format!("serial-{output}")),
+            connector: None,
+        },
     }
 }
 

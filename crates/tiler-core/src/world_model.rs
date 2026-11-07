@@ -462,6 +462,7 @@ impl WorldEngine {
                 OutputFacts {
                     rect: screen.full_rect,
                     primary: designated.as_deref() == Some(screen.output.0.as_str()),
+                    identity: screen.identity.clone(),
                 },
             );
         }
@@ -469,11 +470,14 @@ impl WorldEngine {
             // Held outputs keep disconnect-time-style facts (no geometry)
             // so displacement still places survivors without inventing a
             // proxy frame; the designated flag never marks a held output.
+            // Held identity rows are unreadable: record unknown rather
+            // than stale evidence.
             self.output_facts.insert(
                 held.output.0.clone(),
                 OutputFacts {
                     rect: None,
                     primary: false,
+                    identity: crate::world_report::OutputIdentity::unknown(),
                 },
             );
         }
@@ -579,22 +583,59 @@ impl WorldEngine {
         let mut fresh_views: Vec<(OutputId, String)> = Vec::new();
         let mut fresh_members: Vec<(WindowId, DomainKey, DomainKey)> = Vec::new();
         if !shared {
-            let returned: Vec<String> = self
-                .displaced
-                .keys()
-                .filter(|origin| live_set.contains(origin.as_str()))
-                .cloned()
+            // Returns first: a live panel whose physical reconnect identity
+            // matches a displaced origin's disconnect-time snapshot reclaims
+            // that origin's preserved units onto the matched live handle
+            // (which may differ from the origin handle after a rename). No
+            // live-name fallback: unknown, duplicate or mismatched
+            // identities hold rather than reclaim a same-named panel.
+            let live_panels: Vec<(String, crate::world_report::OutputIdentity)> = self
+                .staged
+                .screens
+                .iter()
+                .map(|screen| (screen.output.0.clone(), screen.identity.clone()))
                 .collect();
-            for origin in returned {
+            let live_refs: Vec<(&str, &crate::world_report::OutputIdentity)> = live_panels
+                .iter()
+                .map(|(handle, identity)| (handle.as_str(), identity))
+                .collect();
+            let origins: Vec<String> = self.displaced.keys().cloned().collect();
+            let mut matched: Vec<(String, String)> = Vec::new();
+            for origin in &origins {
+                let Some(entry) = self.displaced.get(origin) else {
+                    continue;
+                };
+                let siblings: Vec<&crate::world_report::OutputIdentity> = origins
+                    .iter()
+                    .filter(|other| *other != origin)
+                    .filter_map(|other| self.displaced.get(other))
+                    .map(|sibling| &sibling.origin_identity)
+                    .collect();
+                if let Some(handle) =
+                    crate::workspace_scope::match_physical_return(entry, &live_refs, &siblings)
+                {
+                    matched.push((origin.clone(), handle));
+                }
+            }
+            // One live panel claimed twice is ambiguous: hold every such
+            // claim rather than merging two physical identities.
+            {
+                let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+                for (_, handle) in &matched {
+                    *counts.entry(handle.clone()).or_default() += 1;
+                }
+                matched.retain(|(_, handle)| counts.get(handle) == Some(&1));
+            }
+            for (origin, live_handle) in matched {
                 let Some(entry) = self.displaced.remove(&origin) else {
                     continue;
                 };
                 let home = entry.workspaces.clone();
                 for id in &home {
-                    self.take_workspace_from_all(id, &origin);
+                    self.take_workspace_from_all(id, &live_handle);
                 }
                 {
-                    let slot = self.mapping.entry(origin.clone()).or_default();
+                    let slot = self.mapping.entry(live_handle.clone()).or_default();
                     for id in &home {
                         if !slot.iter().any(|kept| kept == id) {
                             slot.push(id.clone());
@@ -602,11 +643,11 @@ impl WorldEngine {
                     }
                 }
                 for id in &home {
-                    self.carry_tiling(id, &entry.dest, &origin);
+                    self.carry_tiling(id, &entry.dest, &live_handle);
                 }
-                let origin_id = OutputId(origin.clone());
+                let origin_id = OutputId(live_handle.clone());
                 for id in &home {
-                    self.rekey_members(id, &entry.dest, &origin);
+                    self.rekey_members(id, &entry.dest, &live_handle);
                     let source = DomainKey {
                         output: OutputId(entry.dest.clone()),
                         workspace: WorkspaceId(id.clone()),
@@ -780,13 +821,54 @@ impl WorldEngine {
                     };
                     let _ = self.relocate_session_for_move(&source, &target);
                 }
+                // Snapshot the panel identity plus its contention flags.
+                // Re-displacement keeps the original snapshot; a fresh
+                // record scans retained facts for peers sharing the tuple
+                // or connector. Unknown holds any return.
+                let (identity, tuple_contested, connector_contested) = self
+                    .displaced
+                    .get(&origin)
+                    .map(|record| {
+                        (
+                            record.origin_identity.clone(),
+                            record.origin_tuple_contested,
+                            record.origin_connector_contested,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        let (tuple, connector) = crate::workspace_scope::snapshot_contention(
+                            &self.output_facts,
+                            &origin,
+                        );
+                        (
+                            self.output_facts
+                                .get(&origin)
+                                .map(|facts| facts.identity.clone())
+                                .unwrap_or_else(crate::world_report::OutputIdentity::unknown),
+                            tuple,
+                            connector,
+                        )
+                    });
                 self.displaced.insert(
                     origin.clone(),
                     DisplacedEntry {
                         workspaces: candidates.clone(),
                         dest: dest.clone(),
+                        origin_identity: identity,
+                        origin_tuple_contested: tuple_contested,
+                        origin_connector_contested: connector_contested,
                     },
                 );
+                // Chain refresh: earlier records whose units rode along on
+                // this ring now live on the new dest. Without this the
+                // return rekeys against a stale source and trims the unit.
+                for (other, record) in self.displaced.iter_mut() {
+                    if *other != origin
+                        && record.workspaces.iter().any(|id| candidates.contains(id))
+                    {
+                        record.dest = dest.clone();
+                    }
+                }
                 if fresh {
                     let dest_id = OutputId(dest.clone());
                     for id in &candidates {

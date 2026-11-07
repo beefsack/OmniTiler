@@ -2597,6 +2597,9 @@ function encodeV4ScreenRow(s: {
     full: { x: number; y: number; w: number; h: number } | null;
     work: { x: number; y: number; w: number; h: number } | null;
     complete: boolean;
+    manufacturer: string | null;
+    model: string | null;
+    serial: string | null;
 }): string | null {
     if (!isOpaqueId(s.out)) {
         return null;
@@ -2607,15 +2610,34 @@ function encodeV4ScreenRow(s: {
         return null;
     }
     // KWin reports in logical pixels, so scale is exactly 1 (never a
-    // physical/logical device-pixel ratio). Identity has no truthful
-    // producer: no EDID metadata or connector proof exists in the script
-    // surface, and substituting output names or ordinals for the connector
-    // is forbidden, so every arm rides null. Primary is always omitted:
-    // the contract primary is the native host-designated output, and the
+    // physical/logical device-pixel ratio). Identity carries the neutral
+    // LogicalOutput manufacturer/model/serialNumber facts the observation
+    // normalized (null when unknown/unreadable/overbound, never ""); the
+    // encoder fails closed on any malformed/overbound/empty text rather
+    // than emitting it. Connector has no scripting-surface proof (the DRM
+    // connector name is not scripting-wide connector proof, and uuid() is
+    // not scripting-exposed), so it always rides null; output names or
+    // ordinals are never substituted. Primary is always omitted: the
+    // contract primary is the native host-designated output, and the
     // active screen is not that proof.
+    const identityText = (value: string | null): string | null => {
+        if (value === null) {
+            return "null";
+        }
+        if (typeof value !== "string" || value === "" || utf8ByteLength(value) > 256) {
+            return null;
+        }
+        return encodeV4String(value);
+    };
+    const manufacturer = identityText(s.manufacturer);
+    const model = identityText(s.model);
+    const serial = identityText(s.serial);
+    if (manufacturer === null || model === null || serial === null) {
+        return null;
+    }
     return `{"out":${encodeV4String(s.out)},"full":${full},"work":${work},` +
         `"complete":${encodeV4Bool(s.complete)},"scale":1,` +
-        `"identity":{"manufacturer":null,"model":null,"serial":null,"connector":null}}`;
+        `"identity":{"manufacturer":${manufacturer},"model":${model},"serial":${serial},"connector":null}}`;
 }
 
 function encodeV4NativeRow(n: {

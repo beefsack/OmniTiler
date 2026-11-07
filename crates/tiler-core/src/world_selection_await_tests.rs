@@ -16,7 +16,7 @@
 use std::collections::BTreeSet;
 
 use crate::connection::{HostCapabilities, RawSettingValue};
-use crate::directional::{OutputId, WindowId, WorkspaceId};
+use crate::directional::{Node, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
@@ -11365,5 +11365,1283 @@ fn selection_redundant_unchanged_preserves_binding_history_and_mints_nothing() {
         engine.effective_view(&OutputId("out-a".to_owned())),
         before_view,
         "view preserved"
+    );
+}
+
+fn d23_subtree_leaves(node: &Node) -> Vec<String> {
+    match node {
+        Node::Leaf { id } => vec![id.0.clone()],
+        Node::Group { children, .. } => children.iter().flat_map(d23_subtree_leaves).collect(),
+    }
+}
+
+fn d23_group_leaves(tree: &Node, leaf: &NodeId) -> Option<Vec<String>> {
+    let Node::Group { children, .. } = tree else {
+        return None;
+    };
+    for child in children {
+        if d23_subtree_leaves(child).contains(&leaf.0) {
+            return match child {
+                Node::Leaf { .. } => Some(d23_subtree_leaves(tree)),
+                Node::Group { .. } => d23_group_leaves(child, leaf),
+            };
+        }
+    }
+    None
+}
+
+fn d23_home_tree(engine: &WorldEngine, key: &DomainKey) -> Node {
+    engine
+        .engine
+        .session(key)
+        .expect("home retained")
+        .snapshot()
+        .domains
+        .iter()
+        .find(|domain| domain.output == key.output && domain.workspace == key.workspace)
+        .expect("home domain")
+        .tree
+        .clone()
+        .expect("home tree")
+}
+
+fn d23_link_leaf(engine: &WorldEngine, key: &DomainKey, window: &WindowId) -> NodeId {
+    engine
+        .engine
+        .session(key)
+        .expect("home retained")
+        .snapshot()
+        .windows
+        .iter()
+        .find(|link| link.window == *window)
+        .expect("window linked")
+        .leaf
+        .clone()
+}
+
+fn d23_focused_window(engine: &WorldEngine, key: &DomainKey) -> Option<String> {
+    let session = engine.engine.session(key).expect("home retained");
+    let (domain, leaf) = session.focus();
+    let (domain, leaf) = (domain?, leaf?);
+    session
+        .snapshot()
+        .windows
+        .iter()
+        .find(|link| {
+            link.leaf == leaf && link.output == domain.output && link.workspace == domain.workspace
+        })
+        .map(|link| link.window.0.clone())
+}
+
+#[test]
+fn d23_minimized_native_rehome_forgets_source_slot() {
+    // D23 option B: the first confirmed per-window minimized rehome (same
+    // lifetime, complete inventory) forgets the source restore slot, so a
+    // later restore fresh-admits instead of rejoining the old group.
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(
+        &mut engine,
+        &host_native_report(1, vec![], "n0", None, None),
+    );
+    let home_ws = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0 workspace")
+        .id
+        .clone();
+    let away_ws = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n1"))
+        .expect("n1 workspace")
+        .id
+        .clone();
+    let home_key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(home_ws.clone()),
+    };
+    let away_key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(away_ws),
+    };
+    let win_b = WindowId("win-b".to_owned());
+    // Admit A, then B at focused B, then C at focused B through real
+    // reports: fresh admission splits the focused leaf, yielding nested
+    // A / (B, C) grouping on the n0 workspace.
+    let mut staged = host_native_report(2, vec![hfact("win-a", "n0", 0, true)], "n0", None, None);
+    staged.focused_global = "win-a".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    let mut staged = host_native_report(
+        3,
+        vec![
+            hfact("win-a", "n0", 0, true),
+            hfact("win-b", "n0", 100, true),
+        ],
+        "n0",
+        None,
+        None,
+    );
+    staged.focused_global = "win-b".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    let mut staged = host_native_report(
+        4,
+        vec![
+            hfact("win-a", "n0", 0, true),
+            hfact("win-b", "n0", 100, true),
+            hfact("win-c", "n0", 200, true),
+        ],
+        "n0",
+        None,
+        None,
+    );
+    staged.focused_global = "win-b".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    // Confirm the starting tree nests B with C, apart from A.
+    let pre_tree = d23_home_tree(&engine, &home_key);
+    let b_leaf = d23_link_leaf(&engine, &home_key, &win_b);
+    let c_leaf = d23_link_leaf(&engine, &home_key, &WindowId("win-c".to_owned()));
+    let mut bc_group = d23_group_leaves(&pre_tree, &b_leaf).expect("B grouped");
+    bc_group.sort();
+    let mut bc_expected = vec![b_leaf.0.clone(), c_leaf.0.clone()];
+    bc_expected.sort();
+    assert_eq!(
+        bc_group, bc_expected,
+        "starting tree nests B with C: {pre_tree:?}"
+    );
+    // Minimize B in place; the hidden fact still reads, so the session
+    // converges the omission into the WS1 restore slot.
+    let mut b_min = hfact("win-b", "n0", 100, false);
+    b_min.minimized = Some(true);
+    b_min.rect = None;
+    let mut staged = host_native_report(
+        5,
+        vec![
+            hfact("win-a", "n0", 0, true),
+            b_min.clone(),
+            hfact("win-c", "n0", 200, true),
+        ],
+        "n0",
+        None,
+        None,
+    );
+    staged.focused_global = "win-c".to_owned();
+    let _ = accepted(&mut engine, &staged);
+    let old_slot = engine
+        .engine
+        .session(&home_key)
+        .expect("home retained")
+        .minimized_slot(&win_b)
+        .expect("minimize stores the source restore slot")
+        .clone();
+    assert_eq!(
+        old_slot.tree, pre_tree,
+        "slot preserves the pre-minimize C-group tree"
+    );
+    assert_eq!(old_slot.leaf, b_leaf, "slot preserves the old B leaf");
+    // Confirmed per-window departure: B still minimized on the same output
+    // but natively rehomed to n1 under a complete inventory.
+    let mut b_away = b_min.clone();
+    b_away.native_workspace = crate::world_report::NativeWorkspaceFact::Value("n1".to_owned());
+    let reply6 = accepted(
+        &mut engine,
+        &host_native_report(
+            6,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                b_away,
+                hfact("win-c", "n0", 200, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let row_ws = reply6
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-b")
+        .map(|row| row.workspace.clone());
+    let homing = engine.adapter_homing(&win_b);
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_none(),
+        "first confirmed minimized rehome forgets the source slot; row_ws={row_ws:?} homing={homing:?}"
+    );
+    // Return leg: B back to n0 while still minimized. No slot exists to
+    // resurrect, so none may appear at either home.
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            7,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                b_min.clone(),
+                hfact("win-c", "n0", 200, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_none(),
+        "return leg resurrects no slot"
+    );
+    assert!(
+        engine
+            .engine
+            .session(&away_key)
+            .is_none_or(|session| session.minimized_slot(&win_b).is_none()),
+        "away home holds no slot either"
+    );
+    // Focus-settle leg: B still minimized while observed focus moves to
+    // A on its own accepted report, so the restore below cannot inherit
+    // a stale C focus. The settled session focus must read A.
+    let mut focus_a = host_native_report(
+        8,
+        vec![
+            hfact("win-a", "n0", 0, true),
+            b_min.clone(),
+            hfact("win-c", "n0", 200, true),
+        ],
+        "n0",
+        None,
+        None,
+    );
+    focus_a.focused_global = "win-a".to_owned();
+    let _ = accepted(&mut engine, &focus_a);
+    assert_eq!(
+        d23_focused_window(&engine, &home_key),
+        Some("win-a".to_owned()),
+        "settled session focus is A before the restore"
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_none(),
+        "focus move resurrects no slot"
+    );
+    // Restore leg: B unminimizes on n0 with settled focus on A. No slot
+    // survives, so the restore must fresh-admit at A instead of
+    // rejoining the old (B, C) group.
+    let mut staged = host_native_report(
+        9,
+        vec![
+            hfact("win-a", "n0", 0, true),
+            hfact("win-b", "n0", 100, true),
+            hfact("win-c", "n0", 200, true),
+        ],
+        "n0",
+        None,
+        None,
+    );
+    staged.focused_global = "win-a".to_owned();
+    let reply9 = accepted(&mut engine, &staged);
+    assert!(
+        reply9.transfers.is_empty(),
+        "restore performs no rehoming move: {reply9:?}"
+    );
+    let home_session = engine.engine.session(&home_key).expect("home retained");
+    let new_b_leaf = home_session
+        .snapshot()
+        .windows
+        .iter()
+        .find(|link| link.window == win_b)
+        .expect("restored B linked")
+        .leaf
+        .clone();
+    let new_tree = d23_home_tree(&engine, &home_key);
+    assert_ne!(
+        new_tree, pre_tree,
+        "fresh admission rewrites the topology, never restores the slot tree"
+    );
+    let mut new_group = d23_group_leaves(&new_tree, &new_b_leaf).expect("B grouped");
+    new_group.sort();
+    let a_leaf = d23_link_leaf(&engine, &home_key, &WindowId("win-a".to_owned()));
+    let mut ab_expected = vec![a_leaf.0.clone(), new_b_leaf.0.clone()];
+    ab_expected.sort();
+    assert_eq!(
+        new_group, ab_expected,
+        "fresh admit groups B with settled-focus A, never the old C group: {new_tree:?}"
+    );
+    assert!(
+        home_session.minimized_slot(&win_b).is_none(),
+        "no slot survives the restore"
+    );
+    assert_eq!(
+        engine.adapter_homing(&win_b),
+        Some(("out-a".to_owned(), home_ws.clone())),
+        "restored B homes at the source workspace"
+    );
+}
+
+#[test]
+fn d23_minimized_cross_output_rehome_forgets_first_slot() {
+    // Cross-output minimized rehome: B minimized on out-a/n0, then the
+    // same minimized lifetime reads on out-b/m0. The first source slot is
+    // forgotten; the later restore tiles fresh at the destination.
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(
+        &mut engine,
+        &d23_two_screen_report(1, vec![], "n0", None, None),
+    );
+    let home_ws = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0 workspace")
+        .id
+        .clone();
+    let ob_ws = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("m0"))
+        .expect("m0 workspace")
+        .id
+        .clone();
+    let home_key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(home_ws),
+    };
+    let ob_key = DomainKey {
+        output: OutputId("out-b".to_owned()),
+        workspace: WorkspaceId(ob_ws.clone()),
+    };
+    let win_b = WindowId("win-b".to_owned());
+    let _ = accepted(
+        &mut engine,
+        &d23_two_screen_report(
+            2,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                hfact("win-b", "n0", 100, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let mut b_min = hfact("win-b", "n0", 100, false);
+    b_min.minimized = Some(true);
+    b_min.rect = None;
+    let _ = accepted(
+        &mut engine,
+        &d23_two_screen_report(
+            3,
+            vec![hfact("win-a", "n0", 0, true), b_min.clone()],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_some(),
+        "minimize stores the source slot"
+    );
+    let mut b_ob = b_min.clone();
+    b_ob.output = Some(OutputId("out-b".to_owned()));
+    b_ob.native_workspace = crate::world_report::NativeWorkspaceFact::Value("m0".to_owned());
+    let _ = accepted(
+        &mut engine,
+        &d23_two_screen_report(
+            4,
+            vec![hfact("win-a", "n0", 0, true), b_ob],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_none(),
+        "cross-output minimized rehome forgets the first source slot"
+    );
+    assert_eq!(
+        engine.adapter_homing(&win_b),
+        Some(("out-b".to_owned(), ob_ws.clone())),
+        "departure homes at the destination"
+    );
+    // Restore at the destination tiles fresh there with no slot anywhere.
+    let mut b_live = hfact("win-b", "m0", 100, true);
+    b_live.output = Some(OutputId("out-b".to_owned()));
+    let _ = accepted(
+        &mut engine,
+        &d23_two_screen_report(
+            5,
+            vec![hfact("win-a", "n0", 0, true), b_live],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let _ = d23_link_leaf(&engine, &ob_key, &win_b);
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_none(),
+        "no slot resurrects at the source"
+    );
+    assert!(
+        engine
+            .engine
+            .session(&ob_key)
+            .is_none_or(|session| session.minimized_slot(&win_b).is_none()),
+        "no slot lingers at the destination"
+    );
+    assert_eq!(
+        engine.adapter_homing(&win_b),
+        Some(("out-b".to_owned(), ob_ws)),
+        "restored B homes at the destination"
+    );
+}
+
+fn d23_two_screen_report(
+    seq: u64,
+    windows: Vec<WindowFact>,
+    current_a: &str,
+    command_seq: Option<u64>,
+    command: Option<WorldCommand>,
+) -> WorldReport {
+    let mut out = report(seq, windows, vec![], command_seq, command, vec![], "");
+    out.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    out.native = vec![
+        crate::world_report::NativeObservation {
+            output: OutputId("out-a".to_owned()),
+            native_order: vec!["n0".to_owned(), "n1".to_owned()],
+            current_native: Some(current_a.to_owned()),
+            occupancy: vec![
+                crate::world_report::NativeOccupancy {
+                    native: "n0".to_owned(),
+                    count: None,
+                },
+                crate::world_report::NativeOccupancy {
+                    native: "n1".to_owned(),
+                    count: None,
+                },
+            ],
+        },
+        crate::world_report::NativeObservation {
+            output: OutputId("out-b".to_owned()),
+            native_order: vec!["m0".to_owned()],
+            current_native: Some("m0".to_owned()),
+            occupancy: vec![crate::world_report::NativeOccupancy {
+                native: "m0".to_owned(),
+                count: None,
+            }],
+        },
+    ];
+    out
+}
+
+#[test]
+fn d23_minimized_stable_native_retains_slot_and_restores() {
+    // Ordinary minimize with a stable receipt retains the slot, and the
+    // restore consumes it: the rehome forget above only fires on a
+    // confirmed departure, never on stability.
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(
+        &mut engine,
+        &host_native_report(1, vec![], "n0", None, None),
+    );
+    let home_ws = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0 workspace")
+        .id
+        .clone();
+    let home_key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(home_ws),
+    };
+    let win_b = WindowId("win-b".to_owned());
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            2,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                hfact("win-b", "n0", 100, true),
+                hfact("win-c", "n0", 200, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let mut b_min = hfact("win-b", "n0", 100, false);
+    b_min.minimized = Some(true);
+    b_min.rect = None;
+    for seq in [3, 4] {
+        let _ = accepted(
+            &mut engine,
+            &host_native_report(
+                seq,
+                vec![
+                    hfact("win-a", "n0", 0, true),
+                    b_min.clone(),
+                    hfact("win-c", "n0", 200, true),
+                ],
+                "n0",
+                None,
+                None,
+            ),
+        );
+        assert!(
+            engine
+                .engine
+                .session(&home_key)
+                .expect("home retained")
+                .minimized_slot(&win_b)
+                .is_some(),
+            "stable minimized receipt retains the slot (seq {seq})"
+        );
+    }
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            5,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                hfact("win-b", "n0", 100, true),
+                hfact("win-c", "n0", 200, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let home_session = engine.engine.session(&home_key).expect("home retained");
+    assert!(
+        home_session
+            .snapshot()
+            .windows
+            .iter()
+            .any(|link| link.window == win_b),
+        "restored B tiles again"
+    );
+    assert!(
+        home_session.minimized_slot(&win_b).is_none(),
+        "restore consumes the slot"
+    );
+}
+
+#[test]
+fn d23_minimized_unknown_native_never_confirms_departure() {
+    // Omitted/null/empty/unmapped native reads keep retained homing: none
+    // of them may confirm a departure or disturb the slot.
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(
+        &mut engine,
+        &host_native_report(1, vec![], "n0", None, None),
+    );
+    let home_ws = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0 workspace")
+        .id
+        .clone();
+    let home_key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(home_ws),
+    };
+    let win_b = WindowId("win-b".to_owned());
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            2,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                hfact("win-b", "n0", 100, true),
+                hfact("win-c", "n0", 200, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let mut b_min = hfact("win-b", "n0", 100, false);
+    b_min.minimized = Some(true);
+    b_min.rect = None;
+    for (seq, native) in (3..).zip([
+        crate::world_report::NativeWorkspaceFact::Omitted,
+        crate::world_report::NativeWorkspaceFact::Null,
+        crate::world_report::NativeWorkspaceFact::Value(String::new()),
+        crate::world_report::NativeWorkspaceFact::Value("n9-unmapped".to_owned()),
+    ]) {
+        let mut b_unknown = b_min.clone();
+        b_unknown.native_workspace = native;
+        let _ = accepted(
+            &mut engine,
+            &host_native_report(
+                seq,
+                vec![
+                    hfact("win-a", "n0", 0, true),
+                    b_unknown,
+                    hfact("win-c", "n0", 200, true),
+                ],
+                "n0",
+                None,
+                None,
+            ),
+        );
+        assert!(
+            engine
+                .engine
+                .session(&home_key)
+                .expect("home retained")
+                .minimized_slot(&win_b)
+                .is_some(),
+            "unknown native read retains the slot (seq {seq})"
+        );
+    }
+}
+
+fn d23_three_native_report(
+    seq: u64,
+    windows: Vec<WindowFact>,
+    command_seq: Option<u64>,
+    command: Option<WorldCommand>,
+) -> WorldReport {
+    let mut out = report(seq, windows, vec![], command_seq, command, vec![], "");
+    out.native = vec![crate::world_report::NativeObservation {
+        output: OutputId("out-a".to_owned()),
+        native_order: vec!["n0".to_owned(), "n1".to_owned(), "n2".to_owned()],
+        current_native: Some("n0".to_owned()),
+        occupancy: vec![
+            crate::world_report::NativeOccupancy {
+                native: "n0".to_owned(),
+                count: None,
+            },
+            crate::world_report::NativeOccupancy {
+                native: "n1".to_owned(),
+                count: None,
+            },
+            crate::world_report::NativeOccupancy {
+                native: "n2".to_owned(),
+                count: None,
+            },
+        ],
+    }];
+    out
+}
+
+#[test]
+fn d23_minimized_incomplete_inventory_retains_slot() {
+    // Gapped evidence never confirms a departure: the same minimized
+    // rehome that forgets under a complete inventory retains the slot
+    // when the inventory reads incomplete.
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(
+        &mut engine,
+        &host_native_report(1, vec![], "n0", None, None),
+    );
+    let home_ws = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0 workspace")
+        .id
+        .clone();
+    let home_key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(home_ws),
+    };
+    let win_b = WindowId("win-b".to_owned());
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            2,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                hfact("win-b", "n0", 100, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let mut b_min = hfact("win-b", "n0", 100, false);
+    b_min.minimized = Some(true);
+    b_min.rect = None;
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            3,
+            vec![hfact("win-a", "n0", 0, true), b_min.clone()],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_some(),
+        "minimize stores the source slot"
+    );
+    let mut b_away = b_min.clone();
+    b_away.native_workspace = crate::world_report::NativeWorkspaceFact::Value("n1".to_owned());
+    let mut staged = host_native_report(
+        4,
+        vec![hfact("win-a", "n0", 0, true), b_away],
+        "n0",
+        None,
+        None,
+    );
+    staged.inventory_complete = false;
+    let _ = accepted(&mut engine, &staged);
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_some(),
+        "gapped inventory never confirms the departure"
+    );
+}
+
+#[test]
+fn d23_minimized_unsettled_transfer_retains_slot() {
+    // A requested but unsettled per-window transfer blocks confirmation:
+    // B is sent toward the n1 workspace, then minimized evidence names
+    // the contradictory n2 workspace while the flight is outstanding.
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(&mut engine, &d23_three_native_report(1, vec![], None, None));
+    let by_native: std::collections::BTreeMap<String, String> = boot
+        .workspaces
+        .iter()
+        .filter_map(|row| {
+            row.native_binding
+                .clone()
+                .map(|native| (native, row.id.clone()))
+        })
+        .collect();
+    let home_ws = by_native["n0"].clone();
+    let away_ws = by_native["n1"].clone();
+    let home_key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(home_ws),
+    };
+    let win_b = WindowId("win-b".to_owned());
+    let _ = accepted(
+        &mut engine,
+        &d23_three_native_report(
+            2,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                hfact("win-b", "n0", 100, true),
+            ],
+            None,
+            None,
+        ),
+    );
+    let mut send = d23_three_native_report(
+        3,
+        vec![
+            hfact("win-a", "n0", 0, true),
+            hfact("win-b", "n0", 100, true),
+        ],
+        Some(3),
+        Some(WorldCommand::Send {
+            window: win_b.clone(),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: away_ws.clone(),
+            follow: false,
+        }),
+    );
+    send.focused_global = "win-b".to_owned();
+    let sent = accepted(&mut engine, &send);
+    assert!(
+        sent.transfers.iter().any(|t| matches!(
+            t.kind,
+            crate::world_report::TransferKind::Window(ref w) if *w == win_b
+        )),
+        "send flight retained: {:?}",
+        sent.transfers
+    );
+    let mut b_min = hfact("win-b", "n0", 100, false);
+    b_min.minimized = Some(true);
+    b_min.rect = None;
+    let minimizing = accepted(
+        &mut engine,
+        &d23_three_native_report(
+            4,
+            vec![hfact("win-a", "n0", 0, true), b_min.clone()],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        minimizing.transfers.iter().any(|t| matches!(
+            t.kind,
+            crate::world_report::TransferKind::Window(ref w) if *w == win_b
+        )),
+        "flight stays outstanding across the minimize: {:?}",
+        minimizing.transfers
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_none(),
+        "outstanding flight holds the sweep: no slot is stored mid-flight"
+    );
+    let mut b_third = b_min.clone();
+    b_third.native_workspace = crate::world_report::NativeWorkspaceFact::Value("n2".to_owned());
+    let held = accepted(
+        &mut engine,
+        &d23_three_native_report(5, vec![hfact("win-a", "n0", 0, true), b_third], None, None),
+    );
+    assert!(
+        held.transfers.iter().any(|t| matches!(
+            t.kind,
+            crate::world_report::TransferKind::Window(ref w) if *w == win_b
+        )),
+        "contradicted flight stays outstanding: {:?}",
+        held.transfers
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_none(),
+        "unsettled transfer never confirms a departure"
+    );
+    // Arrival settles the flight normally: B tiles at the target.
+    let mut arrival = d23_three_native_report(
+        6,
+        vec![
+            hfact("win-a", "n0", 0, true),
+            hfact("win-b", "n1", 100, true),
+        ],
+        None,
+        None,
+    );
+    arrival.focused_global = "win-b".to_owned();
+    let settled = accepted(&mut engine, &arrival);
+    assert!(
+        settled.transfers.is_empty(),
+        "arrival settles the flight: {:?}",
+        settled.transfers
+    );
+    assert_eq!(
+        engine.adapter_homing(&win_b),
+        Some(("out-a".to_owned(), away_ws)),
+        "settled B homes at the target"
+    );
+}
+
+#[test]
+fn d23_minimized_refused_command_still_forgets() {
+    // A refused command does not fence genuine observation: the same
+    // report carries a refused selection plus a confirmed minimized
+    // rehome, and the slot still forgets.
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(
+        &mut engine,
+        &host_native_report(1, vec![], "n0", None, None),
+    );
+    let home_ws = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0 workspace")
+        .id
+        .clone();
+    let home_key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(home_ws),
+    };
+    let win_b = WindowId("win-b".to_owned());
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            2,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                hfact("win-b", "n0", 100, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let mut b_min = hfact("win-b", "n0", 100, false);
+    b_min.minimized = Some(true);
+    b_min.rect = None;
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            3,
+            vec![hfact("win-a", "n0", 0, true), b_min.clone()],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let mut b_away = b_min.clone();
+    b_away.native_workspace = crate::world_report::NativeWorkspaceFact::Value("n1".to_owned());
+    let refused = accepted(
+        &mut engine,
+        &host_native_report(
+            4,
+            vec![hfact("win-a", "n0", 0, true), b_away],
+            "n0",
+            Some(4),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: "ws-nope".to_owned(),
+            }),
+        ),
+    );
+    assert!(
+        matches!(
+            refused.command_result,
+            Some(crate::world_report::CommandResult::Rejected { .. })
+        ),
+        "unknown workspace refuses: {refused:?}"
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_none(),
+        "refused command never fences a confirmed departure"
+    );
+}
+
+#[test]
+fn d23_minimized_unreadable_receipt_retains_slot() {
+    // Unreadable frames are not minimized evidence: B present but
+    // frame-unreadable on the n1 workspace keeps the source slot even
+    // though the receipt moved.
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(
+        &mut engine,
+        &host_native_report(1, vec![], "n0", None, None),
+    );
+    let home_ws = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0 workspace")
+        .id
+        .clone();
+    let home_key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(home_ws),
+    };
+    let win_b = WindowId("win-b".to_owned());
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            2,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                hfact("win-b", "n0", 100, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let mut b_min = hfact("win-b", "n0", 100, false);
+    b_min.minimized = Some(true);
+    b_min.rect = None;
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            3,
+            vec![hfact("win-a", "n0", 0, true), b_min],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_some(),
+        "minimize stores the source slot"
+    );
+    let mut b_unreadable = hfact("win-b", "n1", 100, false);
+    b_unreadable.minimized = Some(false);
+    b_unreadable.rect = None;
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            4,
+            vec![hfact("win-a", "n0", 0, true), b_unreadable],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_some(),
+        "unreadable frames never confirm a departure"
+    );
+}
+
+#[test]
+fn d23_minimized_workspace_migration_retains_relocated_slot() {
+    // Whole-workspace migration is not a per-window rehome: with B
+    // minimized and slotted at home, migrating the home workspace to
+    // out-b relocates the slot with the workspace instead of forgetting
+    // it, and B keeps a restore path at the new home.
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(
+        &mut engine,
+        &d23_two_screen_report(1, vec![], "n0", None, None),
+    );
+    let home_ws = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0 workspace")
+        .id
+        .clone();
+    let new_home_key = DomainKey {
+        output: OutputId("out-b".to_owned()),
+        workspace: WorkspaceId(home_ws.clone()),
+    };
+    let win_b = WindowId("win-b".to_owned());
+    let _ = accepted(
+        &mut engine,
+        &d23_two_screen_report(
+            2,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                hfact("win-b", "n0", 100, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let mut b_min = hfact("win-b", "n0", 100, false);
+    b_min.minimized = Some(true);
+    b_min.rect = None;
+    let _ = accepted(
+        &mut engine,
+        &d23_two_screen_report(
+            3,
+            vec![hfact("win-a", "n0", 0, true), b_min.clone()],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let mut migrate = d23_two_screen_report(
+        4,
+        vec![hfact("win-a", "n0", 0, true), b_min.clone()],
+        "n0",
+        Some(4),
+        Some(WorldCommand::MigrateWorkspace {
+            source_output: OutputId("out-a".to_owned()),
+            target_output: OutputId("out-b".to_owned()),
+            workspace: home_ws,
+        }),
+    );
+    migrate.focused_global = "win-a".to_owned();
+    let migrated = accepted(&mut engine, &migrate);
+    assert!(
+        migrated
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, crate::world_report::TransferKind::Migration)),
+        "migration flight retained: {:?}",
+        migrated.transfers
+    );
+    assert!(
+        engine
+            .engine
+            .session(&new_home_key)
+            .is_some_and(|session| session.minimized_slot(&win_b).is_some()),
+        "migration relocates the slot with the workspace, never forgets it"
+    );
+}
+
+#[test]
+fn d23_minimized_close_wins_over_rehome() {
+    // A native close arriving with a minimized rehome wins: the closed
+    // lifetime leaves no slot behind at either home.
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(
+        &mut engine,
+        &host_native_report(1, vec![], "n0", None, None),
+    );
+    let home_ws = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0 workspace")
+        .id
+        .clone();
+    let home_key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(home_ws),
+    };
+    let win_b = WindowId("win-b".to_owned());
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            2,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                hfact("win-b", "n0", 100, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let mut b_min = hfact("win-b", "n0", 100, false);
+    b_min.minimized = Some(true);
+    b_min.rect = None;
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            3,
+            vec![hfact("win-a", "n0", 0, true), b_min.clone()],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_some(),
+        "minimize stores the source slot"
+    );
+    // A native close of the minimized lifetime arrives as omission plus
+    // a close entry (never a live fact plus a close): the close path owns
+    // the slot, so no stale slot survives at the source home.
+    let mut staged = host_native_report(4, vec![hfact("win-a", "n0", 0, true)], "n0", None, None);
+    staged.closed = vec![win_b.clone()];
+    let _ = accepted(&mut engine, &staged);
+    assert!(
+        engine.adapter_homing(&win_b).is_none(),
+        "closed lifetime drops membership"
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .is_none_or(|session| session.minimized_slot(&win_b).is_none()),
+        "close leaves no slot behind"
+    );
+}
+
+#[test]
+fn d23_minimized_same_turn_rehome_forgets_slot() {
+    // Minimize and native rehome in a single report: the sweep stores the
+    // source slot while converging, and the post-sweep forget still clears
+    // it, so no stale slot survives the turn.
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(
+        &mut engine,
+        &host_native_report(1, vec![], "n0", None, None),
+    );
+    let home_ws = boot
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n0"))
+        .expect("n0 workspace")
+        .id
+        .clone();
+    let home_key = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(home_ws),
+    };
+    let win_b = WindowId("win-b".to_owned());
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            2,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                hfact("win-b", "n0", 100, true),
+                hfact("win-c", "n0", 200, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    let mut b_moved = hfact("win-b", "n1", 100, false);
+    b_moved.minimized = Some(true);
+    b_moved.rect = None;
+    let _ = accepted(
+        &mut engine,
+        &host_native_report(
+            3,
+            vec![
+                hfact("win-a", "n0", 0, true),
+                b_moved,
+                hfact("win-c", "n0", 200, true),
+            ],
+            "n0",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .engine
+            .session(&home_key)
+            .expect("home retained")
+            .minimized_slot(&win_b)
+            .is_none(),
+        "same-turn minimize+rehome leaves no source slot"
     );
 }

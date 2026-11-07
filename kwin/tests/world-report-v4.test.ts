@@ -76,6 +76,25 @@ function makeSurface(wins: Array<Record<string, unknown>>) {
     };
 }
 
+function makeSurfaceWithScreens(
+    wins: Array<Record<string, unknown>>,
+    screens: Array<Record<string, unknown>>,
+) {
+    const desktops = [makeDesk("native-a")];
+    return {
+        windowList: () => wins,
+        screens,
+        desktops,
+        activeScreen: screens[0] ?? { name: "out-a" },
+        activeWindow: wins[0] ?? null,
+        cursorPos: { x: 20, y: 30 },
+        windowAt: () => (wins.length > 0 ? [wins[0]] : []),
+        stackingOrder: [...wins].reverse(),
+        clientArea: () => ({ x: 0, y: 0, width: 1920, height: 1040 }),
+        currentDesktopForScreen: () => desktops[0],
+    };
+}
+
 function observe(surface: object) {
     const obs = captureWorldObservation({
         workspace: surface,
@@ -90,6 +109,205 @@ function observe(surface: object) {
     assert.ok(obs !== null);
     return obs;
 }
+
+describe("v4 screen physical identity", () => {
+    function screenIdent(screens: Array<Record<string, unknown>>) {
+        const { json, value } = buildInner(makeSurfaceWithScreens([makeWin({})], screens));
+        assert.ok(json !== null);
+        const rows = value["screens"] as Array<Record<string, unknown>>;
+        return { json, rows };
+    }
+
+    function deskScreen(over: Record<string, unknown>) {
+        return {
+            name: "out-a",
+            geometry: { x: 0, y: 0, width: 1920, height: 1080 },
+            ...over,
+        };
+    }
+
+    it("rides truthful manufacturer/model/serial with a null connector", () => {
+        const { json, rows } = screenIdent([deskScreen({
+            manufacturer: "ACME", model: "Ultra 27", serialNumber: "SN-001",
+        })]);
+        assert.deepEqual(rows[0]?.["identity"], {
+            manufacturer: "ACME", model: "Ultra 27", serial: "SN-001", connector: null,
+        });
+        assert.ok(json.includes('"identity":{"manufacturer":"ACME","model":"Ultra 27","serial":"SN-001","connector":null}'));
+    });
+
+    it("normalizes empty native strings to null, never empty bytes", () => {
+        const { json, rows } = screenIdent([deskScreen({
+            manufacturer: "", model: "", serialNumber: "",
+        })]);
+        assert.deepEqual(rows[0]?.["identity"], {
+            manufacturer: null, model: null, serial: null, connector: null,
+        });
+        assert.ok(!json.includes('"manufacturer":""'));
+    });
+
+    it("preserves a literal nonempty unknown as neutral metadata", () => {
+        // No arm's native sentinel is the word "unknown" (EDID unknown is
+        // "" on all three arms), so a literal value rides verbatim.
+        for (const literal of ["unknown", "Unknown", "UNKNOWN"]) {
+            const { json, rows } = screenIdent([deskScreen({
+                manufacturer: literal, model: literal, serialNumber: literal,
+            })]);
+            assert.deepEqual(rows[0]?.["identity"], {
+                manufacturer: literal, model: literal, serial: literal, connector: null,
+            }, `literal ${literal} must ride verbatim`);
+            assert.ok(json.includes(`"manufacturer":"${literal}"`));
+        }
+    });
+
+    it("reads null on missing properties", () => {
+        const { rows } = screenIdent([deskScreen({})]);
+        assert.deepEqual(rows[0]?.["identity"], {
+            manufacturer: null, model: null, serial: null, connector: null,
+        });
+    });
+
+    it("reads null on non-string properties without holding the report", () => {
+        const { json, rows } = screenIdent([deskScreen({
+            manufacturer: 42, model: true, serialNumber: ["SN"],
+        })]);
+        assert.ok(json !== null, "malformed identity must not hold the report");
+        assert.deepEqual(rows[0]?.["identity"], {
+            manufacturer: null, model: null, serial: null, connector: null,
+        });
+    });
+
+    it("reads null when a native getter throws, keeping the report alive", () => {
+        const evil = deskScreen({});
+        Object.defineProperty(evil, "manufacturer", {
+            enumerable: true, configurable: true,
+            get() { throw new Error("native boom"); },
+        });
+        Object.defineProperty(evil, "serialNumber", {
+            enumerable: true, configurable: true,
+            get() { throw new Error("native boom"); },
+        });
+        (evil as Record<string, unknown>)["model"] = "Panel";
+        const { json, rows } = screenIdent([evil]);
+        assert.ok(json !== null, "throwing getter must not hold the report");
+        assert.deepEqual(rows[0]?.["identity"], {
+            manufacturer: null, model: "Panel", serial: null, connector: null,
+        });
+    });
+
+    it("rides a 256-byte value on a complete screen", () => {
+        const exact256 = "m".repeat(256);
+        const { json, rows } = screenIdent([deskScreen({
+            manufacturer: exact256, model: "ok", serialNumber: "ok",
+        })]);
+        assert.ok(json !== null, "boundary value must not hold the report");
+        assert.equal(rows[0]?.["complete"], true);
+        assert.deepEqual(rows[0]?.["full"], [0, 0, 1920, 1080]);
+        assert.equal((rows[0]?.["identity"] as Record<string, unknown>)["manufacturer"], exact256);
+    });
+
+    it("holds the screen incomplete on overbound text, never a silent null", () => {
+        // Any overbound arm holds its screen; the report stays alive.
+        for (const prop of ["manufacturer", "model", "serialNumber"] as const) {
+            const { json, rows } = screenIdent([deskScreen({
+                manufacturer: "ACME", model: "Panel", serialNumber: "SN-1", [prop]: "m".repeat(257),
+            })]);
+            assert.ok(json !== null, `overbound ${prop} must not drop the report`);
+            assert.equal(rows[0]?.["complete"], false, `overbound ${prop} holds the screen`);
+            assert.equal(rows[0]?.["full"], null);
+            assert.equal(rows[0]?.["work"], null);
+            assert.deepEqual(rows[0]?.["identity"], {
+                manufacturer: null, model: null, serial: null, connector: null,
+            }, `overbound ${prop} nulls every arm`);
+        }
+    });
+
+    it("bounds multi-byte text in UTF-8 bytes, holding only the overbound screen", () => {
+        // 128 e-acutes are exactly 256 bytes: complete. 129 are 258: held.
+        const good = screenIdent([deskScreen({
+            manufacturer: "\u00e9".repeat(128), model: "ok", serialNumber: "ok",
+        })]);
+        assert.equal(good.rows[0]?.["complete"], true);
+        const screens = [
+            deskScreen({ manufacturer: "\u00e9".repeat(129), model: "ok", serialNumber: "ok" }),
+            {
+                name: "out-b", geometry: { x: 1920, y: 0, width: 1920, height: 1080 },
+                manufacturer: "ACME", model: "Panel", serialNumber: "SN-2",
+            },
+        ];
+        const { json, rows } = screenIdent(screens);
+        assert.ok(json !== null, "a held screen must not drop the report");
+        assert.equal(rows.length, 2);
+        assert.equal(rows[0]?.["complete"], false);
+        assert.deepEqual(rows[0]?.["identity"], {
+            manufacturer: null, model: null, serial: null, connector: null,
+        });
+        assert.equal(rows[1]?.["complete"], true);
+        assert.deepEqual(rows[1]?.["full"], [1920, 0, 1920, 1080]);
+        assert.deepEqual(rows[1]?.["identity"], {
+            manufacturer: "ACME", model: "Panel", serial: "SN-2", connector: null,
+        });
+    });
+
+    it("never substitutes the connector, uuid, name, or ordinal", () => {
+        const { rows } = screenIdent([deskScreen({
+            manufacturer: "ACME", model: "HDMI-A-1", serialNumber: "1",
+            connector: "HDMI-A-1",
+            uuid: "some-uuid",
+            connectorName: "HDMI-A-1",
+        })]);
+        assert.deepEqual(rows[0]?.["identity"], {
+            manufacturer: "ACME", model: "HDMI-A-1", serial: "1", connector: null,
+        });
+    });
+
+    it("keeps duplicate metadata on distinct outputs independent", () => {
+        const screens = [
+            deskScreen({ manufacturer: "ACME", model: "Panel", serialNumber: "SAME" }),
+            { name: "out-b", geometry: { x: 1920, y: 0, width: 1920, height: 1080 }, manufacturer: "ACME", model: "Panel", serialNumber: "SAME" },
+        ];
+        const { json, rows } = screenIdent(screens);
+        assert.ok(json !== null);
+        assert.equal(rows.length, 2);
+        for (const row of rows) {
+            assert.deepEqual(row["identity"], {
+                manufacturer: "ACME", model: "Panel", serial: "SAME", connector: null,
+            });
+        }
+    });
+
+    it("keeps metadata under a renamed output handle", () => {
+        const { rows } = screenIdent([deskScreen({
+            name: "out-renamed", manufacturer: "ACME", model: "Panel", serialNumber: "SN-9",
+        })]);
+        assert.equal(rows[0]?.["out"], "out-renamed");
+        assert.deepEqual(rows[0]?.["identity"], {
+            manufacturer: "ACME", model: "Panel", serial: "SN-9", connector: null,
+        });
+    });
+
+    it("fails closed when hand-built identity text cannot spell canonically", () => {
+        const obs = observe(makeSurfaceWithScreens([makeWin({})], [deskScreen({
+            manufacturer: "ACME", model: "Panel", serialNumber: "SN-1",
+        })]));
+        for (const bad of ["", "m".repeat(257), 42 as unknown]) {
+            const mutated = {
+                ...obs,
+                screens: [{ ...obs.screens[0], manufacturer: bad }],
+            };
+            assert.equal(buildWorldReportV4InnerJson({
+                observation: mutated as never,
+                creationAttempts: [],
+                frameAttempts: [],
+                memberAttempts: [],
+                viewAttempts: [],
+                clearAttempts: [],
+                stateAttempts: [],
+                intentRecords: [],
+            }), null, `bad manufacturer ${String(bad).slice(0, 8)} must fail closed`);
+        }
+    });
+});
 
 function buildInner(surface: object) {
     const obs = observe(surface);

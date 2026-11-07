@@ -295,6 +295,9 @@ impl WorldEngine {
         for (key, window) in std::mem::take(&mut self.pending_forget) {
             self.engine.forget_minimized_slot(&key, &window);
         }
+        for (key, window) in self.confirmed_minimized_rehomes() {
+            self.engine.forget_minimized_slot(&key, &window);
+        }
         self.command_result = None;
         match self.gesture_act(issue, &mut held_scopes) {
             GestureOutcome::Absent | GestureOutcome::Held => {}
