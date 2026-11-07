@@ -588,3 +588,9 @@
   broker obligation rather than a parser default. The latest full adapter build
   succeeds with 984 tests: 957 pass, 27 fail, none skip, before these two migrations.
   Remaining corpus failures, widened gates and integrated review keep K1 open.
+- The outer-gap carrier now drives the production entry through genuine v4
+  handshake/settings and the retained real engine, then verifies native-shaped
+  writes/readback. Its regression and strict TypeScript pass: QML array-likes,
+  renewed wrappers, braced ids, raw bounds and original QSize hints produce the
+  expected four-sided outer inset and inner gap, then converge without replay.
+  Legacy fixture files remain unchanged; no fixture-update route is used.
