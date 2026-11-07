@@ -163,3 +163,26 @@
   unresolved finding. Immutable window-state and other fixture bytes remain
   unchanged. Adapter Hold/Untouched no-write coverage, native execution and
   recovery remain next; no live work has run for this increment.
+
+## Verified native preimage client prerequisite
+
+- Added the bounded v1 ReadNativePreimage/WriteNativePreimage client separately
+  from opaque intent. A usable exact-generation seed precedes all mutation and
+  persistence; failed or missing seed disables native lanes without retry.
+  Nullable property slots and coupled stacking survive strict closed-shape import.
+- Full snapshots serialize without losing other armed properties. Each requested
+  lane's immutable preimage is checked before dispatch and after the exact
+  correlated stored acknowledgement. Changed, missing, disabled or stale lanes
+  cannot receive success. Empty-lane flushes are housekeeping, not native-write
+  permission; callers must still revalidate native identity and core authority.
+- Failed writes disable only their lanes. Property clear and unrelated successful
+  snapshots never resume them; a queued failed-lane duplicate does not dispatch.
+  Whole-window cleanup is reserved for an established ended lifetime.
+- Review rejected pre-seed mutation, stale queued-generation relabeling and
+  count-only acknowledgement as insufficient write prerequisites. These are
+  corrected and covered, as are runtime slot validation and strict string types
+  before native-id normalization. Independent review has no unresolved finding.
+- Typechecking, 1109/1109 adapter tests with zero skips, and the unscoped/non-trace
+  build pass. The new client has no production caller yet: no capability,
+  shortcut, native setter, wire fixture or live behavior changed. Executor and
+  startup-recovery integration remain next; this is not native durability proof.
