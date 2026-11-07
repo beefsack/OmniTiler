@@ -34,9 +34,10 @@
 
 1. Audit target/capture/attempt/preimage mechanics, then port retained raw state
    evidence without enabling native writes. This prerequisite is verified below.
-2. Resolve the native preimage storage interface, then implement and verify
-   property execution and durable recovery. Remove obsolete local policy in
-   separate increments after migrated-caller proof.
+2. Implement the separate internal Planner preimage API and file, reusing the
+   existing private storage, namespace and authorization code. Then implement
+   asynchronous persist-before-write execution and startup recovery. Remove
+   obsolete local policy separately after migrated-caller proof.
 3. Review integrated authorization/recovery behavior independently, then prove
    only native transitions that offline tests cannot establish.
 4. Record exact can/cannot outcomes, durable decisions and remaining physical
@@ -52,17 +53,22 @@
 - `world-connection.ts` still advertises `above:false`. No capability flip,
   shortcut migration, native property write or recovery implementation is part
   of the raw-evidence prerequisite.
-- Preimage storage is absent. The existing opaque intent file excludes native
-  state and cannot be repurposed as core-owned intent. Its same-UID/current-KWin
-  authorization, bus/owner namespace and private atomic replace are reusable
-  implementation patterns, not proof of native recovery.
+- The separate preimage slot is now implemented and verified offline below.
+  The existing opaque intent file excludes native state and is not repurposed.
+  Shared same-UID/current-KWin authorization, bus/owner namespace and private
+  atomic replace remain implementation mechanisms, not native recovery proof.
 - At pinned KWin 6.8.1 (`1b798c05c19b1124edb1e16623191fcd2c128fd0`),
   `src/scripting/scripting.cpp` exposes `readConfig` but no script configuration
   writer or generic durable property store; stopping/unloading deletes the
   script and its child JS engine. The same scripting-surface audit at 6.6 was
   consistent. This rules out retaining JS maps across script unload, not every
-  possible native storage mechanism. A separate external preimage API or a
-  native storage owner remains an unresolved integration choice.
+  possible native storage mechanism. The existing migration records already
+  select a separate adapter-owned external preimage slot; its script-to-Planner
+  API is internal KDE plumbing, not a world-contract extension. The optional
+  native effect cannot own this required storage.
+- Native writes wait for the stored reply. Missing or failed replies disable
+  only the affected window/property, without blind retry. Next-start recovery
+  completes before dependent writes resume; namespace mismatch reads empty.
 - Required storage scope remains exact live UUIDs within the same bus/KWin
   lifetime. A compositor restart invalidates this namespace; stale UUIDs must
   not authorize restoration. Native survival and recovery remain unproved.
@@ -96,3 +102,32 @@
   work ran. The build remains unscoped/non-trace; native transitions, durable
   preimages and startup restoration remain open. Existing native-border and
   physical-input gates are neither changed nor closed.
+
+## Verified separate preimage storage
+
+- Internal `ReadNativePreimage`/`WriteNativePreimage` methods persist a separate
+  version-1 `native-preimage.json` snapshot. The existing intent-store anchored
+  no-follow filesystem helpers accept the separate filename; namespace and
+  authorization reuse the existing service code. Opaque intent semantics stay
+  unchanged. No core, shared protocol, wire fixture or native effect changes.
+- One record per UUID carries nullable `maximize_mode`, `fullscreen`,
+  `desktops` and paired `stacking{above,below}`. Null means untouched; an empty
+  desktop array means all-desktops. Exact maximize axes and coupled stacking
+  facts are retained. Only the executor may arm relevant slots or authorize
+  restoration after an exact live UUID join; the service returns storage, not
+  restoration authority.
+- Review corrected the initial all-property snapshot because it lacked
+  untouched-property ownership, and corrected opaque-intent version leakage on
+  preimage rejections. Pinned KWin rule checks can retain both above and below;
+  the store therefore preserves that raw pair rather than rejecting it as
+  impossible. A test-local live filter was removed as non-production proof.
+- Private-bus legs actually execute: current-owner coupled roundtrip and opaque
+  intent coexistence, non-owner rejection, unavailable namespace, new-owner
+  mismatch-empty and linked-slot refusal without touching foreign bytes.
+  Additional codec/filesystem tests cover partial records, null versus empty,
+  closed shapes, bounds, duplicate/normalized identities and private modes.
+- Independent security/source review has no serious unresolved finding. Scoped
+  core/protocol/service tests, locked build, formatting and all-target clippy
+  with warnings denied pass; only `workspace_unsafe_posture` is excluded.
+  Service unit tests pass 219/219. No native property execution or restoration
+  has run; the client executor and its persist-before-write gates remain next.

@@ -118,6 +118,16 @@ impl IntentNamespace {
     pub(crate) fn authorizes_sender(&self, sender: &str) -> bool {
         sender == self.kwin_owner && zbus::names::UniqueName::try_from(sender).is_ok()
     }
+
+    /// Serving bus id for namespace binding in sibling slots.
+    pub(crate) fn bus_id(&self) -> &str {
+        &self.bus_id
+    }
+
+    /// Current KWin owner for namespace binding in sibling slots.
+    pub(crate) fn kwin_owner(&self) -> &str {
+        &self.kwin_owner
+    }
 }
 
 fn valid_namespace_field(value: &str) -> bool {
@@ -236,7 +246,7 @@ impl FloatIntentStore {
             Ok(None) => return IntentRead::empty(),
             Err(()) => return IntentRead::degraded("unreadable"),
         };
-        let bytes = match read_final(&project) {
+        let bytes = match read_final(&project, STORE_FILE_NAME) {
             Ok(None) => return IntentRead::empty(),
             Ok(Some(bytes)) => bytes,
             Err(()) => return IntentRead::degraded("unreadable"),
@@ -280,11 +290,16 @@ impl FloatIntentStore {
         // Refuse to replace a non-conforming file: only a missing file or
         // our own `0600` regular file may be replaced, so a write never
         // follows a link to foreign data.
-        if gate_final(&project).is_err() {
+        if gate_final(&project, STORE_FILE_NAME).is_err() {
             return Err("store-unavailable");
         }
-        atomic_replace(&project, body.as_bytes(), &temp_file_name())
-            .map_err(|()| "store-unavailable")?;
+        atomic_replace(
+            &project,
+            body.as_bytes(),
+            &temp_file_name(TEMP_FILE_PREFIX),
+            STORE_FILE_NAME,
+        )
+        .map_err(|()| "store-unavailable")?;
         Ok(normalized.len())
     }
 }
@@ -371,8 +386,10 @@ fn euid() -> u32 {
 /// with `O_DIRECTORY|O_NOFOLLOW`: a symlink anywhere in the chain refuses
 /// with `ELOOP`, and `..`/`.` components reject outright. Only the final
 /// runtime dir is gated (euid-owned, no group/other bits); parent modes are
-/// whatever the system or tmp hierarchy uses. Never chmodded.
-fn open_root(root: &Path) -> Result<OwnedFd, ()> {
+/// whatever the system or tmp hierarchy uses. Never chmodded. Shared by the
+/// opaque intent slot and the separate native preimage slot (which passes
+/// its own final filename below).
+pub(crate) fn open_root(root: &Path) -> Result<OwnedFd, ()> {
     let mut components = root.components();
     if components.next() != Some(Component::RootDir) {
         return Err(());
@@ -390,7 +407,8 @@ fn open_root(root: &Path) -> Result<OwnedFd, ()> {
 }
 
 /// Dir gate on an opened handle: real dir, euid-owned, no group/other bits.
-fn gate_private_dir(fd: &OwnedFd) -> Result<(), ()> {
+/// Shared with the native preimage slot.
+pub(crate) fn gate_private_dir(fd: &OwnedFd) -> Result<(), ()> {
     let stat = rustix::fs::fstat(fd).map_err(|_| ())?;
     if stat.st_mode & S_IFMT != S_IFDIR || stat.st_uid != euid() || stat.st_mode & 0o077 != 0 {
         return Err(());
@@ -399,7 +417,8 @@ fn gate_private_dir(fd: &OwnedFd) -> Result<(), ()> {
 }
 
 /// Open the project dir relative to the root fd. `Ok(None)` is missing.
-fn open_project(root: &OwnedFd) -> Result<Option<OwnedFd>, ()> {
+/// Shared with the native preimage slot.
+pub(crate) fn open_project(root: &OwnedFd) -> Result<Option<OwnedFd>, ()> {
     match rustix::fs::openat(root, STORE_DIR_NAME, DIR_FLAGS, Mode::empty()) {
         Ok(fd) => {
             gate_private_dir(&fd)?;
@@ -412,8 +431,8 @@ fn open_project(root: &OwnedFd) -> Result<Option<OwnedFd>, ()> {
 
 /// Create the project dir (`mkdirat` never follows a same-name symlink;
 /// `EEXIST` races re-open under the same nofollow gates) and verify the
-/// opened handle. Never chmods.
-fn create_project(root: &OwnedFd) -> Result<OwnedFd, ()> {
+/// opened handle. Never chmods. Shared with the native preimage slot.
+pub(crate) fn create_project(root: &OwnedFd) -> Result<OwnedFd, ()> {
     match rustix::fs::mkdirat(root, STORE_DIR_NAME, Mode::from_bits_truncate(0o700)) {
         Ok(()) => {}
         Err(error) if not_found(&error) => return Err(()),
@@ -426,8 +445,10 @@ fn create_project(root: &OwnedFd) -> Result<OwnedFd, ()> {
 
 /// Gate the final file on its opened nofollow handle: missing is `Ok(false)`,
 /// our `0600` euid regular file is `Ok(true)`, anything else refuses.
-fn gate_final(dir: &OwnedFd) -> Result<bool, ()> {
-    let fd = match rustix::fs::openat(dir, STORE_FILE_NAME, FILE_FLAGS, Mode::empty()) {
+/// Takes the slot filename so the separate native preimage slot reuses the
+/// same gate on its own file.
+pub(crate) fn gate_final(dir: &OwnedFd, file_name: &str) -> Result<bool, ()> {
+    let fd = match rustix::fs::openat(dir, file_name, FILE_FLAGS, Mode::empty()) {
         Ok(fd) => fd,
         Err(error) if not_found(&error) => return Ok(false),
         Err(_) => return Err(()),
@@ -440,12 +461,12 @@ fn gate_final(dir: &OwnedFd) -> Result<bool, ()> {
 }
 
 /// Bounded read through the gated handle: `take(cap + 1)` so a growing file
-/// can never exceed the bound.
-fn read_final(dir: &OwnedFd) -> Result<Option<Vec<u8>>, ()> {
-    if !gate_final(dir)? {
+/// can never exceed the bound. Takes the slot filename for slot reuse.
+pub(crate) fn read_final(dir: &OwnedFd, file_name: &str) -> Result<Option<Vec<u8>>, ()> {
+    if !gate_final(dir, file_name)? {
         return Ok(None);
     }
-    let fd = rustix::fs::openat(dir, STORE_FILE_NAME, FILE_FLAGS, Mode::empty()).map_err(|_| ())?;
+    let fd = rustix::fs::openat(dir, file_name, FILE_FLAGS, Mode::empty()).map_err(|_| ())?;
     if gate_final_fd(&fd).is_err() {
         return Err(());
     }
@@ -468,16 +489,23 @@ fn gate_final_fd(fd: &OwnedFd) -> Result<(), ()> {
     Ok(())
 }
 
-fn temp_file_name() -> String {
+pub(crate) fn temp_file_name(prefix: &str) -> String {
     let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{TEMP_FILE_PREFIX}{}{id}", std::process::id())
+    format!("{prefix}{}{id}", std::process::id())
 }
 
 /// Anchored atomic replace. Only a temp file this exact call created
 /// (`O_CREAT|O_EXCL|O_NOFOLLOW`) is ever unlinked, via anchored `unlinkat`;
 /// a pre-existing occupant fails creation and is preserved byte-for-byte.
-/// The post-rename handle is re-gated before reporting success.
-pub(crate) fn atomic_replace(dir: &OwnedFd, body: &[u8], temp_name: &str) -> Result<(), ()> {
+/// The post-rename handle is re-gated before reporting success. Takes the
+/// final slot filename so the separate native preimage slot reuses the same
+/// replace on its own file.
+pub(crate) fn atomic_replace(
+    dir: &OwnedFd,
+    body: &[u8],
+    temp_name: &str,
+    final_name: &str,
+) -> Result<(), ()> {
     let fd = match rustix::fs::openat(
         dir,
         temp_name,
@@ -501,11 +529,11 @@ pub(crate) fn atomic_replace(dir: &OwnedFd, body: &[u8], temp_name: &str) -> Res
         let _ = rustix::fs::unlinkat(dir, temp_name, AtFlags::empty());
         return Err(());
     }
-    if rustix::fs::renameat(dir, temp_name, dir, STORE_FILE_NAME).is_err() {
+    if rustix::fs::renameat(dir, temp_name, dir, final_name).is_err() {
         let _ = rustix::fs::unlinkat(dir, temp_name, AtFlags::empty());
         return Err(());
     }
-    if gate_final(dir) != Ok(true) {
+    if gate_final(dir, final_name) != Ok(true) {
         return Err(());
     }
     Ok(())
@@ -1220,7 +1248,10 @@ mod tests {
         let mut file = std::fs::File::from(fd);
         file.write_all(occupant).expect("plant bytes");
         drop(file);
-        assert_eq!(atomic_replace(&project, b"{}", temp), Err(()));
+        assert_eq!(
+            atomic_replace(&project, b"{}", temp, STORE_FILE_NAME),
+            Err(())
+        );
         let fd = rustix::fs::openat(&project, temp, FILE_FLAGS, Mode::empty()).expect("reopen");
         let mut kept = Vec::new();
         std::fs::File::from(fd)
@@ -1234,7 +1265,10 @@ mod tests {
         std::fs::write(&target, b"target-bytes").expect("target");
         std::os::unix::fs::symlink(&target, root.join(format!("{STORE_DIR_NAME}/{link_temp}")))
             .expect("temp link");
-        assert_eq!(atomic_replace(&project, b"{}", link_temp), Err(()));
+        assert_eq!(
+            atomic_replace(&project, b"{}", link_temp, STORE_FILE_NAME),
+            Err(())
+        );
         assert!(
             std::fs::symlink_metadata(root.join(format!("{STORE_DIR_NAME}/{link_temp}")))
                 .expect("meta")

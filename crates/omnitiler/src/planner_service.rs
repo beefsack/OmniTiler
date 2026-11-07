@@ -4,15 +4,17 @@
 //! `/com/omnitiler/Planner`, interface `com.omnitiler.Planner1`,
 //! methods `DiscoverWorld`, `DescribeWorld`, `QueueWorldCommand`,
 //! `TakeCommandResult`, `ReadWorldPresentation`, `ReadFloatIntent`,
-//! `WriteFloatIntent`. The world capture route carries the sole broker; the
+//! `WriteFloatIntent`, `ReadNativePreimage`, `WriteNativePreimage`. The world capture route carries the sole broker; the
 //! query/command routes share its backend; the intent routes carry the
-//! session-scoped opaque intent snapshot.
+//! session-scoped opaque intent snapshot; the preimage routes carry the
+//! separate adapter-owned native-state preimage snapshot.
 //!
 //! Boundary rules: no Rust-to-KWin calls except `org.freedesktop.DBus`
 //! identity/owner queries (`GetConnectionUnixUser` for same-UID caller
 //! verification, `GetId` plus `GetNameOwner(org.kde.KWin)` for opaque-intent
-//! namespace derivation and live-KWin-owner authorization), no other
-//! persistence beyond the session-scoped opaque intent snapshot, no
+//! and native-preimage namespace derivation and live-KWin-owner authorization), no other
+//! persistence beyond the session-scoped opaque intent snapshot plus the
+//! separate native preimage snapshot, no
 //! tray coupling, no autostart, no native mutation. Bounded single-flight
 //! endpoint handling via independent world-capture and intent non-queuing
 //! async locks (the query/command routes are short broker critical sections
@@ -40,6 +42,7 @@ use zbus::{MatchRule, fdo::NameOwnerChanged};
 use crate::float_intent_store::{
     FloatIntentStore, INTENT_MAX_REPLY_BYTES, INTENT_MAX_REQUEST_BYTES, IntentNamespace,
 };
+use crate::native_preimage_store::NativePreimageStore;
 use crate::world_service::{
     WORLD_SERVICE_MAX_REPLY, WORLD_SERVICE_MAX_REQUEST, WorldService, world_egress_summary,
     world_ingress_summary,
@@ -151,6 +154,7 @@ pub struct PlannerEndpoint {
     /// Single-flight admission uses the service's own non-queuing lock.
     world: WorldService,
     intent_store: Option<FloatIntentStore>,
+    preimage_store: Option<NativePreimageStore>,
     /// Separate intent single-flight: intent I/O (including bus credential
     /// and namespace queries) never holds the world lock, so an overlapping
     /// settled-intent call cannot make `DescribeWorld` go busy. Concurrent
@@ -164,6 +168,7 @@ impl PlannerEndpoint {
         Self {
             world: WorldService::new(),
             intent_store: FloatIntentStore::from_runtime_dir(),
+            preimage_store: NativePreimageStore::from_runtime_dir(),
             intent_lock: Arc::new(async_lock::Mutex::new(())),
         }
     }
@@ -174,18 +179,21 @@ impl PlannerEndpoint {
     pub fn with_intent_root(root: std::path::PathBuf) -> Self {
         Self {
             world: WorldService::new(),
-            intent_store: Some(FloatIntentStore::with_root(root)),
+            intent_store: Some(FloatIntentStore::with_root(root.clone())),
+            preimage_store: Some(NativePreimageStore::with_root(root)),
             intent_lock: Arc::new(async_lock::Mutex::new(())),
         }
     }
 
     /// Test seam: endpoint without an intent store (missing runtime dir).
-    /// Intent calls degrade or report unavailable without touching disk.
+    /// Intent and preimage calls degrade or report unavailable without
+    /// touching disk.
     #[must_use]
     pub fn without_intent_store() -> Self {
         Self {
             world: WorldService::new(),
             intent_store: None,
+            preimage_store: None,
             intent_lock: Arc::new(async_lock::Mutex::new(())),
         }
     }
@@ -235,15 +243,16 @@ async fn resolve_intent_namespace(connection: &zbus::Connection) -> Option<Inten
 /// single-flight on the intent lock (never the plan lock, so a settled-intent
 /// call awaiting credential/namespace queries cannot make the regular plan
 /// route go busy) with same-UID verification and connection-loss checks.
-/// Returns the held guard plus the verified sender on admission, an in-band
-/// rejected reply for authorization failures, or a terminal D-Bus error for
-/// busy/closed/oversize. Early exits reuse the fixed uncorrelated summaries.
+/// Returns the held guard plus the verified sender on admission, an
+/// in-band-rejection marker for authorization failures (each method re-emits
+/// it in its own wire version), or a terminal D-Bus error for busy/closed/
+/// oversize. Early exits reuse the fixed uncorrelated summaries.
 enum IntentAdmission<'a> {
     Admitted {
         _guard: async_lock::MutexGuard<'a, ()>,
         sender: String,
     },
-    Reject(String),
+    Reject,
     Fail(PlannerError),
 }
 
@@ -253,7 +262,7 @@ async fn admit_intent_call<'a>(
     caller: Option<&str>,
     connection: &zbus::Connection,
 ) -> IntentAdmission<'a> {
-    use crate::float_intent_store::{emit_intent_diag, intent_rejection};
+    use crate::float_intent_store::emit_intent_diag;
     if request_len > INTENT_MAX_REQUEST_BYTES {
         let Some(_guard) = endpoint.intent_lock.try_lock() else {
             emit_intent_diag(plan_early_exit_summary(PlanEarlyExit::Busy));
@@ -279,12 +288,12 @@ async fn admit_intent_call<'a>(
     let Some(caller) = caller else {
         drop(_guard);
         emit_intent_diag(plan_early_exit_summary(PlanEarlyExit::Unauthorized));
-        return IntentAdmission::Reject(intent_rejection("-", "unauthorized"));
+        return IntentAdmission::Reject;
     };
     if !verify_planner_caller(connection, caller).await {
         drop(_guard);
         emit_intent_diag(plan_early_exit_summary(PlanEarlyExit::Unauthorized));
-        return IntentAdmission::Reject(intent_rejection("-", "unauthorized"));
+        return IntentAdmission::Reject;
     }
     IntentAdmission::Admitted {
         _guard,
@@ -743,7 +752,7 @@ impl PlannerEndpoint {
                 .await
             {
                 IntentAdmission::Admitted { _guard, sender } => (_guard, sender),
-                IntentAdmission::Reject(reply) => return Ok(reply),
+                IntentAdmission::Reject => return Ok(intent_rejection("-", "unauthorized")),
                 IntentAdmission::Fail(error) => return Err(error),
             };
         // Emits the terminal summary after the intent lock releases, then
@@ -877,7 +886,7 @@ impl PlannerEndpoint {
                 .await
             {
                 IntentAdmission::Admitted { _guard, sender } => (_guard, sender),
-                IntentAdmission::Reject(reply) => return Ok(reply),
+                IntentAdmission::Reject => return Ok(intent_rejection("-", "unauthorized")),
                 IntentAdmission::Fail(error) => return Err(error),
             };
         // Emits the terminal summary after the intent lock releases, then
@@ -967,6 +976,274 @@ impl PlannerEndpoint {
                         None,
                         Some(reason),
                         write_failed_reply(&parsed.correlation, outcome, reason),
+                    )
+                }
+            },
+        };
+        if reply.len() > INTENT_MAX_REPLY_BYTES {
+            drop(guard);
+            return Err(PlannerError::Unavailable(
+                "reply exceeds size bound".to_owned(),
+            ));
+        }
+        Ok(finish(
+            guard,
+            &parsed.correlation,
+            outcome,
+            stored,
+            reason,
+            reply,
+        ))
+    }
+
+    /// Native-preimage read route. Same authentication and namespace rules
+    /// as the opaque-intent read route, on the separate preimage slot.
+    /// Returns the stored snapshot, a degraded empty reply when the content
+    /// is missing or unusable, or an in-band rejection for authorization and
+    /// request failures. Only an oversize body or reply fails closed as
+    /// `Unavailable`.
+    #[zbus(name = "ReadNativePreimage")]
+    async fn read_native_preimage(
+        &self,
+        request: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<String, PlannerError> {
+        use crate::float_intent_store::{emit_intent_diag, intent_egress_summary};
+        use crate::native_preimage_store::{
+            parse_read_preimage_request, preimage_degraded_reply, preimage_ok_reply,
+            preimage_rejection,
+        };
+        let caller = header.sender().map(ToString::to_string);
+        let (guard, sender) =
+            match admit_intent_call(self, request.len(), caller.as_deref(), emitter.connection())
+                .await
+            {
+                IntentAdmission::Admitted { _guard, sender } => (_guard, sender),
+                IntentAdmission::Reject => return Ok(preimage_rejection("-", "unauthorized")),
+                IntentAdmission::Fail(error) => return Err(error),
+            };
+        // Emits the terminal summary after the intent lock releases, then
+        // returns the in-band reply. Logging never changes the result.
+        let finish = |guard: async_lock::MutexGuard<'_, ()>,
+                      correlation: &str,
+                      outcome: &str,
+                      stored: Option<usize>,
+                      returned: Option<usize>,
+                      reason: Option<&str>,
+                      reply: String| {
+            drop(guard);
+            emit_intent_diag(&intent_egress_summary(
+                "preimage-read",
+                correlation,
+                outcome,
+                stored,
+                returned,
+                reason,
+            ));
+            reply
+        };
+        let parsed = match parse_read_preimage_request(&request) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                let reply = preimage_rejection(&error.correlation, error.reason);
+                return Ok(finish(
+                    guard,
+                    &error.correlation,
+                    error.reason,
+                    None,
+                    None,
+                    Some(error.reason),
+                    reply,
+                ));
+            }
+        };
+        let namespace = match authorize_intent_sender(emitter.connection(), &sender).await {
+            Ok(namespace) => namespace,
+            Err("not-kwin-owner") => {
+                let reply = preimage_rejection(&parsed.correlation, "not-kwin-owner");
+                return Ok(finish(
+                    guard,
+                    &parsed.correlation,
+                    "rejected",
+                    None,
+                    None,
+                    Some("not-kwin-owner"),
+                    reply,
+                ));
+            }
+            Err(reason) => {
+                let reply = preimage_degraded_reply(&parsed.correlation, reason);
+                return Ok(finish(
+                    guard,
+                    &parsed.correlation,
+                    "degraded",
+                    Some(0),
+                    Some(0),
+                    Some(reason),
+                    reply,
+                ));
+            }
+        };
+        let Some(store) = &self.preimage_store else {
+            let reply = preimage_degraded_reply(&parsed.correlation, "namespace-unavailable");
+            return Ok(finish(
+                guard,
+                &parsed.correlation,
+                "degraded",
+                Some(0),
+                Some(0),
+                Some("namespace-unavailable"),
+                reply,
+            ));
+        };
+        let read = store.read_preimages(&namespace);
+        let (outcome, stored, returned, reason, reply) = match read.degraded {
+            None => (
+                "ok",
+                read.stored,
+                read.records.len(),
+                None,
+                preimage_ok_reply(&parsed.correlation, &read.records, read.stored),
+            ),
+            Some(reason) => (
+                "degraded",
+                0,
+                0,
+                Some(reason),
+                preimage_degraded_reply(&parsed.correlation, reason),
+            ),
+        };
+        if reply.len() > INTENT_MAX_REPLY_BYTES {
+            drop(guard);
+            return Err(PlannerError::Unavailable(
+                "reply exceeds size bound".to_owned(),
+            ));
+        }
+        Ok(finish(
+            guard,
+            &parsed.correlation,
+            outcome,
+            Some(stored),
+            Some(returned),
+            reason,
+            reply,
+        ))
+    }
+
+    /// Native-preimage write route. Same authentication and namespace rules
+    /// as the opaque-intent write route, on the separate preimage slot.
+    /// Persists the full snapshot (empty `records` clears); a write failure
+    /// retains the previous local preimages. Replies mirror the read route
+    /// outcomes with `stored` and `rejected`/`unavailable` failure shapes.
+    #[zbus(name = "WriteNativePreimage")]
+    async fn write_native_preimage(
+        &self,
+        request: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<String, PlannerError> {
+        use crate::float_intent_store::{emit_intent_diag, intent_egress_summary};
+        use crate::native_preimage_store::{
+            parse_write_preimage_request, preimage_failed_reply, preimage_rejection,
+            preimage_stored_reply,
+        };
+        let caller = header.sender().map(ToString::to_string);
+        let (guard, sender) =
+            match admit_intent_call(self, request.len(), caller.as_deref(), emitter.connection())
+                .await
+            {
+                IntentAdmission::Admitted { _guard, sender } => (_guard, sender),
+                IntentAdmission::Reject => return Ok(preimage_rejection("-", "unauthorized")),
+                IntentAdmission::Fail(error) => return Err(error),
+            };
+        // Emits the terminal summary after the intent lock releases, then
+        // returns the in-band reply. Logging never changes the result.
+        let finish = |guard: async_lock::MutexGuard<'_, ()>,
+                      correlation: &str,
+                      outcome: &str,
+                      stored: Option<usize>,
+                      reason: Option<&str>,
+                      reply: String| {
+            drop(guard);
+            emit_intent_diag(&intent_egress_summary(
+                "preimage-write",
+                correlation,
+                outcome,
+                stored,
+                None,
+                reason,
+            ));
+            reply
+        };
+        let parsed = match parse_write_preimage_request(&request) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                let reply = if error.reason == "invalid-members" {
+                    preimage_failed_reply(&error.correlation, "rejected", error.reason)
+                } else {
+                    preimage_rejection(&error.correlation, error.reason)
+                };
+                return Ok(finish(
+                    guard,
+                    &error.correlation,
+                    "rejected",
+                    None,
+                    Some(error.reason),
+                    reply,
+                ));
+            }
+        };
+        let namespace = match authorize_intent_sender(emitter.connection(), &sender).await {
+            Ok(namespace) => namespace,
+            Err("not-kwin-owner") => {
+                let reply = preimage_rejection(&parsed.correlation, "not-kwin-owner");
+                return Ok(finish(
+                    guard,
+                    &parsed.correlation,
+                    "rejected",
+                    None,
+                    Some("not-kwin-owner"),
+                    reply,
+                ));
+            }
+            Err(reason) => {
+                let reply = preimage_failed_reply(&parsed.correlation, "unavailable", reason);
+                return Ok(finish(
+                    guard,
+                    &parsed.correlation,
+                    "unavailable",
+                    None,
+                    Some(reason),
+                    reply,
+                ));
+            }
+        };
+        let (outcome, stored, reason, reply) = match &self.preimage_store {
+            None => (
+                "unavailable",
+                None,
+                Some("namespace-unavailable"),
+                preimage_failed_reply(&parsed.correlation, "unavailable", "namespace-unavailable"),
+            ),
+            Some(store) => match store.write_preimages(&namespace, &parsed.records) {
+                Ok(stored) => (
+                    "stored",
+                    Some(stored),
+                    None,
+                    preimage_stored_reply(&parsed.correlation, stored),
+                ),
+                Err(reason) => {
+                    let outcome = if reason == "invalid-members" {
+                        "rejected"
+                    } else {
+                        "unavailable"
+                    };
+                    (
+                        outcome,
+                        None,
+                        Some(reason),
+                        preimage_failed_reply(&parsed.correlation, outcome, reason),
                     )
                 }
             },
@@ -1084,9 +1361,9 @@ fn handle_name_owner_changed(
 
 /// Retained manually invoked planner service. Acquires the planner name
 /// without queueing and serves the world plus the narrow
-/// session-scoped opaque intent routes until the serving
+/// session-scoped opaque intent and native preimage routes until the serving
 /// connection or the planner name is lost. No tray coupling; the opaque-intent
-/// store is the sole persistence exception.
+/// and native-preimage stores are the sole persistence exceptions.
 pub fn run() -> zbus::Result<()> {
     serve(PlannerEndpoint::new())
 }
@@ -1332,10 +1609,20 @@ mod tests {
                 .intent_store
                 .is_none()
         );
+        assert!(
+            PlannerEndpoint::without_intent_store()
+                .preimage_store
+                .is_none()
+        );
         let root = std::path::PathBuf::from("/nonexistent-intent-root");
         assert!(
             PlannerEndpoint::with_intent_root(root.clone())
                 .intent_store
+                .is_some()
+        );
+        assert!(
+            PlannerEndpoint::with_intent_root(root)
+                .preimage_store
                 .is_some()
         );
     }
@@ -1746,6 +2033,475 @@ mod tests {
         .expect("write reply is JSON");
         assert_eq!(stored["outcome"], "stored");
         assert_eq!(stored["stored"], 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn preimage_method_identity_is_exact_and_json_string_shaped() {
+        use crate::native_preimage_store::{READ_METHOD, WRITE_METHOD};
+        use crate::world_service::{DISCOVERY_METHOD, WORLD_METHOD};
+        assert_eq!(READ_METHOD, "ReadNativePreimage");
+        assert_eq!(WRITE_METHOD, "WriteNativePreimage");
+        assert_ne!(READ_METHOD, WRITE_METHOD);
+        assert_ne!(READ_METHOD, WORLD_METHOD);
+        assert_ne!(WRITE_METHOD, WORLD_METHOD);
+        assert_ne!(READ_METHOD, DISCOVERY_METHOD);
+        assert_ne!(WRITE_METHOD, DISCOVERY_METHOD);
+        for method in [READ_METHOD, WRITE_METHOD] {
+            let message = zbus::message::Message::method_call(OBJECT, method)
+                .unwrap()
+                .destination(SERVICE)
+                .unwrap()
+                .interface(INTERFACE)
+                .unwrap()
+                .build(&("{\"v\":1}".to_owned(),))
+                .unwrap();
+            assert_eq!(message.body().signature().to_string(), "s");
+        }
+    }
+
+    fn preimage_record_body(win: &str) -> String {
+        format!(
+            "{{\"win\":\"{win}\",\"maximize_mode\":3,\"fullscreen\":true,\
+              \"desktops\":[\"desk-1\"],\"stacking\":{{\"above\":true,\"below\":false}}}}"
+        )
+    }
+
+    fn partial_preimage_body(win: &str) -> String {
+        format!(
+            "{{\"win\":\"{win}\",\"maximize_mode\":1,\"fullscreen\":null,\
+              \"desktops\":[],\"stacking\":null}}"
+        )
+    }
+
+    /// Claim the KWin name on the private bus, waiting for a prior owner's
+    /// disconnect to release it. Panics (never silently skips) when the
+    /// name cannot become primary here.
+    fn claim_kwin_name(connection: &Connection) {
+        connection
+            .request_name(KWIN_SERVICE)
+            .expect("request KWin name on private bus");
+        let proxy = zbus::blocking::fdo::DBusProxy::new(connection).expect("bus proxy");
+        let service: zbus::names::BusName<'_> = KWIN_SERVICE.try_into().expect("service name");
+        let ours = connection.unique_name().map(|name| name.to_string());
+        let start = std::time::Instant::now();
+        loop {
+            match proxy.get_name_owner(service.clone()) {
+                Ok(owner) if Some(owner.to_string()) == ours => return,
+                _ if start.elapsed() < std::time::Duration::from_secs(5) => {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                _ => panic!("could not claim KWin name on private bus"),
+            }
+        }
+    }
+
+    #[test]
+    fn private_bus_preimage_without_kwin_owner_is_unavailable() {
+        use crate::native_preimage_store::READ_METHOD as READ;
+        use crate::native_preimage_store::WRITE_METHOD as WRITE;
+        let Some(bus) = PrivateBus::start() else {
+            panic!("dbus-daemon unavailable for hermetic preimage test");
+        };
+        let Some(server) = bus.session() else {
+            panic!("private bus daemon never listened");
+        };
+        let Some(root) = fresh_intent_root() else {
+            panic!("temp dir unavailable for hermetic preimage test");
+        };
+        serve_intent_endpoint(&server, PlannerEndpoint::with_intent_root(root.clone()));
+        let Some(client) = bus.session() else {
+            panic!("private bus daemon dropped the second connection");
+        };
+        // Nobody owns org.kde.KWin here, so the bus-derived namespace is
+        // unresolvable: reads degrade empty, writes stay unavailable, and
+        // nothing is persisted.
+        let proxy = intent_proxy(&client);
+        let read: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            READ,
+            r#"{"v":1,"correlation_id":"preimage-neg-1"}"#,
+        ))
+        .expect("read reply is JSON");
+        assert_eq!(read["outcome"], "degraded");
+        assert_eq!(read["correlation_id"], "preimage-neg-1");
+        assert_eq!(read["reason"], "namespace-unavailable");
+        assert_eq!(read["records"].as_array().expect("array").len(), 0);
+        let write: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            &format!(
+                "{{\"v\":1,\"correlation_id\":\"preimage-neg-1\",\"records\":[{}]}}",
+                preimage_record_body("win-a"),
+            ),
+        ))
+        .expect("write reply is JSON");
+        assert_eq!(write["outcome"], "unavailable");
+        assert_eq!(write["reason"], "namespace-unavailable");
+        assert!(
+            !root.join("omnitiler").exists(),
+            "refused writes persist nothing"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn private_bus_kwin_owner_preimage_coupled_roundtrip() {
+        use crate::float_intent_store::READ_METHOD as INTENT_READ;
+        use crate::float_intent_store::WRITE_METHOD as INTENT_WRITE;
+        use crate::native_preimage_store::READ_METHOD as READ;
+        use crate::native_preimage_store::WRITE_METHOD as WRITE;
+        let Some(bus) = PrivateBus::start() else {
+            panic!("dbus-daemon unavailable for hermetic preimage test");
+        };
+        let Some(server) = bus.session() else {
+            panic!("private bus daemon never listened");
+        };
+        let Some(root) = fresh_intent_root() else {
+            panic!("temp dir unavailable for hermetic preimage test");
+        };
+        serve_intent_endpoint(&server, PlannerEndpoint::with_intent_root(root.clone()));
+        let Some(client) = bus.session() else {
+            panic!("private bus daemon dropped the second connection");
+        };
+        // The caller becomes the current KWin owner on the private bus, so
+        // its sender unique name authorizes the preimage calls.
+        claim_kwin_name(&client);
+        let proxy = intent_proxy(&client);
+        // A stale peer that is not the KWin owner is rejected in-band on
+        // both routes (same-UID alone never authorizes).
+        let Some(outsider) = bus.session() else {
+            panic!("private bus daemon dropped the third connection");
+        };
+        let outsider_proxy = intent_proxy(&outsider);
+        for method in [READ, WRITE] {
+            let body = if method == WRITE {
+                format!(
+                    "{{\"v\":1,\"correlation_id\":\"preimage-out-1\",\"records\":[{}]}}",
+                    preimage_record_body("win-a"),
+                )
+            } else {
+                r#"{"v":1,"correlation_id":"preimage-out-1"}"#.to_owned()
+            };
+            let rejected: serde_json::Value =
+                serde_json::from_str(&call_intent(&outsider_proxy, method, &body))
+                    .expect("rejection is JSON");
+            assert_eq!(rejected["outcome"], "rejected", "{method}");
+            assert_eq!(rejected["reason"], "not-kwin-owner", "{method}");
+            assert_eq!(rejected["v"], 1, "{method}");
+        }
+        // Missing content reads plain empty before any write.
+        let empty: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            READ,
+            r#"{"v":1,"correlation_id":"preimage-rt-0"}"#,
+        ))
+        .expect("read reply is JSON");
+        assert_eq!(empty["outcome"], "ok");
+        assert_eq!(empty["stored"], 0);
+        assert_eq!(empty["records"].as_array().expect("array").len(), 0);
+        // Settled coupled preimages persist the full snapshot through the
+        // wire: exact maximize axes, fullscreen flag, sticky memberships,
+        // and paired stacking, with partial records keeping null slots.
+        let stored: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            &format!(
+                "{{\"v\":1,\"correlation_id\":\"preimage-rt-1\",\"records\":[{},{}]}}",
+                preimage_record_body("win-a"),
+                partial_preimage_body("win-b"),
+            ),
+        ))
+        .expect("write reply is JSON");
+        assert_eq!(stored["outcome"], "stored");
+        assert_eq!(stored["v"], 1);
+        assert_eq!(stored["stored"], 2);
+        let read: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            READ,
+            r#"{"v":1,"correlation_id":"preimage-rt-2"}"#,
+        ))
+        .expect("read reply is JSON");
+        assert_eq!(read["outcome"], "ok");
+        assert_eq!(read["v"], 1);
+        assert_eq!(read["stored"], 2);
+        assert_eq!(read["returned"], 2);
+        assert_eq!(read["records"].as_array().expect("array").len(), 2);
+        assert_eq!(read["records"][0]["win"], "win-a");
+        assert_eq!(read["records"][0]["maximize_mode"], 3);
+        assert_eq!(read["records"][0]["fullscreen"], true);
+        assert_eq!(
+            read["records"][0]["desktops"],
+            serde_json::json!(["desk-1"])
+        );
+        assert_eq!(
+            read["records"][0]["stacking"],
+            serde_json::json!({"above": true, "below": false})
+        );
+        // Untouched slots stay null and distinguishable from set ones.
+        assert_eq!(read["records"][1]["maximize_mode"], 1);
+        assert_eq!(read["records"][1]["fullscreen"], serde_json::Value::Null);
+        assert_eq!(read["records"][1]["desktops"], serde_json::json!([]));
+        assert_eq!(read["records"][1]["stacking"], serde_json::Value::Null);
+        // The separate slot leaves the opaque intent file alone: an intent
+        // snapshot roundtrips unchanged beside the preimages.
+        let intent_stored: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            INTENT_WRITE,
+            r#"{"v":2,"correlation_id":"preimage-rt-intent","records":[{"win":"win-a","data":"x"}]}"#,
+        ))
+        .expect("write reply is JSON");
+        assert_eq!(intent_stored["outcome"], "stored");
+        let intent_read: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            INTENT_READ,
+            r#"{"v":2,"correlation_id":"preimage-rt-intent-r"}"#,
+        ))
+        .expect("read reply is JSON");
+        assert_eq!(intent_read["outcome"], "ok");
+        assert_eq!(intent_read["records"][0]["data"], "x");
+        let kept: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            READ,
+            r#"{"v":1,"correlation_id":"preimage-rt-kept"}"#,
+        ))
+        .expect("read reply is JSON");
+        assert_eq!(kept["stored"], 2);
+        // Duplicate subjects reject without touching disk.
+        let dup: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            &format!(
+                "{{\"v\":1,\"correlation_id\":\"preimage-rt-3\",\"records\":[{},{}]}}",
+                preimage_record_body("win-a"),
+                preimage_record_body("win-a"),
+            ),
+        ))
+        .expect("rejection is JSON");
+        assert_eq!(dup["outcome"], "rejected");
+        assert_eq!(dup["reason"], "invalid-members");
+        assert_eq!(dup["v"], 1);
+        // Out-of-range maximize axes reject without touching disk.
+        let bad_mode: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            r#"{"v":1,"correlation_id":"preimage-rt-mode","records":[{"win":"win-a","maximize_mode":4,"fullscreen":null,"desktops":null,"stacking":null}]}"#,
+        ))
+        .expect("rejection is JSON");
+        assert_eq!(bad_mode["outcome"], "rejected");
+        assert_eq!(bad_mode["reason"], "invalid-members");
+        assert_eq!(bad_mode["v"], 1);
+        // All-null slots reject without touching disk.
+        let all_null: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            r#"{"v":1,"correlation_id":"preimage-rt-null","records":[{"win":"win-a","maximize_mode":null,"fullscreen":null,"desktops":null,"stacking":null}]}"#,
+        ))
+        .expect("rejection is JSON");
+        assert_eq!(all_null["outcome"], "rejected");
+        assert_eq!(all_null["reason"], "invalid-members");
+        assert_eq!(all_null["v"], 1);
+        // Both-true stacking stores as ordinary raw facts with no
+        // acquisition permission implied.
+        let both_true: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            r#"{"v":1,"correlation_id":"preimage-rt-both","records":[{"win":"win-both","maximize_mode":null,"fullscreen":null,"desktops":null,"stacking":{"above":true,"below":true}}]}"#,
+        ))
+        .expect("write reply is JSON");
+        assert_eq!(both_true["outcome"], "stored");
+        assert_eq!(both_true["stored"], 1);
+        assert_eq!(both_true["v"], 1);
+        let both_read: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            READ,
+            r#"{"v":1,"correlation_id":"preimage-rt-both-r"}"#,
+        ))
+        .expect("read reply is JSON");
+        assert_eq!(both_read["stored"], 1);
+        assert_eq!(
+            both_read["records"][0]["stacking"],
+            serde_json::json!({"above": true, "below": true})
+        );
+        // Restore the two-record snapshot for the checks below.
+        let restored: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            &format!(
+                "{{\"v\":1,\"correlation_id\":\"preimage-rt-restore\",\"records\":[{},{}]}}",
+                preimage_record_body("win-a"),
+                partial_preimage_body("win-b"),
+            ),
+        ))
+        .expect("write reply is JSON");
+        assert_eq!(restored["outcome"], "stored");
+        assert_eq!(restored["stored"], 2);
+        // Wrong-typed members reject as invalid-request in v1 shape.
+        let bad_type: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            r#"{"v":1,"correlation_id":"preimage-rt-type","records":[{"win":"win-a","maximize_mode":"3","fullscreen":null,"desktops":null,"stacking":null}]}"#,
+        ))
+        .expect("rejection is JSON");
+        assert_eq!(bad_type["outcome"], "rejected");
+        assert_eq!(bad_type["reason"], "invalid-request");
+        assert_eq!(bad_type["v"], 1);
+        // Old opaque-intent wire version is not accepted here, in v1 shape.
+        let old_wire: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            READ,
+            r#"{"v":2,"correlation_id":"preimage-rt-old"}"#,
+        ))
+        .expect("rejection is JSON");
+        assert_eq!(old_wire["outcome"], "rejected");
+        assert_eq!(old_wire["reason"], "invalid-request");
+        assert_eq!(old_wire["v"], 1);
+        // The rejected writes left the stored snapshot unchanged.
+        let reread: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            READ,
+            r#"{"v":1,"correlation_id":"preimage-rt-reread"}"#,
+        ))
+        .expect("read reply is JSON");
+        assert_eq!(reread["stored"], 2);
+        assert_eq!(reread["records"][0]["win"], "win-a");
+        // Explicit replacement swaps the full snapshot; empty clears.
+        let replaced: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            &format!(
+                "{{\"v\":1,\"correlation_id\":\"preimage-rt-4\",\"records\":[{}]}}",
+                preimage_record_body("win-c"),
+            ),
+        ))
+        .expect("write reply is JSON");
+        assert_eq!(replaced["outcome"], "stored");
+        assert_eq!(replaced["stored"], 1);
+        let cleared: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            r#"{"v":1,"correlation_id":"preimage-rt-5","records":[]}"#,
+        ))
+        .expect("clear reply is JSON");
+        assert_eq!(cleared["outcome"], "stored");
+        assert_eq!(cleared["stored"], 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn private_bus_preimage_namespace_mismatch_reads_empty() {
+        use crate::native_preimage_store::READ_METHOD as READ;
+        use crate::native_preimage_store::WRITE_METHOD as WRITE;
+        let Some(bus) = PrivateBus::start() else {
+            panic!("dbus-daemon unavailable for hermetic preimage test");
+        };
+        let Some(server) = bus.session() else {
+            panic!("private bus daemon never listened");
+        };
+        let Some(root) = fresh_intent_root() else {
+            panic!("temp dir unavailable for hermetic preimage test");
+        };
+        serve_intent_endpoint(&server, PlannerEndpoint::with_intent_root(root.clone()));
+        let Some(first) = bus.session() else {
+            panic!("private bus daemon dropped the second connection");
+        };
+        claim_kwin_name(&first);
+        {
+            let proxy = intent_proxy(&first);
+            let stored: serde_json::Value = serde_json::from_str(&call_intent(
+                &proxy,
+                WRITE,
+                &format!(
+                    "{{\"v\":1,\"correlation_id\":\"preimage-ns-1\",\"records\":[{}]}}",
+                    preimage_record_body("win-a"),
+                ),
+            ))
+            .expect("write reply is JSON");
+            assert_eq!(stored["outcome"], "stored");
+        }
+        // A KWin restart invalidates the namespace: the new owner reads
+        // empty instead of stale preimages, and its next write replaces.
+        drop(first);
+        let Some(second) = bus.session() else {
+            panic!("private bus daemon dropped the replacement connection");
+        };
+        claim_kwin_name(&second);
+        let proxy = intent_proxy(&second);
+        let read: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            READ,
+            r#"{"v":1,"correlation_id":"preimage-ns-2"}"#,
+        ))
+        .expect("read reply is JSON");
+        assert_eq!(read["outcome"], "degraded");
+        assert_eq!(read["reason"], "namespace-mismatch");
+        assert_eq!(read["records"].as_array().expect("array").len(), 0);
+        let replaced: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            &format!(
+                "{{\"v\":1,\"correlation_id\":\"preimage-ns-3\",\"records\":[{}]}}",
+                preimage_record_body("win-b"),
+            ),
+        ))
+        .expect("write reply is JSON");
+        assert_eq!(replaced["outcome"], "stored");
+        assert_eq!(replaced["stored"], 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn private_bus_preimage_symlinked_slot_fails_closed() {
+        use crate::native_preimage_store::READ_METHOD as READ;
+        use crate::native_preimage_store::WRITE_METHOD as WRITE;
+        let Some(bus) = PrivateBus::start() else {
+            panic!("dbus-daemon unavailable for hermetic preimage test");
+        };
+        let Some(server) = bus.session() else {
+            panic!("private bus daemon never listened");
+        };
+        let Some(root) = fresh_intent_root() else {
+            panic!("temp dir unavailable for hermetic preimage test");
+        };
+        serve_intent_endpoint(&server, PlannerEndpoint::with_intent_root(root.clone()));
+        let Some(client) = bus.session() else {
+            panic!("private bus daemon dropped the second connection");
+        };
+        claim_kwin_name(&client);
+        let proxy = intent_proxy(&client);
+        // Plant a linked slot file plus foreign bytes through paths (test
+        // setup only): the anchored service path must refuse both routes
+        // and leave the foreign bytes untouched.
+        let foreign = root.join("foreign-preimage.json");
+        let sentinel = br#"{"v":1,"bus":"x","kwin":"y","records":[]}"#;
+        std::fs::write(&foreign, sentinel).expect("foreign");
+        std::fs::create_dir_all(root.join("omnitiler")).expect("project dir");
+        std::os::unix::fs::symlink(
+            &foreign,
+            root.join("omnitiler").join("native-preimage.json"),
+        )
+        .expect("slot link");
+        let read: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            READ,
+            r#"{"v":1,"correlation_id":"preimage-link-1"}"#,
+        ))
+        .expect("read reply is JSON");
+        assert_eq!(read["outcome"], "degraded");
+        assert_eq!(read["reason"], "unreadable");
+        assert_eq!(read["records"].as_array().expect("array").len(), 0);
+        let write: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            WRITE,
+            &format!(
+                "{{\"v\":1,\"correlation_id\":\"preimage-link-2\",\"records\":[{}]}}",
+                preimage_record_body("win-a"),
+            ),
+        ))
+        .expect("write reply is JSON");
+        assert_eq!(write["outcome"], "unavailable");
+        assert_eq!(write["reason"], "store-unavailable");
+        assert_eq!(std::fs::read(&foreign).expect("foreign"), sentinel);
         let _ = std::fs::remove_dir_all(&root);
     }
 
