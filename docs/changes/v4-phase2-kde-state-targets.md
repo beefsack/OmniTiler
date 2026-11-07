@@ -225,3 +225,28 @@
   durability proof. No setters, capabilities or shortcuts are migrated;
   startup recovery and live proof remain next. The accepted interval and
   storage-client prerequisites remain unchanged.
+
+## Verified staged startup recovery
+
+- Added a startup-only recovery coordinator for the seeded touched slots.
+  Exact live UUID joins and native desktop-reference resolution restore original
+  maximize axes, fullscreen, desktop memberships and coupled stacking. Null
+  slots remain untouched; runtime arms never become startup recovery entries.
+- Setter acceptance alone cannot complete recovery. A later current capture
+  must match the original, then a single housekeeping snapshot must be stored
+  before the lane unblocks. Failed, missing or stale acknowledgements leave
+  that lane blocked without retry; ordinary tiling does not consult this gate.
+- Review corrected incomplete desktop restoration, same-watermark observation
+  acceptance and housekeeping retries. Explicit post-batch invalidation requests
+  a fresh capture even when a no-op setter emits no native signal. Generation,
+  settings, accepted-revision and watermark checks fence native calls; entry
+  identity fences reset/prune completion. Malformed live sets cannot prove
+  lifetime end, and normalized live UUIDs preserve matching recovery records.
+- The entry constructs and tears down the store/coordinator, but does not seed
+  the store or invoke recovery yet. Activation remains atomic with disabling
+  legacy writers. An initial read-seed insertion changed bus/timer gates; the
+  staged seam has no such traffic and leaves existing writer behavior intact.
+- Independent follow-up review and executable probes leave no serious finding.
+  Typechecking, 1177/1177 adapter tests with zero skips and the unscoped/non-trace
+  build pass. The recovery module is 732 lines. Startup/native restoration is
+  still unproved live; migration and integrated authorization review remain next.

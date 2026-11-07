@@ -16,6 +16,8 @@
 
 import { connectSignal, readSignal } from "./signal-capability";
 import { registerWorldShortcuts } from "./world-shortcuts";
+import { createNativePreimageStore } from "./world-native-preimage";
+import { createNativeRecoveryCoordinator } from "./world-native-recovery";
 import { createWorldApplyHost, createWorldNativeToggles } from "./world-native";
 import {
     createWorldPresentationSubscriber,
@@ -1701,6 +1703,59 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         overrides.floatIntent === true,
     );
 
+    // Staged recovery seam (inert): store plus coordinator bind the
+    // lifecycle (coordinator seed/reset/stop only). No store seed, no
+    // restoring run, no legacy change until the atomic migration wires
+    // them together. Zero bus/timer/log footprint while unseeded.
+    const nativePreimageStore = createNativePreimageStore(
+        {
+            route: {
+                service: WORLD_DBUS_SERVICE,
+                object: WORLD_DBUS_OBJECT,
+                iface: WORLD_DBUS_INTERFACE,
+            },
+            callDbus: (service, path, iface, method, payload, callback) => {
+                try {
+                    (callDbus as NonNullable<WorldEntryOverrides["callDbus"]>)(
+                        service, path, iface, method, payload, callback,
+                    );
+                } catch (error) {
+                    void error;
+                }
+            },
+            scheduleOnce,
+            log,
+            isStopped: () => stopped,
+            getGeneration: () => state.boundGen,
+            // Single hydration kick: one redispatch, never a poll or retry.
+            onHydrated: () => {
+                if (!stopped) {
+                    scheduleDispatch();
+                }
+            },
+        },
+        true,
+    );
+    const nativeRecovery = createNativeRecoveryCoordinator({
+        store: nativePreimageStore,
+        getFences: () => ({
+            generation: state.boundGen,
+            settingsRev,
+            acceptedRev: state.lastAcceptedRev,
+            watermark: state.currentInvalid,
+            clock: state.lastClock,
+            stopped,
+        }),
+        // Fresh capture after a restore run (real invalidate plus
+        // dispatch, never fabricated evidence). Wired but never fired
+        // until the atomic migration invokes the restoring run.
+        requestObservation: () => {
+            state.invalidate();
+            scheduleDispatch();
+        },
+        log,
+    });
+
     // Native effect renderer calls (never workspace policy): the presentation
     // subscriber paints accepted core shapes only (border, underlay, drop
     // preview); the effect remains the renderer with native anchoring plus
@@ -1926,6 +1981,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // first admissible report carries it. The superseded
                         // round (if any) fences on its nonce.
                         intentStore.seed(parsed.gen);
+                        // Recovery rotation cleanup for the new generation
+                        // (read-only: no arm/clear/flush, no store seed, no
+                        // restoring run). The store seed arrives with the
+                        // atomic migration.
+                        nativeRecovery.reset(parsed.gen);
                         // New generation: queued intents belong to the dead
                         // generation and drop with one diagnostic; the
                         // binding snapshot and one-shot native effects
@@ -5059,6 +5119,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // on the single hydration kick, never a poll or retry.
         if (!intentStore.isHydrated(state.boundGen)) {
             intentStore.seed(state.boundGen);
+            // Read-only recovery rebind (zero bus/timer footprint); the
+            // store seed stays deferred to the atomic migration.
+            nativeRecovery.seed(state.boundGen);
             return;
         }
         const observation = capture();
@@ -5740,6 +5803,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // re-enter through the generation-mismatch branch above. Opaque intent
     // seeds from the runtime store before the first dispatch when enabled.
     intentStore.seed(state.boundGen);
+    // Read-only recovery bind (zero footprint); the preimage store seed
+    // and the restoring run arrive with the atomic migration.
+    nativeRecovery.seed(state.boundGen);
     discover();
     log(`omnitiler:world:ready ${state.describeForLog()} source=${resolveSourceRev()}`);
 
@@ -5840,6 +5906,18 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             // callbacks no-op on the fence; the map itself needs no I/O.
             try {
                 intentStore.stop();
+            } catch (error) {
+                void error;
+            }
+            // Preimage/recovery teardown: drop seed/write rounds so late
+            // callbacks no-op on the fence; the recovery map is dropped.
+            try {
+                nativePreimageStore.stop();
+            } catch (error) {
+                void error;
+            }
+            try {
+                nativeRecovery.stop();
             } catch (error) {
                 void error;
             }
