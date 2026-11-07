@@ -87,8 +87,8 @@
 ### Deferred Activities support
 - Decision: inactive-Activity windows are retained and never tiled, focused or moved by core except with their workspace (migration/swap), when host removes their display, or to finish a transfer pending before hide. Report host-hidden windows through existing `WindowFact.minimized=true`; no new core state. All-desktop maps to sticky; subset-of-desktops floats and never rehomes. Activities support is later port work, not implemented.
 - Why: not recorded.
-- Assumes / revisit if: KDE evidence remains pending and tentative; port may propose evidence-backed alternative, any core change needs user approval. Do not infer Activities semantics from macOS multi-Space/accessibility variants.
-- Status: tentative, 2026-10-24
+- Assumes / revisit if: KDE evidence remains pending; port may propose evidence-backed alternative, any core change needs user approval. Do not infer Activities semantics from macOS multi-Space/accessibility variants.
+- Status: active, 2026-11-07
 - Evidence: [port deferred investigations](../changes/kde-world-v2-port.md).
 
 ### Deferred asynchronous configure investigation

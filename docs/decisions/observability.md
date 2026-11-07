@@ -25,8 +25,8 @@
 ### KDE world placement traces
 - Decision: production KDE world placement traces include capped ordered source/target tree shapes and shares before and after send/R4 planning, without native or leaf identities.
 - Why: distinguish nested whole-target wrapping from flat insertion.
-- Assumes / revisit if: this does not prove exact named-leaf order; wire and actuation remain unchanged; user review remains pending.
-- Status: tentative, 2026-10-19
+- Assumes / revisit if: this does not prove exact named-leaf order; wire and actuation remain unchanged.
+- Status: active, 2026-11-07
 - Evidence: [trace evidence and limits](../changes/kde-dual-output-live.md#current-continuation-2026-10-19).
 
 ### Shortcut diagnostics

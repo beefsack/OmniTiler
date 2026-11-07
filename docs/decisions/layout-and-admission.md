@@ -260,10 +260,10 @@
 - Evidence: [R19 review](../changes/core-interface-review.md).
 
 ### Native hidden representation and unknown sticky membership
-- Decision: Tentatively represent KDE inactive-Activity and macOS Cmd+H windows with existing `WindowFact.minimized=true`, no new core state; qualified workspace/output-loss/pending-transfer relocation is intentional. The later Activities default replaces earlier strict "never move" promise.
+- Decision: Represent KDE inactive-Activity and macOS Cmd+H windows with existing `WindowFact.minimized=true`, no new core state; qualified workspace/output-loss/pending-transfer relocation is intentional. The later Activities default replaces earlier strict "never move" promise.
 - Why: not recorded.
 - Assumes / revisit if: Activities native testing pending. Unknown sticky membership remains parked: either retain existing omission semantics or propose neutral all-desktop home/retention contract before claiming all-desktop slot retention.
-- Status: tentative, 2026-10-25
+- Status: active, 2026-11-07
 - Evidence: [R19 review](../changes/core-interface-review.md).
 
 ### Shared core and adapter delivery coordination
