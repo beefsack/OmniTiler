@@ -593,8 +593,7 @@ pub(crate) fn parse_write_request(body: &str) -> Result<WriteRequest, RequestPar
     }
     // Fail before disk on duplicate subjects, bad subjects, and overbound
     // data; the store re-checks the same predicate before replacing.
-    validate_records(&records)
-        .map_err(|reason| RequestParseError::new(&correlation, reason))?;
+    validate_records(&records).map_err(|reason| RequestParseError::new(&correlation, reason))?;
     Ok(WriteRequest {
         correlation,
         records,
@@ -644,11 +643,7 @@ pub(crate) fn write_failed_reply(correlation: &str, outcome: &str, reason: &str)
     .to_string()
 }
 
-pub(crate) fn read_ok_reply(
-    correlation: &str,
-    records: &[IntentRecord],
-    stored: usize,
-) -> String {
+pub(crate) fn read_ok_reply(correlation: &str, records: &[IntentRecord], stored: usize) -> String {
     serde_json::json!({
         "v": 2,
         "correlation_id": sanitize_correlation(correlation),
@@ -982,10 +977,7 @@ mod tests {
             Err("invalid-members")
         );
         assert_eq!(
-            store.write_records(
-                &ns,
-                &[record("a", &data), record("a", &data)]
-            ),
+            store.write_records(&ns, &[record("a", &data), record("a", &data)]),
             Err("invalid-members")
         );
         assert_eq!(
@@ -993,10 +985,7 @@ mod tests {
             Err("invalid-members")
         );
         assert_eq!(
-            store.write_records(
-                &ns,
-                &vec![record("a", &data); MAX_INTENT_RECORDS + 1]
-            ),
+            store.write_records(&ns, &vec![record("a", &data); MAX_INTENT_RECORDS + 1]),
             Err("invalid-members")
         );
         let read = store.read_membership(&ns);
@@ -1262,10 +1251,10 @@ mod tests {
         let root = fresh_root("notemp");
         let store = FloatIntentStore::with_root(root.clone());
         store
-            .write_records(&namespace("bus-notemp", ":1.7"), &[record(
-                "win-a",
-                &canonical_data(),
-            )])
+            .write_records(
+                &namespace("bus-notemp", ":1.7"),
+                &[record("win-a", &canonical_data())],
+            )
             .expect("write");
         let leftovers: Vec<_> = std::fs::read_dir(root.join(STORE_DIR_NAME))
             .expect("list dir")
@@ -1284,7 +1273,14 @@ mod tests {
         assert!(line.contains("returned=1"), "{line}");
         assert!(!line.contains("evil"), "{line}");
         assert!(!line.contains(":1.999"), "{line}");
-        let line = intent_egress_summary("write", "corr-1", "degraded", Some(0), Some(0), Some("corrupt"));
+        let line = intent_egress_summary(
+            "write",
+            "corr-1",
+            "degraded",
+            Some(0),
+            Some(0),
+            Some("corrupt"),
+        );
         assert!(line.contains("correlation=corr-1"), "{line}");
         assert!(line.contains("reason=corrupt"), "{line}");
         assert!(!line.contains('\n'), "{line}");

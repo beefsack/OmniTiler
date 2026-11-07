@@ -1571,9 +1571,8 @@ mod tests {
         let over_body = format!(
             r#"{{"v":2,"correlation_id":"intent-rt-over","records":[{{"win":"win-a","data":"{over_data}"}}]}}"#
         );
-        let over: serde_json::Value =
-            serde_json::from_str(&call_intent(&proxy, WRITE, &over_body))
-                .expect("rejection is JSON");
+        let over: serde_json::Value = serde_json::from_str(&call_intent(&proxy, WRITE, &over_body))
+            .expect("rejection is JSON");
         assert_eq!(over["outcome"], "rejected");
         assert_eq!(over["reason"], "invalid-members");
         // Invalid subjects reject without touching disk.

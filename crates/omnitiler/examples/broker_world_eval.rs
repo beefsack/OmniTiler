@@ -52,8 +52,12 @@ const LINE_CAP: usize = WORLD_SERVICE_MAX_REQUEST;
 /// JSON string per input. Details never echo (fixed sentences only).
 fn transport_error(service: &WorldService, error: WorldServiceError) -> String {
     match error {
-        WorldServiceError::Oversized => service.error_body("oversized", "request exceeds size bound"),
-        WorldServiceError::Unavailable(_) => service.error_body("unavailable", "service unavailable"),
+        WorldServiceError::Oversized => {
+            service.error_body("oversized", "request exceeds size bound")
+        }
+        WorldServiceError::Unavailable(_) => {
+            service.error_body("unavailable", "service unavailable")
+        }
     }
 }
 
@@ -104,7 +108,7 @@ fn main() {
                 Chunk(Vec<u8>, bool),
             }
             let step = match input.fill_buf() {
-                Ok(chunk) if chunk.is_empty() => Step::Eof,
+                Ok([]) => Step::Eof,
                 Ok(chunk) => match chunk.iter().position(|&b| b == b'\n') {
                     Some(pos) => Step::Chunk(chunk[..pos + 1].to_vec(), true),
                     None => Step::Chunk(chunk.to_vec(), false),
@@ -218,23 +222,26 @@ mod tests {
     #[test]
     fn handshake_settings_then_read_not_ready() {
         let service = WorldService::new();
-        let discovery: serde_json::Value = serde_json::from_str(
-            &evaluate(&service, &envelope("DiscoverWorld", &handshake_body("adapter-1", "req-0"))),
-        )
+        let discovery: serde_json::Value = serde_json::from_str(&evaluate(
+            &service,
+            &envelope("DiscoverWorld", &handshake_body("adapter-1", "req-0")),
+        ))
         .expect("valid JSON");
         assert_eq!(discovery["ready"], false);
         let generation = discovery["gen"].as_str().expect("gen").to_owned();
         assert!(!generation.is_empty());
-        let settings: serde_json::Value = serde_json::from_str(
-            &evaluate(&service, &envelope("DiscoverWorld", &settings_body(&generation))),
-        )
+        let settings: serde_json::Value = serde_json::from_str(&evaluate(
+            &service,
+            &envelope("DiscoverWorld", &settings_body(&generation)),
+        ))
         .expect("valid JSON");
         assert_eq!(settings["status"], "accepted");
         // Exact read shape (`src/world_service.rs` suspension_read); no
         // accepted capture yet, so the presentation route stays not-ready.
-        let read: serde_json::Value = serde_json::from_str(
-            &evaluate(&service, &envelope("ReadWorldPresentation", "{\"v\":4,\"req\":\"read-1\"}")),
-        )
+        let read: serde_json::Value = serde_json::from_str(&evaluate(
+            &service,
+            &envelope("ReadWorldPresentation", "{\"v\":4,\"req\":\"read-1\"}"),
+        ))
         .expect("valid JSON");
         assert_eq!(read["outcome"], "rejected");
         assert_eq!(read["kind"], "not-ready");

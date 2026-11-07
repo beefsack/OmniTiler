@@ -102,10 +102,10 @@ fn clock_settle_ms(chain: &str, envelopes: &[&str]) -> u64 {
         ] {
             if let Some(items) = report[lane].as_array() {
                 for item in items {
-                    if let Some(stamp) = item["attemptMs"].as_str() {
-                        if let Ok(ms) = stamp.parse::<u64>() {
-                            max = max.max(ms);
-                        }
+                    if let Some(stamp) = item["attemptMs"].as_str()
+                        && let Ok(ms) = stamp.parse::<u64>()
+                    {
+                        max = max.max(ms);
                     }
                 }
             }

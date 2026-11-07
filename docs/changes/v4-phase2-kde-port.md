@@ -614,3 +614,13 @@
   no skips. The count drops by one because the two old outer-gap producer/golden
   cases are one integrated genuine-engine carrier with both semantic oracles.
   Widened Rust gates and integrated independent review remain open.
+- The scoped `tiler-core`/`tiler-protocol`/`omnitiler` test and build gates now
+  pass, excluding only `workspace_unsafe_posture`; no ignored tests were forced.
+  A repeated test run with captured output proves private-bus execution: actual
+  ownership refusal, opaque-store degraded/write/reread, queue/take/presentation
+  and wait-wake outcomes appear without skip diagnostics. The protocol examples
+  build also passes. Strict all-target clippy exposed two mechanical lints in the
+  broker evaluator and stage5 clock scan; equivalent slice/let-chain patterns
+  resolve them. Clippy and workspace formatting now pass after formatting the
+  affected persistence/service sources. Actual action/stress/transcript tool runs,
+  final source/record hygiene and integrated independent review remain open.
