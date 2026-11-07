@@ -980,7 +980,7 @@ describe("world entry discovery and observation", () => {
         ]) {
             assert.ok(h.shortcuts.has(name), name);
         }
-        // A resize shortcut routes a parameterized resize world command.
+        // A resize shortcut routes a parameterized direct v4 resize command.
         discover(h);
         const resize = h.shortcuts.get("omnitiler-resize-outwards-left") as () => void;
         assert.ok(resize !== undefined);
@@ -988,11 +988,21 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         const filed = JSON.parse(queueOf(h)) as Record<string, unknown>;
         const cmd = (filed["command"] as Record<string, unknown>);
-        assert.equal(cmd["op"], "operation");
-        const inner = cmd["command"] as Record<string, unknown>;
-        assert.equal(inner["op"], "resize");
-        assert.equal(inner["direction"], "left");
-        assert.equal(inner["mode"], "outwards");
+        assert.equal(cmd["op"], "resize");
+        assert.equal(cmd["direction"], "left");
+        assert.equal(cmd["mode"], "outwards");
+        assert.equal(cmd["press"], 0);
+        // An orientation shortcut routes the direct v4 toggle-orientation
+        // command on the same production path once the resize settles.
+        const resizeReq = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", resizeReq["source"] as string, resizeReq["nativeInvalid"] as string, "1"));
+        const orient = h.shortcuts.get("omnitiler-toggle-orientation") as () => void;
+        assert.ok(orient !== undefined);
+        orient();
+        h.runTimers();
+        const orientFiled = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        const orientCmd = (orientFiled["command"] as Record<string, unknown>);
+        assert.deepEqual(orientCmd, { op: "toggle-orientation", win: "win-a" });
     });
 
     it("defers a floating-maximized float request until the settlement report", () => {

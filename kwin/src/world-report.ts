@@ -41,6 +41,8 @@ export type WorldCommand =
     | { op: "set-workspace-tiling"; out: string; ws: string; tiled: boolean }
     | { op: "toggle-workspace-tiling"; out: string; ws: string }
     | { op: "toggle-maximize"; win: string }
+    | { op: "toggle-orientation"; win: string }
+    | { op: "resize"; win: string; direction: string; mode: string; press: number }
     | { op: "toggle-float"; win: string; rect: [number, number, number, number] | null }
     | { op: "migrate-workspace"; from: string; to: string; ws: string }
     | { op: "focus-directional"; win: string; direction: string }
@@ -769,6 +771,24 @@ export function cmdToggleWorkspaceTiling(out: string, ws: string): WorldCommand 
 }
 export function cmdToggleMaximize(win: string): WorldCommand {
     return { op: "toggle-maximize", win };
+}
+export function cmdToggleOrientation(win: string): WorldCommand {
+    return { op: "toggle-orientation", win };
+}
+// Direct v4 resize (world_protocol.rs decode_command_v4): press is the
+// key-repeat index (0 first, saturating at u32). Mode beyond the pair
+// the callbacks produce, or an out-of-range press, refuses here.
+export function cmdResize(win: string, direction: string, mode: string, press: number): WorldCommand | null {
+    if (!DIRECTIONS.has(direction)) {
+        return null;
+    }
+    if (mode !== "inwards" && mode !== "outwards") {
+        return null;
+    }
+    if (!Number.isInteger(press) || press < 0 || press > 4294967295) {
+        return null;
+    }
+    return { op: "resize", win, direction, mode, press };
 }
 export function cmdMigrateWorkspace(from: string, to: string, ws: string): WorldCommand | null {
     if (from === to) {

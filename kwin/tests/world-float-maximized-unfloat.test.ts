@@ -530,7 +530,7 @@ describe("world B9 deferred maximized unfloat", () => {
         const body = JSON.parse(call.payload) as Record<string, unknown>;
         const resizeQ = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         const cmd = resizeQ["command"] as Record<string, unknown>;
-        assert.equal((cmd["command"] as Record<string, unknown>)["op"], "resize");
+        assert.equal(cmd["op"], "resize");
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
             windows: [h.winRow(WIN_A, FLOAT_A, "untouched"), h.winRow(WIN_B, TILE_B, "controlled")],
             result: null,

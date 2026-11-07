@@ -95,6 +95,7 @@ import {
     cmdFocusDirectional,
     cmdMigrateDirectional,
     cmdMoveDirectional,
+    cmdResize,
     cmdSelectNumbered,
     cmdSelectPrevious,
     cmdSelectRelative,
@@ -103,6 +104,7 @@ import {
     cmdSendNumbered,
     cmdSendRelative,
     cmdToggleMaximize,
+    cmdToggleOrientation,
     cmdToggleWorkspaceTiling,
     implicitSource,
     isCoreWorldReply,
@@ -5637,13 +5639,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 shortcutFailed("resize");
                 return;
             }
-            if (!submitCommand({ op: "operation", command: { op: "resize", win: w, direction, mode, press: route.nextResizePress(w, direction, mode) } }, "resize")) {
+            const cmd = cmdResize(w, direction, mode, route.nextResizePress(w, direction, mode));
+            if (cmd === null || !submitCommand(cmd, "resize")) {
                 shortcutFailed("resize");
             }
         },
         requestToggleOrientation: () => {
             const w = activeWindowId();
-            if (w === null || !submitCommand({ op: "operation", command: { op: "toggle-orientation", win: w } }, "toggle-orientation")) {
+            if (w === null || !submitCommand(cmdToggleOrientation(w), "toggle-orientation")) {
                 shortcutFailed("toggle-orientation");
             }
         },

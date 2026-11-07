@@ -8,12 +8,14 @@
 import {
     cmdFocusDirectional,
     cmdMoveDirectional,
+    cmdResize,
     cmdSelectNumbered,
     cmdSelectPrevious,
     cmdSelectRelative,
     cmdSelectTrailing,
     cmdSendRelative,
     cmdToggleMaximize,
+    cmdToggleOrientation,
     cmdToggleWorkspaceTiling,
     implicitSource,
     type WorldCommand,
@@ -192,7 +194,8 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
                 shortcutFailed(`resize-${mode}-${d}`);
                 return;
             }
-            if (!submitCommand({ op: "operation", command: { op: "resize", win: w, direction: d, mode, press: nextPress(w, d, mode) } }, `resize-${mode}-${d}`)) {
+            const cmd = cmdResize(w, d, mode, nextPress(w, d, mode));
+            if (cmd === null || !submitCommand(cmd, `resize-${mode}-${d}`)) {
                 shortcutFailed(`resize-${mode}-${d}`);
             }
         };
@@ -253,7 +256,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
         });
         tryRegister("omnitiler-toggle-orientation", "Toggle split orientation", "Meta+O", () => {
             const w = focusedWin();
-            if (w === null || !submitCommand({ op: "operation", command: { op: "toggle-orientation", win: w } }, "toggle-orientation")) {
+            if (w === null || !submitCommand(cmdToggleOrientation(w), "toggle-orientation")) {
                 shortcutFailed("toggle-orientation");
             }
         });

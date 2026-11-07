@@ -312,10 +312,8 @@ function moveSameAxis(h: Harness): string {
 function resizePress(h: Harness): number {
     const req = JSON.parse(h.lastPayload("QueueWorldCommand")) as Record<string, unknown>;
     const cmd = req["command"] as Record<string, unknown>;
-    assert.equal(cmd["op"], "operation");
-    const inner = cmd["command"] as Record<string, unknown>;
-    assert.equal(inner["op"], "resize");
-    return inner["press"] as number;
+    assert.equal(cmd["op"], "resize");
+    return cmd["press"] as number;
 }
 
 function settle(h: Harness, rev: string): void {
@@ -522,12 +520,13 @@ describe("world shortcut settings", () => {
         (resize as () => void)();
         (resize as () => void)();
         const presses = commands.map(
-            (c) => ((c as Record<string, unknown>)["command"] as Record<string, unknown>)["press"],
+            (c) => (c as Record<string, unknown>)["press"],
         );
         assert.deepEqual(presses, [0, 1, 2]);
+        assert.deepEqual(commands[0], { op: "resize", win: "win-a", direction: "right", mode: "outwards", press: 0 });
         signature.value = "sig-2";
         (resize as () => void)();
-        const reset = ((commands[3] as Record<string, unknown>)["command"] as Record<string, unknown>)["press"];
+        const reset = (commands[3] as Record<string, unknown>)["press"];
         assert.equal(reset, 0);
     });
 });

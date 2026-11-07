@@ -7,7 +7,10 @@
 // queued tiled focus resolves its subject at drain time from the
 // authoritative current native focus), queued tiled moves rebind the same
 // way (mixed focus-then-move proves the mover is the settled new focus),
-// and each repeated move applies its own planned geometry round. A queued native-signal invalidation still
+// and each repeated move applies its own planned geometry round. Direct
+// resize presses step the shared boundary by the core schedule with exact
+// native-shaped frames (12px then 14px), and the direct orientation toggle flips
+// the pair to a vertical stack. A queued native-signal invalidation still
 // withholds the stale head's real setters, and a timed-out head still
 // drains its tail with no synthetic signal. Included in `npm test`.
 
@@ -927,6 +930,72 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
                 .map((entry) => entry.cmdSeq as string);
             assert.ok(seqs.length > 0, "drained tail stamped exactly once");
             assert.equal(new Set(seqs).size, seqs.length, "sent head never replays");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("plans direct resize presses and orientation with exact native-shaped geometry", async () => {
+        const h = await makeHarness("win-a", ["win-a", "win-b"]);
+        try {
+            await discover(h);
+            // The Engine settles B left of focused win-a: growing win-a
+            // leftwards outwards moves the shared boundary by the core
+            // step (12px on press 0, 14px on press 1); growing rightwards
+            // would refuse unchanged at the work-area edge.
+            const xs = (id: string): number => frameOf(winById(h, id)).x;
+            assert.ok(xs("win-b") < xs("win-a"), "engine settles B left of focused win-a");
+            const widths = (): Record<string, number> => Object.fromEntries(
+                h.wins.map((win) => [win.internalId, frameOf(win).w]),
+            );
+            // Press 0 through the production callback: the direct v4
+            // resize files on the queue lane and the real Engine plans it.
+            let before = widths();
+            h.handle.requestResize("left", "outwards");
+            h.runTimers();
+            assert.equal(h.commandPayloads("resize").length, 1, "first press files the direct resize");
+            const headIndex = await h.flush();
+            const headReply = JSON.parse(h.replies.get(headIndex) as string) as Record<string, unknown>;
+            assert.notEqual(headReply["outcome"], "rejected", "real Engine decodes the direct resize");
+            appliedMatchesReply(h, headReply);
+            let after = widths();
+            assert.equal(after["win-a"] as number - (before["win-a"] as number), 12, "press 0 grows the subject by the initial step");
+            assert.equal((before["win-b"] as number) - (after["win-b"] as number), 12, "press 0 takes exactly the step from the neighbor");
+            h.runTimers();
+            await h.settle();
+            // Press 1 steps further from the settled layout: the press
+            // counter survives the round trip, the subject keeps press-time
+            // identity, and the Engine plans the steeper step.
+            before = widths();
+            h.handle.requestResize("left", "outwards");
+            h.runTimers();
+            assert.equal(h.commandPayloads("resize").length, 2, "second press files the direct resize again");
+            const tailIndex = await h.flush();
+            const tailReply = JSON.parse(h.replies.get(tailIndex) as string) as Record<string, unknown>;
+            assert.notEqual(tailReply["outcome"], "rejected", "real Engine decodes the repeated resize");
+            appliedMatchesReply(h, tailReply);
+            after = widths();
+            assert.equal(after["win-a"] as number - (before["win-a"] as number), 14, "press 1 grows the subject by the repeat step");
+            assert.equal((before["win-b"] as number) - (after["win-b"] as number), 14, "press 1 takes exactly the repeat step from the neighbor");
+            h.runTimers();
+            await h.settle();
+            // Orientation through the production callback: the direct
+            // toggle flips the pair to a vertical stack with exact native
+            // frames.
+            before = widths();
+            h.handle.requestToggleOrientation();
+            h.runTimers();
+            assert.equal(h.commandPayloads("toggle-orientation").length, 1, "orientation files the direct toggle");
+            const orientIndex = await h.flush();
+            const orientReply = JSON.parse(h.replies.get(orientIndex) as string) as Record<string, unknown>;
+            assert.notEqual(orientReply["outcome"], "rejected", "real Engine decodes the direct toggle");
+            appliedMatchesReply(h, orientReply);
+            assert.equal(frameOf(winById(h, "win-a")).x, frameOf(winById(h, "win-b")).x, "flipped pair shares the full width");
+            assert.notEqual(frameOf(winById(h, "win-a")).y, frameOf(winById(h, "win-b")).y, "flipped pair stacks vertically");
+            assert.ok(
+                h.wins.some((win) => frameOf(win).w !== (before[win.internalId] as number)),
+                "orientation rewrites geometry",
+            );
         } finally {
             await h.stop();
         }
