@@ -186,3 +186,42 @@
   build pass. The new client has no production caller yet: no capability,
   shortcut, native setter, wire fixture or live behavior changed. Executor and
   startup-recovery integration remain next; this is not native durability proof.
+
+## Verified native state executor prerequisite
+
+- The executor remains unwired. Initial review found
+  commandless above resume suppressed, lagging applied state preventing later
+  exits, unbounded spent tracking and invented attempts for skipped writes.
+  A correction replaced those paths with captured-pre guards, bounded latest
+  markers, silent pre-call cancellation and per-lane revalidation.
+- The corrected prototype passes 1138 adapter tests, but independent probes
+  still reproduce serious failures: a mixed Hold/Controlled or
+  Untouched/Controlled row erases the held property's spent marker, allowing a
+  second fullscreen write and replacing its original evidence; a reentrant
+  setter changes the acted-on revision from 5 to 6; refused above acquisition
+  creates ownership that permits a subsequent release write.
+- A third approach rewrote the executor around one spent identity per
+  window/property, presence at any authority, and frozen evidence installed
+  before invocation. Hold/Untouched preserve spent; an accepted listed-window
+  row lacking the property clears it, including empty state. Whole-window
+  absence does not clear it. Reentrant completion cannot overwrite newer spent;
+  refused or throwing above acquisition creates no ownership.
+- Source checks resolve retained-binding gaps: above latches never reopen in
+  place, and capability/route changes replace the engine generation. A core
+  regression covers an unsettled latched acquire and late attempt evidence.
+  Adapter regressions reproduce all seven original failures before correction.
+- Follow-up review found missing fences between stacking-restore subcalls and
+  completion crossing reset/prune. Corrections revalidate each native call,
+  fence old-generation completion, and preserve actual same-generation evidence
+  without resurrecting ownership. A global prune fence initially suppressed
+  ownership on no-op or unrelated pruning; transient in-flight lane cancellation
+  now scopes that fence to the ended lifetime. These cases have regressions.
+- The final executor is 1089 lines, down from the 1223-line prototype; shared
+  slot helpers and actual ownership identity replace redundant tracking. No
+  history or numeric retry counters are needed. Independent follow-up probes
+  leave no serious unresolved finding. Typechecking, 1153/1153 adapter tests
+  with zero skips, the unscoped/non-trace build, formatting and all 22 above
+  core tests pass. This is offline executor acceptance, not production or native
+  durability proof. No setters, capabilities or shortcuts are migrated;
+  startup recovery and live proof remain next. The accepted interval and
+  storage-client prerequisites remain unchanged.

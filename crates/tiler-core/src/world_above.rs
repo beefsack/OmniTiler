@@ -1399,6 +1399,101 @@ mod tests {
     }
 
     #[test]
+    fn latched_unsettled_acquire_stays_silent_after_late_attempt() {
+        // Adapter-invoked but unreported acquire meets external below: the
+        // binding latches while unsettled (unspent, no pending). The late
+        // attempt still correlates and spends, yet no publish reauthorizes
+        // the identity: no row, never Controlled again. A latch never
+        // unlatches in place; only native preowned-above deletes it.
+        let mut engine = engine_above();
+        let first = accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![float_fact("win-a", "out-a", 100, 100)],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        let rev = first.state_revision;
+        let mut belowed = float_fact("win-a", "out-a", 100, 100);
+        belowed.above = Some(false);
+        belowed.below = Some(true);
+        let reply = accepted(
+            &mut engine,
+            &report_full(
+                2,
+                2,
+                vec![screen("out-a", 0)],
+                vec![belowed],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        assert!(above_row(&reply, "win-a").is_none());
+        let mut shown = float_fact("win-a", "out-a", 100, 100);
+        shown.above = Some(false);
+        shown.below = Some(true);
+        let mut report = report_full(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![shown],
+            vec![],
+            "win-a",
+            None,
+            None,
+        );
+        report.state_attempts = vec![StateAttempt {
+            window: WindowId("win-a".to_owned()),
+            property: StateProperty::Above,
+            target: true,
+            revision: rev,
+            setter: FrameSetter::Accepted,
+            pre: Some(false),
+            post: Some(true),
+            attempt_ms: 7,
+        }];
+        accepted(&mut engine, &report);
+        let binding = engine
+            .retained_states
+            .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
+            .expect("latched binding retained")
+            .clone();
+        assert!(binding.spent);
+        assert!(binding.above_meta.as_ref().is_some_and(|meta| meta.latched));
+        let reply = accepted(
+            &mut engine,
+            &report_full(
+                4,
+                4,
+                vec![screen("out-a", 0)],
+                vec![float_fact("win-a", "out-a", 100, 100)],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        assert!(above_row(&reply, "win-a").is_none());
+        assert!(
+            engine
+                .retained_states
+                .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
+                .is_some_and(|binding| binding
+                    .above_meta
+                    .as_ref()
+                    .is_some_and(|meta| meta.latched))
+        );
+    }
+
+    #[test]
     fn external_below_latches_pending_release_without_controlled_write() {
         // B2: proven acquire, tile mints release false, then external below
         // with no attempt: no second write, no row, latch preserves tuple;
