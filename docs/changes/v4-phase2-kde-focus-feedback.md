@@ -130,3 +130,28 @@
   scoped core/protocol/service tests, formatting and strict all-target clippy
   pass. Independent focus-increment source review has no blocking finding.
   Immutable fixtures and enabled stage5 production-route proofs are unchanged.
+
+## Interrupted apply accounting
+
+- First native integration measured four populated switches across Wayland and
+  XWayland fixture pairs. All switched desktops and restored native foreground,
+  but none produced focus feedback or a terminal. Native frame snapshots matched
+  published desired frames; without arrival brackets this is not an arrival
+  proof or an exact-frame predicate failure rate.
+- Synchronous native view/focus signals advanced the local invalidation fence.
+  Earlier apply phases returned before the focus section, bypassing its spend
+  and no-call accounting. This is an adapter producer defect, not evidence that
+  the core must replay one-shot grants.
+- A common interrupted-apply epilogue now spends remaining focus grants and
+  reports correlated `not-called` / `superseded` evidence with empty arrival
+  brackets, retaining fresh raw foreground and the original pre-apply broker
+  clock. It never weakens the fence, invents arrival or reissues focus.
+- Regression coverage reproduces synchronous native desktop/focus signals
+  through the real decoder: native foreground restoration with no focus setter
+  now yields one `completed-with-failures` / `unproven` terminal. Additional
+  proofs cover earlier geometry interruption, remaining grants after a mid-focus
+  break and a clock changed reentrantly during apply.
+- Current adapter gates pass (1015 tests, zero skips) and independent follow-up
+  review has no blocking finding. Native confirmation of this correction and
+  measurement of actual arrival-predicate failures remain pending. No conclusion
+  about all native KDE selections follows from this four-switch sample.

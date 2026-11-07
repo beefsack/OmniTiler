@@ -3763,7 +3763,7 @@ describe("world entry trace probe", () => {
 // (witness null with healthy setter+foreground) fails it exactly once
 // with no upgrade on retry. No hand-built replies on asserted paths.
 describe("world entry focus feedback production regression", () => {
-    async function driveSelect(witnessPresent: boolean): Promise<{
+    async function driveSelect(witnessPresent: boolean, syncViewSignals = false): Promise<{
         selectReply: Record<string, unknown>;
         feedbackWire: Array<Record<string, unknown>>;
         feedbackId: unknown;
@@ -3901,6 +3901,10 @@ describe("world entry focus feedback production regression", () => {
         const timers: Array<{ delay: number; cb: () => void }> = [];
         let active: FakeWindow = w1;
         let focusSets = 0;
+        // Live KWin emits the selection signals synchronously inside the
+        // view setter and restores the view's focused client natively, so
+        // the focus setter never runs behind the moved fence.
+        const expectedFocusSets = syncViewSignals ? 0 : 1;
         const surface: Record<string, unknown> = {
             windowList: () => [w1, w2],
             screens,
@@ -3925,6 +3929,14 @@ describe("world entry focus feedback production regression", () => {
             currentDesktopForScreen: (screen: { name: string }) => currents.get(screen.name) === "ws2" ? ws2 : ws1,
             setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }) => {
                 currents.set(screen.name, (deskRef as { id: string }).id);
+                if (syncViewSignals) {
+                    active = w2;
+                    for (const key of ["currentDesktopChanged", "windowActivated"] as const) {
+                        for (const handler of [...(signals[key] as FakeSignal).handlers]) {
+                            handler();
+                        }
+                    }
+                }
             },
             sendClientToScreen: () => undefined,
             createDesktop: () => null,
@@ -4095,13 +4107,13 @@ describe("world entry focus feedback production regression", () => {
             assert.ok(fxRows.length >= 1, `select grants focus: ${select.rawReply.slice(0, 500)}`);
             assert.equal(fxRows[0]!["awaitShown"], true, `populated select grants awaitShown focus: ${select.rawReply.slice(0, 500)}`);
             const target = fxRows[0]!["target"] as string;
-            assert.equal((active as unknown as Record<string, unknown>)["internalId"], target, "production setter moves the native foreground");
-            assert.equal(focusSets, 1, "select grant actuates the native setter exactly once");
+            assert.equal((active as unknown as Record<string, unknown>)["internalId"], target, syncViewSignals ? "native view switch restores the foreground without the focus setter" : "production setter moves the native foreground");
+            assert.equal(focusSets, expectedFocusSets, "select grant uses only the expected native focus calls");
             // Explicit duplicate redelivery of the accepted select reply
             // through the real transport callback: the settled guard must
             // neither re-actuate nor mint a second row.
             calls[flushed - 1]!.callback(select.rawReply);
-            assert.equal(focusSets, 1, "duplicate select redelivery fires no second setter call");
+            assert.equal(focusSets, expectedFocusSets, "duplicate select redelivery fires no second setter call");
             // Real transport failure before the feedback accept: the next
             // dispatched capture carries the genuine row, but its reply
             // bytes are lost (non-string callback). Recovery must
@@ -4175,7 +4187,7 @@ describe("world entry focus feedback production regression", () => {
             for (const row of laterFeedbackWire) {
                 assert.equal(row["attemptMs"], attemptMs, "re-carried row retains the original stamp");
             }
-            assert.equal(focusSets, 1, "no focus reissue after settlement");
+            assert.equal(focusSets, expectedFocusSets, "no focus reissue after settlement");
             let restoredSwitch: Array<Record<string, unknown>> = [];
             if (!witnessPresent) {
                 // Healthy witness restored before the next accepted
@@ -4196,7 +4208,7 @@ describe("world entry focus feedback production regression", () => {
                     !restoredWire.some((row) => row["id"] !== feedbackId),
                     `no new focus rows on witness restore: ${JSON.stringify(restoredWire).slice(0, 500)}`,
                 );
-                assert.equal(focusSets, 1, "witness restore reissues no focus call");
+                assert.equal(focusSets, expectedFocusSets, "witness restore reissues no focus call");
             }
             return {
                 selectReply: select.reply,
@@ -4261,4 +4273,26 @@ describe("world entry focus feedback production regression", () => {
         }
         assert.equal(driven.focusSets, 1, "exactly one focus setter call end to end");
     });
+
+    it("sync view-switch signals supersede focus with one no-call row and one failed terminal, no upgrade", { timeout: 120000 }, async () => {
+        const driven = await driveSelect(true, true);
+        assert.equal(driven.feedbackWire.length, 1, "one superseded row, no missing feedback");
+        assert.equal(driven.feedbackWire[0]!["setter"], "not-called");
+        assert.equal(driven.feedbackWire[0]!["reason"], "superseded");
+        const fxTarget = ((driven.selectReply["effects"] as Array<Record<string, unknown>>).find((e) => e["kind"] === "focus")!)["target"];
+        assert.equal(driven.feedbackWire[0]!["target"], fxTarget, "no-call names the granted target");
+        assert.equal(driven.feedbackWire[0]!["post"], fxTarget, "no-call preserves the restored foreground");
+        assert.equal(driven.feedbackWire[0]!["foregroundProven"], false, "no proof without a valid causal bracket");
+        assert.deepEqual(driven.feedbackWire[0]!["arrival"], [], "no arrival fabricated after invalidation");
+        assert.equal(driven.switchEvents.length, 1, "one terminal switch event");
+        assert.equal(driven.switchEvents[0]!["outcome"], "completed-with-failures", "superseded focus fails the terminal");
+        assert.equal(driven.switchEvents[0]!["focus"], "unproven", "superseded focus never proves");
+        assert.equal(driven.laterSwitchEvents.length, 0, "no switch event after the terminal one");
+        assert.ok(!driven.laterFeedbackWire.some((row) => row["id"] !== driven.feedbackId), "no new feedback rows after settlement");
+        for (const row of driven.laterFeedbackWire) {
+            assert.equal(row["attemptMs"], driven.feedbackAttemptMs, "re-carried row retains the original stamp");
+        }
+        assert.equal(driven.focusSets, 0, "superseded focus never touches the setter, end to end");
+    });
+
 });

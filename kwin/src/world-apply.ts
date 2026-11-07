@@ -666,7 +666,7 @@ function settleFollowView(
     }
 }
 
-export function applyWorldReply(env: ApplyEnv): ApplyResult {
+function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     const { state, observation, reply } = env;
     const result: ApplyResult = {
         geometryWrites: 0, membershipWrites: 0, viewWrites: 0,
@@ -676,11 +676,6 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     // this dispatch fence, never against the dirty flag (self-sent dirty
     // must not stop multi-window geometry/membership).
     const entryObs = env.dispatchWatermark;
-    // Original write stamp for every mechanical attempt this apply
-    // records: the broker dispatch-clock reading, never wall-clock. "0"
-    // means unreported; redelivery after a lost acknowledgement reuses
-    // the stored stamps (the core consumes each idempotently).
-    const stamp = isCanonicalU64(state.lastClock) ? state.lastClock : "0";
     const byWin = new Map<string, ObservedWindow>();
     for (const domain of observation.domains) {
         for (const w of domain.windows) {
@@ -1547,7 +1542,6 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             void error;
             after = null;
         }
-        const stamp = isCanonicalU64(state.lastClock) ? state.lastClock : "0";
         if (after === null) {
             state.deferCreationReceipt({
                 op, ws: logical, out,
@@ -2798,6 +2792,54 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.stoppedMidApply = true;
             break;
         }
+    }
+    return result;
+}
+
+// Single completion point for every pre-focus early return and mid-focus
+// break: spend each still-unspent focus grant with one factual superseded
+// no-call row (fresh foreground, never proven, empty arrival). The stamp
+// is captured before reentrant native work, never re-read after it.
+export function applyWorldReply(env: ApplyEnv): ApplyResult {
+    // Original broker dispatch-clock reading, never wall-clock; "0" means
+    // unreported. Captured before native setters can reenter and move it.
+    const stamp = isCanonicalU64(env.state.lastClock) ? env.state.lastClock : "0";
+    const result = runApply(env, stamp);
+    if (!result.stoppedMidApply) {
+        return result;
+    }
+    const { state, reply } = env;
+    const readFgNow = (): string | null => {
+        try {
+            const id = env.readActiveWindowId?.() ?? null;
+            return typeof id === "string" && isOpaqueId(id) ? id : null;
+        } catch (error) {
+            void error;
+            return null;
+        }
+    };
+    for (const fx of reply.effects) {
+        if (fx.kind !== "focus") {
+            continue;
+        }
+        if (!state.markEffectSpent(fx.id)) {
+            continue;
+        }
+        const fg = readFgNow();
+        state.recordFocusFeedback({
+            id: fx.id,
+            target: fx.target,
+            rev: fx.rev,
+            setter: "not-called",
+            reason: "superseded",
+            pre: fg,
+            post: fg,
+            foregroundProven: false,
+            arrival: [],
+            attemptMs: stamp,
+        });
+        state.noteFollowup();
+        result.held += 1;
     }
     return result;
 }

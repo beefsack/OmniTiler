@@ -467,6 +467,104 @@ describe("world focus feedback rows", () => {
         }
         assert.equal(rows[0]?.attemptMs, "7", "write stamp is the broker clock, never wall-clock");
     });
+
+    it("completes a pre-focus geometry stop with one superseded no-call, no replay", () => {
+        const state = setupState();
+        const reply = acceptParsed(state, replyText({
+            effects: [fxRow("fx-1", "focus", "win-b")],
+            clock: "9",
+            windows: [
+                { ...winRow("win-b", "ws1"), frame: [10, 10, 200, 200], alloc: [10, 10, 200, 200] },
+                // Second row so the window-loop top observes the fence
+                // moved by the first row's geometry setter: a lone
+                // geometry-only row `continue`s past the end-of-iteration
+                // fence check, so without another row the move would only
+                // surface later inside the focus loop itself.
+                winRow("win-c", "ws1"),
+            ],
+        }));
+        assert.deepEqual(state.acceptReply(reply, "req-1", state.currentInvalid), { applied: true, reason: "accepted" });
+        const targetRef = {};
+        const observation = makeObs(targetRef);
+        const fg: FgModel = { current: "win-a" };
+        let geometryCalls = 0;
+        const env = baseEnv(state, observation, reply, fg, targetRef, {
+            // Synchronous native invalidation inside the geometry setter
+            // (the live selector echo): the write lands, the fence moves,
+            // and the apply stops before the focus section.
+            setGeometry: () => {
+                geometryCalls += 1;
+                state.invalidate();
+                // Reentrant native work moves the dispatch clock mid-apply:
+                // rows must still carry the stamp captured before apply.
+                state.recordClock("99");
+                return true;
+            },
+            focusWindow: () => { throw new Error("focus must not run behind a moved fence"); },
+        });
+        const result = applyWorldReply(env);
+        assert.equal(result.stoppedMidApply, true);
+        assert.equal(geometryCalls, 1);
+        const rows = state.focusFeedbacksForReport();
+        assert.equal(rows.length, 1, "early exit still spends the skipped focus grant");
+        assert.equal(rows[0]?.id, "fx-1");
+        assert.equal(rows[0]?.target, "win-b");
+        assert.equal(rows[0]?.setter, "not-called");
+        assert.equal(rows[0]?.reason, "superseded");
+        assert.equal(rows[0]?.pre, "win-a");
+        assert.equal(rows[0]?.post, "win-a");
+        assert.equal(rows[0]?.foregroundProven, false);
+        assert.deepEqual(rows[0]?.arrival, []);
+        assert.equal(rows[0]?.attemptMs, "9", "original broker-epoch stamp retained");
+        assert.equal(state.lastClock, "99", "reentrant clock move actually happened");
+        // Duplicate redelivery spends nothing twice and restamps nothing.
+        applyWorldReply(env);
+        const again = state.focusFeedbacksForReport();
+        assert.equal(again.length, 1, "spent effect never records twice");
+        assert.equal(again[0]?.attemptMs, "9");
+    });
+
+    it("completes remaining focus grants after a mid-focus-loop break, no replay", () => {
+        const state = setupState();
+        const reply = acceptParsed(state, replyText({
+            effects: [fxRow("fx-1", "focus", "win-b"), fxRow("fx-2", "focus", "win-b")],
+            clock: "9",
+        }));
+        assert.deepEqual(state.acceptReply(reply, "req-1", state.currentInvalid), { applied: true, reason: "accepted" });
+        const targetRef = {};
+        const observation = makeObs(targetRef);
+        const fg: FgModel = { current: "win-a" };
+        let focusCalls = 0;
+        const env = baseEnv(state, observation, reply, fg, targetRef, {
+            // The first focus setter lands and its synchronous native
+            // signal moves the fence; the loop breaks before the second
+            // grant.
+            focusWindow: (ref) => {
+                focusCalls += 1;
+                assert.equal(ref, targetRef);
+                fg.current = "win-b";
+                state.invalidate();
+                return true;
+            },
+        });
+        const result = applyWorldReply(env);
+        assert.equal(result.stoppedMidApply, true);
+        assert.equal(focusCalls, 1, "no actuation for the grant after the break");
+        const rows = state.focusFeedbacksForReport();
+        assert.equal(rows.length, 2, "processed plus skipped grants each record once");
+        const first = rows.find((r) => r.id === "fx-1");
+        const second = rows.find((r) => r.id === "fx-2");
+        assert.equal(first?.setter, "accepted");
+        assert.equal(first?.foregroundProven, true);
+        assert.equal(first?.attemptMs, "9");
+        assert.equal(second?.setter, "not-called");
+        assert.equal(second?.reason, "superseded");
+        assert.equal(second?.foregroundProven, false);
+        assert.deepEqual(second?.arrival, []);
+        assert.equal(second?.attemptMs, "9", "skipped grant keeps the original stamp");
+        applyWorldReply(env);
+        assert.equal(state.focusFeedbacksForReport().length, 2, "duplicates never re-record");
+    });
 });
 
 describe("world focus lane caps", () => {
