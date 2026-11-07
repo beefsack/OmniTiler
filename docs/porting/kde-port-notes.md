@@ -345,6 +345,24 @@ request fixtures pin the JS producer, including populated raw attempts.
   native item anchor. No additional DPI factor, outset or Windows frame
   compensation is applied. Freshness has separate accepted recorded-route
   evidence; independently observed native draw bounds remain outstanding.
+- Anchored border join: `presentation_router.h::tryArmBorderChain` clears then
+  re-proves only on exact-current native coverage. The live tracked and active
+  lifetime, subject, witness window/foreground and held paint foreground must
+  match; the quantized live frame must equal the witness frame, with complete
+  held metrics, known eligibility and finite positive output scale. Broker
+  observation, local capture watermark and native coverage remain distinct.
+  Delivered same-anchor frame and same-window gesture-boundary events advance
+  only an already-current chain by exactly one native bump, with stable output
+  identity/scale; paint coverage is never rewritten. A structurally accepted
+  older-coverage paint makes no new join: only the same stream, current chain
+  and equal anchor inputs retain the original held descriptor, including its
+  original arming witness watermark/frame. Its new underlay, preview, order and
+  coverage still apply. Changed anchor inputs, hidden/missing descriptor,
+  generation/source changes, unknown authority or gaps clear the chain; only
+  exact-current paint can re-arm. Gesture boundaries still clear the preview
+  latch and preserve global bump, floor, tick and publication accounting.
+  These rules have offline coverage; native continuity and dropout acceptance
+  remain [TBD](../spec/reference-outcomes.md#anchored-border-in-flight-replacement).
 - KWin size hints are client sizes: project decorated frames with
   `clientGeometry`, never with Windows invisible-border compensation.
 - Fresh native readbacks (visibility, frame, foreground joined to the

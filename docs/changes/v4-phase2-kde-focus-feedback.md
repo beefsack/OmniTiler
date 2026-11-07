@@ -50,8 +50,8 @@
   effect, target, issuing revision, broker clock and live foreground reads.
   Arrival brackets use the narrow shown witness and preserve the broker-owned
   observation separately from the local invalidation fence. The core now
-  receives an adapter-local border witness; native rendering remains hidden
-  pending the consumer port.
+  receives an adapter-local border witness; the native anchored consumer is
+  integrated offline, with live native acceptance still open.
 - Populated-selection completion requires truthful shown evidence:
   `world-report.ts` truthfully reports shown state as unknown unless hidden or
   minimized. Synchronous `windowAt` membership supplies a positive shown witness
@@ -64,8 +64,9 @@
   distinct counters. Witness and arrival sampling must preserve their causal
   joins rather than equating them.
 - Host shown-witness acceptance and offline focus integration are complete.
-  Native focus/terminal acceptance now has a bounded healthy sample. The
-  anchored consumer and final integrated review remain pending.
+  Native focus/terminal acceptance has a bounded healthy sample. The anchored
+  consumer and integrated review are accepted offline; all live native gates
+  below remain open and user-run.
 
 ## Shown evidence
 
@@ -373,13 +374,18 @@
   floating fixture resize, foreground change, minimize and maximize hide/re-arm,
   but did not isolate frame-follow from a broker round trip. Minimize restore
   and version-mismatch live checks were not completed. That run is not accepted
-  as native continuity or K5/R20 evidence. Final offline records remain pending.
+  as native continuity or K5/R20 evidence.
 - The separate obsolete `borderStrokeFromPublished` helper was removed after
   source search proved no production callers; only its own tests and static
   existence checks used it. Live-frame anchored geometry coverage is retained.
   Active licensing and port references were updated; historical records remain
   unchanged. Native checks pass all 38, the targeted static suite passes all 18,
   and adapter typecheck passes after removal.
+- The existing KDE packaging decision now specifies quiet version-mismatch
+  hiding for border, underlay and preview with tiling unaffected. The port
+  reference records exact-current arming, distinct capture/native namespaces,
+  one-bump event continuity and original held-anchor retention without a new
+  older-paint join. The discriminator retains every native outcome as TBD.
 - Open user-run native acceptance check: tracked-frame border follow without a
   broker round trip; foreground change to the non-active fixture;
   minimize/restore; maximize eligibility hide/re-arm; version mismatch quietly
@@ -395,3 +401,19 @@
   Record each unexpected hidden interval and its duration separately from
   expected foreground, minimize and maximize vetoes. Keep this note active
   until the complete native check is resolved.
+
+## Final offline verification
+
+- Workspace formatting and scoped core/protocol/service tests pass: 3067 tests,
+  zero failures, with only the existing `workspace_unsafe_posture` exclusion.
+  Scoped strict all-target clippy also passes.
+- Adapter typecheck and the full suite pass: 1065 tests, zero skips/failures.
+  The Nix native-effect check passes all 38 tests, including v2 recovery and
+  retained live-frame geometry proofs. Current supported ABI compilation and
+  staging pass; compilation is not runtime acceptance.
+- Legacy `stage5`, `stage5-v4` and `world-wire/v4` fixture trees and Rust sources
+  are unchanged across the consumer port and helper removal. Enabled stage5
+  production-route proofs remain enabled.
+- The actual generated bundle was rebuilt unscoped and non-trace after the
+  gates. No new product finding remains from offline verification. All live
+  native gates above remain open and user-run; this note remains active.
