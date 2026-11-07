@@ -362,6 +362,13 @@
   native checks and current ABI compilation pass after the correction.
 - Independent integrated source review, including recording/recovery assertion
   equivalence and the geometry correction, has no unresolved offline finding.
-- No native witness-join or normal-interaction dropout live proof has run for
-  this port. Final integrated review and the separate obsolete-helper removal
-  remain pending.
+- Native live acceptance remains incomplete. A partial nested run reported
+  fixture admission and a visible native border, but its programmatic frame
+  writes read back unchanged, so no move/resize dropout measurement follows.
+  The initial isolation checkpoint and complete host-configuration preimage were
+  not retained as accepted evidence; the partial run does not close K5/R20.
+  Receipt-bound teardown removed the owned controller, effect and processes;
+  process absence and an empty private compositor runtime were verified. The
+  unscoped non-trace bundle was rebuilt. A valid nested witness-join and normal
+  interaction measurement, the separate obsolete-helper removal and final
+  records remain pending.
