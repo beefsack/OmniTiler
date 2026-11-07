@@ -4,16 +4,16 @@
 
 - K1 is the first vertical slice: a built KWin producer handshakes with the v4
   core, sends genuine v4 reports, consumes replies and tiles fixture windows.
-- Status: connection, opaque persistence wiring, native-fact producer, exact
-  v4 reply decoding and binding/ordinary apply have targeted offline evidence.
-  Hidden-only presentation is checked offline; visible anchored presentation is
-  deferred to focus feedback.
-  A genuine producer/real-engine ordinary frame carrier now passes offline.
-   Built script/service now tile and reflow native fixtures with the effect
-   absent, including service-restart recovery. Full K1 acceptance remains open.
-- The [phase-1 note](v4-phase1-core-protocol.md) stays active. Its working-tree
+- Status: K1 engineering acceptance is complete. Genuine v4 producer/core byte
+  gates, the full adapter suite, widened scoped Rust gates, actual tool runs and
+  integrated independent review pass. Native fixture evidence covers ordinary
+  one-output tiling/reflow, watchdog and service/script restart recovery, exact
+  opaque intent hydration and hidden-only effect transport. This is development
+  acceptance, not complete KDE functionality or release acceptance.
+- The final outcome below supersedes historical pending-gate statements.
+- The [phase-1 note](../v4-phase1-core-protocol.md) stays active. Its working-tree
   core/protocol/service/broker cutover is the baseline, not work to redo here.
-- Follow the [recorded order](../decisions/contract.md#contract-authority-and-v4-migration):
+- Follow the [recorded order](../../decisions/contract.md#contract-authority-and-v4-migration):
   handshake, report/reply, selection, arrival, focus feedback, state targets;
   then scaled metrics, physical reconnect/rehome, scenario runner and remaining
   v3 removal. K1 ends after handshake and the functioning report/reply loop.
@@ -91,13 +91,13 @@
   devenv. Any changed native component also needs its repository-defined build
   and relevant tests; an optional renderer must not become a tiling dependency.
 - Core/service/protocol changes require the widened package-scoped gate in
-  [phase 1](v4-phase1-core-protocol.md#unit-7-widened-verification-plan-not-executed),
+  [phase 1](../v4-phase1-core-protocol.md#unit-7-widened-verification-plan-not-executed),
   including proof that private-bus legs actually execute, tool transcripts,
   strict clippy, formatting, whitespace/ASCII/NUL and local-link checks. Never
   run `workspace_unsafe_posture`, the legacy fixture generator, ignored-test
   forcing or an unfiltered workspace suite. No whole-workspace pass is implied.
-- Native tests follow [the live guide](../live-kwin-testing.md) and the
-  [fixture reference](../../crates/tiler-live-fixture/README.md): durable
+- Native tests follow [the live guide](../../live-kwin-testing.md) and the
+  [fixture reference](../../../crates/tiler-live-fixture/README.md): durable
   default (user 2026-11-06) of fresh each-run inventory of occupied
   workspaces through n, tests on workspaces >n, fixture with exact platform
   filter, exact lifecycle receipts, evaluated readiness as cheap evidence,
@@ -137,7 +137,7 @@
 - Native internal PID reads, the owned outline's candidate boundary and captured
   token exclusion are proved below; other internal surfaces and unreadable native
   PID outcomes remain outside that evidence. The
-  [minimal broker discriminator](../spec/reference-outcomes.md#v4-broker-connection-discriminator)
+  [minimal broker discriminator](../../spec/reference-outcomes.md#v4-broker-connection-discriminator)
   retains TBD native outcomes.
 
 ## Accepted evidence so far
@@ -624,3 +624,62 @@
   resolve them. Clippy and workspace formatting now pass after formatting the
   affected persistence/service sources. Actual action/stress/transcript tool runs,
   final source/record hygiene and integrated independent review remain open.
+
+## K1 final outcome
+
+- Actual `world_acceptance` passes all 6 checkpoints. Both stress tools pass
+  ordered, batched and reordered schedules: home/away uses 186/149/151 reports
+  with 16 checkpoints each; trio churn uses 190/156/158 with 19 each. These are
+  core/tool acceptance, not native keyboard or workspace-selection proof.
+- Actual `world_eval` stdin/stdout passes the 12-line v4 transcript: handshake,
+  pre-settings not-ready, accepted settings, ready report, byte-identical replay,
+  changed-request refusal, fresh reconnect generation, old report/settings
+  refusal, and fresh bootstrap/settings/readiness. Semantic assertions and exact
+  replay bytes were checked, not just output count.
+- Integrated independent source review found no blocking defect in migration
+  authority, tagged native evidence, ordinary classification/apply, opaque
+  persistence authorization and private atomic storage, hydration/freshness,
+  connection/queue ownership or hidden presentation. This review adds no runtime
+  claim. The latest runtime gates remain the 983/983 adapter suite and widened
+  package-scoped Rust tests/build, protocol examples build, strict all-target
+  clippy and formatting. Both stage5 production-route proofs remain enabled.
+- Final changed-file whitespace, added ASCII, full-content NUL and relative
+  Markdown file-target checks pass. Legacy fixtures and immutable v4 wire
+  fixtures remain unchanged; no legacy generator or ignored-test forcing was
+  used. No whole-workspace pass is claimed.
+
+### Can
+
+- Run the built producer/service through real v4 handshake, separate settings
+  and correlated report/reply traffic; tile and reflow ordinary fixture windows
+  on the tested one-output topology, without the optional effect.
+- Recover bound wait/watchdog silence without re-handshaking, then recover a
+  service replacement through a fresh generation and resumed tiling.
+- Retain explicit float intent as exact opaque bytes through service/script
+  replacement in the same compositor session, hydrating before first accepted
+  capture; positively carry hidden presentation through the loaded native effect.
+- Exclude the captured native internal outline through the own-process classifier
+  gate rather than fixture omission; this is not proof for all internal surfaces.
+
+### Cannot claim
+
+- Complete selection, arrival, causal focus feedback or native state targets;
+  native migration completeness, scaled metrics, physical output reconnect/rehome
+  or multi-output acceptance; physical-key/input or release acceptance.
+- An OmniTiler active border: K1 intentionally leaves it off. The native anchored
+  consumer belongs to focus feedback; there is no script geometry workaround.
+
+### Degraded and unproved
+
+- Native group underlay and drag preview remain unproved; the current native
+  presentation endpoint has no pager surface. Optional absent effect/tray routes
+  can emit bounded D-Bus diagnostics; the loaded-effect leg still had absent-tray
+  noise and two transient stale-coverage refusals that recovered.
+- Fractional frame/client quantization differed by 0.4 logical units in the
+  earlier native three-window leg; it remains unresolved, not scaled or exact
+  asynchronous-settlement acceptance.
+- Resize/orientation emitters retain the retired operation wrapper and fail
+  closed; settings/shortcut carriage tests do not establish those operations.
+- Other internal surfaces and native unreadable/zero-PID outcomes remain TBD.
+  The approved one-time version-1 intent reset remains distinct from required
+  ordinary v4 within-session persistence. Later KDE slices remain open.
