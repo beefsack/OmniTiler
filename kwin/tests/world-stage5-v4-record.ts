@@ -26,6 +26,7 @@ import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
+import { isCanonicalU64 } from "../src/world-seq";
 import {
     isCoreWorldReply,
     isWorldPresentationReply,
@@ -559,9 +560,35 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
         if (parsed.coveredInstance !== latestWitness.instance || parsed.coveredInvalid !== latestWitness.counter) {
             throw new Error(`projection at step ${step} rev=${parsed.rev} obs=${parsed.obs} covers ${String(parsed.coveredInstance)}/${String(parsed.coveredInvalid)} but the latest witness is ${latestWitness.instance}/${latestWitness.counter}`);
         }
-        // K1: the hidden border stays hidden at the presentation level.
-        if (parsed.presentation.border.visible !== false) {
-            throw new Error(`projection at step ${step} shows a visible border (K1 stays hidden)`);
+        // v2 producer: the adapter-local witness joins the same-capture
+        // foreground lifetime, so the core publishes a genuine visible
+        // anchored border (7 keys). Unknown/mismatch still hides narrowly.
+        const border = parsed.presentation.border as unknown as Record<string, unknown>;
+        const borderKeys = Object.keys(border).sort();
+        if (JSON.stringify(borderKeys) !== JSON.stringify(["outsets", "radius", "reason", "subject", "visible", "width", "witness"])) {
+            throw new Error(`projection at step ${step} border keys are not the anchored 7-key shape: ${JSON.stringify(borderKeys)}`);
+        }
+        if (border["visible"] !== true) {
+            throw new Error(`projection at step ${step} hides the anchored border (v2 witness must join): ${JSON.stringify(border).slice(0, 500)}`);
+        }
+        if (border["subject"] !== "win-a") {
+            throw new Error(`projection at step ${step} border subject is not win-a: ${JSON.stringify(border).slice(0, 300)}`);
+        }
+        if (border["reason"] !== "") {
+            throw new Error(`projection at step ${step} visible border carries a hide reason`);
+        }
+        const bw = border["witness"] as { win?: unknown; obs?: unknown; frame?: unknown; foreground?: unknown } | null;
+        if (bw === null || typeof bw !== "object" || Array.isArray(bw)) {
+            throw new Error(`projection at step ${step} visible border carries no witness`);
+        }
+        if (bw["win"] !== "win-a" || bw["foreground"] !== "win-a") {
+            throw new Error(`projection at step ${step} border witness does not join win-a`);
+        }
+        if (typeof bw["obs"] !== "string" || !isCanonicalU64(bw["obs"] as string)) {
+            throw new Error(`projection at step ${step} border witness obs is not a canonical local watermark`);
+        }
+        if (!Array.isArray(bw["frame"]) || (bw["frame"] as Array<unknown>).length !== 4) {
+            throw new Error(`projection at step ${step} border witness frame is not a rect`);
         }
         // Underlay is expected found for the tiled win-a group in every
         // step of this scenario (legacy projections all carry it).

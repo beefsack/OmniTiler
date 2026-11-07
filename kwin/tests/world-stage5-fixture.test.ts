@@ -55,6 +55,7 @@ import {
     type Stage5V4ChainResult,
 } from "./world-stage5-v4-record";
 import { createWorldPresentationSubscriber } from "../src/world-presentation";
+import { isCanonicalU64 } from "../src/world-seq";
 
 type ChainName = "full" | "s2";
 
@@ -63,6 +64,15 @@ const GESTURE_A = STAGE5_V4_GESTURE_A;
 
 function v4Fixture(chain: ChainName, name: string): string {
     return readFileSync(resolve("..", "test-fixtures", "stage5-v4", chain, name), "utf8");
+}
+
+// v2 producer lineage (adapter-local FrameWitness): genuine recordings via
+// the same actual entry/real-broker path, now carrying the local witness
+// and the visible anchored border. Producer re-record comparisons use this
+// sibling byte-exact (gen/source only normalized); legacy hidden-fixture
+// subscriber tests below stay on stage5-v4.
+function v2Fixture(chain: ChainName, name: string): string {
+    return readFileSync(resolve("..", "test-fixtures", "stage5-v2", chain, name), "utf8");
 }
 
 // Volatile transport/correlation tokens (disclosed, shape-preserving):
@@ -253,7 +263,7 @@ interface V4Manifest {
 }
 
 function loadManifest(chain: ChainName): V4Manifest {
-    return JSON.parse(v4Fixture(chain, "manifest.json")) as V4Manifest;
+    return JSON.parse(v2Fixture(chain, "manifest.json")) as V4Manifest;
 }
 
 const FULL_WITNESS: Record<string, ReadonlyArray<StepExpectation>> = {
@@ -295,7 +305,7 @@ function checkDiscovery(chain: ChainName): void {
     assert.equal(result.adapter, STAGE5_V4_ADAPTER);
     const handshake = normalizeTopLevel(
         result.discovery.handshakeRequest,
-        v4Fixture(chain, "discovery-handshake.request.json"),
+        v2Fixture(chain, "discovery-handshake.request.json"),
         [],
     );
     assert.equal(handshake.actual, handshake.expected, `${chain} handshake request is byte-exact`);
@@ -305,7 +315,7 @@ function checkDiscovery(chain: ChainName): void {
     assert.equal(handshakeBody["req"], "disc-1");
     const settings = normalizeTopLevel(
         result.discovery.settingsRequest,
-        v4Fixture(chain, "discovery-settings.request.json"),
+        v2Fixture(chain, "discovery-settings.request.json"),
         ["gen"],
     );
     assert.equal(settings.actual, settings.expected, `${chain} settings request matches gen-only normalized`);
@@ -329,7 +339,7 @@ function checkGenesis(chain: ChainName): void {
     assert.equal(genesis1.file, "envelope-genesis-1.json");
     const compared0 = normalizeTopLevel(
         genesis0.bytes,
-        v4Fixture(chain, "envelope-genesis-0.json"),
+        v2Fixture(chain, "envelope-genesis-0.json"),
         ["gen", "source"],
     );
     assert.equal(compared0.actual, compared0.expected, `${chain} genesis-0 is byte-exact`);
@@ -343,11 +353,44 @@ function checkGenesis(chain: ChainName): void {
     const clock = (JSON.parse(reply1.bytes) as { clock: string }).clock;
     assertGenesisAttempts(
         genesis1.bytes,
-        v4Fixture(chain, "envelope-genesis-1.json"),
+        v2Fixture(chain, "envelope-genesis-1.json"),
         expectedStamp,
         clock,
         `${chain} genesis-1`,
     );
+    // Genuine unknown-cover hide through the real entry+broker path: both
+    // genesis captures fly before the first facts answer, so the report
+    // carries no causal cover and the witness rides null while tiling facts
+    // stay alive (complete inventory, same foreground). No handwritten
+    // bytes: the recorder's own envelopes prove the fail-closed hide.
+    for (const genesis of [genesis0, genesis1]) {
+        const report = parseReport(genesis.bytes);
+        assert.equal(report["nativeInvalidWitness"], null, `${chain} ${genesis.file} carries no causal cover`);
+        assert.equal(
+            (report["presentation"] as Record<string, unknown>)["witness"],
+            null,
+            `${chain} ${genesis.file} hides the witness without cover`,
+        );
+        assert.equal(report["complete"], true, `${chain} ${genesis.file} report stays alive`);
+        assert.equal(report["focused"], "win-a", `${chain} ${genesis.file} foreground stays live`);
+    }
+    // The real broker's verdict on those coverless captures: the recorded
+    // reply bytes carry the hidden anchored border (exact 7 keys, hidden
+    // with nulls) while tiling stays alive. This is the core hide verdict
+    // through the genuine entry+broker path, distinct from the scripted
+    // direct-entry unknown-cover tests. No regeneration, no new files.
+    for (const reply of [reply0, reply1]) {
+        const body = JSON.parse(reply.bytes) as Record<string, unknown>;
+        const presentation = body["presentation"] as Record<string, unknown>;
+        assert.deepEqual(
+            presentation["border"],
+            { outsets: null, radius: null, reason: "", subject: null, visible: false, width: null, witness: null },
+            `${chain} ${reply.file} hides the anchored border`,
+        );
+        assert.equal(body["ready"], true, `${chain} ${reply.file} reply stays ready`);
+        assert.equal(presentation["foreground"], "win-a", `${chain} ${reply.file} foreground stays live`);
+        assert.equal((body["windows"] as Array<unknown>).length, 2, `${chain} ${reply.file} tiling rows stay live`);
+    }
     // Frame/member/view/clear/creation attempts appear only in genesis-1:
     // every step envelope carries none.
     for (const entry of result.envelopes) {
@@ -379,11 +422,22 @@ function checkSteps(
             const entry = envelopes[index] as { step: string; file: string; bytes: string } | undefined;
             assert.ok(entry !== undefined, `${chain} ${step.name} envelope ${index} exists`);
             assert.equal(entry.file, file, `${chain} ${step.name} envelope order`);
-            const compared = normalizeTopLevel(entry.bytes, v4Fixture(chain, file), ["gen", "source"]);
+            const compared = normalizeTopLevel(entry.bytes, v2Fixture(chain, file), ["gen", "source"]);
             assert.equal(compared.actual, compared.expected, `${chain} ${step.name} ${file} is byte-exact`);
             const expected = expectations[index] as StepExpectation | undefined;
             assert.ok(expected !== undefined, `${chain} ${step.name} envelope ${index} expectation exists`);
             assertReportWitnessGesture(parseReport(entry.bytes), expected, `${chain} ${step.name} ${file}`);
+            const report = parseReport(entry.bytes);
+            const local = report["presentation"] as Record<string, unknown>;
+            const lw = local["witness"] as { win?: unknown; obs?: unknown; frame?: unknown; foreground?: unknown } | null;
+            assert.ok(lw !== null && typeof lw === "object", `${chain} ${step.name} ${file} carries the local witness`);
+            assert.equal(lw["win"], "win-a", `${chain} ${step.name} ${file} local witness win`);
+            assert.equal(lw["foreground"], "win-a", `${chain} ${step.name} ${file} local witness foreground`);
+            assert.ok(isCanonicalU64(lw["obs"]), `${chain} ${step.name} ${file} local witness obs is canonical`);
+            assert.deepEqual(lw["frame"], [404, 8, 388, 584], `${chain} ${step.name} ${file} local witness frame`);
+            const nativeCover = report["nativeInvalidWitness"] as { instance?: unknown; counter?: unknown } | null;
+            assert.ok(nativeCover !== null, `${chain} ${step.name} ${file} keeps native cover`);
+            assert.notEqual(lw["obs"], nativeCover?.["counter"], `${chain} ${step.name} ${file} local watermark diverges from native counter`);
         });
         const projection = result.projections.find((entry) => entry.step === step.name) as
             | { step: string; file: string; bytes: string }
@@ -392,7 +446,7 @@ function checkSteps(
         assert.equal(projection.file, step.projection, `${chain} ${step.name} projection order`);
         const projectionCompared = normalizeTopLevel(
             projection.bytes,
-            v4Fixture(chain, step.projection),
+            v2Fixture(chain, step.projection),
             ["gen"],
         );
         assert.equal(
@@ -400,6 +454,17 @@ function checkSteps(
             projectionCompared.expected,
             `${chain} ${step.name} projection matches gen-only normalized`,
         );
+        const projValue = JSON.parse(projection.bytes) as Record<string, unknown>;
+        const presentation = (projValue["presentation"] as Record<string, unknown>)["border"] as Record<string, unknown>;
+        assert.deepEqual(Object.keys(presentation).sort(), ["outsets", "radius", "reason", "subject", "visible", "width", "witness"], `${chain} ${step.name} genuine anchored 7-key border`);
+        assert.equal(presentation["visible"], true, `${chain} ${step.name} genuine visible border`);
+        assert.equal(presentation["reason"], "", `${chain} ${step.name} visible border carries no hide reason`);
+        assert.equal(presentation["subject"], "win-a", `${chain} ${step.name} border subject`);
+        const bw = presentation["witness"] as Record<string, unknown> | null;
+        assert.ok(bw !== null, `${chain} ${step.name} border witness joins`);
+        assert.equal(bw["win"], "win-a", `${chain} ${step.name} border witness win`);
+        assert.equal(bw["foreground"], "win-a", `${chain} ${step.name} border witness foreground`);
+        assert.ok(isCanonicalU64(bw["obs"]), `${chain} ${step.name} border witness obs is canonical`);
     }
 }
 

@@ -7,7 +7,7 @@
 // policy route: every selection/send/migration shortcut builds one of
 // these, never a synchronous TS desktop decision.
 
-import { isCanonicalU64, isCorrelationId, isGenerationId, isOpaqueId, utf8ByteLength, WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES } from "./world-seq";
+import { isCanonicalU64, isCorrelationId, isGenerationId, isOpaqueId, incrementU64, utf8ByteLength, WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES } from "./world-seq";
 import type { RawWindowFact, WorldObservation } from "./world-observe";
 import { rawNativeGestureJson, type NativeGestureSnapshot } from "./world-gesture";
 import type { MigrationSourceRefill } from "./world-settings-live";
@@ -2612,6 +2612,76 @@ function encodeV4NativeRow(n: {
         `"current":${current},"occupancy":[${occupancy.join(",")}]}`;
 }
 
+// Adapter-local FrameWitness producer: the captured LOCAL invalidation
+// watermark (observation.localInvalidWatermark, retained by the entry's
+// start/end fence around the actual capture), never the native effect
+// counter/sourceSeq/broker obs. Fail-closed null on any reentrant
+// invalidation (null watermark), changed generation/foreground/lifetime/
+// inventory/readability, unknown/malformed effect coverage, or unknown
+// frame. Unknown/mismatch suppresses only witness/paint; the report stays
+// alive. Known foreground must join the exact same-capture in-scope live
+// window lifetime with its correct fresh frame; mismatched
+// presentation.foreground vs focusedGlobal (or a different foregroundRow)
+// never mints.
+export function deriveLocalFrameWitness(
+    observation: WorldObservation,
+): { win: string; obs: string; frame: [number, number, number, number]; foreground: string } | null {
+    const watermark = observation.localInvalidWatermark ?? null;
+    if (typeof watermark !== "string" || !isCanonicalU64(watermark)) {
+        return null;
+    }
+    if (incrementU64(watermark) === null) {
+        // Exhausted local watermark: invalidate() holds at u64 max instead
+        // of wrapping, so a straddling invalidation at the cap is
+        // undetectable by start/end comparison. Fail closed.
+        return null;
+    }
+    if (observation.complete !== true) {
+        return null;
+    }
+    const cover = observation.nativeInvalidWitness ?? null;
+    if (
+        cover === null || typeof cover !== "object" || Array.isArray(cover) ||
+        typeof cover.instance !== "string" || !isOpaqueId(cover.instance) ||
+        typeof cover.counter !== "string" || !isCanonicalU64(cover.counter)
+    ) {
+        return null;
+    }
+    const foreground = observation.presentation.foreground;
+    const focused = observation.focusedGlobal;
+    if (typeof foreground !== "string" || foreground === "" || !isOpaqueId(foreground)) {
+        return null;
+    }
+    if (foreground !== focused) {
+        return null;
+    }
+    const row = observation.windowFacts.find((w) => w.win === focused) ?? null;
+    if (row === null || row.win !== foreground) {
+        return null;
+    }
+    if (observation.closed.includes(foreground)) {
+        return null;
+    }
+    if (row.minimized) {
+        return null;
+    }
+    if (encodeV4Rect(row.rectV4) === null) {
+        return null;
+    }
+    const live = observation.presentation.frame;
+    if (
+        live === null || live.x !== row.rectV4.x || live.y !== row.rectV4.y ||
+        live.w !== row.rectV4.w || live.h !== row.rectV4.h
+    ) {
+        return null;
+    }
+    return {
+        win: foreground, obs: watermark,
+        frame: [row.rectV4.x, row.rectV4.y, row.rectV4.w, row.rectV4.h],
+        foreground,
+    };
+}
+
 function encodeV4Presentation(
     observation: WorldObservation,
     foregroundRow: RawWindowFact | null,
@@ -2657,9 +2727,16 @@ function encodeV4Presentation(
         }
         pagerFrames.push(`{"win":${esc(f.win)},"live":${live}}`);
     }
-    // The adapter can never mint the broker-namespaced observation proof,
-    // so the witness always rides null; the broker binds real coverage
-    // from the stripped raw lane.
+    // Adapter-local causal witness: exact same-capture {win,obs,frame,
+    // foreground} join, or null when unproven. Unknown/mismatch suppresses
+    // only witness/paint; tiling/report stay alive. Core eligibility owns
+    // every hide verdict; this never adds one.
+    const witness = deriveLocalFrameWitness(observation);
+    const witnessJson = witness === null
+        ? "null"
+        : `{"win":${esc(witness.win)},"obs":"${witness.obs}",` +
+          `"frame":[${witness.frame[0]},${witness.frame[1]},${witness.frame[2]},${witness.frame[3]}],` +
+          `"foreground":${esc(witness.foreground)}}`;
     const foregroundOut = foregroundRow === null
         ? "null"
         : encodeV4NullableId(foregroundRow.out);
@@ -2671,7 +2748,7 @@ function encodeV4Presentation(
         `"hostHidden":${hostHidden},"hiddenWorkspace":${hiddenWorkspace},` +
         `"frame":${frame},"chordHeld":${encodeV4Bool(presentation.chordHeld)},` +
         `"moveWindow":${moveWindow},"pagerOrder":[${pagerOrder.join(",")}],` +
-        `"pagerFrames":[${pagerFrames.join(",")}],"witness":null,` +
+        `"pagerFrames":[${pagerFrames.join(",")}],"witness":${witnessJson},` +
         `"foregroundOut":${foregroundOut}}`;
 }
 

@@ -296,6 +296,14 @@ export interface WorldObservation {
     // it back with the presentation; missing proof yields no drawable
     // coverage, never guessed truth.
     nativeInvalidWitness?: { instance: string; counter: string } | null;
+    // Adapter-local causal watermark for the v4 FrameWitness (never the
+    // native effect counter, never the broker obs): the canonical local
+    // invalidation watermark retained by the entry's start/end fence around
+    // the actual capture, or null when the fence failed (reentrant
+    // invalidation, generation/effect reset). The v4 presentation encoder
+    // derives witness {win,obs,frame,foreground} from this plus the
+    // same-capture foreground facts; null suppresses only witness/paint.
+    localInvalidWatermark?: string | null;
     actionForeground: string | null;
     actionCached: null;
     actionOutputs: string[];

@@ -896,6 +896,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // reads live) to the core ingress lane. Script signals never mint
     // here; terminal snapshots freeze the native finish cursor upstream.
     const capture = (): WorldObservation | null => {
+        // Witness fence: the local watermark is namespaced apart from the
+        // native effect counter and the broker obs. Native getters can
+        // reenter synchronously, so the retained start mark fails closed
+        // unless start/end generation, effect source, and watermark agree;
+        // send-time state.currentInvalid may already have advanced past it.
+        const startInvalid = state.currentInvalid;
+        const startGen = state.boundGen;
+        const startEffectInstance = effectSnapshot?.instance ?? null;
+        const startEffectInvalid = effectSnapshot?.invalidation ?? null;
         try {
             maybeLogPerOutputWarning();
         } catch (error) {
@@ -967,6 +976,19 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (observation === null) {
             return null;
         }
+        const endInvalid = state.currentInvalid;
+        const endGen = state.boundGen;
+        const endEffectInstance = effectSnapshot?.instance ?? null;
+        const endEffectInvalid = effectSnapshot?.invalidation ?? null;
+        let watermark: string | null = startInvalid;
+        if (
+            endInvalid !== startInvalid ||
+            startGen === null || endGen === null || startGen !== endGen ||
+            startEffectInstance !== endEffectInstance || startEffectInvalid !== endEffectInvalid
+        ) {
+            watermark = null;
+        }
+        observation.localInvalidWatermark = watermark;
         return observation;
     };
 

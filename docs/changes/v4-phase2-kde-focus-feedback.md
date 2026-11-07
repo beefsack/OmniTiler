@@ -49,8 +49,9 @@
 - Focus feedback now rides retained, generation-bound evidence with exact
   effect, target, issuing revision, broker clock and live foreground reads.
   Arrival brackets use the narrow shown witness and preserve the broker-owned
-  observation separately from the local invalidation fence. Anchored borders
-  remain intentionally hidden pending the native consumer port.
+  observation separately from the local invalidation fence. The core now
+  receives an adapter-local border witness; native rendering remains hidden
+  pending the consumer port.
 - Populated-selection completion requires truthful shown evidence:
   `world-report.ts` truthfully reports shown state as unknown unless hidden or
   minimized. Synchronous `windowAt` membership supplies a positive shown witness
@@ -272,17 +273,44 @@
   renderer bytes. The legacy recovery test's visible/hide/restore border checks,
   preview producer crossings, coverage fences and facts-source checks must all
   remain intact.
-- Unchanged v4 projections are insufficient: they carry hidden borders because
-  `world-report.ts` still hardcodes `presentation.witness:null`. Merely recording
-  a v2 formatter would lose the legacy visible-border recovery assertions. The
-  native capture-to-witness join must be implemented and proved before recording
-  genuine visible anchored projections and repointing recovery.
+- Unchanged v4 projections were insufficient: they carry hidden borders because
+  the producer hardcoded `presentation.witness:null`. Merely recording a v2
+  formatter would lose the legacy visible-border recovery assertions. The
+  adapter-local producer below supplies genuine visible anchored projections
+  before the formatter and recovery port.
 - The broker preserves the typed presentation witness unchanged while stamping
   its own report observation, and separately strips/caches the effect-owned
   invalidation witness. Neither broker stamping nor core border eligibility
-  currently creates the missing native witness. The capture identifier and its
-  exact join to effect coverage remain the next bounded investigation; no
-  counter equivalence or new wire format is established by this audit.
+  creates the native witness. The adapter now supplies its local captured
+  invalidation watermark, distinct from broker observation and native effect
+  coverage. No counter equivalence or new wire format is needed.
 - Existing fixture bytes remain unchanged. The new sibling must be generated
   through the actual entry/broker/subscriber path, not by editing projections,
   converting legacy payloads or weakening recovery assertions.
+
+## Captured border witness
+
+- The entry retains its local invalidation watermark across a synchronous
+  capture, fencing reentrant invalidation, generation and effect-source changes.
+  The encoder joins foreground lifetime and frame from that capture, requiring
+  known native coverage and a complete inventory. Unknown, inconsistent or
+  exhausted evidence yields a null witness without withholding tiling facts.
+- The witness and existing effect-coverage lane travel in the same capture;
+  broker stamping and native invalidation remain separate namespaces. Existing
+  subscriber equality and native source authority still reject stale coverage.
+  No broker, core, shared shape or mapping layer changed. Native acceptance and
+  anchor-event continuity remain pending, not established by this producer proof.
+- Genuine entry-to-broker recordings now live in `test-fixtures/stage5-v2`.
+  Current producer comparisons use those siblings with exact witness, fact and
+  revision bytes. The original stage5 and stage5-v4 bytes are unchanged; legacy
+  subscriber DTO and crossed-preview checks remain intact. Renderer dispatch
+  recordings will follow through the same production subscriber after its port.
+- Both chains prove a visible seven-key anchored core border; their coverless
+  genesis replies prove hidden/null border descriptors with tiling still ready.
+  Entry regressions cover reentrant capture, source rotation, delayed queue
+  retention and gap recapture, unknown effect facts, foreground lifetime changes
+  and generation recovery. Saturation has a targeted encoder regression.
+- Typecheck and the full adapter suite pass (1047 tests, zero skips).
+  Independent source review and a fresh gate rerun found no blocking issue.
+  Native rendering, motion continuity and normal-interaction dropout measurement
+  are not yet accepted.

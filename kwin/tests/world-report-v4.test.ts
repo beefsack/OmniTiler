@@ -13,7 +13,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { captureWorldObservation } from "../src/world-observe";
-import { buildWorldReportV4InnerJson, encodeV4String } from "../src/world-report";
+import { buildWorldReportV4InnerJson, deriveLocalFrameWitness, encodeV4String } from "../src/world-report";
 import { mapNativePid } from "../src/world-connection";
 
 function makeDesk(id: string) {
@@ -463,5 +463,139 @@ describe("v4 member/view attempt lanes", () => {
     it("fails closed on a bad operation id on either lane", () => {
         assert.equal(buildWithAttempts([member({ op: "not an id!" })], []).json, null);
         assert.equal(buildWithAttempts([], [view({ op: "" })]).json, null);
+    });
+});
+
+describe("v4 local frame witness (adapter-local watermark)", () => {
+    function observeWith(
+        surface: object,
+        presentationFacts: { instance: string; rev: string; invalidation: string; chord: boolean; borderGap: number; borderWidth: number; underlayExtension: number } | null,
+        watermark: string | null,
+    ) {
+        const obs = captureWorldObservation({
+            workspace: surface,
+            readMode: () => "per-output-local",
+            readGap: () => 8,
+            readOuterGap: () => 8,
+            gestureActive: () => false,
+            knownClosed: () => [],
+            logicalBindingOf: (nativeId) => ({ logical: `desk-${nativeId}`, out: "out-a", pin: false, disp: false, managed: true }),
+            isFloating: () => false,
+            ...(presentationFacts === null ? {} : { presentationFacts }),
+        });
+        assert.ok(obs !== null);
+        (obs as { localInvalidWatermark?: string | null }).localInvalidWatermark = watermark;
+        (obs as { nativeInvalidWitness?: { instance: string; counter: string } | null }).nativeInvalidWitness =
+            presentationFacts === null ? null : { instance: presentationFacts.instance, counter: presentationFacts.invalidation };
+        return obs;
+    }
+
+    function facts() {
+        return { instance: "effect-1", rev: "r-1", invalidation: "7", chord: false, borderGap: 0, borderWidth: 3, underlayExtension: -1 };
+    }
+
+    function innerWitness(obs: object) {
+        const json = buildWorldReportV4InnerJson({
+            observation: obs as never,
+            creationAttempts: [],
+            frameAttempts: [],
+            memberAttempts: [],
+            viewAttempts: [],
+            clearAttempts: [],
+            intentRecords: [],
+        });
+        assert.ok(json !== null);
+        const value = JSON.parse(json) as Record<string, unknown>;
+        return (value["presentation"] as Record<string, unknown>)["witness"] as Record<string, unknown> | null;
+    }
+
+    it("mints the exact known witness with local watermark, diverging native and broker counters", () => {
+        const obs = observeWith(makeSurface([makeWin({})]), facts(), "5");
+        const witness = deriveLocalFrameWitness(obs);
+        assert.ok(witness !== null);
+        assert.equal(witness.win, "win-a");
+        assert.equal(witness.foreground, "win-a");
+        assert.equal(witness.obs, "5");
+        assert.deepEqual(witness.frame, [8, 9, 800, 600]);
+        const wire = innerWitness(obs);
+        assert.deepEqual(Object.keys(wire as object).sort(), ["foreground", "frame", "obs", "win"]);
+        assert.equal((wire as Record<string, unknown>)["win"], "win-a");
+        assert.equal((wire as Record<string, unknown>)["obs"], "5");
+        assert.deepEqual((wire as Record<string, unknown>)["frame"], [8, 9, 800, 600]);
+        assert.equal((wire as Record<string, unknown>)["foreground"], "win-a");
+    });
+
+    it("uses the local watermark, never the native effect counter", () => {
+        const native = facts();
+        native.invalidation = "1";
+        const obs = observeWith(makeSurface([makeWin({})]), native, "9");
+        const witness = deriveLocalFrameWitness(obs);
+        assert.ok(witness !== null);
+        assert.equal(witness.obs, "9");
+    });
+
+    it("nulls on missing watermark (reentrant invalidation fence)", () => {
+        const obs = observeWith(makeSurface([makeWin({})]), facts(), null);
+        assert.equal(deriveLocalFrameWitness(obs), null);
+        assert.equal(innerWitness(obs), null);
+    });
+
+    it("nulls on malformed watermark", () => {
+        const obs = observeWith(makeSurface([makeWin({})]), facts(), "07");
+        assert.equal(deriveLocalFrameWitness(obs), null);
+    });
+
+    it("nulls on unknown or malformed effect coverage", () => {
+        const unknown = observeWith(makeSurface([makeWin({})]), null, "5");
+        assert.equal(deriveLocalFrameWitness(unknown), null);
+        const malformed = observeWith(makeSurface([makeWin({})]), facts(), "5");
+        (malformed as { nativeInvalidWitness?: unknown }).nativeInvalidWitness = { instance: "", counter: "7" };
+        assert.equal(deriveLocalFrameWitness(malformed), null);
+        const badCounter = observeWith(makeSurface([makeWin({})]), facts(), "5");
+        (badCounter as { nativeInvalidWitness?: unknown }).nativeInvalidWitness = { instance: "effect-1", counter: "07" };
+        assert.equal(deriveLocalFrameWitness(badCounter), null);
+    });
+
+    it("nulls on mismatched foreground vs focusedGlobal", () => {
+        const obs = observeWith(makeSurface([makeWin({})]), facts(), "5");
+        (obs.presentation as { foreground: string }).foreground = "win-b";
+        assert.equal(deriveLocalFrameWitness(obs), null);
+    });
+
+    it("nulls on removed foreground lifetime and closed lifetime", () => {
+        const surface = makeSurface([]);
+        const obs = observeWith(surface, facts(), "5");
+        assert.equal(deriveLocalFrameWitness(obs), null);
+        const live = observeWith(makeSurface([makeWin({})]), facts(), "5");
+        (live as { closed: string[] }).closed = ["win-a"];
+        assert.equal(deriveLocalFrameWitness(live), null);
+    });
+
+    it("nulls on minimized or unreadable frame", () => {
+        const minimized = observeWith(makeSurface([makeWin({ minimized: true })]), facts(), "5");
+        assert.equal(deriveLocalFrameWitness(minimized), null);
+        const live = observeWith(makeSurface([makeWin({})]), facts(), "5");
+        (live.presentation as { frame: { x: number; y: number; w: number; h: number } | null }).frame = null;
+        assert.equal(deriveLocalFrameWitness(live), null);
+    });
+
+    it("nulls on incomplete inventory", () => {
+        const obs = observeWith(makeSurface([makeWin({})]), facts(), "5");
+        (obs as { complete: boolean }).complete = false;
+        assert.equal(deriveLocalFrameWitness(obs), null);
+    });
+
+    it("fails closed at the exhausted local watermark", () => {
+        const obs = observeWith(makeSurface([makeWin({})]), facts(), "18446744073709551615");
+        assert.equal(deriveLocalFrameWitness(obs), null);
+        assert.equal(innerWitness(obs), null);
+    });
+
+    it("consecutive no-change captures may share the local watermark", () => {
+        const first = observeWith(makeSurface([makeWin({})]), facts(), "5");
+        const second = observeWith(makeSurface([makeWin({})]), facts(), "5");
+        assert.ok(deriveLocalFrameWitness(first) !== null);
+        assert.ok(deriveLocalFrameWitness(second) !== null);
+        assert.equal(deriveLocalFrameWitness(first)?.obs, deriveLocalFrameWitness(second)?.obs);
     });
 });
