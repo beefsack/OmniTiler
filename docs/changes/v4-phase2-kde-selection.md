@@ -3,8 +3,9 @@
 ## Goal and status
 
 - Port workspace selection and its acknowledgement/correlation to the native
-  KDE adapter while retaining K1 ordinary tiling. Status: selection audit pending;
-  the direct resize/orientation repair passes offline gates.
+  KDE adapter while retaining K1 ordinary tiling. Status: direct
+  resize/orientation repair passes offline gates; selection acceptance scope
+  needs resolution against its deferred focus/arrival dependency.
 - Start from the [K1 closeout](archive/v4-phase2-kde-port.md#k1-final-outcome).
   The [phase-1 note](v4-phase1-core-protocol.md) remains active and unchanged.
 - First repair resize and toggle-orientation emitters to use the existing direct
@@ -57,3 +58,23 @@
 - K1's can/cannot and degraded list remain the baseline until new verification
   supersedes specific items. Native selection and resize/orientation behavior
   are not yet proved by this slice.
+
+## Selection dependency
+
+- Source audit finds the native selector path and native-only view attempts
+  already connected: `world-apply.ts` spends retained view operations before
+  `switchView`, records native pre/post/base, and the v4 producer publishes them.
+  Core latches the exact parent/output/workspace tuple in
+  `settle_selection_feedback` and checks authoritative native echo or raw attempt
+  proof in `selection_native_proof`. This is source evidence, not new native proof.
+- Focusless native selections can terminate through the existing shared
+  predicate with `focus:unproven`. Focus-bearing selections cannot yet terminate:
+  `selection_terminal` requires correlated focus feedback when an effect exists,
+  while the KDE v4 producer currently emits an empty `focusFeedback` lane.
+  Proven focus completion also requires arrival readiness. Both ports belong to
+  later slices; no synthetic success, changed core predicate or local settlement
+  is permitted here.
+- Open scope question: whether this slice accepts native selector/readback and
+  view-attempt correlation with focusless terminal proof, explicitly retaining
+  populated-workspace focus settlement as deferred, or must wait for the later
+  arrival/focus-feedback work. No dependency expansion has been implemented.
