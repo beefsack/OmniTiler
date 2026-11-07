@@ -622,7 +622,6 @@ describe("world empty migration controlled scope", () => {
             takeResult: takeResult as never,
             log: (): void => undefined,
             isStillListed: (): boolean => true,
-            isActiveWindow: (): boolean => false,
             readLiveRect: (): null => null,
             readLiveMembership: (): null => null,
             readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),
@@ -697,7 +696,6 @@ describe("world empty migration controlled scope", () => {
             takeResult: null as never,
             log: (): void => undefined,
             isStillListed: (): boolean => true,
-            isActiveWindow: (): boolean => false,
             readLiveRect: (): null => null,
             readLiveMembership: (r: object): { out: string; ws: string } | null =>
                 r === ref ? { out: "out-b", ws: "wb1" } : null,
@@ -879,7 +877,6 @@ describe("world setter attempt correspondence", () => {
             takeResult: null,
             log: (): void => undefined,
             isStillListed: (): boolean => true,
-            isActiveWindow: (): boolean => false,
             readLiveRect: (): null => null,
             readLiveMembership: (r: object): { out: string; ws: string } | null => homing.get(r) ?? null,
             readLiveSafety: setterSafety,
@@ -967,7 +964,6 @@ describe("world setter attempt correspondence", () => {
             takeResult: null,
             log: (): void => undefined,
             isStillListed: (): boolean => true,
-            isActiveWindow: (): boolean => false,
             readLiveRect: (): null => null,
             readLiveMembership: (r: object): { out: string; ws: string } | null => homing.get(r) ?? null,
             readLiveSafety: setterSafety,
@@ -1019,7 +1015,6 @@ describe("world setter attempt correspondence", () => {
             takeResult: null,
             log: (): void => undefined,
             isStillListed: (): boolean => true,
-            isActiveWindow: (): boolean => false,
             readLiveRect: (): null => null,
             readLiveMembership: (r: object): { out: string; ws: string } | null => homing.get(r) ?? null,
             readLiveSafety: setterSafety,
@@ -1080,7 +1075,6 @@ describe("world setter attempt correspondence", () => {
             takeResult: null,
             log: (): void => undefined,
             isStillListed: (): boolean => true,
-            isActiveWindow: (): boolean => false,
             readLiveRect: (): null => null,
             readLiveMembership: (r: object): { out: string; ws: string } | null => {
                 if (sent) {
@@ -1166,7 +1160,6 @@ describe("world clear attempt correspondence", () => {
             takeResult: null,
             log: (): void => undefined,
             isStillListed: (): boolean => opts.listed ?? true,
-            isActiveWindow: (): boolean => false,
             readLiveRect: (): { x: number; y: number; w: number; h: number } | null => {
                 opts.onRect?.();
                 return opts.liveRect === undefined ? { x: 0, y: 0, w: 100, h: 100 } : opts.liveRect;

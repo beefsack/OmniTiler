@@ -1364,19 +1364,6 @@ export function createWorldApplyHost(
             // never survives a scripting-engine enumeration.
             return isLiveWindowListed(surface, readProp, ref);
         },
-        isActiveWindow: (ref) => {
-            try {
-                const active = readProp(surface, "activeWindow");
-                if (typeof active !== "object" || active === null) {
-                    return false;
-                }
-                const want = liveWindowId(readProp, ref);
-                return want !== null && liveWindowId(readProp, active) === want;
-            } catch (error) {
-                void error;
-                return false;
-            }
-        },
         readActiveWindowId: () => {
             // Fresh exact native foreground id for focus pre/post
             // correlation: the live `surface.activeWindow` translated

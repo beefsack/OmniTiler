@@ -120,7 +120,6 @@ function makeEnv(state: WorldAdapterState, world: FakeWorld) {
         state,
         log: () => undefined,
         isStillListed: () => true,
-        isActiveWindow: () => false,
         readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
         readLiveMembership: (ref: object) => {
             const id = (ref as { id: string }).id;

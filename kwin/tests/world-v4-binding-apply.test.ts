@@ -110,7 +110,6 @@ function makeEnv(
         state,
         log: () => undefined,
         isStillListed: () => true,
-        isActiveWindow: () => false,
         readLiveRect: () => ({ ...live.rect }),
         readLiveMembership: () => ({ out: "out-a", ws: live.homeWs }),
         readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),

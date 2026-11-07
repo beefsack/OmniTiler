@@ -554,7 +554,7 @@ function applyBoundReply(target: string, id: string, effect: { cause: "automatic
 
 describe("world apply automatic-float focus preservation", () => {
     it("a focused automatic float keeps native focus across an automatic af-* reconcile", () => {
-        const { observation, refs } = applyObservation("win-b", true);
+        const { observation } = applyObservation("win-b", true);
         // Producer-accurate automatic admission intent (world_engine.rs
         // mints af-<window>); explicit fx-<seq> must never take this path.
         const { state, flightWatermark, reply } = applyBoundReply("win-a", "af-win-a", { cause: "automatic-admission", cmdSeq: null });
@@ -566,7 +566,6 @@ describe("world apply automatic-float focus preservation", () => {
             reply,
             log: (m) => { logs.push(m); },
             isStillListed: () => true,
-            isActiveWindow: (ref) => ref === refs.floatRef,
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
             readLiveMembership: () => ({ out: "out", ws: "ws" }),
             readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),
@@ -608,7 +607,6 @@ describe("world apply automatic-float focus preservation", () => {
             reply,
             log: (m) => { logs.push(m); },
             isStillListed: () => true,
-            isActiveWindow: (ref) => ref === refs.tileRef && fg === "win-a",
             readActiveWindowId: () => fg,
             readWindowId: (ref) => ref === refs.tileRef ? "win-a" : ref === refs.floatRef ? "win-b" : null,
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
@@ -648,7 +646,6 @@ describe("world apply automatic-float focus preservation", () => {
             reply,
             log: (m) => { logs.push(m); },
             isStillListed: () => true,
-            isActiveWindow: (ref) => ref === refs.floatRef && fg === "win-b",
             readActiveWindowId: () => fg,
             readWindowId: (ref) => ref === refs.tileRef ? "win-a" : ref === refs.floatRef ? "win-b" : null,
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
@@ -692,7 +689,6 @@ describe("world apply automatic-float focus preservation", () => {
             // Setter accepts, but native activation never proves: the
             // outcome must stay setter-accepted with a separate false
             // proven token instead of degrading to setter-refused.
-            isActiveWindow: () => false,
             readActiveWindowId: () => fg,
             readWindowId: (ref) => ref === refs.tileRef ? "win-a" : ref === refs.floatRef ? "win-b" : null,
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),

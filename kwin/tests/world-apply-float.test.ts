@@ -136,7 +136,6 @@ function makeEnv(state: WorldAdapterState, world: FakeWorld, opts: EnvOpts = {})
         state,
         log: () => undefined,
         isStillListed: () => true,
-        isActiveWindow: () => false,
         readLiveRect: (ref: object) => {
             const frame = world.frames.get((ref as { id: string }).id);
             return frame === undefined ? null : { ...frame };

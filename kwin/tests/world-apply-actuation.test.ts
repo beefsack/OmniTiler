@@ -1327,7 +1327,6 @@ describe("world apply safety reads", () => {
         return {
             log: () => undefined,
             isStillListed: () => true,
-            isActiveWindow: () => false,
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
             readLiveMembership: () => ({ out: "out", ws: "ws1" }),
             readLiveSafety: () => null,
@@ -1713,7 +1712,6 @@ describe("world admission focus on settled floats", () => {
             takeResult: null,
             log: (m) => { setup.logs.push(m); },
             isStillListed: () => true,
-            isActiveWindow: (ref) => ref === target,
             // Fresh foreground/id readers track the fake activation above:
             // unknown until the focus setter runs, then the target.
             readActiveWindowId: () => (setup.focused.includes("win-b") ? "win-b" : null),
@@ -1912,7 +1910,6 @@ describe("world admission focus on settled floats", () => {
             sendToOutput: () => { setters += 1; return true; },
             switchView: () => { setters += 1; return true; },
             focusWindow: () => false,
-            isActiveWindow: () => false,
         };
         const result = applyWorldReply(denying);
         assert.deepEqual(setup.focused, [], "denied focus writes nothing");

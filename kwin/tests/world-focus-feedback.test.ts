@@ -126,7 +126,6 @@ function baseEnv(
         takeResult: null,
         log: () => undefined,
         isStillListed: () => true,
-        isActiveWindow: (ref) => ref === targetRef && fg.current === "win-b",
         readActiveWindowId: () => fg.current,
         readWindowId: (ref) => (ref === targetRef ? "win-b" : null),
         readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
@@ -676,7 +675,5 @@ describe("world live visibility host", () => {
         const host = createWorldApplyHost(surface, readProp);
         assert.equal(host.readActiveWindowId?.(), "win-b");
         assert.equal(host.readWindowId?.(winB), "win-b");
-        assert.equal(host.isActiveWindow(winB), true);
-        assert.equal(host.isActiveWindow(winA), false);
     });
 });

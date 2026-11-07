@@ -44,7 +44,6 @@ export interface ApplyEnv {
     log: (message: string) => void;
     // Native setters through public KWin state only.
     isStillListed: (ref: object) => boolean;
-    isActiveWindow: (ref: object) => boolean;
     // Fresh exact native foreground id for focus pre/post correlation:
     // the live active window translated through the stable internalId, or
     // null when unreadable/absent (unknown, never a guess). Optional only

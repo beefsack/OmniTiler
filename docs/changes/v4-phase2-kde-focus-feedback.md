@@ -155,3 +155,7 @@
   review has no blocking finding. Native confirmation of this correction and
   measurement of actual arrival-predicate failures remain pending. No conclusion
   about all native KDE selections follows from this four-switch sample.
+- The exact foreground/lifetime readers made the old `isActiveWindow` boolean
+  callback unused. Its interface, implementation and test-only mock keys were
+  removed separately; source search finds no remaining caller. Typecheck and
+  all 1015 adapter tests remain green.

@@ -24,7 +24,6 @@ function directEnv(
     return {
         log: () => undefined,
         isStillListed: () => true,
-        isActiveWindow: () => false,
         readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
         readLiveMembership: () => ({ out: "out-1", ws: NATIVE_B }),
         readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),
