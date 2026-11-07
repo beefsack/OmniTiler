@@ -594,3 +594,14 @@
   renewed wrappers, braced ids, raw bounds and original QSize hints produce the
   expected four-sided outer inset and inner gap, then converge without replay.
   Legacy fixture files remain unchanged; no fixture-update route is used.
+- The entry byte gate now records independent genuine v4 counterparts under
+  `test-fixtures/kde-v4/bytes/`: handshake/settings, startup/close/send captures,
+  size-hint/select captures and the actual accepted reply. Only volatile capture
+  source and its equal reply request echo are masked textually; canonical inner
+  bytes, control escaping and all other fields remain exact. Recording succeeds
+  and two independent normal executions pass all six tests, as does TypeScript.
+  Real engine replies strict-parse and produce ordinary native-shaped frame writes;
+  queue acknowledgement precedes fresh command-draining captures. Startup retains
+  extreme geometry before actuation, and the later capture retains the explicit
+  close. Hint/default/sentinel cases, the unchanged 4MiB no-truncation gate and
+  bounded no-echo rejection logs remain covered. Old fixtures are untouched.
