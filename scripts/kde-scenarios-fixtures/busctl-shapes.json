@@ -24,6 +24,16 @@
       {}
     ]
   },
+  "getWindowInfoStateKeys": {
+    "provenance": "Key set and D-Bus signatures derived from KWin v6.8.1 src/dbusinterface.cpp clientToVariantMap (offline reading; no live values captured). maximizeHorizontal/maximizeVertical are the plain-enum MaximizeMode bit test (MaximizeVertical 1 / MaximizeHorizontal 2, src/effect/globals.h). All-desktop (sticky) has no key: it is the desktops array being empty (Window::setOnAllDesktops(true) calls setDesktops({})).",
+    "signatures": {
+      "fullscreen": "b",
+      "keepAbove": "b",
+      "maximizeHorizontal": "i",
+      "maximizeVertical": "i",
+      "desktops": "as"
+    }
+  },
   "variantDictEnvelope": {
     "type": "a{sv}",
     "data": [

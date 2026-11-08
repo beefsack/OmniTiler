@@ -156,10 +156,8 @@
   workspace removed by the run, dev DOWN, no leftover processes.
 - Gates: runner tests 57/57; adapter typecheck, adapter tests (1185/1185, which
   include the unscoped build) pass. No Rust changed, so Rust gates were not run.
-- Not exercised live: the opt-in input daemon (`--input`); its cleanup
-  verifies exact pid and socket absence in tests only. Whether the real daemon
-  unlinks its socket on SIGTERM is unverified; if not, `--input` runs will report
-  a cleanup failure.
+- The opt-in input daemon (`--input`) was first exercised live by the
+  state-targets work below; see that section for the cleanup result.
 - Non-blocking notes (unfixed): fixture replies are not correlated by request id;
   the remove-path restore uses a different once-key than the order-20 restore;
   fixtures on different outputs abort the run (fail-closed); helper list decoding
@@ -194,12 +192,71 @@
   confirms the runner on a 1.25 output but did not itself witness a fractional
   native frame. The fractional-normalization proof is the hermetic one.
 
+## State-targets scenario
+
+- `--scenario state-targets` (requires `--input`; exit 2 before any io
+  otherwise) drives fixture A through maximize, fullscreen, float and sticky
+  with real key chords injected by `ydotool` against a runner-owned daemon
+  socket, on the appended workspace beside fixture B. Chords come from the
+  production shortcut registrations (`kwin/src/world-shortcuts.ts`): maximize
+  Meta+M, fullscreen Meta+F11, float Meta+G, sticky Meta+Shift+G. Fixture A is
+  natively activated before each chord (own once-key per activation and chord).
+- Journey and exact oracles, each read from native facts (`getWindowInfo`
+  maximize axes, fullscreen, keepAbove, desktops; presentation `floating`;
+  frames through the fractional-aware helper) and the published allocations:
+  maximize-on (both axes, A inside the output, B equals its allocation);
+  fullscreen-on (A frame exactly the output rectangle); fullscreen-off (maximize
+  retained, A inside the output); maximize-off (A exactly its base allocation);
+  float-on (floating, keepAbove, B strictly larger and equal to its
+  allocation); float-off; sticky-on (empty desktops list, which is how KWin
+  reports all-desktop, never the roster; floating, keepAbove, B larger);
+  sticky-off; sticky-on, one orderly production stop/start with a fresh-cursor
+  readiness gate, sticky restored, sticky-off. The presentation window set must
+  be exactly the two fixtures. A missing or unknown state key is PENDING, never
+  PASS.
+- Unfloat and sticky-off are fresh admission (no old slot;
+  [decision](../decisions/window-state.md#fullscreen-and-maximize-overlays),
+  REQ-FLT-01): the oracle for those steps is that A and B hold the two base
+  allocations in either order, each equal to its published allocation, never the
+  same one twice, with the observed order recorded in `receipts.stateSlotOrder`.
+  The second live attempt (the first ran the wrong scenario) exposed the earlier wrong "A returns to its original
+  slot" oracle (a runner defect, not a product defect).
+- Runner defects found live and fixed offline with tests: (1) `liveMain` did not
+  pass `--scenario` to the scenario function, so the first live "state-targets"
+  run silently executed tiling-reflow; the result now records
+  `requestedScenario`, `scenarioRan` and `scenarioMismatch`, and the runner
+  exits 1 if the scenario that ran differs from the requested one; a
+  `liveMain` test drives both scenarios end to end and fails without the
+  pass-through. (2) the float-off slot oracle above.
+- Input daemon cleanup, observed live: the real `ydotoold` does not unlink its
+  socket on SIGTERM. The runner stops the exact owned pid, verifies it gone, then
+  removes only that exact owned socket path and verifies absence
+  (`counts.ydotooldSocketUnlinkedByRunner`). Verified after the live run: no
+  daemon process, no socket left in the evidence directory.
+- Reviews: one independent read-only review of the scenario (found and fixed:
+  sticky is the empty desktops list rather than the roster; fullscreen-off frame
+  checks; exact presentation set; both planner receipts kept; unlink counter set
+  only after the verified removal) and one of the CLI pass-through fix (no other
+  dropped argument; an unknown `scenarioRan` fails closed).
+- Live (fractional-scale output, 1.25, no display change; third state-targets
+  attempt after the two runner defects above): exit 0, PASS, 16 state checks and
+  every cleanup check passing, `scenarioRan` state-targets, no cleanup failures.
+  Sticky read back as an empty desktops list before and after the restart;
+  after float-off, sticky-off and the final sticky-off A held B's former
+  allocation and B held A's (consistent fresh admission). Cleanup verified: dev
+  DOWN, no leftover fixture, planner, cargo or daemon processes, fixture
+  socket and run dir absent, current workspace restored, appended workspace
+  removed by the run, unscoped bundle rebuilt after the scoped dev-on.
+- Gates: runner tests 91/91 (adapter and Rust unchanged, not run).
+- Limits: physical keyboard input is not exercised (injected uinput chords
+  through the daemon); chord keycodes are the stable Linux input-event codes.
+
 ## Follow-up units
 
 - Genuine-producer offline ordered journeys through the real adapter/broker/core.
 - Further fixture-driven native scenarios after the lifecycle and one-scenario
   tool are proved: selection with continued tiling; state targets including
-  sticky restart/off; scaled-metric frames at current scales; resize-refusal
+  sticky restart/off (state targets delivered above); scaled-metric frames at current scales; resize-refusal
   diagnostics; rapid-input burst. Retain physical-key/hotplug/scale-change/paint
   exclusions.
 - Replace the advertised live-test recipe and cull the obsolete wrapper/tests

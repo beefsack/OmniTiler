@@ -43,6 +43,7 @@ export const T = {
   readinessPoll: 1000,
   admit: 15000,
   reflow: 15000,
+  stateStep: 15000,
   poll: 500,
   inputSock: 15000,
   shutdown: 10000,
@@ -71,24 +72,28 @@ export function createMutOnce() {
 
 export function helpText() {
   return [
-    "usage: node scripts/kde-scenarios.mjs [--help] [--live --evidence-dir PATH [--input]]",
+    "usage: node scripts/kde-scenarios.mjs [--help] [--live --evidence-dir PATH [--input] [--scenario NAME]]",
     "",
     "Fixture-driven KDE native scenario runner. Offline by default.",
-    "Exactly one scenario: admission A/B tiling then close-B/A-reflow,",
-    "on a workspace appended beyond the whole roster.",
+    "Two scenarios on a workspace appended beyond the whole roster:",
+    "  tiling-reflow: admission A/B tiling then close-B/A-reflow (default).",
+    "  state-targets:  maximize/fullscreen/float/sticky chord journey with an",
+    "                  orderly production restart (requires --input).",
     "",
     "  --help            show this help and exit (never mutates)",
     "  --live            explicit live mode against the real session.",
     "                    Without --live nothing executes; exit 2.",
     "  --evidence-dir P  fresh private dir for evidence. Must be absolute,",
     "                    canonical, outside the repository, and not pre-exist.",
-    "  --input           also start ydotoold (lifecycle only, no injection).",
-    "                    Default off.",
+    "  --input           also start ydotoold (lifecycle only for tiling-reflow,",
+    "                    chord injection for state-targets). Default off.",
+    "  --scenario NAME   tiling-reflow (default) or state-targets. state-targets",
+    "                    REQUIRES --input. Unknown values exit 2 before any io.",
   ].join("\n");
 }
 
 export function parseArgs(argv) {
-  const out = { help: false, live: false, evidenceDir: null, input: false };
+  const out = { help: false, live: false, evidenceDir: null, input: false, scenario: "tiling-reflow" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--help" || a === "-h") { out.help = true; }
@@ -108,6 +113,18 @@ export function parseArgs(argv) {
       if (!v) { throw new ScenarioError("--evidence-dir requires a value"); }
       if (out.evidenceDir) { throw new ScenarioError("duplicate --evidence-dir"); }
       out.evidenceDir = v;
+    } else if (a === "--scenario") {
+      const v = argv[++i];
+      if (!v) { throw new ScenarioError("--scenario requires a value"); }
+      if (out.scenario !== "tiling-reflow") { throw new ScenarioError("duplicate --scenario"); }
+      if (v !== "tiling-reflow" && v !== "state-targets") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
+      out.scenario = v;
+    } else if (a.startsWith("--scenario=")) {
+      const v = a.slice("--scenario=".length);
+      if (!v) { throw new ScenarioError("--scenario requires a value"); }
+      if (out.scenario !== "tiling-reflow") { throw new ScenarioError("duplicate --scenario"); }
+      if (v !== "tiling-reflow" && v !== "state-targets") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
+      out.scenario = v;
     } else { throw new ScenarioError("unknown argument '" + a + "'"); }
   }
   return out;
@@ -262,7 +279,17 @@ export function parsePresentation(text, req) {
     if (!(w.alloc === null || isCarriedRect(w.alloc))) {
       throw new ScenarioError("presentation window " + i + ": bad alloc");
     }
-    return { win: w.win, out: w.out, ws: w.ws, alloc: w.alloc };
+    // Floating flag (WorldReplyWindow.floating, always a boolean on the
+    // wire): strict boolean or reject when present; absent reads null
+    // (unknown, never matches), never a guess.
+    let floating = null;
+    if (w.floating !== undefined && w.floating !== null) {
+      if (typeof w.floating !== "boolean") {
+        throw new ScenarioError("presentation window " + i + ": bad floating");
+      }
+      floating = w.floating;
+    }
+    return { win: w.win, out: w.out, ws: w.ws, alloc: w.alloc, floating };
   });
   return { gen: body.gen, rev: body.rev, obs: body.obs, windows };
 }
@@ -314,6 +341,29 @@ export function parseWindowInfo(text, uuid) {
     return d;
   };
   const x = num("x"), y = num("y"), w = num("width"), h = num("height");
+  // Native state targets (KWin v6.8.1 src/dbusinterface.cpp
+  // clientToVariantMap): maximize axes are the plain-enum MaximizeMode bit
+  // test (MaximizeVertical 1 / MaximizeHorizontal 2, src/effect/globals.h),
+  // so an int 0/nonzero; fullscreen/keepAbove are bools. All-desktop
+  // (sticky) has no key: it is the desktops array being empty
+  // (Window::setOnAllDesktops(true) calls setDesktops({})). Missing keys read null (unknown, never matches); present
+  // values are strictly wrapped with exact source types.
+  const optBool = (k) => {
+    if (info[k] === undefined) { return null; }
+    const d = wrapped(k, ["b"]);
+    if (typeof d !== "boolean") { throw new ScenarioError("getWindowInfo " + uuid + ": bad boolean data for '" + k + "'"); }
+    return d;
+  };
+  const optMax = (k) => {
+    if (info[k] === undefined) { return null; }
+    const d = wrapped(k, ["i"]);
+    if (!Number.isInteger(d)) { throw new ScenarioError("getWindowInfo " + uuid + ": bad maximize data for '" + k + "'"); }
+    return d !== 0;
+  };
+  const maxH = optMax("maximizeHorizontal");
+  const maxV = optMax("maximizeVertical");
+  const fullscreen = optBool("fullscreen");
+  const keepAbove = optBool("keepAbove");
   return {
     resourceClass,
     caption,
@@ -321,6 +371,10 @@ export function parseWindowInfo(text, uuid) {
     pid,
     desks: desks.slice(),
     frame: { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) },
+    maxH,
+    maxV,
+    fullscreen,
+    keepAbove,
   };
 }
 
@@ -348,6 +402,27 @@ export function ydotooldCmd(sockPath) {
     throw new ScenarioError("input socket must be absolute");
   }
   return ["ydotoold", "--socket-path=" + sockPath, "--socket-perm=0600"];
+}
+// State-target chord keycodes (Linux input-event-codes.h UAPI, stable ABI;
+// verified against local linux-headers: KEY_LEFTMETA 125, KEY_LEFTSHIFT 42,
+// KEY_G 34, KEY_M 50, KEY_F11 87). Sequences mirror the registered defaults
+// in kwin/src/world-shortcuts.ts: Meta+M maximize, Meta+F11 fullscreen,
+// Meta+G float, Meta+Shift+G sticky. Press in order, release in reverse.
+export const STATE_CHORDS = {
+  maximize: [125, 50],
+  fullscreen: [125, 87],
+  float: [125, 34],
+  sticky: [125, 42, 34],
+};
+export function ydotoolKeyCmd(sockPath, chord) {
+  if (typeof sockPath !== "string" || !sockPath || sockPath[0] !== "/") {
+    throw new ScenarioError("input socket must be absolute");
+  }
+  const codes = STATE_CHORDS[chord];
+  if (!codes) { throw new ScenarioError("unknown chord '" + String(chord) + "'"); }
+  const down = codes.map((c) => c + ":1");
+  const up = codes.slice().reverse().map((c) => c + ":0");
+  return ["ydotool", "key"].concat(down, up);
 }
 export function presentationReq() {
   return "kde-scen-" + randomBytes(8).toString("hex");
@@ -380,14 +455,25 @@ export async function runScenario(o) {
   }
   if (typeof templatePath !== "string" || !templatePath) { throw new ScenarioError("templatePath required"); }
 
+  const scenarioName = o.scenario === undefined ? "tiling-reflow" : o.scenario;
+  if (scenarioName !== "tiling-reflow" && scenarioName !== "state-targets") {
+    throw new ScenarioError("unknown scenario '" + String(scenarioName) + "'");
+  }
+  if (scenarioName === "state-targets" && !withInput) {
+    throw new ScenarioError("state-targets requires --input");
+  }
+
   const S = {
     events: [], calls: [], checks: [], cleanups: [],
     receipts: {}, counts: {}, secrets: [],
-    category: "NOT-RUN", divergence: null, scenario: "init",
+    category: "NOT-RUN", divergence: null, scenario: "init", scenarioRan: null,
     kwin: null, roster: null, original: null, appended: null,
     fixture: null, cargo: null, ydoc: null, devUp: false,
     joins: null, planner: null, cleanupFailed: [], teardownIssues: [],
   };
+  // Join results, shared by the scenario closures below (which are defined
+  // outside the try block) and filled in by the inline join step.
+  const joins = [];
   const redact = (s) => {
     let t = String(s);
     for (const n of S.secrets) { if (n) { t = t.split(n).join("[redacted]"); } }
@@ -595,6 +681,563 @@ export async function runScenario(o) {
     return parseWindowInfo(r.stdout, uuid);
   };
 
+  // Shared lifecycle pieces used by both scenarios: re-derive the planner
+  // pid/script-id receipts exactly as the initial dev-on does, run the
+  // readiness gate against a given pre-start cursor, and run the shared
+  // A/B admission check (frames equal published allocations, disjoint,
+  // inside the output). label/prefix name the scenario in failures/checks.
+  const derivePlannerReceipts = async () => {
+    const rt = env.XDG_RUNTIME_DIR || "/tmp";
+    const pidFile = String(await io.readFile(rt + "/omnitiler-dev/planner-pid")).trim();
+    const receiptPtr = String(await io.readFile(rt + "/omnitiler-dev/controller-receipt-path")).trim().split("\n")[0];
+    if (!/^[1-9][0-9]*$/.test(pidFile)) { fail("planner-pid file is not a pid"); }
+    let receipt;
+    try { receipt = JSON.parse(String(await io.readFile(receiptPtr))); } catch (e) { fail("controller receipt unparsable"); }
+    if (!receipt || !Number.isInteger(receipt.script_id) || receipt.script_id < 0 || receipt.script_id > 2147483647) {
+      fail("controller receipt has no valid script_id");
+    }
+    const pOwnerR = await busJson(["busctl", "--user", "--json=short", "call",
+      DBUS_BUS, DBUS_OBJECT, DBUS_IFACE, "GetNameOwner", "s", PLANNER_BUS], "planner GetNameOwner");
+    if (!pOwnerR || pOwnerR.type !== "s" || !Array.isArray(pOwnerR.data)) { fail("planner GetNameOwner: need {type:s,data:[owner]}"); }
+    const pOwner = pOwnerR.data[0];
+    if (typeof pOwner !== "string" || !UNIQUE_RE.test(pOwner)) { fail("planner owner is not a unique name"); }
+    const pPidR = await busJson(["busctl", "--user", "--json=short", "call",
+      DBUS_BUS, DBUS_OBJECT, DBUS_IFACE, "GetConnectionUnixProcessID", "s", pOwner], "planner owner pid");
+    if (!pPidR || pPidR.type !== "u" || !Array.isArray(pPidR.data)) { fail("planner owner pid: need {type:u,data:[pid]}"); }
+    const pPid = pPidR.data[0];
+    if (!Number.isInteger(pPid) || pPid <= 0) { fail("bad planner PID reply"); }
+    if (String(pPid) !== pidFile) { fail("planner-pid file does not equal the D-Bus owner pid"); }
+    const pTick = await io.procIdentity(pPid);
+    if (pTick === null) { fail("planner process identity unavailable"); }
+    S.planner = { pid: pPid, tick: pTick, scriptId: receipt.script_id };
+    // Both planner receipts survive the restart: planner stays the first
+    // start, plannerRestart is the second (post-restart) start.
+    if (!S.receipts.planner) {
+      S.receipts.planner = { pid: pPid, tick: pTick, scriptId: receipt.script_id };
+    } else {
+      S.receipts.plannerRestart = { pid: pPid, tick: pTick, scriptId: receipt.script_id };
+    }
+    const st2 = await mustExec(devStatusCmd(), "dev-status after dev-on");
+    if (parseDevStatusMode(st2.stdout) !== "UP") { fail("dev mode is not UP after dev-on"); }
+  };
+
+  const runReadinessGate = async (cursor, countsKey, missingMsg) => {
+    let gate = null;
+    const gateEnd = io.now() + T.readiness;
+    for (;;) {
+      const j = await mustExec(["journalctl", "--user", "--after-cursor", cursor, "-o", "json", "_PID=" + S.kwin.pid], "readiness journal");
+      gate = parseReadiness(redact(j.stdout));
+      if (readinessPass(gate)) { break; }
+      if (io.now() >= gateEnd) { break; }
+      await io.sleep(T.readinessPoll);
+    }
+    S.counts[countsKey] = gate ? {
+      ready: gate.ready ? 1 : 0, discovered: gate.discovered ? 1 : 0,
+      dispatch: gate.dispatch ? 1 : 0, applied: gate.applied ? 1 : 0,
+    } : null;
+    if (!gate || !readinessPass(gate)) { fail(missingMsg + " within the bounded window: stop, no restart"); }
+  };
+
+  const pollAdmission = async (label, prefix) => {
+    const bare = (u) => normalizeNativeId(u);
+    const admit = await (async () => {
+      const end = io.now() + T.admit;
+      let first = "no read yet";
+      let last = "no read yet";
+      const note = (m) => { if (first === "no read yet") { first = m; } last = m; };
+      for (;;) {
+        const proj = await readPresentation();
+        const nat = await helperOp({ op: "read" });
+        const row = nat.filter((r) => Array.isArray(r.owned))[0];
+        if (!row) { note("native read produced no roster"); }
+        else {
+          const wA = proj.windows.filter((w) => w.win === bare(joins[0].uuid))[0];
+          const wB = proj.windows.filter((w) => w.win === bare(joins[1].uuid))[0];
+          if (!wA || !wB) { note("presentation does not list both windows"); }
+          else if (proj.windows.length !== 2 ||
+            proj.windows.some((w) => w.win !== bare(joins[0].uuid) && w.win !== bare(joins[1].uuid))) {
+            note("presentation window set is not exactly {A,B}: [" +
+              proj.windows.map((w) => w.win).sort().join(",") + "]");
+          }
+          else if (wA.alloc === null || wB.alloc === null) { note("presentation alloc unknown (null never matches)"); }
+          else {
+            const rA = row.owned.filter((w) => w.uuid === joins[0].uuid)[0];
+            const rB = row.owned.filter((w) => w.uuid === joins[1].uuid)[0];
+            const scopeOwned = row.owned.filter((w) => w.class === SCOPE_CLASS);
+            if (!rA || !rB) { note("native rows for A/B absent"); }
+            else if (scopeOwned.length !== 2 ||
+              !scopeOwned.some((w) => w.uuid === joins[0].uuid) ||
+              !scopeOwned.some((w) => w.uuid === joins[1].uuid)) {
+              note("native scope roster is not exactly {A,B}");
+            }
+            else if (rA.frame === null || rB.frame === null) { note("native frame unknown (PENDING, never PASS)"); }
+            else if (!rA.outRect || !rB.outRect) { note("native output geometry unknown (PENDING, never PASS)"); }
+            else {
+              const expA = frameOf(wA.alloc), expB = frameOf(wB.alloc);
+              if (!frameEqual(rA.frame, expA)) { note("tile A frame mismatch (" + frameDiff(rA.frame, expA).join(",") + "): native " + JSON.stringify(rA.frame) + " != alloc " + JSON.stringify(expA) + " raw " + JSON.stringify(rA.frameRaw)); }
+              else if (!frameEqual(rB.frame, expB)) { note("tile B frame mismatch (" + frameDiff(rB.frame, expB).join(",") + "): native " + JSON.stringify(rB.frame) + " != alloc " + JSON.stringify(expB) + " raw " + JSON.stringify(rB.frameRaw)); }
+              else if (!frameInside(rA.frame, rA.outRect) || !frameInside(rB.frame, rB.outRect)) { note("tile frame outside its output"); }
+              else if (rectsOverlap(rA.frame, rB.frame)) { note("tiles A/B overlap: not an ordinary split"); }
+              else if (wA.ws !== wB.ws) { note("A/B in different presentation workspaces"); }
+              else {
+                let deskBad = null;
+                for (const j of joins) {
+                  const info = await windowInfo(j.uuid);
+                  if (info.desks.length !== 1 || info.desks[0] !== S.appended) {
+                    deskBad = "fixture '" + j.callerId + "' desktops mismatch after join (need exactly the appended workspace)";
+                    break;
+                  }
+                }
+                if (deskBad) { note(deskBad); }
+                else {
+                  return {
+                    proj, expA, expB, fA: rA.frame, fB: rB.frame, out: rA.outRect,
+                    outName: rA.out, rawA: rA.frameRaw, rawB: rB.frameRaw,
+                    outScale: (typeof rA.outScale === "number" && isFinite(rA.outScale) && rA.outScale > 0) ? rA.outScale : null,
+                    sameOut: rA.out === rB.out, wsA: wA.ws, wsB: wB.ws,
+                  };
+                }
+              }
+            }
+          }
+        }
+        if (io.now() >= end) {
+          if (last.indexOf("unknown") >= 0 || last.indexOf("PENDING") >= 0) { S.category = "PENDING"; }
+          fail(label + ": " + first + (last !== first ? " (last: " + last + ")" : ""));
+        }
+        await io.sleep(T.poll);
+      }
+    })();
+    if (admit.sameOut !== true) { fail(label + ": A/B on different outputs here"); }
+    S.receipts.output = {
+      name: admit.outName,
+      scale: (typeof admit.outScale === "number" && isFinite(admit.outScale) && admit.outScale > 0) ? admit.outScale : null,
+      rect: admit.out,
+      raw: { a: admit.rawA, b: admit.rawB },
+    };
+    check(prefix + "-a-frame-equals-alloc", frameEqual(admit.fA, admit.expA), admit.expA, admit.fA);
+    check(prefix + "-b-frame-equals-alloc", frameEqual(admit.fB, admit.expB), admit.expB, admit.fB);
+    check(prefix + "-disjoint", !rectsOverlap(admit.fA, admit.fB), "disjoint", "disjoint");
+    check(prefix + "-inside-output", frameInside(admit.fA, admit.out) && frameInside(admit.fB, admit.out), admit.out, admit.out);
+    check(prefix + "-same-ws", admit.wsA === admit.wsB, admit.wsA, admit.wsB);
+    return admit;
+  };
+
+  // Ordinary two-fixture tiling and close/reflow over the shared context.
+  const scenarioTilingReflow = async () => {
+    S.scenario = "admission";
+    event("scenario-admission");
+    const bare = (u) => normalizeNativeId(u);
+    const admit = await pollAdmission("admission", "admit");
+    S.receipts.presentationRev = admit.proj.rev;
+    event("scenario-close-b");
+
+    S.scenario = "reflow";
+    mutOnce("fixture-close-b");
+    {
+      const r = await exec(fixtureSendCmd(S.fixture.socket, S.fixture.nonce,
+        ['{"v":1,"request_id":"close-b","op":"close","ids":["b"]}']), T.exec);
+      if (r.status !== 0) {
+        await fixtureSend(['{"v":1,"request_id":"state-check","op":"list"}'], "fixture list");
+        fail("fixture close failed; state re-read once, no retry");
+      }
+      let crep;
+      try {
+        crep = r.stdout.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l));
+      } catch (e) { fail("fixture close: unparsable fixture reply"); }
+      if (!crep.length || crep.some((x) => !x || x.ok !== true)) { fail("fixture close: no ok acknowledgement"); }
+    }
+    const before = admit.fA;
+    const reflow = await (async () => {
+      const end = io.now() + T.reflow;
+      let first = "no read yet";
+      let last = "no read yet";
+      const note = (m) => { if (first === "no read yet") { first = m; } last = m; };
+      for (;;) {
+        const proj = await readPresentation();
+        const nat = await helperOp({ op: "read" });
+        const row = nat.filter((r) => Array.isArray(r.owned))[0];
+        if (!row) { note("native read produced no roster"); }
+        else if (proj.windows.some((w) => w.win === bare(joins[1].uuid))) { note("presentation still lists closed b"); }
+        else if (proj.windows.length !== 1 || proj.windows[0].win !== bare(joins[0].uuid)) {
+          note("presentation window set is not exactly {A} after close: [" +
+            proj.windows.map((w) => w.win).sort().join(",") + "]");
+        }
+        else {
+          const wA = proj.windows.filter((w) => w.win === bare(joins[0].uuid))[0];
+          if (!wA) { note("presentation lost a after close"); }
+          else if (wA.alloc === null) { note("reflow alloc unknown (null never matches)"); }
+          else {
+            const rA = row.owned.filter((w) => w.uuid === joins[0].uuid)[0];
+            if (!rA) { note("native row for A absent after close"); }
+            else if (rA.frame === null) { note("native frame for A unknown after close"); }
+            else if (!rA.outRect) { note("native output geometry unknown after close"); }
+            else {
+              const expA = frameOf(wA.alloc);
+              const scopeOwned = row.owned.filter((w) => w.class === SCOPE_CLASS);
+              if (row.owned.some((w) => w.uuid === joins[1].uuid)) { note("b still in the native roster after close"); }
+              else if (scopeOwned.length !== 1 || scopeOwned[0].uuid !== joins[0].uuid) {
+                note("native scope roster is not exactly {A} after close");
+              }
+              else if (!frameEqual(rA.frame, expA)) { note("reflow A frame mismatch (" + frameDiff(rA.frame, expA).join(",") + "): native " + JSON.stringify(rA.frame) + " != alloc " + JSON.stringify(expA) + " raw " + JSON.stringify(rA.frameRaw)); }
+              else if (!frameInside(expA, rA.outRect)) { note("reflow allocation outside output bounds"); }
+              else if (frameEqual(expA, before)) { note("reflowed A alloc unchanged after closing B"); }
+              else if (!(frameArea(expA) > frameArea(before))) { note("reflow did not grow A after closing B"); }
+              else {
+                const info = await windowInfo(joins[0].uuid);
+                if (info.desks.length !== 1 || info.desks[0] !== S.appended) {
+                  note("fixture 'a' desktops mismatch after join (need exactly the appended workspace)");
+                } else {
+                  return {
+                    proj, expA, fA: rA.frame, out: rA.outRect,
+                    bProj: proj.windows.some((w) => w.win === bare(joins[1].uuid)) ? "present" : "absent",
+                    bNat: row.owned.some((w) => w.uuid === joins[1].uuid) ? "present" : "absent",
+                  };
+                }
+              }
+            }
+          }
+        }
+        if (io.now() >= end) {
+          if (last.indexOf("unknown") >= 0) { S.category = "PENDING"; }
+          fail("reflow: " + first + (last !== first ? " (last: " + last + ")" : ""));
+        }
+        await io.sleep(T.poll);
+      }
+    })();
+    check("reflow-b-gone-from-presentation", reflow.bProj === "absent", "absent", reflow.bProj);
+    check("reflow-b-absent-native", reflow.bNat === "absent", "absent", reflow.bNat);
+    check("reflow-a-alloc-changed-larger", frameArea(reflow.expA) > frameArea(before), frameArea(before), frameArea(reflow.expA));
+    check("reflow-a-frame-equals-alloc", frameEqual(reflow.fA, reflow.expA), reflow.expA, reflow.fA);
+    check("reflow-a-inside-output", frameInside(reflow.expA, reflow.out), reflow.out, reflow.out);
+    S.scenario = "done";
+    S.category = "PASS";
+    event("scenario-done");
+  };
+
+  // State-targets chord journey over the shared context: maximize /
+  // fullscreen / float / sticky toggles driven by injected ydotool chords
+  // with exact native activation of A before each chord, plus one orderly
+  // production stop/start. Native oracles come from getWindowInfo (wrapped
+  // strict values); presentation oracles from ReadWorldPresentation rows.
+  // Unknown (null/missing) is PENDING, never PASS; a product-behaviour
+  // mismatch is a FAIL naming the first divergence.
+  const scenarioStateTargets = async () => {
+    S.scenario = "state-targets";
+    event("scenario-state-targets");
+    const bare = (u) => normalizeNativeId(u);
+    const uuidA = joins[0].uuid, uuidB = joins[1].uuid;
+    const admit = await pollAdmission("state-admit", "state-admit");
+    const outRect = admit.out;
+    const baseA = admit.expA, baseB = admit.expB;
+    S.receipts.stateBase = { a: baseA, b: baseB };
+    const bad = (note) => ({ note });
+    const good = (expected, actual) => ({ ok: true, expected, actual });
+    const prow = (s, uuid) => s.proj.windows.filter((w) => w.win === bare(uuid))[0] || null;
+    const frameStr = (f) => (f ? "[" + f.x + "," + f.y + "," + f.w + "," + f.h + "]" : "null");
+    // Join/home re-check after every step: same UUIDs, and A keeps exactly
+    // the appended workspace as its home except while sticky (empty desktops
+    // list means all-desktop: setDesktops({}), never the roster).
+    const joinHome = (s, sticky) => {
+      if (s.infoA.uuid !== uuidA || s.infoB.uuid !== uuidB) {
+        return "fixture join changed (UUIDs differ)";
+      }
+      if (sticky) {
+        if (!Array.isArray(s.infoA.desks) || s.infoA.desks.length !== 0) {
+          return "a not all-desktop while sticky (desks " + JSON.stringify(s.infoA.desks) + ")";
+        }
+      } else if (s.infoA.desks.length !== 1 || s.infoA.desks[0] !== S.appended) {
+        return "a home is not exactly the appended workspace (desks " + JSON.stringify(s.infoA.desks) + ")";
+      }
+      return null;
+    };
+    const readAll = async () => {
+      const proj = await readPresentation();
+      const bareA = normalizeNativeId(uuidA), bareB = normalizeNativeId(uuidB);
+      const set = proj.windows.map((w) => w.win).sort().join(",");
+      if (proj.windows.length !== 2 || set !== [bareA, bareB].sort().join(",")) {
+        return { fail: "presentation window set is not exactly {A,B}: [" + proj.windows.map((w) => w.win).sort().join(",") + "]" };
+      }
+      const nat = await helperOp({ op: "read" });
+      const row = nat.filter((r) => Array.isArray(r.owned))[0];
+      if (!row) { return { fail: "native read produced no roster" }; }
+      const infoA = await windowInfo(uuidA);
+      const infoB = await windowInfo(uuidB);
+      return { proj, row, infoA, infoB };
+    };
+    const activateA = async (stepKey) => {
+      mutOnce("activate-" + stepKey);
+      await helperOp({ op: "activate", uuid: uuidA }, { mutate: true });
+      const end = io.now() + T.admit;
+      for (;;) {
+        const ar = await helperOp({ op: "read" });
+        const arow = ar.filter((r) => Array.isArray(r.owned))[0];
+        const observed = arow ? normalizeNativeId(arow.active) : null;
+        if (arow && observed === bare(uuidA)) { return; }
+        if (io.now() >= end) { break; }
+        await io.sleep(T.poll);
+      }
+      fail("state-" + stepKey + ": activation of a unverified within the bounded wait");
+    };
+    const injectChord = async (stepKey, chord) => {
+      mutOnce("chord-" + stepKey);
+      const argv = ydotoolKeyCmd(S.ydoc.sock, chord);
+      S.calls.push(redact(argv.map(String).join(" ")));
+      const r = await io.exec(argv, { timeoutMs: T.exec, env: Object.assign({}, env, { YDOTOOL_SOCKET: S.ydoc.sock }), cwd: root });
+      if (!r || typeof r.status !== "number") { fail("bad exec result"); }
+      if (r.status !== 0) { fail("state-" + stepKey + ": chord '" + chord + "' failed (status " + r.status + ")"); }
+    };
+    const pollStep = async (name, verify) => {
+      const end = io.now() + T.stateStep;
+      let first = "no read yet";
+      let last = "no read yet";
+      const note = (m) => { if (first === "no read yet") { first = m; } last = m; };
+      for (;;) {
+        let v = null;
+        try {
+          v = await verify(name);
+        } catch (e) {
+          const msg = e && e.message ? e.message : String(e);
+          if (e instanceof ScenarioError && msg.indexOf("getWindowInfo") >= 0) {
+            note("native state unknown (" + msg.slice(0, 120) + ")");
+          } else { throw e; }
+        }
+        if (v && v.ok === true) {
+          check("state-" + name, true, v.expected, v.actual);
+          return;
+        }
+        if (v && v.note) { note(v.note); }
+        if (io.now() >= end) {
+          if (last.indexOf("unknown") >= 0 || last.indexOf("PENDING") >= 0) { S.category = "PENDING"; }
+          fail("state-" + name + ": " + first + (last !== first ? " (last: " + last + ")" : ""));
+        }
+        await io.sleep(T.poll);
+      }
+    };
+    const aAllocFrame = (s) => {
+      const pA = prow(s, uuidA);
+      if (!pA) { return { fail: "presentation lost a" }; }
+      if (pA.alloc === null) { return { fail: "a published allocation unknown (null never matches)" }; }
+      if (s.infoA.frame === null) { return { fail: "a native frame unknown (null never matches)" }; }
+      if (!frameEqual(s.infoA.frame, frameOf(pA.alloc))) {
+        return { fail: "a native frame != published allocation (" + frameDiff(s.infoA.frame, frameOf(pA.alloc)).join(",") + "): native " + frameStr(s.infoA.frame) + " != alloc " + JSON.stringify(pA.alloc) };
+      }
+      return { alloc: pA.alloc };
+    };
+    const bAllocFrame = (s) => {
+      const pB = prow(s, uuidB);
+      if (!pB) { return { fail: "presentation lost b" }; }
+      if (pB.alloc === null) { return { fail: "b published allocation unknown (null never matches)" }; }
+      if (s.infoB.frame === null) { return { fail: "b native frame unknown (null never matches)" }; }
+      if (!frameEqual(s.infoB.frame, frameOf(pB.alloc))) {
+        return { fail: "b native frame != published allocation (" + frameDiff(s.infoB.frame, frameOf(pB.alloc)).join(",") + "): native " + frameStr(s.infoB.frame) + " != alloc " + JSON.stringify(pB.alloc) };
+      }
+      return { alloc: pB.alloc };
+    };
+    const flagStr = (v) => (v === null ? "unknown" : String(v));
+    const verifyMaxOn = async () => {
+      const s = await readAll();
+      if (s.fail) { return bad(s.fail); }
+      const jh = joinHome(s, false);
+      if (jh) { return bad(jh); }
+      if (s.infoA.maxH === null || s.infoA.maxV === null) {
+        return bad("a maximize unknown (maxH=" + flagStr(s.infoA.maxH) + " maxV=" + flagStr(s.infoA.maxV) + ")");
+      }
+      if (s.infoA.maxH !== true || s.infoA.maxV !== true) {
+        return bad("a maximize axes not both true (maxH=" + s.infoA.maxH + " maxV=" + s.infoA.maxV + ")");
+      }
+      if (s.infoA.fullscreen === null) { return bad("a fullscreen unknown (null never matches)"); }
+      if (s.infoA.fullscreen !== false) {
+        return bad("a fullscreen not false while maximizing (fullscreen=" + s.infoA.fullscreen + ")");
+      }
+      if (s.infoA.frame === null) { return bad("a native frame unknown (null never matches)"); }
+      if (!frameInside(s.infoA.frame, outRect)) {
+        return bad("a frame not inside its output (frame " + frameStr(s.infoA.frame) + ")");
+      }
+      const bf = bAllocFrame(s);
+      if (bf.fail) { return bad(bf.fail); }
+      return good("maxH=true maxV=true fs=false a-inside b==alloc",
+        "maxH=" + s.infoA.maxH + " maxV=" + s.infoA.maxV + " fs=" + s.infoA.fullscreen);
+    };
+    const verifyFsOn = async () => {
+      const s = await readAll();
+      if (s.fail) { return bad(s.fail); }
+      const jh = joinHome(s, false);
+      if (jh) { return bad(jh); }
+      if (s.infoA.maxH === null || s.infoA.maxV === null) {
+        return bad("a maximize unknown (maxH=" + flagStr(s.infoA.maxH) + " maxV=" + flagStr(s.infoA.maxV) + ")");
+      }
+      if (s.infoA.maxH !== true || s.infoA.maxV !== true) {
+        return bad("a maximize axes not both true under fullscreen (maxH=" + s.infoA.maxH + " maxV=" + s.infoA.maxV + ")");
+      }
+      if (s.infoA.fullscreen === null) { return bad("a fullscreen unknown (null never matches)"); }
+      if (s.infoA.fullscreen !== true) {
+        return bad("a fullscreen not true (fullscreen=" + s.infoA.fullscreen + ")");
+      }
+      if (s.infoA.frame === null) { return bad("a native frame unknown (null never matches)"); }
+      if (!frameEqual(s.infoA.frame, outRect)) {
+        return bad("a frame != output rectangle (" + frameDiff(s.infoA.frame, outRect).join(",") + "): native " + frameStr(s.infoA.frame) + " != output " + frameStr(outRect));
+      }
+      return good("maxH=true maxV=true fs=true a==output", "maxH=" + s.infoA.maxH + " fs=" + s.infoA.fullscreen);
+    };
+    const verifyFsOff = async () => {
+      const s = await readAll();
+      if (s.fail) { return bad(s.fail); }
+      const jh = joinHome(s, false);
+      if (jh) { return bad(jh); }
+      if (s.infoA.fullscreen === null) { return bad("a fullscreen unknown (null never matches)"); }
+      if (s.infoA.fullscreen !== false) {
+        return bad("a fullscreen not false after exit (fullscreen=" + s.infoA.fullscreen + ")");
+      }
+      if (s.infoA.maxH === null || s.infoA.maxV === null) {
+        return bad("a maximize unknown (maxH=" + flagStr(s.infoA.maxH) + " maxV=" + flagStr(s.infoA.maxV) + ")");
+      }
+      if (s.infoA.maxH !== true || s.infoA.maxV !== true) {
+        return bad("a maximize overlay not retained after fullscreen exit (maxH=" + s.infoA.maxH + " maxV=" + s.infoA.maxV + ")");
+      }
+      if (s.infoA.frame === null) { return bad("a native frame unknown (null never matches)"); }
+      if (!frameInside(s.infoA.frame, outRect)) {
+        return bad("a frame not inside its output after fullscreen exit (frame " + frameStr(s.infoA.frame) + ")");
+      }
+      const bf = bAllocFrame(s);
+      if (bf.fail) { return bad(bf.fail); }
+      return good("fs=false maxH=true maxV=true a-inside b==alloc", "fs=" + s.infoA.fullscreen);
+    };
+    const verifyMaxOff = async () => {
+      const s = await readAll();
+      if (s.fail) { return bad(s.fail); }
+      const jh = joinHome(s, false);
+      if (jh) { return bad(jh); }
+      if (s.infoA.maxH === null || s.infoA.maxV === null) {
+        return bad("a maximize unknown (maxH=" + flagStr(s.infoA.maxH) + " maxV=" + flagStr(s.infoA.maxV) + ")");
+      }
+      if (s.infoA.maxH !== false || s.infoA.maxV !== false) {
+        return bad("a maximize axes not both false (maxH=" + s.infoA.maxH + " maxV=" + s.infoA.maxV + ")");
+      }
+      if (s.infoA.fullscreen === null) { return bad("a fullscreen unknown (null never matches)"); }
+      if (s.infoA.fullscreen !== false) {
+        return bad("a fullscreen not false after maximize exit (fullscreen=" + s.infoA.fullscreen + ")");
+      }
+      if (s.infoA.frame === null) { return bad("a native frame unknown (null never matches)"); }
+      if (!frameEqual(s.infoA.frame, baseA)) {
+        return bad("a frame != base allocation (" + frameDiff(s.infoA.frame, baseA).join(",") + "): native " + frameStr(s.infoA.frame) + " != base " + frameStr(baseA));
+      }
+      const bf = bAllocFrame(s);
+      if (bf.fail) { return bad(bf.fail); }
+      return good("maxH=false maxV=false fs=false a==base b==alloc", "a=" + frameStr(s.infoA.frame));
+    };
+    const verifyFloatOn = async () => {
+      const s = await readAll();
+      if (s.fail) { return bad(s.fail); }
+      const jh = joinHome(s, false);
+      if (jh) { return bad(jh); }
+      const pA = prow(s, uuidA);
+      if (!pA) { return bad("presentation lost a"); }
+      if (pA.floating === null) { return bad("a floating unknown (null never matches)"); }
+      if (pA.floating !== true) { return bad("a presentation floating not true (floating=" + pA.floating + ")"); }
+      if (s.infoA.keepAbove === null) { return bad("a keepAbove unknown (null never matches)"); }
+      if (s.infoA.keepAbove !== true) { return bad("a keepAbove not true while floating (keepAbove=" + s.infoA.keepAbove + ")"); }
+      const bf = bAllocFrame(s);
+      if (bf.fail) { return bad(bf.fail); }
+      if (!(frameArea(frameOf(bf.alloc)) > frameArea(baseB))) {
+        return bad("b published allocation not larger than base while floating (area " + frameArea(frameOf(bf.alloc)) + " <= base " + frameArea(baseB) + ")");
+      }
+      return good("floating=true above=true b>base b==alloc", "floating=" + pA.floating + " above=" + s.infoA.keepAbove);
+    };
+    const verifyOrdinaryBase = async (step) => {
+      const s = await readAll();
+      if (s.fail) { return bad(s.fail); }
+      const jh = joinHome(s, false);
+      if (jh) { return bad(jh); }
+      const pA = prow(s, uuidA);
+      if (!pA) { return bad("presentation lost a"); }
+      if (pA.floating === null) { return bad("a floating unknown (null never matches)"); }
+      if (pA.floating !== false) { return bad("a presentation floating not false (floating=" + pA.floating + ")"); }
+      if (s.infoA.keepAbove === null) { return bad("a keepAbove unknown (null never matches)"); }
+      if (s.infoA.keepAbove !== false) { return bad("a keepAbove not false (keepAbove=" + s.infoA.keepAbove + ")"); }
+      const af = aAllocFrame(s);
+      if (af.fail) { return bad(af.fail); }
+      const bf = bAllocFrame(s);
+      if (bf.fail) { return bad(bf.fail); }
+      // Leaving floating/sticky is fresh admission: A and B hold the two base
+      // allocations in either order, never the same one twice.
+      if (s.infoA.frame === null) { return bad("a native frame unknown (null never matches)"); }
+      if (s.infoB.frame === null) { return bad("b native frame unknown (null never matches)"); }
+      const aIsA = frameEqual(s.infoA.frame, baseA);
+      const aIsB = frameEqual(s.infoA.frame, baseB);
+      const bIsA = frameEqual(s.infoB.frame, baseA);
+      const bIsB = frameEqual(s.infoB.frame, baseB);
+      if (!aIsA && !aIsB) {
+        return bad("a native frame equals neither base allocation (" + frameDiff(s.infoA.frame, baseA).join(",") + "): native " + frameStr(s.infoA.frame) + " != base a " + frameStr(baseA) + " base b " + frameStr(baseB));
+      }
+      if (!bIsA && !bIsB) {
+        return bad("b native frame equals neither base allocation (" + frameDiff(s.infoB.frame, baseB).join(",") + "): native " + frameStr(s.infoB.frame) + " != base a " + frameStr(baseA) + " base b " + frameStr(baseB));
+      }
+      if ((aIsA && bIsA) || (aIsB && bIsB)) {
+        return bad("a and b occupy the same base allocation (a " + frameStr(s.infoA.frame) + " b " + frameStr(s.infoB.frame) + " base a " + frameStr(baseA) + " base b " + frameStr(baseB) + ")");
+      }
+      const aSlot = aIsA ? "a-base" : "b-base";
+      if (!Array.isArray(S.receipts.stateSlotOrder)) { S.receipts.stateSlotOrder = []; }
+      S.receipts.stateSlotOrder.push({ step: step, aSlot: aSlot });
+      return good("floating=false above=false {a,b}=={base a, base b} (either order) a/b==alloc", "a=" + frameStr(s.infoA.frame) + " b=" + frameStr(s.infoB.frame));
+    };
+    const verifyStickyOn = async () => {
+      const s = await readAll();
+      if (s.fail) { return bad(s.fail); }
+      const jh = joinHome(s, true);
+      if (jh) { return bad(jh); }
+      const pA = prow(s, uuidA);
+      if (!pA) { return bad("presentation lost a"); }
+      if (pA.floating === null) { return bad("a floating unknown (null never matches)"); }
+      if (pA.floating !== true) { return bad("a presentation floating not true while sticky (floating=" + pA.floating + ")"); }
+      if (s.infoA.keepAbove === null) { return bad("a keepAbove unknown (null never matches)"); }
+      if (s.infoA.keepAbove !== true) { return bad("a keepAbove not true while sticky (keepAbove=" + s.infoA.keepAbove + ")"); }
+      const bf = bAllocFrame(s);
+      if (bf.fail) { return bad(bf.fail); }
+      if (!(frameArea(frameOf(bf.alloc)) > frameArea(baseB))) {
+        return bad("b published allocation not larger than base while sticky (area " + frameArea(frameOf(bf.alloc)) + " <= base " + frameArea(baseB) + ")");
+      }
+      return good("all-desktop above=true floating=true b>base b==alloc", "desks=" + s.infoA.desks.length);
+    };
+    const chordStep = async (name, chord, verify) => {
+      event("state-" + name);
+      await activateA(name);
+      await injectChord(name, chord);
+      await pollStep(name, verify);
+    };
+    await chordStep("a-maximize-on", "maximize", verifyMaxOn);
+    await chordStep("b-fullscreen-on", "fullscreen", verifyFsOn);
+    await chordStep("c-fullscreen-off", "fullscreen", verifyFsOff);
+    await chordStep("d-maximize-off", "maximize", verifyMaxOff);
+    await chordStep("e-float-on", "float", verifyFloatOn);
+    await chordStep("f-float-off", "float", verifyOrdinaryBase);
+    await chordStep("g-sticky-on", "sticky", verifyStickyOn);
+    await chordStep("h-sticky-off", "sticky", verifyOrdinaryBase);
+    await chordStep("i-sticky-on", "sticky", verifyStickyOn);
+    // One orderly production stop/start. The armed dev-off cleanup still
+    // ends DOWN even if this restart faults between its own dev-off/dev-on.
+    event("state-restart");
+    const cursor1 = await showCursor("pre-restart journal cursor");
+    mutOnce("state-restart-dev-off");
+    const off = await exec(devOffCmd(), T.exec);
+    if (off.status !== 0) { fail("state restart dev-off failed (status " + off.status + ")"); }
+    S.devUp = false;
+    mutOnce("state-restart-dev-on");
+    const on = await exec(devOnCmd(), T.devOn);
+    if (on.status !== 0) { fail("state restart dev-on failed; no retry, no relaunch"); }
+    S.devUp = true;
+    await derivePlannerReceipts();
+    S.counts.restart = 1;
+    event("readiness-restart");
+    await runReadinessGate(cursor1, "readinessRestart", "restart readiness gate missing");
+    event("state-i-restart-restored");
+    await pollStep("i-restart-restored", verifyStickyOn);
+    await chordStep("i-sticky-off", "sticky", verifyOrdinaryBase);
+    S.scenario = "done";
+    S.category = "PASS";
+    event("scenario-done");
+  };
+
   let rc = 1;
   try {
     // 1. Preflight: dev mode must be DOWN. Anything else: stop, nothing mutated.
@@ -685,7 +1328,17 @@ export async function runScenario(o) {
         if (ex === null) { fail("ydotoold did not exit after SIGTERM"); }
         if ((await io.procIdentity(yd.pid)) !== null) { fail("ydotoold pid still present"); }
         if (!S.ydoc) { fail("ydotoold socket never appeared within the bounded wait (daemon terminated)"); }
-        if (await io.exists(ysock)) { fail("ydotoold socket still present"); }
+        if (await io.exists(ysock)) {
+          // Unknown real behaviour: whether ydotoold unlinks its socket on
+          // SIGTERM. A socket the daemon left behind is removed here (only
+          // this exact owned path); afterwards absence is still verified,
+          // and only then is the runner count set.
+          try { await io.rm(ysock); } catch (e) {
+            fail("ydotoold socket rm failed (" + (e && e.message ? e.message : String(e)).slice(0, 120) + ")");
+          }
+          if (await io.exists(ysock)) { fail("ydotoold socket still present after runner rm"); }
+          S.counts.ydotooldSocketUnlinkedByRunner = 1;
+        }
       } });
       const end = io.now() + T.inputSock;
       let seen = false;
@@ -808,50 +1461,13 @@ export async function runScenario(o) {
     const devR = await exec(devOnCmd(), T.devOn);
     if (devR.status !== 0) { fail("dev-on failed; no retry, no relaunch"); }
     S.devUp = true;
-    const rt = env.XDG_RUNTIME_DIR || "/tmp";
-    const pidFile = String(await io.readFile(rt + "/omnitiler-dev/planner-pid")).trim();
-    const receiptPtr = String(await io.readFile(rt + "/omnitiler-dev/controller-receipt-path")).trim().split("\n")[0];
-    if (!/^[1-9][0-9]*$/.test(pidFile)) { fail("planner-pid file is not a pid"); }
-    let receipt;
-    try { receipt = JSON.parse(String(await io.readFile(receiptPtr))); } catch (e) { fail("controller receipt unparsable"); }
-    if (!receipt || !Number.isInteger(receipt.script_id) || receipt.script_id < 0 || receipt.script_id > 2147483647) {
-      fail("controller receipt has no valid script_id");
-    }
-    const pOwnerR = await busJson(["busctl", "--user", "--json=short", "call",
-      DBUS_BUS, DBUS_OBJECT, DBUS_IFACE, "GetNameOwner", "s", PLANNER_BUS], "planner GetNameOwner");
-    if (!pOwnerR || pOwnerR.type !== "s" || !Array.isArray(pOwnerR.data)) { fail("planner GetNameOwner: need {type:s,data:[owner]}"); }
-    const pOwner = pOwnerR.data[0];
-    if (typeof pOwner !== "string" || !UNIQUE_RE.test(pOwner)) { fail("planner owner is not a unique name"); }
-    const pPidR = await busJson(["busctl", "--user", "--json=short", "call",
-      DBUS_BUS, DBUS_OBJECT, DBUS_IFACE, "GetConnectionUnixProcessID", "s", pOwner], "planner owner pid");
-    if (!pPidR || pPidR.type !== "u" || !Array.isArray(pPidR.data)) { fail("planner owner pid: need {type:u,data:[pid]}"); }
-    const pPid = pPidR.data[0];
-    if (!Number.isInteger(pPid) || pPid <= 0) { fail("bad planner PID reply"); }
-    if (String(pPid) !== pidFile) { fail("planner-pid file does not equal the D-Bus owner pid"); }
-    const pTick = await io.procIdentity(pPid);
-    if (pTick === null) { fail("planner process identity unavailable"); }
-    S.planner = { pid: pPid, tick: pTick, scriptId: receipt.script_id };
-    S.receipts.planner = { pid: pPid, tick: pTick, scriptId: receipt.script_id };
-    const st2 = await mustExec(devStatusCmd(), "dev-status after dev-on");
-    if (parseDevStatusMode(st2.stdout) !== "UP") { fail("dev mode is not UP after dev-on"); }
+    await derivePlannerReceipts();
 
-    // 8. Readiness gate after the only start, against the pre-start cursor.
+    // 8. Readiness gate after the first start, against the pre-start cursor.
+    // (state-targets restarts once more later; see state-restart.) No restart
     // No restart on missing lines. Only booleans/counts are persisted.
     event("readiness");
-    let gate = null;
-    const gateEnd = io.now() + T.readiness;
-    for (;;) {
-      const j = await mustExec(["journalctl", "--user", "--after-cursor", cursor0, "-o", "json", "_PID=" + S.kwin.pid], "readiness journal");
-      gate = parseReadiness(redact(j.stdout));
-      if (readinessPass(gate)) { break; }
-      if (io.now() >= gateEnd) { break; }
-      await io.sleep(T.readinessPoll);
-    }
-    S.counts.readiness = gate ? {
-      ready: gate.ready ? 1 : 0, discovered: gate.discovered ? 1 : 0,
-      dispatch: gate.dispatch ? 1 : 0, applied: gate.applied ? 1 : 0,
-    } : null;
-    if (!gate || !readinessPass(gate)) { fail("readiness gate missing within the bounded window: stop, no restart"); }
+    await runReadinessGate(cursor0, "readiness", "readiness gate missing");
 
     // 9. Spawn fixtures a and b in ONE request, then wait until get returns both.
     mutOnce("fixture-spawn");
@@ -898,7 +1514,6 @@ export async function runScenario(o) {
         seenU.add(w.uuid);
       }
     }
-    const joins = [];
     const used = new Set();
     for (const id of ["a", "b"]) {
       const snap = snaps.get(id);
@@ -943,174 +1558,16 @@ export async function runScenario(o) {
     check("activate-a", S.activeObserved === normalizeNativeId(joins[0].uuid),
       normalizeNativeId(joins[0].uuid), S.activeObserved);
 
-    // 12. The ONLY scenario: ordinary two-fixture tiling and close/reflow.
-    S.scenario = "admission";
-    event("scenario-admission");
-    const bare = (u) => normalizeNativeId(u);
-    const admit = await (async () => {
-      const end = io.now() + T.admit;
-      let first = "no read yet";
-      let last = "no read yet";
-      const note = (m) => { if (first === "no read yet") { first = m; } last = m; };
-      for (;;) {
-        const proj = await readPresentation();
-        const nat = await helperOp({ op: "read" });
-        const row = nat.filter((r) => Array.isArray(r.owned))[0];
-        if (!row) { note("native read produced no roster"); }
-        else {
-          const wA = proj.windows.filter((w) => w.win === bare(joins[0].uuid))[0];
-          const wB = proj.windows.filter((w) => w.win === bare(joins[1].uuid))[0];
-          if (!wA || !wB) { note("presentation does not list both windows"); }
-          else if (proj.windows.length !== 2 ||
-            proj.windows.some((w) => w.win !== bare(joins[0].uuid) && w.win !== bare(joins[1].uuid))) {
-            note("presentation window set is not exactly {A,B}: [" +
-              proj.windows.map((w) => w.win).sort().join(",") + "]");
-          }
-          else if (wA.alloc === null || wB.alloc === null) { note("presentation alloc unknown (null never matches)"); }
-          else {
-            const rA = row.owned.filter((w) => w.uuid === joins[0].uuid)[0];
-            const rB = row.owned.filter((w) => w.uuid === joins[1].uuid)[0];
-            const scopeOwned = row.owned.filter((w) => w.class === SCOPE_CLASS);
-            if (!rA || !rB) { note("native rows for A/B absent"); }
-            else if (scopeOwned.length !== 2 ||
-              !scopeOwned.some((w) => w.uuid === joins[0].uuid) ||
-              !scopeOwned.some((w) => w.uuid === joins[1].uuid)) {
-              note("native scope roster is not exactly {A,B}");
-            }
-            else if (rA.frame === null || rB.frame === null) { note("native frame unknown (PENDING, never PASS)"); }
-            else if (!rA.outRect || !rB.outRect) { note("native output geometry unknown (PENDING, never PASS)"); }
-            else {
-              const expA = frameOf(wA.alloc), expB = frameOf(wB.alloc);
-              if (!frameEqual(rA.frame, expA)) { note("tile A frame mismatch (" + frameDiff(rA.frame, expA).join(",") + "): native " + JSON.stringify(rA.frame) + " != alloc " + JSON.stringify(expA) + " raw " + JSON.stringify(rA.frameRaw)); }
-              else if (!frameEqual(rB.frame, expB)) { note("tile B frame mismatch (" + frameDiff(rB.frame, expB).join(",") + "): native " + JSON.stringify(rB.frame) + " != alloc " + JSON.stringify(expB) + " raw " + JSON.stringify(rB.frameRaw)); }
-              else if (!frameInside(rA.frame, rA.outRect) || !frameInside(rB.frame, rB.outRect)) { note("tile frame outside its output"); }
-              else if (rectsOverlap(rA.frame, rB.frame)) { note("tiles A/B overlap: not an ordinary split"); }
-              else if (wA.ws !== wB.ws) { note("A/B in different presentation workspaces"); }
-              else {
-                let deskBad = null;
-                for (const j of joins) {
-                  const info = await windowInfo(j.uuid);
-                  if (info.desks.length !== 1 || info.desks[0] !== S.appended) {
-                    deskBad = "fixture '" + j.callerId + "' desktops mismatch after join (need exactly the appended workspace)";
-                    break;
-                  }
-                }
-                if (deskBad) { note(deskBad); }
-                else {
-                  return {
-                    proj, expA, expB, fA: rA.frame, fB: rB.frame, out: rA.outRect,
-                    outName: rA.out, rawA: rA.frameRaw, rawB: rB.frameRaw,
-                    outScale: (typeof rA.outScale === "number" && isFinite(rA.outScale) && rA.outScale > 0) ? rA.outScale : null,
-                    sameOut: rA.out === rB.out, wsA: wA.ws, wsB: wB.ws,
-                  };
-                }
-              }
-            }
-          }
-        }
-        if (io.now() >= end) {
-          if (last.indexOf("unknown") >= 0 || last.indexOf("PENDING") >= 0) { S.category = "PENDING"; }
-          fail("admission: " + first + (last !== first ? " (last: " + last + ")" : ""));
-        }
-        await io.sleep(T.poll);
-      }
-    })();
-    if (admit.sameOut !== true) { fail("admission: A/B on different outputs here"); }
-    S.receipts.output = {
-      name: admit.outName,
-      scale: (typeof admit.outScale === "number" && isFinite(admit.outScale) && admit.outScale > 0) ? admit.outScale : null,
-      rect: admit.out,
-      raw: { a: admit.rawA, b: admit.rawB },
-    };
-    check("admit-a-frame-equals-alloc", frameEqual(admit.fA, admit.expA), admit.expA, admit.fA);
-    check("admit-b-frame-equals-alloc", frameEqual(admit.fB, admit.expB), admit.expB, admit.fB);
-    check("admit-disjoint", !rectsOverlap(admit.fA, admit.fB), "disjoint", "disjoint");
-    check("admit-inside-output", frameInside(admit.fA, admit.out) && frameInside(admit.fB, admit.out), admit.out, admit.out);
-    check("admit-same-ws", admit.wsA === admit.wsB, admit.wsA, admit.wsB);
-    S.receipts.presentationRev = admit.proj.rev;
-    event("scenario-close-b");
-
-    S.scenario = "reflow";
-    mutOnce("fixture-close-b");
-    {
-      const r = await exec(fixtureSendCmd(S.fixture.socket, S.fixture.nonce,
-        ['{"v":1,"request_id":"close-b","op":"close","ids":["b"]}']), T.exec);
-      if (r.status !== 0) {
-        await fixtureSend(['{"v":1,"request_id":"state-check","op":"list"}'], "fixture list");
-        fail("fixture close failed; state re-read once, no retry");
-      }
-      let crep;
-      try {
-        crep = r.stdout.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l));
-      } catch (e) { fail("fixture close: unparsable fixture reply"); }
-      if (!crep.length || crep.some((x) => !x || x.ok !== true)) { fail("fixture close: no ok acknowledgement"); }
+    // 12. Scenario dispatch over the shared context (S, helpers, joins).
+    // Ordinary two-fixture tiling and close/reflow (default), or the
+    // state-targets chord journey. Each scenario function is defined above.
+    if (scenarioName === "state-targets") {
+      S.scenarioRan = "state-targets";
+      await scenarioStateTargets();
+    } else {
+      S.scenarioRan = "tiling-reflow";
+      await scenarioTilingReflow();
     }
-    const before = admit.fA;
-    const reflow = await (async () => {
-      const end = io.now() + T.reflow;
-      let first = "no read yet";
-      let last = "no read yet";
-      const note = (m) => { if (first === "no read yet") { first = m; } last = m; };
-      for (;;) {
-        const proj = await readPresentation();
-        const nat = await helperOp({ op: "read" });
-        const row = nat.filter((r) => Array.isArray(r.owned))[0];
-        if (!row) { note("native read produced no roster"); }
-        else if (proj.windows.some((w) => w.win === bare(joins[1].uuid))) { note("presentation still lists closed b"); }
-        else if (proj.windows.length !== 1 || proj.windows[0].win !== bare(joins[0].uuid)) {
-          note("presentation window set is not exactly {A} after close: [" +
-            proj.windows.map((w) => w.win).sort().join(",") + "]");
-        }
-        else {
-          const wA = proj.windows.filter((w) => w.win === bare(joins[0].uuid))[0];
-          if (!wA) { note("presentation lost a after close"); }
-          else if (wA.alloc === null) { note("reflow alloc unknown (null never matches)"); }
-          else {
-            const rA = row.owned.filter((w) => w.uuid === joins[0].uuid)[0];
-            if (!rA) { note("native row for A absent after close"); }
-            else if (rA.frame === null) { note("native frame for A unknown after close"); }
-            else if (!rA.outRect) { note("native output geometry unknown after close"); }
-            else {
-              const expA = frameOf(wA.alloc);
-              const scopeOwned = row.owned.filter((w) => w.class === SCOPE_CLASS);
-              if (row.owned.some((w) => w.uuid === joins[1].uuid)) { note("b still in the native roster after close"); }
-              else if (scopeOwned.length !== 1 || scopeOwned[0].uuid !== joins[0].uuid) {
-                note("native scope roster is not exactly {A} after close");
-              }
-              else if (!frameEqual(rA.frame, expA)) { note("reflow A frame mismatch (" + frameDiff(rA.frame, expA).join(",") + "): native " + JSON.stringify(rA.frame) + " != alloc " + JSON.stringify(expA) + " raw " + JSON.stringify(rA.frameRaw)); }
-              else if (!frameInside(expA, rA.outRect)) { note("reflow allocation outside output bounds"); }
-              else if (frameEqual(expA, before)) { note("reflowed A alloc unchanged after closing B"); }
-              else if (!(frameArea(expA) > frameArea(before))) { note("reflow did not grow A after closing B"); }
-              else {
-                const info = await windowInfo(joins[0].uuid);
-                if (info.desks.length !== 1 || info.desks[0] !== S.appended) {
-                  note("fixture 'a' desktops mismatch after join (need exactly the appended workspace)");
-                } else {
-                  return {
-                    proj, expA, fA: rA.frame, out: rA.outRect,
-                    bProj: proj.windows.some((w) => w.win === bare(joins[1].uuid)) ? "present" : "absent",
-                    bNat: row.owned.some((w) => w.uuid === joins[1].uuid) ? "present" : "absent",
-                  };
-                }
-              }
-            }
-          }
-        }
-        if (io.now() >= end) {
-          if (last.indexOf("unknown") >= 0) { S.category = "PENDING"; }
-          fail("reflow: " + first + (last !== first ? " (last: " + last + ")" : ""));
-        }
-        await io.sleep(T.poll);
-      }
-    })();
-    check("reflow-b-gone-from-presentation", reflow.bProj === "absent", "absent", reflow.bProj);
-    check("reflow-b-absent-native", reflow.bNat === "absent", "absent", reflow.bNat);
-    check("reflow-a-alloc-changed-larger", frameArea(reflow.expA) > frameArea(before), frameArea(before), frameArea(reflow.expA));
-    check("reflow-a-frame-equals-alloc", frameEqual(reflow.fA, reflow.expA), reflow.expA, reflow.fA);
-    check("reflow-a-inside-output", frameInside(reflow.expA, reflow.out), reflow.out, reflow.out);
-    S.scenario = "done";
-    S.category = "PASS";
-    event("scenario-done");
   } catch (e) {
     if (S.category === "NOT-RUN") {
       const msg = e && e.message ? e.message : String(e);
@@ -1189,7 +1646,7 @@ export async function runScenario(o) {
     else { rc = 1; }
   }
   return {
-    rc, category: S.category, scenario: S.scenario, divergence: S.divergence,
+    rc, category: S.category, scenario: S.scenario, scenarioRan: S.scenarioRan, divergence: S.divergence,
     events: S.events, calls: S.calls, checks: S.checks, receipts: S.receipts,
     counts: S.counts, cleanupFailed: S.cleanupFailed,
     joins: S.joins ? S.joins.map((j) => ({ callerId: j.callerId, uuid: j.uuid })) : null,
@@ -1319,6 +1776,10 @@ export async function liveMain(o) {
     console.error("refusing: live mode not enabled (pass --live to run against the real session). Nothing executed.");
     return 2;
   }
+  if (args.scenario === "state-targets" && !args.input) {
+    console.error("kde-scenarios: --scenario state-targets requires --input");
+    return 2;
+  }
   const root = o.root || repoRoot();
   let evidenceDir;
   try { evidenceDir = checkEvidenceDir(args.evidenceDir, root); } catch (e) {
@@ -1333,11 +1794,20 @@ export async function liveMain(o) {
   }
   await io.mkdir(evidenceDir, 0o700);
   const templatePath = o.templatePath || path.join(path.dirname(fileURLToPath(import.meta.url)), "kde-scenarios-helper.js");
-  const res = await runScenario({ io, root, env: execEnv, evidenceDir, input: args.input, templatePath });
+  const res = await (o.runScenarioFn || runScenario)({ io, root, env: execEnv, evidenceDir, input: args.input, scenario: args.scenario, templatePath });
+  // The scenario that ran must be the one requested: a mismatch fails the run.
+  let rc = res.rc;
+  let scenarioMismatch = false;
+  if (res.scenarioRan !== null && res.scenarioRan !== args.scenario) {
+    scenarioMismatch = true;
+    rc = 1;
+    console.error("kde-scenarios: requested scenario '" + args.scenario + "' but ran '" + res.scenarioRan + "'");
+  }
   // Evidence: step results, named checks, receipts, counts. No nonces, no
   // foreign window metadata, no home/host names (relative names only).
   const evidence = {
-    v: 1, category: res.category, scenario: res.scenario, divergence: res.divergence,
+    v: 1, category: res.category, requestedScenario: args.scenario, scenarioRan: res.scenarioRan,
+    scenarioMismatch, scenario: res.scenario, divergence: res.divergence,
     events: res.events, checks: res.checks, receipts: res.receipts, counts: res.counts,
     cleanupFailed: res.cleanupFailed,
     joins: res.joins,
@@ -1350,7 +1820,7 @@ export async function liveMain(o) {
   }
   console.log("receipts: " + JSON.stringify(res.receipts));
   console.log("cleanupFailed: " + JSON.stringify(res.cleanupFailed));
-  return res.rc;
+  return rc;
 }
 
 const isMain = (() => {

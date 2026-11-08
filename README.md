@@ -153,12 +153,14 @@ the repository and not yet existing; it receives `result.json`.
 
 ```sh
 devenv shell -- node scripts/kde-scenarios.mjs --live --evidence-dir ABS_PATH
-devenv shell -- node scripts/kde-scenarios.mjs --live --evidence-dir ABS_PATH --input
+devenv shell -- node scripts/kde-scenarios.mjs --live --scenario state-targets --input --evidence-dir ABS_PATH
 devenv shell -- node --test scripts/kde-scenarios.test.mjs   # hermetic, no live effects
 ```
 
-`--input` additionally starts and cleans up the `ydotoold` input daemon (lifecycle
-only until a scenario injects input). The scoped dev-on bakes the fixture scope into the KWin bundle, so
+`--scenario NAME` selects `tiling-reflow` (default) or `state-targets`
+(maximize, fullscreen, float and sticky chords with an orderly restart, which
+requires `--input`). `--input` additionally starts and cleans up the `ydotoold`
+input daemon used to inject those chords. The scoped dev-on bakes the fixture scope into the KWin bundle, so
 rebuild the unscoped bundle afterwards (`env OMNITILER_SCOPE_CLASS= npm --prefix
 kwin run build`). Read `docs/live-kwin-testing.md` before any live run; the
 low-level `scripts/start-test.sh` commands remain the manual reference.

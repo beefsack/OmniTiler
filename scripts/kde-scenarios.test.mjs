@@ -15,11 +15,11 @@ import { fileURLToPath } from "node:url";
 import {
   SCOPE_CLASS, PLUGIN_ID, PLANNER_BUS, PLANNER_OBJECT, PLANNER_IFACE, PLANNER_METHOD,
   WORLD_CONTRACT_VERSION, HELPER_PREFIX,
-  ScenarioError, createMutOnce, parseArgs, checkEvidenceDir,
+  ScenarioError, createMutOnce, parseArgs, helpText, checkEvidenceDir,
   isOpaqueId, isCanonicalU64, normalizeNativeId, isCarriedRect, parseDevStatusMode,
   frameOf, frameEqual, frameDiff, frameInside, frameArea, parseReadiness, readinessPass,
   parsePresentation, parseWindowInfo, devStatusCmd, devOffCmd, devOnCmd,
-  fixtureServeCmd, fixtureSendCmd, ydotooldCmd, presentationReq, plannerReadCmd,
+  fixtureServeCmd, fixtureSendCmd, ydotooldCmd, ydotoolKeyCmd, STATE_CHORDS, presentationReq, plannerReadCmd,
   windowInfoCmd, runScenario, liveMain, parseProcStat, createLiveIo,
 } from "./kde-scenarios.mjs";
 
@@ -99,6 +99,12 @@ function makeFake(opts) {
       mkWin(UUID_B, SCOPE_CLASS, fp, "OmniTilerTestWindow:b:tag9", { x: 960, y: 0, w: 960, h: 1080 }, ["d1"]),
       mkWin(UUID_F, "org.kde.dolphin", 1234, "Foreign Files - Do Not Touch", { x: 0, y: 0, w: 400, h: 300 }, ["d1"]),
     ];
+    // Native state-target model (source-shaped defaults; the chord
+    // interpreter below mutates these on injected ydotool key argv).
+    for (const w of F.wins) {
+      w.maxH = 0; w.maxV = 0; w.fs = false; w.above = false;
+      w.floatSt = false; w.stickySt = false;
+    }
   };
   F.resetWins();
   // Window A carries a non-empty caption suffix (caption = captionNormal +
@@ -211,11 +217,15 @@ function makeFake(opts) {
       F.devOnCount++;
       count("dev-on");
       if (F.fail.devOn) { return { status: 1, stdout: "", stderr: "boom" }; }
-      if (F.devOnCount > 1) { busErr("dev-on relaunch (second start)"); }
+      if (F.fail.restartDevOn && F.devOnCount === 2) { return { status: 1, stdout: "", stderr: "boom" }; }
+      if (F.devOnCount > 1 && !F.allowRestart) { busErr("dev-on relaunch (second start)"); }
+      if (F.devOnCount > 2) { busErr("dev-on third start"); }
       F.devUp = true;
-      F.plannerPid = 70317;
+      F.plannerPid = F.devOnCount === 1 ? 70317 : 70389;
       F.plannerTick = String(100000 + F.plannerPid);
       F.procs.set(F.plannerPid, { tick: F.plannerTick, alive: true, name: "planner" });
+      const skipReady = F.fail.restartReadiness && F.devOnCount === 2;
+      if (!skipReady) {
       if (F.fail.readinessPart !== "no-ready") {
         F.journalPush(F.kwinPid, "js: omnitiler:world:ready gen=g9 source=local-dev");
       }
@@ -231,12 +241,26 @@ function makeFake(opts) {
       if (!F.fail.readinessDrop && F.fail.readinessPart !== "no-applied") {
         F.journalPush(F.kwinPid, "js: omnitiler:world:applied rev=1 geom=2 member=2 views=0 mk=1 rm=0 fx=0 held=0");
       }
-      return { status: 0, stdout: "dev-on: planner pid 70317, script id 7\n", stderr: "" };
+      }
+      if (F.fail.stateFault === "restartStickyLost" && F.devOnCount === 2) {
+        const A = F.wins.find((w) => w.internalId === UUID_A);
+        if (A) { A.stickySt = false; A.floatSt = false; A.above = false; }
+        F.applyStateModel();
+      }
+      if (F.fail.stateFault === "extraRestart" && F.devOnCount === 2 && !F.extraRestartAdded) {
+        // A stray managed row appearing only after the restart: the shared
+        // readAll exact-set ({A,B}) check must refuse it at restore.
+        F.extraRestartAdded = true;
+        F.wins.push(F.mkWin(UUID_X, SCOPE_CLASS, F.fixture ? F.fixture.pid : 70231,
+          "OmniTilerTestWindow:x:tag9", { x: 0, y: 0, w: 100, h: 100 }, ["desk-new"]));
+      }
+      return { status: 0, stdout: "dev-on: planner pid " + F.plannerPid + ", script id 7\n", stderr: "" };
     }
     if (argv[0] === "just" && argv[1] === "dev-off") {
       F.devOffCount++;
       count("dev-off");
-      if (F.devOffCount > 1) { busErr("dev-off repeated"); }
+      if (F.devOffCount > 1 && !F.allowRestart) { busErr("dev-off repeated"); }
+      if (F.devOffCount > 2) { busErr("dev-off third"); }
       if (F.fail.devOff) { return { status: 1, stdout: "", stderr: "boom" }; }
       if (!F.fail.devUpStuck) { F.devUp = false; }
       if (F.plannerPid && !F.leave.planner) { F.procs.get(F.plannerPid).alive = false; }
@@ -297,6 +321,31 @@ function makeFake(opts) {
       return { status: 0, stdout: J({ ok: true, result: {} }) + "\n", stderr: "" };
     }
     if (argv[0] === "ydotoold") { busErr("ydotoold via blocking exec (must use spawnBackground)"); }
+    if (argv[0] === "ydotool") {
+      // Injected chord client: argv carries evdev key events
+      // (CODE:1 press ... CODE:0 release); the socket rides YDOTOOL_SOCKET.
+      if (argv[1] !== "key") { return { status: 1, stdout: "", stderr: "unknown ydotool subcommand" }; }
+      count("ydotool-key");
+      const seq = argv.slice(2).join(" ");
+      if (!o || !o.env || o.env.YDOTOOL_SOCKET !== F.ydSock) {
+        return { status: 1, stdout: "", stderr: "ydotool without the owned socket" };
+      }
+      if (F.activeUuid !== UUID_A) {
+        return { status: 1, stdout: "", stderr: "chord without active A" };
+      }
+      const kinds = {
+        "125:1 50:1 50:0 125:0": "maximize",
+        "125:1 87:1 87:0 125:0": "fullscreen",
+        "125:1 34:1 34:0 125:0": "float",
+        "125:1 42:1 34:1 34:0 42:0 125:0": "sticky",
+      };
+      const kind = kinds[seq];
+      if (!kind) { return { status: 1, stdout: "", stderr: "unknown chord argv" }; }
+      F.stateArmed = true;
+      const err = F.toggleState(kind);
+      if (err) { return { status: 1, stdout: "", stderr: err }; }
+      return { status: 0, stdout: "", stderr: "" };
+    }
     if (argv[0] === "busctl") {
       if (s.indexOf("GetNameOwner") >= 0 && s.indexOf(KWIN_BUS_FAKE) >= 0) {
         if (F.fail.kwinOwner) { return { status: 0, stdout: J({ type: "s", data: ["kwin-not-unique"] }) + "\n", stderr: "" }; }
@@ -367,25 +416,33 @@ function makeFake(opts) {
         const cap = (typeof w.captionNormal === "string" && w.captionNormal) || w.caption;
         const fg = w.frameGeometry || { x: 0, y: 0, width: 0, height: 0 };
         // Real-shaped a{sv}: every value wrapped with its KWin-source
-        // signature (strings s, desktops as, pid i, geometry d).
+        // signature (strings s, desktops as, pid i, geometry d, state
+        // targets: fullscreen/keepAbove b, maximize axes i).
         const desks = (F.fail.moveOffAppend && F.winfoCount > 2) ? ["d1"] : w.desktops.map((d) => d.id);
+        const fsWrapped = (F.fail.stateFault === "unknownState" && F.stateArmed)
+          ? wrap("s", "maybe")
+          : wrap("b", !!w.fs);
+        const infoData = {
+          resourceClass: wrap("s", cls),
+          resourceName: wrap("s", "x"),
+          caption: wrap("s", cap),
+          x: wrap("d", fg.x),
+          y: wrap("d", fg.y),
+          width: wrap("d", fg.width),
+          height: wrap("d", fg.height),
+          desktops: wrap("as", desks),
+          uuid: wrap("s", w.internalId),
+          pid: wrap("i", w.pid),
+          fullscreen: fsWrapped,
+          keepAbove: wrap("b", !!w.above),
+          maximizeHorizontal: wrap("i", w.maxH | 0),
+          maximizeVertical: wrap("i", w.maxV | 0),
+        };
+        // D1 probe: a missing state key must read null (unknown, never PASS).
+        if (F.fail.stateFault === "missingKeepAbove") { delete infoData.keepAbove; }
         return {
           status: 0,
-          stdout: J({
-            type: "a{sv}",
-            data: [{
-              resourceClass: wrap("s", cls),
-              resourceName: wrap("s", "x"),
-              caption: wrap("s", cap),
-              x: wrap("d", fg.x),
-              y: wrap("d", fg.y),
-              width: wrap("d", fg.width),
-              height: wrap("d", fg.height),
-              desktops: wrap("as", desks),
-              uuid: wrap("s", w.internalId),
-              pid: wrap("i", w.pid),
-            }],
-          }) + "\n",
+          stdout: J({ type: "a{sv}", data: [infoData] }) + "\n",
           stderr: "",
         };
       }
@@ -397,18 +454,31 @@ function makeFake(opts) {
         const rows = [];
         const a = F.wins.find((w) => w.internalId === UUID_A);
         const b = F.wins.find((w) => w.internalId === UUID_B);
+        const aFloating = !!a && !!(a.floatSt || a.stickySt);
         const win = (w, alloc) => ({
           win: BARE(w.internalId), out: "out-1", ws: F.fail.splitWs ? (w.internalId === UUID_A ? "ws-1" : "ws-2") : "ws-1",
           alloc, frame: null, frame_auth: "controlled", frame_hold: "",
-          member_auth: "controlled", member_hold: "", floating: false, float_origin: "",
+          member_auth: "controlled", member_hold: "",
+          floating: w.internalId === UUID_A
+            ? (F.fail.stateFault === "floatFlag" ? false : aFloating)
+            : false,
+          float_origin: "",
           cmdSeq: null, visibility: null, visibility_auth: "controlled", visibility_hold: "", state: [],
         });
         if (F.closedB) {
           const g = F.framePatch && F.framePatch.grown === false ? [0, 0, 960, 1080] : [0, 0, 1920, 1080];
           rows.push(win(a, F.allocPatch ? F.allocPatch("a1", g) : g));
         } else {
-          const ga = [0, 0, 960, 1080];
+          let ga = [0, 0, 960, 1080];
           let gb = [960, 0, 960, 1080];
+          if (aFloating && F.fail.stateFault !== "bNotGrown") { gb = [0, 0, 1920, 1080]; }
+          if (!aFloating && F.afterFloatOff) {
+            // Fresh-admission slot variants after float-off, in lockstep with
+            // the native model above so native==alloc still passes.
+            if (F.fail.stateFault === "swapFloatOff") { const t = ga; ga = gb; gb = t; }
+            else if (F.fail.stateFault === "ordinaryDriftA") { ga = [0, 0, 100, 100]; }
+            else if (F.fail.stateFault === "ordinarySameSlot") { gb = [0, 0, 960, 1080]; }
+          }
           F.presentCount = (F.presentCount || 0) + 1;
           // First-divergence probes: a one-time bad allocation resolves on the
           // next poll (transient), while admitDrift keeps disagreeing with a
@@ -510,6 +580,7 @@ function makeFake(opts) {
       const yp = newPid("ydotoold");
       F.ydPid = yp;
       const sock = argv.filter((a) => a.indexOf("--socket-path=") === 0)[0].slice("--socket-path=".length);
+      F.ydSock = sock;
       if (!F.fail.ydotooldSocket) { F.files.set(sock, { data: "sock", mode: 0 }); }
       return {
         pid: yp,
@@ -559,8 +630,12 @@ function makeFake(opts) {
     },
     rm: async (p) => {
       // leave.helperSrc models a helper source file the rm cannot remove, so
-      // the runner's post-rm existence check stays live.
+      // the runner's post-rm existence check stays live. ydRmFail models a
+      // ydotool socket the runner cannot unlink, so the fallback reports.
       if (F.leave.helperSrc && String(p).indexOf("/helper-") >= 0) { return; }
+      if (F.fail.ydRmFail && String(p).endsWith("ydotool.sock")) {
+        throw Object.assign(new Error("EACCES: rm " + p), { code: "EACCES" });
+      }
       F.files.delete(p);
     },
     exists: async (p) => {
@@ -590,6 +665,92 @@ function makeFake(opts) {
         w.desktops = [{ id: "desk-new" }];
       }
     }
+  };
+  // State-target model: interpret injected ydotool chord argv and mutate the
+  // fake window model (maximize, fullscreen, keepAbove/float, sticky, with B
+  // tile reflow). Shapes mirror KWin v6.8.1 clientToVariantMap (maximize axes
+  // int 0/nonzero with the real MaximizeVertical=1/MaximizeHorizontal=2
+  // values, fullscreen/keepAbove bool). Faults via F.fail.stateFault target
+  // one oracle each (see the ST tests).
+  F.maxToggles = 0;
+  F.stateArmed = false;
+  F.applyStateModel = () => {
+    const A = F.wins.find((w) => w.internalId === UUID_A);
+    const B = F.wins.find((w) => w.internalId === UUID_B);
+    if (!A) { return; }
+    if (A.fs || (A.maxH && A.maxV)) {
+      A.frameGeometry = { x: 0, y: 0, width: OUT_GEOM.w, height: OUT_GEOM.h };
+    } else {
+      A.frameGeometry = { x: 0, y: 0, width: 960, height: 1080 };
+    }
+    if (F.fail.stateFault === "fsFrame" && A.fs) {
+      A.frameGeometry = { x: 0, y: 0, width: OUT_GEOM.w - 1, height: OUT_GEOM.h };
+    }
+    if (F.fail.stateFault === "maxoffFrame" && !A.maxH && !A.maxV && F.maxToggles >= 2) {
+      A.frameGeometry = { x: 0, y: 0, width: 961, height: 1080 };
+    }
+    if (F.fail.stateFault === "fsOffFrame" && F.fsExited && !A.fs) {
+      // Frame stuck outside its output after the fullscreen exit: x is
+      // negative, so frameInside fails while fullscreen/maximize read back.
+      A.frameGeometry = { x: -40, y: 0, width: OUT_GEOM.w, height: OUT_GEOM.h };
+    }
+    if (F.afterFloatOff && !A.fs && !(A.maxH && A.maxV) && !(A.floatSt || A.stickySt)) {
+      // Fresh-admission slot variants after float-off: the planner hook below
+      // moves the published allocations in lockstep, so the native==alloc
+      // checks still pass and the oracle's set-equality branch is exercised.
+      if (F.fail.stateFault === "swapFloatOff") {
+        A.frameGeometry = { x: 960, y: 0, width: 960, height: 1080 };
+      } else if (F.fail.stateFault === "ordinaryDriftA") {
+        A.frameGeometry = { x: 0, y: 0, width: 100, height: 100 };
+      }
+    }
+    if (F.fail.stateFault === "stickyDesks") { /* leave desks alone */ }
+    else if (F.fail.stateFault === "stickyTwoDesks" && A.stickySt) {
+      // Two-homed while sticky: a sticky window must report an empty
+      // desktops list, so two entries (even including the appended
+      // workspace) must fail the sticky oracle.
+      A.desktops = [{ id: "desk-new" }, { id: "d1" }];
+    }
+    else {
+      A.desktops = A.stickySt ? [] : [{ id: "desk-new" }];
+    }
+    if (B) {
+      const grown = (A.floatSt || A.stickySt) && F.fail.stateFault !== "bNotGrown";
+      B.frameGeometry = grown
+        ? { x: 0, y: 0, width: OUT_GEOM.w, height: OUT_GEOM.h }
+        : { x: 960, y: 0, width: 960, height: 1080 };
+      if (!grown && F.afterFloatOff &&
+        (F.fail.stateFault === "swapFloatOff" || F.fail.stateFault === "ordinarySameSlot")) {
+        B.frameGeometry = { x: 0, y: 0, width: 960, height: 1080 };
+      }
+    }
+  };
+  F.toggleState = (kind) => {
+    const A = F.wins.find((w) => w.internalId === UUID_A);
+    if (!A) { return "no fixture A to drive"; }
+    if (kind === "maximize") {
+      F.maxToggles++;
+      if (F.maxToggles % 2 === 1) {
+        if (F.fail.stateFault === "maxAxis") { A.maxH = 2; A.maxV = 0; }
+        else { A.maxH = 2; A.maxV = 1; }
+      } else { A.maxH = 0; A.maxV = 0; }
+    } else if (kind === "fullscreen") {
+      A.fs = !A.fs;
+      if (F.fail.stateFault === "fsOffFrame" && !A.fs) { F.fsExited = true; }
+    } else if (kind === "float") {
+      A.floatSt = !A.floatSt;
+      if (!A.floatSt && (F.fail.stateFault === "swapFloatOff" ||
+        F.fail.stateFault === "ordinaryDriftA" || F.fail.stateFault === "ordinarySameSlot")) {
+        F.afterFloatOff = true;
+      }
+    } else if (kind === "sticky") {
+      A.stickySt = !A.stickySt;
+    } else {
+      return "unknown state kind";
+    }
+    A.above = F.fail.stateFault === "keepAbove" ? false : !!(A.floatSt || A.stickySt);
+    F.applyStateModel();
+    return null;
   };
   return F;
 }
@@ -1021,14 +1182,310 @@ test("YDPIN: ydotoold pid reaped/replaced before cleanup sends no signal and fai
     m.indexOf("identity changed") >= 0), J(res.cleanupFailed));
 });
 
-test("YDSOCK: ydotoold pid gone but its socket remains fails cleanup naming the socket", async () => {
+test("YDSOCK: ydotoold socket left by the daemon is unlinked by the runner and counted", async () => {
   const f = makeFake({ leave: { ydSock: true } });
   const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true }));
-  assert.equal(res.rc, 1);
+  assert.equal(res.category, "PASS", J({ div: res.divergence, cf: res.cleanupFailed }));
+  assert.equal(res.rc, 0, J(res.cleanupFailed));
   assert.deepEqual(f.kills.filter((k) => k[0] === f.ydPid).map((k) => k[1]), ["SIGTERM"]);
+  assert.equal(res.counts.ydotooldSocketUnlinkedByRunner, 1);
+  assert.ok(!(await f.io.exists(EVID + "/ydotool.sock")));
+});
+
+test("YDSOCK: daemon-unlinked socket passes cleanup with no runner count", async () => {
+  const f = makeFake();
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true }));
+  assert.equal(res.category, "PASS", J({ div: res.divergence, cf: res.cleanupFailed }));
+  assert.equal(res.rc, 0, J(res.cleanupFailed));
+  assert.equal(res.counts.ydotooldSocketUnlinkedByRunner, undefined);
+});
+
+test("YDSOCK: runner rm failure on the leftover socket is a cleanup failure", async () => {
+  const f = makeFake({ leave: { ydSock: true }, fail: { ydRmFail: true } });
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true }));
+  assert.equal(res.rc, 1);
+  assert.equal(res.counts.ydotooldSocketUnlinkedByRunner, undefined);
   assert.ok(res.cleanupFailed.some((m) => m.indexOf("ydotoold-stop") >= 0 &&
-    m.indexOf("socket still present") >= 0), J(res.cleanupFailed));
-  assert.ok(res.cleanupFailed.some((m) => m.indexOf("ydotoold-gone") >= 0 || m.indexOf("ydotoold") >= 0));
+    (m.indexOf("rm failed") >= 0 || m.indexOf("still present") >= 0)), J(res.cleanupFailed));
+});
+
+// ---------------------------------------------------------------------------
+// ST. state-targets scenario (chord journey with an orderly restart)
+// ---------------------------------------------------------------------------
+
+test("ST-CLI: scenario flag defaults, parses, and fails closed before io", async () => {
+  assert.equal(parseArgs([]).scenario, "tiling-reflow");
+  assert.equal(parseArgs(["--scenario", "state-targets"]).scenario, "state-targets");
+  assert.equal(parseArgs(["--scenario=state-targets"]).scenario, "state-targets");
+  assert.ok(helpText().indexOf("--scenario") >= 0, "help documents --scenario");
+  assert.throws(() => parseArgs(["--scenario", "bogus"]), /unknown --scenario/);
+  assert.throws(() => parseArgs(["--scenario=state-targets", "--scenario=tiling-reflow"]), /duplicate --scenario/);
+  const noIo = () => { throw new Error("io must not be built"); };
+  // Unknown scenario exits 2 before io.
+  assert.equal(await liveMain({
+    argv: ["--live", "--evidence-dir", "/tmp/kde-st-bad-1", "--scenario", "bogus"],
+    ioFactory: noIo, root: ROOT, templatePath: TEMPLATE,
+  }), 2);
+  // state-targets without --input exits 2 before ioFactory.
+  assert.equal(await liveMain({
+    argv: ["--live", "--evidence-dir", "/tmp/kde-st-noinput-1", "--scenario", "state-targets"],
+    ioFactory: noIo, root: ROOT, templatePath: TEMPLATE,
+  }), 2);
+  // Direct runScenario without input rejects before any process boundary call.
+  const f = makeFake();
+  await assert.rejects(
+    runScenario(Object.assign(baseOpts(), { io: f.io, scenario: "state-targets" })),
+    /state-targets requires --input/);
+  assert.equal(f.execCalls.length, 0, "no exec before the input guard");
+});
+
+test("ST-BUILDER: exact chord argv, keycodes, and closed construction", () => {
+  assert.deepEqual(STATE_CHORDS, {
+    maximize: [125, 50], fullscreen: [125, 87], float: [125, 34], sticky: [125, 42, 34],
+  });
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "maximize"),
+    ["ydotool", "key", "125:1", "50:1", "50:0", "125:0"]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "fullscreen"),
+    ["ydotool", "key", "125:1", "87:1", "87:0", "125:0"]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "float"),
+    ["ydotool", "key", "125:1", "34:1", "34:0", "125:0"]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "sticky"),
+    ["ydotool", "key", "125:1", "42:1", "34:1", "34:0", "42:0", "125:0"]);
+  assert.throws(() => ydotoolKeyCmd("/tmp/x.sock", "bogus"), /unknown chord/);
+  assert.throws(() => ydotoolKeyCmd("rel.sock", "maximize"), /absolute/);
+});
+
+test("ST-PASS: chord journey with restart passes all 16 state checks", async () => {
+  const f = makeFake({});
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.category, "PASS", J({ div: res.divergence, checks: res.checks }));
+  assert.equal(res.rc, 0, J(res.cleanupFailed));
+  assert.equal(res.scenario, "done");
+  const seq = ["preflight", "kwin-identity", "fixture-serve", "ydotoold-start", "journal-cursor",
+    "workspace-read", "workspace-append", "workspace-reread", "workspace-setcurrent",
+    "dev-on", "readiness", "fixture-spawn", "native-read", "join", "activate",
+    "scenario-state-targets",
+    "state-a-maximize-on", "state-b-fullscreen-on", "state-c-fullscreen-off", "state-d-maximize-off",
+    "state-e-float-on", "state-f-float-off", "state-g-sticky-on", "state-h-sticky-off",
+    "state-i-sticky-on", "state-restart", "readiness-restart", "state-i-restart-restored",
+    "state-i-sticky-off", "scenario-done", "cleanup",
+    "cleanup-fixture-shutdown", "cleanup-workspace-restore", "cleanup-dev-off",
+    "cleanup-workspace-remove", "cleanup-ydotoold-stop",
+    "verify-fixture-pid-gone", "verify-cargo-pid-gone",
+    "verify-fixture-socket-absent", "verify-rundir-removed", "verify-planner-pid-gone",
+    "verify-ydotoold-gone", "verify-current-restored", "verify-appended-absent", "verify-dev-down"];
+  assert.deepEqual(res.events, seq);
+  const stateChecks = res.checks.filter((c) => c.name.indexOf("state-") === 0);
+  assert.equal(stateChecks.length, 16, J(stateChecks.map((c) => c.name)));
+  assert.ok(stateChecks.every((c) => c.pass), J(stateChecks));
+  // Chord multiset: maximize 2, fullscreen 2, float 2, sticky 4 (10 injections).
+  const keys = f.execCalls.filter((c) => c.indexOf("ydotool key") === 0);
+  assert.equal(keys.length, 10, J(keys));
+  const count = (frag) => keys.filter((c) => c.indexOf(frag) >= 0).length;
+  assert.equal(count("125:1 50:1 50:0 125:0"), 2);
+  assert.equal(count("125:1 87:1 87:0 125:0"), 2);
+  assert.equal(count("125:1 34:1 34:0 125:0"), 2);
+  assert.equal(count("125:1 42:1 34:1 34:0 42:0 125:0"), 4);
+  assert.equal(f.devOnCount, 2);
+  assert.equal(f.devOffCount, 2);
+  assert.equal(res.counts.restart, 1);
+  assert.equal(res.receipts.planner.pid, 70317);
+  assert.equal(res.receipts.plannerRestart.pid, 70389);
+  assert.deepEqual(res.receipts.stateBase, {
+    a: { x: 0, y: 0, w: 960, h: 1080 }, b: { x: 960, y: 0, w: 960, h: 1080 },
+  });
+  const blob = J(res) +
+    [...f.files.values()].map((x) => String(x.data)).join("\n");
+  assert.ok(!blob.includes(FIX_NONCE), "fixture nonce leaked");
+  assert.ok(!/helper-[0-9a-f]{32}/.test(J(res)), "helper nonce leaked into evidence");
+  assert.ok(!blob.includes("Foreign Files"), "foreign caption leaked");
+  assert.ok(!blob.includes("org.kde.dolphin"), "foreign class leaked");
+  assert.equal(res.counts.foreign, 1);
+});
+
+test("ST-NEG: maximize axis fault fails closed at a-maximize-on", async () => {
+  const f = makeFake({ fail: { stateFault: "maxAxis" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.match(res.divergence || "", /state-a-maximize-on/);
+  assert.match(res.divergence || "", /maximize axes not both true/);
+  assert.ok(!res.events.includes("scenario-done"));
+});
+
+test("ST-NEG: fullscreen frame fault fails at b-fullscreen-on with one chord", async () => {
+  const f = makeFake({ fail: { stateFault: "fsFrame" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.match(res.divergence || "", /state-b-fullscreen-on/);
+  assert.match(res.divergence || "", /output rectangle/);
+  const keys = f.execCalls.filter((c) => c.indexOf("ydotool key 125:1 87:1") === 0);
+  assert.equal(keys.length, 1, "failing chord is never retried: " + J(keys));
+});
+
+test("ST-NEG: maximize-off frame fault fails at d-maximize-off", async () => {
+  const f = makeFake({ fail: { stateFault: "maxoffFrame" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.match(res.divergence || "", /state-d-maximize-off/);
+  assert.match(res.divergence || "", /!= base/);
+});
+
+test("ST-NEG: float faults fail closed at e-float-on", async () => {
+  for (const [fault, oracle] of [
+    ["keepAbove", /keepAbove not true/],
+    ["floatFlag", /floating not true/],
+    ["bNotGrown", /not larger than base/],
+  ]) {
+    const f = makeFake({ fail: { stateFault: fault } });
+    f.allowRestart = true;
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+    assert.equal(res.rc, 1, fault);
+    assert.match(res.divergence || "", /state-e-float-on/, fault);
+    assert.match(res.divergence || "", oracle, fault);
+  }
+});
+
+test("ST-SWAP: float-off fresh admission in either order passes all 16 state checks", async () => {
+  const f = makeFake({ fail: { stateFault: "swapFloatOff" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.category, "PASS", J({ div: res.divergence, checks: res.checks }));
+  assert.equal(res.rc, 0, J(res.cleanupFailed));
+  assert.equal(res.scenario, "done");
+  const stateChecks = res.checks.filter((c) => c.name.indexOf("state-") === 0);
+  assert.equal(stateChecks.length, 16, J(stateChecks.map((c) => c.name)));
+  assert.ok(stateChecks.every((c) => c.pass), J(stateChecks));
+  const slots = res.receipts.stateSlotOrder || [];
+  const fOff = slots.filter((e) => e.step === "f-float-off");
+  assert.equal(fOff.length, 1, J(slots));
+  assert.equal(fOff[0].aSlot, "b-base", J(slots));
+});
+
+test("ST-NEG: float-off drift fails at f-float-off naming a", async () => {
+  const f = makeFake({ fail: { stateFault: "ordinaryDriftA" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.match(res.divergence || "", /state-f-float-off/);
+  assert.match(res.divergence || "", /a native frame equals neither base allocation/);
+});
+
+test("ST-NEG: float-off same slot fails at f-float-off", async () => {
+  const f = makeFake({ fail: { stateFault: "ordinarySameSlot" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.match(res.divergence || "", /state-f-float-off/);
+  assert.match(res.divergence || "", /same base allocation/);
+});
+
+test("ST-NEG: sticky desks fault fails at g-sticky-on", async () => {
+  const f = makeFake({ fail: { stateFault: "stickyDesks" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.match(res.divergence || "", /state-g-sticky-on/);
+  assert.match(res.divergence || "", /not all-desktop/);
+});
+
+test("ST-NEG: two-homed A after sticky-on fails at g-sticky-on (sticky means empty)", async () => {
+  const f = makeFake({ fail: { stateFault: "stickyTwoDesks" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.match(res.divergence || "", /state-g-sticky-on/);
+  assert.match(res.divergence || "", /not all-desktop/);
+});
+
+test("ST-NEG: fullscreen-off frame fault fails at c-fullscreen-off", async () => {
+  const f = makeFake({ fail: { stateFault: "fsOffFrame" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.match(res.divergence || "", /state-c-fullscreen-off/);
+  assert.match(res.divergence || "", /not inside its output/);
+});
+
+test("ST-NEG: restart losing sticky fails at i-restart-restored", async () => {
+  const f = makeFake({ fail: { stateFault: "restartStickyLost" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.match(res.divergence || "", /state-i-restart-restored/);
+  const down = res.checks.filter((c) => c.name === "cleanup-dev-down")[0];
+  assert.ok(down && down.pass, "cleanup still ends DOWN: " + J(res.checks));
+});
+
+test("ST-NEG: extra presentation row after restart fails at i-restart-restored", async () => {
+  const f = makeFake({ fail: { stateFault: "extraRestart" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.match(res.divergence || "", /state-i-restart-restored/);
+  assert.match(res.divergence || "", /not exactly \{A,B\}/);
+});
+
+test("ST-NEG: restart readiness gap fails with dev-down cleanup", async () => {
+  const f = makeFake({ fail: { restartReadiness: true } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.match(res.divergence || "", /restart readiness gate missing/);
+  assert.equal(f.devOnCount, 2, "both starts ran before the gate failed");
+  const down = res.checks.filter((c) => c.name === "cleanup-dev-down")[0];
+  assert.ok(down && down.pass, "cleanup still ends DOWN: " + J(res.checks));
+});
+
+test("ST-NEG: restart dev-on failure fails with dev-down cleanup", async () => {
+  const f = makeFake({ fail: { restartDevOn: true } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.match(res.divergence || "", /restart dev-on failed/);
+  const down = res.checks.filter((c) => c.name === "cleanup-dev-down")[0];
+  assert.ok(down && down.pass, "cleanup still ends DOWN: " + J(res.checks));
+});
+
+test("ST-NEG: unknown native state is PENDING at a-maximize-on", async () => {
+  const f = makeFake({ fail: { stateFault: "unknownState" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.equal(res.category, "PENDING");
+  assert.match(res.divergence || "", /state-a-maximize-on/);
+});
+
+test("ST-NEG: missing keepAbove key is PENDING at e-float-on (D1)", async () => {
+  const f = makeFake({ fail: { stateFault: "missingKeepAbove" } });
+  f.allowRestart = true;
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "state-targets" }));
+  assert.equal(res.rc, 1);
+  assert.equal(res.category, "PENDING", J({ div: res.divergence }));
+  assert.match(res.divergence || "", /state-e-float-on/);
+});
+
+test("ST-ONCE: runner guard refuses a repeated chord key", () => {
+  const once = createMutOnce();
+  once("chord-a-maximize-on");
+  assert.throws(() => once("chord-a-maximize-on"), /refusing second mutating call/);
+});
+
+test("ST-SHAPES: state-key signatures match the captured KWin-derived shapes", async () => {
+  assert.deepEqual(SHAPES.getWindowInfoStateKeys.signatures, {
+    fullscreen: "b", keepAbove: "b", maximizeHorizontal: "i", maximizeVertical: "i", desktops: "as",
+  });
+  const f = makeFake();
+  const knownR = JSON.parse((await f.io.exec(windowInfoCmd(UUID_A), {})).stdout);
+  const body = knownR.data[0];
+  for (const k of Object.keys(SHAPES.getWindowInfoStateKeys.signatures)) {
+    assert.equal(body[k].type, SHAPES.getWindowInfoStateKeys.signatures[k], "signature: " + k);
+  }
+  assert.equal(body.maximizeHorizontal.data, 0);
+  assert.equal(body.maximizeVertical.data, 0);
 });
 
 test("PROCSTAT: production parser accepts the real stat shape (trailing newline) and fails closed", () => {
@@ -1454,6 +1911,70 @@ test("G: --input starts ydotoold in background and cleans it; default does not",
   const f2 = makeFake();
   await runScenario(Object.assign(baseOpts(), { io: f2.io }));
   assert.ok(!f2.spawnCalls.some((c) => c.indexOf("ydotoold") === 0), "no ydotoold by default");
+});
+
+async function liveMainFake(argv, extra) {
+  const f = makeFake({});
+  f.allowRestart = true;
+  f.dirs.delete(EVID);
+  const stdoutSink = [];
+  const origLog = console.log; const origErr = console.error;
+  console.log = (...a) => { stdoutSink.push(a.join(" ")); };
+  console.error = (...a) => { stdoutSink.push(a.join(" ")); };
+  let rc;
+  try {
+    rc = await liveMain(Object.assign({ argv, ioFactory: () => f.io, root: ROOT, execEnv: ENV, templatePath: TEMPLATE }, extra || {}));
+  } finally { console.log = origLog; console.error = origErr; }
+  const raw = f.files.get(EVID + "/result.json");
+  return { rc, f, out: stdoutSink.join("\n"), result: raw ? JSON.parse(raw.data) : null };
+}
+
+test("G: CLI --scenario reaches runScenario; result.json names the scenario that ran", async () => {
+  const st = await liveMainFake(["--live", "--evidence-dir", EVID, "--input", "--scenario", "state-targets"]);
+  assert.equal(st.rc, 0, st.out);
+  assert.equal(st.result.requestedScenario, "state-targets");
+  assert.equal(st.result.scenarioRan, "state-targets");
+  assert.equal(st.result.scenarioMismatch, false);
+  assert.ok(st.result.events.includes("scenario-state-targets"), "state-targets events ran");
+  assert.ok(st.result.events.includes("state-a-maximize-on"));
+  assert.ok(!st.result.events.includes("scenario-admission"), "tiling-reflow did not run");
+  assert.equal(st.result.checks.filter((c) => c.name.indexOf("state-") === 0).length, 16);
+
+  const tr = await liveMainFake(["--live", "--evidence-dir", EVID]);
+  assert.equal(tr.rc, 0, tr.out);
+  assert.equal(tr.result.requestedScenario, "tiling-reflow");
+  assert.equal(tr.result.scenarioRan, "tiling-reflow");
+  assert.ok(tr.result.events.includes("scenario-admission"));
+  assert.ok(!tr.result.events.includes("scenario-state-targets"));
+
+  const tr2 = await liveMainFake(["--live", "--evidence-dir", EVID, "--scenario", "tiling-reflow"]);
+  assert.equal(tr2.result.scenarioRan, "tiling-reflow");
+});
+
+test("G: a ran-vs-requested scenario mismatch fails the run and is recorded", async () => {
+  const f = makeFake({});
+  f.dirs.delete(EVID);
+  const wrong = async (opts) => {
+    const res = await runScenario(Object.assign({}, opts, { scenario: "tiling-reflow" }));
+    return res;
+  };
+  const origLog = console.log; const origErr = console.error;
+  const sink = [];
+  console.log = (...a) => { sink.push(a.join(" ")); };
+  console.error = (...a) => { sink.push(a.join(" ")); };
+  let rc;
+  try {
+    rc = await liveMain({
+      argv: ["--live", "--evidence-dir", EVID, "--input", "--scenario", "state-targets"],
+      ioFactory: () => f.io, root: ROOT, execEnv: ENV, templatePath: TEMPLATE, runScenarioFn: wrong,
+    });
+  } finally { console.log = origLog; console.error = origErr; }
+  assert.equal(rc, 1);
+  assert.match(sink.join("\n"), /requested scenario 'state-targets' but ran 'tiling-reflow'/);
+  const result = JSON.parse(f.files.get(EVID + "/result.json").data);
+  assert.equal(result.scenarioMismatch, true);
+  assert.equal(result.requestedScenario, "state-targets");
+  assert.equal(result.scenarioRan, "tiling-reflow");
 });
 
 test("G: existing evidence dir is refused without mutation", async () => {
