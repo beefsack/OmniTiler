@@ -37,7 +37,9 @@ key delivery and perceived latency remain separate acceptance checks.
 - A bounded fixture-only injected-input burst establishes complete ordered
   command settlement and final native/core agreement. Correct semantic refusals
   (unchanged, no neighbour, outer edge or minimum size) are allowed; busy, dropped
-  or stale-subject refusals are not. Physical acceptance remains user-run.
+  or stale-subject refusals are not. Fixture placement order is not under test:
+  observe the joined tiled order and fix the left/right role-to-fixture mapping
+  once before input. Physical acceptance remains user-run.
 
 ## Approach
 
@@ -276,9 +278,11 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   sentinel/PID/native-UUID joins and WindowsRunner activation of A passed;
   fixture focus and presentation foreground agreed. Native resizability is not
   exposed by `getWindowInfo`; only the fixture's default is established.
-- FAIL, initial-layout precondition: native and published frames agree, but B
+- Historical staging stop: native and published frames agree, but B
   is left and A right, the mirror of the required A-left/B-right start. The
   journey stopped before input. No staging shortcut, input daemon or burst ran.
+  Mirrored placement is not a product failure; the revised check derives its
+  roles from observed order instead of requiring fixture names to fix placement.
   Raw basis: `16-info1.json`, `17-info2.json`, `18-match.json`,
   `20-getfocus.json`, `21-pres2.json`.
 - NOT RUN, post-correction command accounting and semantic refusal counts:
@@ -305,4 +309,62 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   independently rechecked. Raw basis: `23-devoff.txt`, `24-shutdown.json`,
   `27-final-roster.json`, `28-owner2.json`, `30-build.txt`, `31-devstatus.txt`.
   The live result remains stopped/incomplete, not PASS; the change note stays
+  active.
+
+## Observed-order post-correction burst (2026-11-09)
+
+- PASS, setup: a fresh fixture-only leg appended one workspace, started the
+  scoped stack once and passed evaluated ready/discovered plus matched
+  observation dispatch/applied checks. Exact sentinel/PID/native-UUID joins
+  established caller `a` on the left and `b` on the right. That observed mapping
+  was fixed before input: left `a` was role A and right `b` role B. WindowsRunner
+  activated the joined left fixture; fixture focus and published foreground
+  agreed. No window placement order was imposed. Raw basis: `12-start-full.txt`,
+  `15-native-*.txt`, `16-observed-mapping.txt`, `17-match-left.txt`,
+  `19-focus-check.txt`, `20-presentation-verify.txt`.
+- PASS, command path: one uninterrupted ten-cycle burst used the six chords
+  listed above, 340 events at one-millisecond key delay. All 60 ordered callbacks
+  and unique queue identities 1 through 60 have matching terminal Take READY
+  results with kind `-`. The 115 READY lines include 55 repeated terminal reads,
+  not extra commands. Refusal counts are zero correct-outcome, zero defect and
+  zero unclassified; there are no internal refusal reasons to classify in this
+  leg. This does not retroactively classify the earlier 51 refusals. Raw basis:
+  `24-events-tokens.txt`, `24-chord-table.txt`, `25-burst-inject.txt`,
+  `26-burst-full.txt`, `28-planner-full.log`, terminal-derived `44-accounting.txt`.
+- PASS, final snapshot: independent native frames equal both final allocations;
+  fixture `a` alone is focused, matching published foreground. No native focus
+  getter or fixture client-size geometry oracle is assumed. Raw basis:
+  `29-presentation-final.txt`, `30-final-native-*.txt`, `31-final-get.txt`.
+- Both startup and burst journal captures use the unfiltered verified KWin
+  owner-PID stream and separate actual `QT_CATEGORY=kwin_scripting` queries.
+  Pre-input capture contains 129 declaration-order warnings and two
+  non-activatable-name errors; burst capture contains no declaration warnings
+  and two non-activatable-name errors. Each category query retains the matching
+  two D-Bus errors. Their cause/significance remains unclassified, not benign.
+  Raw basis: `12-start-full.txt`, `13-start-category.txt`, `26-burst-full.txt`,
+  `27-burst-category.txt`.
+- Four burst reads log `presentation-continuity-during-flight` followed by
+  `presentation-malformed recovery=hide`. Source ordering identifies the
+  payload-formatter refusal and display-hide path, not a command refusal.
+  The matching Planner summaries retain correlation but not reply payloads;
+  neither a defect nor an expected missing-proof outcome is established.
+  Independent evidence review confirms this unresolved display-path limit.
+  Raw basis: `26-burst-full.txt` lines 125-126, 133-134, 228-229 and 257-258;
+  `kwin/src/world-presentation.ts` payload formatting and reply handling.
+- NOT PROVEN, latest-only native history: 25 dispatches, 20 applied publications
+  and five superseded-during-flight messages are observed. Sparse final native
+  samples do not exclude intermediate per-press work or paints. This is injected
+  input, not physical-key or perceived-latency acceptance.
+- Evidence corrections: an unset shell variable first caused local output
+  redirection to fail before the fixture recipe executed; absolute paths repaired
+  that pre-effect setup once. Only one fixture process and one burst ran. Review
+  replaced queue-based READY wording with terminal-Take accounting and surfaced
+  the four omitted presentation-hide diagnostics. No effective mutation repeated.
+- PASS, cleanup: controller/Planner, fixture and private input daemon stopped;
+  exact owned sockets disappeared; original workspace roster/current and KWin
+  owner match their saved preimages. Unscoped non-trace build and independently
+  rechecked production DOWN pass. Raw basis: `33-dev-off.txt` through
+  `43-dev-status-final.txt`, including saved process/socket absence checkpoints.
+  Command settlement and final snapshot acceptance pass; display diagnostics,
+  independent native history and physical/perceived acceptance keep this note
   active.
