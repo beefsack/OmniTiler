@@ -451,3 +451,33 @@
   tests and the unscoped/non-trace build pass. No native-effect or fixture bytes
   changed. Native exit and independent float on/off re-checks remain pending;
   sticky release remains blocked on the membership decision above.
+
+## Fixture exit and float re-check (2026-11-08)
+
+- PASS, exit: ordinary tile -> maximize-on -> fullscreen-on -> fullscreen-off
+  retained full maximize after clearing native fullscreen; maximize-off then
+  cleared both native maximize axes and restored the original tiled frame.
+  The ordinary companion retained its tile throughout. Raw basis:
+  `base-native-a.json`, `maxon-native-a.json`, `fson-native-a.json`,
+  `fsoff-native-a.json`, `maxoff-native-a.json`, companion captures and
+  `journal-after-exit.log`. Actual shortcut callbacks dispatched all four
+  commands and produced native-state work, without `state-unknown` failures.
+- PASS, independent float and above release: from the restored ordinary base,
+  float-on produced a floating presentation row and native keep-above true;
+  float-off returned the subject to tiled presentation and native keep-above
+  false. The companion expanded while the subject floated and both re-tiled
+  on release. Raw basis: `floaton-*`, `floatoff-*` native/presentation captures
+  and `journal-after-float.log`. This is not sticky release evidence.
+- Exact fixture sentinel/PID/native UUID joins preceded transition input.
+  Initial pre-map enumeration did not find the fixtures; the post-map native
+  joins were collected after controller startup. A pointer-center focus attempt
+  did not focus either fixture and sent no command chord. Native activation of
+  the exact joined fixture then focused it before each of the six chords,
+  confirmed by fixture readback. State commands used injected ydotool input,
+  not physical-key acceptance. No full-native-roster uniqueness is claimed.
+- Cleanup passed: owned controller, Planner, fixture and input daemon stopped;
+  fixture/input sockets removed; appended workspace removed and original
+  current workspace restored. The unscoped non-trace bundle was rebuilt and
+  final production status was DOWN. No sticky-on ran; sticky release and its
+  membership decision remain open, as do sticky/stacking startup restoration
+  and physical-key acceptance. This note remains active.
