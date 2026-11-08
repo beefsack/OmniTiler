@@ -141,5 +141,26 @@ four tests also pass. Strict Clippy first found eight mechanical lint failures;
 their repair briefly introduced a compile error, corrected before all gates
 were rerun successfully. Protected fixture bytes remain unchanged. Pure culls
 of unreachable legacy bookkeeping support and obsolete harness identity fields
-are separately scoped; native injected-input and physical acceptance remain
-pending. No completed outcome is claimed.
+are verified in separate commits. Legacy admission rejects implicit commands,
+so its resolved-identity clone and extra publication argument were redundant;
+all five production and six test callers are updated. The harness's retired
+identity constants had no importers, its factory's twenty callers pass no
+arguments, and its identity field had no readers. Scoped Rust gates and adapter
+typecheck, all 1183 tests and the unscoped build remain green after these culls.
+
+## Native acceptance blocker
+
+A fixture-only live attempt reached evaluated controller readiness, discovery
+and two applied observation publications. Two fixture sentinel/PID/native-UUID
+joins matched controlled tiled frames. Native activation did not establish the
+required focused fixture: after a pointer move and click, both fixture focus
+readbacks were false and the presentation foreground was empty. No command-key
+burst ran, so rapid-input delivery and final native/core agreement remain
+unverified. Startup also emitted declaration-order warnings and D-Bus errors;
+their significance is unclassified, not dismissed as environmental.
+
+Teardown removed the owned fixture and input daemon, their sockets and both
+created workspaces. The original workspace roster and current workspace were
+observed again, the unscoped non-trace bundle was rebuilt, and final status is
+DOWN. Injected-input acceptance is blocked before key delivery; physical-key
+and perceived-latency acceptance remain pending. No completed outcome is claimed.
