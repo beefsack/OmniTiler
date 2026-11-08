@@ -1,5 +1,15 @@
 // Strict v4 broker-transport shim for real-Engine integration tests.
 //
+// SINGLE-PARKED-COMMAND LIMITATION: this shim stamps at most one queued
+// command per capture and is NOT a model of production batch semantics.
+// Production (`WorldService` via `broker_world_eval`) drains ALL parked
+// commands FIFO in one capture. Any test exercising queued bursts or
+// multiple parked commands must drive the genuine retained broker
+// evaluator (see world-entry-fifo-engine.test.ts), never this shim.
+// `stampCapture` throws fail-fast when more than one command is parked,
+// so a burst silently modeled under old one-command-per-capture batching
+// becomes a hard RED instead of a false GREEN.
+//
 // The production broker owns one sequencing namespace plus the bound
 // response correlation; `raw_world_eval` is a retained strict `WorldEngine`
 // with no broker in front of it, so this file performs exactly the
@@ -109,7 +119,9 @@ export interface MiniBroker {
     // Stamp one capture envelope into the exact strict v4 report the sole
     // broker would dispatch: the envelope's own producer adapter and
     // serving generation, fresh broker sequences, the capture source, and
-    // at most one queued command, with the capture-only lanes stripped.
+    // the single parked command (throws when more than one command is
+    // parked: batch semantics require the genuine broker evaluator),
+    // with the capture-only lanes stripped.
     stampCapture(envelopePayload: string): string;
     // Bind one core reply for the actuator lane: source/watermark/clock
     // plus a nulled terminal result. Records the core result for take.
@@ -123,6 +135,8 @@ export interface MiniBroker {
     // latest drain unsettled; ready with the earliest uncollected
     // settlement's own globalCmd and result (null included), collected
     // exactly once. A stale generation refuses as generation-mismatch.
+    // Test-only take correlation only: never authentication or full
+    // production broker behavior (see the Rust broker tests).
     answerTake(takePayload: string): string;
 }
 
@@ -183,6 +197,9 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
             obs = increment(obs);
             reqSeq = increment(reqSeq);
             clock = increment(clock);
+            if (queued.length > 1) {
+                throw new Error(`mini-broker supports single-parked-command captures only: ${String(queued.length)} commands parked; use the genuine broker_world_eval WorldService route for batch semantics`);
+            }
             const next = queued.length > 0 ? (queued.shift() as { client: unknown; clientCmd: unknown; command: unknown; globalCmd: string }) : null;
             const command = next?.command ?? null;
             let cmdSeqValue: string | null = null;

@@ -491,15 +491,28 @@ describe("production-entry FrameWitness fence", () => {
         const sentBefore = h.describes().length;
         fire(h, "desktopsChanged");
         answerQueued(h);
-        assert.equal(h.describes().length, sentBefore + 1, "gap invalidation sends exactly one fresh capture");
-        const sent = envelopeOf(h.describes()[sentBefore] as CapturedCall);
-        const report = sent["report"] as Record<string, unknown>;
-        const witness = witnessOf(report);
-        assert.ok(witness !== null, "fresh capture proves");
-        assert.notEqual(witness["obs"], mark, "stale mark is never sent");
-        assert.equal(sent["nativeInvalid"], witness["obs"], "envelope watermark matches the fresh mark");
-        assert.ok(isCanonicalU64(witness["obs"]), "fresh mark is canonical");
-        assert.equal(report["focused"], "win-a", "report stays alive");
+        // The queue accept honestly defers to the invalidation-armed
+        // debounce (no synchronous preempt of the armed timer, so the burst
+        // file pump can never reenter dispatch): the debounce drains a fresh
+        // capture after the filings settle.
+        h.runTimers();
+        const fresh = h.describes().slice(sentBefore);
+        assert.ok(fresh.length >= 1, "gap invalidation drains a fresh capture");
+        const first = envelopeOf(fresh[0] as CapturedCall);
+        const firstReport = first["report"] as Record<string, unknown>;
+        const firstWitness = witnessOf(firstReport);
+        assert.ok(firstWitness !== null, "fresh capture proves");
+        assert.notEqual(firstWitness["obs"], mark, "stale mark is never sent");
+        assert.equal(first["nativeInvalid"], firstWitness["obs"], "envelope watermark matches the fresh mark");
+        assert.ok(isCanonicalU64(firstWitness["obs"]), "fresh mark is canonical");
+        assert.equal(firstReport["focused"], "win-a", "report stays alive");
+        for (const call of fresh) {
+            const report = (JSON.parse(call.payload) as { report: Record<string, unknown> }).report;
+            const witness = witnessOf(report);
+            if (witness !== null) {
+                assert.notEqual(witness["obs"], mark, "no post-gap capture replays the stale mark");
+            }
+        }
         h.handle?.stop();
     });
 

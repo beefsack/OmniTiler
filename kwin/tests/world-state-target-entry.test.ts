@@ -378,14 +378,16 @@ describe("world state-target entry (production wiring)", () => {
         sticky();
         h.runTimers();
         const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
-        assert.deepEqual(filed["command"], { op: "toggle-sticky", win: "win-a" });
+        // Ordinary keyboard intents resolve implicit at core current focus
+        // (docs/decisions/commands.md#kde-rapid-input).
+        assert.deepEqual(filed["command"], { op: "toggle-sticky", win: { currentFocus: true } });
         assert.equal(live["onAllDesktops"], false);
         const req = requestOf(h);
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1"));
         fs();
         h.runTimers();
         const filed2 = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
-        assert.deepEqual(filed2["command"], { op: "toggle-fullscreen", win: "win-a" });
+        assert.deepEqual(filed2["command"], { op: "toggle-fullscreen", win: { currentFocus: true } });
         assert.equal(live["fullScreen"], false);
         h.handle?.stop();
     });

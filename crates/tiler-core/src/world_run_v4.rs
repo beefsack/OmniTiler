@@ -33,8 +33,8 @@ use crate::world_engine::{
 use crate::world_gesture::GestureOutcome;
 use crate::world_publish_v4::PublishEnvelopeV4;
 use crate::world_report::{
-    CommandRejectKind, CommandResult, HoldReason, TilingMode, TransferKind, WorldReplyV4,
-    WorldReportV4,
+    BatchSettlement, CommandRejectKind, CommandResult, EffectKind, HoldReason, IntentWrite,
+    TilingMode, TransferKind, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_report_v4_checks::graded_effective_v4;
 
@@ -64,6 +64,7 @@ impl WorldEngine {
     /// next live revision; the admission boundary owns the counter). Revision
     /// exhaustion refuses before any mutation. The caller stages on a
     /// clone and discards it on [`V4RunOutcome::Rejected`].
+    #[cfg(test)]
     pub(crate) fn run_accepted_v4(
         &mut self,
         report: &WorldReportV4,
@@ -71,14 +72,42 @@ impl WorldEngine {
         consumed: bool,
         issuing_revision: u64,
     ) -> V4RunOutcome {
+        let (outcome, _) =
+            self.run_accepted_v4_batched(report, issue, consumed, issuing_revision, &[]);
+        outcome
+    }
+
+    /// Run one already-admitted v4 candidate plus a parked FIFO command
+    /// batch drained inside the same capture/run/publication: native
+    /// observations incorporate once, then every command executes in order
+    /// with core subject state after the preceding action, and exactly one
+    /// full publication carries the last command's result. The inline
+    /// report command (when present) runs first; queued commands follow in
+    /// FIFO order. Renderer validation applies to the inline command only:
+    /// queued commands never carried render proof. Returns the single run
+    /// outcome plus one per-command settlement index-aligned with `queued`
+    /// (inline results ride the final publication, never a settlement). A
+    /// creation-exhausted command discards the whole staged candidate with
+    /// empty settlements so the caller reparks the batch.
+    pub(crate) fn run_accepted_v4_batched(
+        &mut self,
+        report: &WorldReportV4,
+        issue: &EventIssue,
+        consumed: bool,
+        issuing_revision: u64,
+        queued: &[(u64, WorldCommand)],
+    ) -> (V4RunOutcome, Vec<BatchSettlement>) {
         // Admitted-candidate precondition without implementing admission:
         // an exhausted counter refuses and re-bootstraps under a new
         // generation elsewhere; it never wraps in place.
         if self.state_revision == u64::MAX {
-            return V4RunOutcome::Rejected {
-                kind: KIND_REVISION_EXHAUSTED,
-                message: MSG_REVISION_EXHAUSTED,
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_REVISION_EXHAUSTED,
+                    message: MSG_REVISION_EXHAUSTED,
+                },
+                Vec::new(),
+            );
         }
         debug_assert_eq!(
             issuing_revision,
@@ -115,8 +144,51 @@ impl WorldEngine {
         );
         let effective = graded.as_ref().unwrap_or(report);
         let source_routing = RawRouting::from_v4(effective);
-        let (frozen_send_source, frozen_migration_source) =
-            self.freeze_command_sources(report.command.as_ref(), &source_routing);
+        // First-command freeze stays contracted on the first command of the
+        // batch (inline else oldest queued), never on a later one.
+        let first_command = report
+            .command
+            .as_ref()
+            .or_else(|| queued.first().map(|(_, command)| command));
+        let (mut frozen_send_source, frozen_migration_source) =
+            self.freeze_command_sources(first_command, &source_routing);
+        // Pre-observation retained homes plus the pre-observation action
+        // context for the first command only: the freeze above read the
+        // stale pre-native slot, while execution resolves the UPDATED
+        // slot after native incorporation below. The deferred override
+        // after the native-focus block re-resolves the first implicit
+        // send subject from the updated slot against THIS snapshot, so
+        // the first SEND keeps pre-observation vintage for the subject
+        // that actually executes. Conditional to an actual first implicit
+        // HomeThenAction send; explicit sends and migration freeze
+        // unchanged, and no engine state is cloned.
+        let first_implicit_home_send = matches!(
+            first_command,
+            Some(WorldCommand::Implicit(inner))
+                if matches!(
+                    inner.as_ref(),
+                    WorldCommand::SendRelative {
+                        source: crate::world_report::SendSource::HomeThenAction,
+                        ..
+                    } | WorldCommand::SendNumbered {
+                        source: crate::world_report::SendSource::HomeThenAction,
+                        ..
+                    }
+                )
+        );
+        let pre_send_homes: BTreeMap<WindowId, OutputId> = if first_implicit_home_send {
+            self.members
+                .iter()
+                .map(|(window, state)| (window.clone(), state.home.output.clone()))
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
+        let pre_send_action: Option<OutputId> = if first_implicit_home_send {
+            self.resolve_action_output(&source_routing)
+        } else {
+            None
+        };
         // Exactly-once initial ingestion: capture the original raw facts,
         // ingest intent from that capture, then stage the invalid- and
         // capability-graded effective rows from the same capture, so the
@@ -289,9 +361,48 @@ impl WorldEngine {
             let prev = self.prior_context.prev_focused_global.clone();
             let current_focused = self.staged.observation.focused_global.clone();
             if !current_focused.is_empty() && prev != current_focused {
-                let active = WindowId(current_focused);
+                let active = WindowId(current_focused.clone());
                 let _ = self.record_canonical(&active, &held_scopes, false);
+                // A genuine new native focus event beats prior core intent:
+                // when the fail-closed record above skipped, the stale slot
+                // must not survive under the new event.
+                if self
+                    .implicit_focus
+                    .as_ref()
+                    .is_none_or(|slot| slot.0 != current_focused)
+                {
+                    self.implicit_focus = None;
+                }
+            } else if current_focused.is_empty() {
+                // Genuine native focus loss clears the execution-time
+                // subject. Per-workspace canonical memory
+                // (`last_active_window`) is untouched: it stays best-effort
+                // for workspace return.
+                self.implicit_focus = None;
             }
+            // Close or departure clears a slot target that left the live
+            // set; unchanged re-reports keep an unlanded command choice.
+            if let Some(slot) = self.implicit_focus.clone()
+                && (self.staged.closes.contains(&slot) || !self.staged.homing.contains_key(&slot))
+            {
+                self.implicit_focus = None;
+            }
+        }
+        // Deferred first-command subject re-resolution: the pre-observation
+        // freeze read the stale slot, but native incorporation above moved
+        // it. Re-resolve the first implicit HomeThenAction send subject from
+        // the UPDATED slot against the pre-observation snapshot (retained
+        // home else pre-observation action context), never staged postimage
+        // state: same-report rehoming of the execution subject still refuses
+        // instead of retargeting, and an unresolvable subject freezes
+        // nothing so execution refuses without inventing focus.
+        if first_implicit_home_send {
+            frozen_send_source = self.implicit_focus.clone().and_then(|subject| {
+                pre_send_homes
+                    .get(&subject)
+                    .cloned()
+                    .or(pre_send_action.clone())
+            });
         }
         {
             let mut pre_known: BTreeSet<WindowId> = BTreeSet::new();
@@ -346,50 +457,125 @@ impl WorldEngine {
                 result,
                 &held_scopes,
             );
-            return self.finish_v4(report, issuing_revision, reply);
+            return (self.finish_v4(report, issuing_revision, reply), Vec::new());
         }
+        // Batch command list: the inline report command (when present)
+        // runs first, then every parked command in FIFO order. The inline
+        // entry carries its renderer proof; queued entries never do.
+        let mut commands: Vec<(u64, WorldCommand, bool)> = Vec::new();
         if let Some(command) = report.command.as_ref() {
-            let command_seq = report.command_seq.expect("admitted v4 pair");
-            let was_floating = self.floating_scopes.clone();
-            // Observation-only pre-command image: settlement, sweep,
-            // gesture, admission focus, and intent effects above are
-            // trusted observations. A command refusal restores exactly
-            // this image so no partial command mutation survives, while
-            // pre-command observation effects stay published. Renderer
-            // validation reads the latest previously published revision,
-            // never the pending one the publication below will stamp.
+            commands.push((
+                report.command_seq.expect("admitted v4 pair"),
+                command.clone(),
+                true,
+            ));
+        }
+        for (seq, command) in queued {
+            commands.push((*seq, command.clone(), false));
+        }
+        // Admission focus effects above are history, never promises: the
+        // first explicit batch Focus supersedes every unissued prior Focus
+        // (admission or earlier batch), so only the latest batch Focus
+        // publishes. Raise/Stack have no core producer and pass through
+        // untouched (no blanket supersession assumed). Trailing non-focus
+        // commands never clear the surviving focus.
+        if commands.is_empty() {
+            let result = self.command_result.take();
+            crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
+            let reply = self.publish_v4(
+                PublishEnvelopeV4 {
+                    adapter_incarnation: report.adapter_incarnation.clone(),
+                    request_id: report.request_id.clone(),
+                    observation_seq: report.observation_seq,
+                    command_consumed: false,
+                    issuing_revision,
+                },
+                report.command.as_ref(),
+                effects,
+                result,
+                &held_scopes,
+            );
+            return (self.finish_v4(report, issuing_revision, reply), Vec::new());
+        }
+        let mut settlements: Vec<BatchSettlement> = Vec::new();
+        let mut last_result: Option<CommandResult> = None;
+        // Baseline for in-batch focus resolution: post-observation session
+        // state, before the first command runs. Observations applied once
+        // above; every command below owns post-previous-command state.
+        self.snapshot_batch_focus_baseline();
+        // Explicit batch intent accumulator, latest-wins per window. The
+        // pre-existing sticky refusal rollback saves stay untouched in
+        // their map until the single final merge below, so intermediate
+        // commands never consume, duplicate, or drop them.
+        let mut batch_saves: BTreeMap<WindowId, IntentWrite> = BTreeMap::new();
+        // Post-command bookkeeping identity per executed command: the
+        // resolved execution subject carried from pre-execution state,
+        // never focus after the action. The final publish drains with the
+        // last executed command's identity.
+        let mut last_bookkeeping: Option<WorldCommand> = None;
+        let mut first = true;
+        let last_index = commands.len() - 1;
+        for (index, (command_seq, command, is_inline)) in commands.iter().enumerate() {
+            let command_seq = *command_seq;
+            let is_inline = *is_inline;
+            // Already-consumed sequences reconcile without re-executing:
+            // no effect, no result, no high-watermark motion.
+            if self
+                .command_highwater
+                .is_some_and(|mark| command_seq <= mark)
+            {
+                settlements.push(BatchSettlement {
+                    seq: command_seq,
+                    result: None,
+                });
+                first = false;
+                continue;
+            }
+            // Observation-only pre-command image per command: a refusal
+            // restores exactly the post-previous-command image, so earlier
+            // batch effects stay published while this command's partial
+            // mutation never survives.
             let precommand = self.clone();
-            if let Some(reject) = self.validate_renderer_input_v4(
-                report.renderer_input.as_ref(),
-                precommand.latest_published_presentation_rev_v4,
-            ) {
+            if is_inline
+                && let Some(reject) = self.validate_renderer_input_v4(
+                    report.renderer_input.as_ref(),
+                    precommand.latest_published_presentation_rev_v4,
+                )
+            {
                 *self = precommand;
                 self.note_command(command_seq);
-                self.command_result = Some(CommandResult::Rejected { kind: reject });
+                let result = Some(CommandResult::Rejected { kind: reject });
                 crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                let result = self.command_result.take();
-                let reply = self.publish_v4(
-                    PublishEnvelopeV4 {
-                        adapter_incarnation: report.adapter_incarnation.clone(),
-                        request_id: report.request_id.clone(),
-                        observation_seq: report.observation_seq,
-                        command_consumed: false,
-                        issuing_revision,
-                    },
-                    report.command.as_ref(),
-                    effects,
-                    result,
-                    &held_scopes,
-                );
-                return self.finish_v4(report, issuing_revision, reply);
+                settlements.push(BatchSettlement {
+                    seq: command_seq,
+                    result: result.clone(),
+                });
+                last_result = result;
+                first = false;
+                continue;
             }
+            // The first batch command reuses the contracted pre-observation
+            // freeze above; every later subject re-freezes from staged
+            // post-previous-command state.
+            let (send_source, migration_source) = if first {
+                (frozen_send_source.clone(), frozen_migration_source.clone())
+            } else {
+                let routing = RawRouting::from_staged(&self.staged);
+                self.freeze_command_sources(Some(command), &routing)
+            };
+            first = false;
+            let was_floating = self.floating_scopes.clone();
+            // Resolve the bookkeeping identity before execution: an
+            // implicit command maps to its explicit form against the
+            // current (pre-execution) subject slot.
+            let bookkeeping = self.bookkeeping_command(command);
             match self.execute_command(
                 issue,
                 command_seq,
                 command,
                 &held_scopes,
-                frozen_send_source.clone(),
-                frozen_migration_source.clone(),
+                send_source,
+                migration_source,
             ) {
                 CommandApplied::Effect(effect) => {
                     self.resweep_retiled(
@@ -401,29 +587,28 @@ impl WorldEngine {
                     let result = self.command_result.take();
                     self.build_staged_domains();
                     self.settle_intent_admissions();
-                    self.sync_toggle_float_command(command);
-                    if effect.kind == crate::world_report::EffectKind::Focus {
-                        effects.retain(|existing| {
-                            !(existing.kind == crate::world_report::EffectKind::Focus
-                                && existing.target == effect.target)
-                        });
+                    self.sync_toggle_float_command(&bookkeeping);
+                    if index == last_index {
+                        // Final command: its staged saves stay for the
+                        // single final publish drain, preserving exact
+                        // single-command semantics (including queued-match
+                        // ordinary suppression).
+                    } else {
+                        self.accumulate_batch_command_save(&mut batch_saves, &bookkeeping, &result);
+                    }
+                    if effect.kind == EffectKind::Focus {
+                        // Latest explicit focus wins: drop every unissued
+                        // prior Focus (admission or earlier batch).
+                        effects.retain(|existing| existing.kind != EffectKind::Focus);
                     }
                     effects.push(effect);
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                    let reply = self.publish_v4(
-                        PublishEnvelopeV4 {
-                            adapter_incarnation: report.adapter_incarnation.clone(),
-                            request_id: report.request_id.clone(),
-                            observation_seq: report.observation_seq,
-                            command_consumed: false,
-                            issuing_revision,
-                        },
-                        report.command.as_ref(),
-                        effects,
-                        result,
-                        &held_scopes,
-                    );
-                    return self.finish_v4(report, issuing_revision, reply);
+                    settlements.push(BatchSettlement {
+                        seq: command_seq,
+                        result: result.clone(),
+                    });
+                    last_result = result;
+                    last_bookkeeping = Some(bookkeeping);
                 }
                 CommandApplied::NoEffect => {
                     self.resweep_retiled(
@@ -434,30 +619,28 @@ impl WorldEngine {
                     );
                     self.build_staged_domains();
                     self.settle_intent_admissions();
-                    self.sync_toggle_float_command(command);
+                    self.sync_toggle_float_command(&bookkeeping);
                     let result = self.command_result.take();
+                    if index != last_index {
+                        self.accumulate_batch_command_save(&mut batch_saves, &bookkeeping, &result);
+                    }
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                    let reply = self.publish_v4(
-                        PublishEnvelopeV4 {
-                            adapter_incarnation: report.adapter_incarnation.clone(),
-                            request_id: report.request_id.clone(),
-                            observation_seq: report.observation_seq,
-                            command_consumed: false,
-                            issuing_revision,
-                        },
-                        report.command.as_ref(),
-                        effects,
-                        result,
-                        &held_scopes,
-                    );
-                    return self.finish_v4(report, issuing_revision, reply);
+                    settlements.push(BatchSettlement {
+                        seq: command_seq,
+                        result: result.clone(),
+                    });
+                    last_result = result;
+                    last_bookkeeping = Some(bookkeeping);
                 }
                 CommandApplied::Rejected { kind, message } => {
                     // Creation exhaustion is a protocol envelope failure:
                     // it discards the staged candidate with no adoption,
-                    // exactly like every pre-acceptance gate.
+                    // exactly like every pre-acceptance gate. The empty
+                    // settlements leave the whole batch parked.
                     if kind == KIND_CREATION_EXHAUSTED {
-                        return V4RunOutcome::Rejected { kind, message };
+                        self.batch_base_focus.clear();
+                        self.batch_command_focus.clear();
+                        return (V4RunOutcome::Rejected { kind, message }, Vec::new());
                     }
                     *self = precommand;
                     if let Some(line) = self.resize_refusal_diagnostic_v4(report, kind) {
@@ -466,28 +649,32 @@ impl WorldEngine {
                     self.note_command(command_seq);
                     let typed = CommandRejectKind::parse(kind)
                         .unwrap_or(CommandRejectKind::OperationRefused);
-                    self.command_result = Some(CommandResult::Rejected { kind: typed });
+                    let result = Some(CommandResult::Rejected { kind: typed });
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                    let result = self.command_result.take();
-                    let reply = self.publish_v4(
-                        PublishEnvelopeV4 {
-                            adapter_incarnation: report.adapter_incarnation.clone(),
-                            request_id: report.request_id.clone(),
-                            observation_seq: report.observation_seq,
-                            command_consumed: false,
-                            issuing_revision,
-                        },
-                        report.command.as_ref(),
-                        effects,
-                        result,
-                        &held_scopes,
-                    );
-                    return self.finish_v4(report, issuing_revision, reply);
+                    settlements.push(BatchSettlement {
+                        seq: command_seq,
+                        result: result.clone(),
+                    });
+                    last_result = result;
+                    last_bookkeeping = Some(bookkeeping);
                 }
             }
         }
-        let result = self.command_result.take();
-        crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
+        // Single final intent merge: earlier batch saves win over the
+        // pre-existing refusal rollback map latest-wins per window. The
+        // final command's own staged saves stay staged, so the publish
+        // drain below emits everything exactly once with one knowledge
+        // update. Rejected commands restored their pre-command image and
+        // accumulated nothing; consumed skips never executed.
+        for (win, write) in batch_saves {
+            self.sticky_rollback_saves.insert(win, write);
+        }
+        // The final publish drains with the last executed command's
+        // carried identity (resolved pre-execution subject); commands
+        // that never executed fall back to the reported spelling.
+        let published_command: Option<&WorldCommand> = last_bookkeeping
+            .as_ref()
+            .or_else(|| commands.last().map(|(_, command, _)| command));
         let reply = self.publish_v4(
             PublishEnvelopeV4 {
                 adapter_incarnation: report.adapter_incarnation.clone(),
@@ -496,12 +683,12 @@ impl WorldEngine {
                 command_consumed: false,
                 issuing_revision,
             },
-            report.command.as_ref(),
+            published_command,
             effects,
-            result,
+            last_result,
             &held_scopes,
         );
-        self.finish_v4(report, issuing_revision, reply)
+        (self.finish_v4(report, issuing_revision, reply), settlements)
     }
 
     /// Finish one v4 accepted run: lifetime retention, membership and
@@ -515,6 +702,11 @@ impl WorldEngine {
         issuing_revision: u64,
         mut reply: WorldReplyV4,
     ) -> V4RunOutcome {
+        // Batch-only baseline ends with the run: clear so committed state
+        // never carries an active baseline into the next capture or a
+        // direct command seam (missing entry falls back to staged focus).
+        self.batch_base_focus.clear();
+        self.batch_command_focus.clear();
         self.prune_lifetime_state();
         self.note_focused_output();
         self.reconcile_members();

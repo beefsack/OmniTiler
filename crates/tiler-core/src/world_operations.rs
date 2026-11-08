@@ -26,6 +26,92 @@ use crate::world_report::{
 use crate::world_commands::CommandApplied;
 
 impl WorldEngine {
+    /// Effective operation focus for one internal command: the session's
+    /// post-previous-command focus when a prior batch command established
+    /// it (a session value change since the batch baseline snapshot, or
+    /// actual in-batch command provenance even when the value matches the
+    /// baseline) and it resolves to a window homed in `domain`, else the
+    /// staged (native capture) focus unchanged. Batch commands share one
+    /// native capture, so later commands must not restage stale native
+    /// focus - but unchanged native lag also never overrides the session:
+    /// only actual in-batch command focus counts, never mere retained
+    /// state. Raw native facts are never rewritten, only the carried
+    /// event focus. A genuine empty staged focus keeps its no-focus
+    /// meaning unless a prior batch command set a valid focus after it;
+    /// retained pre-batch session state (including MRU fallback) never
+    /// promotes itself over the staged capture here.
+    pub(crate) fn effective_operation_focus(
+        &self,
+        domain: &DomainKey,
+        staged_focus: &WindowId,
+    ) -> WindowId {
+        if let Some(session) = self.engine.session(domain) {
+            let (focus_domain, focus_leaf) = session.focus();
+            let current = match (focus_domain, focus_leaf) {
+                (Some(focus_domain), Some(focus_leaf)) if &focus_domain == domain => {
+                    session.focused_window_for(&focus_leaf, &focus_domain)
+                }
+                _ => None,
+            }
+            .filter(|window| self.staged.homing.get(window).as_ref() == Some(&domain));
+            // Batch-only baseline: only an entry snapped for the active
+            // batch counts. No entry means no active batch, so fall back
+            // to the staged capture - never treat a missing entry as a
+            // None baseline, which would promote stale retained session
+            // focus over fresh observations outside the batch loop.
+            if let Some(base) = self.batch_base_focus.get(domain) {
+                if let Some(window) = current.as_ref()
+                    && Some(window) != base.as_ref()
+                {
+                    return window.clone();
+                }
+                // Same-as-baseline still counts when an actual batch command
+                // established it: an explicit in-batch Focus at the
+                // already-focused sole member changes no session value, but
+                // the live focus is still post-prior core state. Genuine
+                // empty never marks (empty records fail closed), and
+                // outside-batch retained focus has no baseline entry, so
+                // both still fall back to the staged capture unchanged.
+                if let Some(window) = current.as_ref()
+                    && self.batch_command_focus.contains(window)
+                {
+                    return window.clone();
+                }
+            }
+        }
+        staged_focus.clone()
+    }
+
+    /// Snapshot the current per-domain session focus as the batch
+    /// baseline: one entry per live session, resolved to its focused
+    /// window when homed in that same domain. Taken once per capture
+    /// after observation incorporation and before the first batch
+    /// command, so [`WorldEngine::effective_operation_focus`] can tell a
+    /// prior batch command's focus apart from retained pre-batch state.
+    pub(crate) fn snapshot_batch_focus_baseline(&mut self) {
+        let mut base: BTreeMap<DomainKey, Option<WindowId>> = BTreeMap::new();
+        // Provenance starts empty every capture: only commands in THIS
+        // batch may mark, never admission or a previous run.
+        self.batch_command_focus.clear();
+        for key in self.engine.domain_keys() {
+            let resolved = self
+                .engine
+                .session(&key)
+                .and_then(|session| {
+                    let (focus_domain, focus_leaf) = session.focus();
+                    match (focus_domain, focus_leaf) {
+                        (Some(focus_domain), Some(focus_leaf)) if focus_domain == key => {
+                            session.focused_window_for(&focus_leaf, &focus_domain)
+                        }
+                        _ => None,
+                    }
+                })
+                .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&key));
+            base.insert(key, resolved);
+        }
+        self.batch_base_focus = base;
+    }
+
     /// Existing operation route through the full [`CoreEvent`] (D2/D3
     /// migration path for KDE): the homing (or first readable) domain
     /// supplies the observation envelope. Send operations retain a window
@@ -325,7 +411,7 @@ impl WorldEngine {
             domain: Engine::canonical_component_domain(&inset_source),
             domain_key: source_key.clone(),
             outer_gap: source_report.outer_gap,
-            focused_window: source_report.focused.clone(),
+            focused_window: self.effective_operation_focus(&source_key, &source_report.focused),
             windows: combined,
             closed_windows: closed,
             directional: Some(vec![
@@ -337,7 +423,7 @@ impl WorldEngine {
             target_windows: Vec::new(),
             command: command.clone(),
         };
-        self.finish_operation_event(command_seq, &event)
+        self.finish_operation_event(command_seq, &event, held_scopes)
     }
 
     /// Direction-only focus (core-owned topology): strict parity with the
@@ -1689,7 +1775,7 @@ impl WorldEngine {
             domain: Engine::canonical_component_domain(&inset),
             domain_key: domain_key.clone(),
             outer_gap: domain_report.outer_gap,
-            focused_window: domain_report.focused.clone(),
+            focused_window: self.effective_operation_focus(&domain_key, &domain_report.focused),
             windows: self.shielded_windows(&domain_key, &domain_report.windows),
             closed_windows: domain_report.closed.clone(),
             directional: None,
@@ -1698,7 +1784,7 @@ impl WorldEngine {
             target_windows: Vec::new(),
             command: command.clone(),
         };
-        let applied = self.finish_operation_event(command_seq, &event);
+        let applied = self.finish_operation_event(command_seq, &event, held_scopes);
         if composed_cleared
             && matches!(applied, CommandApplied::Rejected { .. })
             && let CoreCommand::ToggleFloat { window, .. } = command
@@ -1774,6 +1860,7 @@ impl WorldEngine {
         &mut self,
         command_seq: u64,
         event: &CoreEvent,
+        held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
         let reply = self.engine.handle(event);
         self.command_result = Self::command_result_from_reply(&event.command, &reply);
@@ -1890,6 +1977,7 @@ impl WorldEngine {
             }
             CoreReply::FocusDirectional(plan) => {
                 self.note_command(command_seq);
+                let _ = self.record_command_focus(&plan.to_window, held_scopes);
                 CommandApplied::Effect(OneShotEffect::explicit_focus(
                     command_seq,
                     plan.to_window.clone(),
@@ -2120,5 +2208,9 @@ pub(crate) fn command_window(command: &WorldCommand) -> Option<WindowId> {
         | WorldCommand::MigrateDirectional { .. }
         | WorldCommand::SetWorkspaceTiling { .. }
         | WorldCommand::ToggleWorkspaceTiling { .. } => None,
+        // Execution-time subjects resolve at dispatch; the placeholder
+        // never names a binding, so no supersession applies here. The
+        // resolved explicit command supersedes through the normal path.
+        WorldCommand::Implicit(_) => None,
     }
 }

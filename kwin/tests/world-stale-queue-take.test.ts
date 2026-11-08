@@ -266,8 +266,11 @@ describe("stale queue/take lanes after a lifetime rotation", () => {
         discoverFlow(flow, "gen-1");
         const auto = lastCall(flow.calls, "DescribeWorld");
         auto.callback(acceptCapture("gen-1", JSON.parse(auto.payload) as Record<string, unknown>, "1"));
-        // Two commands file while both queue replies are held: Q1 stays
-        // held past the rotation below.
+        // Two commands park while the first queue reply is held: Q1 stays
+        // held past the rotation below. FIFO filing serializes: the second
+        // press parks without submitting while Q1's ACK is unresolved (the
+        // broker high-water refuses an older missing command once a later
+        // one is accepted), so only one Queue call flies.
         flow.handle.requestWorkspaceMove(0, false);
         runTimers(flow);
         const q1 = lastCall(flow.calls, "QueueWorldCommand");
@@ -275,10 +278,13 @@ describe("stale queue/take lanes after a lifetime rotation", () => {
         const q1client = (JSON.parse(q1.payload) as Record<string, unknown>)["clientCmd"];
         flow.handle.requestWorkspaceMove(0, false);
         runTimers(flow);
-        const q2 = lastCall(flow.calls, "QueueWorldCommand");
-        assert.notEqual(q2, q1);
-        // Q2 races the rotation: the serving world is already gen-2.
-        q2.callback(generationMismatch("gen-2"));
+        assert.equal(
+            flow.calls.filter((c) => c.method === "QueueWorldCommand").length,
+            1,
+            "second press parks without submitting while the first ACK is outstanding",
+        );
+        // Q1 races the rotation: the serving world is already gen-2.
+        q1.callback(generationMismatch("gen-2"));
         // The dead generation drops and the entry re-discovers.
         const rediscover = lastCall(flow.calls, "DiscoverWorld");
         assert.notEqual(rediscover, undefined);
@@ -300,7 +306,12 @@ describe("stale queue/take lanes after a lifetime rotation", () => {
         const describes = flow.calls.filter((c) => c.method === "DescribeWorld").length;
         const writes = flow.world.geometryWrites.length;
         // The delayed Q1 success (gen-1) arrives after the reset: no-op.
-        // It never drains, never clears newer undecided state, never wedges.
+        // The mismatch already settled Q1, so the transport duplicate is
+        // swallowed by the settled guard; it never drains, never clears
+        // newer undecided state, never wedges, emits no new queue, capture,
+        // or take.
+        const queuesBefore = flow.calls.filter((c) => c.method === "QueueWorldCommand").length;
+        const takesBefore = flow.calls.filter((c) => c.method === "TakeCommandResult").length;
         q1.callback(JSON.stringify({
             v: 4, outcome: "queued", gen: "gen-1",
             client: (JSON.parse(q1.payload) as Record<string, unknown>)["client"],
@@ -312,9 +323,15 @@ describe("stale queue/take lanes after a lifetime rotation", () => {
             "stale queue reply drains nothing",
         );
         assert.equal(flow.world.geometryWrites.length, writes, "stale queue reply applies nothing");
-        assert.ok(
-            flow.logs.some((l) => l.startsWith("omnitiler:world:queue-stale")),
-            "stale queue reply logs its no-op",
+        assert.equal(
+            flow.calls.filter((c) => c.method === "QueueWorldCommand").length,
+            queuesBefore,
+            "stale queue reply files nothing",
+        );
+        assert.equal(
+            flow.calls.filter((c) => c.method === "TakeCommandResult").length,
+            takesBefore,
+            "stale queue reply collects nothing",
         );
         // The stream continues: the next command files under the new
         // generation with the next client id.

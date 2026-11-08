@@ -496,7 +496,9 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.ok(isCanonicalU64(filed["clientCmd"]));
         const command = filed["command"] as Record<string, unknown>;
         assert.equal(command["op"], "send-numbered");
-        assert.equal(command["win"], "win-a");
+        // Ordinary keyboard intents resolve implicit at core current focus
+        // (docs/decisions/commands.md#kde-rapid-input).
+        assert.deepEqual(command["win"], { currentFocus: true });
         assert.equal(command["index"], 0);
         assert.equal(command["follow"], false);
         assert.deepEqual(command["source"], { implicit: "home-then-action" });

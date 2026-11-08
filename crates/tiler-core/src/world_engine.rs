@@ -315,7 +315,7 @@ impl WorldEngine {
             direction,
             mode,
             press_index,
-        }) = command
+        }) = crate::world_report::unwrap_implicit(command)
         else {
             return None;
         };
@@ -890,17 +890,37 @@ impl WorldEngine {
         command: Option<&WorldCommand>,
         routing: &RawRouting<'_>,
     ) -> (Option<OutputId>, Option<(OutputId, String)>) {
-        let frozen_send_source = match command {
-            Some(WorldCommand::SendRelative { window, source, .. })
-            | Some(WorldCommand::SendNumbered { window, source, .. }) => match source {
+        // Execution-time (Implicit-wrapped) sends carry an empty placeholder
+        // window: resolve the retained subject from the pre-freeze slot
+        // first, then look up its retained home. The slot vintage is the
+        // caller's: pre-observation for the first batch command, post-prior
+        // for later per-command refreezes. An unresolvable subject freezes
+        // nothing, so execution refuses instead of falling back to action.
+        let effective_send: Option<(&WindowId, &crate::world_report::SendSource)> = match command {
+            Some(WorldCommand::Implicit(inner)) => match inner.as_ref() {
+                WorldCommand::SendRelative { source, .. }
+                | WorldCommand::SendNumbered { source, .. } => {
+                    self.implicit_focus.as_ref().map(|slot| (slot, source))
+                }
+                _ => None,
+            },
+            Some(
+                WorldCommand::SendRelative { window, source, .. }
+                | WorldCommand::SendNumbered { window, source, .. },
+            ) => Some((window, source)),
+            _ => None,
+        };
+        let frozen_send_source = match effective_send {
+            Some((window, source)) => match source {
                 crate::world_report::SendSource::Explicit(_) => None,
                 crate::world_report::SendSource::HomeThenAction => {
                     self.resolve_home_then_action(routing, window)
                 }
             },
-            _ => None,
+            None => None,
         };
-        let frozen_migration_source = match command {
+        let unwrapped = command.map(crate::world_report::unwrap_implicit);
+        let frozen_migration_source = match unwrapped {
             Some(WorldCommand::MigrateDirectional { .. }) => {
                 let resolved = self.resolve_action_output(routing);
                 match resolved {
@@ -1511,6 +1531,28 @@ pub struct WorldEngine {
     /// the tiled MRU fallback. Pruned to the live inventory on finish.
     /// Equal precedence for tile/float/sticky: most recent wins.
     pub(crate) last_active_window: BTreeMap<DomainKey, WindowId>,
+    /// Latest retained canonical focus across all domains (execution-time
+    /// `win:{"currentFocus":true}` resolution): the most recent window successfully recorded
+    /// by [`WorldEngine::record_canonical`], regardless of domain. Empty
+    /// when no canonical focus has ever been recorded.
+    pub(crate) implicit_focus: Option<WindowId>,
+    /// Pre-batch per-domain session focus snapshot, taken once per capture
+    /// after observation incorporation and before the first batch command.
+    /// [`WorldEngine::effective_operation_focus`] prefers the live session
+    /// focus only when it moved since this snapshot (a prior batch command
+    /// established it), so unchanged native lag never erases batch intent
+    /// while genuine empty keeps its no-focus meaning.
+    pub(crate) batch_base_focus: BTreeMap<DomainKey, Option<WindowId>>,
+    /// Windows explicitly focused by an in-batch command (inserted on
+    /// successful command-time [`WorldEngine::record_command_focus`]).
+    /// Batch-only provenance for [`WorldEngine::effective_operation_focus`]:
+    /// a live session focus that matches the baseline still counts as
+    /// post-prior core state when an actual batch command established it
+    /// (an explicit Focus at the already-focused sole member changes no
+    /// session value but is still a genuine in-batch move). Cleared with
+    /// the baseline at snapshot and at run end, so genuine empty and
+    /// outside-batch retained focus still fall back to staged capture.
+    pub(crate) batch_command_focus: BTreeSet<WindowId>,
     /// Opt-in neutral focused-fullscreen presentation suspension (stage 5):
     /// when set, a focused surface that is truthfully fullscreen on its
     /// observed output suspends published border/underlay/pager shapes on
@@ -1826,6 +1868,9 @@ impl WorldEngine {
             #[cfg(test)]
             ingest_trials: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             last_active_window: BTreeMap::new(),
+            implicit_focus: None,
+            batch_base_focus: BTreeMap::new(),
+            batch_command_focus: BTreeSet::new(),
             focused_fullscreen_presentation_suspension: false,
         })
     }
@@ -2795,6 +2840,42 @@ impl WorldEngine {
         self.handle_report_v4(report, &EventIssue { owner, correlation })
     }
 
+    /// Batched counterpart of [`WorldEngine::handle_report`]: one fresh
+    /// capture report plus the parked FIFO batch drained inside the same
+    /// capture/run/publication. Returns the single admission outcome plus
+    /// one per-command settlement index-aligned with `queued`. Any refusal
+    /// adopts nothing, settles nothing, and returns empty settlements so
+    /// the caller reparks the whole batch. Not a second public ingress:
+    /// same owner/correlation defense as [`WorldEngine::handle_report`].
+    pub fn handle_report_batched(
+        &mut self,
+        report: &WorldReportV4,
+        queued: &[(u64, WorldCommand)],
+    ) -> (V4RunOutcome, Vec<crate::world_report::BatchSettlement>) {
+        let Some(owner) = self.connection_owner.clone() else {
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_OWNER,
+                    message: MSG_OWNER,
+                },
+                Vec::new(),
+            );
+        };
+        let correlation = match CorrelationId::parse(&report.request_id) {
+            Some(correlation) => correlation,
+            None => {
+                return (
+                    V4RunOutcome::Rejected {
+                        kind: KIND_CORRELATION,
+                        message: MSG_CORRELATION,
+                    },
+                    Vec::new(),
+                );
+            }
+        };
+        self.handle_report_v4_batched(report, &EventIssue { owner, correlation }, queued)
+    }
+
     fn bootstrap_report_reply(
         &self,
         report: &WorldReport,
@@ -3444,13 +3525,31 @@ impl WorldEngine {
         }
     }
 
+    /// Resolve one command to its post-command bookkeeping identity: an
+    /// implicit (execution-time-subject) command maps to its explicit form
+    /// against the resolved subject; explicit commands clone unchanged. An
+    /// unresolvable implicit falls back to the original placeholder, which
+    /// matches no save arm (preserving mismatch/empty semantics). Call
+    /// BEFORE execution: the subject is the pre-execution slot, never
+    /// focus after the action.
+    pub(crate) fn bookkeeping_command(&self, command: &WorldCommand) -> WorldCommand {
+        match command {
+            WorldCommand::Implicit(inner) => self
+                .implicit_focus
+                .clone()
+                .and_then(|window| crate::world_report::explicit_for_implicit(inner, window))
+                .unwrap_or_else(|| command.clone()),
+            _ => command.clone(),
+        }
+    }
+
     /// Synchronize explicit-float provenance with a successful runtime
     /// float toggle: a toggled-to-float non-automatic exception gains the
     /// durable mark, a toggled-to-tile lifetime loses it. Unknown or held
     /// subjects keep their mark. Only explicit command wins enter; generic
     /// automatic/capacity floats never do.
     pub(crate) fn sync_toggle_float_command(&mut self, command: &WorldCommand) {
-        let window = match command {
+        let window = match crate::world_report::unwrap_implicit(command) {
             WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
                 window, ..
             }) => WindowId(window.clone()),
@@ -3783,13 +3882,34 @@ impl WorldEngine {
         // `record_canonical` (tiled ingestion gates: readable, unheld,
         // owning-Session validation). Unchanged re-reports carry no new
         // information and never overwrite an unlanded command choice;
-        // empty focus records nothing.
+        // empty focus records nothing. The execution-time slot follows the
+        // same event lifecycle: genuine loss, close, or departure clears
+        // it while per-workspace canonical memory is untouched.
         {
             let prev = self.prior_context.prev_focused_global.clone();
             let current_focused = self.staged.observation.focused_global.clone();
             if !current_focused.is_empty() && prev != current_focused {
-                let active = WindowId(current_focused);
+                let active = WindowId(current_focused.clone());
                 let _ = self.record_canonical(&active, &held_scopes, false);
+                // A genuine new native focus event beats prior core intent:
+                // when the fail-closed record above skipped, the stale slot
+                // must not survive under the new event.
+                if self
+                    .implicit_focus
+                    .as_ref()
+                    .is_none_or(|slot| slot.0 != current_focused)
+                {
+                    self.implicit_focus = None;
+                }
+            } else if current_focused.is_empty() {
+                self.implicit_focus = None;
+            }
+            // Close or departure clears a slot target that left the live
+            // set; unchanged re-reports keep an unlanded command choice.
+            if let Some(slot) = self.implicit_focus.clone()
+                && (self.staged.closes.contains(&slot) || !self.staged.homing.contains_key(&slot))
+            {
+                self.implicit_focus = None;
             }
         }
         // Commandless born maximize-clear minting: first-seen maximized /
@@ -3844,7 +3964,14 @@ impl WorldEngine {
         if consumed {
             crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
             let result = self.command_result.take();
-            let reply = self.publish(report, true, effects, result, &held_scopes);
+            let reply = self.publish(
+                report,
+                report.command.as_ref(),
+                true,
+                effects,
+                result,
+                &held_scopes,
+            );
             return self.finish(report, digest, reply);
         }
         if let Some(command) = report.command.as_ref() {
@@ -3856,6 +3983,10 @@ impl WorldEngine {
             // this image so no partial command mutation survives, while
             // pre-command observation effects stay published.
             let precommand = self.clone();
+            // Post-command bookkeeping runs against the resolved
+            // execution subject, never the implicit placeholder: carry
+            // the pre-execution identity (not focus after the action).
+            let bookkeeping = self.bookkeeping_command(command);
             match self.execute_command(
                 &issue,
                 command_seq,
@@ -3873,7 +4004,7 @@ impl WorldEngine {
                     // in-flight members home by raw screen.
                     self.build_staged_domains();
                     self.settle_intent_admissions();
-                    self.sync_toggle_float_command(command);
+                    self.sync_toggle_float_command(&bookkeeping);
                     // Admission intent first: an explicit command
                     // focuses after it, so user intent wins when they
                     // coincide. A same-target admission duplicate is
@@ -3887,7 +4018,14 @@ impl WorldEngine {
                     }
                     effects.push(effect);
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                    let reply = self.publish(report, false, effects, result, &held_scopes);
+                    let reply = self.publish(
+                        report,
+                        Some(&bookkeeping),
+                        false,
+                        effects,
+                        result,
+                        &held_scopes,
+                    );
                     return self.finish(report, digest, reply);
                 }
                 CommandApplied::NoEffect => {
@@ -3895,10 +4033,17 @@ impl WorldEngine {
                     // See above: restage against committed ownership.
                     self.build_staged_domains();
                     self.settle_intent_admissions();
-                    self.sync_toggle_float_command(command);
+                    self.sync_toggle_float_command(&bookkeeping);
                     let result = self.command_result.take();
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                    let reply = self.publish(report, false, effects, result, &held_scopes);
+                    let reply = self.publish(
+                        report,
+                        Some(&bookkeeping),
+                        false,
+                        effects,
+                        result,
+                        &held_scopes,
+                    );
                     return self.finish(report, digest, reply);
                 }
                 CommandApplied::Rejected { kind, message } => {
@@ -3923,14 +4068,28 @@ impl WorldEngine {
                     self.command_result = Some(CommandResult::Rejected { kind: typed });
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
                     let result = self.command_result.take();
-                    let reply = self.publish(report, false, effects, result, &held_scopes);
+                    let reply = self.publish(
+                        report,
+                        report.command.as_ref(),
+                        false,
+                        effects,
+                        result,
+                        &held_scopes,
+                    );
                     return self.finish(report, digest, reply);
                 }
             }
         }
         let result = self.command_result.take();
         crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-        let reply = self.publish(report, false, effects, result, &held_scopes);
+        let reply = self.publish(
+            report,
+            report.command.as_ref(),
+            false,
+            effects,
+            result,
+            &held_scopes,
+        );
         self.finish(report, digest, reply)
     }
 

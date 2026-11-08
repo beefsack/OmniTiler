@@ -28,27 +28,27 @@ export type SendSource =
 // path; migrate-directional is direction-only (the core resolves the action
 // source from the neutral report facts).
 export type WorldCommand =
-    | { op: "focus"; win: string }
-    | { op: "send"; win: string; out: string; ws: string; follow: boolean }
+    | { op: "focus"; win: string | { currentFocus: true } }
+    | { op: "send"; win: string | { currentFocus: true }; out: string; ws: string; follow: boolean }
     | { op: "select-workspace"; out: string; ws: string }
     | { op: "select-numbered"; out: string | null; index: number }
     | { op: "select-relative"; out: string | null; delta: -1 | 1 }
     | { op: "select-previous"; out: string | null }
     | { op: "select-trailing"; out: string | null }
-    | { op: "send-relative"; win: string; source: SendSource; delta: -1 | 1; follow: boolean }
-    | { op: "send-numbered"; win: string; source: SendSource; index: number; follow: boolean }
+    | { op: "send-relative"; win: string | { currentFocus: true }; source: SendSource; delta: -1 | 1; follow: boolean }
+    | { op: "send-numbered"; win: string | { currentFocus: true }; source: SendSource; index: number; follow: boolean }
     | { op: "set-workspace-tiling"; out: string; ws: string; tiled: boolean }
     | { op: "toggle-workspace-tiling"; out: string; ws: string }
-    | { op: "toggle-maximize"; win: string }
-    | { op: "toggle-sticky"; win: string }
-    | { op: "toggle-fullscreen"; win: string }
-    | { op: "toggle-orientation"; win: string }
-    | { op: "resize"; win: string; direction: string; mode: string; press: number }
-    | { op: "toggle-float"; win: string; rect: [number, number, number, number] | null }
+    | { op: "toggle-maximize"; win: string | { currentFocus: true } }
+    | { op: "toggle-sticky"; win: string | { currentFocus: true } }
+    | { op: "toggle-fullscreen"; win: string | { currentFocus: true } }
+    | { op: "toggle-orientation"; win: string | { currentFocus: true } }
+    | { op: "resize"; win: string | { currentFocus: true }; direction: string; mode: string; press: number }
+    | { op: "toggle-float"; win: string | { currentFocus: true }; rect: [number, number, number, number] | null }
     | { op: "migrate-workspace"; from: string; to: string; ws: string }
-    | { op: "focus-directional"; win: string; direction: string }
-    | { op: "move-directional"; win: string; direction: string; sameAxis: string }
-    | { op: "send-directional"; win: string; direction: string; follow: boolean }
+    | { op: "focus-directional"; win: string | { currentFocus: true }; direction: string }
+    | { op: "move-directional"; win: string | { currentFocus: true }; direction: string; sameAxis: string }
+    | { op: "send-directional"; win: string | { currentFocus: true }; direction: string; follow: boolean }
     | { op: "migrate-directional"; direction: string };
 
 export type WorldAuthorityScope =

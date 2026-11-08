@@ -15,7 +15,7 @@ import { startWorldAdapterEntry, mintAdapterIncarnation } from "../src/world-ent
 import { captureWorldObservation } from "../src/world-observe";
 import { isSeparateWorkspaceMode } from "../src/workspace-native";
 import { createMiniBroker, DISABLED_PRESENTATION, type MiniBroker } from "./world-wire-harness";
-import { isOpaqueId } from "../src/world-seq";
+import { isCanonicalU64, isOpaqueId } from "../src/world-seq";
 import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
 
 interface FakeDesktop {
@@ -136,6 +136,7 @@ interface Harness {
     handle: ReturnType<typeof startWorldAdapterEntry>;
     runTimers: (maxDelay?: number) => void;
     lastCall: (method: string) => CapturedCall;
+    intentWriteFlights: Array<{ payload: string; callback: (reply: unknown) => void }>;
 }
 
 interface FakeSignal {
@@ -161,11 +162,17 @@ function fakeSignal(): FakeSignal {
     };
 }
 
-function makeHarness(mode: unknown = "per-output-local", gesture = false, defaultTiled: unknown = true, refillFn?: () => unknown, optionsValue?: unknown, perOutputSeam = true, entryFn: typeof startWorldAdapterEntry = startWorldAdapterEntry, throwOnProbeLog = false): Harness {
+function makeHarness(mode: unknown = "per-output-local", gesture = false, defaultTiled: unknown = true, refillFn?: () => unknown, optionsValue?: unknown, perOutputSeam = true, entryFn: typeof startWorldAdapterEntry = startWorldAdapterEntry, throwOnProbeLog = false, floatIntentSeam = false, queueHold?: { value: boolean }): Harness {
     const world = makeWorld();
     const calls: CapturedCall[] = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
     const logs: string[] = [];
+    // Held opaque-intent write flights, only when the floatIntent seam is
+    // on: WriteFloatIntent callbacks are stashed (never auto-answered) so a
+    // test can overlap accepted publications against a genuinely in-flight
+    // persist and answer each covering write by hand. Default harnesses
+    // keep sync durability and never emit these methods.
+    const intentWriteFlights: Array<{ payload: string; callback: (reply: unknown) => void }> = [];
     const shortcuts = new Map<string, () => void>();
     const signals: Record<string, FakeSignal> = {
         windowAdded: fakeSignal(),
@@ -375,7 +382,25 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback) => {
             calls.push({ method, payload, callback });
-            if (method === "QueueWorldCommand") {
+            if (method === "ReadFloatIntent" && floatIntentSeam) {
+                // Empty persisted-store read shape (ok outcome with
+                // matching stored/returned counts): hydrates empty so the
+                // first dispatch proceeds.
+                const seedBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({
+                    v: 2,
+                    correlation_id: seedBody["correlation_id"],
+                    outcome: "ok",
+                    records: [],
+                    stored: 0,
+                    returned: 0,
+                }));
+            } else if (method === "WriteFloatIntent" && floatIntentSeam) {
+                intentWriteFlights.push({ payload, callback });
+            } else if (method === "QueueWorldCommand") {
+                if (queueHold?.value === true) {
+                    return;
+                }
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
                 const queueGen = typeof queueBody["gen"] === "string" ? (queueBody["gen"] as string) : "gen-1";
                 callback(JSON.stringify({ v: 4, outcome: "queued", gen: queueGen,
@@ -412,6 +437,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         readDefaultTiledFn: () => defaultTiled,
         ...(refillFn !== undefined ? { readMigrationSourceRefillFn: refillFn } : {}),
         ...(optionsValue !== undefined ? { options: optionsValue } : {}),
+        ...(floatIntentSeam ? { floatIntent: true } : {}),
     });
     assert.ok(handle !== null);
     const runTimers = (maxDelay = 120): void => {
@@ -425,7 +451,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         }
     };
     return {
-        world, calls, timers, logs, shortcuts, signals, handle,
+        world, calls, timers, logs, shortcuts, signals, handle, intentWriteFlights,
         runTimers,
         lastCall: (method: string): CapturedCall => {
             const found = [...calls].reverse().find((c) => c.method === method);
@@ -1437,7 +1463,7 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestSticky();
         h.runTimers();
         const stickyFiled = JSON.parse(queueOf(h)) as Record<string, unknown>;
-        assert.deepEqual(stickyFiled["command"], { op: "toggle-sticky", win: "win-a" });
+        assert.deepEqual(stickyFiled["command"], { op: "toggle-sticky", win: { currentFocus: true } });
         // No direct native setter: the command owns the verdict; the
         // accepted state rows drive the single executor.
         assert.equal(ref["onAllDesktops"], onAllBefore);
@@ -1452,7 +1478,7 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestFullscreen();
         h.runTimers();
         const fsFiled = JSON.parse(queueOf(h)) as Record<string, unknown>;
-        assert.deepEqual(fsFiled["command"], { op: "toggle-fullscreen", win: "win-a" });
+        assert.deepEqual(fsFiled["command"], { op: "toggle-fullscreen", win: { currentFocus: true } });
         assert.equal(ref["fullScreen"], fsBefore);
         assert.equal(h.world.membershipWrites.length, 0);
         assert.equal(h.world.geometryWrites.length, 0);
@@ -1499,7 +1525,7 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         const orientFiled = JSON.parse(queueOf(h)) as Record<string, unknown>;
         const orientCmd = (orientFiled["command"] as Record<string, unknown>);
-        assert.deepEqual(orientCmd, { op: "toggle-orientation", win: "win-a" });
+        assert.deepEqual(orientCmd, { op: "toggle-orientation", win: { currentFocus: true } });
     });
 
     it("defers a floating-maximized float request until the settlement report", () => {
@@ -1586,6 +1612,7 @@ describe("world entry rapid directional FIFO", () => {
     it("dispatches rapid left then right in order across a coalescing debounce", () => {
         const h = makeHarness();
         discover(h);
+        const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
         // A native burst arms the debounce with no command in flight.
         for (const handler of [...(h.signals.windowActivated as FakeSignal).handlers]) {
             handler();
@@ -1598,20 +1625,33 @@ describe("world entry rapid directional FIFO", () => {
         // Both presses accepted: no busy refusal, no shortcut failure.
         assert.ok(!h.logs.some((l) => l.includes("command-busy")));
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
-        // The debounce flushes the head first with a fresh observation.
+        // FIFO batch: the whole parked batch files before the single
+        // draining capture (press order preserved, no capture of its own
+        // while parking).
+        assert.equal(queueCalls(h).length, 2);
+        assert.deepEqual(
+            queueCalls(h).map((req) => (req["command"] as Record<string, unknown>)["direction"]),
+            ["left", "right"],
+        );
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore,
+            "parking files no capture of its own",
+        );
+        // The debounce drains the whole batch in exactly one fresh capture.
         h.runTimers();
-        const headQ = JSON.parse(queueOf(h)) as Record<string, unknown>;
-        const headCmd = headQ["command"] as Record<string, unknown>;
-        assert.equal(headCmd["op"], "focus-directional");
-        assert.equal(headCmd["direction"], "left");
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore + 1,
+            "exactly one fresh capture drains the batch",
+        );
+        assert.equal(queueCalls(h).length, 2, "the drain files nothing further");
         acceptLast(h, "gen-1", "1");
-        // The accepted head files the queued opposite press next.
+        // The accepted drain files nothing further: both intents rode the
+        // one batch with strictly increasing command sequences.
         h.runTimers();
         const queued = queueCalls(h);
         assert.equal(queued.length, 2);
-        const tailCmd = queued[1]?.["command"] as Record<string, unknown>;
-        assert.equal(tailCmd["op"], "focus-directional");
-        assert.equal(tailCmd["direction"], "right");
         assert.ok((queued[1]?.["clientCmd"] as string) > (queued[0]?.["clientCmd"] as string));
     });
 
@@ -1625,95 +1665,97 @@ describe("world entry rapid directional FIFO", () => {
         moveLeft();
         const headQ = JSON.parse(queueOf(h)) as Record<string, unknown>;
         assert.equal((headQ["command"] as Record<string, unknown>)["op"], "move-directional");
-        // Two more presses queue behind the flight without moving the
-        // watermark, so the head still accepts; each tail then files
-        // zero-delay after the previous acceptance.
+        const describesAfterHead = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        // Two more presses park FIFO behind the flight (filed promptly,
+        // no watermark advance), so the head still accepts; the pair then
+        // drains as ONE batch after the acceptance.
         moveLeft();
         moveLeft();
         assert.ok(!h.logs.some((l) => l.includes("command-busy")));
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
         assert.ok(!h.logs.some((l) => l.includes("stale")));
+        assert.equal(queueCalls(h).length, 3, "all three presses filed upfront in press order");
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesAfterHead,
+            "parking behind the flight starts no second flight",
+        );
         const head = requestOf(h);
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", head["source"] as string, head["nativeInvalid"] as string, "1"));
         h.runTimers();
-        const queued = queueCalls(h);
-        assert.equal(queued.length, 2);
-        const second = queued[1]?.["command"] as Record<string, unknown>;
-        assert.equal(second["op"], "move-directional");
-        assert.equal(second["direction"], "left");
+        // The two parked tails drain in exactly one follow-up capture.
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesAfterHead + 1,
+            "tails drain as one batch",
+        );
+        assert.equal(queueCalls(h).length, 3, "the batch drain files nothing further");
         acceptLast(h, "gen-1", "2");
         h.runTimers();
-        const queued3 = queueCalls(h);
-        assert.equal(queued3.length, 3);
-        const third = queued3[2]?.["command"] as Record<string, unknown>;
-        assert.equal(third["op"], "move-directional");
-        assert.equal(third["direction"], "left");
-        acceptLast(h, "gen-1", "3");
-        // Every intent rode exactly one report: strictly increasing
-        // command sequences, no replay, no coalescing.
+        assert.equal(queueCalls(h).length, 3);
+        // Every intent rode exactly once: strictly increasing command
+        // sequences, no replay, no coalescing.
         const seqs = sentCmdSeqs(h);
         assert.deepEqual(seqs, [...seqs].sort());
         assert.equal(new Set(seqs).size, 3);
     });
 
-    it("drains queued tails automatically after a busy rejection, unsignalled", () => {
+    it("drains the parked tail after a busy rejection without replay, unsignalled", () => {
         const h = makeHarness();
         discover(h);
+        // Idle fast path: the first press files and captures at once; the
+        // second parks FIFO behind the flight (filed promptly).
         h.handle?.requestFocus("left");
-        // Core busy: the filed head ends without replay.
         h.handle?.requestFocus("right");
+        assert.equal(queueCalls(h).length, 2, "both presses filed upfront in press order");
+        // Core busy: the consumed head ends without replay; the parked tail
+        // survives for the next drain.
         h.lastCall("DescribeWorld").callback(JSON.stringify({
             v: 4, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
             source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
         }));
         // No native event and no new press: the terminal failure alone
-        // schedules an observation-only catchup first.
+        // redrains the parked tail.
         h.runTimers();
-        assert.equal(queueCalls(h).length, 1, "catchup files nothing");
-        acceptLast(h, "gen-1", "1");
-        // The accepted catchup drains the queued tail zero-delay.
-        h.runTimers();
+        assert.equal(queueCalls(h).length, 2, "the redrain files nothing further");
         const queued = queueCalls(h);
-        assert.equal(queued.length, 2);
         const drained = queued[1]?.["command"] as Record<string, unknown>;
         assert.equal(drained["op"], "focus-directional");
         assert.equal(drained["direction"], "right");
-        acceptLast(h, "gen-1", "2");
-        // No replay anywhere: the refused head and the queued tail each
+        acceptLast(h, "gen-1", "1");
+        // No replay anywhere: the refused head and the parked tail each
         // filed exactly once.
         const cmdSeqs = sentCmdSeqs(h);
         assert.equal(new Set(cmdSeqs).size, cmdSeqs.length);
         assert.equal(cmdSeqs.length, 2);
     });
 
-    it("drops only the sent head on timeout and drains the tail unsignalled", () => {
+    it("drops only the consumed head on timeout and drains the tail unsignalled", () => {
         const h = makeHarness();
         discover(h);
         const mark = h.timers.length;
+        // Idle fast path: the first press files and captures at once; the
+        // second parks FIFO behind the flight.
         h.handle?.requestFocus("left");
-        const firstQ = JSON.parse(queueOf(h)) as Record<string, unknown>;
-        const firstClientCmd = firstQ["clientCmd"] as string;
-        // Queue a second press behind the flight, then expire the debounce,
-        // the settled queue timer, and the flight's own capture timeout in
-        // turn: the auto-drain files the tail on the debounce. No native
-        // event is delivered anywhere below.
+        const firstClientCmd = (queueCalls(h)[0] as Record<string, unknown>)["clientCmd"] as string;
         h.handle?.requestFocus("right");
+        assert.equal(queueCalls(h).length, 2, "both presses filed upfront");
+        // Expire the debounce, both settled queue timers, and the flight's
+        // own capture timeout in turn. No native event is delivered anywhere
+        // below.
+        fireNextTimer(h, 2000, mark);
         fireNextTimer(h, 2000, mark);
         fireNextTimer(h, 2000, mark);
         fireNextTimer(h, 2000, mark);
         assert.ok(h.logs.some((l) => l.includes("timeout")));
-        // The timeout schedules an observation-only catchup first.
+        // The timeout redrains the parked tail (filing nothing further).
         h.runTimers();
-        assert.equal(queueCalls(h).length, 1, "catchup files nothing");
-        acceptLast(h, "gen-1", "1");
-        // The accepted catchup drains the queued tail zero-delay.
-        h.runTimers();
+        assert.equal(queueCalls(h).length, 2, "the redrain files nothing further");
         const queued = queueCalls(h);
-        assert.equal(queued.length, 2);
         const drained = queued[1]?.["command"] as Record<string, unknown>;
         assert.equal(drained["op"], "focus-directional");
         assert.equal(drained["direction"], "right");
-        acceptLast(h, "gen-1", "2");
+        acceptLast(h, "gen-1", "1");
         // The timed-out head never reappears.
         const seqs = sentCmdSeqs(h);
         assert.equal(seqs.filter((s) => s === firstClientCmd).length, 1);
@@ -1756,28 +1798,46 @@ describe("world entry rapid directional FIFO", () => {
         assert.equal(fresh["gen"], "gen-2");
         const freshQ = JSON.parse(queueOf(h)) as Record<string, unknown>;
         assert.equal((freshQ["command"] as Record<string, unknown>)["direction"], "right");
+        // Filing history keeps the pre-drop parks (filed promptly at press)
+        // plus the fresh post-rebind press; only the fresh press drains.
         const dirs = queueCalls(h)
             .map((req) => (req["command"] as Record<string, unknown>)["direction"]);
-        assert.deepEqual(dirs, ["left", "right"]);
+        assert.deepEqual(dirs, ["left", "right", "left", "right"]);
     });
 
-    it("keeps fail-fast busy refusal for non-directional commands", () => {
+    it("parks every press FIFO with no busy refusal, directional or not", () => {
         const h = makeHarness();
         discover(h);
+        const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
         h.handle?.requestFocus("left");
-        // A workspace select behind a directional flight refuses exactly
-        // like the old single-slot path: no queue, native state untouched.
+        // A workspace select behind a directional flight parks FIFO too
+        // (QueueWorldCommand only parks; one capture drains the batch):
+        // no busy refusal, no shortcut failure, native state untouched.
         h.handle?.requestWorkspaceRelative(1);
-        assert.ok(h.logs.some((l) => l.includes("command-busy")));
-        assert.ok(h.logs.some((l) => l.includes("shortcut-failed action=workspace-relative")));
-        // A resize does the same.
+        assert.ok(!h.logs.some((l) => l.includes("command-busy")));
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
+        // A resize parks the same way.
         h.handle?.requestResize("left", "outwards");
-        assert.ok(h.logs.some((l) => l.includes("shortcut-failed action=resize")));
-        // Draining the head still works afterwards.
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed action=resize")));
+        assert.equal(queueCalls(h).length, 3, "all three presses filed upfront in press order");
+        assert.deepEqual(
+            queueCalls(h).map((req) => (req["command"] as Record<string, unknown>)["op"]),
+            ["focus-directional", "select-relative", "resize"],
+        );
+        // The idle fast path already flew the first press alone; the parked
+        // pair drains as one batch after its acceptance.
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore + 1,
+        );
         acceptLast(h, "gen-1", "1");
         h.runTimers();
-        const drained = (JSON.parse(queueOf(h)) as Record<string, unknown>)["command"] as Record<string, unknown>;
-        assert.equal(drained["op"], "focus-directional");
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore + 2,
+            "parked pair drains as one batch",
+        );
+        assert.equal(queueCalls(h).length, 3, "the batch drain files nothing further");
     });
 
     it("drops the queue on stop with no post-stop dispatch", () => {
@@ -2049,6 +2109,7 @@ describe("world entry all-mode native coverage", () => {
             world, calls, timers, logs, shortcuts, signals, handle,
             currents, surface,
             runTimers,
+            intentWriteFlights: [] as Harness["intentWriteFlights"],
             lastCall: (method: string): CapturedCall => {
                 const found = [...calls].reverse().find((c) => c.method === method);
                 assert.ok(found !== undefined, `expected ${method}`);
@@ -4792,4 +4853,480 @@ describe("world entry focus feedback production regression", () => {
         assert.equal(driven.focusSets, 1, "exactly one core-target setter end to end");
     });
 
+});
+
+describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
+    // KDE rapid-input batching (decisions/commands.md#kde-rapid-input) and
+    // the queued-ingress contract (porting/world-contract.md#queued-kde-ingress).
+    // every press parks FIFO with no busy refusal (QueueWorldCommand only
+    // parks); ONE fresh capture drains the whole parked batch against
+    // post-previous-action core state; presses arriving mid-flight ride the
+    // next batch. Ordinary keyboard windowed actions resolve implicit at
+    // core current focus (`win:{"currentFocus":true}`, exact closed object;
+    // null invalid); explicit string ids (settled by-id continuations) and
+    // the directional nofocus `win:""` keep their meaning. Overlapping
+    // accepted publications share one latest-pending slot while previous
+    // writes are genuinely in flight: superseded unissued targets never
+    // issue, issued writes spend at-most-once, and an intermediate
+    // superseded publication drives no covering persist of its own.
+    // These FAIL against the current busy/directional-only single-head
+    // drain (submitCommandInner busy, per-head fileQueue, one
+    // WriteFloatIntent per persist waiter) and pin the correction.
+
+    // Existing harness boundary for parking before a capture: a native
+    // burst arms the observation debounce, so every press below queues
+    // instead of taking the idle fast path (no retroactive joining).
+    const armDebounce = (h: Harness): void => {
+        for (const handler of [...(h.signals.windowActivated as FakeSignal).handlers]) {
+            (handler as (...args: Array<unknown>) => void)();
+        }
+    };
+    const parkedOps = (h: Harness): string[] => queueCalls(h)
+        .map((req) => (req["command"] as Record<string, unknown>)["op"] as string);
+    const acceptLast = (h: Harness, rev: string, extra: Record<string, unknown> = {}): void => {
+        const req = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, rev, extra));
+    };
+    const storedIntentReply = (payload: string): string => {
+        const body = JSON.parse(payload) as Record<string, unknown>;
+        return JSON.stringify({
+            v: 2,
+            correlation_id: body["correlation_id"],
+            outcome: "stored",
+            stored: (body["records"] as Array<unknown>).length,
+        });
+    };
+    const untouchedFloatRow = (id: string): Record<string, unknown> => ({
+        win: id, out: "out", ws: "ws1",
+        alloc: null, frame: null,
+        frame_auth: "untouched", frame_hold: "",
+        member_auth: "controlled", member_hold: "",
+        frame_op: "", clear_op: "",
+        floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
+    });
+
+    it("parks every mixed press FIFO with no busy refusal", () => {
+        const h = makeHarness();
+        discover(h);
+        armDebounce(h);
+        const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        h.handle?.requestFocus("left");
+        h.handle?.requestToggleOrientation();
+        h.handle?.requestWorkspaceRelative(1);
+        assert.ok(!h.logs.some((l) => l.includes("command-busy")), "no busy refusal while parking the burst");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "no shortcut failure while parking the burst");
+        const queued = queueCalls(h);
+        assert.equal(queued.length, 3, "all three mixed presses park before the drain");
+        assert.deepEqual(parkedOps(h), ["focus-directional", "toggle-orientation", "select-relative"], "press order preserved");
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore,
+            "parking files no capture of its own",
+        );
+    });
+
+    it("files the whole parked batch before ONE fresh capture drains it", () => {
+        const h = makeHarness();
+        discover(h);
+        armDebounce(h);
+        const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        h.handle?.requestFocus("left");
+        h.handle?.requestFocus("right");
+        h.handle?.requestFocus("left");
+        // All three presses park behind the armed debounce, so the whole
+        // batch is filed before the single draining capture; the current
+        // one-head-per-capture path files only the head at dispatch.
+        assert.equal(queueCalls(h).length, 3, "whole batch filed before the capture");
+        h.runTimers();
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore + 1,
+            "exactly one fresh capture drains the batch",
+        );
+        assert.equal(queueCalls(h).length, 3, "the drain files nothing further");
+        acceptLast(h, "1");
+        h.runTimers();
+        assert.equal(queueCalls(h).length, 3, "the accepted drain files nothing further");
+    });
+
+    it("parks commands arriving during the capture for the next batch", () => {
+        const h = makeHarness();
+        discover(h);
+        armDebounce(h);
+        h.handle?.requestFocus("left");
+        h.handle?.requestFocus("right");
+        h.runTimers();
+        const flightDescribes = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        // A press arriving while the drain flight owns the wire parks without
+        // starting a second flight.
+        h.handle?.requestFocus("left");
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            flightDescribes,
+            "no second flight while one owns the wire",
+        );
+        assert.equal(queueCalls(h).length, 3, "late press parks for the next batch");
+        acceptLast(h, "1");
+        h.runTimers();
+        assert.equal(queueCalls(h).length, 3, "the next batch files nothing further");
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            flightDescribes + 1,
+            "next batch drains in exactly one follow-up capture",
+        );
+    });
+
+    it("subjects implicit presses at core current focus", () => {
+        const h = makeHarness();
+        discover(h);
+        h.handle?.requestFocus("left");
+        const focusCmds = queueCalls(h).filter((req) => (req["command"] as Record<string, unknown>)["op"] === "focus-directional");
+        assert.ok(focusCmds.length >= 1, "implicit directional files");
+        const lastFocus = focusCmds[focusCmds.length - 1] as Record<string, unknown>;
+        assert.deepEqual(
+            (lastFocus["command"] as Record<string, unknown>)["win"],
+            { currentFocus: true },
+            "implicit directional resolves at core current focus, never native-rebound",
+        );
+    });
+
+    it("subjects ordinary sticky intent at core current focus", () => {
+        // requestSticky is ordinary keyboard intent, not an explicit route:
+        // it resolves implicit exactly like every other windowed press.
+        const h = makeHarness();
+        discover(h);
+        h.handle?.requestSticky();
+        h.runTimers();
+        const queued = queueCalls(h);
+        assert.equal(queued.length, 1, "ordinary sticky files");
+        const cmd = (queued[0] as Record<string, unknown>)["command"] as Record<string, unknown>;
+        assert.equal(cmd["op"], "toggle-sticky");
+        assert.deepEqual(
+            cmd["win"],
+            { currentFocus: true },
+            "ordinary keyboard sticky is implicit, never press-time identity",
+        );
+    });
+
+    it("keeps the explicit empty directional nofocus marker", () => {
+        const h = makeHarness();
+        discover(h);
+        h.world.activeWindow = null;
+        try {
+            h.handle?.requestFocus("left");
+            const queued = queueCalls(h);
+            assert.equal(queued.length, 1, "nofocus press still files");
+            assert.deepEqual(
+                ((queued[0] as Record<string, unknown>)["command"] as Record<string, unknown>)["win"],
+                "",
+                "empty win stays genuinely no-focus, never implicit focus",
+            );
+        } finally {
+            h.world.activeWindow = h.world.wins[0] as FakeWindow;
+            h.handle?.stop();
+        }
+    });
+
+    it("keeps settled by-id continuation identity (guard)", () => {
+        // Genuinely explicit route (not keyboard intent): the B9
+        // maximized-unfloat continuation resubmits through the settled
+        // command lane with its settled window id and rect, passing through
+        // untouched. Unchanged by the implicit-marker migration.
+        const h = makeHarness();
+        discover(h);
+        h.handle?.requestWorkspaceRelative(1);
+        h.runTimers();
+        const seed = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", seed["source"] as string, seed["nativeInvalid"] as string, "1", {
+            windows: [untouchedFloatRow("win-a")],
+        }));
+        const target = h.world.wins.find((w) => w.internalId === "win-a");
+        assert.ok(target !== undefined);
+        (target as FakeWindow).maximizeMode = 3;
+        h.handle?.requestFloat();
+        h.runTimers();
+        assert.equal(queueCalls(h).length, 1, "clear schedules observation first");
+        const req = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "2", {
+            windows: [untouchedFloatRow("win-a")],
+        }));
+        h.runTimers();
+        const filed = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        const cmd = filed["command"] as Record<string, unknown>;
+        const frame = (target as FakeWindow).frameGeometry;
+        assert.deepEqual(cmd, { op: "toggle-float", win: "win-a", rect: [frame.x, frame.y, frame.width, frame.height] });
+        assert.equal(typeof cmd["win"], "string", "settled continuation keeps its explicit string id");
+    });
+
+    it("overlapping publications share one latest slot while writes fly", () => {
+        // Distinct accepted publications overlapping the genuine async
+        // intent-persist barrier (floatIntent seam holds every
+        // WriteFloatIntent until answered by hand; native setters are
+        // synchronous, so an empty focus record proves the hold). The
+        // single latest-pending slot applies exactly once: superseded
+        // unissued targets/raise/stack never issue, and an intermediate
+        // superseded publication drives no covering persist of its own.
+        // One accepted reply carrying two focus effects is NOT
+        // supersession (both effects of one publication apply in order).
+        const h = makeHarness("per-output-local", false, true, undefined, undefined, true, startWorldAdapterEntry, false, true);
+        discover(h);
+        // Extra lifetimes: win-c takes the superseded focus, win-d dies NEW.
+        h.world.wins.push(win("win-c", "out", h.world.desktops[0] as FakeDesktop, 400));
+        h.world.wins.push(win("win-d", "out", h.world.desktops[0] as FakeDesktop, 600));
+        // Delivered close: win-b is removed before the first drain, so it
+        // rides the first report (no replay assertion after its accept: the
+        // incorporation may ack delivered closes independent of apply).
+        const removedB = h.world.wins.find((w) => w.internalId === "win-b");
+        assert.ok(removedB !== undefined);
+        for (const handler of [...(h.signals.windowRemoved as FakeSignal).handlers]) {
+            (handler as (payload?: unknown) => void)(removedB);
+        }
+        h.world.wins = h.world.wins.filter((w) => w.internalId !== "win-b");
+        // Park one ordinary press behind the removal-armed debounce.
+        h.handle?.requestWorkspaceRelative(1);
+        h.runTimers();
+        assert.equal(queueCalls(h).length, 1, "first batch files its park");
+        const flight1 = requestOf(h);
+        assert.ok((reportOf(h)["closed"] as Array<string>).includes("win-b"), "delivered close rides the first drain");
+        // First publication: intent change plus superseded focus, held
+        // behind the genuinely in-flight persist.
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", flight1["source"] as string, flight1["nativeInvalid"] as string, "1", {
+            intentWrites: [{ win: "win-a", data: "{\"t\":1}" }],
+            effects: [
+                { id: "fx-old", kind: "focus", target: "win-c", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false },
+                { id: "rx-old", kind: "raise", target: "win-c", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false },
+            ],
+        }));
+        assert.equal(h.intentWriteFlights.length, 1, "first persist genuinely in flight");
+        assert.deepEqual(h.world.focused, [], "held publication issues nothing");
+        // A NEW undelivered close lands after the first acceptance, and the
+        // second drain carries it across the skipped publication.
+        const removedD = h.world.wins.find((w) => w.internalId === "win-d");
+        assert.ok(removedD !== undefined);
+        for (const handler of [...(h.signals.windowRemoved as FakeSignal).handlers]) {
+            (handler as (payload?: unknown) => void)(removedD);
+        }
+        h.world.wins = h.world.wins.filter((w) => w.internalId !== "win-d");
+        h.handle?.requestFocus("left");
+        h.runTimers();
+        assert.equal(queueCalls(h).length, 2, "second batch files its park");
+        assert.ok((reportOf(h)["closed"] as Array<string>).includes("win-d"), "undelivered close retained across the skipped publication");
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", (requestOf(h)["source"] as string), (requestOf(h)["nativeInvalid"] as string), "2", {
+            intentWrites: [{ win: "win-a", data: "{\"t\":2}" }],
+            effects: [
+                { id: "fx-mid", kind: "focus", target: "win-c", rev: "2", cause: "automatic-admission", cmdSeq: null, awaitShown: false },
+            ],
+        }));
+        assert.equal(h.intentWriteFlights.length, 1, "second publication queues behind the in-flight write");
+        assert.deepEqual(h.world.focused, [], "still nothing issued");
+        // A third publication overlaps the same barrier.
+        h.handle?.requestFocus("right");
+        h.runTimers();
+        assert.equal(queueCalls(h).length, 3, "third batch files its park");
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", (requestOf(h)["source"] as string), (requestOf(h)["nativeInvalid"] as string), "3", {
+            intentWrites: [{ win: "win-a", data: "{\"t\":3}" }],
+            effects: [
+                { id: "fx-new", kind: "focus", target: "win-a", rev: "3", cause: "automatic-admission", cmdSeq: null, awaitShown: false },
+                { id: "sx-new", kind: "stack", target: "win-a", rev: "3", cause: "automatic-admission", cmdSeq: null, awaitShown: false },
+            ],
+        }));
+        assert.equal(h.intentWriteFlights.length, 1, "third publication queues behind the same in-flight write");
+        assert.deepEqual(h.world.focused, [], "nothing issued before the barrier lifts");
+        // The in-flight write lands: the first superseded publication drops
+        // without issuing and the next waiter persists covering.
+        h.intentWriteFlights[0]!.callback(storedIntentReply(h.intentWriteFlights[0]!.payload));
+        assert.deepEqual(h.world.focused, [], "superseded unissued focus drops, latest still held");
+        assert.equal(h.intentWriteFlights.length, 2, "next waiter persists covering");
+        // Answering the second round: the intermediate superseded
+        // publication must NOT drive a covering persist of its own. The
+        // waiter queue does (a third flight); the single latest slot does
+        // not (the covering write applies the latest publication).
+        h.intentWriteFlights[1]!.callback(storedIntentReply(h.intentWriteFlights[1]!.payload));
+        assert.equal(h.intentWriteFlights.length, 2, "intermediate superseded publications drive no persist of their own");
+        assert.deepEqual(h.world.focused, ["win-a"], "latest issues once, superseded never issue");
+        assert.equal(h.world.membershipWrites.length, 0, "no membership writes");
+        assert.equal(h.world.geometryWrites.length, 0, "no geometry writes");
+        // Spent: re-seeing the issued effect never reissues, and acked
+        // closes never replay.
+        armDebounce(h);
+        h.runTimers();
+        assert.ok(!(reportOf(h)["closed"] as Array<string>).includes("win-b"), "acked closes never replay");
+        assert.ok(!(reportOf(h)["closed"] as Array<string>).includes("win-d"), "acked closes never replay");
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", (requestOf(h)["source"] as string), (requestOf(h)["nativeInvalid"] as string), "4", {
+            effects: [
+                { id: "fx-new", kind: "focus", target: "win-a", rev: "3", cause: "automatic-admission", cmdSeq: null, awaitShown: false },
+            ],
+        }));
+        assert.deepEqual(h.world.focused, ["win-a"], "issued writes stay spent");
+    });
+
+    it("serializes filing: a newer press never submits while an older Queue ACK is outstanding", () => {
+        // The broker high-water refuses an older missing command once a
+        // later one is accepted, so the pump holds every newer press until
+        // the head is known filed (or permanently refused). A synchronously
+        // answered head still files the whole parked remainder before ONE
+        // capture (no per-command captures, no reentrant dispatch).
+        const hold = { value: true };
+        const h = makeHarness("per-output-local", false, true, undefined, undefined, true, startWorldAdapterEntry, false, false, hold);
+        discover(h);
+        const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        h.handle?.requestFocus("left");
+        assert.equal(queueCalls(h).length, 1, "first press submits");
+        h.handle?.requestFocus("right");
+        h.handle?.requestFocus("left");
+        assert.equal(queueCalls(h).length, 1, "newer presses park without submitting while the older ACK is outstanding");
+        assert.ok(!h.logs.some((l) => l.includes("command-busy")), "no busy refusal while parking");
+        const head = h.calls.filter((c) => c.method === "QueueWorldCommand")[0] as CapturedCall;
+        const headBody = JSON.parse(head.payload) as Record<string, unknown>;
+        hold.value = false;
+        head.callback(JSON.stringify({
+            v: 4, outcome: "queued", gen: "gen-1",
+            client: headBody["client"], clientCmd: headBody["clientCmd"], globalCmd: "1",
+        }));
+        assert.deepEqual(
+            queueCalls(h).map((req) => req["clientCmd"]),
+            ["1", "2", "3"],
+            "head accept files the whole parked remainder in FIFO order",
+        );
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore + 1,
+            "exactly one fresh capture drains the filed batch",
+        );
+        h.handle?.stop();
+    });
+
+    it("a lost Queue ACK redelivers the exact bytes under the same identity with a newer press parked", () => {
+        // Transport ambiguity never mints a duplicate: the timed-out head
+        // redelivers byte-identical under its original clientCmd before the
+        // parked newer press files under its own identity.
+        const hold = { value: true };
+        const h = makeHarness("per-output-local", false, true, undefined, undefined, true, startWorldAdapterEntry, false, false, hold);
+        discover(h);
+        h.handle?.requestFocus("left");
+        assert.equal(queueCalls(h).length, 1, "first press submits");
+        const firstPayload = h.lastCall("QueueWorldCommand").payload;
+        h.handle?.requestFocus("right");
+        assert.equal(queueCalls(h).length, 1, "newer press parks while the head ACK is outstanding");
+        const timeout = [...h.timers].reverse().find((t) => t.delay === 2000);
+        assert.ok(timeout !== undefined, "queue timeout armed");
+        h.timers.splice(h.timers.indexOf(timeout as { delay: number; cb: () => void }), 1);
+        (timeout as { cb: () => void }).cb();
+        assert.ok(!h.calls.some((c) => c.method === "TakeCommandResult"), "lost queue files no take");
+        // The next press pumps the lost head first (exact bytes), never the
+        // newer press out of order and never a new identity.
+        h.handle?.requestFocus("left");
+        const queues = h.calls.filter((c) => c.method === "QueueWorldCommand");
+        assert.equal(queues.length, 2, "exactly one redelivery, no duplicate numbering");
+        assert.equal((queues[1] as CapturedCall).payload, firstPayload, "redelivery is byte-identical under the same identity");
+        h.handle?.stop();
+    });
+
+    it("a nonpermanent queue refusal never retries inline", () => {
+        // A retained-position refusal recovers honestly on-next-event: no
+        // synchronous resubmit (a synchronously refusing broker would
+        // otherwise recurse unboundedly), exactly one scheduled dispatch.
+        const hold = { value: true };
+        const h = makeHarness("per-output-local", false, true, undefined, undefined, true, startWorldAdapterEntry, false, false, hold);
+        discover(h);
+        h.handle?.requestFocus("left");
+        assert.equal(queueCalls(h).length, 1, "first press submits");
+        const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        const head = h.calls.filter((c) => c.method === "QueueWorldCommand")[0] as CapturedCall;
+        const headBody = JSON.parse(head.payload) as Record<string, unknown>;
+        head.callback(JSON.stringify({
+            v: 4, outcome: "rejected", kind: "busy", message: "busy",
+            gen: "gen-1", source: "", nativeInvalid: "0", clock: "1", gestureAssoc: null,
+        }));
+        assert.equal(queueCalls(h).length, 1, "no inline resubmit after a nonpermanent refusal");
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore,
+            "no inline capture after a nonpermanent refusal",
+        );
+        assert.ok(
+            h.logs.some((l) => l.startsWith("omnitiler:world:queue-rejected")),
+            "refusal logs its on-next-event recovery",
+        );
+        void headBody;
+        h.handle?.stop();
+    });
+
+    it("captures fresh after a Queue ACK with interleaved native invalidation", () => {
+        // Native input landing while a Queue ACK is outstanding is
+        // incorporated after the filings settle: the draining capture never
+        // sends the stale pre-gap observation.
+        const hold = { value: true };
+        const h = makeHarness("per-output-local", false, true, undefined, undefined, true, startWorldAdapterEntry, false, false, hold);
+        discover(h);
+        h.handle?.requestFocus("left");
+        assert.equal(queueCalls(h).length, 1, "command files");
+        const mark = requestOf(h)["nativeInvalid"] as string;
+        const sentBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        for (const handler of [...(h.signals.desktopsChanged as FakeSignal).handlers]) {
+            (handler as (...args: Array<unknown>) => void)();
+        }
+        const head = h.calls.filter((c) => c.method === "QueueWorldCommand")[0] as CapturedCall;
+        const headBody = JSON.parse(head.payload) as Record<string, unknown>;
+        hold.value = false;
+        head.callback(JSON.stringify({
+            v: 4, outcome: "queued", gen: "gen-1",
+            client: headBody["client"], clientCmd: headBody["clientCmd"], globalCmd: "1",
+        }));
+        // The accept defers to the invalidation-armed debounce (never a
+        // synchronous preempt from inside the filing kick).
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            sentBefore,
+            "queue accept never preempts the armed debounce",
+        );
+        h.runTimers();
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            sentBefore + 1,
+            "gap invalidation drains exactly one fresh capture",
+        );
+        const sent = requestOf(h);
+        assert.notEqual(sent["nativeInvalid"], mark, "stale mark is never sent");
+        assert.ok(isCanonicalU64(sent["nativeInvalid"]), "fresh watermark is canonical");
+        h.handle?.stop();
+    });
+
+    it("a later accept collects every outstanding requester result, including a timed-out capture", () => {
+        // A capture timeout never requeues its sent commands, but their
+        // identities stay undecided: the next accepted capture (even one
+        // draining a newer batch) collects every outstanding take,
+        // distinguishing pending retries from terminal settlements.
+        const h = makeHarness();
+        discover(h);
+        h.handle?.requestFocus("left");
+        const filed = queueCalls(h);
+        assert.equal(filed.length, 1, "first press files");
+        const firstCmd = filed[0]?.["clientCmd"] as string;
+        const capture = h.lastCall("DescribeWorld");
+        const timeout = [...h.timers].reverse().find((t) => t.delay === 2000);
+        assert.ok(timeout !== undefined, "capture timeout armed");
+        h.timers.splice(h.timers.indexOf(timeout as { delay: number; cb: () => void }), 1);
+        (timeout as { cb: () => void }).cb();
+        assert.ok(!h.calls.some((c) => c.method === "TakeCommandResult"), "timed-out capture collects no take yet");
+        // A newer press parks and its drain flies on the next event (the
+        // withheld queue rides the catchup after the timeout armed the
+        // observation-only lane); accepting it collects both the timed-out
+        // identity and the new one in clientCmd order.
+        h.handle?.requestFocus("right");
+        assert.equal(queueCalls(h).length, 2, "newer press files under its own identity");
+        h.runTimers();
+        const drained = h.lastCall("DescribeWorld");
+        assert.notEqual(drained, capture, "a follow-up capture flies after the timeout");
+        const body = JSON.parse(drained.payload) as Record<string, unknown>;
+        drained.callback(acceptedReply("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1"));
+        const takes = h.calls.filter((c) => c.method === "TakeCommandResult");
+        assert.equal(takes.length, 2, "one take per outstanding identity, timed-out included");
+        assert.deepEqual(
+            takes.map((c) => (JSON.parse(c.payload) as Record<string, unknown>)["clientCmd"]),
+            [firstCmd, "2"],
+            "outstanding identities collected in order, never re-executed",
+        );
+        h.handle?.stop();
+    });
 });

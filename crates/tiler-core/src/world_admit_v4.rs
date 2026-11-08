@@ -40,9 +40,9 @@ use crate::world_engine::{
 };
 use crate::world_presentation::{GroupHideReason, PresentationUnderlay};
 use crate::world_report::{
-    AttemptLaneV4, BorderPresentationV4, WORLD_CONTRACT_VERSION_V4, WORLD_MAX_REPLY_BYTES,
-    WORLD_MAX_REQUEST_BYTES, WorldPresentationV4, WorldReplyV4, WorldReportV4,
-    validate_intent_writes_reason,
+    AttemptLaneV4, BatchSettlement, BorderPresentationV4, WORLD_CONTRACT_VERSION_V4,
+    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldCommand, WorldPresentationV4,
+    WorldReplyV4, WorldReportV4, validate_intent_writes_reason,
 };
 use crate::world_report_v4_checks::{
     graded_effective_v4, report_digest_v4, validate_report_v4_reason,
@@ -50,6 +50,7 @@ use crate::world_report_v4_checks::{
 use crate::world_run_v4::V4RunOutcome;
 use crate::world_sizing::max_intent_rollback_bound;
 use crate::world_sizing_v4::{
+    is_intent_save_command_v4, max_intent_save_batch_bound_v4, max_intent_save_batch_rows_v4,
     reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4, report_estimate_v4,
 };
 
@@ -132,40 +133,73 @@ impl WorldEngine {
         report: &WorldReportV4,
         issue: &EventIssue,
     ) -> V4RunOutcome {
+        let (outcome, _) = self.handle_report_v4_batched(report, issue, &[]);
+        outcome
+    }
+
+    /// Accept one already-admitted v4 report plus a parked FIFO command
+    /// batch drained inside the same capture/run/publication. The report
+    /// carries the fresh native observations; `queued` holds the parked
+    /// `(command sequence, command)` pairs in drain order. Returns the
+    /// single admission outcome plus one per-command settlement
+    /// index-aligned with `queued`. Any refusal adopts nothing, settles
+    /// nothing, and returns empty settlements so the caller reparks the
+    /// whole batch.
+    pub(crate) fn handle_report_v4_batched(
+        &mut self,
+        report: &WorldReportV4,
+        issue: &EventIssue,
+        queued: &[(u64, WorldCommand)],
+    ) -> (V4RunOutcome, Vec<BatchSettlement>) {
         // Internal admitted-envelope defense: the bound adapter, generation,
         // owner, and request correlation must match before any estimate,
         // grading, validation, or mutation. The caller owns public
         // admission; this internal boundary re-checks the already-admitted
         // context so a stale or foreign envelope never reaches the run.
         if self.adapter.as_deref() != Some(report.adapter_incarnation.as_str()) {
-            return V4RunOutcome::Rejected {
-                kind: KIND_OWNER,
-                message: MSG_OWNER,
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_OWNER,
+                    message: MSG_OWNER,
+                },
+                Vec::new(),
+            );
         }
         if report.core_generation != self.core_generation_str {
-            return V4RunOutcome::Rejected {
-                kind: KIND_GENERATION,
-                message: MSG_GENERATION,
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_GENERATION,
+                    message: MSG_GENERATION,
+                },
+                Vec::new(),
+            );
         }
         let Some(bound_owner) = self.connection_owner.clone() else {
-            return V4RunOutcome::Rejected {
-                kind: KIND_OWNER,
-                message: MSG_OWNER,
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_OWNER,
+                    message: MSG_OWNER,
+                },
+                Vec::new(),
+            );
         };
         if issue.owner != bound_owner {
-            return V4RunOutcome::Rejected {
-                kind: KIND_OWNER,
-                message: MSG_OWNER,
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_OWNER,
+                    message: MSG_OWNER,
+                },
+                Vec::new(),
+            );
         }
         if issue.correlation.as_str() != report.request_id {
-            return V4RunOutcome::Rejected {
-                kind: KIND_CORRELATION,
-                message: MSG_CORRELATION,
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_CORRELATION,
+                    message: MSG_CORRELATION,
+                },
+                Vec::new(),
+            );
         }
         // Core-owned grading for the typed path: invalid scale/identity and
         // metadata/process rows become narrow holds like their
@@ -238,10 +272,13 @@ impl WorldEngine {
             || !report.creation_attempts.is_empty()
             || held_native_evidence;
         if native_evidence && !self.host_owned_workspace_domains() {
-            return V4RunOutcome::Rejected {
-                kind: KIND_SNAPSHOT,
-                message: "native-without-capability",
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_SNAPSHOT,
+                    message: "native-without-capability",
+                },
+                Vec::new(),
+            );
         }
         let host_owned = self.host_owned_workspace_domains();
         let arrival_host_mismatch = report.focus_feedback.iter().any(|row| {
@@ -250,23 +287,32 @@ impl WorldEngine {
                 .any(|bracket| bracket.location.is_native() != host_owned)
         });
         if arrival_host_mismatch {
-            return V4RunOutcome::Rejected {
-                kind: KIND_SNAPSHOT,
-                message: "arrival-host-mismatch",
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_SNAPSHOT,
+                    message: "arrival-host-mismatch",
+                },
+                Vec::new(),
+            );
         }
         if report_estimate_v4(report) > WORLD_MAX_REQUEST_BYTES {
-            return V4RunOutcome::Rejected {
-                kind: KIND_OVERSIZED,
-                message: MSG_OVERSIZED,
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_OVERSIZED,
+                    message: MSG_OVERSIZED,
+                },
+                Vec::new(),
+            );
         }
         if let Some(reason) = validate_report_v4_reason(effective) {
-            return V4RunOutcome::Rejected {
-                kind: KIND_SNAPSHOT,
-                // Fixed check vocabulary, never payload bytes.
-                message: reason,
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_SNAPSHOT,
+                    // Fixed check vocabulary, never payload bytes.
+                    message: reason,
+                },
+                Vec::new(),
+            );
         }
         let digest = report_digest_v4(report);
         if self.has_last_v4 {
@@ -286,33 +332,45 @@ impl WorldEngine {
             ) {
                 V4Replay::Fresh => {}
                 V4Replay::Stale => {
-                    return V4RunOutcome::Rejected {
-                        kind: KIND_SUPERSEDED,
-                        message: MSG_SUPERSEDED,
-                    };
+                    return (
+                        V4RunOutcome::Rejected {
+                            kind: KIND_SUPERSEDED,
+                            message: MSG_SUPERSEDED,
+                        },
+                        Vec::new(),
+                    );
                 }
                 V4Replay::Reused => {
-                    return V4RunOutcome::Rejected {
-                        kind: KIND_REUSED,
-                        message: MSG_REUSED,
-                    };
+                    return (
+                        V4RunOutcome::Rejected {
+                            kind: KIND_REUSED,
+                            message: MSG_REUSED,
+                        },
+                        Vec::new(),
+                    );
                 }
                 V4Replay::Duplicate => {
                     let Some(cached) = self.last_reply_v4.clone() else {
-                        return V4RunOutcome::Rejected {
-                            kind: KIND_SUPERSEDED,
-                            message: MSG_SUPERSEDED,
-                        };
+                        return (
+                            V4RunOutcome::Rejected {
+                                kind: KIND_SUPERSEDED,
+                                message: MSG_SUPERSEDED,
+                            },
+                            Vec::new(),
+                        );
                     };
-                    return V4RunOutcome::Duplicate(cached);
+                    return (V4RunOutcome::Duplicate(cached), Vec::new());
                 }
             }
         }
         if self.has_last_v4 && report.observation_seq < self.last_observation_seq_v4 {
-            return V4RunOutcome::Rejected {
-                kind: KIND_OBS_STALE,
-                message: MSG_OBS_STALE,
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_OBS_STALE,
+                    message: MSG_OBS_STALE,
+                },
+                Vec::new(),
+            );
         }
         // Conservative pre-mutation reply bound: no observation convergence,
         // slot cleanup, or command mutation runs when the worst-case reply
@@ -343,20 +401,58 @@ impl WorldEngine {
         // terminal per fresh displaced/returned workspace at publish;
         // bound the placements knowable before convergence.
         .saturating_add(self.policy_terminal_reserve_v4(report))
+        // Drained FIFO batch saves: the inline bound above covers at most
+        // the report command; queued save-capable commands (explicit
+        // distinct plus implicit max-width) stage additional latest-wins
+        // rows merged into the single final publication.
+        .saturating_add(max_intent_save_batch_bound_v4(queued))
             > WORLD_MAX_REPLY_BYTES
         {
-            return V4RunOutcome::Rejected {
-                kind: KIND_REPLY_SIZE,
-                message: MSG_REPLY_SIZE,
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_REPLY_SIZE,
+                    message: MSG_REPLY_SIZE,
+                },
+                Vec::new(),
+            );
+        }
+        // Fixed rowcap: the merged final section (pre-existing rollback
+        // plus inline plus distinct batch saves, latest-wins collapsed only
+        // at publish) must fit `MAX_INTENT_WRITES`. Bytes alone cannot gate
+        // this: rows and bytes are distinct limits. Over-cap refuses before
+        // mutation with the outbound section vocabulary so the caller
+        // reparks the whole batch.
+        {
+            let inline_rows = usize::from(
+                report
+                    .command
+                    .as_ref()
+                    .is_some_and(is_intent_save_command_v4),
+            );
+            let total_rows = self
+                .rollback_reserve_count()
+                .saturating_add(inline_rows)
+                .saturating_add(max_intent_save_batch_rows_v4(queued));
+            if total_rows > crate::world_report::MAX_INTENT_WRITES {
+                return (
+                    V4RunOutcome::Rejected {
+                        kind: KIND_SNAPSHOT,
+                        message: "section-over-cap",
+                    },
+                    Vec::new(),
+                );
+            }
         }
         // Counter exhaustion refuses and re-bootstraps under a new
         // generation; it never wraps in place.
         if self.state_revision == u64::MAX {
-            return V4RunOutcome::Rejected {
-                kind: KIND_REVISION_EXHAUSTED,
-                message: MSG_REVISION_EXHAUSTED,
-            };
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_REVISION_EXHAUSTED,
+                    message: MSG_REVISION_EXHAUSTED,
+                },
+                Vec::new(),
+            );
         }
         // Fresh reports carrying an already-consumed command sequence
         // reconcile observation but never re-execute the command. The
@@ -365,10 +461,13 @@ impl WorldEngine {
         let consumed = match (report.command_seq, report.command.as_ref()) {
             (Some(seq), Some(_)) => self.command_highwater.is_some_and(|mark| seq <= mark),
             (Some(_), None) | (None, Some(_)) => {
-                return V4RunOutcome::Rejected {
-                    kind: KIND_SNAPSHOT,
-                    message: "command-pair-invalid",
-                };
+                return (
+                    V4RunOutcome::Rejected {
+                        kind: KIND_SNAPSHOT,
+                        message: "command-pair-invalid",
+                    },
+                    Vec::new(),
+                );
             }
             (None, None) => false,
         };
@@ -420,10 +519,10 @@ impl WorldEngine {
             }
             let reply = staged.bootstrap_reply_v4(report, &issue.correlation);
             if let Some(refused) = Self::refuse_outbound_v4(&reply) {
-                return refused;
+                return (refused, Vec::new());
             }
             *self = staged;
-            return V4RunOutcome::Accepted(reply);
+            return (V4RunOutcome::Accepted(reply), Vec::new());
         }
         // Stage everything past this point on a clone. Exact-encoding
         // overflow (or any late failure) drops the candidate; `self` is
@@ -433,20 +532,41 @@ impl WorldEngine {
         if usable_initial_observation {
             staged.ready_latched = true;
         }
-        let outcome = staged.run_accepted_v4(report, issue, consumed, self.state_revision + 1);
+        let (outcome, settlements) = staged.run_accepted_v4_batched(
+            report,
+            issue,
+            consumed,
+            self.state_revision + 1,
+            queued,
+        );
         match outcome {
             V4RunOutcome::Accepted(reply) | V4RunOutcome::CommandConsumed(reply) => {
-                self.finalize_v4_candidate(staged, report, digest, reply)
+                let consumed_reply = reply.command_consumed;
+                match self.finalize_v4_candidate(staged, report, digest, reply) {
+                    V4RunOutcome::Accepted(reply) => {
+                        debug_assert!(!consumed_reply);
+                        (V4RunOutcome::Accepted(reply), settlements)
+                    }
+                    V4RunOutcome::CommandConsumed(reply) => {
+                        debug_assert!(consumed_reply);
+                        (V4RunOutcome::CommandConsumed(reply), settlements)
+                    }
+                    V4RunOutcome::Duplicate(reply) => (V4RunOutcome::Duplicate(reply), Vec::new()),
+                    rejected => (rejected, Vec::new()),
+                }
             }
             V4RunOutcome::Duplicate(_) => {
                 // Staged runs never duplicate: the latest duplicate returns
                 // above, before staging.
-                V4RunOutcome::Rejected {
-                    kind: KIND_SUPERSEDED,
-                    message: MSG_SUPERSEDED,
-                }
+                (
+                    V4RunOutcome::Rejected {
+                        kind: KIND_SUPERSEDED,
+                        message: MSG_SUPERSEDED,
+                    },
+                    Vec::new(),
+                )
             }
-            rejected => rejected,
+            rejected => (rejected, Vec::new()),
         }
     }
 

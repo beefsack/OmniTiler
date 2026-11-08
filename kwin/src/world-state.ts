@@ -44,11 +44,18 @@ export interface PendingCreationReceipt {
 
 // One queued user intent awaiting the queue-then-capture route. keepSubject
 // is LOCAL routing only (float-origin fallback keeps its press-time subject
-// instead of rebinding to the current native focus): it never rides the
-// wire, where every focus-directional is exactly {op,win,direction}.
+// instead of converting to the implicit marker): it never rides the
+// wire. clientCmd is minted at press; payload is the exact QueueWorldCommand
+// bytes; filed tracks a filed-but-unresolved identity; filing tracks an
+// in-flight QueueWorldCommand send; gen binds the serving generation.
 export interface QueuedIntent {
     command: WorldCommand;
     keepSubject: boolean;
+    clientCmd: string;
+    payload: string;
+    gen: string;
+    filed: boolean;
+    filing: boolean;
 }
 
 export interface CaptureFlight {

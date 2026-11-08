@@ -9981,7 +9981,14 @@ fn staged_frame_clock_drives_suppression_and_burst() {
             });
         let mut contra = legacy.clone();
         contra.monotonic_ms = 5000;
-        let reply = engine.publish(&contra, false, Vec::new(), None, &BTreeSet::new());
+        let reply = engine.publish(
+            &contra,
+            contra.command.as_ref(),
+            false,
+            Vec::new(),
+            None,
+            &BTreeSet::new(),
+        );
         let row_a = reply
             .windows
             .iter()
@@ -10016,7 +10023,14 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         let legacy = stage_source(&mut engine, 5000);
         let mut contra = legacy.clone();
         contra.monotonic_ms = 5000;
-        let reply = engine.publish(&contra, false, Vec::new(), None, &BTreeSet::new());
+        let reply = engine.publish(
+            &contra,
+            contra.command.as_ref(),
+            false,
+            Vec::new(),
+            None,
+            &BTreeSet::new(),
+        );
         let row_a = reply
             .windows
             .iter()
@@ -10114,7 +10128,14 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         );
         let mut contra = legacy.clone();
         contra.monotonic_ms = 5000;
-        let reply = engine.publish(&contra, false, Vec::new(), None, &BTreeSet::new());
+        let reply = engine.publish(
+            &contra,
+            contra.command.as_ref(),
+            false,
+            Vec::new(),
+            None,
+            &BTreeSet::new(),
+        );
         let row = reply
             .windows
             .iter()
@@ -10133,7 +10154,14 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         let legacy = stage_source(&mut engine, 5000);
         let mut contra = legacy.clone();
         contra.monotonic_ms = 5000;
-        let reply = engine.publish(&contra, false, Vec::new(), None, &BTreeSet::new());
+        let reply = engine.publish(
+            &contra,
+            contra.command.as_ref(),
+            false,
+            Vec::new(),
+            None,
+            &BTreeSet::new(),
+        );
         let row = reply
             .windows
             .iter()
@@ -10211,7 +10239,14 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         );
         let mut contra = legacy.clone();
         contra.monotonic_ms = 2000;
-        let reply = engine.publish(&contra, false, Vec::new(), None, &BTreeSet::new());
+        let reply = engine.publish(
+            &contra,
+            contra.command.as_ref(),
+            false,
+            Vec::new(),
+            None,
+            &BTreeSet::new(),
+        );
         let row = reply
             .windows
             .iter()
@@ -10236,7 +10271,14 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         let legacy = stage_source(&mut engine, 2000);
         let mut contra = legacy.clone();
         contra.monotonic_ms = 2000;
-        let reply = engine.publish(&contra, false, Vec::new(), None, &BTreeSet::new());
+        let reply = engine.publish(
+            &contra,
+            contra.command.as_ref(),
+            false,
+            Vec::new(),
+            None,
+            &BTreeSet::new(),
+        );
         let row = reply
             .windows
             .iter()

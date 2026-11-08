@@ -2184,6 +2184,12 @@ pub enum WorldCommand {
     /// directional migration, and domain release have dedicated world
     /// commands or no world route and are refused here.
     Operation(CoreCommand),
+    /// Execution-time core-focus subject (wire `win:{"currentFocus":true}`): the adapter
+    /// names the payload only, never the subject. The core resolves the
+    /// window from retained canonical focus at execution time, then runs
+    /// the wrapped explicit command. Wraps only windowed commands; the
+    /// inner carries a placeholder empty subject that never executes.
+    Implicit(Box<WorldCommand>),
 }
 
 /// World report: complete normalized observation on EVERY update, covering
@@ -2750,6 +2756,17 @@ pub enum CommandResult {
     /// but the command refused without mutation. `kind` is the closed
     /// [`CommandRejectKind`] reason, never an adapter fallback.
     Rejected { kind: CommandRejectKind },
+}
+
+/// Per-command settlement for one accepted batch capture: the broker-parked
+/// FIFO batch drains inside a single capture/run/publication, and each
+/// queued sequence settles individually from its own result without its own
+/// publication. `Rejected` settles the take lane as failed; any other value
+/// (including `None`) settles ready. Index-aligned with the drained batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchSettlement {
+    pub seq: u64,
+    pub result: Option<CommandResult>,
 }
 
 /// Staged v4 reply section caps: worst-case row bounds for the whole-reply
@@ -4762,8 +4779,12 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
     if report.command_seq.is_none() != report.command.is_none() {
         return Some("command-pair-invalid");
     }
+    // The legacy envelope is frozen: execution-time subjects never rode
+    // it, so a wrapped command refuses here even when its payload is
+    // otherwise well-formed. (The legacy codec never constructs the
+    // wrapper; this arm stays defensive for direct construction.)
     if let Some(command) = report.command.as_ref()
-        && !valid_command(command)
+        && (matches!(command, WorldCommand::Implicit(_)) || !valid_command(command))
     {
         return Some("command-invalid");
     }
@@ -5434,6 +5455,175 @@ pub fn valid_command(command: &WorldCommand) -> bool {
             is_opaque_id(&window.0)
         }
         WorldCommand::Operation(command) => valid_operation(command),
+        WorldCommand::Implicit(inner) => valid_implicit_command(inner),
+    }
+}
+
+/// Validate one execution-time (`win:{"currentFocus":true}`) command payload: the same
+/// checks as [`valid_command`] minus the subject identity (resolved at
+/// execution time from retained canonical focus). Only windowed commands
+/// may ride the implicit subject; windowless commands refuse.
+#[must_use]
+pub fn valid_implicit_command(command: &WorldCommand) -> bool {
+    const DIRECTIONS: [&str; 4] = ["left", "right", "up", "down"];
+    match command {
+        WorldCommand::Focus { direction, .. } => {
+            direction.is_empty() || DIRECTIONS.contains(&direction.as_str())
+        }
+        WorldCommand::Send {
+            target_output,
+            target_workspace,
+            ..
+        } => is_opaque_id(&target_output.0) && is_opaque_id(target_workspace),
+        WorldCommand::SendRelative { source, delta, .. } => {
+            valid_send_source(source) && (*delta == -1 || *delta == 1)
+        }
+        WorldCommand::SendNumbered { source, index, .. } => {
+            valid_send_source(source) && *index <= 9
+        }
+        WorldCommand::FocusDirectional { direction, .. } => {
+            DIRECTIONS.contains(&direction.as_str())
+        }
+        WorldCommand::MoveDirectional { direction, .. } => DIRECTIONS.contains(&direction.as_str()),
+        WorldCommand::SendDirectional { direction, .. } => DIRECTIONS.contains(&direction.as_str()),
+        WorldCommand::ToggleMaximize { .. }
+        | WorldCommand::ToggleSticky { .. }
+        | WorldCommand::ToggleFullscreen { .. } => true,
+        WorldCommand::SetSticky { .. } | WorldCommand::SetFullscreen { .. } => true,
+        WorldCommand::Operation(command) => valid_implicit_operation(command),
+        // Windowless commands never ride the implicit subject. Nested
+        // implicit wrappers are not a wire spelling.
+        _ => false,
+    }
+}
+
+/// Validate one execution-time operation payload minus the subject.
+#[must_use]
+pub fn valid_implicit_operation(command: &CoreCommand) -> bool {
+    const DIRECTIONS: [&str; 4] = ["left", "right", "up", "down"];
+    const RESIZE_MODES: [&str; 4] = ["inwards", "outwards", "horizontal", "vertical"];
+    match command {
+        CoreCommand::ToggleFloat { float_rect, .. } => {
+            float_rect.is_none_or(|r| valid_carried_rect(r.x, r.y, r.w, r.h))
+        }
+        CoreCommand::ToggleOrientation { .. } => true,
+        CoreCommand::Resize {
+            direction, mode, ..
+        } => DIRECTIONS.contains(&direction.as_str()) && RESIZE_MODES.contains(&mode.as_str()),
+        _ => false,
+    }
+}
+
+/// Borrow through one execution-time wrapper: the wrapped explicit
+/// payload, or the command itself when it is already explicit.
+#[must_use]
+pub fn unwrap_implicit(command: &WorldCommand) -> &WorldCommand {
+    match command {
+        WorldCommand::Implicit(inner) => inner,
+        other => other,
+    }
+}
+
+/// Build the explicit command for one resolved execution-time subject:
+/// clone the wrapped payload with the resolved subject. Windowless
+/// payloads (never a valid implicit spelling) return `None`.
+#[must_use]
+pub fn explicit_for_implicit(inner: &WorldCommand, window: WindowId) -> Option<WorldCommand> {
+    let resolved = window.0.clone();
+    match inner {
+        WorldCommand::Focus { direction, .. } => Some(WorldCommand::Focus {
+            window,
+            direction: direction.clone(),
+        }),
+        WorldCommand::Send {
+            target_output,
+            target_workspace,
+            follow,
+            ..
+        } => Some(WorldCommand::Send {
+            window,
+            target_output: target_output.clone(),
+            target_workspace: target_workspace.clone(),
+            follow: *follow,
+        }),
+        WorldCommand::SendRelative {
+            source,
+            delta,
+            follow,
+            ..
+        } => Some(WorldCommand::SendRelative {
+            window,
+            source: source.clone(),
+            delta: *delta,
+            follow: *follow,
+        }),
+        WorldCommand::SendNumbered {
+            source,
+            index,
+            follow,
+            ..
+        } => Some(WorldCommand::SendNumbered {
+            window,
+            source: source.clone(),
+            index: *index,
+            follow: *follow,
+        }),
+        WorldCommand::FocusDirectional { direction, .. } => Some(WorldCommand::FocusDirectional {
+            window,
+            direction: direction.clone(),
+        }),
+        WorldCommand::MoveDirectional {
+            direction,
+            same_axis,
+            ..
+        } => Some(WorldCommand::MoveDirectional {
+            window,
+            direction: direction.clone(),
+            same_axis: *same_axis,
+        }),
+        WorldCommand::SendDirectional {
+            direction, follow, ..
+        } => Some(WorldCommand::SendDirectional {
+            window,
+            direction: direction.clone(),
+            follow: *follow,
+        }),
+        WorldCommand::ToggleMaximize { .. } => Some(WorldCommand::ToggleMaximize { window }),
+        WorldCommand::SetSticky { value, .. } => Some(WorldCommand::SetSticky {
+            window,
+            value: *value,
+        }),
+        WorldCommand::ToggleSticky { .. } => Some(WorldCommand::ToggleSticky { window }),
+        WorldCommand::SetFullscreen { value, .. } => Some(WorldCommand::SetFullscreen {
+            window,
+            value: *value,
+        }),
+        WorldCommand::ToggleFullscreen { .. } => Some(WorldCommand::ToggleFullscreen { window }),
+        WorldCommand::Operation(core) => {
+            let resolved_core = match core {
+                CoreCommand::ToggleFloat { float_rect, .. } => CoreCommand::ToggleFloat {
+                    window: resolved,
+                    float_rect: *float_rect,
+                },
+                CoreCommand::ToggleOrientation { .. } => {
+                    CoreCommand::ToggleOrientation { window: resolved }
+                }
+                CoreCommand::Resize {
+                    direction,
+                    mode,
+                    press_index,
+                    ..
+                } => CoreCommand::Resize {
+                    window: resolved,
+                    direction: direction.clone(),
+                    mode: mode.clone(),
+                    press_index: *press_index,
+                },
+                _ => return None,
+            };
+            Some(WorldCommand::Operation(resolved_core))
+        }
+        _ => None,
     }
 }
 

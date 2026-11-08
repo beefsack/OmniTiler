@@ -953,7 +953,7 @@ impl WorldEngine {
             target_windows: Vec::new(),
             command: command.clone(),
         };
-        let applied = staged.finish_operation_event(command_seq, &event);
+        let applied = staged.finish_operation_event(command_seq, &event, held_scopes);
         match (&applied, &staged.command_result) {
             (
                 CommandApplied::NoEffect,
@@ -1200,7 +1200,7 @@ impl WorldEngine {
                 target_windows: Vec::new(),
                 command: command.clone(),
             };
-            let applied = staged.finish_operation_event(command_seq, &event);
+            let applied = staged.finish_operation_event(command_seq, &event, held_scopes);
             match (&applied, &staged.command_result) {
                 (
                     CommandApplied::NoEffect,

@@ -173,6 +173,8 @@ mod world_prior_context_tests;
 #[cfg(test)]
 mod world_publish_v4_tests;
 #[cfg(test)]
+mod world_rapid_input_tests;
+#[cfg(test)]
 mod world_rejected_accepted_tests;
 #[cfg(test)]
 mod world_renderer_input_v4_tests;

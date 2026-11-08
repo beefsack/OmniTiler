@@ -1,6 +1,8 @@
 // Producer-shaped whole-workspace migration end to end through
-// the production entry against the real `WorldEngine` (via the test-only
-// `raw_world_eval` example) with a faithful native
+// the production entry against the real broker (via the test-only
+// `broker_world_eval` example: the true `WorldService` route serving
+// discovery, queue, capture-batch drain, take, and presentation reads
+// in one retained process) with a faithful native
 // surface shaped like the pinned KWin semantics: two offset unequal
 // outputs (out-left 1000x800 at 0,0 plus out-right 900x700 at 1000,50),
 // the pinned `sendClientToScreen` echo (`window.cpp`
@@ -33,7 +35,6 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
-import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -59,7 +60,7 @@ class WorldBridge {
         this.proc = proc;
         const stdout = proc.stdout;
         if (stdout === null || stdout === undefined) {
-            throw new Error("raw_world_eval stdout unavailable");
+            throw new Error("broker_world_eval stdout unavailable");
         }
         createInterface({ input: stdout }).on("line", (line: string) => {
             this.waiters.shift()?.resolve(line);
@@ -71,7 +72,7 @@ class WorldBridge {
             this.failAll(error instanceof Error ? error : new Error(String(error)));
         });
         proc.on("close", (code, signal) => {
-            this.failAll(new Error(`raw_world_eval exited with code ${String(code)} signal=${String(signal)} stderr=${this.stderrTail.slice(-2000)}`));
+            this.failAll(new Error(`broker_world_eval exited with code ${String(code)} signal=${String(signal)} stderr=${this.stderrTail.slice(-2000)}`));
         });
     }
 
@@ -86,7 +87,7 @@ class WorldBridge {
 
     static start(): WorldBridge {
         return new WorldBridge(
-            spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
+            spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "broker_world_eval"], {
                 cwd: repoRoot(),
                 stdio: ["pipe", "pipe", "pipe"],
             }),
@@ -98,7 +99,7 @@ class WorldBridge {
             return Promise.reject(new Error(this.dead));
         }
         if (this.proc.exitCode !== null || this.proc.signalCode !== null) {
-            return Promise.reject(new Error("raw_world_eval process already exited"));
+            return Promise.reject(new Error("broker_world_eval process already exited"));
         }
         const line = JSON.stringify({ method, body: payload });
         return new Promise<string>((resolve, reject) => {
@@ -219,17 +220,34 @@ interface Faults {
     staleView: Map<string, { show: string; rounds: number }>;
 }
 
-function lastTakeResult(h: Harness): Record<string, unknown> {
-    const readys = h.takeReplies
+function readyTakeCount(h: Harness): number {
+    return h.takeReplies
         .map((raw) => JSON.parse(raw) as Record<string, unknown>)
-        .filter((r) => r["outcome"] === "ready");
-    assert.ok(readys.length > 0, "at least one ready take result");
-    return (readys[readys.length - 1] as Record<string, unknown>)["result"] as Record<string, unknown>;
+        .filter((r) => r["outcome"] === "ready").length;
+}
+
+async function nextTakeResult(h: Harness, known: number, tag: string): Promise<Record<string, unknown>> {
+    // The take lane is async through the real broker (like production
+    // D-Bus): after a drain the entry collects the terminal over
+    // subsequent yields. Wait boundedly for a NEW ready take beyond
+    // `known` and return its result; the op asserts below keep their
+    // exact messages.
+    for (let round = 0; round < 300; round += 1) {
+        h.runTimers();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        const readys = h.takeReplies
+            .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+            .filter((r) => r["outcome"] === "ready");
+        if (readys.length > known) {
+            return (readys[readys.length - 1] as Record<string, unknown>)["result"] as Record<string, unknown>;
+        }
+    }
+    assert.ok(false, `expected the drained command to settle a new ready take (${tag})`);
+    throw new Error("unreachable");
 }
 
 interface Harness {
     readonly bridge: WorldBridge;
-    readonly broker: MiniBroker;
     readonly takeReplies: string[];
     readonly wins: FakeWindow[];
     readonly desktops: FakeDesktop[];
@@ -331,7 +349,6 @@ async function makeProducerHarness(): Promise<Harness> {
     }
     const harness: Harness = {
         bridge: WorldBridge.start(),
-        broker: createMiniBroker(),
         takeReplies: [],
         wins,
         desktops,
@@ -374,26 +391,73 @@ async function makeProducerHarness(): Promise<Harness> {
             }
         },
         flush: async () => {
-            const index = harness.calls.findIndex((call, at) => call.method === "DescribeWorld" && !harness.answered.has(at));
-            assert.ok(index >= 0, "expected a queued DescribeWorld dispatch to flush to the real Engine");
-            // Mini-broker stamping: the envelope becomes the exact core
-            // report the sole broker would dispatch (own namespace plus at
-            // most one queued command), and the core reply returns bound
-            // with a nulled terminal result.
+            // The broker transport is async (process lines, like D-Bus):
+            // a press files its Queue first and the entry dispatches the
+            // DescribeWorld only once the filing answer returns. Yield to
+            // transport I/O and pump due production timers boundedly so
+            // the dispatch lands before giving up.
+            let index = -1;
+            for (let round = 0; round < 200; round += 1) {
+                index = harness.calls.findIndex((call, at) => call.method === "DescribeWorld" && !harness.answered.has(at));
+                if (index >= 0) {
+                    break;
+                }
+                harness.runTimers();
+                await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            }
+            assert.ok(index >= 0, "expected a queued DescribeWorld dispatch to flush through the production broker");
+            // Production broker drain: the envelope runs end to end through
+            // the real `WorldService` (one fresh capture incorporates native
+            // evidence once and drains ALL parked commands FIFO in core,
+            // returning one final full publication with the terminal result
+            // nulled for the take lane). No test-side stamping, sequencing,
+            // or reply binding: the broker owns all of it.
             const envelope = (harness.calls[index] as CapturedCall).payload;
-            const stamped = harness.broker.stampCapture(envelope);
-            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
-            const reply = harness.broker.bindReply(coreReply, envelope);
+            const reply = await harness.bridge.send("DescribeWorld", envelope);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);
+            // Pump to quiescence: post-accept native apply waits for the
+            // async per-command take collection (production D-Bus is async
+            // the same way), so yield to transport I/O and due timers until
+            // no new lane call appears and every take is answered.
+            // Follow-up DescribeWorld dispatches stay recorded but unflushed
+            // for the caller to drive.
+            let calm = 0;
+            let lastCalls = -1;
+            let lastTakes = -1;
+            for (let round = 0; round < 300 && calm < 3; round += 1) {
+                harness.runTimers();
+                await new Promise<void>((resolve) => setTimeout(resolve, 0));
+                const takeCalls = harness.calls.filter((call) => call.method === "TakeCommandResult").length;
+                if (
+                    harness.calls.length === lastCalls &&
+                    harness.takeReplies.length === lastTakes &&
+                    takeCalls <= harness.takeReplies.length
+                ) {
+                    calm += 1;
+                } else {
+                    calm = 0;
+                    lastCalls = harness.calls.length;
+                    lastTakes = harness.takeReplies.length;
+                }
+            }
             return index;
         },
         flushAll: async (): Promise<void> => {
             for (let round = 0; round < 32; round += 1) {
+                harness.runTimers();
+                await new Promise<void>((resolve) => setTimeout(resolve, 0));
                 const next = harness.calls.findIndex((call, at) => call.method === "DescribeWorld" && !harness.answered.has(at));
                 if (next < 0) {
-                    return;
+                    // Quiescence recheck: an async take settling may dispatch
+                    // a follow-up observation after one more yield.
+                    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+                    harness.runTimers();
+                    const retry = harness.calls.findIndex((call, at) => call.method === "DescribeWorld" && !harness.answered.has(at));
+                    if (retry < 0) {
+                        return;
+                    }
                 }
                 await harness.flush();
             }
@@ -597,12 +661,25 @@ async function makeProducerHarness(): Promise<Harness> {
                 return;
             }
             harness.calls.push({ method, payload, callback });
+            // Queue/take run through the real broker (ordered process
+            // lines, so the broker sees Queue before a later DescribeWorld
+            // exactly in call order). Replies arrive asynchronously; the
+            // entry already treats delayed queue/take answers as honest
+            // on-next-event recovery, and a dead bridge leaves pending
+            // filings to the entry's own timeouts.
             if (method === "QueueWorldCommand") {
-                callback(harness.broker.answerQueue(payload));
+                harness.bridge.send("QueueWorldCommand", payload).then(
+                    (queueReply) => callback(queueReply),
+                    () => undefined,
+                );
             } else if (method === "TakeCommandResult") {
-                const takeReply = harness.broker.answerTake(payload);
-                harness.takeReplies.push(takeReply);
-                callback(takeReply);
+                harness.bridge.send("TakeCommandResult", payload).then(
+                    (takeReply) => {
+                        harness.takeReplies.push(takeReply);
+                        callback(takeReply);
+                    },
+                    () => undefined,
+                );
             }
         },
         scheduleOnce: (delayMs, callback): (() => void) => {
@@ -643,10 +720,10 @@ async function discover(h: Harness): Promise<string> {
     assert.equal(hsReply["req"], hsBody["req"], "handshake echoes the request correlation");
     assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string) !== "", "handshake mints the serving generation");
     const gen = hsReply["gen"] as string;
-    const boundHs = h.broker.bindDiscovery(hsReplyText);
-    assert.equal((JSON.parse(boundHs) as Record<string, unknown>)["adapter"], "test-adapter", "harness passes the producer lifetime through");
-    assert.equal(h.broker.gen, gen, "harness records the actual serving generation");
-    (h.calls[hsIndex] as CapturedCall).callback(boundHs);
+    // The production broker binds the producer adapter lifetime verbatim
+    // (never a broker incarnation) and mints the serving generation it
+    // stamps on every later queue/capture/take binding: pass through.
+    (h.calls[hsIndex] as CapturedCall).callback(hsReplyText);
     const setIndex = h.calls.findIndex((call, at) => at > hsIndex && call.method === "DiscoverWorld");
     assert.ok(setIndex >= 0, "revisioned settings follow the handshake");
     const setBody = JSON.parse((h.calls[setIndex] as CapturedCall).payload) as Record<string, unknown>;
@@ -801,11 +878,28 @@ describe("world migration producer", () => {
             // win-m) left.
             const nativeOrderBeforeLeg1 = h.desktops.map((d) => d.id);
             const winCBefore = JSON.stringify((h.wins.find((w) => w.internalId === "win-c") as FakeWindow).frameGeometry);
+            const takesBeforeLeg1 = readyTakeCount(h);
             h.handle.requestWorkspaceMigrate("left");
             h.runTimers();
             // Close migrating member win-m mid-flight while the transfer
-            // is still retained: the survivors must still migrate, the
-            // close must converge without wedging the flight.
+            // is still retained: await the real filing and the drain
+            // dispatch first, so the close lands after the drain baseline
+            // (as in the single-drain era). Closing before the async
+            // filing drains makes the broker refuse the whole migration
+            // (member vanished pre-drain); the survivors must still
+            // migrate, the close must converge without wedging the flight.
+            const leg1filed = migrateCommands(h);
+            assert.equal(leg1filed.length, 1, "migration files before the mid-flight close");
+            const leg1qIndex = leg1filed[0]?.index as number;
+            let leg1predrain = -1;
+            for (let round = 0; round < 200 && leg1predrain < 0; round += 1) {
+                leg1predrain = h.calls.findIndex((call, at) => at > leg1qIndex && call.method === "DescribeWorld" && !h.answered.has(at));
+                if (leg1predrain < 0) {
+                    h.runTimers();
+                    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+                }
+            }
+            assert.ok(leg1predrain >= 0, "drain dispatches before the mid-flight close");
             const winM = h.wins.findIndex((w) => w.internalId === "win-m");
             assert.ok(winM >= 0, "win-m present before close");
             h.wins.splice(winM, 1);
@@ -827,7 +921,7 @@ describe("world migration producer", () => {
             assert.ok(drainIndex >= 0, "queued command drains on a fresh capture");
             const leg1reply = JSON.parse(h.replies.get(drainIndex) as string) as Record<string, unknown>;
             assert.equal(leg1reply["result"], null, "actuator lane never carries the terminal result");
-            const leg1result = lastTakeResult(h);
+            const leg1result = await nextTakeResult(h, takesBeforeLeg1, "leg1");
             assert.equal(leg1result["op"], "migrate-workspace");
             assert.equal(leg1result["sourceOut"], RIGHT);
             assert.equal(leg1result["targetOut"], LEFT);
@@ -899,10 +993,37 @@ describe("world migration producer", () => {
             h.activeScreen = { name: LEFT };
             h.activeRef = winA;
             const nativeOrderBeforeLeg2 = h.desktops.map((d) => d.id);
+            const takesBeforeLeg2 = readyTakeCount(h);
             h.handle.requestWorkspaceMigrate("right");
             h.runTimers();
-            // One unreadable arrival round holds truthfully, then converges.
+            // Drain-then-hold ordering: the broker refuses a migration it
+            // cannot source-prove, so the unreadable round must follow a
+            // readable drain, never precede it (fault-before-drain settles
+            // the command failed/migration-refused with no transfer:
+            // LEG2-PROBE evidence takes=[ready#1,ready#2,failed#4
+            // migration-refused], faultLeft=0). Await the real filing and
+            // the drain dispatch first (as in leg 1): the envelope payload
+            // is built at dispatch, so faulting only afterwards keeps the
+            // drain readable (migration accepted, transfer retained) while
+            // the follow-up arrival observation builds unreadable.
+            const leg2filed = migrateCommands(h);
+            assert.equal(leg2filed.length, 2, "return migration files");
+            const leg2qIndex = (leg2filed[1] as { index: number }).index;
+            let leg2predrain = -1;
+            for (let round = 0; round < 200 && leg2predrain < 0; round += 1) {
+                leg2predrain = h.calls.findIndex((call, at) => at > leg2qIndex && call.method === "DescribeWorld" && !h.answered.has(at));
+                if (leg2predrain < 0) {
+                    h.runTimers();
+                    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+                }
+            }
+            assert.ok(leg2predrain >= 0, "return drain dispatches before the unreadable round");
+            // One unreadable arrival round holds truthfully, then converges:
+            // the first flush sends the readable drain (transfer retained),
+            // its arrival follow-up builds under the fault; the second flush
+            // sends that unreadable arrival, which must retain the transfer.
             h.faults.unreadableMembership.set("win-a", 4);
+            await h.flush();
             await h.flush();
             assert.ok(transfersOf(lastReply(h)).length > 0, "unreadable arrival retains the transfer");
             h.faults.unreadableMembership.delete("win-a");
@@ -933,7 +1054,7 @@ describe("world migration producer", () => {
             assert.ok(leg2drain >= 0, "return command drains on a fresh capture");
             const leg2reply = JSON.parse(h.replies.get(leg2drain) as string) as Record<string, unknown>;
             assert.equal(leg2reply["result"], null, "actuator lane never carries the terminal result");
-            const leg2result = lastTakeResult(h);
+            const leg2result = await nextTakeResult(h, takesBeforeLeg2, "leg2");
             assert.equal(leg2result["op"], "migrate-workspace");
             assert.equal(leg2result["sourceOut"], LEFT);
             assert.equal(leg2result["targetOut"], RIGHT);
@@ -1005,6 +1126,7 @@ describe("world migration producer", () => {
             const emptyLogicalBefore = ((lastReply(h)["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === LEFT && b["bind"] === emptySrc)?.["id"] ?? "");
             assert.ok(emptyLogicalBefore !== "", "empty source cell has a logical identity");
             const nativeOrderBeforeLeg3 = h.desktops.map((d) => d.id);
+            const takesBeforeLeg3 = readyTakeCount(h);
             h.handle.requestWorkspaceMigrate("right");
             try {
                 await h.settle();
@@ -1020,7 +1142,7 @@ describe("world migration producer", () => {
             assert.ok(leg3drain >= 0, "empty command drains on a fresh capture");
             const leg3reply = JSON.parse(h.replies.get(leg3drain) as string) as Record<string, unknown>;
             assert.equal(leg3reply["result"], null, "actuator lane never carries the terminal result");
-            const leg3result = lastTakeResult(h);
+            const leg3result = await nextTakeResult(h, takesBeforeLeg3, "leg3");
             assert.equal(leg3result["op"] ?? null, "migrate-workspace", "empty migration commits");
             assert.deepEqual(leg3result["members"] as string[], [], "empty migration carries no members");
             assert.equal(leg3result["sourceOut"], LEFT);

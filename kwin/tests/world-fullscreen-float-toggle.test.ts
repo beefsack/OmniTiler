@@ -498,6 +498,10 @@ const winRow = (
 });
 
 describe("world fullscreen float toggle", () => {
+    // Ordinary keyboard windowed intents (requestFloat/requestMaximize/
+    // requestFullscreen below) file win:{currentFocus:true}, resolved at
+    // core execution time (docs/decisions/commands.md#kde-rapid-input).
+    // Terminal take results and reply rows keep explicit subject ids.
     it("single toggle floats beneath retained fullscreen with zero subject writes", () => {
         const h = makeHarness([
             termSpec(WIN_A, { x: FULLSCREEN_FRAME[0], y: FULLSCREEN_FRAME[1], width: FULLSCREEN_FRAME[2], height: FULLSCREEN_FRAME[3] }, { fullScreen: true }),
@@ -515,7 +519,7 @@ describe("world fullscreen float toggle", () => {
         const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
             filed["command"] as Record<string, unknown>,
-            { op: "toggle-float", win: WIN_A, rect: null },
+            { op: "toggle-float", win: { currentFocus: true }, rect: null },
             "fullscreen float carries no rect, never the fullscreen frame",
         );
         // Core admits beneath the retained overlay: the float row carries
@@ -572,7 +576,7 @@ describe("world fullscreen float toggle", () => {
         const filedUnfloat = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
             filedUnfloat["command"] as Record<string, unknown>,
-            { op: "toggle-float", win: WIN_A, rect: null },
+            { op: "toggle-float", win: { currentFocus: true }, rect: null },
             "fullscreen unfloat carries no rect, never the fullscreen frame",
         );
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
@@ -600,7 +604,7 @@ describe("world fullscreen float toggle", () => {
         const filedRefloat = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
             filedRefloat["command"] as Record<string, unknown>,
-            { op: "toggle-float", win: WIN_A, rect: null },
+            { op: "toggle-float", win: { currentFocus: true }, rect: null },
             "refloat still carries no rect (core reuses the retained placement)",
         );
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "3", {
@@ -718,7 +722,7 @@ describe("world fullscreen float toggle", () => {
         const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
             filed["command"] as Record<string, unknown>,
-            { op: "toggle-float", win: WIN_A, rect: null },
+            { op: "toggle-float", win: { currentFocus: true }, rect: null },
         );
         assert.deepEqual(h.subjectWrites(`{${WIN_A}}`), [], "no geometry write to the fullscreen maximized subject");
         assert.ok(!h.logs.some((l) => l.includes("float-unfloat-maximize-clear") && l.includes("outcome=issued")), "B9 never arms under fullscreen");
@@ -729,6 +733,9 @@ describe("world fullscreen float toggle", () => {
 });
 
 describe("world maximize toggle", () => {
+    // Filed requestMaximize commands carry the implicit execution-time
+    // marker (docs/decisions/commands.md#kde-rapid-input); descriptive
+    // take results below keep explicit subject ids.
     const maximizeResult = (maximized: boolean, clearFullscreen: boolean, wasMaximized: boolean): Record<string, unknown> => ({
         op: "maximize", win: WIN_A, maximized, clearFullscreen, wasMaximized,
     });
@@ -804,7 +811,7 @@ describe("world maximize toggle", () => {
         entry.requestMaximize();
         h.runTimers();
         const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
-        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: WIN_A });
+        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: { currentFocus: true } });
         // Descriptive take result alone never actuates (retired legacy
         // pending path): zero native writes from the terminal alone.
         acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, true, false));
@@ -855,7 +862,7 @@ describe("world maximize toggle", () => {
         entry.requestMaximize();
         h.runTimers();
         const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
-        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: WIN_A });
+        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: { currentFocus: true } });
         acceptMaximize(h, "3", tiledWindows(), maximizeResult(false, false, true));
         assert.equal(h.subjectNativeWrites(`{${WIN_A}}`).length, 2, "descriptive restore result writes nothing");
         // Restore is a maximize-only Controlled row: setMaximize without
@@ -898,7 +905,7 @@ describe("world maximize toggle", () => {
         entry.requestMaximize();
         h.runTimers();
         const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
-        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: WIN_A });
+        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: { currentFocus: true } });
         acceptMaximize(h, "2", [
             winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
             winRow(WIN_B, TILE_B_FULL, "controlled"),
@@ -960,7 +967,7 @@ describe("world maximize toggle", () => {
         entry.requestMaximize();
         h.runTimers();
         const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
-        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: WIN_A });
+        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: { currentFocus: true } });
         acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, true, true));
         assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [], "descriptive take result writes nothing");
         nextAccept(h, "2", { windows: clearMaxWindows("1") });
@@ -984,7 +991,7 @@ describe("world maximize toggle", () => {
         entry.requestMaximize();
         h.runTimers();
         const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
-        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: WIN_A });
+        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: { currentFocus: true } });
         acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, false, false));
         assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [], "descriptive take result writes nothing");
         nextAccept(h, "2", { windows: maxOnlyWindows(true, "1") });
@@ -1168,7 +1175,7 @@ describe("world maximize toggle", () => {
         entry.requestFullscreen();
         h.runTimers();
         const fsFiled = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
-        assert.deepEqual(fsFiled["command"], { op: "toggle-fullscreen", win: WIN_A }, "fullscreen files the existing core command");
+        assert.deepEqual(fsFiled["command"], { op: "toggle-fullscreen", win: { currentFocus: true } }, "fullscreen files the existing core command");
         assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [], "enqueue writes nothing directly");
         assert.ok(!h.logs.some((l) => l.includes("native-pending-superseded")), "no shared pending to supersede");
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "independent commands never fail each other");
@@ -1231,6 +1238,9 @@ describe("world maximize toggle", () => {
 });
 
 describe("world native pending settlement", () => {
+    // Filed requestFullscreen/requestMaximize commands carry the implicit
+    // execution-time marker (docs/decisions/commands.md#kde-rapid-input);
+    // the gen-2 leg below then verifies the rebound generation counts.
     const maximizeResult = (maximized: boolean, clearFullscreen: boolean, wasMaximized: boolean): Record<string, unknown> => ({
         op: "maximize", win: WIN_A, maximized, clearFullscreen, wasMaximized,
     });
@@ -1359,7 +1369,7 @@ describe("world native pending settlement", () => {
         entry.requestFullscreen();
         h.runTimers();
         const enterFiled = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
-        assert.deepEqual(enterFiled["command"], { op: "toggle-fullscreen", win: WIN_A }, "enter files the existing core command");
+        assert.deepEqual(enterFiled["command"], { op: "toggle-fullscreen", win: { currentFocus: true } }, "enter files the existing core command");
         assert.ok(!legacyTokens.some((t) => h.logs.some((l) => l.includes(t))), "no legacy pending traffic");
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "no refusal before the rows land");
         assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [], "enqueue writes nothing directly");
@@ -1382,7 +1392,7 @@ describe("world native pending settlement", () => {
         entry.requestFullscreen();
         h.runTimers();
         const exitFiled = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
-        assert.deepEqual(exitFiled["command"], { op: "toggle-fullscreen", win: WIN_A }, "exit files the existing core command");
+        assert.deepEqual(exitFiled["command"], { op: "toggle-fullscreen", win: { currentFocus: true } }, "exit files the existing core command");
         assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [
             `{${WIN_A}}@fullScreen=true`,
         ], "exit enqueue writes nothing directly");
@@ -1591,7 +1601,7 @@ describe("world native pending settlement", () => {
         entry.requestMaximize();
         h.runTimers();
         const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
-        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: WIN_A });
+        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: { currentFocus: true } });
         acceptMaximizeGen(h, "gen-2", "1", tiledOrdinary(), maximizeResult(true, false, false));
         assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [], "descriptive take result writes nothing");
         nextAcceptGen(h, "gen-2", "2", maxOnlyOrdinary(true, "1"));

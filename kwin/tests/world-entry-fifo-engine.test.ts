@@ -1,18 +1,23 @@
 // Rapid directional FIFO through the production entry against the real
-// `WorldEngine` (via the test-only `raw_world_eval` example: same decode,
-// retained engine, codec and generation binding the shipped world service
-// uses; only D-Bus and signals are stubbed). Proves integrated native
-// effects, not just dispatched command sequences: left-then-right focus
-// lands exact native focus per the Engine in order (neighbor then origin:
-// queued tiled focus resolves its subject at drain time from the
-// authoritative current native focus), queued tiled moves rebind the same
-// way (mixed focus-then-move proves the mover is the settled new focus),
-// and each repeated move applies its own planned geometry round. Direct
-// resize presses step the shared boundary by the core schedule with exact
-// native-shaped frames (12px then 14px), and the direct orientation toggle flips
-// the pair to a vertical stack. A queued native-signal invalidation still
-// withholds the stale head's real setters, and a timed-out head still
-// drains its tail with no synthetic signal. Included in `npm test`.
+// production broker (via the test-only `broker_world_eval` example: the true
+// `WorldService` route serving discovery, queue, capture-batch drain, take,
+// and presentation reads in one retained process; only D-Bus and signals are
+// stubbed, with queue/take bound under a constant test sender). Proves
+// integrated native effects under genuine batch semantics: every press files
+// FIFO, one fresh capture incorporates native evidence once and drains ALL
+// parked commands in order against post-prior core state, returning one final
+// publication; per-command settlements ride the take lane. Intermediate
+// native focus/geometry never occur (core collapses superseded unissued
+// focus; the adapter applies only the latest publication), and a sent command
+// never replays. Sequential settled presses still drain one per capture;
+// rapid bursts drain together. Window-targeting commands file the explicit
+// execution-time marker win:{currentFocus:true} (docs/decisions/commands.md
+// #kde-rapid-input); reply placements are read from actual Engine replies
+// before choosing directions, never assumed from native rect order. A queued
+// native-signal invalidation still withholds the stale batch's real setters
+// (filings awaited first), and a timed-out capture still drains its batch on
+// the later on-next-event catchup (the next native signal, never an inline
+// retry). Included in `npm test`.
 
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -22,7 +27,6 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
-import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -48,7 +52,7 @@ class WorldBridge {
         this.proc = proc;
         const stdout = proc.stdout;
         if (stdout === null || stdout === undefined) {
-            throw new Error("raw_world_eval stdout unavailable");
+            throw new Error("broker_world_eval stdout unavailable");
         }
         createInterface({ input: stdout }).on("line", (line: string) => {
             this.waiters.shift()?.resolve(line);
@@ -60,7 +64,7 @@ class WorldBridge {
             this.failAll(error instanceof Error ? error : new Error(String(error)));
         });
         proc.on("close", (code, signal) => {
-            this.failAll(new Error(`raw_world_eval exited with code ${String(code)} signal=${String(signal)} stderr=${this.stderrTail.slice(-2000)}`));
+            this.failAll(new Error(`broker_world_eval exited with code ${String(code)} signal=${String(signal)} stderr=${this.stderrTail.slice(-2000)}`));
         });
     }
 
@@ -75,7 +79,7 @@ class WorldBridge {
 
     static start(): WorldBridge {
         return new WorldBridge(
-            spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
+            spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "broker_world_eval"], {
                 cwd: repoRoot(),
                 stdio: ["pipe", "pipe", "pipe"],
             }),
@@ -87,7 +91,7 @@ class WorldBridge {
             return Promise.reject(new Error(this.dead));
         }
         if (this.proc.exitCode !== null || this.proc.signalCode !== null) {
-            return Promise.reject(new Error("raw_world_eval process already exited"));
+            return Promise.reject(new Error("broker_world_eval process already exited"));
         }
         const line = JSON.stringify({ method, body: payload });
         return new Promise<string>((resolve, reject) => {
@@ -205,14 +209,12 @@ interface Timer {
 
 interface Harness {
     readonly bridge: WorldBridge;
-    readonly broker: MiniBroker;
     workspace: Record<string, unknown>;
     readonly wins: FakeWindow[];
     readonly calls: CapturedCall[];
     readonly answered: Set<number>;
     readonly replies: Map<number, string>;
     readonly takeReplies: string[];
-    readonly stampedCmds: Array<{ cmd: unknown; cmdSeq: unknown }>;
     readonly timers: Timer[];
     readonly logs: string[];
     readonly geometryWrites: string[];
@@ -304,14 +306,12 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
     }
     const harness: Harness = {
         bridge: WorldBridge.start(),
-        broker: createMiniBroker(),
         workspace: {},
         wins,
         calls: [],
         answered: new Set<number>(),
         replies: new Map<number, string>(),
         takeReplies: [],
-        stampedCmds: [],
         timers: [],
         logs: [],
         geometryWrites,
@@ -349,28 +349,64 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
             (timer as Timer).callback();
         },
         flush: async () => {
-            const index = harness.calls.findIndex((call, at) => call.method === "DescribeWorld" && !harness.answered.has(at));
-            assert.ok(index >= 0, "expected a queued DescribeWorld dispatch to flush to the real Engine");
-            return harness.flushAt(index);
+            // The broker transport is async (process lines, like D-Bus):
+            // a press files its Queue first and the entry dispatches the
+            // DescribeWorld only once the filing answer returns. Yield to
+            // transport I/O and pump due production timers boundedly
+            // (debounce/drain only; timeouts stay armed) so the dispatch
+            // lands before giving up.
+            for (let round = 0; round < 200; round += 1) {
+                const index = harness.calls.findIndex((call, at) => call.method === "DescribeWorld" && !harness.answered.has(at));
+                if (index >= 0) {
+                    return harness.flushAt(index);
+                }
+                harness.runTimers();
+                await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            }
+            assert.ok(false, "expected a queued DescribeWorld dispatch to flush through the production broker");
+            throw new Error("unreachable");
         },
         flushAt: async (index: number): Promise<number> => {
             assert.ok(
                 (harness.calls[index] as CapturedCall | undefined)?.method === "DescribeWorld" && !harness.answered.has(index),
                 "expected the targeted DescribeWorld dispatch to be unanswered",
             );
-            // Mini-broker stamping: the envelope becomes the exact core
-            // report the sole broker would dispatch (own namespace plus at
-            // most one queued command), and the core reply returns bound
-            // with a nulled terminal result.
+            // Production broker drain: the envelope runs end to end through
+            // the real `WorldService` (one fresh capture incorporates native
+            // evidence once and drains ALL parked commands FIFO in core,
+            // returning one final full publication with the terminal result
+            // nulled for the take lane). No test-side stamping, sequencing,
+            // or reply binding: the broker owns all of it.
             const envelope = (harness.calls[index] as CapturedCall).payload;
-            const stamped = harness.broker.stampCapture(envelope);
-            const parsed = JSON.parse(stamped) as Record<string, unknown>;
-            harness.stampedCmds.push({ cmd: parsed["command"] ?? null, cmdSeq: parsed["cmdSeq"] ?? null });
-            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
-            const reply = harness.broker.bindReply(coreReply, envelope);
+            const reply = await harness.bridge.send("DescribeWorld", envelope);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);
+            // Pump to quiescence: post-accept native apply waits for the
+            // async per-command take collection (production D-Bus is async
+            // the same way; the old sync fake resolved takes inline), so
+            // yield to transport I/O and due timers until no new lane call
+            // appears and every take is answered. Follow-up DescribeWorld
+            // dispatches stay recorded but unflushed for the test to drive.
+            let calm = 0;
+            let lastCalls = -1;
+            let lastTakes = -1;
+            for (let round = 0; round < 300 && calm < 3; round += 1) {
+                harness.runTimers();
+                await new Promise<void>((resolve) => setTimeout(resolve, 0));
+                const takeCalls = harness.calls.filter((call) => call.method === "TakeCommandResult").length;
+                if (
+                    harness.calls.length === lastCalls &&
+                    harness.takeReplies.length === lastTakes &&
+                    takeCalls <= harness.takeReplies.length
+                ) {
+                    calm += 1;
+                } else {
+                    calm = 0;
+                    lastCalls = harness.calls.length;
+                    lastTakes = harness.takeReplies.length;
+                }
+            }
             return index;
         },
         flushAll: async (): Promise<void> => {
@@ -397,9 +433,9 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
             throw new Error("settle did not converge");
         },
         commandPayloads: (op: string): Array<{ index: number; body: Record<string, unknown> }> => {
-            // v2 command lane: presses file QueueWorldCommand (the broker
-            // drains at most one per capture); DescribeWorld envelopes
-            // carry no inline command.
+            // v4 command lane: presses file QueueWorldCommand (the broker
+            // drains the whole parked FIFO batch in the next fresh capture);
+            // DescribeWorld envelopes carry no inline command.
             const out: Array<{ index: number; body: Record<string, unknown> }> = [];
             harness.calls.forEach((call, index) => {
                 if (call.method !== "QueueWorldCommand") {
@@ -505,12 +541,25 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
                 return;
             }
             harness.calls.push({ method, payload, callback });
+            // Queue/take run through the real broker (ordered process
+            // lines, so the broker sees Queue before a later DescribeWorld
+            // exactly in call order). Replies arrive asynchronously; the
+            // entry already treats delayed queue/take answers as honest
+            // on-next-event recovery, and a dead bridge leaves pending
+            // filings to the entry's own timeouts.
             if (method === "QueueWorldCommand") {
-                callback(harness.broker.answerQueue(payload));
+                harness.bridge.send("QueueWorldCommand", payload).then(
+                    (queueReply) => callback(queueReply),
+                    () => undefined,
+                );
             } else if (method === "TakeCommandResult") {
-                const takeReply = harness.broker.answerTake(payload);
-                harness.takeReplies.push(takeReply);
-                callback(takeReply);
+                harness.bridge.send("TakeCommandResult", payload).then(
+                    (takeReply) => {
+                        harness.takeReplies.push(takeReply);
+                        callback(takeReply);
+                    },
+                    () => undefined,
+                );
             }
         },
         scheduleOnce: (delayMs, callback): (() => void) => {
@@ -551,10 +600,10 @@ async function discover(h: Harness): Promise<string> {
     assert.equal(hsReply["req"], hsBody["req"], "handshake echoes the request correlation");
     assert.ok(typeof hsReply["gen"] === "string" && (hsReply["gen"] as string) !== "", "handshake mints the serving generation");
     const gen = hsReply["gen"] as string;
-    const boundHs = h.broker.bindDiscovery(hsReplyText);
-    assert.equal((JSON.parse(boundHs) as Record<string, unknown>)["adapter"], "test-adapter", "harness passes the producer lifetime through");
-    assert.equal(h.broker.gen, gen, "harness records the actual serving generation");
-    (h.calls[hsIndex] as CapturedCall).callback(boundHs);
+    // The production broker binds the producer adapter lifetime verbatim
+    // (never a broker incarnation) and mints the serving generation it
+    // stamps on every later queue/capture/take binding: pass through.
+    (h.calls[hsIndex] as CapturedCall).callback(hsReplyText);
     const setIndex = h.calls.findIndex((call, at) => at > hsIndex && call.method === "DiscoverWorld");
     assert.ok(setIndex >= 0, "revisioned settings follow the handshake");
     const setBody = JSON.parse((h.calls[setIndex] as CapturedCall).payload) as Record<string, unknown>;
@@ -612,71 +661,155 @@ function appliedMatchesReply(h: Harness, reply: Record<string, unknown>): void {
     }
 }
 
+// Batch-era observation helpers: one fresh capture incorporates native
+// once and drains the whole parked FIFO batch, returning one final
+// publication; per-command settlements ride the take lane. These helpers
+// read actual Engine placements and lane identities instead of assuming
+// press-time native order or reusing command sequence 1.
+function describeCount(h: Harness): number {
+    return h.calls.filter((call) => call.method === "DescribeWorld").length;
+}
+
+function lastDescribeReply(h: Harness): Record<string, unknown> {
+    const indices = [...h.replies.keys()].filter((at) => (h.calls[at] as CapturedCall).method === "DescribeWorld");
+    assert.ok(indices.length > 0, "at least one answered capture");
+    return JSON.parse(h.replies.get(Math.max(...indices) as number) as string) as Record<string, unknown>;
+}
+
+function replyFrames(reply: Record<string, unknown>): Map<string, { x: number; y: number; w: number; h: number }> {
+    const out = new Map<string, { x: number; y: number; w: number; h: number }>();
+    for (const entry of (reply["windows"] as Array<Record<string, unknown>>) ?? []) {
+        const frame = entry["frame"] as [number, number, number, number] | null;
+        if (frame !== null) {
+            out.set(entry["win"] as string, { x: frame[0], y: frame[1], w: frame[2], h: frame[3] });
+        }
+    }
+    return out;
+}
+
+function takeReadys(h: Harness): Array<Record<string, unknown>> {
+    return h.takeReplies
+        .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+        .filter((r) => r["outcome"] === "ready");
+}
+
+async function awaitQueueCount(h: Harness, op: string, expected: number): Promise<void> {
+    // Queue filings are async through the real broker (ordered process
+    // lines, like production D-Bus): a rapid second press stays parked in
+    // the entry until the first filing settles, so yield boundedly for
+    // every filing before counting. The count asserts below keep their
+    // exact messages; this only settles transport timing.
+    for (let round = 0; round < 200; round += 1) {
+        if (h.commandPayloads(op).length >= expected) {
+            return;
+        }
+        h.runTimers();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+}
+
+async function awaitDispatch(h: Harness): Promise<number> {
+    // Bounded wait for the parked batch to dispatch its single capture:
+    // the dispatch gate fires only after every parked Queue filing settles,
+    // so a dispatched capture proves real filing (never a sync assumption).
+    for (let round = 0; round < 200; round += 1) {
+        const index = h.calls.findIndex((call, at) => call.method === "DescribeWorld" && !h.answered.has(at));
+        if (index >= 0) {
+            return index;
+        }
+        h.runTimers();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    assert.ok(false, "expected the parked batch to dispatch one capture through the production broker");
+    throw new Error("unreachable");
+}
+
 describe("world entry rapid directional FIFO against the real Engine", () => {
     it("applies rapid left then right focus with exact native effects in order", async () => {
         const h = await makeHarness("win-a", ["win-a", "win-b", "win-c"]);
         try {
             await discover(h);
-            // The Engine settles the focused window last: positional order
-            // B,C,A. Bring middle win-c into focus with one accepted press;
-            // focus never moves windows, so the tree stays put.
-            const xs = (id: string): number => frameOf(winById(h, id)).x;
-            assert.ok(xs("win-b") < xs("win-c") && xs("win-c") < xs("win-a"), "engine settles positional row B,C,A");
+            // Read actual Engine placements from the settled reply before
+            // choosing directions (never assume native rect order).
+            let frames = replyFrames(lastDescribeReply(h));
+            assert.ok(
+                (frames.get("win-b")?.x ?? 0) < (frames.get("win-c")?.x ?? 0) &&
+                (frames.get("win-c")?.x ?? 0) < (frames.get("win-a")?.x ?? 0),
+                "engine settles positional row B,C,A",
+            );
+            // Setup consumes command sequence 1: single press left from
+            // win-a lands middle win-c.
             h.handle.requestFocus("left");
             await h.flush();
             h.runTimers();
             await h.settle();
             assert.deepEqual(h.focused, ["win-c"], "setup press focuses middle win-c");
-            // Both rapid presses start from middle win-c; neither press
-            // advances the watermark, so each report stays fresh. The
-            // queued tail rebinds to the settled focus at dispatch.
+            assert.equal(takeReadys(h).length, 1, "setup settles its own take");
+            assert.equal(takeReadys(h)[0]?.["globalCmd"], "1", "setup holds sequence 1, never reused");
+            frames = replyFrames(lastDescribeReply(h));
+            assert.ok(
+                (frames.get("win-b")?.x ?? 0) < (frames.get("win-c")?.x ?? 0) &&
+                (frames.get("win-c")?.x ?? 0) < (frames.get("win-a")?.x ?? 0),
+                "settled reply still places win-c between win-b and win-a",
+            );
+            // Both rapid presses file before either filing settles; the
+            // explicit marker rides unchanged (core resolves at execution
+            // with same-batch focus advance).
             h.handle.requestFocus("left");
             h.handle.requestFocus("right");
             assert.ok(!h.logs.some((l) => l.includes("command-busy")));
             assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
+            // One capture drains the whole parked batch: the dispatch gate
+            // fires only after real filings settle. n0 is read BEFORE the
+            // filing wait: the batch dispatch itself lands during those
+            // yields, so reading after would swallow it (actual==n0).
+            const n0 = describeCount(h);
+            await awaitQueueCount(h, "focus-directional", 3);
             let moves = h.commandPayloads("focus-directional");
-            assert.equal(moves.length, 2, "setup plus head dispatched, tail queued");
-            // Head through the real Engine: focus lands on win-b natively.
-            const headIndex = await h.flush();
-            const headReply = JSON.parse(h.replies.get(headIndex) as string) as Record<string, unknown>;
-            const headEffects = headReply["effects"] as Array<Record<string, unknown>>;
+            assert.equal(moves.length, 3, "setup plus both rapid presses file");
+            for (const q of moves) {
+                assert.deepEqual(
+                    (q.body["command"] as Record<string, unknown>)["win"],
+                    { currentFocus: true },
+                    "rapid press keeps the explicit execution-time marker",
+                );
+            }
+            // One capture drains the whole parked batch: the dispatch gate
+            // fires only after real filings settle.
+            const batchIndex = await awaitDispatch(h);
+            assert.equal(describeCount(h), n0 + 1, "one capture drains the whole parked batch");
+            assert.deepEqual(h.focused, ["win-c"], "no intermediate native focus before the batch lands");
+            const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(batchReply["outcome"], "rejected", "real Engine drains the batch");
+            assert.equal(batchReply["result"], null, "actuator lane never carries terminal results");
+            // Final-only publication: core collapses the superseded head
+            // focus unissued, so only the return to origin publishes.
+            const batchEffects = batchReply["effects"] as Array<Record<string, unknown>>;
             assert.ok(
-                headEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-b"),
-                `real Engine plans head focus on win-b, got ${JSON.stringify(headEffects)}`,
+                !batchEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-b"),
+                `superseded head focus never publishes, got ${JSON.stringify(batchEffects)}`,
             );
-            assert.deepEqual(h.focused, ["win-c", "win-b"], "Engine-planned focus-left actuates natively");
-            assert.equal((h.activeRef as FakeWindow).internalId, "win-b");
-            // Tail drains zero-delay after the acceptance. The head moved
-            // focus to win-b, so the tail resolves its subject at drain
-            // time from the authoritative current native focus (win-b) and
-            // plans focus-right back onto win-c: FIFO order is preserved
-            // and the core adjudicates each rebuilt intent in turn.
-            h.runTimers();
-            moves = h.commandPayloads("focus-directional");
-            assert.equal(moves.length, 3, "queued opposite press drains after the acceptance");
-            const tailBody = moves[2]?.body as Record<string, unknown>;
-            assert.deepEqual(
-                (tailBody["command"] as Record<string, unknown>)["win"],
-                "win-b",
-                "queued tail rebinds to the settled native focus at dispatch",
-            );
-            const tailIndex = await h.flush();
-            const tailReply = JSON.parse(h.replies.get(tailIndex) as string) as Record<string, unknown>;
-            assert.notEqual(tailReply["outcome"], "rejected", "real Engine plans the rebuilt tail");
-            const tailEffects = tailReply["effects"] as Array<Record<string, unknown>>;
             assert.ok(
-                tailEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-c"),
-                `real Engine plans tail focus on win-c, got ${JSON.stringify(tailEffects)}`,
+                batchEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-c"),
+                `final publication returns focus to the origin, got ${JSON.stringify(batchEffects)}`,
             );
-            assert.ok(!h.logs.some((l) => l.includes("focus-mismatch")));
-            assert.deepEqual(h.focused, ["win-c", "win-b", "win-c"], "tail returns focus to the origin natively");
+            assert.ok(!h.focused.includes("win-b"), "intermediate neighbor never actuates natively");
             assert.equal((h.activeRef as FakeWindow).internalId, "win-c");
+            appliedMatchesReply(h, batchReply);
+            // Every action settles its own take FIFO under fresh sequences.
+            const batchTakes = takeReadys(h);
+            assert.equal(batchTakes.length, 3, "every batch action settles its own take");
+            assert.deepEqual(
+                batchTakes.slice(1).map((t) => t["globalCmd"]),
+                ["2", "3"],
+                "batch takes ride fresh sequences 2/3, never reused 1",
+            );
             // No replay, no coalescing: late duplicate input changes nothing.
             h.fire("windowActivated");
             h.fire("windowActivated");
             await h.settle();
             assert.equal(h.commandPayloads("focus-directional").length, 3, "no command replay after settlement");
-            assert.deepEqual(h.focused, ["win-c", "win-b", "win-c"], "no duplicate native focus writes");
+            assert.ok(!h.focused.includes("win-b"), "no duplicate native focus writes");
         } finally {
             await h.stop();
         }
@@ -686,47 +819,67 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
         const h = await makeHarness("win-a", ["win-a", "win-b", "win-c"]);
         try {
             await discover(h);
-            const xs = (id: string): number => frameOf(winById(h, id)).x;
-            assert.ok(xs("win-b") < xs("win-c") && xs("win-c") < xs("win-a"), "engine settles positional row B,C,A");
+            let frames = replyFrames(lastDescribeReply(h));
+            assert.ok(
+                (frames.get("win-b")?.x ?? 0) < (frames.get("win-c")?.x ?? 0) &&
+                (frames.get("win-c")?.x ?? 0) < (frames.get("win-a")?.x ?? 0),
+                "engine settles positional row B,C,A",
+            );
             h.handle.requestFocus("left");
             await h.flush();
             h.runTimers();
             await h.settle();
             assert.deepEqual(h.focused, ["win-c"], "setup press focuses middle win-c");
             // A native burst arms the observation debounce with no command
-            // in flight; both rapid presses queue behind it in order.
+            // in flight; both rapid presses queue behind it in order. The
+            // debounce never captures commandless while filings are
+            // outstanding: one capture still drains the whole batch.
             h.fire("windowActivated");
             h.handle.requestFocus("left");
             h.handle.requestFocus("right");
             assert.ok(!h.logs.some((l) => l.includes("command-busy")));
             assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
-            // The debounce flushes the head first with a fresh observation.
-            h.runTimers();
-            let moves = h.commandPayloads("focus-directional");
-            assert.equal(moves.length, 2, "setup plus debounced head dispatched, tail queued");
-            const headIndex = await h.flush();
-            const headReply = JSON.parse(h.replies.get(headIndex) as string) as Record<string, unknown>;
-            const headEffects = headReply["effects"] as Array<Record<string, unknown>>;
+            const n0 = describeCount(h);
+            await awaitQueueCount(h, "focus-directional", 3);
+            const moves = h.commandPayloads("focus-directional");
+            assert.equal(moves.length, 3, "setup plus both rapid presses file");
+            for (const q of moves) {
+                assert.deepEqual(
+                    (q.body["command"] as Record<string, unknown>)["win"],
+                    { currentFocus: true },
+                    "rapid press keeps the explicit execution-time marker",
+                );
+            }
+            const batchIndex = await awaitDispatch(h);
+            assert.equal(describeCount(h), n0 + 1, "debounced pair still drains in one capture, never a commandless trailing capture");
+            assert.deepEqual(h.focused, ["win-c"], "no intermediate native focus before the batch lands");
+            const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(batchReply["outcome"], "rejected", "real Engine drains the debounced batch");
+            const batchEffects = batchReply["effects"] as Array<Record<string, unknown>>;
             assert.ok(
-                headEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-b"),
-                `real Engine plans head focus on win-b, got ${JSON.stringify(headEffects)}`,
+                !batchEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-b"),
+                `superseded head focus never publishes, got ${JSON.stringify(batchEffects)}`,
             );
-            assert.equal((h.activeRef as FakeWindow).internalId, "win-b");
-            // The accepted head drains the queued opposite press next, which
-            // rebinds to win-b at dispatch and returns to win-c.
-            h.runTimers();
-            moves = h.commandPayloads("focus-directional");
-            assert.equal(moves.length, 3, "queued opposite press drains after the acceptance");
-            const tailIndex = await h.flush();
-            const tailReply = JSON.parse(h.replies.get(tailIndex) as string) as Record<string, unknown>;
-            assert.notEqual(tailReply["outcome"], "rejected", "real Engine plans the rebuilt debounced tail");
-            const tailEffects = tailReply["effects"] as Array<Record<string, unknown>>;
             assert.ok(
-                tailEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-c"),
-                `real Engine plans tail focus on win-c, got ${JSON.stringify(tailEffects)}`,
+                batchEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-c"),
+                `final publication returns focus to the origin, got ${JSON.stringify(batchEffects)}`,
             );
-            assert.deepEqual(h.focused, ["win-c", "win-b", "win-c"], "debounced pair lands neighbor then origin");
+            assert.ok(!h.focused.includes("win-b"), "intermediate neighbor never actuates natively");
             assert.equal((h.activeRef as FakeWindow).internalId, "win-c");
+            appliedMatchesReply(h, batchReply);
+            frames = replyFrames(batchReply);
+            assert.ok(
+                (frames.get("win-b")?.x ?? 0) < (frames.get("win-c")?.x ?? 0),
+                "batch reply keeps the settled placement",
+            );
+            const batchTakes = takeReadys(h);
+            assert.equal(batchTakes.length, 3, "every batch action settles its own take");
+            assert.deepEqual(
+                batchTakes.slice(1).map((t) => t["globalCmd"]),
+                ["2", "3"],
+                "batch takes ride fresh sequences 2/3, never reused 1",
+            );
+            assert.deepEqual(h.focused.filter((f) => f === "win-b"), [], "debounced pair lands neighbor never, origin finally");
         } finally {
             await h.stop();
         }
@@ -736,38 +889,78 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
         const h = await makeHarness("win-a", ["win-a", "win-b"]);
         try {
             await discover(h);
-            // The Engine settles B left of focused win-a: left swaps, then
-            // right swaps back. Both presses name win-a.
-            const xs = (id: string): number => frameOf(winById(h, id)).x;
-            assert.ok(xs("win-b") < xs("win-a"), "engine settles B left of focused win-a");
+            // Read the actual Engine placement before choosing directions:
+            // the Engine settles B left of focused win-a.
+            let frames = replyFrames(lastDescribeReply(h));
+            assert.ok(
+                (frames.get("win-b")?.x ?? 0) < (frames.get("win-a")?.x ?? 0),
+                "engine settles B left of focused win-a",
+            );
+            const nativeBefore = h.wins.map((w) => ({ ...frameOf(w) }));
+            // Rapid out-and-back pair: one capture drains both moves in
+            // order against post-prior core state, returning one net-zero
+            // publication. Both presses file the explicit marker.
             h.handle.requestMove("left");
             h.handle.requestMove("right");
             assert.ok(!h.logs.some((l) => l.includes("command-busy")));
+            const n0 = describeCount(h);
+            await awaitQueueCount(h, "move-directional", 2);
             let moves = h.commandPayloads("move-directional");
-            assert.equal(moves.length, 1, "head dispatched immediately, tail queued");
-            // Head through the real Engine: the swap applies natively with
-            // the Engine's own planned frames.
-            const headIndex = await h.flush();
-            const headReply = JSON.parse(h.replies.get(headIndex) as string) as Record<string, unknown>;
-            assert.notEqual(headReply["outcome"], "rejected", "real Engine plans the head move");
-            appliedMatchesReply(h, headReply);
-            const framesAfterHead = h.wins.map((w) => ({ ...frameOf(w) }));
-            // Tail drains zero-delay and swaps back with fresh planning.
-            h.runTimers();
-            moves = h.commandPayloads("move-directional");
-            assert.equal(moves.length, 2, "queued move drains after the acceptance");
-            const tailIndex = await h.flush();
-            const tailReply = JSON.parse(h.replies.get(tailIndex) as string) as Record<string, unknown>;
-            assert.notEqual(tailReply["outcome"], "rejected", "real Engine plans the tail move");
-            appliedMatchesReply(h, tailReply);
-            assert.ok(
-                h.wins.some((w, i) => JSON.stringify(frameOf(w)) !== JSON.stringify(framesAfterHead[i])),
-                "tail move rewrites geometry again",
+            assert.equal(moves.length, 2, "both rapid moves file");
+            for (const q of moves) {
+                assert.deepEqual(
+                    (q.body["command"] as Record<string, unknown>)["win"],
+                    { currentFocus: true },
+                    "rapid move keeps the explicit execution-time marker",
+                );
+                assert.ok(
+                    (q.body["command"] as Record<string, unknown>)["direction"] === "left" ||
+                    (q.body["command"] as Record<string, unknown>)["direction"] === "right",
+                );
+            }
+            const batchIndex = await awaitDispatch(h);
+            assert.equal(describeCount(h), n0 + 1, "one capture drains the whole move batch");
+            const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(batchReply["outcome"], "rejected", "real Engine drains the move batch");
+            assert.equal(batchReply["result"], null, "actuator lane never carries terminal results");
+            // Net-zero round trip: the pair swaps out and back, so the
+            // final publication matches the pre-batch frames exactly, and
+            // the native setters match the final publication.
+            appliedMatchesReply(h, batchReply);
+            assert.deepEqual(
+                h.wins.map((w) => ({ ...frameOf(w) })),
+                nativeBefore,
+                "out-and-back move pair converges net-zero",
             );
+            frames = replyFrames(batchReply);
+            assert.deepEqual(frames.get("win-a"), {
+                x: nativeBefore[0]?.x, y: nativeBefore[0]?.y, w: nativeBefore[0]?.w, h: nativeBefore[0]?.h,
+            });
+            // Every action settles its own take FIFO under fresh sequences.
+            const batchTakes = takeReadys(h);
+            assert.equal(batchTakes.length, 2, "every batch move settles its own take");
+            assert.deepEqual(
+                batchTakes.map((t) => t["globalCmd"]),
+                ["1", "2"],
+                "move takes ride fresh sequences 1/2",
+            );
+            // Follow-focus on the mover is genuine production behavior for
+            // tiled moves (tiler-core world_directional.rs
+            // `tiled_move_keeps_focus_on_mover_through_one_effect`): the
+            // out-and-back batch re-affirms focus on the mover exactly once
+            // through the collapsed follow-focus effect, never touching the
+            // neighbor.
+            assert.deepEqual(h.focused, ["win-a"], "move batch re-affirms focus on the mover once");
+            assert.equal((h.activeRef as FakeWindow).internalId, "win-a", "mover stays focused");
             // Late duplicate input replays nothing.
             h.fire("windowActivated");
             await h.settle();
             assert.equal(h.commandPayloads("move-directional").length, 2, "no command replay after settlement");
+            assert.deepEqual(
+                h.wins.map((w) => ({ ...frameOf(w) })),
+                nativeBefore,
+                "settlement keeps the converged frames",
+            );
         } finally {
             await h.stop();
         }
@@ -777,50 +970,67 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
         const h = await makeHarness("win-a", ["win-a", "win-b"]);
         try {
             await discover(h);
-            // The Engine settles B left of focused win-a. Focus-left lands
-            // on win-b; the immediately queued move-right still names
-            // win-a at press time (the head has not applied yet), so the
-            // tail must rebind to the settled win-b at dispatch. From the
-            // stale win-a (right edge) right would be a boundary noop,
-            // while from win-b it swaps: the planned tail proves the
-            // rebinding.
-            const xs = (id: string): number => frameOf(winById(h, id)).x;
-            assert.ok(xs("win-b") < xs("win-a"), "engine settles B left of focused win-a");
+            // Read the actual Engine placement: B settles left of focused
+            // win-a, so focus-left lands on win-b and the paired move-right
+            // swaps from there. Both file the explicit marker; core
+            // resolves subjects at execution with same-batch focus advance
+            // (never a press-time rebind).
+            const frames = replyFrames(lastDescribeReply(h));
+            assert.ok(
+                (frames.get("win-b")?.x ?? 0) < (frames.get("win-a")?.x ?? 0),
+                "engine settles B left of focused win-a",
+            );
             h.handle.requestFocus("left");
             h.handle.requestMove("right");
             assert.ok(!h.logs.some((l) => l.includes("command-busy")));
             assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
-            let focuses = h.commandPayloads("focus-directional");
-            let moves = h.commandPayloads("move-directional");
-            assert.equal(focuses.length, 1, "focus head dispatched immediately");
-            assert.equal(moves.length, 0, "move tail queued behind the focus flight");
-            const headIndex = await h.flush();
-            const headReply = JSON.parse(h.replies.get(headIndex) as string) as Record<string, unknown>;
-            assert.notEqual(headReply["outcome"], "rejected", "real Engine plans the focus head");
-            assert.deepEqual(h.focused, ["win-b"], "focus head lands on win-b natively");
-            assert.equal((h.activeRef as FakeWindow).internalId, "win-b");
-            // The queued move drains zero-delay and rebinds to win-b.
-            h.runTimers();
-            moves = h.commandPayloads("move-directional");
-            assert.equal(moves.length, 1, "queued move drains after the acceptance");
-            const tailBody = moves[0]?.body as Record<string, unknown>;
+            const n0 = describeCount(h);
+            await awaitQueueCount(h, "move-directional", 1);
+            const focuses = h.commandPayloads("focus-directional");
+            const moves = h.commandPayloads("move-directional");
+            assert.equal(focuses.length, 1, "focus press files");
+            assert.equal(moves.length, 1, "move press files behind it");
             assert.deepEqual(
-                (tailBody["command"] as Record<string, unknown>)["win"],
-                "win-b",
-                "queued move rebinds to the settled native focus at dispatch",
+                (focuses[0]?.body["command"] as Record<string, unknown>)["win"],
+                { currentFocus: true },
+                "focus keeps the explicit execution-time marker",
             );
             assert.deepEqual(
-                (tailBody["command"] as Record<string, unknown>)["direction"],
+                (moves[0]?.body["command"] as Record<string, unknown>)["win"],
+                { currentFocus: true },
+                "queued move keeps the explicit execution-time marker (no press-time rebind)",
+            );
+            assert.deepEqual(
+                (moves[0]?.body["command"] as Record<string, unknown>)["direction"],
                 "right",
                 "queued move keeps its pressed direction",
             );
-            const tailIndex = await h.flush();
-            const tailReply = JSON.parse(h.replies.get(tailIndex) as string) as Record<string, unknown>;
-            assert.notEqual(tailReply["outcome"], "rejected", "real Engine plans the rebound move (stale win-a right would be a noop)");
-            appliedMatchesReply(h, tailReply);
+            // One capture drains the mixed batch in order.
+            const batchIndex = await awaitDispatch(h);
+            assert.equal(describeCount(h), n0 + 1, "one capture drains the mixed batch");
+            assert.deepEqual(h.focused, [], "no intermediate native focus before the batch lands");
+            const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(batchReply["outcome"], "rejected", "real Engine drains the mixed batch");
+            // From stale win-a (right edge) right would be a boundary noop
+            // while from settled win-b it swaps: the applied swap proves
+            // same-batch resolution to the settled focus.
+            const batchEffects = batchReply["effects"] as Array<Record<string, unknown>>;
+            assert.ok(
+                batchEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-b"),
+                `batch focuses the settled win-b, got ${JSON.stringify(batchEffects)}`,
+            );
+            appliedMatchesReply(h, batchReply);
+            assert.deepEqual(h.focused, ["win-b"], "mixed batch lands exactly one native focus on win-b");
             assert.equal((h.activeRef as FakeWindow).internalId, "win-b", "mover stays focused");
             assert.ok(!h.logs.some((l) => l.includes("focus-mismatch")));
             assert.ok(!h.logs.some((l) => l.includes("command-dropped reason=move-")));
+            const batchTakes = takeReadys(h);
+            assert.equal(batchTakes.length, 2, "every batch action settles its own take");
+            assert.deepEqual(
+                batchTakes.map((t) => t["globalCmd"]),
+                ["1", "2"],
+                "mixed takes ride fresh sequences 1/2",
+            );
             // No replay after settlement.
             h.fire("windowActivated");
             await h.settle();
@@ -835,101 +1045,202 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
         const h = await makeHarness("win-a", ["win-a", "win-b", "win-c"]);
         try {
             await discover(h);
-            // Positional row B,C,A: bring middle win-c into focus first so
-            // both rapid presses name it and plan focus-left onto win-b.
-            const xs = (id: string): number => frameOf(winById(h, id)).x;
-            assert.ok(xs("win-b") < xs("win-c") && xs("win-c") < xs("win-a"), "engine settles positional row B,C,A");
+            // Read actual placements: positional row B,C,A; bring middle
+            // win-c into focus first so the rapid out-and-back pair starts
+            // there.
+            let frames = replyFrames(lastDescribeReply(h));
+            assert.ok(
+                (frames.get("win-b")?.x ?? 0) < (frames.get("win-c")?.x ?? 0) &&
+                (frames.get("win-c")?.x ?? 0) < (frames.get("win-a")?.x ?? 0),
+                "engine settles positional row B,C,A",
+            );
             h.handle.requestFocus("left");
             await h.flush();
             h.runTimers();
             await h.settle();
             assert.deepEqual(h.focused, ["win-c"], "setup press focuses middle win-c");
-            // Rapid right twice from win-c: both plan focus-right onto win-a.
+            // Rapid out-and-back from win-c. The filings are awaited first:
+            // only after the batch capture is genuinely dispatched (which
+            // the dispatch gate allows solely once every parked Queue filing
+            // settles) does genuine native input land under the flight. A
+            // synchronously-fired invalidation would merely join the fresh
+            // observation instead of superseding it.
+            h.handle.requestFocus("left");
             h.handle.requestFocus("right");
-            h.handle.requestFocus("right");
-            // Genuine native input under the flight advances the watermark:
-            // the head reply still accepts at the transport, but the
-            // observation is superseded, so no setters run on it. The
-            // drained command already executed server-side; follow-up
-            // observes the newer watermark and drains the tail.
+            const n0 = describeCount(h);
+            const batchIndex = await awaitDispatch(h);
+            assert.equal(describeCount(h), n0 + 1, "one capture carries the whole batch");
+            assert.ok(!h.logs.some((l) => l.includes("queue-timeout")), "real filings beat the queue timeouts");
             h.fire("windowActivated");
             const writesBefore = h.focused.length;
-            await h.flush();
+            await h.flushAt(batchIndex);
+            // The batch reply still accepts at the transport, but the
+            // observation is superseded, so no setters run on it.
             assert.ok(h.logs.some((l) => l.includes("stale reason=superseded-during-flight")));
-            assert.equal(h.focused.length, writesBefore, "superseded head applies no native focus");
-            // Catchup stays observation-only, then the queued tail drains
-            // and applies exactly once.
+            assert.equal(h.focused.length, writesBefore, "superseded batch applies no native focus");
+            assert.ok(!h.focused.includes("win-b"), "superseded intermediate never actuates");
+            // The drained batch already executed server-side: the take lane
+            // collects both terminals, and the follow-up catchup observes
+            // the newer watermark into final native/core agreement.
             h.runTimers();
-            await h.flush();
-            h.runTimers();
-            await h.flush();
-            assert.deepEqual(h.focused, ["win-c", "win-a"], "queued tail applies exactly one native focus after catchup");
-            assert.equal((h.activeRef as FakeWindow).internalId, "win-a");
-            assert.equal((h.activeRef as FakeWindow).internalId, "win-a");
+            await h.settle();
+            const batchTakes = takeReadys(h);
+            assert.equal(batchTakes.length, 3, "every batch action settles its own take despite supersession");
+            assert.deepEqual(
+                batchTakes.slice(1).map((t) => t["globalCmd"]),
+                ["2", "3"],
+                "superseded takes ride fresh sequences 2/3, never reused 1",
+            );
+            appliedMatchesReply(h, lastDescribeReply(h));
+            assert.equal(h.commandPayloads("focus-directional").length, 3, "superseded batch never replays its commands");
+            assert.equal((h.activeRef as FakeWindow).internalId, "win-c", "native focus converges with the final agreement");
         } finally {
             await h.stop();
         }
     });
 
-    it("drains the tail after a timed-out head with no synthetic signal", async () => {
+    it("drains the tail after a timed-out head with on-next-event recovery", async () => {
         const h = await makeHarness("win-a", ["win-a", "win-b"]);
         try {
             await discover(h);
             const mark = h.timers.length;
-            // Same applicable direction twice: the filed head drains on the
-            // catchup and applies, so the tail drains next against settled
-            // topology (A right of B, focus on A) where the repeat noops.
-            const xs = (id: string): number => frameOf(winById(h, id)).x;
-            assert.ok(xs("win-b") < xs("win-a"), "engine settles B left of focused win-a");
+            // Read the actual Engine placement: B settles left of focused
+            // win-a, so the first move-left swaps and the repeat meets the
+            // settled boundary.
+            const placed = replyFrames(lastDescribeReply(h));
+            assert.ok(
+                (placed.get("win-b")?.x ?? 0) < (placed.get("win-a")?.x ?? 0),
+                "engine settles B left of focused win-a",
+            );
+            const nativeBefore = h.wins.map((w) => ({ ...frameOf(w) }));
+            // Same applicable direction twice: both file before either
+            // filing settles, and one capture carries the batch.
             h.handle.requestMove("left");
             h.handle.requestMove("left");
-            // Expire the head flight, then the scheduled catchup, without
-            // answering either and without any native event.
-            h.fireNextTimer(2000, mark);
-            h.fireNextTimer(2000, mark);
-            h.fireNextTimer(2000, mark);
-            assert.ok(h.logs.some((l) => l.includes("timeout")));
-            // Catchup drains the already-filed head (filing is durable in
-            // v2: the timed-out capture never replays, but the filed head
-            // still drains once), then the tail drains against the settled
-            // topology where the repeated move is a noop.
-            const headIndex = await h.flushAt(h.calls.length - 1);
-            const headReply = JSON.parse(h.replies.get(headIndex) as string) as Record<string, unknown>;
-            assert.notEqual(headReply["outcome"], "rejected", "catchup drains the filed head");
-            appliedMatchesReply(h, headReply);
-            const framesAfterHead = h.wins.map((w) => ({ ...frameOf(w) }));
-            h.runTimers();
+            await awaitQueueCount(h, "move-directional", 2);
             const moves = h.commandPayloads("move-directional");
-            assert.equal(moves.length, 2, "timed-out head plus drained tail, nothing else");
-            const tailIndex = await h.flushAt(h.calls.length - 1);
-            const tailReply = JSON.parse(h.replies.get(tailIndex) as string) as Record<string, unknown>;
-            // v4 noop shape: a no-effect move drains accepted (accepted
-            // core replies carry no outcome key; the retired
-            // rejected/planner-noop pair never appears on the wire).
-            assert.equal(tailReply["outcome"] ?? "accepted", "accepted", "repeated tail move drains accepted against settled topology");
-            assert.equal(tailReply["consumed"], false, "tail executes fresh (not consumed) with no-op geometry");
-            assert.equal(tailReply["result"], null, "actuator lane never carries the terminal result");
-            // The noop verdict rides the requester take lane: move ops
-            // carry no separate result (the snapshot IS the result), so
-            // the ready take for the drained tail resolves null.
-            const tailTakes = h.takeReplies
-                .map((raw) => JSON.parse(raw) as Record<string, unknown>)
-                .filter((r) => r["outcome"] === "ready");
-            assert.ok(tailTakes.length > 0, "take lane settles the drained tail");
-            assert.equal((tailTakes[tailTakes.length - 1] as Record<string, unknown>)["result"], null, "tail noop resolves a null take result");
+            assert.equal(moves.length, 2, "timed-out head plus queued tail file, nothing else");
+            // Await real filing and the batch dispatch first: the dispatch
+            // gate fires only after every parked Queue filing settles, and
+            // each settled filing cancels its own queue timeout. Expiring
+            // ONLY the capture flight afterwards never touches a queue.
+            const headIndex = await awaitDispatch(h);
+            assert.ok(!h.logs.some((l) => l.includes("queue-timeout")), "real filings beat the queue timeouts");
+            assert.ok(!h.answered.has(headIndex), "batch capture still in flight, no synthetic reply");
+            for (let round = 0; round < 6; round += 1) {
+                if (h.logs.some((l) => l.includes("omnitiler:world:timeout recovery=on-next-event"))) {
+                    break;
+                }
+                h.fireNextTimer(2000, mark);
+            }
+            assert.ok(h.logs.some((l) => l.includes("omnitiler:world:timeout recovery=on-next-event")), "capture flight expires");
+            assert.ok(!h.logs.some((l) => l.includes("queue-timeout")), "only the capture expires, never a queue");
+            // Recovery is on-next-event (never an inline retry): the next
+            // native signal dispatches the catchup, which drains the filed
+            // batch server-side exactly once (world-entry.ts `timeout
+            // recovery=on-next-event`; the rapid batch decision files the
+            // whole parked batch before one fresh capture drains it). The
+            // timed-out capture itself is never forwarded, so it never
+            // replays.
+            h.fire("windowActivated");
+            h.runTimers();
+            let catchIndex = -1;
+            for (let round = 0; round < 200; round += 1) {
+                catchIndex = h.calls.findIndex((call, at) => at > headIndex && call.method === "DescribeWorld" && !h.answered.has(at));
+                if (catchIndex >= 0) {
+                    break;
+                }
+                h.runTimers();
+                await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            }
+            assert.ok(catchIndex >= 0, "catchup dispatches after the timeout");
+            const catchReply = JSON.parse(h.replies.get(await h.flushAt(catchIndex)) as string) as Record<string, unknown>;
+            assert.equal(catchReply["outcome"] ?? "accepted", "accepted", "catchup drains the filed batch");
+            assert.equal(catchReply["result"], null, "actuator lane never carries the terminal result");
+            appliedMatchesReply(h, catchReply);
+            assert.ok(
+                h.wins.some((w, i) => JSON.stringify(frameOf(w)) !== JSON.stringify(nativeBefore[i])),
+                "drained batch applies the Engine-planned swap",
+            );
+            // The filed batch settles on the take lane per command: the head
+            // move swaps (move ops carry no separate result - the snapshot
+            // IS the result - so its ready take resolves null), while the
+            // repeat meets the settled boundary. After the swap win-a sits
+            // at the left edge with no left neighbor, so the planner
+            // reports a Boundary noop (directional.rs NoopReason::Boundary),
+            // the session refuses PlannerNoop (session/ops/move.rs), and
+            // the batch settlement normalizes that unknown wire token to
+            // the expected `operation-refused` terminal
+            // (world_run_v4.rs settle path via CommandRejectKind::parse
+            // fallback; world_report.rs). A refused tail is a legitimate
+            // edge terminal by the existing contract, not a dropped action:
+            // both commands drain exactly once, in FIFO order.
+            const batchTakes = h.takeReplies.map((raw) => JSON.parse(raw) as Record<string, unknown>);
+            const firstByCmd = new Map<string, Record<string, unknown>>();
+            for (const take of batchTakes) {
+                const cmd = take["globalCmd"] as string;
+                if (!firstByCmd.has(cmd)) {
+                    firstByCmd.set(cmd, take);
+                }
+            }
+            assert.deepEqual([...firstByCmd.keys()], ["1", "2"], "both filed commands settle FIFO exactly once");
+            const headTake = firstByCmd.get("1") as Record<string, unknown>;
+            const tailTake = firstByCmd.get("2") as Record<string, unknown>;
+            assert.equal(headTake["outcome"], "ready", "head move swaps and settles ready");
+            assert.equal(headTake["result"], null, "drained move resolves a null take result");
+            assert.equal(tailTake["outcome"], "failed", "boundary repeat settles failed, never dropped");
+            assert.equal(tailTake["kind"], "operation-refused", "boundary noop normalizes to the expected refusal kind");
+            // No-replay proof through production identities: the broker mints
+            // one globalCmd per filed command and each settles exactly once
+            // on the per-command take lane. The timed-out capture stays
+            // unanswered through the catchup: it never replays there.
+            assert.ok(!h.answered.has(headIndex), "timed-out capture never replays during catchup");
+            const globalCmds = batchTakes.map((t) => t["globalCmd"] as string);
+            assert.equal(new Set(globalCmds).size, globalCmds.length, "sent commands never replay");
+            // Transport-drop model for the expired capture (explicit, not a
+            // silent late forward): the entry transmitted headIndex before
+            // its flight expired (transmitCapture sends, then the capture
+            // timeout settles the flight with recovery=on-next-event while
+            // the settled guard at world-entry.ts:5102 drops any late
+            // reply). The test transport never delivered that envelope to
+            // the broker, so it must never be evaluated late: mark it
+            // answered-without-send (no reply recorded) so settle() cannot
+            // forward the expired envelope after the catchup sourceSeq,
+            // which the broker would only refuse as stale-source
+            // (world_broker.rs:662-669). Either branch of the ambiguity
+            // (drop-before-execution here; or evaluate-once-and-hold-the-
+            // callback) keeps exactly-once execution; this test pins the
+            // drop branch: no later send, no replay.
+            h.answered.add(headIndex);
+            // A later observation-only round changes nothing further.
+            h.fire("windowActivated");
+            h.runTimers();
+            const framesAfterCatchup = h.wins.map((w) => ({ ...frameOf(w) }));
+            await h.settle();
             assert.deepEqual(
                 h.wins.map((w) => ({ ...frameOf(w) })),
-                framesAfterHead,
-                "no-op tail rewrites no geometry",
+                framesAfterCatchup,
+                "settlement keeps the drained frames",
             );
-            // Broker-owned sequence replaces the adapter-owned cmdSeq: the
-            // stamped captures (not the envelopes) carry each drained
-            // command exactly once under a unique broker cmdSeq.
-            const seqs = h.stampedCmds
-                .filter((entry) => entry.cmd !== null)
-                .map((entry) => entry.cmdSeq as string);
-            assert.ok(seqs.length > 0, "drained tail stamped exactly once");
-            assert.equal(new Set(seqs).size, seqs.length, "sent head never replays");
+            assert.equal(h.commandPayloads("move-directional").length, 2, "no command replay after settlement");
+            // A remembered take may legitimately reread an already-settled
+            // ready (take-lane memory, not a re-execution), so settlement
+            // proof is per-identity, not a global uniqueness count: every
+            // take names a drained command, first settlements stay FIFO,
+            // and no identity ever settles a conflicting outcome.
+            const settledTakes = h.takeReplies.map((raw) => JSON.parse(raw) as Record<string, unknown>);
+            const settledFirst = new Map<string, Record<string, unknown>>();
+            for (const take of settledTakes) {
+                const cmd = take["globalCmd"] as string;
+                assert.ok(cmd === "1" || cmd === "2", `take names a drained command, got ${cmd}`);
+                if (!settledFirst.has(cmd)) {
+                    settledFirst.set(cmd, take);
+                } else {
+                    assert.equal(take["outcome"], (settledFirst.get(cmd) as Record<string, unknown>)["outcome"], `reread agrees with the first settlement for ${cmd}`);
+                }
+            }
+            assert.deepEqual([...settledFirst.keys()], ["1", "2"], "both terminal identities settle FIFO exactly once");
+            assert.ok(!h.replies.has(headIndex), "expired capture never evaluated by the broker");
         } finally {
             await h.stop();
         }

@@ -63,8 +63,8 @@ pub const READ_METHOD: &str = "ReadWorldPresentation";
 /// External wait route: one long-held `WaitWorldWake` call per generation.
 /// The parked call completes on queued work, supersession, or the idle
 /// lease below. The wait never executes native work or engine logic and
-/// never holds the capture single-flight lock; the follow-up capture does
-/// the draining.
+/// never holds the capture single-flight lock; a still-parked command
+/// drains on the follow-up capture.
 pub const WAIT_METHOD: &str = "WaitWorldWake";
 /// Idle server lease in milliseconds: the parked wait answers `lease`
 /// (cursor unchanged) at the latest after this long. A heuristic under the
@@ -197,7 +197,8 @@ impl WorldService {
 
     /// Evaluate one broker capture envelope end to end: byte-bound the
     /// envelope, run the sole broker (watermark binding, redelivery replay,
-    /// broker-owned sequencing, at most one drained command), and byte-bound
+    /// broker-owned sequencing, joint-head plus synchronous drain of any
+    /// parked commands), and byte-bound
     /// the response. Ready outcomes return the bound reply; rejections
     /// return bounded in-band errors. Only oversize surfaces as
     /// [`WorldServiceError`].
@@ -211,8 +212,9 @@ impl WorldService {
         self.run_broker(|broker| broker.dispatch_capture(envelope))
     }
 
-    /// File one external command for the next fresh capture. Pure broker
-    /// state: never touches the engine, never waits on the capture lock.
+    /// File one external command: it parks for the next fresh capture,
+    /// which drains the whole FIFO batch in order. Pure broker state:
+    /// never waits on the capture lock.
     /// The `sender` is the authenticated D-Bus unique name binding the
     /// client namespace.
     pub fn queue_command(

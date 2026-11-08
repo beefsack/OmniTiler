@@ -109,14 +109,14 @@
 //! Dispatch rules. A syntactically invalid capture (envelope or commandless
 //! report) rejects without touching the engine or the queue, so a bad
 //! capture never retires a good queued command. A syntactically valid
-//! capture whose queued command the world rejects settles that command
-//! terminally as `failed` with the core kind/message, then dispatches the
-//! same fresh facts observation-only so the stream never wedges (the command
-//! never re-executes). A v4 semantic rejection is an accepted reply carrying
-//! the typed `Rejected` command result: the observation incorporates, the
-//! command settles terminally as `failed`, and that same reply continues the
-//! stream with no second dispatch (the actuator lane stays nulled; the
-//! requester collects through take). The fallback verdict binds for its source exactly
+//! capture snapshots the whole parked FIFO and drains it inside ONE
+//! capture/run/publication: native observations incorporate once, every
+//! queued command executes in order over post-previous-command state, and
+//! each command settles individually (`ready` with its encoded result, or
+//! `failed` with the core kind/message). An all-capture refusal adopts
+//! nothing and settles nothing, so the whole batch reparks for the next
+//! capture; pre-ready bootstraps and defensive duplicate/consumed verdicts
+//! repark the same way. Rejected outcomes bind for their source exactly
 //! like any other outcome but never touches the presentation cache (last
 //! accepted projection only), so a failed drain can never wedge or poison
 //! the cached full reply. Raw attempt timestamps (`attemptMs` in
@@ -203,8 +203,8 @@ use serde_json::Map;
 
 use tiler_protocol::world_protocol::{
     DecodedReplyV4, ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
-    WorldEngine, WorldOutcome, decode_request, encode_error, encode_reply, is_valid_adapter_id,
-    is_valid_request_id,
+    WorldEngine, WorldOutcome, decode_command_value_v4, decode_request, encode_error, encode_reply,
+    is_valid_adapter_id, is_valid_request_id,
 };
 
 /// Broker wire contract version (equals the core/world protocol version).
@@ -244,6 +244,9 @@ pub enum BrokerError {
 pub const MAX_REMEMBERED_SOURCES: usize = 1024;
 
 /// One queued external command awaiting the next fresh capture.
+/// Commands park here in FIFO order until one capture drains the whole
+/// batch; pre-ready filings wait for the first usable capture the same
+/// way.
 #[derive(Debug, Clone)]
 struct QueuedCommand {
     sender: String,
@@ -589,8 +592,8 @@ impl WorldBroker {
     /// sources without touching the engine (never draining from an old
     /// capture), otherwise bind generation/lifetime/watermark/source
     /// sequence, stamp the broker-owned sequencing namespace, validate
-    /// commandless before draining, drain at most one queued command, and
-    /// dispatch. In-band rejections bind for their source and are remembered
+    /// commandless before draining, snapshot the whole parked FIFO batch,
+    /// and dispatch. In-band rejections bind for their source and are remembered
     /// exactly like accepted replies, but never touch the presentation cache
     /// (last accepted projection only) and never retire queued commands they
     /// did not dispatch.
@@ -687,7 +690,7 @@ impl WorldBroker {
         // before sequencing. A malformed lane remembers an exact-replay
         // rejection and never installs map state. The staged map installs only with an accepted
         // `FreshOutcome::Reply` below; every other outcome (rejection,
-        // decode failure, attempt-clock refusal, fallback rejection)
+        // decode failure, attempt-clock refusal, engine rejection)
         // discards the staged mutation so a malformed report with a valid
         // native lane can never retire sources or spend identity/revision.
         let mut staged_gesture_map = self.gesture_map.clone();
@@ -752,7 +755,6 @@ impl WorldBroker {
             &parsed,
             observation_seq,
             request_seq,
-            None,
             clock,
         );
         let plain_stamped = serde_json::Value::Object(plain_inner).to_string();
@@ -771,9 +773,8 @@ impl WorldBroker {
                 );
             }
         };
-        // The gate above validated without mutation; execution below
-        // re-decodes the identical bytes (deterministic) before dispatch.
-        drop(plain_report);
+        // The gate above decoded without mutation; the identical typed
+        // report dispatches below through the batched core lane.
         if !attempts_clock_valid(&parsed.inner, clock) {
             return self.remember_rejection(
                 &parsed,
@@ -783,39 +784,71 @@ impl WorldBroker {
                 clock,
             );
         }
-        // Drain at most one queued command into this fresh capture.
-        let head = self.pending.front().cloned();
-        let (outcome, command_produced_preview) = match head {
-            Some(queued) => {
-                let drag_command = command_is_drag_preview(&queued.command);
-                let (outcome, command_produced) = self.dispatch_with_command(
-                    &parsed,
-                    &queued,
-                    &plain_stamped,
-                    observation_seq,
-                    request_seq,
-                    clock,
-                )?;
-                // The reply result is the drained command's own terminal
-                // outcome exactly when the non-fallback dispatch carried a
-                // drag-preview command: only then can the `DragPreview`
-                // result below be command-produced rather than
-                // session-produced by this capture's live native gesture.
-                (outcome, drag_command && command_produced)
+        // Parked FIFO batch: snapshot the whole queue for this fresh
+        // capture. Commands arriving during this dispatch stay parked for
+        // the next capture. Every entry decodes through the exact strict
+        // codec (queue-time validation passed, so a decode failure settles
+        // that command failed without touching the rest); the surviving
+        // batch drains inside ONE capture/run/publication through the
+        // batched core lane, which settles each command individually with a
+        // single final world.
+        let drained: VecDeque<QueuedCommand> = std::mem::take(&mut self.pending);
+        let mut batch: Vec<(u64, tiler_core::world_report::WorldCommand)> = Vec::new();
+        for queued in &drained {
+            match decode_command_value_v4(&queued.command) {
+                Ok(command) => batch.push((queued.global_seq, command)),
+                Err(error) => {
+                    self.settle_drained(
+                        queued,
+                        Settlement::Failed {
+                            global_seq: queued.global_seq,
+                            kind: error.kind.to_owned(),
+                            message: error.message.to_owned(),
+                        },
+                    )?;
+                }
             }
-            None => match self.run_engine(&plain_stamped)? {
-                Ok(encoded) => (FreshOutcome::Reply(encoded), false),
-                Err((kind, message)) => (FreshOutcome::Rejected { kind, message }, false),
-            },
+        }
+        let last_drag_command = drained
+            .back()
+            .is_some_and(|queued| command_is_drag_preview(&queued.command));
+        let (outcome, settlements) = self.engine.handle_report_batched(&plain_report, &batch);
+        // Settle FIFO from the per-command settlements: a typed `Rejected`
+        // result settles that command terminally as failed with the core
+        // kind, any other result readies it with the encoded outcome.
+        // Drained entries WITHOUT a settlement were never executed (a
+        // pre-ready bootstrap, a whole-capture refusal, or a defensive
+        // duplicate/consumed verdict): they repark at the head in order,
+        // ahead of arrivals filed during this dispatch, so nothing parked
+        // is ever silently lost.
+        let (outcome, command_produced_preview) = match outcome {
+            WorldOutcome::Accepted(reply) => {
+                let encoded = encode_world_reply(&reply)?;
+                let produced = last_drag_command
+                    && matches!(
+                        reply.command_result,
+                        Some(tiler_core::world_report::CommandResult::DragPreview { .. })
+                    );
+                self.settle_batch(&drained, &settlements)?;
+                (FreshOutcome::Reply(encoded), produced)
+            }
+            WorldOutcome::Duplicate(reply) | WorldOutcome::CommandConsumed(reply) => {
+                let encoded = encode_world_reply(&reply)?;
+                self.repark_batch(drained);
+                (FreshOutcome::Reply(encoded), false)
+            }
+            WorldOutcome::Rejected { kind, message } => {
+                self.repark_batch(drained);
+                (FreshOutcome::Rejected { kind, message }, false)
+            }
         };
         match outcome {
             FreshOutcome::Rejected { kind, message } => {
-                // The facts' own verdict (or the fallback's after a terminally
-                // settled drain): bind it for this source and remember it, but
-                // touch neither the presentation cache (last accepted
-                // projection only) nor the watermark floor, so a failed drain
-                // can never wedge or poison the cached full reply. The queue
-                // already settled and stays untouched.
+                // The engine refusal verdict: bind it for this source and
+                // remember it, but touch neither the presentation cache
+                // (last accepted projection only) nor the watermark floor,
+                // so a failed drain can never wedge or poison the cached
+                // full reply. The batch already reparks and stays untouched.
                 self.remember_rejection(&parsed, envelope, kind, message, clock)
             }
             FreshOutcome::Reply(encoded) => {
@@ -897,16 +930,15 @@ impl WorldBroker {
         Ok(bound)
     }
 
-    /// Stamp the broker-owned namespace onto one inner observation. The
-    /// drained command rides only when `command` is `Some`; otherwise the
-    /// report stays observation-only. Pure over the map: no engine contact.
+    /// Stamp the broker-owned namespace onto one commandless inner
+    /// observation. The parked FIFO batch rides the typed core lane, never
+    /// the stamped report. Pure over the map: no engine contact.
     fn stamp_inner(
         &self,
         inner: &mut serde_json::Map<String, serde_json::Value>,
         parsed: &ParsedCapture,
         observation_seq: u64,
         request_seq: u64,
-        command: Option<&QueuedCommand>,
         clock: u64,
     ) {
         inner.insert("adapter".to_owned(), json_string(&parsed.adapter));
@@ -914,189 +946,100 @@ impl WorldBroker {
         inner.insert("obs".to_owned(), json_string(&observation_seq.to_string()));
         inner.insert("reqSeq".to_owned(), json_string(&request_seq.to_string()));
         inner.insert("req".to_owned(), json_string(&parsed.source));
-        match command {
-            Some(queued) => {
-                inner.insert(
-                    "cmdSeq".to_owned(),
-                    json_string(&queued.global_seq.to_string()),
-                );
-                inner.insert("command".to_owned(), queued.command.clone());
-            }
-            None => {
-                inner.insert("cmdSeq".to_owned(), serde_json::Value::Null);
-                inner.insert("command".to_owned(), serde_json::Value::Null);
-            }
-        };
+        inner.insert("cmdSeq".to_owned(), serde_json::Value::Null);
+        inner.insert("command".to_owned(), serde_json::Value::Null);
         inner.insert("monotonicMs".to_owned(), json_string(&clock.to_string()));
     }
 
-    /// Dispatch a fresh capture carrying the drained head command. A decode
-    /// failure (unreachable after queue-time validation) settles the command
-    /// terminally as failed and falls back to the observation-only report. A
-    /// semantic engine rejection settles the command terminally as failed
-    /// with the explicit core kind/message, then dispatches the same fresh
-    /// facts observation-only so the stream never wedges. The command never
-    /// re-executes in any lane. The caller binds and remembers the outcome;
-    /// this only settles the queue and runs the engine.
-    fn dispatch_with_command(
+    /// Settle one drained batch command terminally without queue motion
+    /// (the batch snapshot already left `pending`): ready carries the core
+    /// result, failed carries the explicit rejection kind/message. Each
+    /// settlement advances the wake epoch and completes a parked waiter
+    /// while work remains.
+    fn settle_drained(
         &mut self,
-        parsed: &ParsedCapture,
         queued: &QueuedCommand,
-        plain_stamped: &str,
-        observation_seq: u64,
-        request_seq: u64,
-        clock: u64,
-    ) -> Result<(FreshOutcome, bool), BrokerError> {
-        let mut inner = parsed.inner.clone();
-        self.stamp_inner(
-            &mut inner,
-            parsed,
-            observation_seq,
-            request_seq,
-            Some(queued),
-            clock,
-        );
-        let stamped = serde_json::Value::Object(inner).to_string();
-        if stamped.len() > WORLD_MAX_REQUEST_BYTES {
-            return Err(BrokerError::Oversized);
+        settlement: Settlement,
+    ) -> Result<(), BrokerError> {
+        self.insert_settlement(queued.key(), settlement);
+        self.take_wake_epoch()?;
+        self.complete_waiter_if_work();
+        Ok(())
+    }
+
+    /// Settle one drained FIFO batch from the core per-command settlements.
+    /// Every drained entry with a matching settlement settles terminally: a
+    /// typed `Rejected` result fails with the core kind (never a null
+    /// result masquerading as success), any other result readies with the
+    /// encoded outcome. Drained entries without a settlement were never
+    /// executed and repark at the head in order (see `repark_batch`).
+    fn settle_batch(
+        &mut self,
+        drained: &VecDeque<QueuedCommand>,
+        settlements: &[tiler_core::world_report::BatchSettlement],
+    ) -> Result<(), BrokerError> {
+        use std::collections::HashMap;
+        let mut by_seq: HashMap<u64, &tiler_core::world_report::BatchSettlement> = HashMap::new();
+        for settlement in settlements {
+            by_seq.insert(settlement.seq, settlement);
         }
-        let commanded = match decode_request(&stamped) {
-            Ok(report) => report,
-            Err(error) => {
-                self.pop_settle_failed(queued, error.kind, error.message)?;
-                // Fallback observation-only dispatch: any preview in its
-                // reply is session-produced, never the settled command's.
-                return self
-                    .dispatch_plain_fallback(plain_stamped)
-                    .map(|outcome| (outcome, false));
-            }
-        };
-        match self.engine.handle_report(&commanded) {
-            WorldOutcome::Accepted(reply)
-            | WorldOutcome::Duplicate(reply)
-            | WorldOutcome::CommandConsumed(reply) => {
-                // v4 semantic rejection is an accepted reply carrying a
-                // typed `Rejected` result: the observation incorporates,
-                // the command settles terminally as failed, and this same
-                // reply continues the stream (no second dispatch).
-                if let Some(tiler_core::world_report::CommandResult::Rejected { kind }) =
-                    &reply.command_result
-                {
+        let mut repark: Vec<QueuedCommand> = Vec::new();
+        for queued in drained {
+            let Some(settlement) = by_seq.get(&queued.global_seq) else {
+                repark.push(queued.clone());
+                continue;
+            };
+            match &settlement.result {
+                Some(tiler_core::world_report::CommandResult::Rejected { kind }) => {
                     let kind_str = kind.as_str();
-                    let encoded = encode_world_reply(&reply)?;
-                    self.pop_settle_failed(queued, kind_str, kind_str)?;
-                    // A rejected command never produces a drag preview:
-                    // any preview here is session-produced.
-                    Ok((FreshOutcome::Reply(encoded), false))
-                } else {
-                    let encoded = encode_world_reply(&reply)?;
-                    let result = result_of(&encoded);
-                    self.pop_settle_ready(queued, result)?;
-                    // The reply result is the drained command's own terminal
-                    // outcome: a `DragPreview` result here is command-produced.
-                    Ok((FreshOutcome::Reply(encoded), true))
+                    self.settle_drained(
+                        queued,
+                        Settlement::Failed {
+                            global_seq: queued.global_seq,
+                            kind: kind_str.to_owned(),
+                            message: kind_str.to_owned(),
+                        },
+                    )?;
+                }
+                result => {
+                    self.settle_drained(
+                        queued,
+                        Settlement::Ready {
+                            global_seq: queued.global_seq,
+                            result: encode_result_value(result),
+                        },
+                    )?;
                 }
             }
-            WorldOutcome::Rejected { kind, message } => {
-                self.pop_settle_failed(queued, kind, message)?;
-                // Fallback observation-only dispatch: any preview in its
-                // reply is session-produced, never the settled command's.
-                self.dispatch_plain_fallback(plain_stamped)
-                    .map(|outcome| (outcome, false))
-            }
         }
-    }
-
-    /// Observation-only follow-up after a terminally settled command.
-    /// Rejections here are the facts' own verdict (the queue already settled
-    /// and stays untouched); the caller binds and remembers them without
-    /// touching the presentation cache.
-    fn dispatch_plain_fallback(
-        &mut self,
-        plain_stamped: &str,
-    ) -> Result<FreshOutcome, BrokerError> {
-        match self.run_engine(plain_stamped)? {
-            Ok(encoded) => Ok(FreshOutcome::Reply(encoded)),
-            Err((kind, message)) => Ok(FreshOutcome::Rejected { kind, message }),
-        }
-    }
-
-    /// Run one validated stamped report through the engine. Outer `Err` is
-    /// an oversize encoded reply (fail closed); inner `Err` is a core
-    /// rejection with its fixed kind/message (no state changed).
-    fn run_engine(
-        &mut self,
-        stamped: &str,
-    ) -> Result<Result<String, (&'static str, &'static str)>, BrokerError> {
-        let report = match decode_request(stamped) {
-            Ok(report) => report,
-            Err(error) => return Ok(Err((error.kind, error.message))),
-        };
-        match self.engine.handle_report(&report) {
-            WorldOutcome::Accepted(reply)
-            | WorldOutcome::Duplicate(reply)
-            | WorldOutcome::CommandConsumed(reply) => {
-                let encoded = encode_world_reply(&reply)?;
-                Ok(Ok(encoded))
-            }
-            WorldOutcome::Rejected { kind, message } => Ok(Err((kind, message))),
-        }
-    }
-
-    /// Pop the drained head and settle it terminally as ready with the
-    /// reply's terminal result (possibly null when the snapshot alone is
-    /// the outcome). An actual head drain advances the wake epoch and
-    /// completes a parked waiter while work remains.
-    fn pop_settle_ready(
-        &mut self,
-        queued: &QueuedCommand,
-        result: serde_json::Value,
-    ) -> Result<(), BrokerError> {
-        let key = queued.key();
-        self.pending.pop_front();
-        let global_seq = queued.global_seq;
-        self.insert_settlement(key, Settlement::Ready { global_seq, result });
-        self.take_wake_epoch()?;
-        self.complete_waiter_if_work();
+        self.repark_batch_vec(repark);
         Ok(())
     }
 
-    /// Pop the drained head and settle it terminally as failed with the
-    /// explicit rejection kind/message. Never a null result masquerading as
-    /// success. Like the ready drain, this is an actual head drain: the
-    /// wake epoch advances and a parked waiter completes while work
-    /// remains.
-    fn pop_settle_failed(
-        &mut self,
-        queued: &QueuedCommand,
-        kind: &str,
-        message: &str,
-    ) -> Result<(), BrokerError> {
-        let key = queued.key();
-        self.pending.pop_front();
-        let global_seq = queued.global_seq;
-        self.insert_settlement(
-            key,
-            Settlement::Failed {
-                global_seq,
-                kind: kind.to_owned(),
-                message: message.to_owned(),
-            },
-        );
-        self.take_wake_epoch()?;
-        self.complete_waiter_if_work();
-        Ok(())
+    /// Repark drained-but-unexecuted commands at the head in FIFO order,
+    /// ahead of arrivals filed during this dispatch, so nothing parked is
+    /// ever silently lost (pre-ready bootstrap, whole-capture refusal, or a
+    /// defensive duplicate/consumed verdict).
+    fn repark_batch(&mut self, drained: VecDeque<QueuedCommand>) {
+        self.repark_batch_vec(drained.into_iter().collect());
+    }
+
+    /// Ordered head-repark worker for one unexecuted batch remainder.
+    fn repark_batch_vec(&mut self, repark: Vec<QueuedCommand>) {
+        for queued in repark.into_iter().rev() {
+            self.pending.push_front(queued);
+        }
     }
 
     /// File one external command. Duplicates at or below the per-sender
     /// per-client high-water never re-execute; new commands take the next
-    /// global sequence and wait for the next fresh capture. The `sender` is
-    /// the authenticated D-Bus unique name: the client namespace binds it,
-    /// so one sender can never move another's high-water. The request's
-    /// generation binds before any high-water or queue state is touched: a
-    /// stale generation refuses as generation-mismatch, so a delayed call
-    /// from a superseded lifetime can never file an old intent into the new
-    /// world.
+    /// global sequence and park for the next fresh capture, which drains
+    /// the whole FIFO in one batch. The `sender` is the authenticated
+    /// D-Bus unique name: the client namespace binds it, so one sender can
+    /// never move another's high-water. The request's generation binds
+    /// before any high-water or queue state is touched: a stale generation
+    /// refuses as generation-mismatch, so a delayed call from a superseded
+    /// lifetime can never file an old intent into the new world.
     pub fn queue_command(&mut self, sender: &str, request: &str) -> Result<String, BrokerError> {
         if request.len() > WORLD_MAX_REQUEST_BYTES {
             return Err(BrokerError::Oversized);
@@ -1150,6 +1093,9 @@ impl WorldBroker {
             global_seq,
             command,
         });
+        // Queue-only: the command parks here. The wire outcome stays
+        // `queued`; the take lane serves the terminal result after the next
+        // fresh capture drains the batch.
         // A newly queued command advances the wake epoch and completes a
         // parked waiter: the actuator's follow-up capture drains it.
         self.take_wake_epoch()?;
@@ -1965,13 +1911,16 @@ fn strip_result(encoded: &str) -> String {
     value.to_string()
 }
 
-/// Extract the terminal result value of one encoded reply for
-/// requester-only settlement.
-fn result_of(encoded: &str) -> serde_json::Value {
-    serde_json::from_str::<serde_json::Value>(encoded)
-        .ok()
-        .and_then(|v| v.get("result").cloned())
-        .unwrap_or(serde_json::Value::Null)
+/// Encode one per-command terminal result through the exact canonical lane:
+/// `Rejected` never reaches here (the caller fails those with the core
+/// kind); anything else (including `None`) readies with the encoded
+/// outcome, null when the snapshot alone is the outcome.
+fn encode_result_value(
+    result: &Option<tiler_core::world_report::CommandResult>,
+) -> serde_json::Value {
+    let mut encoded = String::new();
+    tiler_core::world_sizing::encode_command_result(&mut encoded, result);
+    serde_json::from_str(&encoded).unwrap_or(serde_json::Value::Null)
 }
 
 /// Foreign-epoch guard over the mechanical attempt lanes: every present

@@ -65,6 +65,36 @@ impl WorldEngine {
             by_id.insert(&window.window, window);
         }
         match command {
+            WorldCommand::Implicit(inner) => {
+                let Some(resolved) = self.implicit_focus.clone() else {
+                    return CommandApplied::Rejected {
+                        kind: KIND_FOCUS,
+                        message: MSG_FOCUS,
+                    };
+                };
+                // The implicit maximize bypasses the settled-native focus
+                // gate (retained core focus is the subject proof); every
+                // other implicit command maps to its explicit form and
+                // reuses the identical dispatch.
+                if matches!(inner.as_ref(), WorldCommand::ToggleMaximize { .. }) {
+                    return self.toggle_maximize_inner(command_seq, &resolved, held_scopes, false);
+                }
+                let Some(explicit) = crate::world_report::explicit_for_implicit(inner, resolved)
+                else {
+                    return CommandApplied::Rejected {
+                        kind: KIND_FOCUS,
+                        message: MSG_FOCUS,
+                    };
+                };
+                self.execute_command(
+                    issue,
+                    command_seq,
+                    &explicit,
+                    held_scopes,
+                    frozen_send_source,
+                    frozen_migration_source,
+                )
+            }
             WorldCommand::Focus { window, direction } => {
                 // V4 by-id focus spells the removed direction as the
                 // empty string; the legacy envelope still refuses it
@@ -902,7 +932,21 @@ impl WorldEngine {
         window: &WindowId,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
-        if self.staged.observation.focused_global != window.0 {
+        self.toggle_maximize_inner(command_seq, window, held_scopes, true)
+    }
+
+    /// Shared maximize body: explicit commands check the settled-native
+    /// focus gate; execution-time implicit commands skip it (the resolved
+    /// retained core focus is the subject proof). All other gates stay
+    /// identical.
+    pub(crate) fn toggle_maximize_inner(
+        &mut self,
+        command_seq: u64,
+        window: &WindowId,
+        held_scopes: &BTreeSet<DomainKey>,
+        check_focus: bool,
+    ) -> CommandApplied {
+        if check_focus && self.staged.observation.focused_global != window.0 {
             return CommandApplied::Rejected {
                 kind: KIND_FOCUS,
                 message: MSG_FOCUS,

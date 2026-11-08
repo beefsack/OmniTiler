@@ -48,7 +48,20 @@ impl WorldEngine {
         window: &WindowId,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> bool {
-        self.record_canonical(window, held_scopes, true)
+        if self.record_canonical(window, held_scopes, true) {
+            // Actual in-batch command focus provenance for
+            // [`WorldEngine::effective_operation_focus`]: only a recorded
+            // command focus marks, never observation or publish backfill.
+            // Gated on an active batch baseline, so no write-only mark is
+            // ever retained outside the batch loop; read only while that
+            // baseline is active and cleared with it.
+            if !self.batch_base_focus.is_empty() {
+                self.batch_command_focus.insert(window.clone());
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// Shared accepted focus-effect publication recorder: one pass over the
@@ -143,6 +156,7 @@ impl WorldEngine {
                 return false;
             }
             self.last_active_window.insert(home, window.clone());
+            self.implicit_focus = Some(window.clone());
             return true;
         }
         let effective = if sticky {
@@ -190,6 +204,7 @@ impl WorldEngine {
                 }
             }
             self.last_active_window.insert(effective, window.clone());
+            self.implicit_focus = Some(window.clone());
             return true;
         }
         let ok = self
@@ -219,6 +234,7 @@ impl WorldEngine {
             }
         }
         self.last_active_window.insert(effective, window.clone());
+        self.implicit_focus = Some(window.clone());
         true
     }
     /// Shared window-send path for [`WorldCommand::Send`],
@@ -661,7 +677,7 @@ impl WorldEngine {
             domain: Engine::canonical_component_domain(&inset_source),
             domain_key: source_key.clone(),
             outer_gap: source_domain.outer_gap,
-            focused_window: source_domain.focused.clone(),
+            focused_window: self.effective_operation_focus(&source_key, &source_domain.focused),
             windows: self.shielded_windows(&source_key, &source_domain.windows),
             closed_windows: source_domain.closed.clone(),
             directional: None,
@@ -901,7 +917,7 @@ impl WorldEngine {
             domain: Engine::canonical_component_domain(&inset_source),
             domain_key: source_key.clone(),
             outer_gap: source_domain.outer_gap,
-            focused_window: source_domain.focused.clone(),
+            focused_window: self.effective_operation_focus(&source_key, &source_domain.focused),
             windows: self.shielded_windows(&source_key, &source_domain.windows),
             closed_windows: source_domain.closed.clone(),
             directional: None,

@@ -118,6 +118,7 @@ import {
     isWorldWaitReply,
     parseWorldReply,
     type WorldCommand,
+    type WorldQueueReply,
     type WorldReply,
     type WorldReplyResult,
     type WorldTakeReply,
@@ -433,11 +434,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // outstanding: the generation it would carry is known-stale (rebind
     // window) or absent (startup, already gated by boundGen).
     let discoverOutstanding = false;
-    // FIFO of user intents not yet filed, in press order. The head is
-    // shifted at QueueWorldCommand send (never replayed, even when the
-    // transport reply is lost: re-filing under a new clientCmd would risk a
-    // second execution). Drag-verdict and B9-continuation traffic bypasses
-    // this queue through submitCommandInner (fail-fast single-flight).
+    // FIFO of user intents awaiting capture, in press order. Queue ACKs
+    // mark entries filed; only a secured capture flight removes them.
+    // Lost ACKs redeliver the same bytes/id, never a new execution identity.
+    // Drag-verdict and B9-continuation traffic parks the same queue
+    // through submitCommandInner under separate fail-fast single-flight
+    // validation (a queued intent or a capture flight in progress
+    // refuses as busy).
     // keepSubject is LOCAL routing only (float-origin fallback keeps its
     // press-time subject); it never rides the wire.
     const pendingQueue: QueuedIntent[] = [];
@@ -449,11 +452,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // floor refuses rewound sequences); only a fresh producer lifetime
     // (fresh entry) restarts it.
     let sourceSeq = "0";
-    // Last queue-client command whose terminal result is still
+    // Last queue-client commands whose terminal results are still
     // uncollected (transport-failed takes retry after the next accept).
     // Keyed by clientCmd; the server settles exactly once and re-serves
     // while remembered, so retries never re-execute.
-    let undecidedClientCmd: string | null = null;
+    const undecidedClientCmds = new Set<string>();
+    // Batch clientCmds per capture source (avoids world-state flight
+    // changes): set at sendCapture (clientCmd=first for CaptureFlight
+    // compat), read+deleted at take time. Replay flights default [].
+    const flightBatches = new Map<string, string[]>();
     // Adapter-owned logical<->native mapping snapshot for report bindings,
     // converged from accepted replies (Planner-owned) plus pending tokens.
     // Keyed per (output, native): the separate grid carries a
@@ -1050,11 +1057,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
     // One bounded catchup drain after a terminal failure that consumed a
     // command-carrying flight with queued tails still waiting. The next
-    // dispatch files the next head (or observes commandless when the queue
+    // dispatch files the next batch (or observes commandless when the queue
     // emptied), so tails drain only after the failure settles. A failed
     // commandless flight schedules nothing: no retry loop.
-    const drainAfterFailure = (flight: { clientCmd: string | null }): void => {
-        if (flight.clientCmd !== null && pendingQueue.length > 0) {
+    const drainAfterFailure = (consumed: boolean): void => {
+        if (consumed && pendingQueue.length > 0) {
             scheduleDispatch();
         }
     };
@@ -1522,10 +1529,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
     // Fail-fast single-flight submit: a queued intent or a capture flight
     // in progress refuses as busy with one bounded line (the caller fails
-    // closed and retries after the flight settles). All non-directional
-    // commands route here, plus drag-verdict and B9-continuation traffic.
-    // Filing (QueueWorldCommand) plus the draining capture happen on the
-    // dispatch path; the head shifts at file-send, never replays.
+    // closed and retries after the flight settles). Settled by-id
+    // continuations plus drag-verdict and B9-continuation traffic route
+    // here with explicit identity (never the implicit marker). Filing
+    // (QueueWorldCommand) plus the draining capture happen on the
+    // dispatch path; entries drain at capture, never replay.
     const submitCommandInner = (command: WorldCommand, label: string, keepSubject = false): boolean => {
         if (stopped) {
             return false;
@@ -1544,23 +1552,27 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             log(`omnitiler:world:command-busy op=${token((command as { op?: unknown }).op)}`);
             return false;
         }
-        pendingQueue.push({ command, keepSubject });
+        const gen = state.boundGen;
+        if (gen === null) {
+            return false;
+        }
+        const clientCmd = state.mintClientCmd();
+        if (clientCmd === null) {
+            log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=cmd-exhausted`);
+            return false;
+        }
+        const payload = buildQueueRequest(state.client, gen, clientCmd, command);
+        if (utf8ByteLength(payload) > WORLD_MAX_REQUEST_BYTES) {
+            log("omnitiler:world:request-oversize recovery=on-next-event");
+            state.noteRejectedOrTransportError();
+            killPending("rejected");
+            drainAfterFailure(false);
+            return false;
+        }
+        pendingQueue.push({ command, keepSubject, clientCmd, payload, gen, filed: false, filing: false });
         log(`omnitiler:world:command op=${token((command as { op?: unknown }).op)} label=${token(label)} nwinv=${state.currentInvalid}`);
         scheduleDispatch();
         return true;
-    };
-
-    // Narrow FIFO scope: direction-only focus/move intents queue in press
-    // order behind any debounce or flight instead of refusing as busy.
-    // Tiled focus and move queue the direction intent only: the subject
-    // rebinds at dispatch to the authoritative current native focus
-    // (below), so an earlier queued intent cannot stale a later one. The
-    // float-origin cross-output fallback (same focus op shape, keepSubject
-    // true) keeps its press-time subject. Everything else revalidates
-    // through the fail-fast path.
-    const isQueuedDirectional = (command: WorldCommand): boolean => {
-        const op = (command as { op?: unknown }).op;
-        return op === "focus-directional" || op === "move-directional";
     };
     // Newer explicit input supersedes a deferred B9 unfloat immediately:
     // every command routed here cancels the pending attempt (which ends
@@ -1569,14 +1581,39 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // cannot cancel itself. Assigned after the native toggles exist;
     // calls before that are no-ops.
     let cancelPendingForNewerInput: (() => void) | null = null;
-    // FIFO submit for directional tiled focus/move: every accepted press
-    // queues in press order behind any debounce or flight instead of
-    // refusing as busy. Enqueueing never advances the native-invalidation
-    // watermark (only native changes invalidate), so a queued press cannot
-    // stale the in-flight head; each dispatch captures fresh and rebinds a
-    // tiled focus/move head to the current native focus. Returns true when
-    // the press is queued or dispatched, false only on stop/undiscovered
-    // refusal.
+    // Ordinary keyboard windowed intents resolve implicit at core current
+    // focus: a non-empty string win converts to the exact closed marker
+    // win:{currentFocus:true} (core resolves at execution; the marker is
+    // never a literal native id so no native lookup runs). keepSubject
+    // (float-origin fallback), empty directional nofocus win:"", and all
+    // windowless commands pass through untouched; null stays invalid.
+    const WINDOWED_IMPLICIT_OPS = new Set([
+        "focus", "send", "send-relative", "send-numbered",
+        "toggle-maximize", "toggle-sticky", "toggle-fullscreen",
+        "toggle-orientation", "resize", "toggle-float",
+        "focus-directional", "move-directional", "send-directional",
+    ]);
+    const toImplicitSubject = (command: WorldCommand, keepSubject: boolean): WorldCommand => {
+        if (keepSubject) {
+            return command;
+        }
+        const rec = command as unknown as Record<string, unknown>;
+        if (!WINDOWED_IMPLICIT_OPS.has(rec["op"] as string)) {
+            return command;
+        }
+        if (typeof rec["win"] !== "string" || (rec["win"] as string) === "") {
+            return command;
+        }
+        return { ...(command as object), win: { currentFocus: true } } as WorldCommand;
+    };
+    // FIFO submit for every ordinary press: every accepted press parks in
+    // press order behind any debounce or flight instead of refusing as
+    // busy. Enqueueing never advances the native-invalidation watermark
+    // (only native changes invalidate), so a queued press cannot stale the
+    // in-flight batch; one fresh capture incorporates native once and
+    // drains all parked FIFO against post-prior core state. Returns true
+    // when the press is queued, false only on stop/undiscovered/scope/
+    // cmd-exhausted refusal.
     const submitCommand = (command: WorldCommand, label: string, keepSubject = false): boolean => {
         try {
             cancelPendingForNewerInput?.();
@@ -1590,24 +1627,39 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=undiscovered`);
             return false;
         }
-        const target = commandWindowTarget(command);
-        if (target !== null && !windowInScope(target)) {
+        // Authorize the press target before replacing its native id with
+        // the core-resolved marker. Explicit continuations keep their id.
+        const originalTarget = commandWindowTarget(command);
+        if (originalTarget !== null && !windowInScope(originalTarget)) {
             log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=scope-class`);
             return false;
         }
-        if (!isQueuedDirectional(command)) {
-            return submitCommandInner(command, label, keepSubject);
+        const converted = toImplicitSubject(command, keepSubject);
+        const gen = state.boundGen;
+        if (gen === null) {
+            return false;
         }
-        pendingQueue.push({ command, keepSubject });
+        const clientCmd = state.mintClientCmd();
+        if (clientCmd === null) {
+            log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=cmd-exhausted`);
+            return false;
+        }
+        const payload = buildQueueRequest(state.client, gen, clientCmd, converted);
+        if (utf8ByteLength(payload) > WORLD_MAX_REQUEST_BYTES) {
+            log("omnitiler:world:request-oversize recovery=on-next-event");
+            state.noteRejectedOrTransportError();
+            killPending("rejected");
+            drainAfterFailure(false);
+            return false;
+        }
+        pendingQueue.push({ command: converted, keepSubject, clientCmd, payload, gen, filed: false, filing: false });
         log(`omnitiler:world:command op=${token((command as { op?: unknown }).op)} label=${token(label)} nwinv=${state.currentInvalid} depth=${pendingQueue.length}`);
-        // Explicit directionals skip the observation debounce only when
-        // nothing is unsettled; otherwise the debounced/event-driven path
-        // drains the queue in order.
-        if (state.inFlight === null && !debounceArmed && !state.observationOnlyCatchup) {
-            void dispatch(false);
-        } else {
-            scheduleDispatch();
-        }
+        // Park-first FIFO: the pump files the earliest unfiled entry only
+        // when no filing is outstanding, so a newer press never submits
+        // while an older Queue ACK is unresolved (the broker high-water
+        // refuses an older missing command once a later one is accepted).
+        // Synchronous ACKs still file the whole burst before one capture.
+        pumpQueueFiling();
         return true;
     };
 
@@ -2623,8 +2675,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     const dropDeadGenerationIntents = (): void => {
         const dropped = pendingQueue.length;
         pendingQueue.length = 0;
-        undecidedClientCmd = null;
-        unackedQueue = null;
+        undecidedClientCmds.clear();
+        flightBatches.clear();
         if (dropped > 0) {
             log(`omnitiler:world:queue-dropped reason=generation-mismatch depth=${dropped}`);
         }
@@ -2633,95 +2685,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } catch (error) {
             void error;
         }
-    };
-
-    // Drain-time subject resolution for queued directional focus and
-    // move. The queue retains the direction intent; the subject rebinds
-    // here to the authoritative current native focus, validated against
-    // the fresh observation. A vanished subject (no active window,
-    // unknown to the observation, or with no live ref) drops narrowly
-    // with one bounded line and no native writes; the next queued intent
-    // then resolves in turn. Floating/sticky subjects pass through like
-    // tiled ones: the core owns the float-focus lattice and half-snap
-    // geometry. Non-directional commands pass through untouched.
-    const resolveHeadCommand = (observation: WorldObservation): QueuedIntent | null => {
-        if (state.observationOnlyCatchup) {
-            return null;
-        }
-        while (pendingQueue.length > 0) {
-            const head = pendingQueue[0] as QueuedIntent;
-            const rec = head.command as unknown as Record<string, unknown>;
-            const op = rec["op"];
-            if (op === "focus-directional" && head.keepSubject) {
-                // Explicit float-origin fallback: the core resolves the
-                // strict target from the press-time subject.
-                return head;
-            }
-            if (op !== "focus-directional" && op !== "move-directional") {
-                return head;
-            }
-            const isMove = op === "move-directional";
-            const reasonPrefix = isMove ? "move" : "focus";
-            const direction = rec["direction"];
-            if (direction !== "left" && direction !== "right" && direction !== "up" && direction !== "down") {
-                pendingQueue.shift();
-                log(`omnitiler:world:command-dropped reason=${reasonPrefix}-invalid`);
-                continue;
-            }
-            let sameAxis: string | null = null;
-            if (isMove) {
-                const rawAxis = rec["sameAxis"];
-                if (rawAxis !== "group-with-neighbor" && rawAxis !== "swap-with-neighbor") {
-                    pendingQueue.shift();
-                    log(`omnitiler:world:command-dropped reason=${reasonPrefix}-invalid`);
-                    continue;
-                }
-                sameAxis = rawAxis as string;
-            }
-            let current: string | null = null;
-            try {
-                current = activeWindowId();
-            } catch (error) {
-                void error;
-                current = null;
-            }
-            if (current === null) {
-                pendingQueue.shift();
-                log(`omnitiler:world:command-dropped reason=${reasonPrefix}-vanished`);
-                continue;
-            }
-            let subject: WorldObservation["domains"][number]["windows"][number] | null = null;
-            for (const domain of observation.domains) {
-                for (const entry of domain.windows) {
-                    if (entry.win === current) {
-                        subject = entry;
-                        break;
-                    }
-                }
-                if (subject !== null) {
-                    break;
-                }
-            }
-            if (subject === null || liveRefById(current) === null) {
-                pendingQueue.shift();
-                log(`omnitiler:world:command-dropped reason=${reasonPrefix}-vanished`);
-                continue;
-            }
-            if (current === (rec["win"] as string)) {
-                return head;
-            }
-            const rebuilt = isMove
-                ? cmdMoveDirectional(current, direction as string, sameAxis as string)
-                : cmdFocusDirectional(current, direction as string);
-            if (rebuilt === null) {
-                pendingQueue.shift();
-                log(`omnitiler:world:command-dropped reason=${reasonPrefix}-invalid`);
-                continue;
-            }
-            pendingQueue[0] = { command: rebuilt, keepSubject: head.keepSubject };
-            return pendingQueue[0] as QueuedIntent;
-        }
-        return null;
     };
 
     // Fresh per-capture source correlation (opaque, bounded): every
@@ -2749,17 +2712,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         sourceSeq = next;
         return next;
     };
-    // Filed-but-unacked queue payload: the head shifts at QueueWorldCommand
-    // send; when the transport reply is lost (timeout/transport/malformed/
-    // oversize) the command may already be filed server-side. The broker
-    // per-client high-water dedups the same clientCmd (never re-executes),
-    // so the next dispatch redelivers THE SAME queue bytes/id to resolve
-    // the ambiguity, never a new numbered duplicate. The terminal take
-    // collects exactly once through the normal accept path. Cleared on a
-    // filed reply, on in-band refusal (never filed, head requeues at
-    // front), on generation rotation, and on stop. Oversize payloads never
-    // retain: identical bytes could never file.
-    let unackedQueue: { head: QueuedIntent; clientCmd: string; payload: string } | null = null;
     // External-command wait lifecycle (B1): one outstanding long-held
     // WaitWorldWake per generation. waitCursor is the last delivered wake
     // cursor ("0" before the first wake): it advances only on a delivered
@@ -3825,7 +3777,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             return;
                         }
                         if (parsed.kind === "unknown-command") {
-                            undecidedClientCmd = null;
+                            undecidedClientCmds.delete(clientCmd);
                         }
                         done(null);
                         return;
@@ -3851,9 +3803,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     if (outcome === "ready") {
                         const take = parsed as Extract<WorldTakeReply, { outcome: "ready" }>;
-                        if (undecidedClientCmd === clientCmd) {
-                            undecidedClientCmd = null;
-                        }
+                        undecidedClientCmds.delete(clientCmd);
                         state.lastTakeResult = take.result;
                         done(take.result);
                         return;
@@ -3861,18 +3811,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     if (outcome === "failed") {
                         const take = parsed as Extract<WorldTakeReply, { outcome: "failed" }>;
                         log(`omnitiler:world:command-failed kind=${token(take.kind)} msg=${token(take.message)} recovery=on-next-event`);
-                        if (undecidedClientCmd === clientCmd) {
-                            undecidedClientCmd = null;
-                        }
+                        undecidedClientCmds.delete(clientCmd);
                         state.lastTakeResult = null;
                         done(null);
                         return;
                     }
                     if (outcome === "duplicate") {
                         log("omnitiler:world:take-duplicate recovery=on-next-event");
-                        if (undecidedClientCmd === clientCmd) {
-                            undecidedClientCmd = null;
-                        }
+                        undecidedClientCmds.delete(clientCmd);
                         done(null);
                         return;
                     }
@@ -3886,6 +3832,43 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             log("omnitiler:world:take-transport recovery=on-next-event");
             done(null);
         }
+    };
+
+    // Batch take collection: every listed per-command settlement is
+    // collected in clientCmd order through the existing single take lane.
+    // Close/attempt ACK stays distinct from native apply (see
+    // postAcceptCapture); takes here only resolve requester outcomes.
+    const takeResultsFor = (clientCmds: string[], done: (results: Array<WorldReplyResult | null>) => void): void => {
+        const results: Array<WorldReplyResult | null> = [];
+        const step = (index: number): void => {
+            if (index >= clientCmds.length) {
+                done(results);
+                return;
+            }
+            takeResultFor(clientCmds[index] as string, (result) => {
+                results.push(result);
+                step(index + 1);
+            });
+        };
+        step(0);
+    };
+
+    // Undecided-wide take collection: every outstanding per-command
+    // settlement is collected in clientCmd order after each accept,
+    // including commandless captures (a rejected/timeout capture never
+    // requeues its sent commands, but their identities stay undecided for
+    // a later accept to collect). Pending/transport/timeout takes keep
+    // their identity for a future round; only terminal take outcomes
+    // (ready/failed/duplicate/unknown-command, settled inside takeResultFor)
+    // clear it. Takes only resolve requester outcomes, never re-execute.
+    // Pairs carry the serving identity so the apply lane can route exactly
+    // its own flight's results while every outstanding identity is still
+    // collected (never forgotten, never re-executed).
+    const takeResultsForUndecided = (done: (pairs: Array<{ clientCmd: string; result: WorldReplyResult | null }>) => void): void => {
+        const snapshot = [...undecidedClientCmds];
+        takeResultsFor(snapshot, (results) => {
+            done(snapshot.map((clientCmd, index) => ({ clientCmd, result: results[index] as WorldReplyResult | null })));
+        });
     };
 
     // Terminal drop diagnostic: `drop-settled` per proven settlement,
@@ -4124,8 +4107,39 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     const postAcceptCapture = (
         parsed: WorldReply,
         flight: CaptureFlight,
-        takeResult: WorldReplyResult | null,
+        takeResults: Array<WorldReplyResult | null>,
     ): void => {
+                    // Close/attempt ACK is independent of native apply: ack
+                    // the closes that rode the accepted dispatch BEFORE the
+                    // post-accept fresh capture or any persist gate, so
+                    // delivered closes never replay even when the publication
+                    // is superseded or its setters never run. The
+                    // superseded-during-flight path never reaches here, so
+                    // its NEW facts are still retained.
+                    try {
+                        closeTracker.ack();
+                    } catch (error) {
+                        void error;
+                    }
+                    // Single publication take for the apply lane: the first
+                    // migrate-workspace result, else the first non-null, else
+                    // null. Every requester settlement was already collected
+                    // above; this only routes float convergence + apply.
+                    let takeResult: WorldReplyResult | null = null;
+                    for (const candidate of takeResults) {
+                        if (candidate !== null && candidate.op === "migrate-workspace") {
+                            takeResult = candidate;
+                            break;
+                        }
+                    }
+                    if (takeResult === null) {
+                        for (const candidate of takeResults) {
+                            if (candidate !== null) {
+                                takeResult = candidate;
+                                break;
+                            }
+                        }
+                    }
                     const runApply = (): void => {
                     // Startup native recovery: restore durable originals once
                     // per fresh accepted run (fenced inside; no-op when the
@@ -4208,15 +4222,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             // (incorporateCreationBindings); nothing is
                             // consumed here.
                         }
-                    }
-                    // Ack the closes that rode the accepted dispatch BEFORE the
-                    // post-accept fresh capture: that capture may promote new
-                    // event-gated closes that have never been reported and
-                    // must survive until their own accepted reply.
-                    try {
-                        closeTracker.ack();
-                    } catch (error) {
-                        void error;
                     }
                     // Clear settled floats and record unfloat tile overrides
                     // before capture: otherwise stale floating/fitExcluded
@@ -4320,20 +4325,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             floatingIds.delete(id);
                         }
                         try {
-                            if (
-                                takeResult !== null && takeResult.op === "toggle-float" &&
-                                takeResult.rect === null && takeResult.noSpace !== true
-                            ) {
-                                tileIds.add(takeResult.win);
-                                floatingIds.delete(takeResult.win);
-                            } else if (
-                                takeResult !== null && takeResult.op === "toggle-float" &&
-                                takeResult.rect === null && takeResult.noSpace === true
-                            ) {
-                                // Explicit-tile no-space retry (D5): the
-                                // window stays floated, so no tile override
-                                // is recorded and nothing re-tiles.
-                                log(`omnitiler:world:toggle-float-no-space win=${token(takeResult.win)}`);
+                            for (const take of takeResults) {
+                                if (
+                                    take !== null && take.op === "toggle-float" &&
+                                    take.rect === null && take.noSpace !== true
+                                ) {
+                                    tileIds.add(take.win);
+                                    floatingIds.delete(take.win);
+                                } else if (
+                                    take !== null && take.op === "toggle-float" &&
+                                    take.rect === null && take.noSpace === true
+                                ) {
+                                    // Explicit-tile no-space retry (D5): the
+                                    // window stays floated, so no tile override
+                                    // is recorded and nothing re-tiles.
+                                    log(`omnitiler:world:toggle-float-no-space win=${token(take.win)}`);
+                                }
                             }
                         } catch (error) {
                             void error;
@@ -4549,12 +4556,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // placement. Observation input only; opaque core intent
                     // persists through the intent store.
                     try {
-                        if (
-                            takeResult !== null && takeResult.op === "toggle-float" &&
-                            takeResult.rect !== null
-                        ) {
-                            tileIds.delete(takeResult.win);
-                            floatingIds.add(takeResult.win);
+                        for (const take of takeResults) {
+                            if (
+                                take !== null && take.op === "toggle-float" &&
+                                take.rect !== null
+                            ) {
+                                tileIds.delete(take.win);
+                                floatingIds.add(take.win);
+                            }
                         }
                     } catch (error) {
                         void error;
@@ -4699,6 +4708,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         if (intentPersistBusy) {
                             intentChangedDuringPersist = true;
                         }
+                        // Latest-pending slot: overlapping accepted
+                        // publications share one slot while writes fly, so a
+                        // superseded unissued publication never issues and an
+                        // intermediate never drives its own covering persist.
+                        // The in-flight waiter lives in the persist closure,
+                        // never in this array, so clearing only drops
+                        // unissued waiters.
+                        intentPersistWaiters.length = 0;
                         intentPersistWaiters.push({ run: runApply, gen: parsed.gen, watermark: flight.watermark, rev: parsed.rev, settingsRev: settingsAcceptedRev, persist: true });
                         pumpIntentPersistQueue();
                         return;
@@ -4709,6 +4726,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // before the older one it supersedes. While owed the
                         // pump upgrades this waiter to a covering write;
                         // otherwise it is ordering-only.
+                        intentPersistWaiters.length = 0;
                         intentPersistWaiters.push({ run: runApply, gen: parsed.gen, watermark: flight.watermark, rev: parsed.rev, settingsRev: settingsAcceptedRev, persist: false });
                         pumpIntentPersistQueue();
                         return;
@@ -4770,9 +4788,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // stamps the drained queued command itself). Fresh-source correlation
     // and the CURRENT local watermark bind the envelope; the callback binds
     // generation/source/watermark before any setter.
-    const sendCapture = (observation: WorldObservation, headOp: string | null, clientCmd: string | null): void => {
+    const sendCapture = (observation: WorldObservation, headOp: string | null, clientCmds: string[]): boolean => {
         if (state.boundGen === null) {
-            return;
+            return false;
         }
         // Flush deferred creation evidence first: a spent desire whose
         // same-turn post-call readback was unavailable must not wait for
@@ -4821,34 +4839,37 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             log("omnitiler:world:report-invalid op=observe reason=encode-failed");
             state.noteRejectedOrTransportError();
             killPending("rejected");
-            drainAfterFailure({ clientCmd });
-            return;
+            drainAfterFailure(clientCmds.length > 0);
+            return false;
         }
         const source = mintSource();
         const seq = mintSourceSeq();
         if (seq === null) {
             log("omnitiler:world:command-refused op=observe reason=seq-exhausted");
-            return;
+            return false;
         }
         const boundGen = state.boundGen;
         if (boundGen === null) {
-            return;
+            return false;
         }
         const envelope = buildCaptureEnvelope(adapter, boundGen, source, seq, state.currentInvalid, inner);
         if (utf8ByteLength(envelope) > WORLD_MAX_REQUEST_BYTES) {
-            // Narrow overflow recovery: the filed head is already consumed
-            // (never replayed); keep the queued remainder and the
-            // observation dirty for a smaller scope on the next event.
+            // Narrow overflow recovery: the previewed batch is NOT consumed
+            // (never replayed once sent, but unsent here); it stays parked
+            // with the observation dirty for a smaller scope on the next
+            // event.
             log("omnitiler:world:request-oversize recovery=on-next-event");
             state.noteRejectedOrTransportError();
             killPending("rejected");
-            drainAfterFailure({ clientCmd });
-            return;
+            drainAfterFailure(clientCmds.length > 0);
+            return false;
         }
+        const clientCmd = clientCmds.length > 0 ? (clientCmds[0] as string) : null;
         const flight = state.beginCapture(source, clientCmd);
         if (flight === null) {
-            return;
+            return false;
         }
+        flightBatches.set(source, [...clientCmds]);
         // Stamp the exact raw terminal identity this capture carries (if
         // any): the later accept binds its GestureSettled to this flight
         // identity before any ack may fire. The native window freezes here
@@ -4880,6 +4901,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
         }
         transmitCapture(envelope, flight, headOp, observation);
+        return true;
     };
 
     // Bounded same-envelope retry arming for a failed commandless terminal
@@ -5068,7 +5090,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 // envelope on a bounded cadence instead.
                 state.noteRejectedOrTransportError();
                 killPending("timeout");
-                drainAfterFailure(flight);
+                drainAfterFailure(flight.clientCmd !== null);
                 maybeRetryTerminalCapture(envelope, flight);
                 wakeFollowup();
             }
@@ -5093,7 +5115,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         log("omnitiler:world:transport-error recovery=on-next-event");
                         state.noteRejectedOrTransportError();
                         killPending("transport");
-                        drainAfterFailure(flight);
+                        drainAfterFailure(flight.clientCmd !== null);
                         maybeRetryTerminalCapture(envelope, flight);
                         wakeFollowup();
                         return;
@@ -5102,7 +5124,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         log("omnitiler:world:reply-oversize recovery=on-next-event");
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
-                        drainAfterFailure(flight);
+                        drainAfterFailure(flight.clientCmd !== null);
                         maybeRetryTerminalCapture(envelope, flight);
                         wakeFollowup();
                         return;
@@ -5123,7 +5145,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         log("omnitiler:world:reply-malformed recovery=on-next-event");
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
-                        drainAfterFailure(flight);
+                        drainAfterFailure(flight.clientCmd !== null);
                         maybeRetryTerminalCapture(envelope, flight);
                         wakeFollowup();
                         return;
@@ -5159,14 +5181,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         if (parsed.kind === "busy" || parsed.kind === "unavailable") {
                             state.noteRejectedOrTransportError();
                             killPending("busy");
-                            drainAfterFailure(flight);
+                            drainAfterFailure(flight.clientCmd !== null);
                             wakeFollowup();
                             return;
                         }
                         log(`omnitiler:world:rejected kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=on-next-event`);
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
-                        drainAfterFailure(flight);
+                        drainAfterFailure(flight.clientCmd !== null);
                         wakeFollowup();
                         return;
                     }
@@ -5179,7 +5201,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         log("omnitiler:world:reply-malformed recovery=on-next-event");
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
-                        drainAfterFailure(flight);
+                        drainAfterFailure(flight.clientCmd !== null);
                         maybeRetryTerminalCapture(envelope, flight);
                         wakeFollowup();
                         return;
@@ -5276,7 +5298,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         } catch (error) {
                             void error;
                         }
-                        takeResultFor(flight.clientCmd, () => {
+                        takeResultsForUndecided(() => {
+                            flightBatches.delete(flight.source);
                             if (state.dirty || pendingQueue.length > 0) {
                                 scheduleDispatch();
                             }
@@ -5284,7 +5307,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         });
                         return;
                     }
-                    takeResultFor(flight.clientCmd, (takeResult) => {
+                    takeResultsForUndecided((pairs) => {
+                        const flightCmds = flightBatches.get(flight.source) ?? (flight.clientCmd !== null ? [flight.clientCmd] : []);
+                        const flightSet = new Set(flightCmds);
+                        const takeResults = pairs
+                            .filter((pair) => flightSet.has(pair.clientCmd))
+                            .map((pair) => pair.result);
+                        flightBatches.delete(flight.source);
                         if (parsed.gen !== state.boundGen) {
                             // The take outlived its generation (a delayed
                             // reply after rotation): never apply stale
@@ -5299,7 +5328,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             wakeFollowup();
                             return;
                         }
-                        postAcceptCapture(parsed, flight, takeResult);
+                        postAcceptCapture(parsed, flight, takeResults);
                     });
                 },
             );
@@ -5308,38 +5337,121 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             timeoutCancel();
             state.noteRejectedOrTransportError();
             killPending("transport");
-            drainAfterFailure(flight);
+            drainAfterFailure(flight.clientCmd !== null);
             maybeRetryTerminalCapture(envelope, flight);
             wakeFollowup();
         }
     };
 
-    // One queue filing: ships one QueueWorldCommand payload, then drains it
-    // with a fresh commandless capture. Shared by fresh heads and by
-    // filed-but-unacked redelivery (identical bytes/id). Transport loss
-    // retains the exact unresolved identity in unackedQueue for the next
-    // event-driven dispatch; in-band refusal proves the command never
-    // filed and requeues the head at front instead. filedGen is the serving
-    // generation captured at send: a delayed reply from a superseded
-    // generation is a no-op that never touches newer queue state.
-    const fileQueue = (
-        head: QueuedIntent,
-        clientCmd: string,
-        queuePayload: string,
-        observation: WorldObservation,
-        mark: string,
-        filedGen: string,
-    ): void => {
-        const headOp = (head.command as { op?: unknown }).op;
+    // One queue filing per parked entry: ships the press-time
+    // QueueWorldCommand bytes, then the draining capture incorporates
+    // native once for the whole batch. Queue only parks+wakes: filing
+    // never captures, never publishes alone. Per-entry filed/filing flags
+    // replace the old single unacked slot: FIFO byte redelivery is never
+    // reordered by delayed ACKs, exact per-entry identity is preserved,
+    // and commands arriving during capture park the next batch instead of
+    // stranding. The single kick site lives in every settle branch below.
+    // Reentrancy fence: dispatch captures only after all filings settle,
+    // and a synchronous Queue ACK during the file pump must not reenter
+    // dispatch (the outer dispatch owns the single fresh capture). While
+    // set, kicks park as a scheduled dispatch instead of running inline.
+    let dispatchActive = false;
+    const kickAfterFile = (): void => {
+        if (dispatchActive) {
+            return;
+        }
+        if (state.inFlight === null && !debounceArmed && !state.observationOnlyCatchup) {
+            void dispatch(false);
+        } else {
+            scheduleDispatch();
+        }
+    };
+    // Deferred kick for retained-position failures (nonpermanent refusal,
+    // transport, oversize, malformed, timeout): recovery is honestly
+    // on-next-event, never an immediate inline retry (a synchronously
+    // refusing broker would otherwise recurse unboundedly). Success and
+    // permanent-drop progress keep the immediate kick above.
+    const kickDeferred = (): void => {
+        if (dispatchActive) {
+            return;
+        }
+        scheduleDispatch();
+    };
+    // FIFO filing pump: at most one QueueWorldCommand outstanding. Sends
+    // the earliest unfiled entry only when no filing is in flight; a
+    // synchronously refusing entry defers (no inline loop) while a filed
+    // or permanently dropped head advances to the next. Returns true while
+    // a filing owns the wire.
+    const pumpQueueFiling = (): boolean => {
+        while (true) {
+            if (stopped || state.boundGen === null || discoverOutstanding) {
+                return pendingQueue.some((entry) => entry.filing);
+            }
+            if (pendingQueue.some((entry) => entry.filing)) {
+                return true;
+            }
+            const head = pendingQueue.find((entry) => !entry.filed);
+            if (head === undefined) {
+                return false;
+            }
+            fileSend(head);
+            if (head.filing) {
+                return true;
+            }
+            if (!pendingQueue.includes(head)) {
+                continue;
+            }
+            if (!head.filed) {
+                return false;
+            }
+        }
+    };
+    const fileSend = (entry: QueuedIntent): void => {
+        if (stopped || state.boundGen === null || discoverOutstanding) {
+            return;
+        }
+        if (entry.filed || entry.filing) {
+            return;
+        }
+        if (entry.gen !== state.boundGen) {
+            return;
+        }
+        // Filing waits behind the same gates as the draining capture: the
+        // accepted initial settings snapshot and the hydrated intent store.
+        // The entry stays parked (unfiled) and the kick below drives the
+        // gated dispatch, which files it once the gates pass. Filing before
+        // accepted settings would strand the entry when no queue answer can
+        // arrive yet.
+        if (settingsAcceptedGen !== state.boundGen || !intentStore.isHydrated(state.boundGen)) {
+            kickAfterFile();
+            return;
+        }
+        entry.filing = true;
+        const clientCmd = entry.clientCmd;
+        const queuePayload = entry.payload;
+        const filedGen = entry.gen;
+        const headOp = (entry.command as { op?: unknown }).op;
         let qsettled = false;
         const qtimeoutCancel = scheduleOnce(WORLD_TIMEOUT_MS, () => {
             if (!qsettled) {
                 qsettled = true;
+                // A rotation already dropped this entry: the timeout owns
+                // nothing newer (no kill, no kick, no log beyond stale).
+                if (entry.gen !== state.boundGen || !pendingQueue.includes(entry)) {
+                    entry.filing = false;
+                    log("omnitiler:world:queue-stale recovery=on-next-event");
+                    return;
+                }
+                entry.filing = false;
+                entry.filed = false;
                 log("omnitiler:world:queue-timeout recovery=on-next-event");
-                unackedQueue = { head, clientCmd, payload: queuePayload };
                 state.noteRejectedOrTransportError();
                 killPending("timeout");
-                drainAfterFailure({ clientCmd });
+                drainAfterFailure(false);
+                // Lost ACK: the exact bytes/id redeliver on the next event
+                // (the pump resends this same entry), never a new identity
+                // and never an immediate inline retry.
+                kickDeferred();
                 wakeFollowup();
             }
         });
@@ -5354,130 +5466,142 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     qsettled = true;
                     qtimeoutCancel();
                     if (typeof reply !== "string") {
+                        if (entry.gen !== state.boundGen || !pendingQueue.includes(entry)) {
+                            entry.filing = false;
+                            log("omnitiler:world:queue-stale recovery=on-next-event");
+                            return;
+                        }
+                        entry.filing = false;
+                        entry.filed = false;
                         log("omnitiler:world:queue-transport recovery=on-next-event");
-                        unackedQueue = { head, clientCmd, payload: queuePayload };
                         state.noteRejectedOrTransportError();
                         killPending("transport");
-                        drainAfterFailure({ clientCmd });
+                        drainAfterFailure(false);
+                        kickDeferred();
                         wakeFollowup();
                         return;
                     }
                     if (utf8ByteLength(reply) > WORLD_MAX_REPLY_BYTES) {
+                        if (entry.gen !== state.boundGen || !pendingQueue.includes(entry)) {
+                            entry.filing = false;
+                            log("omnitiler:world:queue-stale recovery=on-next-event");
+                            return;
+                        }
+                        entry.filing = false;
+                        entry.filed = false;
                         log("omnitiler:world:queue-oversize recovery=on-next-event");
-                        unackedQueue = { head, clientCmd, payload: queuePayload };
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
-                        drainAfterFailure({ clientCmd });
+                        drainAfterFailure(false);
+                        kickDeferred();
                         wakeFollowup();
                         return;
                     }
                     const parsed = parseWorldReply(reply);
-                    if (parsed === null || !isWorldQueueReply(parsed)) {
-                        if (parsed !== null && isWorldRejection(parsed)) {
-                            if (parsed.kind === "generation-mismatch") {
-                                // Our filing raced a lifetime rotation: the
-                                // command never filed. When we have not
-                                // rotated yet the dead generation drops
-                                // (never reminted) and we re-discover; a
-                                // delayed callback after our own reset is a
-                                // no-op that never touches newer queue state.
-                                if (state.boundGen === filedGen) {
-                                    dropDeadGenerationIntents();
-                                    killPending("generation-mismatch");
-                                    waitHoldForDiscovery = true;
-                                    wakePendingCapture = false;
-                                    log("omnitiler:world:generation-mismatch recovery=rediscover");
-                                    discover();
-                                } else {
-                                    log("omnitiler:world:queue-stale recovery=on-next-event");
-                                }
-                                return;
-                            }
-                            if (parsed.gen !== filedGen || parsed.gen !== state.boundGen) {
+                    if (parsed === null || (!isWorldQueueReply(parsed) && !isWorldRejection(parsed))) {
+                        if (entry.gen !== state.boundGen || !pendingQueue.includes(entry)) {
+                            entry.filing = false;
+                            log("omnitiler:world:queue-stale recovery=on-next-event");
+                            return;
+                        }
+                        entry.filing = false;
+                        entry.filed = false;
+                        log("omnitiler:world:queue-malformed recovery=on-next-event");
+                        state.noteRejectedOrTransportError();
+                        killPending("rejected");
+                        drainAfterFailure(false);
+                        kickDeferred();
+                        wakeFollowup();
+                        return;
+                    }
+                    if (parsed !== null && isWorldRejection(parsed)) {
+                        if (parsed.kind === "generation-mismatch") {
+                            entry.filing = false;
+                            if (state.boundGen === filedGen) {
+                                dropDeadGenerationIntents();
+                                killPending("generation-mismatch");
+                                waitHoldForDiscovery = true;
+                                wakePendingCapture = false;
+                                log("omnitiler:world:generation-mismatch recovery=rediscover");
+                                discover();
+                            } else {
                                 log("omnitiler:world:queue-stale recovery=on-next-event");
-                                return;
                             }
-                            // In-band refusal proves the command never
-                            // filed. A shape refusal (snapshot-invalid from
-                            // queue-time command_shape_valid, e.g. a retired
-                            // implicit source) is permanent: drop the head
-                            // narrowly so later commands can proceed instead
-                            // of requeueing the poison forever. Any other
-                            // refusal requeues at front (never a replay, the
-                            // server holds nothing) and waits for the next
-                            // native event. Never a retry loop: no schedule
-                            // on the requeue path.
-                            if (parsed.kind === "snapshot-invalid" && parsed.message === "command-invalid") {
-                                log(`omnitiler:world:command-dropped kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=on-next-event`);
-                                unackedQueue = null;
-                                state.noteRejectedOrTransportError();
-                                killPending("rejected");
-                                if (pendingQueue.length > 0) {
-                                    scheduleDispatch();
-                                } else {
-                                    wakeFollowup();
-                                }
-                                return;
+                            return;
+                        }
+                        if (parsed.gen !== filedGen || parsed.gen !== state.boundGen) {
+                            entry.filing = false;
+                            log("omnitiler:world:queue-stale recovery=on-next-event");
+                            return;
+                        }
+                        // In-band refusal proves the command never filed.
+                        // A shape refusal is permanent: drop this entry
+                        // narrowly so later commands can proceed instead of
+                        // requeueing poison forever. Any other refusal
+                        // retains position (never a replay, the server holds
+                        // nothing) for later redelivery. Never a retry loop.
+                        if (parsed.kind === "snapshot-invalid" && parsed.message === "command-invalid") {
+                            entry.filing = false;
+                            const at = pendingQueue.indexOf(entry);
+                            if (at >= 0) {
+                                pendingQueue.splice(at, 1);
                             }
-                            log(`omnitiler:world:queue-rejected kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=on-next-event`);
-                            unackedQueue = null;
-                            pendingQueue.unshift(head);
+                            undecidedClientCmds.delete(clientCmd);
+                            log(`omnitiler:world:command-dropped kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=on-next-event`);
                             state.noteRejectedOrTransportError();
                             killPending("rejected");
+                            kickAfterFile();
                             wakeFollowup();
                             return;
                         }
-                        log("omnitiler:world:queue-malformed recovery=on-next-event");
-                        unackedQueue = { head, clientCmd, payload: queuePayload };
+                        entry.filing = false;
+                        entry.filed = false;
+                        log(`omnitiler:world:queue-rejected kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=on-next-event`);
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
-                        drainAfterFailure({ clientCmd });
+                        kickDeferred();
                         wakeFollowup();
                         return;
                     }
                     // Filed (or duplicate of an already-filed command, which
-                    // never re-executes): a fresh capture drains exactly one
-                    // FIFO command. Our own queue wakes our own capture
-                    // directly (no D-Bus signal subscription exists on the
-                    // scripting surface); foreign wakes drain on the next
-                    // native-event capture. The ambiguity is resolved: the
-                    // filed identity is acked, never retained. The reply
-                    // must bind the filed generation and identity: a stale
-                    // reply from a superseded generation (or for another
-                    // command) is a no-op that never clears newer undecided
-                    // state.
+                    // never re-executes): the reply must bind the filed
+                    // generation and exact per-entry identity, or a delayed
+                    // callback never touches newer queue state. Queued
+                    // commands arriving during capture park the next batch;
+                    // only the dispatch path drains.
                     if (
-                        parsed.gen !== filedGen || parsed.gen !== state.boundGen ||
-                        parsed.client !== state.client || parsed.clientCmd !== clientCmd
+                        (parsed as WorldQueueReply).gen !== filedGen ||
+                        (parsed as WorldQueueReply).gen !== state.boundGen ||
+                        (parsed as WorldQueueReply).client !== state.client ||
+                        (parsed as WorldQueueReply).clientCmd !== clientCmd
                     ) {
+                        // Delayed or old-generation callback: never touches
+                        // newer queue state (no kick, no kill, no undecided).
+                        if (!pendingQueue.includes(entry)) {
+                            log("omnitiler:world:queue-stale recovery=on-next-event");
+                            return;
+                        }
+                        entry.filing = false;
+                        entry.filed = false;
                         log("omnitiler:world:queue-stale recovery=on-next-event");
                         return;
                     }
-                    unackedQueue = null;
-                    undecidedClientCmd = clientCmd;
-                    if (state.currentInvalid !== mark) {
-                        const fresh = capture();
-                        if (fresh === null) {
-                            log("omnitiler:world:observe-invalid recovery=on-next-event");
-                            state.noteRejectedOrTransportError();
-                            killPending("rejected");
-                            drainAfterFailure({ clientCmd });
-                            return;
-                        }
-                        sendCapture(fresh, typeof headOp === "string" ? headOp : null, clientCmd);
-                        return;
-                    }
-                    sendCapture(observation, typeof headOp === "string" ? headOp : null, clientCmd);
+                    entry.filing = false;
+                    entry.filed = true;
+                    undecidedClientCmds.add(clientCmd);
+                    kickAfterFile();
                 },
             );
         } catch (error) {
             void error;
             qtimeoutCancel();
+            entry.filing = false;
+            entry.filed = false;
             log("omnitiler:world:queue-transport recovery=on-next-event");
-            unackedQueue = { head, clientCmd, payload: queuePayload };
             state.noteRejectedOrTransportError();
             killPending("transport");
-            drainAfterFailure({ clientCmd });
+            drainAfterFailure(false);
+            kickDeferred();
             wakeFollowup();
         }
     };
@@ -5490,6 +5614,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (state.inFlight !== null) {
             return;
         }
+        if (dispatchActive) {
+            scheduleDispatch();
+            return;
+        }
+        dispatchActive = true;
+        try {
         // Accepted initial settings gate every report: the first capture
         // must not precede the broker's accepted settings for this
         // generation. A send already outstanding owns the wire; otherwise
@@ -5532,58 +5662,55 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } catch (error) {
             void error;
         }
+        // Observation-only catchup withholds the queue without dropping it:
+        // unsent intents stay queued and file after the catchup report is
+        // accepted.
+        if (state.observationOnlyCatchup) {
+            const catchupObservation = capture();
+            if (catchupObservation === null) {
+                log("omnitiler:world:observe-invalid recovery=on-next-event");
+                return;
+            }
+            sendCapture(catchupObservation, null, []);
+            return;
+        }
+        // File the FIFO pump BEFORE capturing: the capture must be fresh
+        // after all filings settle (never a stale pre-filing observation),
+        // and native invalidation while a Queue ACK is outstanding is
+        // incorporated here rather than raced. A filing still in flight
+        // owns the kick and this dispatch returns without capturing.
+        pumpQueueFiling();
+        if (pendingQueue.some((entry) => entry.filing)) {
+            return;
+        }
+        // Never drain unfiled presses: a gated, refused, or lost-ACK entry
+        // stays parked for its own redelivery instead of being silently
+        // consumed by a capture that cannot execute it.
+        if (pendingQueue.some((entry) => !entry.filed)) {
+            return;
+        }
+        // Fresh observation after the filings settle: one capture
+        // incorporates native once and drains ALL already-parked FIFO
+        // against post-prior core state; presses arriving mid-flight park
+        // the next batch. The batch splices only after the capture flight
+        // is secured below, so local encode/size/mint failure never
+        // discards filed presses.
         const observation = capture();
         if (observation === null) {
             log("omnitiler:world:observe-invalid recovery=on-next-event");
             return;
         }
-        const mark = state.currentInvalid;
-        // Filed-but-unacked redelivery first: the identical queue bytes/id
-        // resolve the ambiguity (the broker high-water dedups, never
-        // re-executes). Fresh heads wait behind it in order.
-        const filedGen = state.boundGen;
-        if (filedGen === null) {
-            return;
+        const preview = [...pendingQueue];
+        const clientCmds = preview.map((entry) => entry.clientCmd);
+        const headOp = preview.length > 0
+            ? ((preview[0] as QueuedIntent).command as { op?: unknown }).op
+            : null;
+        if (sendCapture(observation, typeof headOp === "string" ? headOp : null, clientCmds)) {
+            pendingQueue.splice(0, preview.length);
         }
-        if (unackedQueue !== null) {
-            const redeliver = unackedQueue;
-            log(`omnitiler:world:queue-redeliver clientCmd=${token(redeliver.clientCmd)}`);
-            fileQueue(redeliver.head, redeliver.clientCmd, redeliver.payload, observation, mark, filedGen);
-            return;
+        } finally {
+            dispatchActive = false;
         }
-        // Observation-only catchup withholds the queue without dropping it:
-        // unsent intents stay queued and file after the catchup report is
-        // accepted. A tiled focus or move head rebinds its subject at
-        // dispatch to the current native focus (invalid subjects drop
-        // narrowly with no native writes); float-origin focus fallbacks keep
-        // press-time identity. The head shifts at file-send, so binding
-        // retention still sees the riding intent during capture, exactly
-        // like the old single pending slot.
-        const head = resolveHeadCommand(observation);
-        if (head === null) {
-            sendCapture(observation, null, null);
-            return;
-        }
-        const clientCmd = state.mintClientCmd();
-        if (clientCmd === null) {
-            log(`omnitiler:world:command-refused op=${token((head.command as { op?: unknown }).op)} reason=cmd-exhausted`);
-            pendingQueue.shift();
-            state.noteRejectedOrTransportError();
-            return;
-        }
-        // The report is built: consume the head now, so a later reply
-        // (accepted, stale, rejected, timed out) can never replay it. The
-        // unsent remainder stays queued in order.
-        pendingQueue.shift();
-        const queuePayload = buildQueueRequest(state.client, filedGen, clientCmd, head.command);
-        if (utf8ByteLength(queuePayload) > WORLD_MAX_REQUEST_BYTES) {
-            log("omnitiler:world:request-oversize recovery=on-next-event");
-            state.noteRejectedOrTransportError();
-            killPending("rejected");
-            drainAfterFailure({ clientCmd });
-            return;
-        }
-        fileQueue(head, clientCmd, queuePayload, observation, mark, filedGen);
     };
 
     // A wake owed a capture drains at flight end: every sendCapture tail
@@ -6414,7 +6541,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             // Teardown drops unsent queued intents: no post-stop dispatch
             // may carry them, and later presses refuse on `stopped`.
             pendingQueue.length = 0;
-            unackedQueue = null;
+            undecidedClientCmds.clear();
+            flightBatches.clear();
             if (drainTimerCancel !== null) {
                 try {
                     drainTimerCancel();
@@ -6451,9 +6579,28 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             // Command-only: floating/sticky subjects route the same
             // direction-only command; the core owns the float lattice.
+            // Genuine nofocus (no live active window at all) files the
+            // explicit empty marker (never the implicit marker, never a
+            // refusal). A foreign live focus under a scope class still
+            // refuses: it reads as no active window so no command path can
+            // target it, and a nofocus marker would misrepresent it.
             const w = activeWindowId();
             if (w === null) {
-                shortcutFailed("focus");
+                let rawActive: unknown = null;
+                try {
+                    rawActive = readProp(surface, "activeWindow");
+                } catch (error) {
+                    void error;
+                    rawActive = null;
+                }
+                if (typeof rawActive === "object" && rawActive !== null) {
+                    shortcutFailed("focus");
+                    return;
+                }
+                const cmd = cmdFocusDirectional("", direction);
+                if (cmd === null || !submitCommand(cmd, "focus")) {
+                    shortcutFailed("focus");
+                }
                 return;
             }
             const cmd = cmdFocusDirectional(w, direction);

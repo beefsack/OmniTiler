@@ -460,7 +460,9 @@ describe("world directional intent (core-owned crossing)", () => {
         h.runTimers();
         const cmd = lastCommand(h);
         assert.ok(cmd !== null, "focus intent dispatched");
-        assert.equal(cmd["win"], winA);
+        // Ordinary keyboard intents resolve implicit at core current focus
+        // (docs/decisions/commands.md#kde-rapid-input).
+        assert.deepEqual(cmd["win"], { currentFocus: true });
         assert.equal(cmd["direction"], "right");
         assert.equal(cmd["op"], "focus-directional");
     });

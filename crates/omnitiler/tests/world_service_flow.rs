@@ -623,7 +623,8 @@ fn cross_sender_commands_never_steal_or_move_highwater() {
             .expect("accepted"),
     );
     assert_eq!(dispatched["rev"], "1");
-    // Each issuer collects only its own settlement.
+    // Each issuer collects only its own settlement. One capture drains the
+    // whole batch, so both settlements are ready after the first capture.
     let ready_a = parse(
         &service
             .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
@@ -636,20 +637,28 @@ fn cross_sender_commands_never_steal_or_move_highwater() {
             .take_result(SENDER_B, &take_req(&generation, "panel-1", "1"))
             .expect("in-band"),
     );
-    assert_eq!(ready_b["outcome"], "pending");
+    assert_eq!(ready_b["outcome"], "ready");
+    assert_eq!(ready_b["globalCmd"], "2");
+    // The second capture drains nothing; re-takes re-serve identical
+    // settlements without re-execution.
     let drained = parse(
         &service
             .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &inner))
             .expect("accepted"),
     );
     assert_eq!(drained["rev"], "2");
-    let ready_b = parse(
+    let again_a = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
+            .expect("in-band"),
+    );
+    assert_eq!(again_a, ready_a);
+    let again_b = parse(
         &service
             .take_result(SENDER_B, &take_req(&generation, "panel-1", "1"))
             .expect("in-band"),
     );
-    assert_eq!(ready_b["outcome"], "ready");
-    assert_eq!(ready_b["globalCmd"], "2");
+    assert_eq!(again_b, ready_b);
 }
 
 #[test]
@@ -1871,8 +1880,8 @@ fn burst_commands_wake_capture_by_capture() {
         .expect("immediate wake");
     let value: serde_json::Value = serde_json::from_str(&immediate).expect("wake JSON");
     assert_eq!(value["cursor"], "3");
-    // Park at the delivered cursor; each draining capture advances the
-    // epoch and re-wakes while work remains.
+    // Park at the delivered cursor; the first draining capture settles the
+    // whole batch at once, leaving nothing pending so no tail wake fires.
     let inner = inner_report(&[], true, false, "");
     assert_eq!(
         broker
@@ -1883,25 +1892,44 @@ fn burst_commands_wake_capture_by_capture() {
     noop_park(&mut broker, "wait-burst", 3);
     broker
         .dispatch_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
-        .expect("drains one");
-    let wake = broker.take_wait_ready("wait-burst").expect("re-wake");
-    let wake_value: serde_json::Value = serde_json::from_str(&wake).expect("wake JSON");
-    assert_eq!(wake_value["cursor"], "4");
-    // Cursor semantics: a lease at the delivered cursor keeps it, so the
-    // next waiter still sees the remaining two commands.
+        .expect("drains all");
+    assert_eq!(broker.take_wait_ready("wait-burst"), None);
+    // One capture settles all three commands.
+    for client_cmd in ["1", "2", "3"] {
+        let settled = parse(
+            &broker
+                .take_result(SENDER_A, &take_req(&generation, "panel-1", client_cmd))
+                .expect("in-band"),
+        );
+        assert_eq!(settled["outcome"], "ready");
+    }
+    // Nothing pending, so a waiter at the delivered cursor parks; the next
+    // capture drains nothing and delivers no spurious wake.
     assert_eq!(
         broker
-            .wait_immediate(ADAPTER, &generation, 4)
+            .wait_immediate(ADAPTER, &generation, 3)
             .expect("binds"),
         None
     );
-    noop_park(&mut broker, "wait-tail", 4);
+    noop_park(&mut broker, "wait-tail", 3);
     broker
         .dispatch_capture(&capture(ADAPTER, &generation, 2, 2, &inner))
-        .expect("drains two");
-    let tail = broker.take_wait_ready("wait-tail").expect("tail wake");
-    let tail_value: serde_json::Value = serde_json::from_str(&tail).expect("wake JSON");
-    assert_eq!(tail_value["cursor"], "5");
+        .expect("drains none");
+    assert_eq!(broker.take_wait_ready("wait-tail"), None);
+    // A newly queued command wakes the parked waiter.
+    broker
+        .queue_command(
+            SENDER_A,
+            &queue_req(&generation, "panel-1", "4", select_numbered_command()),
+        )
+        .expect("queued");
+    assert!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 3)
+            .expect("binds")
+            .is_some(),
+        "new command wakes"
+    );
 }
 
 #[test]

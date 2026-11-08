@@ -341,6 +341,9 @@ const winRow = (
 });
 
 describe("world unfloat immediate retile", () => {
+    // Filed requestFloat commands carry the implicit execution-time
+    // marker (docs/decisions/commands.md#kde-rapid-input); accepted
+    // results below keep explicit subject ids.
     it("float places then unfloat retiles synchronously with no focus event between", () => {
         const h = makeHarness([
             termSpec(WIN_A, { x: 0, y: 0, width: 400, height: 600 }),
@@ -358,7 +361,7 @@ describe("world unfloat immediate retile", () => {
         const filedFloat = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
             filedFloat["command"] as Record<string, unknown>,
-            { op: "toggle-float", win: WIN_A, rect: null },
+            { op: "toggle-float", win: { currentFocus: true }, rect: null },
         );
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
             windows: [
@@ -382,7 +385,7 @@ describe("world unfloat immediate retile", () => {
         const filedUnfloat = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
             filedUnfloat["command"] as Record<string, unknown>,
-            { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] },
+            { op: "toggle-float", win: { currentFocus: true }, rect: [...FLOAT_A] },
         );
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
             windows: [
@@ -447,7 +450,7 @@ describe("world unfloat immediate retile", () => {
         const filedFixed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
             filedFixed["command"] as Record<string, unknown>,
-            { op: "toggle-float", win: WIN_F, rect: [...FLOAT_F] },
+            { op: "toggle-float", win: { currentFocus: true }, rect: [...FLOAT_F] },
         );
         const writesBefore = h.geometryWrites.length;
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {

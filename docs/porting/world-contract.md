@@ -600,31 +600,58 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   platform, not a second engine route. [Payloads](../decisions/contract.md#command-payloads),
   [R18](../decisions/contract.md#scripting-command-surface-r18).
 
+### Queued KDE ingress
+
+- The command envelope remains
+  `{"v":4,"gen":G,"client":C,"clientCmd":"N","command":{...}}`.
+  The subject distinction belongs to the command's `win`, not a second queue
+  envelope field. Existing explicit command bytes remain unchanged.
+- Queueing parks each command in FIFO order and fires the existing wake. One
+  fresh capture incorporates native observation evidence once, then drains
+  the whole parked batch against core state without waiting for native
+  application or a separate capture per action. Commands arriving during the
+  capture park for the next batch. No old observation evidence is restamped
+  or replayed between actions, and no queue-time execution or new transport
+  is required.
+- For every window-targeting command below, `win:{"currentFocus":true}` selects
+  core's current focus at execution, after preceding actions. An explicit id
+  keeps its existing subject meaning. Empty `win` is allowed only on
+  directional focus and still means genuinely no focused subject; missing or
+  null `win` remains invalid. The object has exactly one key with boolean
+  `true`; extra keys, false and other types refuse. Implicit maximize uses core-resolved focus instead of
+  a settled-native-focus equality check; explicit maximize keeps its gate.
+- The capture returns one final full actuator publication for the batch, with
+  per-command results retained on the requester-only take lane. Native
+  application keeps only the newest pending publication and follows the
+  [normative apply rule](#normative-apply-rule).
+  Superseding native work never discards incoming `closed` or attempt evidence.
+  [Rapid-input decision](../decisions/commands.md#kde-rapid-input).
+
 ### WorldCommand payloads
 
 | `op` | Other keys and types | Null/absence | Meaning/source |
 | --- | --- | --- | --- |
-| `focus` | `win`: WindowId | no | By-id focus; ignored direction removed (R6). |
-| `send` | `win`: WindowId; `out`: OutputId; `ws`: WorkspaceId; `follow`: bool | no | Explicit destination, unchanged. |
+| `focus` | `win`: WindowId or current-focus object | no | Explicit-id or execution-time focus; ignored direction removed (R6). |
+| `send` | `win`: WindowId or current-focus object; `out`: OutputId; `ws`: WorkspaceId; `follow`: bool | no | Explicit destination, unchanged. |
 | `select-workspace` | `out`: OutputId; `ws`: WorkspaceId | no | Explicit logical selection, unchanged. |
 | `select-numbered` | `out`: OutputId; `index`: integer 1..9 | out nullable | Core resolves implicit output. |
 | `select-relative` | `out`: OutputId; `delta`: integer -1 or 1 | out nullable | Relative ring selection. |
 | `select-previous`, `select-trailing` | `out`: OutputId | out nullable | Existing planner selection. |
-| `send-relative` | `win`: WindowId; `source`: SendSource; `delta`: -1 or 1; `follow`: bool | no | Core resolves retained source. |
-| `send-numbered` | `win`: WindowId; `source`: SendSource; `index`: integer 0..9; `follow`: bool | no | 0 retains trailing-send meaning. |
+| `send-relative` | `win`: WindowId or current-focus object; `source`: SendSource; `delta`: -1 or 1; `follow`: bool | no | Core resolves retained source. |
+| `send-numbered` | `win`: WindowId or current-focus object; `source`: SendSource; `index`: integer 0..9; `follow`: bool | no | 0 retains trailing-send meaning. |
 | `set-workspace-tiling` | `out`: OutputId; `ws`: WorkspaceId; `tiled`: bool | no | Explicit requested state. |
 | `toggle-workspace-tiling` | `out`: OutputId; `ws`: WorkspaceId | no | Toggle retained core state. |
 | `migrate-workspace` | `from,to`: OutputId; `ws`: WorkspaceId | no | Distinct outputs, stable logical id. |
-| `focus-directional` | `win`: WindowId; `direction`: Direction | win may be empty, never null/missing | Empty means genuinely no focused subject. |
-| `move-directional` | `win`: WindowId; `direction`: Direction; `sameAxis`: SameAxisMove | no | Shared core route including macOS. |
-| `send-directional` | `win`: WindowId; `direction`: Direction; `follow`: bool | no | Core resolves destination. |
+| `focus-directional` | `win`: WindowId or current-focus object; `direction`: Direction | win may be empty, never null/missing | Empty means genuinely no focused subject; object selects core focus. |
+| `move-directional` | `win`: WindowId or current-focus object; `direction`: Direction; `sameAxis`: SameAxisMove | no | Shared core route including macOS. |
+| `send-directional` | `win`: WindowId or current-focus object; `direction`: Direction; `follow`: bool | no | Core resolves destination. |
 | `migrate-directional` | `direction`: Direction | no | Action source, no retained-window-home source. |
-| `toggle-maximize` | `win`: WindowId | no | Existing command and result kept. |
-| `toggle-float` | `win`: WindowId; `rect`: Rect | rect nullable | Promoted live operation; rect is genuine input placement only. |
-| `toggle-orientation` | `win`: WindowId | no | Promoted live operation. |
-| `resize` | `win`: WindowId; `direction`: Direction; `mode`: resize token; `press`: integer | no | Existing promoted payload, no resize-policy change. |
-| `set-fullscreen`, `set-sticky` | `win`: WindowId; `value`: bool | no | New neutral on/off state intent. |
-| `toggle-fullscreen`, `toggle-sticky` | `win`: WindowId | no | Core resolves toggle. |
+| `toggle-maximize` | `win`: WindowId or current-focus object | no | Existing command and result kept. |
+| `toggle-float` | `win`: WindowId or current-focus object; `rect`: Rect | rect nullable | Promoted live operation; rect is genuine input placement only. |
+| `toggle-orientation` | `win`: WindowId or current-focus object | no | Promoted live operation. |
+| `resize` | `win`: WindowId or current-focus object; `direction`: Direction; `mode`: resize token; `press`: integer | no | Existing promoted payload, no resize-policy change. |
+| `set-fullscreen`, `set-sticky` | `win`: WindowId or current-focus object; `value`: bool | no | New neutral on/off state intent. |
+| `toggle-fullscreen`, `toggle-sticky` | `win`: WindowId or current-focus object | no | Core resolves toggle. |
 
 - `Direction = left/right/up/down`; `SameAxisMove = group-with-neighbor/swap-with-neighbor`;
   resize tokens remain `inwards/outwards/horizontal/vertical`, with the existing

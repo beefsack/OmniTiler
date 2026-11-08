@@ -15,6 +15,12 @@ behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
 Reuse existing coverage rather than duplicating a scenario with a
 trivially different start state.
 
+### KDE queued execution-time subject
+
+| Minimal action sequence | Selected outcome | Unproven outcome |
+| --- | --- | --- |
+| Focus A with neighbor B; enqueue directional focus to B, then resize with `win:{"currentFocus":true}`, without native focus settlement; compare an explicit resize of A | User 2026-11-08: core executes both in order and resizes B for the current-focus subject; explicit A still targets A. Empty directional-focus `win` remains genuinely no-focus, not implicit focus | End-to-end mixed-burst delivery, physical keys, perceived latency and equivalent reference-WM observations remain TBD; [decision](../decisions/commands.md#kde-rapid-input) |
+
 ### macOS core-designated trailing pager discriminators
 
 | Variant | Minimal action sequence | Offline evidence / direction | Unsupported outcome |

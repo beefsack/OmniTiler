@@ -666,13 +666,16 @@ describe("world command result entry", () => {
         assert.deepEqual(floatBody["records"], [{ win: "win-a", data: "{\"v\":1,\"float\":true,\"stickyPrior\":null}" }]);
         // Unfloat through the production shortcut: the command carries the
         // live frame, and the accepted result (no placement rect) records
-        // the explicit tile override.
+        // the explicit tile override. Ordinary keyboard windowed intents
+        // file win:{currentFocus:true} resolved at core execution time
+        // (docs/decisions/commands.md#kde-rapid-input); terminal results
+        // and intent writes keep explicit ids.
         h.handle?.requestFloat();
         h.runTimers();
         const sent = [...h.calls].reverse().find((c) => c.method === "QueueWorldCommand");
         assert.ok(sent !== undefined);
         const cmd = (JSON.parse((sent as { payload: string }).payload) as Record<string, unknown>)["command"] as Record<string, unknown>;
-        assert.deepEqual(cmd, { op: "toggle-float", win: "win-a", rect: [162, 122, 475, 355] });
+        assert.deepEqual(cmd, { op: "toggle-float", win: { currentFocus: true }, rect: [162, 122, 475, 355] });
         const capture = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
         assert.ok(capture !== undefined);
         const envelope = JSON.parse((capture as { payload: string }).payload) as Record<string, unknown>;

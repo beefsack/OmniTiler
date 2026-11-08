@@ -661,21 +661,39 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
 /// subject ids likewise never escape ([`crate::bounds::is_opaque_id`]).
 pub const MAX_INTENT_SAVE_DATA_JSON: usize = 48;
 
+/// Maximum per-row intent-save write width with array comma: `{"win":,"data":}`
+/// is 16 punctuation plus the longest opaque subject id (128 raw bytes,
+/// never escaped, so 130 quoted) plus [`MAX_INTENT_SAVE_DATA_JSON`], plus
+/// one array comma. Exactly 16 + 130 + 48 + 1 = 195. The comma overcounts
+/// the final row by one, conservatively.
+pub const MAX_INTENT_SAVE_ROW_BYTES: usize = 195;
+
 /// Pre-mutation bound for the at-most-one sticky/float save row, gated on
 /// the report's own command: `{"win":,"data":}` is 16 punctuation plus the
 /// subject id plus the save value above (a single row carries no comma).
 /// Reserved for `SetSticky`, `ToggleSticky`, and the sticky-clearing
-/// `ToggleFloat`; zero for every other report. Conservative like every
+/// `ToggleFloat`; zero for every other report. An execution-time
+/// (`Implicit`) save-capable command resolves its subject at execution, so
+/// it reserves the longest opaque id (130 quoted) rather than the empty
+/// placeholder width. Conservative like every
 /// other [`reply_upper_bound`] term; the exact-encoded staged reply stays
 /// the commit backstop.
 #[must_use]
 pub fn max_intent_save_bound(report: &WorldReport) -> usize {
-    let window: &str = match report.command.as_ref() {
+    let unwrapped = report
+        .command
+        .as_ref()
+        .map(crate::world_report::unwrap_implicit);
+    let is_implicit = matches!(report.command.as_ref(), Some(WorldCommand::Implicit(_)));
+    let window: &str = match unwrapped {
         Some(WorldCommand::SetSticky { window, .. }) => window.0.as_str(),
         Some(WorldCommand::ToggleSticky { window }) => window.0.as_str(),
         Some(WorldCommand::Operation(CoreCommand::ToggleFloat { window, .. })) => window.as_str(),
         _ => return 0,
     };
+    if is_implicit {
+        return 16 + 130 + MAX_INTENT_SAVE_DATA_JSON;
+    }
     16 + json_string_len(window) + MAX_INTENT_SAVE_DATA_JSON
 }
 
@@ -1532,6 +1550,13 @@ pub const fn direction_token(direction: Direction) -> &'static str {
 /// per variant (derived from the protocol shapes) plus exact carried
 /// string/numeric widths. The caller counts `null` (4) when absent.
 pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
+    // Execution-time subjects ride `win:{"currentFocus":true}` (21 bytes);
+    // the wrapped payload always carries the placeholder empty subject
+    // (`""`, 2 bytes), so the implicit estimate is the explicit estimate
+    // plus 19.
+    if let WorldCommand::Implicit(inner) = command {
+        return command_estimate_owned(inner) + 19;
+    }
     match command {
         WorldCommand::Focus { window, direction } => {
             // {"op":"focus","win":S,"direction":S} = 34 fixed.
@@ -1678,6 +1703,9 @@ pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
         WorldCommand::Operation(command) => {
             // {"op":"operation","command":{...}} = 30 fixed.
             30 + operation_estimate(command)
+        }
+        WorldCommand::Implicit(_) => {
+            unreachable!("implicit subjects unwrap before estimating")
         }
     }
 }

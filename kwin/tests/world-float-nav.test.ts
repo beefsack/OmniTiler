@@ -369,7 +369,9 @@ describe("command-only directional intents for float subjects", () => {
             .filter((c) => c !== null && c["op"] === "focus-directional");
         assert.ok(focusOps.length >= 1);
         const inner = focusOps[focusOps.length - 1] as Record<string, unknown>;
-        assert.equal(inner["win"], "win-f");
+        // Ordinary keyboard intents resolve implicit at core current focus
+        // (docs/decisions/commands.md#kde-rapid-input).
+        assert.deepEqual(inner["win"], { currentFocus: true });
         assert.equal(inner["direction"], "right");
         assert.ok(!("floatSubject" in inner) && !("out" in inner), "no adapter routing key on the wire");
     });
@@ -407,7 +409,9 @@ describe("command-only directional intents for float subjects", () => {
             .filter((c) => c !== null && c["op"] === "move-directional");
         assert.ok(moveOps.length >= 1);
         const inner = moveOps[moveOps.length - 1] as Record<string, unknown>;
-        assert.equal(inner["win"], "win-f");
+        // Ordinary keyboard intents resolve implicit at core current focus
+        // (docs/decisions/commands.md#kde-rapid-input).
+        assert.deepEqual(inner["win"], { currentFocus: true });
         assert.equal(inner["direction"], "right");
         assert.ok(!("out" in inner) && !("crossOutput" in inner));
     });
@@ -421,8 +425,14 @@ describe("command-only directional intents for float subjects", () => {
         h.world.activeWindow = null;
         h.handle?.requestFocus("right");
         h.runTimers();
-        assert.equal(queuePayloads(h).length, 0, "missing subject files nothing");
-        assert.ok(h.logs.some((l) => l.includes("shortcut-failed action=focus")));
+        // Genuine nofocus files the explicit empty marker (never the
+        // implicit marker, never a refusal); foreign-scope refusal below
+        // still files nothing (docs/decisions/commands.md#kde-rapid-input).
+        const nofocusOps = queuePayloads(h).map((p) => p["command"] as Record<string, unknown>);
+        assert.equal(nofocusOps.length, 1, "genuine nofocus files the empty-marker command");
+        assert.equal(nofocusOps[0]?.["op"], "focus-directional");
+        assert.equal(nofocusOps[0]?.["win"], "");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed action=focus")));
     });
 
     it("queues directional presses in order behind flight instead of refusing as busy", () => {
@@ -520,8 +530,10 @@ describe("command-only directional intents for float subjects", () => {
         head.callback(acceptedReply("gen-1", headBody["source"] as string, headBody["nativeInvalid"] as string, "2"));
         h.runTimers();
         const ops = queuePayloads(h).map((p) => p["command"] as Record<string, unknown>);
-        assert.ok(ops.some((c) => c["op"] === "focus-directional" && c["win"] === "win-f" && c["direction"] === "right"));
-        assert.ok(ops.some((c) => c["op"] === "move-directional" && c["win"] === "win-f" && c["direction"] === "right"));
+        // Ordinary keyboard intents resolve implicit at core current focus
+        // (docs/decisions/commands.md#kde-rapid-input).
+        assert.ok(ops.some((c) => c["op"] === "focus-directional" && typeof c["win"] === "object" && c["direction"] === "right"));
+        assert.ok(ops.some((c) => c["op"] === "move-directional" && typeof c["win"] === "object" && c["direction"] === "right"));
         for (const c of ops) {
             assert.ok(!("floatSubject" in c) && !("out" in c) && !("crossOutput" in c), "no adapter routing key on the wire");
         }
@@ -573,9 +585,12 @@ describe("command-only directional intents for float subjects", () => {
         seen = queuePayloads(h).length;
         h.handle?.requestWorkspaceRelativeMove(1, true);
         h.runTimers();
+        // Windowed send intents are ordinary keyboard intents: implicit
+        // marker resolved at execution
+        // (docs/decisions/commands.md#kde-rapid-input).
         assert.deepEqual(lastCommand(seen), {
             op: "send-relative",
-            win: "win-f",
+            win: { currentFocus: true },
             source: { implicit: "home-then-action" },
             delta: 1,
             follow: true,
@@ -586,7 +601,7 @@ describe("command-only directional intents for float subjects", () => {
         h.runTimers();
         assert.deepEqual(lastCommand(seen), {
             op: "send-numbered",
-            win: "win-f",
+            win: { currentFocus: true },
             source: { implicit: "home-then-action" },
             index: 0,
             follow: false,

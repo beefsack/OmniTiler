@@ -781,7 +781,10 @@ async function runFixedTileLeg(intervening: 0 | 2, t: TestContext): Promise<void
         const direct = ((newQueues[0] as { body: Record<string, unknown> }).body["command"] as Record<string, unknown>);
         assert.equal(direct["op"], "toggle-float", "immediate command is the direct toggle-float");
         assert.ok(!("command" in direct), "direct v4 shape carries no operation wrapper");
-        assert.equal(direct["win"], WIN_F, "explicit tile names the stable fixed client (bare id on the wire)");
+        // Ordinary keyboard intents resolve implicit at core current focus
+        // (docs/decisions/commands.md#kde-rapid-input); the terminal
+        // take result below keeps the explicit fixed-client id.
+        assert.deepEqual(direct["win"], { currentFocus: true }, "explicit tile resolves implicit at execution (marker on the wire)");
         assert.ok(Array.isArray(direct["rect"]), "floating fixed unfloat carries the live frame");
         assert.equal(describeCount(h) - describesBeforeTile, 1, "press queues exactly one DescribeWorld before the tile flush (no silent extra rounds)");
         const tileRound = await h.flushOne();

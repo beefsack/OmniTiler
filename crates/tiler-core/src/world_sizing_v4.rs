@@ -9,7 +9,7 @@
 
 use crate::world_report::{
     AttemptLaneV4, CommandResult, PresentationIngressV4, PresentationRowV4, RendererInput,
-    TransferKind, WorldPresentationV4, WorldReplyV4, WorldReportV4,
+    TransferKind, WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4,
 };
 use crate::world_sizing::{
     MAX_CANONICAL_F64_LEN, MAX_EFFECT_RESERVE_BYTES, MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES,
@@ -980,11 +980,18 @@ fn presentation_exact_v4(presentation: &WorldPresentationV4) -> usize {
 /// Pre-mutation bound for the at-most-one sticky/float save row over a v4
 /// report: twin of
 /// [`max_intent_save_bound`](crate::world_sizing::max_intent_save_bound)
-/// over the staged report command.
+/// over the staged report command. Unwraps the execution-time subject and
+/// reserves the longest opaque id for implicit save-capable commands,
+/// never the empty placeholder width.
 #[must_use]
 pub fn max_intent_save_bound_v4(report: &WorldReportV4) -> usize {
     use crate::world_report::WorldCommand;
-    let window: &str = match report.command.as_ref() {
+    let unwrapped = report
+        .command
+        .as_ref()
+        .map(crate::world_report::unwrap_implicit);
+    let is_implicit = matches!(report.command.as_ref(), Some(WorldCommand::Implicit(_)));
+    let window: &str = match unwrapped {
         Some(WorldCommand::SetSticky { window, .. }) => window.0.as_str(),
         Some(WorldCommand::ToggleSticky { window }) => window.0.as_str(),
         Some(WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
@@ -992,7 +999,105 @@ pub fn max_intent_save_bound_v4(report: &WorldReportV4) -> usize {
         })) => window.as_str(),
         _ => return 0,
     };
+    if is_implicit {
+        return 16 + 130 + crate::world_sizing::MAX_INTENT_SAVE_DATA_JSON;
+    }
     16 + json_string_len(window) + crate::world_sizing::MAX_INTENT_SAVE_DATA_JSON
+}
+
+/// True when one drained command can stage an intent save row: `SetSticky`,
+/// `ToggleSticky`, or the sticky-clearing `ToggleFloat`, explicit or
+/// execution-time. Every other command reserves nothing.
+#[must_use]
+pub fn is_intent_save_command_v4(command: &WorldCommand) -> bool {
+    use crate::world_report::WorldCommand;
+    matches!(
+        crate::world_report::unwrap_implicit(command),
+        WorldCommand::SetSticky { .. }
+            | WorldCommand::ToggleSticky { .. }
+            | WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat { .. })
+    )
+}
+
+/// Distinct save-row count for one parked FIFO batch: distinct explicit
+/// subjects plus one row per implicit save (unresolved subjects conservatively
+/// count distinct at max width). Latest-wins per window means repeats of one
+/// explicit subject count once; correctness before tightness keeps implicit
+/// rows unmerged.
+#[must_use]
+pub fn max_intent_save_batch_rows_v4(queued: &[(u64, WorldCommand)]) -> usize {
+    use crate::world_report::WorldCommand;
+    use std::collections::BTreeSet;
+    let mut distinct: BTreeSet<&str> = BTreeSet::new();
+    let mut implicit: usize = 0;
+    for (_, command) in queued {
+        if !is_intent_save_command_v4(command) {
+            continue;
+        }
+        if matches!(command, WorldCommand::Implicit(_)) {
+            implicit = implicit.saturating_add(1);
+            continue;
+        }
+        match crate::world_report::unwrap_implicit(command) {
+            WorldCommand::SetSticky { window, .. } => {
+                distinct.insert(window.0.as_str());
+            }
+            WorldCommand::ToggleSticky { window } => {
+                distinct.insert(window.0.as_str());
+            }
+            WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
+                window, ..
+            }) => {
+                distinct.insert(window.as_str());
+            }
+            _ => {}
+        }
+    }
+    distinct.len().saturating_add(implicit)
+}
+
+/// Pre-mutation byte reserve for one parked FIFO batch: one
+/// [`MAX_INTENT_SAVE_ROW_BYTES`](crate::world_sizing::MAX_INTENT_SAVE_ROW_BYTES)
+/// per distinct explicit subject at its exact id width (plus comma) and one
+/// max row per implicit save. Zero when the batch holds no save-capable
+/// commands. Conservative like every other reply bound term; the
+/// exact-encoded staged reply stays the commit backstop.
+#[must_use]
+pub fn max_intent_save_batch_bound_v4(queued: &[(u64, WorldCommand)]) -> usize {
+    use crate::world_report::WorldCommand;
+    use std::collections::BTreeSet;
+    let mut distinct: BTreeSet<&str> = BTreeSet::new();
+    let mut implicit: usize = 0;
+    for (_, command) in queued {
+        if !is_intent_save_command_v4(command) {
+            continue;
+        }
+        if matches!(command, WorldCommand::Implicit(_)) {
+            implicit = implicit.saturating_add(1);
+            continue;
+        }
+        match crate::world_report::unwrap_implicit(command) {
+            WorldCommand::SetSticky { window, .. } => {
+                distinct.insert(window.0.as_str());
+            }
+            WorldCommand::ToggleSticky { window } => {
+                distinct.insert(window.0.as_str());
+            }
+            WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
+                window, ..
+            }) => {
+                distinct.insert(window.as_str());
+            }
+            _ => {}
+        }
+    }
+    let mut bytes = 0usize;
+    for id in distinct {
+        bytes = bytes.saturating_add(
+            16 + json_string_len(id) + crate::world_sizing::MAX_INTENT_SAVE_DATA_JSON + 1,
+        );
+    }
+    bytes.saturating_add(implicit.saturating_mul(crate::world_sizing::MAX_INTENT_SAVE_ROW_BYTES))
 }
 
 /// Conservative pre-mutation v4 reply upper bound for one report: twin of

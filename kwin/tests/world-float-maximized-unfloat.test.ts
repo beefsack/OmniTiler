@@ -431,7 +431,9 @@ describe("world B9 deferred maximized unfloat", () => {
         h.runTimers();
         const retryQ = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         const retryCmd = retryQ["command"] as Record<string, unknown>;
-        assert.deepEqual(retryCmd, { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] });
+        // The retry is an ordinary later press: implicit marker resolved
+        // at execution (docs/decisions/commands.md#kde-rapid-input).
+        assert.deepEqual(retryCmd, { op: "toggle-float", win: { currentFocus: true }, rect: [...FLOAT_A] });
         assert.equal(toggleCount(h), 2, "seed float plus exactly one retried unfloat command");
     });
 
@@ -637,7 +639,9 @@ describe("world B9 deferred maximized unfloat", () => {
         JSON.parse(call.payload);
         const immQ = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         const cmd = immQ["command"] as Record<string, unknown>;
-        assert.deepEqual(cmd, { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] });
+        // Ordinary immediate unfloat: implicit marker resolved at execution
+        // (docs/decisions/commands.md#kde-rapid-input).
+        assert.deepEqual(cmd, { op: "toggle-float", win: { currentFocus: true }, rect: [...FLOAT_A] });
         assert.ok(!h.logs.some((l) => l.includes("float-unfloat-maximize-clear") && l.includes("outcome=issued")));
     });
 });

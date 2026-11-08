@@ -5066,13 +5066,201 @@ fn check_presentation_structure_v4(
     Ok(())
 }
 
+/// Closed execution-time core-focus marker (`win:{"currentFocus":true}`):
+/// exactly one key `currentFocus` with boolean `true`. Every other shape
+/// (missing, null, string, empty object, extra keys, false/null/wrong-type
+/// values) is not the marker and follows the normal by-id path (which
+/// refuses null/non-string subjects exactly as before).
+fn is_current_focus_marker(value: Option<&serde_json::Value>) -> bool {
+    let Some(serde_json::Value::Object(map)) = value else {
+        return false;
+    };
+    if map.len() != 1 {
+        return false;
+    }
+    matches!(map.get("currentFocus"), Some(serde_json::Value::Bool(true)))
+}
+
+/// Decode one execution-time (`win:{"currentFocus":true}`) v4 command: the adapter names
+/// the payload only. The wrapped explicit command carries a placeholder
+/// empty subject that never executes; the core substitutes the retained
+/// canonical focus at execution time.
+fn decode_implicit_command_v4(
+    map: &serde_json::Map<String, serde_json::Value>,
+    op: &str,
+) -> Result<WorldCommand> {
+    use tiler_core::world_report::WorldCommand as C;
+    let empty = WindowId(String::new());
+    let wrapped = match op {
+        "focus" => {
+            check_keys(map, &["op", "win"])?;
+            C::Focus {
+                window: empty,
+                direction: String::new(),
+            }
+        }
+        "send" => {
+            check_keys(map, &["op", "win", "out", "ws", "follow"])?;
+            C::Send {
+                window: empty,
+                target_output: OutputId(req_id(map, "out")?),
+                target_workspace: req_id(map, "ws")?,
+                follow: req_bool(map, "follow")?,
+            }
+        }
+        "send-relative" => {
+            check_keys(map, &["op", "win", "source", "delta", "follow"])?;
+            let delta = map
+                .get("delta")
+                .and_then(serde_json::Value::as_i64)
+                .and_then(|v| i32::try_from(v).ok())
+                .ok_or_else(malformed)?;
+            if delta != -1 && delta != 1 {
+                return Err(unknown_value());
+            }
+            let source = decode_send_source(map, "source")?;
+            C::SendRelative {
+                window: empty,
+                source,
+                delta,
+                follow: req_bool(map, "follow")?,
+            }
+        }
+        "send-numbered" => {
+            check_keys(map, &["op", "win", "source", "index", "follow"])?;
+            let index = map
+                .get("index")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|v| u8::try_from(v).ok())
+                .ok_or_else(malformed)?;
+            if index > 9 {
+                return Err(unknown_value());
+            }
+            let source = decode_send_source(map, "source")?;
+            C::SendNumbered {
+                window: empty,
+                source,
+                index,
+                follow: req_bool(map, "follow")?,
+            }
+        }
+        "focus-directional" => {
+            check_keys(map, &["op", "win", "direction"])?;
+            C::FocusDirectional {
+                window: empty,
+                direction: parse_direction_token(req_str(map, "direction")?)?,
+            }
+        }
+        "move-directional" => {
+            check_keys(map, &["op", "win", "direction", "sameAxis"])?;
+            let same_axis =
+                tiler_core::directional::SameAxisMove::parse_wire(req_str(map, "sameAxis")?)
+                    .ok_or_else(unknown_value)?;
+            C::MoveDirectional {
+                window: empty,
+                direction: parse_direction_token(req_str(map, "direction")?)?,
+                same_axis,
+            }
+        }
+        "send-directional" => {
+            check_keys(map, &["op", "win", "direction", "follow"])?;
+            C::SendDirectional {
+                window: empty,
+                direction: parse_direction_token(req_str(map, "direction")?)?,
+                follow: req_bool(map, "follow")?,
+            }
+        }
+        "toggle-maximize" => {
+            check_keys(map, &["op", "win"])?;
+            C::ToggleMaximize { window: empty }
+        }
+        "set-sticky" => {
+            check_keys(map, &["op", "win", "value"])?;
+            C::SetSticky {
+                window: empty,
+                value: req_bool(map, "value")?,
+            }
+        }
+        "toggle-sticky" => {
+            check_keys(map, &["op", "win"])?;
+            C::ToggleSticky { window: empty }
+        }
+        "set-fullscreen" => {
+            check_keys(map, &["op", "win", "value"])?;
+            C::SetFullscreen {
+                window: empty,
+                value: req_bool(map, "value")?,
+            }
+        }
+        "toggle-fullscreen" => {
+            check_keys(map, &["op", "win"])?;
+            C::ToggleFullscreen { window: empty }
+        }
+        "toggle-float" => {
+            check_keys(map, &["op", "win", "rect"])?;
+            C::Operation(CoreCommand::ToggleFloat {
+                window: String::new(),
+                float_rect: opt_rect_or_null(map, "rect")?,
+            })
+        }
+        "toggle-orientation" => {
+            check_keys(map, &["op", "win"])?;
+            C::Operation(CoreCommand::ToggleOrientation {
+                window: String::new(),
+            })
+        }
+        "resize" => {
+            check_keys(map, &["op", "win", "direction", "mode", "press"])?;
+            let mode = match req_str(map, "mode")? {
+                "inwards" | "outwards" | "horizontal" | "vertical" => {
+                    req_str(map, "mode")?.to_owned()
+                }
+                _ => return Err(unknown_value()),
+            };
+            let press = map
+                .get("press")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(malformed)?;
+            C::Operation(CoreCommand::Resize {
+                window: String::new(),
+                direction: parse_direction_token(req_str(map, "direction")?)?,
+                mode,
+                press_index: press,
+            })
+        }
+        _ => return Err(unknown_value()),
+    };
+    if !tiler_core::world_report::valid_implicit_command(&wrapped) {
+        return Err(unknown_value());
+    }
+    Ok(WorldCommand::Implicit(Box::new(wrapped)))
+}
+
+/// Decode one bare v4 command value (queue-lane ingress): the same
+/// `win:{"currentFocus":true}` execution-time spelling the report lane
+/// accepts. Shape-only; execution resolves the subject from retained
+/// canonical focus.
+pub fn decode_command_value_v4(value: &serde_json::Value) -> Result<WorldCommand> {
+    decode_command_v4(value)
+}
+
 /// Staged v4 command decode: every v3 direct world-command arm except the
 /// removed `switch-view` alias (which refuses as an unknown value).
 /// The removed `operation` wrapper refuses as well; its three promoted
 /// payloads (`toggle-float`, `toggle-orientation`, `resize`) decode
 /// directly into the equivalent [`CoreCommand`] operation instead.
+/// A `win:{"currentFocus":true}` subject on any windowed op decodes to the
+/// execution-time core-focus wrapper (resolved from retained canonical focus at
+/// execution); explicit strings keep their by-id meaning, and the empty
+/// `focus-directional` win keeps its genuine no-focus meaning. Missing,
+/// null, or otherwise malformed subjects refuse exactly as before.
 fn decode_command_v4(value: &serde_json::Value) -> Result<WorldCommand> {
     let map = as_object(value)?;
+    if is_current_focus_marker(map.get("win")) {
+        let op = req_str(map, "op")?;
+        return decode_implicit_command_v4(map, op);
+    }
     let op = req_str(map, "op")?;
     match op {
         "switch-view" | "operation" => Err(unknown_value()),
@@ -8457,6 +8645,11 @@ fn push_send_source(out: &mut String, source: &tiler_core::world_report::SendSou
 /// instead of emitting unknown wire shapes.
 fn encode_command_v4(command: &WorldCommand) -> Result<String> {
     let mut out = String::new();
+    // Execution-time subjects encode the identical op shape with the
+    // closed `{"currentFocus":true}` subject; every other field rides verbatim.
+    if let WorldCommand::Implicit(inner) = command {
+        return encode_implicit_command_v4(inner);
+    }
     match command {
         WorldCommand::Focus { window, direction } => {
             if !direction.is_empty() {
@@ -8677,6 +8870,148 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             }
             _ => return Err(snapshot_invalid("command-invalid")),
         },
+        WorldCommand::Implicit(_) => {
+            unreachable!("implicit subjects encode through the current-focus path")
+        }
+    }
+    Ok(out)
+}
+
+/// Canonical encode of one execution-time (`win:{"currentFocus":true}`)
+/// v4 command: the identical op shape with the closed current-focus
+/// subject. Windowless payloads (never a valid implicit spelling) refuse instead of emitting wrong-subject
+/// bytes.
+fn encode_implicit_command_v4(command: &WorldCommand) -> Result<String> {
+    let mut out = String::new();
+    match command {
+        WorldCommand::Focus { direction, .. } => {
+            if !direction.is_empty() {
+                return Err(snapshot_invalid("command-invalid"));
+            }
+            out.push_str("{\"op\":\"focus\",\"win\":{\"currentFocus\":true}}");
+        }
+        WorldCommand::Send {
+            target_output,
+            target_workspace,
+            follow,
+            ..
+        } => {
+            out.push_str("{\"op\":\"send\",\"win\":{\"currentFocus\":true}");
+            out.push_str(",\"out\":");
+            push_json_string(&mut out, &target_output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(&mut out, target_workspace);
+            out.push_str(",\"follow\":");
+            out.push_str(if *follow { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::SendRelative {
+            source,
+            delta,
+            follow,
+            ..
+        } => {
+            out.push_str("{\"op\":\"send-relative\",\"win\":{\"currentFocus\":true}");
+            out.push_str(",\"source\":");
+            push_send_source(&mut out, source);
+            out.push_str(",\"delta\":");
+            out.push_str(&delta.to_string());
+            out.push_str(",\"follow\":");
+            out.push_str(if *follow { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::SendNumbered {
+            source,
+            index,
+            follow,
+            ..
+        } => {
+            out.push_str("{\"op\":\"send-numbered\",\"win\":{\"currentFocus\":true}");
+            out.push_str(",\"source\":");
+            push_send_source(&mut out, source);
+            out.push_str(",\"index\":");
+            out.push_str(&index.to_string());
+            out.push_str(",\"follow\":");
+            out.push_str(if *follow { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::FocusDirectional { direction, .. } => {
+            out.push_str("{\"op\":\"focus-directional\",\"win\":{\"currentFocus\":true}");
+            out.push_str(",\"direction\":");
+            push_json_string(&mut out, direction);
+            out.push('}');
+        }
+        WorldCommand::MoveDirectional {
+            direction,
+            same_axis,
+            ..
+        } => {
+            out.push_str("{\"op\":\"move-directional\",\"win\":{\"currentFocus\":true}");
+            out.push_str(",\"direction\":");
+            push_json_string(&mut out, direction);
+            out.push_str(",\"sameAxis\":");
+            push_json_string(&mut out, same_axis.as_wire_str());
+            out.push('}');
+        }
+        WorldCommand::SendDirectional {
+            direction, follow, ..
+        } => {
+            out.push_str("{\"op\":\"send-directional\",\"win\":{\"currentFocus\":true}");
+            out.push_str(",\"direction\":");
+            push_json_string(&mut out, direction);
+            out.push_str(",\"follow\":");
+            out.push_str(if *follow { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::ToggleMaximize { .. } => {
+            out.push_str("{\"op\":\"toggle-maximize\",\"win\":{\"currentFocus\":true}}");
+        }
+        WorldCommand::SetSticky { value, .. } => {
+            out.push_str("{\"op\":\"set-sticky\",\"win\":{\"currentFocus\":true}");
+            out.push_str(",\"value\":");
+            out.push_str(if *value { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::ToggleSticky { .. } => {
+            out.push_str("{\"op\":\"toggle-sticky\",\"win\":{\"currentFocus\":true}}");
+        }
+        WorldCommand::SetFullscreen { value, .. } => {
+            out.push_str("{\"op\":\"set-fullscreen\",\"win\":{\"currentFocus\":true}");
+            out.push_str(",\"value\":");
+            out.push_str(if *value { "true" } else { "false" });
+            out.push('}');
+        }
+        WorldCommand::ToggleFullscreen { .. } => {
+            out.push_str("{\"op\":\"toggle-fullscreen\",\"win\":{\"currentFocus\":true}}");
+        }
+        WorldCommand::Operation(core) => match core {
+            CoreCommand::ToggleFloat { float_rect, .. } => {
+                out.push_str("{\"op\":\"toggle-float\",\"win\":{\"currentFocus\":true}");
+                out.push_str(",\"rect\":");
+                push_opt_rect(&mut out, float_rect);
+                out.push('}');
+            }
+            CoreCommand::ToggleOrientation { .. } => {
+                out.push_str("{\"op\":\"toggle-orientation\",\"win\":{\"currentFocus\":true}}");
+            }
+            CoreCommand::Resize {
+                direction,
+                mode,
+                press_index,
+                ..
+            } => {
+                out.push_str("{\"op\":\"resize\",\"win\":{\"currentFocus\":true}");
+                out.push_str(",\"direction\":");
+                push_json_string(&mut out, direction);
+                out.push_str(",\"mode\":");
+                push_json_string(&mut out, mode);
+                out.push_str(",\"press\":");
+                out.push_str(&press_index.to_string());
+                out.push('}');
+            }
+            _ => return Err(snapshot_invalid("command-invalid")),
+        },
+        _ => return Err(snapshot_invalid("command-invalid")),
     }
     Ok(out)
 }
@@ -9462,5 +9797,240 @@ mod tests {
         assert!(core_wire.contains("\"switchSettled\":[{"));
         assert!(core_wire.contains("\"outcome\":\"complete\""));
         assert!(core_wire.contains("\"outcome\":\"completed-with-failures\""));
+    }
+
+    /// Minimal v4 report envelope carrying one candidate command, mirroring
+    /// the broker probe skeleton. Decode is shape-only: inventory-free, so
+    /// any well-formed command spelling decodes here.
+    fn rapid_report_with_command(command_json: &str) -> String {
+        format!(
+            "{{\"v\":4,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"obs\":\"1\",\
+              \"reqSeq\":\"1\",\"req\":\"req-1\",\"monotonicMs\":\"1\",\"cmdSeq\":\"1\",\
+              \"command\":{command_json},\"screens\":[],\"windows\":[],\"closed\":[],\
+              \"native\":[],\"focused\":\"\",\"complete\":true,\"gesture\":false,\
+              \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+              \"actionOutputs\":[],\
+              \"presentation\":{{\"foreground\":\"\",\"minimized\":null,\
+              \"maximized\":null,\"fullscreen\":null,\"hostHidden\":null,\
+              \"hiddenWorkspace\":null,\"frame\":null,\"chordHeld\":false,\
+              \"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
+              \"witness\":null,\"foregroundOut\":null}},\
+              \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+              \"rendererInput\":null}}"
+        )
+    }
+
+    fn assert_current_focus_subject_accepted(op: &str, command_json: &str) {
+        let decoded = decode_report_v4(&rapid_report_with_command(command_json));
+        let decoded = decoded.unwrap_or_else(|error| {
+            panic!(
+                "op {op} must accept win:{{\"currentFocus\":true}} as the execution-time core-focus subject; got {error:?}"
+            )
+        });
+        assert!(
+            matches!(
+                decoded.report.command,
+                Some(tiler_core::world_report::WorldCommand::Implicit(_))
+            ),
+            "op {op} current-focus subject must decode to the implicit wrapper"
+        );
+        // The implicit spelling round-trips through the canonical encode
+        // with the closed marker and decodes back to the wrapper.
+        let reencoded = encode_report_v4(&decoded).expect("implicit command encodes");
+        assert!(
+            reencoded.contains("\"win\":{\"currentFocus\":true}"),
+            "op {op} implicit encode must carry the current-focus subject"
+        );
+        let reparsed: serde_json::Value =
+            serde_json::from_str(&reencoded).expect("canonical encode is JSON");
+        let command_value = reparsed
+            .get("command")
+            .expect("encoded report carries the command");
+        let round_tripped =
+            decode_command_value_v4(command_value).expect("current-focus subject re-decodes");
+        assert!(
+            matches!(
+                round_tripped,
+                tiler_core::world_report::WorldCommand::Implicit(_)
+            ),
+            "op {op} round trip must preserve the implicit wrapper"
+        );
+    }
+
+    #[test]
+    fn rapid_input_current_focus_subject_focus_and_directional_send() {
+        assert_current_focus_subject_accepted(
+            "focus",
+            r#"{"op":"focus","win":{"currentFocus":true}}"#,
+        );
+        assert_current_focus_subject_accepted(
+            "send",
+            r#"{"op":"send","win":{"currentFocus":true},"out":"out-a","ws":"ws-1","follow":false}"#,
+        );
+        assert_current_focus_subject_accepted(
+            "send-relative",
+            r#"{"op":"send-relative","win":{"currentFocus":true},"source":{"implicit":"home-then-action"},"delta":1,"follow":false}"#,
+        );
+        assert_current_focus_subject_accepted(
+            "send-numbered",
+            r#"{"op":"send-numbered","win":{"currentFocus":true},"source":{"explicit":"out-a"},"index":2,"follow":true}"#,
+        );
+        assert_current_focus_subject_accepted(
+            "focus-directional",
+            r#"{"op":"focus-directional","win":{"currentFocus":true},"direction":"right"}"#,
+        );
+        assert_current_focus_subject_accepted(
+            "move-directional",
+            r#"{"op":"move-directional","win":{"currentFocus":true},"direction":"left","sameAxis":"group-with-neighbor"}"#,
+        );
+        assert_current_focus_subject_accepted(
+            "send-directional",
+            r#"{"op":"send-directional","win":{"currentFocus":true},"direction":"left","follow":false}"#,
+        );
+    }
+
+    #[test]
+    fn rapid_input_current_focus_subject_resize_and_orientation() {
+        assert_current_focus_subject_accepted(
+            "resize",
+            r#"{"op":"resize","win":{"currentFocus":true},"direction":"left","mode":"horizontal","press":1}"#,
+        );
+        assert_current_focus_subject_accepted(
+            "toggle-orientation",
+            r#"{"op":"toggle-orientation","win":{"currentFocus":true}}"#,
+        );
+        assert_current_focus_subject_accepted(
+            "toggle-float",
+            r#"{"op":"toggle-float","win":{"currentFocus":true},"rect":null}"#,
+        );
+    }
+
+    #[test]
+    fn rapid_input_current_focus_subject_state_toggles() {
+        assert_current_focus_subject_accepted(
+            "toggle-maximize",
+            r#"{"op":"toggle-maximize","win":{"currentFocus":true}}"#,
+        );
+        assert_current_focus_subject_accepted(
+            "set-fullscreen",
+            r#"{"op":"set-fullscreen","win":{"currentFocus":true},"value":true}"#,
+        );
+        assert_current_focus_subject_accepted(
+            "toggle-fullscreen",
+            r#"{"op":"toggle-fullscreen","win":{"currentFocus":true}}"#,
+        );
+        assert_current_focus_subject_accepted(
+            "set-sticky",
+            r#"{"op":"set-sticky","win":{"currentFocus":true},"value":true}"#,
+        );
+        assert_current_focus_subject_accepted(
+            "toggle-sticky",
+            r#"{"op":"toggle-sticky","win":{"currentFocus":true}}"#,
+        );
+    }
+
+    #[test]
+    fn rapid_input_current_focus_marker_malformed_refuses() {
+        // The closed marker is exactly one key `currentFocus` with boolean
+        // true: extra keys, false/null/wrong-type values, an empty object,
+        // or a wrong-case key all refuse; null and missing subjects refuse
+        // exactly as before (the historical null reject is preserved).
+        for (label, command_json) in [
+            (
+                "false value",
+                r#"{"op":"toggle-maximize","win":{"currentFocus":false}}"#,
+            ),
+            (
+                "null value",
+                r#"{"op":"toggle-maximize","win":{"currentFocus":null}}"#,
+            ),
+            ("missing key", r#"{"op":"toggle-maximize","win":{}}"#),
+            (
+                "extra key",
+                r#"{"op":"toggle-maximize","win":{"currentFocus":true,"extra":1}}"#,
+            ),
+            (
+                "string value",
+                r#"{"op":"toggle-maximize","win":{"currentFocus":"true"}}"#,
+            ),
+            (
+                "number value",
+                r#"{"op":"toggle-maximize","win":{"currentFocus":1}}"#,
+            ),
+            (
+                "wrong-case key",
+                r#"{"op":"toggle-maximize","win":{"currentfocus":true}}"#,
+            ),
+            ("null subject", r#"{"op":"toggle-maximize","win":null}"#),
+            (
+                "null focus-directional subject",
+                r#"{"op":"focus-directional","win":null,"direction":"right"}"#,
+            ),
+        ] {
+            assert!(
+                decode_report_v4(&rapid_report_with_command(command_json)).is_err(),
+                "{label} marker shape stays refused"
+            );
+        }
+        // Windowless payloads never ride the marker: a windowless op with a
+        // marker-shaped win refuses.
+        assert!(
+            decode_report_v4(&rapid_report_with_command(
+                r#"{"op":"migrate-directional","win":{"currentFocus":true},"direction":"left"}"#,
+            ))
+            .is_err(),
+            "marker on a windowless command stays refused"
+        );
+    }
+
+    #[test]
+    fn rapid_input_explicit_subjects_keep_meaning() {
+        // Explicit strings still decode to by-id subjects; the empty
+        // focus-directional win keeps its genuine no-focus meaning; missing,
+        // null, or empty subjects on other commands stay refused.
+        let explicit = decode_request(&rapid_report_with_command(
+            r#"{"op":"toggle-maximize","win":"win-a"}"#,
+        ))
+        .expect("explicit win still decodes");
+        assert!(matches!(
+            explicit.command,
+            Some(tiler_core::world_report::WorldCommand::ToggleMaximize { .. })
+        ));
+        let no_focus = decode_request(&rapid_report_with_command(
+            r#"{"op":"focus-directional","win":"","direction":"right"}"#,
+        ))
+        .expect("empty focus-directional win still decodes");
+        assert!(matches!(
+            no_focus.command,
+            Some(tiler_core::world_report::WorldCommand::FocusDirectional { .. })
+        ));
+        assert!(
+            decode_request(&rapid_report_with_command(
+                r#"{"op":"focus-directional","direction":"right"}"#,
+            ))
+            .is_err(),
+            "missing win stays refused"
+        );
+        assert!(
+            decode_request(&rapid_report_with_command(
+                r#"{"op":"focus-directional","win":null,"direction":"right"}"#,
+            ))
+            .is_err(),
+            "null focus-directional win stays refused"
+        );
+        assert!(
+            decode_request(&rapid_report_with_command(
+                r#"{"op":"toggle-maximize","win":null}"#,
+            ))
+            .is_err(),
+            "null win outside focus-directional stays refused"
+        );
+        assert!(
+            decode_request(&rapid_report_with_command(
+                r#"{"op":"toggle-maximize","win":""}"#,
+            ))
+            .is_err(),
+            "empty win outside focus-directional stays refused"
+        );
     }
 }

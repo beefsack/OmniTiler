@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{CoreReply, ProjectionKind, project_retained_tiled_geometry};
+use crate::boundary::{CoreCommand, CoreReply, ProjectionKind, project_retained_tiled_geometry};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::{DomainKey, RefusalKind};
@@ -73,7 +73,8 @@ impl WorldEngine {
             return merged;
         }
         if let Some(save) = queued {
-            let matches = match command {
+            let unwrapped = command.map(crate::world_report::unwrap_implicit);
+            let matches = match unwrapped {
                 Some(WorldCommand::SetSticky { window, .. }) => window == &save.win,
                 Some(WorldCommand::ToggleSticky { window }) => window == &save.win,
                 Some(WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
@@ -100,6 +101,48 @@ impl WorldEngine {
         }
         self.upsert_intent_save_knowledge(&merged);
         merged
+    }
+
+    /// Accumulate one batch command's intent saves into `batch` without
+    /// touching the sticky refusal rollback map: takes the staged
+    /// sticky-command save and the ordinary ToggleFloat save for this exact
+    /// `(command, result)` pair, latest-wins per window. Mirrors
+    /// [`Self::drain_intent_saves`] exactly (saturated generations suppress
+    /// both saves; a matching fresh sticky save wins and suppresses the
+    /// ordinary save; a non-matching queued save drops; consumed commands
+    /// never reach here). The caller merges `batch` into
+    /// `sticky_rollback_saves` once before the single final publication, so
+    /// intermediate commands never consume, duplicate, or drop the
+    /// pre-existing refusal rollback saves, and the final publish drain
+    /// performs the single knowledge update.
+    pub(crate) fn accumulate_batch_command_save(
+        &mut self,
+        batch: &mut BTreeMap<WindowId, IntentWrite>,
+        command: &WorldCommand,
+        result: &Option<CommandResult>,
+    ) {
+        if self.intent_sticky_saturated {
+            self.sticky_command_save.take();
+            return;
+        }
+        if let Some(save) = self.sticky_command_save.take() {
+            let unwrapped = Some(crate::world_report::unwrap_implicit(command));
+            let matches = match unwrapped {
+                Some(WorldCommand::SetSticky { window, .. }) => window == &save.win,
+                Some(WorldCommand::ToggleSticky { window }) => window == &save.win,
+                Some(WorldCommand::Operation(CoreCommand::ToggleFloat { window, .. })) => {
+                    WindowId(window.clone()) == save.win
+                }
+                _ => false,
+            };
+            if matches {
+                batch.insert(save.win.clone(), save);
+                return;
+            }
+        }
+        for write in self.toggle_float_intent_save(Some(command), false, result) {
+            batch.insert(write.win.clone(), write);
+        }
     }
 
     /// Bounded latest-wins `sticky_saved` knowledge from published writes.
@@ -152,7 +195,7 @@ impl WorldEngine {
         if command_consumed || self.intent_sticky_saturated {
             return Vec::new();
         }
-        let window = match command {
+        let window = match command.map(crate::world_report::unwrap_implicit) {
             Some(WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
                 window,
                 ..
@@ -1493,6 +1536,7 @@ impl WorldEngine {
     pub(crate) fn publish(
         &mut self,
         report: &WorldReport,
+        command: Option<&WorldCommand>,
         command_consumed: bool,
         effects: Vec<OneShotEffect>,
         command_result: Option<CommandResult>,
@@ -1524,8 +1568,7 @@ impl WorldEngine {
         // sticky-command save drains exactly once on its successful fresh
         // command, else the ordinary ToggleFloat save; the exact-encoding
         // gate below still commits it atomically with the rest of the reply.
-        let intent_writes =
-            self.drain_intent_saves(report.command.as_ref(), command_consumed, &command_result);
+        let intent_writes = self.drain_intent_saves(command, command_consumed, &command_result);
         // Per-report switch terminals: taken here so the next unrelated
         // report publishes empty. Duplicates repeat the cached reply.
         let switch_settled = std::mem::take(&mut self.switch_settled);
