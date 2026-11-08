@@ -44,6 +44,11 @@ export const T = {
   admit: 15000,
   reflow: 15000,
   stateStep: 15000,
+  // Rapid-burst quiescence: the settled-state predicate must hold on
+  // burstSettleReads consecutive polls spanning at least burstSettleMin of
+  // runner clock (io.now()) inside the overall stateStep budget.
+  burstSettleReads: 3,
+  burstSettleMin: 2000,
   poll: 500,
   inputSock: 15000,
   shutdown: 10000,
@@ -81,6 +86,8 @@ export function helpText() {
     "                  orderly production restart (requires --input).",
     "  resize-refusal: keyboard grow-towards-direction journey with planner",
     "                  refusal-line oracles (requires --input).",
+    "  rapid-burst:    60-chord FIFO focus/move burst with journal-order and",
+    "                  settled-geometry oracles (requires --input).",
     "",
     "  --help            show this help and exit (never mutates)",
     "  --live            explicit live mode against the real session.",
@@ -89,9 +96,10 @@ export function helpText() {
     "                    canonical, outside the repository, and not pre-exist.",
     "  --input           also start ydotoold (lifecycle only for tiling-reflow,",
     "                    chord injection for state-targets). Default off.",
-    "  --scenario NAME   tiling-reflow (default), state-targets, or",
-    "                    resize-refusal. state-targets and resize-refusal",
-    "                    REQUIRE --input. Unknown values exit 2 before any io.",
+    "  --scenario NAME   tiling-reflow (default), state-targets,",
+    "                    resize-refusal, or rapid-burst. state-targets,",
+    "                    resize-refusal, and rapid-burst REQUIRE --input.",
+    "                    Unknown values exit 2 before any io.",
   ].join("\n");
 }
 
@@ -120,13 +128,13 @@ export function parseArgs(argv) {
       const v = argv[++i];
       if (!v) { throw new ScenarioError("--scenario requires a value"); }
       if (out.scenario !== "tiling-reflow") { throw new ScenarioError("duplicate --scenario"); }
-      if (v !== "tiling-reflow" && v !== "state-targets" && v !== "resize-refusal") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
+      if (v !== "tiling-reflow" && v !== "state-targets" && v !== "resize-refusal" && v !== "rapid-burst") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
       out.scenario = v;
     } else if (a.startsWith("--scenario=")) {
       const v = a.slice("--scenario=".length);
       if (!v) { throw new ScenarioError("--scenario requires a value"); }
       if (out.scenario !== "tiling-reflow") { throw new ScenarioError("duplicate --scenario"); }
-      if (v !== "tiling-reflow" && v !== "state-targets" && v !== "resize-refusal") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
+      if (v !== "tiling-reflow" && v !== "state-targets" && v !== "resize-refusal" && v !== "rapid-burst") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
       out.scenario = v;
     } else { throw new ScenarioError("unknown argument '" + a + "'"); }
   }
@@ -420,13 +428,16 @@ export function ydotooldCmd(sockPath) {
   }
   return ["ydotoold", "--socket-path=" + sockPath, "--socket-perm=0600"];
 }
-// State-target and resize chord keycodes (Linux input-event-codes.h UAPI,
-// stable ABI; verified against local linux-headers: KEY_LEFTMETA 125,
-// KEY_LEFTSHIFT 42, KEY_LEFTALT 56, KEY_G 34, KEY_M 50, KEY_F11 87,
-// KEY_LEFT 105, KEY_RIGHT 106). Sequences mirror the registered defaults in
+// State-target, resize, and rapid-burst chord keycodes (Linux
+// input-event-codes.h UAPI, stable ABI; verified against local
+// linux-headers: KEY_LEFTMETA 125, KEY_LEFTSHIFT 42, KEY_LEFTALT 56,
+// KEY_G 34, KEY_M 50, KEY_F11 87, KEY_LEFT 105, KEY_RIGHT 106).
+// Sequences mirror the registered defaults in
 // kwin/src/world-shortcuts.ts: Meta+M maximize, Meta+F11 fullscreen,
-// Meta+G float, Meta+Shift+G sticky; grow-towards-direction is Meta+Alt+Arrow
-// (world-shortcuts.ts:205). Press in order, release in reverse.
+// Meta+G float, Meta+Shift+G sticky; grow-towards-direction is
+// Meta+Alt+Arrow (world-shortcuts.ts:205); directional focus is
+// Meta+Arrow and directional move is Meta+Shift+Arrow. Press in order,
+// release in reverse.
 export const STATE_CHORDS = {
   maximize: [125, 50],
   fullscreen: [125, 87],
@@ -434,6 +445,10 @@ export const STATE_CHORDS = {
   sticky: [125, 42, 34],
   resizeLeft: [125, 56, 105],
   resizeRight: [125, 56, 106],
+  focusLeft: [125, 105],
+  focusRight: [125, 106],
+  moveLeft: [125, 42, 105],
+  moveRight: [125, 42, 106],
 };
 // One keyboard resize press in the allocation coordinate space (the first
 // press of a series; crates/tiler-core/src/cosmic_v1.rs:233).
@@ -448,6 +463,67 @@ export function ydotoolKeyCmd(sockPath, chord) {
   const up = codes.slice().reverse().map((c) => c + ":0");
   return ["ydotool", "key"].concat(down, up);
 }
+// One ydotool invocation carrying a whole burst of chords back to back:
+// the per-chord press/release events concatenated in order (same builder
+// form as ydotoolKeyCmd). Never empty: an empty burst is a caller bug.
+export function ydotoolBurstCmd(sockPath, names) {
+  if (typeof sockPath !== "string" || !sockPath || sockPath[0] !== "/") {
+    throw new ScenarioError("input socket must be absolute");
+  }
+  if (!Array.isArray(names) || !names.length) { throw new ScenarioError("burst needs at least one chord"); }
+  const events = [];
+  for (const name of names) {
+    const codes = STATE_CHORDS[name];
+    if (!codes) { throw new ScenarioError("unknown chord '" + String(name) + "'"); }
+    for (const c of codes) { events.push(c + ":1"); }
+    for (let i = codes.length - 1; i >= 0; i--) { events.push(codes[i] + ":0"); }
+  }
+  return ["ydotool", "key"].concat(events);
+}
+// Rapid-burst sequence derivation (deterministic, pure): from the OBSERVED
+// admission order (leftFixture is the caller id whose admitted frame has the
+// smaller x) and a fixed-constant LCG (Numerical Recipes multiplier and
+// increment, date-pinned seed; bit 16 selects the kind), generate exactly 60
+// chords. Model of a two-tile row: state = (order [left,right], focused
+// position). Each step picks kind focus or move from the PRNG and the
+// direction FORCED by the focused position, so every chord has an in-row
+// target and none can be an edge/no-op or cross to another output (focused
+// on left -> right; focused on right -> left). Model effect: focus flips the
+// focused position; move swaps the two fixtures' slots and the moved
+// (focused) fixture keeps focus, i.e. position flips.
+export const RAPID_BURST_LEN = 60;
+export function rapidBurstSequence(leftFixture) {
+  if (leftFixture !== "a" && leftFixture !== "b") {
+    throw new ScenarioError("rapid-burst sequence needs the observed left fixture ('a' or 'b')");
+  }
+  const other = leftFixture === "a" ? "b" : "a";
+  let order = [leftFixture, other];
+  let focusedPos = 0; // the left fixture is native-activated first, so focused
+  const chords = [];
+  const labels = [];
+  let st = 20261019 >>> 0;
+  for (let i = 0; i < RAPID_BURST_LEN; i++) {
+    st = (Math.imul(1664525, st) + 1013904223) >>> 0;
+    const kind = ((st >>> 16) & 1) === 0 ? "focus" : "move";
+    const dir = focusedPos === 0 ? "right" : "left";
+    const name = (kind === "focus" ? "focus" : "move") + (dir === "right" ? "Right" : "Left");
+    chords.push(name);
+    labels.push(kind + "-" + dir);
+    if (kind === "move") { order = [order[1], order[0]]; }
+    focusedPos = 1 - focusedPos;
+  }
+  return {
+    chords, labels,
+    expected: { leftFixture: order[0], rightFixture: order[1], focusedFixture: order[focusedPos] },
+  };
+}
+// KWin-side failure/loss lines that must never appear during the burst
+// (world-entry.ts command/queue/take/request outcomes, plus the
+// shortcut-layer and scope-ownership rejections). The success line
+// `omnitiler:world:command op=... label=...` never matches: it carries a
+// space after `command`, every failure token carries `-...` there instead.
+export const RAPID_BURST_FAILURE_RE =
+  /omnitiler:world:(command-failed|command-dropped|command-refused|command-busy|queue-rejected|queue-stale|queue-timeout|queue-transport|queue-dropped|queue-malformed|queue-oversize|take-stale|take-duplicate|take-malformed|request-oversize|shortcut-failed|scope-invalid)/;
 export function presentationReq() {
   return "kde-scen-" + randomBytes(8).toString("hex");
 }
@@ -480,10 +556,10 @@ export async function runScenario(o) {
   if (typeof templatePath !== "string" || !templatePath) { throw new ScenarioError("templatePath required"); }
 
   const scenarioName = o.scenario === undefined ? "tiling-reflow" : o.scenario;
-  if (scenarioName !== "tiling-reflow" && scenarioName !== "state-targets" && scenarioName !== "resize-refusal") {
+  if (scenarioName !== "tiling-reflow" && scenarioName !== "state-targets" && scenarioName !== "resize-refusal" && scenarioName !== "rapid-burst") {
     throw new ScenarioError("unknown scenario '" + String(scenarioName) + "'");
   }
-  if ((scenarioName === "state-targets" || scenarioName === "resize-refusal") && !withInput) {
+  if ((scenarioName === "state-targets" || scenarioName === "resize-refusal" || scenarioName === "rapid-burst") && !withInput) {
     throw new ScenarioError(scenarioName + " requires --input");
   }
 
@@ -1573,6 +1649,279 @@ export async function runScenario(o) {
     event("scenario-done");
   };
 
+  // Rapid-burst journey over the shared context: A and B tile side by side
+  // after admission. The observed order (smaller admitted x is left) seeds a
+  // deterministic 60-chord focus/move burst; the left fixture is
+  // native-activated first so it is focused, then ONE ydotool invocation
+  // carries all 60 chords back to back. Oracles: (1) the KWin journal since
+  // the pre-burst cursor shows exactly the 60 `omnitiler:world:command`
+  // lines with ops in the focus/move family and label= values in the exact
+  // generated order (FIFO preserved, no drop/reorder/extra) and ZERO
+  // failure/loss lines (absence of every failure outcome plus exact
+  // count/order is the observable: no per-command READY line exists);
+  // (2) the settled final state matches the model prediction on
+  // T.burstSettleReads consecutive polls spanning T.burstSettleMin of
+  // runner clock, with identical presentation rev/obs and journal labels
+  // across the streak (exact frames, disjoint inside the output,
+  // left/right slots, focus). A streak that never quiesces fails
+  // "not settled"; terminal journal states fail immediately.
+  // Missing/unknown facts are PENDING, never PASS; a mismatch FAILs naming
+  // the field with predicted vs observed fixture letters (never ids).
+  const scenarioRapidBurst = async () => {
+    S.scenario = "rapid-burst";
+    event("scenario-rapid-burst");
+    const bare = (u) => normalizeNativeId(u);
+    const uuidA = joins[0].uuid, uuidB = joins[1].uuid;
+    const admit = await pollAdmission("rapid-admit", "rapid-admit");
+    const outRect = admit.out;
+    let leftLetter;
+    if (admit.fA.x < admit.fB.x) { leftLetter = "a"; }
+    else if (admit.fB.x < admit.fA.x) { leftLetter = "b"; }
+    else { fail("rapid-burst: admitted frames share x (" + admit.fA.x + "); left slot ambiguous"); }
+    const leftUuid = leftLetter === "a" ? uuidA : uuidB;
+    const seq = rapidBurstSequence(leftLetter);
+    const focusCount = seq.chords.filter((c) => c.indexOf("focus") === 0).length;
+    const moveCount = seq.chords.length - focusCount;
+    const bad = (note) => ({ note });
+    const good = (expected, actual, detail) => ({ ok: true, expected, actual, detail: detail || null });
+    const frameStr = (f) => (f ? "[" + f.x + "," + f.y + "," + f.w + "," + f.h + "]" : "null");
+    const readAllBurst = async () => {
+      const proj = await readPresentation();
+      const bareA = normalizeNativeId(uuidA), bareB = normalizeNativeId(uuidB);
+      const set = proj.windows.map((w) => w.win).sort().join(",");
+      if (proj.windows.length !== 2 || set !== [bareA, bareB].sort().join(",")) {
+        return { fail: "presentation window set is not exactly {A,B}: [" + proj.windows.map((w) => w.win).sort().join(",") + "]" };
+      }
+      const nat = await helperOp({ op: "read" });
+      const row = nat.filter((r) => Array.isArray(r.owned))[0];
+      if (!row) { return { fail: "native read produced no roster" }; }
+      const infoA = await windowInfo(uuidA);
+      const infoB = await windowInfo(uuidB);
+      return { proj, row, infoA, infoB };
+    };
+    const readBurstJournal = async (cursor) => {
+      const j = await mustExec(["journalctl", "--user", "--after-cursor", cursor, "-o", "json", "_PID=" + S.kwin.pid], "burst journal");
+      const cmds = [];
+      let failures = 0;
+      for (const line of j.stdout.split("\n")) {
+        if (!line.trim()) { continue; }
+        let entry;
+        try { entry = JSON.parse(line); } catch (e) { fail("rapid-burst: journal: unparsable -o json line"); }
+        if (typeof entry.MESSAGE !== "string") { fail("rapid-burst: journal: MESSAGE missing"); }
+        let msg = entry.MESSAGE;
+        if (msg.indexOf("js:") === 0) { msg = msg.slice(3).replace(/^ /, ""); }
+        if (RAPID_BURST_FAILURE_RE.test(msg)) { failures++; }
+        if (msg.indexOf("omnitiler:world:command ") >= 0) {
+          const opM = /op=([^\s]+)/.exec(msg);
+          const lbM = /label=([^\s]+)/.exec(msg);
+          cmds.push({ op: opM ? opM[1] : null, label: lbM ? lbM[1] : null });
+        }
+      }
+      return { cmds, failures };
+    };
+    const verifyBurst = async (cursor) => {
+      const terminal = (note) => ({ note, terminal: true });
+      const bj = await readBurstJournal(cursor);
+      if (bj.failures !== 0) {
+        return terminal("journal shows " + bj.failures + " failure/loss line(s) (need zero)");
+      }
+      if (bj.cmds.length > seq.labels.length) {
+        return terminal("journal shows " + bj.cmds.length + " command lines (need " + seq.labels.length + "; extra lines can never drain)");
+      }
+      if (bj.cmds.length !== seq.labels.length) {
+        return bad("journal shows " + bj.cmds.length + " command lines (need " + seq.labels.length + ")");
+      }
+      for (let i = 0; i < seq.labels.length; i++) {
+        const wantLabel = seq.labels[i];
+        const wantOp = wantLabel.indexOf("focus-") === 0 ? "focus-directional" : "move-directional";
+        if (bj.cmds[i].label !== wantLabel) {
+          return terminal("journal label mismatch at index " + i + ": saw '" + bj.cmds[i].label + "' (need '" + wantLabel + "')");
+        }
+        if (bj.cmds[i].op !== wantOp) {
+          return terminal("journal op mismatch at index " + i + ": saw '" + bj.cmds[i].op + "' (need '" + wantOp + "')");
+        }
+      }
+      const s = await readAllBurst();
+      if (s.fail) { return bad(s.fail); }
+      if (s.infoA.uuid !== uuidA || s.infoB.uuid !== uuidB) {
+        return bad("fixture join changed (UUIDs differ)");
+      }
+      for (const pair of [["a", s.infoA], ["b", s.infoB]]) {
+        if (pair[1].desks.length !== 1 || pair[1].desks[0] !== S.appended) {
+          return bad("fixture '" + pair[0] + "' home is not exactly the appended workspace (desks " + JSON.stringify(pair[1].desks) + ")");
+        }
+      }
+      const pA = s.proj.windows.filter((w) => w.win === bare(uuidA))[0];
+      const pB = s.proj.windows.filter((w) => w.win === bare(uuidB))[0];
+      if (!pA || !pB) { return bad("presentation lost a fixture after the burst"); }
+      if (pA.alloc === null) { return bad("a published allocation unknown (null never matches)"); }
+      if (pB.alloc === null) { return bad("b published allocation unknown (null never matches)"); }
+      if (s.infoA.frame === null) { return bad("a native frame unknown (null never matches)"); }
+      if (s.infoB.frame === null) { return bad("b native frame unknown (null never matches)"); }
+      if (!frameEqual(s.infoA.frame, frameOf(pA.alloc))) {
+        return bad("a native frame != published allocation (" + frameDiff(s.infoA.frame, frameOf(pA.alloc)).join(",") + "): native " + frameStr(s.infoA.frame) + " != alloc " + JSON.stringify(pA.alloc));
+      }
+      if (!frameEqual(s.infoB.frame, frameOf(pB.alloc))) {
+        return bad("b native frame != published allocation (" + frameDiff(s.infoB.frame, frameOf(pB.alloc)).join(",") + "): native " + frameStr(s.infoB.frame) + " != alloc " + JSON.stringify(pB.alloc));
+      }
+      if (rectsOverlap(s.infoA.frame, s.infoB.frame)) { return bad("tiles A/B overlap after the burst"); }
+      if (!frameInside(s.infoA.frame, outRect) || !frameInside(s.infoB.frame, outRect)) {
+        return bad("tile frame outside its output after the burst (a " + frameStr(s.infoA.frame) + " b " + frameStr(s.infoB.frame) + ")");
+      }
+      const allocA = frameOf(pA.alloc), allocB = frameOf(pB.alloc);
+      let observedLeft = null;
+      if (allocA.x < allocB.x) { observedLeft = "a"; }
+      else if (allocB.x < allocA.x) { observedLeft = "b"; }
+      if (observedLeft === null) { return bad("published allocations share x after the burst; left slot ambiguous"); }
+      if (observedLeft !== seq.expected.leftFixture) {
+        return bad("final left slot holds '" + observedLeft + "' (need '" + seq.expected.leftFixture + "')");
+      }
+      const observedRight = observedLeft === "a" ? "b" : "a";
+      if (observedRight !== seq.expected.rightFixture) {
+        return bad("final right slot holds '" + observedRight + "' (need '" + seq.expected.rightFixture + "')");
+      }
+      const activeObserved = s.row ? normalizeNativeId(s.row.active) : null;
+      if (activeObserved === null) { return bad("natively active window unknown (null never matches)"); }
+      let observedFocused = null;
+      if (activeObserved === bare(uuidA)) { observedFocused = "a"; }
+      else if (activeObserved === bare(uuidB)) { observedFocused = "b"; }
+      if (observedFocused === null) { return bad("natively active window is neither A nor B after the burst"); }
+      if (observedFocused !== seq.expected.focusedFixture) {
+        return bad("final focused fixture is '" + observedFocused + "' (need '" + seq.expected.focusedFixture + "')");
+      }
+      return good("fifo-60 focus=" + focusCount + " move=" + moveCount +
+        " order=" + seq.expected.leftFixture + seq.expected.rightFixture +
+        " focused=" + seq.expected.focusedFixture,
+        "journal=60 labels-match failures=0 order=" + observedLeft + observedRight + " focused=" + observedFocused,
+        {
+          labels: bj.cmds.map((c) => c.label),
+          rev: s.proj.rev, obs: s.proj.obs,
+          observedLeft, observedRight, observedFocused,
+          frameA: frameStr(s.infoA.frame), frameB: frameStr(s.infoB.frame),
+          allocA: frameStr(allocA), allocB: frameStr(allocB),
+        });
+    };
+    // Quiescence: the journal writes land synchronously in the shortcut
+    // handler, but native effects drain asynchronously through planner
+    // round-trips, and intermediate applied states can equal the final
+    // model. A single matching read proves nothing, so PASS requires the
+    // settled-state predicate to hold on T.burstSettleReads consecutive
+    // polls spanning at least T.burstSettleMin of runner clock, with the
+    // presentation rev/obs and the journal label vector identical across
+    // the streak. Any divergent read resets the streak; terminal journal
+    // states (any failure line, more lines than the burst, or a mismatch
+    // at the full count) fail immediately since journal lines are
+    // append-only inside one cursor window.
+    const pollBurst = async (cursor) => {
+      const end = io.now() + T.stateStep;
+      const NEED = T.burstSettleReads, MINWIN = T.burstSettleMin;
+      let first = "no read yet";
+      let last = "no read yet";
+      let streak = 0, streakStart = 0;
+      let streakLabels = null, streakRev = null, streakObs = null;
+      const note = (m) => { if (first === "no read yet") { first = m; } last = m; };
+      for (;;) {
+        let v = null;
+        try {
+          v = await verifyBurst(cursor);
+        } catch (e) {
+          const msg = e && e.message ? e.message : String(e);
+          if (e instanceof ScenarioError && msg.indexOf("getWindowInfo") >= 0) {
+            note("native state unknown (" + msg.slice(0, 120) + ")");
+          } else { throw e; }
+        }
+        const t = io.now();
+        if (v && v.ok === true) {
+          const d = v.detail;
+          const sameJournal = streakLabels !== null && streakLabels.length === d.labels.length &&
+            streakLabels.every((l, i) => l === d.labels[i]);
+          if (streak === 0 || !sameJournal || d.rev !== streakRev || d.obs !== streakObs) {
+            streak = 1;
+            streakStart = t;
+            streakLabels = d.labels.slice();
+            streakRev = d.rev;
+            streakObs = d.obs;
+          } else {
+            streak++;
+          }
+          if (streak >= NEED && (t - streakStart) >= MINWIN) {
+            const got = d.labels;
+            check("rapid-journal-fifo", true, seq.labels.join(","), got.join(","));
+            check("rapid-final-a-frame-equals-alloc", true, "alloc " + d.allocA, "native " + d.frameA);
+            check("rapid-final-b-frame-equals-alloc", true, "alloc " + d.allocB, "native " + d.frameB);
+            check("rapid-final-disjoint", true, "disjoint", "disjoint a=" + d.frameA + " b=" + d.frameB);
+            check("rapid-final-inside-output", true, outRect, "inside a=" + d.frameA + " b=" + d.frameB);
+            check("rapid-final-order", true,
+              seq.expected.leftFixture + "/" + seq.expected.rightFixture,
+              d.observedLeft + "/" + d.observedRight);
+            check("rapid-final-focus", true, seq.expected.focusedFixture, d.observedFocused);
+            check("rapid-burst", true, v.expected, v.actual);
+            return got.length;
+          }
+          if (t >= end) {
+            fail("rapid-burst: not settled within the bounded wait (matched " + streak + "/" + NEED +
+              " consecutive reads over " + (t - streakStart) + "ms of " + MINWIN + "ms" +
+              (first === "no read yet" ? "; no divergent read" : "; first: " + first + (last !== first ? " (last: " + last + ")" : "")) + ")");
+          }
+        } else {
+          if (v && v.terminal) {
+            fail("rapid-burst: " + v.note);
+          }
+          if (v && v.note) { note(v.note); }
+          streak = 0;
+          streakLabels = null;
+          streakRev = null;
+          streakObs = null;
+          if (t >= end) {
+            if (last.indexOf("unknown") >= 0 || last.indexOf("PENDING") >= 0) { S.category = "PENDING"; }
+            fail("rapid-burst: " + first + (last !== first ? " (last: " + last + ")" : ""));
+          }
+        }
+        await io.sleep(T.poll);
+      }
+    };
+    // Native-activate the observed left fixture first, so it is focused.
+    event("rapid-burst");
+    mutOnce("activate-rapid-left");
+    await helperOp({ op: "activate", uuid: leftUuid }, { mutate: true });
+    {
+      const end = io.now() + T.admit;
+      for (;;) {
+        const ar = await helperOp({ op: "read" });
+        const arow = ar.filter((r) => Array.isArray(r.owned))[0];
+        const observed = arow ? normalizeNativeId(arow.active) : null;
+        if (arow && observed === bare(leftUuid)) { break; }
+        if (io.now() >= end) { break; }
+        await io.sleep(T.poll);
+      }
+      const fin = await helperOp({ op: "read" });
+      const finRow = fin.filter((r) => Array.isArray(r.owned))[0];
+      if (!finRow || normalizeNativeId(finRow.active) !== bare(leftUuid)) {
+        fail("rapid-burst: activation of the left fixture unverified within the bounded wait");
+      }
+    }
+    // KWin journal cursor immediately before the single burst call.
+    const cursor = await showCursor("rapid-burst journal cursor");
+    mutOnce("burst-inject");
+    {
+      const argv = ydotoolBurstCmd(S.ydoc.sock, seq.chords);
+      S.calls.push(redact(argv.map(String).join(" ")));
+      const r = await io.exec(argv, { timeoutMs: T.exec, env: Object.assign({}, env, { YDOTOOL_SOCKET: S.ydoc.sock }), cwd: root });
+      if (!r || typeof r.status !== "number") { fail("bad exec result"); }
+      if (r.status !== 0) { fail("rapid-burst: burst inject failed (status " + r.status + ")"); }
+    }
+    const journalCommands = await pollBurst(cursor);
+    S.receipts.rapidBurst = {
+      length: seq.chords.length, focus: focusCount, move: moveCount,
+      left: seq.expected.leftFixture, right: seq.expected.rightFixture,
+      focused: seq.expected.focusedFixture,
+      journalCommands, failureLinesFound: 0,
+    };
+    S.scenario = "done";
+    S.category = "PASS";
+    event("scenario-done");
+  };
+
   let rc = 1;
   try {
     // 1. Preflight: dev mode must be DOWN. Anything else: stop, nothing mutated.
@@ -1903,6 +2252,9 @@ export async function runScenario(o) {
     } else if (scenarioName === "resize-refusal") {
       S.scenarioRan = "resize-refusal";
       await scenarioResizeRefusal();
+    } else if (scenarioName === "rapid-burst") {
+      S.scenarioRan = "rapid-burst";
+      await scenarioRapidBurst();
     } else {
       S.scenarioRan = "tiling-reflow";
       await scenarioTilingReflow();
@@ -2121,6 +2473,10 @@ export async function liveMain(o) {
   }
   if (args.scenario === "resize-refusal" && !args.input) {
     console.error("kde-scenarios: --scenario resize-refusal requires --input");
+    return 2;
+  }
+  if (args.scenario === "rapid-burst" && !args.input) {
+    console.error("kde-scenarios: --scenario rapid-burst requires --input");
     return 2;
   }
   const root = o.root || repoRoot();

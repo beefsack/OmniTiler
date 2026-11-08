@@ -14,12 +14,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   SCOPE_CLASS, PLUGIN_ID, PLANNER_BUS, PLANNER_OBJECT, PLANNER_IFACE, PLANNER_METHOD,
-  WORLD_CONTRACT_VERSION, HELPER_PREFIX,
+  WORLD_CONTRACT_VERSION, HELPER_PREFIX, T,
   ScenarioError, createMutOnce, parseArgs, helpText, checkEvidenceDir,
   isOpaqueId, isCanonicalU64, normalizeNativeId, isCarriedRect, parseDevStatusMode,
   frameOf, frameEqual, frameDiff, frameInside, frameArea, parseReadiness, readinessPass,
   parsePresentation, parseWindowInfo, devStatusCmd, devOffCmd, devOnCmd,
-  fixtureServeCmd, fixtureSendCmd, ydotooldCmd, ydotoolKeyCmd, STATE_CHORDS, presentationReq, plannerReadCmd,
+  fixtureServeCmd, fixtureSendCmd, ydotooldCmd, ydotoolKeyCmd, ydotoolBurstCmd, rapidBurstSequence,
+  RAPID_BURST_LEN, RAPID_BURST_FAILURE_RE, STATE_CHORDS, presentationReq, plannerReadCmd,
   windowInfoCmd, runScenario, liveMain, parseProcStat, createLiveIo, RESIZE_STEP_PX, parseResizeRefusalTokens,
 } from "./kde-scenarios.mjs";
 
@@ -65,6 +66,7 @@ function makeFake(opts) {
     sawRemove: false, postRemoveRuns: 0,
     desktops: [{ id: "d1", name: "Desktop 1" }, { id: "d2", name: "Desktop 2" }],
     current: "d1", appended: null, activeUuid: null,
+    burstStarted: false, burstFinalFrames: null,
     wins: [],
     journal: [], cursorSeq: 0,
     loaded: new Map(), // plugin -> id
@@ -333,6 +335,14 @@ function makeFake(opts) {
       if (F.activeUuid !== UUID_A && F.activeUuid !== UUID_B) {
         return { status: 1, stdout: "", stderr: "chord without an active fixture" };
       }
+      // Rapid-burst: one ydotool invocation carrying all chords back to back.
+      const burstChords = F.parseBurst(argv.slice(2));
+      if (burstChords) {
+        F.burstStarted = true;
+        const err = F.applyBurst(burstChords);
+        if (err) { return { status: 1, stdout: "", stderr: err }; }
+        return { status: 0, stdout: "", stderr: "" };
+      }
       const kinds = {
         "125:1 50:1 50:0 125:0": "maximize",
         "125:1 87:1 87:0 125:0": "fullscreen",
@@ -409,6 +419,11 @@ function makeFake(opts) {
       }
       if (s.indexOf("getWindowInfo") >= 0) {
         const uuid = argv[argv.length - 1];
+        // Rapid-burst unknown fact: once the burst starts, B stops answering
+        // getWindowInfo, so the final state can never PASS.
+        if ((F.fail && F.fail.burstFault) === "unknownInfo" && F.burstStarted && uuid === UUID_B) {
+          return { status: 0, stdout: J({ type: "a{sv}", data: [{}] }) + "\n", stderr: "" };
+        }
         // Resize step-1 unknown fact: once the journey starts, B stops
         // answering getWindowInfo, so the step can never PASS.
         if (F.fail.resizeFault === "step1UnknownInfo" && F.resizeStarted && uuid === UUID_B) {
@@ -499,8 +514,55 @@ function makeFake(opts) {
           // different allocation every later read (persistent).
           if (F.fail.flakyAdmitOnce && F.presentCount === 1) { gb = [0, 0, 10, 10]; }
           else if (F.fail.admitDrift) { gb = F.presentCount === 1 ? [0, 0, 10, 10] : [0, 0, 20, 20]; }
-          if (F.allocPatch) { rows.push(win(a, F.allocPatch("a0", ga))); rows.push(win(b, F.allocPatch("b0", gb))); }
-          else { rows.push(win(a, ga)); rows.push(win(b, gb)); }
+          const bf = (F.fail && F.fail.burstFault) || null;
+          // Rapid-burst lockstep: the fake planner publishes the post-burst
+          // snapshot, so settled native frames equal their allocations and
+          // the model's slot prediction is observable. Faults target one
+          // oracle each (unknown alloc, missing row).
+          if (F.burstStarted && !F.closedB && F.burstFinalFrames) {
+            const fa = F.burstFinalFrames.a, fb = F.burstFinalFrames.b;
+            ga = [fa.x, fa.y, fa.width, fa.height];
+            gb = [fb.x, fb.y, fb.width, fb.height];
+            if (bf === "burstLag") {
+              // Slow native convergence behind a synchronous journal: the 60
+              // lines land at inject time, but the published effects settle
+              // over several polls. Reads 1-2 already match the final model,
+              // read 3 drifts (native != alloc), reads 4+ match. A
+              // single-match pass would stop at read 1; the quiescence
+              // streak must ride through the reset and settle only at the end.
+              F.burstReads = (F.burstReads || 0) + 1;
+              if (F.burstReads === 3) { gb = [fb.x, fb.y, fb.width + 1, fb.height]; }
+            }
+            if (bf === "lateDrift") {
+              // Matches for fewer than the streak, then swaps the two tiles
+              // permanently (native frames and published allocations move
+              // together, so the slot oracle names the divergence): must
+              // FAIL at the budget, never PASS early.
+              F.burstReads = (F.burstReads || 0) + 1;
+              if (F.burstReads > 2) {
+                if (!F.lateSwapped) {
+                  const wa = F.wins.find((w) => w.internalId === UUID_A);
+                  const wb = F.wins.find((w) => w.internalId === UUID_B);
+                  const g = wa.frameGeometry;
+                  wa.frameGeometry = wb.frameGeometry;
+                  wb.frameGeometry = g;
+                  F.lateSwapped = true;
+                }
+                const wa = F.wins.find((w) => w.internalId === UUID_A);
+                const wb = F.wins.find((w) => w.internalId === UUID_B);
+                ga = [wa.frameGeometry.x, wa.frameGeometry.y, wa.frameGeometry.width, wa.frameGeometry.height];
+                gb = [wb.frameGeometry.x, wb.frameGeometry.y, wb.frameGeometry.width, wb.frameGeometry.height];
+              }
+            }
+          }
+          if (bf === "unknownAlloc" && F.burstStarted && !F.closedB) { gb = null; }
+          if (F.allocPatch) {
+            rows.push(win(a, F.allocPatch("a0", ga)));
+            if (!(bf === "missingRow" && F.burstStarted)) { rows.push(win(b, F.allocPatch("b0", gb))); }
+          } else {
+            rows.push(win(a, ga));
+            if (!(bf === "missingRow" && F.burstStarted)) { rows.push(win(b, gb)); }
+          }
         }
         // Stray managed windows: any other scope-class window present in the
         // fake workspace is also presented, so the exact-set oracle checks
@@ -844,7 +906,105 @@ function makeFake(opts) {
     F.applyStateModel();
     return null;
   };
-  // Resize-refusal model: planner log reachable through the fake exec
+  // Rapid-burst model: segment a concatenated ydotool key argv into chords
+  // (press in order, release in reverse per chord) and apply the two-tile
+  // row model to the fake native focus/frames, emitting one
+  // `omnitiler:world:command ... label=... depth=...` journal line per chord
+  // into the fake KWin journal (read back through the same journalctl
+  // argv). Only multi-chord bursts route here; single chords keep the
+  // single-chord path above (unknown there stays an error).
+  const BURST_CHORDS = { "125,105": 1, "125,106": 1, "125,42,105": 1, "125,42,106": 1 };
+  F.parseBurst = (tokens) => {
+    const chords = [];
+    let stack = [], presses = [];
+    for (const t of tokens) {
+      const m = /^(\d+):([01])$/.exec(t);
+      if (!m) { return null; }
+      const code = Number(m[1]);
+      if (m[2] === "1") { stack.push(code); presses.push(code); }
+      else {
+        if (!stack.length || stack.pop() !== code) { return null; }
+        if (!stack.length) {
+          if (!BURST_CHORDS[presses.join(",")]) { return null; }
+          chords.push(presses);
+          presses = [];
+        }
+      }
+    };
+    if (stack.length || presses.length || chords.length < 2) { return null; }
+    return chords;
+  };
+  F.applyBurst = (chords) => {
+    const kindOf = (codes) => {
+      const k = codes.join(",");
+      if (k === "125,105") { return { kind: "focus", dir: "left" }; }
+      if (k === "125,106") { return { kind: "focus", dir: "right" }; }
+      if (k === "125,42,105") { return { kind: "move", dir: "left" }; }
+      if (k === "125,42,106") { return { kind: "move", dir: "right" }; }
+      return null;
+    };
+    const byId = (id) => F.wins.find((w) => w.internalId === id);
+    const leftId = () => {
+      const A = byId(UUID_A), B = byId(UUID_B);
+      return A.frameGeometry.x <= B.frameGeometry.x ? UUID_A : UUID_B;
+    };
+    const fault = (F.fail && F.fail.burstFault) || null;
+    const lines = [];
+    let moveSeen = 0;
+    chords.forEach((codes, ix) => {
+      const kd = kindOf(codes);
+      const op = kd.kind === "focus" ? "focus-directional" : "move-directional";
+      const label = kd.kind + "-" + kd.dir;
+      if (!(fault === "dropOne" && ix === 5)) {
+        lines.push("js: omnitiler:world:command op=" + op + " label=" + label + " nwinv=0 depth=" + ix);
+      }
+      // Model effect mirrors the runner: focus flips the focused position
+      // (the named slot gains focus); move swaps the two fixtures' slots and
+      // the moved (focused) fixture keeps focus (active id unchanged).
+      if (kd.kind === "focus") {
+        F.activeUuid = kd.dir === "left" ? leftId() : (leftId() === UUID_A ? UUID_B : UUID_A);
+      } else {
+        const A = byId(UUID_A), B = byId(UUID_B);
+        if (!(fault === "lostMove" && moveSeen === 0)) {
+          const g = A.frameGeometry;
+          A.frameGeometry = B.frameGeometry;
+          B.frameGeometry = g;
+        }
+        moveSeen++;
+      }
+    });
+    if (fault === "reorder" && lines.length > 12) {
+      const t = lines[10];
+      lines[10] = lines[11];
+      lines[11] = t;
+    }
+    for (const l of lines) { F.journalPush(F.kwinPid, l); }
+    if (fault === "queueTimeout") {
+      F.journalPush(F.kwinPid, "js: omnitiler:world:queue-timeout op=focus-directional nwinv=0");
+    }
+    if (fault === "refused") {
+      F.journalPush(F.kwinPid, "js: omnitiler:world:command-refused op=focus-directional reason=cmd-exhausted");
+    }
+    if (fault === "focusWrong") {
+      F.activeUuid = F.activeUuid === UUID_A ? UUID_B : UUID_A;
+    }
+    // Snapshot the post-burst geometry first: the fake planner derives the
+    // published allocations from this snapshot (lockstep), so a later native
+    // drift is observable as native != alloc.
+    const A = byId(UUID_A), B = byId(UUID_B);
+    F.burstFinalFrames = {
+      a: { x: A.frameGeometry.x, y: A.frameGeometry.y, width: A.frameGeometry.width, height: A.frameGeometry.height },
+      b: { x: B.frameGeometry.x, y: B.frameGeometry.y, width: B.frameGeometry.width, height: B.frameGeometry.height },
+    };
+    if (fault === "frameDrift" && B && B.frameGeometry) {
+      B.frameGeometry = { x: B.frameGeometry.x, y: 0, width: B.frameGeometry.width + 1, height: 1080 };
+    }
+    if (fault === "extraRow") {
+      F.wins.push(F.mkWin(UUID_X, SCOPE_CLASS, F.fixture.pid, "OmniTilerTestWindow:x:tag9",
+        { x: 0, y: 0, w: 100, h: 100 }, ["desk-new"]));
+    }
+    return null;
+  };
   // boundary (readlink/stat/tail), refusal lines, and the 12px boundary
   // move. Faults via F.fail.resizeFault target one oracle each.
   F.plannerLogPath = "/tmp/omnitiler-planner-dev.a1B2c3D4.log";
@@ -1349,6 +1509,7 @@ test("ST-BUILDER: exact chord argv, keycodes, and closed construction", () => {
   assert.deepEqual(STATE_CHORDS, {
     maximize: [125, 50], fullscreen: [125, 87], float: [125, 34], sticky: [125, 42, 34],
     resizeLeft: [125, 56, 105], resizeRight: [125, 56, 106],
+    focusLeft: [125, 105], focusRight: [125, 106], moveLeft: [125, 42, 105], moveRight: [125, 42, 106],
   });
   assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "maximize"),
     ["ydotool", "key", "125:1", "50:1", "50:0", "125:0"]);
@@ -1843,6 +2004,319 @@ test("RR-CLI: liveMain runs resize-refusal end to end and the mismatch tripwire 
   const result = JSON.parse(f.files.get(EVID + "/result.json").data);
   assert.equal(result.scenarioMismatch, true);
   assert.equal(result.requestedScenario, "resize-refusal");
+  assert.equal(result.scenarioRan, "tiling-reflow");
+});
+
+// ---------------------------------------------------------------------------
+// RB. rapid-burst scenario (60-chord FIFO focus/move burst with
+// journal-order and settled-geometry oracles)
+// ---------------------------------------------------------------------------
+
+// Golden vectors: the exact 60 labels pinned literally from the current
+// implementation, so a PRNG or constant change cannot pass silently. A-left
+// and B-left streams coincide (the kind stream is fixture-independent;
+// only the final model differs), but both orders are pinned.
+const GOLDEN_RAPID_LABELS_A = [
+  "focus-right", "move-left", "focus-right", "focus-left", "move-right",
+  "move-left", "move-right", "focus-left", "focus-right", "move-left",
+  "focus-right", "focus-left", "move-right", "move-left", "focus-right",
+  "focus-left", "move-right", "move-left", "move-right", "focus-left",
+  "move-right", "move-left", "focus-right", "focus-left", "move-right",
+  "focus-left", "move-right", "move-left", "focus-right", "focus-left",
+  "move-right", "move-left", "focus-right", "move-left", "focus-right",
+  "move-left", "focus-right", "focus-left", "move-right", "move-left",
+  "focus-right", "focus-left", "focus-right", "focus-left", "move-right",
+  "move-left", "move-right", "focus-left", "move-right", "move-left",
+  "move-right", "focus-left", "move-right", "move-left", "focus-right",
+  "move-left", "move-right", "focus-left", "move-right", "move-left",
+];
+const GOLDEN_RAPID_LABELS_B = [
+  "focus-right", "move-left", "focus-right", "focus-left", "move-right",
+  "move-left", "move-right", "focus-left", "focus-right", "move-left",
+  "focus-right", "focus-left", "move-right", "move-left", "focus-right",
+  "focus-left", "move-right", "move-left", "move-right", "focus-left",
+  "move-right", "move-left", "focus-right", "focus-left", "move-right",
+  "focus-left", "move-right", "move-left", "focus-right", "focus-left",
+  "move-right", "move-left", "focus-right", "move-left", "focus-right",
+  "move-left", "focus-right", "focus-left", "move-right", "move-left",
+  "focus-right", "focus-left", "focus-right", "focus-left", "move-right",
+  "move-left", "move-right", "focus-left", "move-right", "move-left",
+  "move-right", "focus-left", "move-right", "move-left", "focus-right",
+  "move-left", "move-right", "focus-left", "move-right", "move-left",
+];
+
+test("RB-GENERATOR: length 60, determinism, mix, forced in-row direction, model", () => {
+  assert.equal(RAPID_BURST_LEN, 60);
+  const seqA = rapidBurstSequence("a");
+  const seqB = rapidBurstSequence("b");
+  assert.deepEqual(rapidBurstSequence("a"), seqA, "deterministic for A-left");
+  assert.deepEqual(rapidBurstSequence("b"), seqB, "deterministic for B-left");
+  assert.deepEqual(seqA.labels, GOLDEN_RAPID_LABELS_A, "A-left golden labels");
+  assert.deepEqual(seqB.labels, GOLDEN_RAPID_LABELS_B, "B-left golden labels");
+  for (const [seq, leftL, golden] of [[seqA, "a", GOLDEN_RAPID_LABELS_A], [seqB, "b", GOLDEN_RAPID_LABELS_B]]) {
+    assert.equal(seq.chords.length, 60, leftL);
+    assert.equal(seq.labels.length, 60, leftL);
+    const focus = seq.chords.filter((c) => c.indexOf("focus") === 0).length;
+    const move = seq.chords.length - focus;
+    assert.ok(focus >= 20 && move >= 20, leftL + ": focus=" + focus + " move=" + move);
+    // Independent re-simulation of the two-tile row model against the same
+    // observed left fixture. The kind comes from the GOLDEN vector, never
+    // from the step under test; only the forced direction, the slot swap,
+    // and the focus flip are re-derived. Direction is forced by the focused
+    // position, focus flips the position, move swaps the slots and keeps
+    // focus.
+    const other = leftL === "a" ? "b" : "a";
+    let order = [leftL, other], pos = 0;
+    const expChords = [], expLabels = [];
+    for (let i = 0; i < 60; i++) {
+      const kind = golden[i].indexOf("focus-") === 0 ? "focus" : "move";
+      const dir = pos === 0 ? "right" : "left";
+      expChords.push((kind === "focus" ? "focus" : "move") + (dir === "right" ? "Right" : "Left"));
+      expLabels.push(kind + "-" + dir);
+      if (kind === "move") { order = [order[1], order[0]]; }
+      pos = 1 - pos;
+    }
+    assert.deepEqual(seq.chords, expChords, leftL + ": forced in-row direction");
+    assert.deepEqual(seq.labels, expLabels, leftL + ": labels");
+    assert.deepEqual(seq.expected,
+      { leftFixture: order[0], rightFixture: order[1], focusedFixture: order[pos] },
+      leftL + ": final expectation");
+    for (let i = 0; i < 60; i++) {
+      assert.ok(STATE_CHORDS[seq.chords[i]], leftL + ": chord in the closed table: " + seq.chords[i]);
+      assert.ok(/^(focus|move)-(left|right)$/.test(seq.labels[i]), leftL + ": label shape");
+      assert.equal(seq.chords[i].toLowerCase(), seq.labels[i].replace("-", ""), leftL + ": chord/label agree");
+    }
+  }
+  assert.throws(() => rapidBurstSequence("c"), /observed left fixture/);
+});
+
+test("RB-BUILDER: four chord keycodes and the burst argv", () => {
+  assert.deepEqual(STATE_CHORDS.focusLeft, [125, 105]);
+  assert.deepEqual(STATE_CHORDS.focusRight, [125, 106]);
+  assert.deepEqual(STATE_CHORDS.moveLeft, [125, 42, 105]);
+  assert.deepEqual(STATE_CHORDS.moveRight, [125, 42, 106]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "focusLeft"),
+    ["ydotool", "key", "125:1", "105:1", "105:0", "125:0"]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "focusRight"),
+    ["ydotool", "key", "125:1", "106:1", "106:0", "125:0"]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "moveLeft"),
+    ["ydotool", "key", "125:1", "42:1", "105:1", "105:0", "42:0", "125:0"]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "moveRight"),
+    ["ydotool", "key", "125:1", "42:1", "106:1", "106:0", "42:0", "125:0"]);
+  // Burst argv: per-chord press/release events concatenated in order.
+  assert.deepEqual(ydotoolBurstCmd("/tmp/x.sock", ["focusRight", "moveRight", "focusLeft"]),
+    ["ydotool", "key",
+      "125:1", "106:1", "106:0", "125:0",
+      "125:1", "42:1", "106:1", "106:0", "42:0", "125:0",
+      "125:1", "105:1", "105:0", "125:0"]);
+  assert.throws(() => ydotoolBurstCmd("/tmp/x.sock", []), /at least one chord/);
+  assert.throws(() => ydotoolBurstCmd("/tmp/x.sock", ["bogus"]), /unknown chord/);
+  assert.throws(() => ydotoolBurstCmd("rel.sock", ["focusLeft"]), /absolute/);
+});
+
+test("RB-PASS: burst passes with exact events, one ydotool call, and receipts", async () => {
+  const f = makeFake({});
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "rapid-burst" }));
+  assert.equal(res.category, "PASS", J({ div: res.divergence, checks: res.checks }));
+  assert.equal(res.rc, 0, J(res.cleanupFailed));
+  assert.equal(res.scenario, "done");
+  assert.equal(res.scenarioRan, "rapid-burst");
+  const seq = ["preflight", "kwin-identity", "fixture-serve", "ydotoold-start", "journal-cursor",
+    "workspace-read", "workspace-append", "workspace-reread", "workspace-setcurrent",
+    "dev-on", "readiness", "fixture-spawn", "native-read", "join", "activate",
+    "scenario-rapid-burst",
+    "rapid-burst",
+    "scenario-done", "cleanup",
+    "cleanup-fixture-shutdown", "cleanup-workspace-restore", "cleanup-dev-off",
+    "cleanup-workspace-remove", "cleanup-ydotoold-stop",
+    "verify-fixture-pid-gone", "verify-cargo-pid-gone",
+    "verify-fixture-socket-absent", "verify-rundir-removed", "verify-planner-pid-gone",
+    "verify-ydotoold-gone", "verify-current-restored", "verify-appended-absent", "verify-dev-down"];
+  assert.deepEqual(res.events, seq);
+  for (const n of ["rapid-admit-a-frame-equals-alloc", "rapid-admit-b-frame-equals-alloc",
+    "rapid-admit-disjoint", "rapid-admit-inside-output", "rapid-admit-same-ws",
+    "rapid-journal-fifo", "rapid-final-a-frame-equals-alloc", "rapid-final-b-frame-equals-alloc",
+    "rapid-final-disjoint", "rapid-final-inside-output", "rapid-final-order", "rapid-final-focus",
+    "rapid-burst"]) {
+    assert.ok(res.checks.some((c) => c.name === n), "missing check " + n + ": " + J(res.checks.map((c) => c.name)));
+  }
+  assert.ok(res.checks.every((c) => c.pass), J(res.checks));
+  // Exactly ONE ydotool call carries the whole burst: never retried.
+  const keys = f.execCalls.filter((c) => c.indexOf("ydotool key") === 0);
+  assert.equal(keys.length, 1, J(keys));
+  // The fake admits A left, so the model prediction is the A-left sequence.
+  const want = rapidBurstSequence("a");
+  const fifo = res.checks.filter((c) => c.name === "rapid-journal-fifo")[0];
+  assert.equal(fifo.expected, want.labels.join(","));
+  assert.equal(fifo.actual, want.labels.join(","));
+  // Final checks carry OBSERVED values as actual (from the last matching
+  // read), never the prediction.
+  const order = res.checks.filter((c) => c.name === "rapid-final-order")[0];
+  assert.equal(order.expected, want.expected.leftFixture + "/" + want.expected.rightFixture);
+  assert.equal(order.actual, res.receipts.rapidBurst.left + "/" + res.receipts.rapidBurst.right);
+  const focus = res.checks.filter((c) => c.name === "rapid-final-focus")[0];
+  assert.equal(focus.expected, want.expected.focusedFixture);
+  assert.equal(focus.actual, res.receipts.rapidBurst.focused);
+  for (const n of ["rapid-final-a-frame-equals-alloc", "rapid-final-b-frame-equals-alloc"]) {
+    const c = res.checks.filter((x) => x.name === n)[0];
+    assert.match(String(c.expected), /^alloc \[\d+,\d+,\d+,\d+\]$/, n + ": expected is the observed alloc frame");
+    assert.match(String(c.actual), /^native \[\d+,\d+,\d+,\d+\]$/, n + ": actual is the observed native frame");
+  }
+  const disjoint = res.checks.filter((c) => c.name === "rapid-final-disjoint")[0];
+  assert.match(String(disjoint.actual), /^disjoint a=\[.*\] b=\[.*\]$/, "disjoint actual carries observed frames");
+  assert.deepEqual(res.receipts.rapidBurst, {
+    length: 60,
+    focus: want.chords.filter((c) => c.indexOf("focus") === 0).length,
+    move: want.chords.filter((c) => c.indexOf("move") === 0).length,
+    left: want.expected.leftFixture, right: want.expected.rightFixture,
+    focused: want.expected.focusedFixture,
+    journalCommands: 60, failureLinesFound: 0,
+  });
+  // No leakage: letters and counts only, no ids, no raw journal text.
+  const blob = J(res) +
+    [...f.files.values()].map((x) => String(x.data)).join("\n");
+  assert.ok(!blob.includes("omnitiler:world:command"), "raw journal line recorded");
+  assert.ok(!blob.includes(FIX_NONCE), "fixture nonce leaked");
+  assert.ok(!/helper-[0-9a-f]{32}/.test(J(res)), "helper nonce leaked into evidence");
+  assert.ok(!blob.includes("Foreign Files"), "foreign caption leaked");
+  assert.ok(!blob.includes("org.kde.dolphin"), "foreign class leaked");
+  assert.equal(res.counts.foreign, 1);
+});
+
+test("RB-LAG: slow native convergence passes only after the quiescence streak", async () => {
+  const f = makeFake({ fail: { burstFault: "burstLag" } });
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "rapid-burst" }));
+  assert.equal(res.category, "PASS", J({ div: res.divergence, checks: res.checks }));
+  assert.equal(res.rc, 0, J(res.cleanupFailed));
+  // Reads 1-2 already matched the final model, so a single-match pass would
+  // have stopped there. The streak reset on read 3 and settled only at the
+  // end: several post-burst presentation polls must have run, and the burst
+  // was still injected exactly once.
+  assert.ok((f.burstReads || 0) > T.burstSettleReads + 1,
+    "quiescence rode through the reset: burstReads=" + f.burstReads);
+  assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 1,
+    "the burst is never retried");
+  assert.ok(res.checks.every((c) => c.pass), J(res.checks));
+});
+
+test("RB-LATE-DRIFT: brief match then permanent drift fails with one call", async () => {
+  const f = makeFake({ fail: { burstFault: "lateDrift" } });
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "rapid-burst" }));
+  assert.equal(res.rc, 1);
+  assert.equal(res.category, "FAIL");
+  assert.match(res.divergence || "", /rapid-burst/);
+  assert.match(res.divergence || "", /final (left|right) slot holds/);
+  assert.ok(!res.events.includes("scenario-done"));
+  assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 1,
+    "the burst is never retried");
+});
+
+test("RB-FAILURE-RE: shortcut-layer failures are attributed, success never matches", () => {
+  assert.ok(RAPID_BURST_FAILURE_RE.test("js: omnitiler:world:shortcut-failed op=focus-directional nwinv=0"),
+    "shortcut-failed attributed");
+  assert.ok(RAPID_BURST_FAILURE_RE.test("js: omnitiler:world:scope-invalid op=move-directional nwinv=0"),
+    "scope-invalid attributed");
+  assert.ok(RAPID_BURST_FAILURE_RE.test("js: omnitiler:world:queue-timeout op=focus-directional nwinv=0"),
+    "queue-timeout still attributed");
+  assert.ok(!RAPID_BURST_FAILURE_RE.test("js: omnitiler:world:command op=focus-directional label=focus-right nwinv=0 depth=3"),
+    "success line never matches");
+});
+
+test("RB-NEG: journal loss faults fail at the burst step with one call and no retry", async () => {
+  for (const [fault, oracle] of [
+    ["dropOne", /shows 59 command lines \(need 60\)/],
+    ["reorder", /journal label mismatch at index 10/],
+    ["queueTimeout", /1 failure\/loss line\(s\) \(need zero\)/],
+    ["refused", /1 failure\/loss line\(s\) \(need zero\)/],
+  ]) {
+    const f = makeFake({ fail: { burstFault: fault } });
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "rapid-burst" }));
+    assert.equal(res.rc, 1, fault);
+    assert.equal(res.category, "FAIL", fault);
+    assert.match(res.divergence || "", /rapid-burst/, fault);
+    assert.match(res.divergence || "", oracle, fault);
+    assert.ok(!res.events.includes("scenario-done"), fault);
+    assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 1,
+      fault + ": the burst is never retried");
+  }
+});
+
+test("RB-NEG: settled-state faults fail at the burst step with one call and no retry", async () => {
+  for (const [fault, oracle] of [
+    ["lostMove", /final (left|right) slot holds/],
+    ["focusWrong", /final focused fixture/],
+    ["frameDrift", /native frame != published allocation/],
+    ["extraRow", /not exactly \{A,B\}/],
+    ["missingRow", /not exactly \{A,B\}/],
+  ]) {
+    const f = makeFake({ fail: { burstFault: fault } });
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "rapid-burst" }));
+    assert.equal(res.rc, 1, fault);
+    assert.equal(res.category, "FAIL", fault);
+    assert.match(res.divergence || "", /rapid-burst/, fault);
+    assert.match(res.divergence || "", oracle, fault);
+    assert.ok(!res.events.includes("scenario-done"), fault);
+    assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 1,
+      fault + ": the burst is never retried");
+  }
+});
+
+test("RB-PENDING: missing/unknown facts never PASS", async () => {
+  const f = makeFake({ fail: { burstFault: "unknownInfo" } });
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "rapid-burst" }));
+  assert.equal(res.rc, 1);
+  assert.equal(res.category, "PENDING", J(res.divergence));
+  assert.match(res.divergence || "", /rapid-burst/);
+  const g = makeFake({ fail: { burstFault: "unknownAlloc" } });
+  const res2 = await runScenario(Object.assign(baseOpts(), { io: g.io, input: true, scenario: "rapid-burst" }));
+  assert.equal(res2.rc, 1);
+  assert.equal(res2.category, "PENDING", J(res2.divergence));
+  assert.match(res2.divergence || "", /rapid-burst/);
+});
+
+test("RB-CLI: rapid-burst parses, requires --input before io, and runs end to end", async () => {
+  assert.equal(parseArgs(["--scenario", "rapid-burst"]).scenario, "rapid-burst");
+  assert.equal(parseArgs(["--scenario=rapid-burst"]).scenario, "rapid-burst");
+  assert.ok(helpText().indexOf("rapid-burst") >= 0, "help documents rapid-burst");
+  assert.throws(() => parseArgs(["--scenario=rapid-burst", "--scenario=tiling-reflow"]), /duplicate --scenario/);
+  const noIo = () => { throw new Error("io must not be built"); };
+  assert.equal(await liveMain({
+    argv: ["--live", "--evidence-dir", "/tmp/kde-rb-noinput-1", "--scenario", "rapid-burst"],
+    ioFactory: noIo, root: ROOT, templatePath: TEMPLATE,
+  }), 2);
+  const f = makeFake();
+  await assert.rejects(
+    runScenario(Object.assign(baseOpts(), { io: f.io, scenario: "rapid-burst" })),
+    /rapid-burst requires --input/);
+  assert.equal(f.execCalls.length, 0, "no exec before the input guard");
+  const rb = await liveMainFake(["--live", "--evidence-dir", EVID, "--input", "--scenario", "rapid-burst"]);
+  assert.equal(rb.rc, 0, rb.out);
+  assert.equal(rb.result.requestedScenario, "rapid-burst");
+  assert.equal(rb.result.scenarioRan, "rapid-burst");
+  assert.equal(rb.result.scenarioMismatch, false);
+  assert.ok(rb.result.events.includes("scenario-rapid-burst"), "rapid-burst events ran");
+  assert.ok(rb.result.events.includes("rapid-burst"));
+  assert.ok(!rb.result.events.includes("scenario-admission"), "tiling-reflow did not run");
+  // A ran-vs-requested scenario mismatch fails the run and is recorded.
+  const h = makeFake({});
+  h.dirs.delete(EVID);
+  const wrong = async (opts) => runScenario(Object.assign({}, opts, { scenario: "tiling-reflow" }));
+  const origLog = console.log; const origErr = console.error;
+  const sink = [];
+  console.log = (...a) => { sink.push(a.join(" ")); };
+  console.error = (...a) => { sink.push(a.join(" ")); };
+  let rc;
+  try {
+    rc = await liveMain({
+      argv: ["--live", "--evidence-dir", EVID, "--input", "--scenario", "rapid-burst"],
+      ioFactory: () => h.io, root: ROOT, execEnv: ENV, templatePath: TEMPLATE, runScenarioFn: wrong,
+    });
+  } finally { console.log = origLog; console.error = origErr; }
+  assert.equal(rc, 1);
+  assert.match(sink.join("\n"), /requested scenario 'rapid-burst' but ran 'tiling-reflow'/);
+  const result = JSON.parse(h.files.get(EVID + "/result.json").data);
+  assert.equal(result.scenarioMismatch, true);
+  assert.equal(result.requestedScenario, "rapid-burst");
   assert.equal(result.scenarioRan, "tiling-reflow");
 });
 

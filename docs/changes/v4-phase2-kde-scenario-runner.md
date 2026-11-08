@@ -295,12 +295,58 @@
   refusals are not exercised; injected (not physical) keys. The Planner's
   temporary dev log written by `just dev-on` is not removed by this runner.
 
+## Rapid-burst scenario
+
+- `--scenario rapid-burst` (requires `--input`) checks the tiled directional FIFO
+  ([rapid input outcome](archive/kde-rapid-input-geometry.md)) natively: one
+  `ydotool key` call injects 60 focus/move chords back to back (focus
+  Meta+Left/Right, move Meta+Shift+Left/Right, from the production
+  registrations) against two fixtures on the appended workspace. The sequence is
+  derived, not hand-written: a fixed-constant generator driven by a model of a
+  two-tile row from the observed admission order (the fixture with the smaller
+  x is left and is natively activated first); the direction of every chord is
+  forced toward the in-row neighbour so none is an edge no-op and none can cross
+  to another output; focus flips the focused slot, move swaps the slots and the
+  moved fixture keeps focus. The golden label sequence is pinned in a test.
+- Oracles, all exact: the KWin journal since a pre-injection cursor (owner pid
+  filtered) has exactly 60 `omnitiler:world:command` lines whose `label=` values
+  equal the generated sequence in order and no failure or loss line of any kind;
+  the settled state (presentation set exactly the two fixtures, each native frame
+  equal to its published allocation, disjoint, inside the output, slot occupants
+  and the natively active window equal to the model's final state) must hold on
+  at least three consecutive polls spanning a minimum settle window with
+  unchanged presentation revision and journal, so intermediate states that
+  happen to equal the final one cannot pass. Terminal journal faults (extra
+  lines, any failure line, a label mismatch at 60) fail immediately. Unknown
+  facts are PENDING.
+- "All READY" is observed as: every press accepted (exact count and order) and
+  zero failure/loss outcomes. KWin logs no per-command ready line, so the
+  absence of every failure token plus the exact final native state is the
+  observable.
+- Review: one independent read-only review. Findings fixed: the first-match
+  pass could precede draining (quiescence streak added, with a lagging fake and a
+  late-drift negative), golden vector, observed values in checks, additional
+  failure tokens, fail-fast on terminal journal states. The model matches the
+  product source (two-leaf row swap and neighbour focus, mover keeps focus;
+  no crossing while both fixtures remain in the row).
+- Live (fractional-scale output, no display change): exit 0, PASS, 25 checks,
+  `scenarioRan` rapid-burst, no cleanup failures. 60 accepted presses (27 focus,
+  33 move) with labels in the generated order, zero failure lines; final native
+  frames equal the published allocations with the fixtures in swapped slots as
+  the model predicted and the predicted fixture active. Cleanup verified (dev
+  DOWN, no leftover processes or sockets, current workspace restored, appended
+  workspace removed, unscoped bundle rebuilt after the scoped dev-on).
+- Gates: runner tests 112/112 (adapter and Rust unchanged).
+- Limits: injected (not physical) keys; one 60-press burst at the default key
+  delay; two-tile, single-output row only (no crossing, nested groups or floats);
+  press timing relative to the Planner round trip is not controlled.
+
 ## Follow-up units
 
 - Genuine-producer offline ordered journeys through the real adapter/broker/core.
 - Further fixture-driven native scenarios after the lifecycle and one-scenario
   tool are proved: selection with continued tiling; state targets including
-  sticky restart/off (state targets and resize-refusal delivered above); scaled-metric frames at current scales; rapid-input burst. Retain physical-key/hotplug/scale-change/paint
+  sticky restart/off (state targets, resize-refusal and rapid-burst delivered above); scaled-metric frames at current scales. Retain physical-key/hotplug/scale-change/paint
   exclusions.
 - Replace the advertised live-test recipe and cull the obsolete wrapper/tests
   in a separate verified commit once the replacement covers their purpose.
