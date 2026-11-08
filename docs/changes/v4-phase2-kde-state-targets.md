@@ -585,3 +585,24 @@
 - Pending: one fixture-only orderly restart followed by sticky-off with
   correlated protocol/storage capture and retained pre-chord focus readbacks.
   This is not native restart acceptance; the broader note remains active.
+
+## Sticky restart live re-check stopped before commands
+
+- The fixture-only controller started on an appended workspace, but the startup
+  journal capture used the service launcher PID rather than the KWin D-Bus-owner
+  PID and returned no entries. The readiness evidence was invalid; no sticky
+  chord, restart journey or post-restart sticky-off ran.
+- Diagnostic recapture under the verified owner PID shows the matching adapter,
+  generation and dispatch/applied pairs. The original cursor was older than the
+  run, so this does not retroactively accept the failed readiness capture.
+  Correlated discovery, both store seeds and Describe replies were retained;
+  the monitor also captured unrelated bus traffic despite its intended filters.
+  No sticky persistence or focus/input acceptance is claimed.
+- Cleanup initially misread a scalar desktop property as an array. The corrected
+  scalar read restored the original current desktop; the exact appended desktop
+  was removed. Fixture, input daemon and monitor processes and sockets are absent,
+  the original desktop roster is retained, the unscoped non-trace bundle is
+  rebuilt and production status is DOWN. KWin's owner remained unchanged.
+- The offline correction remains verified and committed. A fresh bounded native
+  restart/off leg with a verified owner-PID journal boundary, correlated capture
+  and retained pre-chord focus evidence is still required. The note stays active.

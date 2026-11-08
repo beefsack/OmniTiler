@@ -136,15 +136,20 @@ startup:
 ## Diagnostics And Ownership
 
 - KWin runs as `plasma-kwin_wayland.service`; use `journalctl --user` and filter
-  by the recorded KWin PID. `journalctl --system` is not a valid KWin capture.
+  by the recorded KWin D-Bus-owner PID. Resolve `org.kde.KWin` with
+  `GetNameOwner`, then `GetConnectionUnixProcessID` for that unique owner;
+  the service's `MainPID` can identify a launcher rather than KWin.
+  `journalctl --system` is not a valid KWin capture.
   Check evaluation errors on the unfiltered current-PID stream: keep the
   separate `QT_CATEGORY=kwin_scripting` error check without the `omnitiler:`
   filter, since a filtered capture cannot see script-engine failures. Neither
   check substitutes for direct authoritative state evidence.
 - Production diagnostics use the `omnitiler:` prefix.
 - A journal cursor is opaque: strip the `-- cursor: ` display prefix before
-  passing it to `--after-cursor`. Prove a new capture contract with a true
-  positive marker before relying on it.
+  passing it to `--after-cursor`. Capture the pre-start cursor from the unfiltered
+  user journal, then filter the subsequent read by the verified KWin owner PID.
+  An empty PID-filtered journal can return an older cursor, not a fresh boundary.
+  Prove a new capture contract with a true positive marker before relying on it.
 - KGlobalAccel collection must enumerate all components and exact action tuples.
   Persisted records after unload do not prove a callback. Never unregister or
   restore anything except exact verified project-owned action records.
