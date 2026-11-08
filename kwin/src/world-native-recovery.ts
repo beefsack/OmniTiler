@@ -1,4 +1,4 @@
-// Startup native recovery coordinator (staged seam, NOT production-invoked).
+// Startup native recovery coordinator, invoked from world-entry.ts.
 //
 // Restores durable preimage ORIGINALS for touched slots only, after an exact
 // live UUID join, then requires a FRESH later observation that matches the

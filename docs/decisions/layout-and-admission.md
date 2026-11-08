@@ -59,14 +59,14 @@
 ### Automatic fixed-float stacking and gaming safety
 - Decision: KDE automatic fixed floats stay above tiles without geometry/focus writes; never write fullscreen clients or cover focused fullscreen game. Preserve pre-existing user/app keep-below (zero writes) and keep-above (untouched). Later keep-below or clearing project-owned above wins without reassertion; suspend owned above while focused fullscreen client scope is active, reacquire after exit, restore on lost automatic classification or explicit tile subject to overlay safety. Stop attempts safe restoration only.
 - Why: not recorded.
-- Assumes / revisit if: KWin unload without a later start leaves state until next start; no unload restoration unless lifecycle owner safely distinguishes pre-existing state. Windows automatic floats remain membership-only with no writes.
+- Assumes / revisit if: unload/restart ownership is answered by [R12](contract.md#native-writes-difficult-to-undo-r12): the adapter records original state in a host slot outliving the tiler before setting project keep-above, and the next start restores leftovers, so pre-existing above stays untouched; KWin unload without a later start leaves state until next start. Windows automatic floats remain membership-only with no writes.
 - Status: active, 2026-10-29
 - Evidence: [stacking investigation](../changes/kde-automatic-float-stacking.md), [contract](contract.md#native-writes-difficult-to-undo-r12).
 
 ### Core-owned keep-above desire
 - Decision: Core owns fixed-size eligibility and suspension, and publishes neutral per-window `keepAboveTiles: null|false|true`: null grants no write authority; false releases only project-owned above; true requests above-tiles with no activation/geometry. Never clear user above, force below or own pre-existing above. Adapters report neutral above/below/ownership facts and apply mechanically; delete KDE-local fixed-size predicate consumer. Preserve below/external-clear no-reacquire; never cover focused fullscreen window. Windows shares codec but automatic-fixed stacking remains opt-out.
 - Why: not recorded.
-- Assumes / revisit if: coordinated v3 if ready, otherwise exact version bump; implementation pending. Unload/restart ownership blocker remains separate.
+- Assumes / revisit if: coordinated v3 if ready, otherwise exact version bump; implementation pending. Unload/restart ownership is answered by [R12](contract.md#native-writes-difficult-to-undo-r12), not an open blocker.
 - Status: active, 2026-10-29; implementation pending.
 - Evidence: [approved core shape](../changes/kde-world-v2-port.md#recommended-core-shape-alternatives-and-cutover), [stacking safety](../changes/kde-automatic-float-stacking.md).
 

@@ -118,7 +118,19 @@
 ## Blocker and exact next action
 
 - User 2026-10-29 approves the [core shape](kde-world-v2-port.md#recommended-core-shape-alternatives-and-cutover);
-  the unload/restart ownership blocker below remains separate and open.
+  the unload/restart ownership question below was parked then and is resolved
+  2026-11-09 (see Resolution).
+- Resolution 2026-11-09: the parked question is answered by
+  [R12](../decisions/contract.md#native-writes-difficult-to-undo-r12) (active
+  2026-10-31): the adapter records original state, including project keep-above,
+  in a host slot outliving the tiler before writing, and the next start restores
+  leftovers; pre-existing above stays untouched. KDE adapter preimage and
+  recovery code exists in `kwin/src/world-native-preimage.ts` and
+  `kwin/src/world-native-recovery.ts` (coupled above/below stacking slot; code
+  presence only, not live-verified). Remaining work: live proof that
+  project-owned above is restored across unload/restart while pre-existing above
+  stays untouched, plus the pending native, dialog, game and Steam checks below.
+  Acceptance is not claimed.
 - Matching existing world-route unload behavior is **clearly unsafe**, not an
   accepted tentative policy: unloading with a surviving owned float leaves
   keep-above behind; restart treats it as pre-existing above and cannot suspend
@@ -128,8 +140,8 @@
   unload/restart, while pre-existing keep-above remains untouched?** No recovery
   owner, persistence scheme or architectural expansion is selected.
 - Resolved 2026-10-19: both retired empty desktops were recreated at their captured positions with captured names/order and new native IDs; protected terminal membership/frame/focus stayed unchanged and the controller stayed stopped; only replacement IDs and default tiling groups changed in configuration.
-- After resolution: implement and prove actual unload/restart ownership, repair
-  complete baseline/wire capture, repeat fixed-window/no-focus, concurrent
+- After resolution: prove actual unload/restart ownership live (see Resolution
+  2026-11-09), repeat fixed-window/no-focus, concurrent
   fullscreen and modal/terminal legs on the corrected build. Leave the user's
   Steam retest pending. Keep this record active; acceptance is incomplete.
 

@@ -184,8 +184,8 @@
 ### Core birth-clear ownership
 - Decision: birth/maximize/fullscreen/fixed-size gates integrate into WorldEngine admission/mode/lifetime; commandless birth/exit clear uses `clear_operation` and raw `ClearAttempt`; setter acceptance is not completion. No adapter logical birth state or broker clear-authorization lane.
 - Why: not recorded.
-- Assumes / revisit if: Windows born outcomes remain identical and preamble-only refusal gates/asynchronous restore are not bypassed. Birth-clear authority under geometry hold is tentative: only independently proven birth clear under existing policy may proceed; never bypass fullscreen/protected/refused/unmanaged/game holds, hold geometry writes for fresh facts, settle only by fresh native evidence and raw ClearAttempt.
-- Status: active, 2026-10-26
+- Assumes / revisit if: Windows born outcomes remain identical and preamble-only refusal gates/asynchronous restore are not bypassed. Birth-clear authority under geometry hold: only independently proven birth clear under existing policy may proceed; never bypass fullscreen/protected/refused/unmanaged/game holds, hold geometry writes for fresh facts, settle only by fresh native evidence and raw ClearAttempt.
+- Status: active, 2026-11-09
 - Evidence: [KDE N6 outcome](../changes/kde-world-v2-port.md#n6-core-intents-outcome-and-blocker-2026-10-26).
 
 ### Stage 5 package review decisions

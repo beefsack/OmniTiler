@@ -248,7 +248,7 @@ questions and unverified cases remain open; no earlier pass proves the v2 port.
 - Teardown verified development DOWN, original memberships/views/focus and output
   configuration, byte-identical shortcut configuration and original float-store
   absence. Normal empty-desktop retirement was retained. Future live legs require
-  full frame baselines, complete request/reply capture and direct mode evidence.
+  full frame baselines, the scenario runner's correlated logs and direct mode evidence.
 - Bounded work: repair the native creation contract with producer-shaped tests;
   independently review lifecycle safety; repeat with a complete fixture; recover
   T05 tests by stash identity and prove or repair their current production route.

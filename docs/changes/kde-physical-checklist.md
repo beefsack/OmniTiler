@@ -10,7 +10,7 @@
 ## Batched physical run sheet 2026-10-29
 
 - Order: preflight; isolated T1 capture; restore; S1-S5 share A/B; S6-S7 add C; S8 uses existing workspaces; N1-N2 share Settings; conditional D block uses the outputs already present. Do not change display topology for this sheet.
-- Follow the guide's ownership checks, helper accounting, evaluated readiness gate, correlated complete request/reply capture and owned-state readback. A successful startup receipt or quiet journal is not readiness.
+- Follow the guide's ownership checks, helper accounting, evaluated readiness gate, the scenario runner's correlated logs and owned-state readback. A successful startup receipt or quiet journal is not readiness.
 - Stop the leg on a crash-class surprise, repeated non-fixture actuation from a filter failure, a real product/contract decision, or inability to safely establish ownership or restore owned resources. Baseline drift alone never stops a leg. Retain the evidence; do not repeat around a hold or inert instance.
 - Report each ID/sub-leg as PASS/FAIL + the requested observation, or BLOCKED (condition) / NOT RUN. All result lines start UNRUN. Keep artifacts outside the repository; send ordered result lines and artifact filenames, not app content, titles or raw key logs.
 

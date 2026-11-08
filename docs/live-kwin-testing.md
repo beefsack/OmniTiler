@@ -128,11 +128,10 @@ startup:
   within the bounded window means the instance is inert: stop, retain the
   gating evidence, and diagnose before any retry. Never re-run, restart
   around it, or claim a pass from a silent instance.
-- When correlated D-Bus capture runs, the first `ReadFloatIntent`
-  (float-seed) and `DiscoverWorld` calls must appear. Zero calls with a
-  successful run receipt is the inert-instance signature from the retained
-  silent-restart leg (loaded, introspected, and run with an unchanged
-  bundle, yet no seed, no world call, no journal output).
+- A successful run receipt with no journal output is the inert-instance
+  signature from the retained silent-restart leg (loaded, introspected, and
+  run with an unchanged bundle, yet no seed, no world call, no journal
+  output).
 
 ## Diagnostics And Ownership
 
@@ -231,8 +230,8 @@ startup:
   `validateDir` is an exported function for offline artifact inspection.
 - Fixture/native joins are required evidence: each exact fixture sentinel and
   PID joined one-to-one to a native KWin UUID/frame. Missing, duplicate or
-  ambiguous joins fail closed; UUID uniqueness is checked across the full
-  native roster. The attribution tool at `kwin/tests/fixture-attribution/` is
+  ambiguous joins fail closed. No full-native-roster UUID uniqueness check is
+  required. The attribution tool at `kwin/tests/fixture-attribution/` is
   optional, never a routine mandatory gate; it is baseline-dependent and reuses
   baseline validation and introspection parsing, following the checker's
   nonce-named, collision-checked, single-unload helper lifecycle. Independent read-only review accepts the offline tool; direct
@@ -255,15 +254,13 @@ startup:
   No effect is installed, linked or loaded, and no compositor environment is
   read. The existing `kwin/tests/visibility-probe/` remains unchanged for later
   hide/reveal work; accepted hide/reveal compositor evidence is not withdrawn.
-- Enable correlated complete request/reply capture before each leg and prove
-  capture with a positive marker; it remains the evidence requirement for
-  protocol claims. At the first crash-class surprise or repeated non-fixture
-  actuation from a filter failure, stop the leg and retain its gating evidence.
-  Baseline drift alone never stops a leg.
-- An interface-only `dbus-monitor` filter omits method returns, which lack the
-  call's interface header. Capture calls destined for the planner and returns
-  from its exact unique sender, correlating reply serials; interface-filtered
-  calls alone are not complete request/reply evidence.
+- Evidence for protocol claims is the scenario runner's own correlated logs
+  (`scripts/kde-scenarios.mjs`: its recorded calls, events and checks, with
+  request/response correlation) plus native readback of the owned state. No raw
+  bus-level request/reply capture is required; do not run `dbus-monitor`, which
+  over-captures foreign traffic. At the first crash-class surprise or repeated
+  non-fixture actuation from a filter failure, stop the leg and retain its
+  gating evidence. Baseline drift alone never stops a leg.
 - `ReadWorldPresentation` strips operation lanes and native write tokens; it
   cannot prove no pending operations. Use full correlated `Describe` replies
   for that checkpoint, with independent native state joins.

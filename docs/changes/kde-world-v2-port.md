@@ -254,6 +254,11 @@
 
 ## Tentative technical decisions
 
+- Retired 2026-11-09: the tentative decisions below are superseded by the v4
+  [world contract](../porting/world-contract.md), the 2026-11-08
+  [common v4 per-output workspaces](../decisions/workspaces.md#common-v4-per-output-workspaces)
+  decision and R19 native adoption. They are kept as history only.
+
 - Sequence the atomic service/JS v2 wire cutover before deleting capture-policy
   consumers, then renderer/host integration and native acceptance. Each stage
   removes its superseded route before acceptance; this is not dual-route support.

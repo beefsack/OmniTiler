@@ -572,6 +572,10 @@ Acceptance of an approach does not claim native evidence.
 
 ## Shared transient classification (2026-10-25)
 
+- Retired as tentative 2026-11-09: superseded by v4 contract native-fact
+  applicability in the [world contract](../porting/world-contract.md) (core-owned
+  transient/modal predicates). Implementation is
+  `tiler_core::window_policy::classify_membership`. Kept as history.
 - Tentative option A adds `MembershipVerdict` and `classify_membership` to
   `window_policy.rs`: existing safety gates leave unmanaged; otherwise the one
   neutral `transient` fact selects float membership versus ordinary tile
