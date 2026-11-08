@@ -81,3 +81,14 @@
   check: two fixture windows on one output, observe frames and loaded-effect
   presentation, change display scale once, verify logical gaps/styles and native
   convergence, then restore the display setting. No native test has run here.
+
+## Current-scale native check not run
+
+- The proposed two-output, different-scale check did not reach fixture staging.
+  The production lifecycle's desktop command exposes the roster, not
+  sticky-inclusive occupancy or fixture workspace placement. The existing
+  baseline helper collects broader foreign-window facts rather than an
+  occupancy-only result; no new capture was taken.
+- Per-output frames, cross-output convergence and border/underlay paint remain
+  unverified. No display setting changed. The unscoped non-trace bundle was
+  rebuilt; controller and Planner status remained down.

@@ -417,3 +417,14 @@
 - The actual generated bundle was rebuilt unscoped and non-trace after the
   gates. No new product finding remains from offline verification. All live
   native gates above remain open and user-run; this note remains active.
+
+## Subsequent native check not run
+
+- No native-effect or interaction journey started. Fixture workspace staging
+  was not established, and the production lifecycle has no integrated nested
+  acceptance runner. No keyboard or mouse input was injected.
+- Frame follow without a broker round trip, minimize restore, version-mismatch
+  hiding, K5/R20, drag/resize release and cancel, and cross-output paint remain
+  open. No new rendering defect or dropout measurement is claimed.
+- No effect, fixtures or desktops were created. The unscoped non-trace bundle
+  was rebuilt; controller and Planner status remained down.

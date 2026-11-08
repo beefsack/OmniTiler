@@ -374,3 +374,12 @@
 - Exact controller, Planner, fixture and capture teardown completed; dev status
   is down and the unscoped/non-trace bundle is restored. The native proof remains
   incomplete and this note remains active.
+
+## Subsequent native check not run
+
+- No state transition or startup-restoration journey started: sticky-inclusive
+  occupancy and fixture placement beyond the desktop roster were not established
+  through the production lifecycle and fixture interfaces. No native acceptance
+  condition is closed by this check, and no new state-target defect is claimed.
+- No fixtures or desktops were created. The unscoped non-trace bundle was
+  rebuilt; controller and Planner status remained down.

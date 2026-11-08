@@ -65,3 +65,12 @@
   Independent integrated review found no in-scope blocker in the diagnostics or
   unchanged requester mapping. Detailed classification awaits the user re-check.
   This note stays active. No root-cause or resize defect fix is claimed.
+
+## Subsequent input check not run
+
+- No resize shortcut was delivered: fixture workspace staging was not
+  established, and no synthetic keyboard/mouse injection tool was available in
+  the development environment. No physical input was tested either.
+- No new refusal diagnostic or classification evidence was collected. Direct
+  command ingress would not establish shortcut-callback or physical-key
+  acceptance. The real-key re-check remains pending; no resize defect is claimed.
