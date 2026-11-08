@@ -1291,7 +1291,7 @@ work area; the production adapter reports DWM visible frames instead.
   these probes. Any such choice requires separate product review.
 - This bounded native measurement pass has results for all six areas; the
   investigation remains pending, not archived, because product gates are open.
-  Exact next implementation step belongs to Windows phase 3 after the approved
+  Exact next implementation step belongs to Windows phase 4 after the approved
   core/protocol cutover: integrate pre-effect baselines/storage, exact-lifetime
   recovery and W2/K5 observation joins, then verify the proposed discriminators
   against production paths. Standalone probes are not that acceptance.

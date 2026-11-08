@@ -29,7 +29,8 @@
 - Shared policy still has unscaled resize steps/minima and fixed group-edge
   zones (`policy.rs`, `session/ops/resize.rs`, `cosmic_v1.rs`). They are correct
   for KDE's scale of 1; scale-not-1 support remains a separate implementation
-  gap, not evidence of complete cross-host scaling. No policy decision changes.
+  gap, not evidence of complete cross-host scaling. It lands at the Windows port
+  start (User 2026-11-09); KDE and macOS use scale 1. No policy decision changes.
 
 ## Acceptance and bounded work
 

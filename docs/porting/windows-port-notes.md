@@ -239,7 +239,7 @@ not v4 acceptance evidence.
   150 ms tolerance. No witness join or physical-drag acceptance. See
   [K5 results](../changes/windows-v4-native-evidence.md#4-border-tracking-and-winevent-coverage-k5).
 
-## Phase-3 port gates (no passes claimed)
+## Phase-4 port gates (no passes claimed)
 
 - Carry all eight scenario OPEN/TBD gates plus: K5 witness join and
   eligibility coverage; opaque/chrome/topmost crash recovery with
