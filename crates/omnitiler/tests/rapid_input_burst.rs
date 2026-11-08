@@ -982,3 +982,442 @@ fn rapid_input_batch_saves_canonical_bytes_fit_reserve() {
         "128 canonical max-width rows fit the max-row reserve: rows={wide_rows}"
     );
 }
+
+fn implicit_resize_dir_cmd(direction: &str, mode: &str) -> String {
+    format!(
+        "{{\"op\":\"resize\",\"win\":{{\"currentFocus\":true}},\
+          \"direction\":\"{direction}\",\"mode\":\"{mode}\",\"press\":0}}"
+    )
+}
+
+fn published_rect(reply: &serde_json::Value, window: &str) -> Option<[i64; 4]> {
+    let rows = reply["windows"].as_array()?;
+    let row = rows.iter().find(|row| row["win"] == window)?;
+    let rect = if !row["alloc"].is_null() {
+        &row["alloc"]
+    } else if !row["frame"].is_null() {
+        &row["frame"]
+    } else {
+        return None;
+    };
+    let cells = rect.as_array()?;
+    if cells.len() < 4 {
+        return None;
+    }
+    Some([
+        cells[0].as_i64()?,
+        cells[1].as_i64()?,
+        cells[2].as_i64()?,
+        cells[3].as_i64()?,
+    ])
+}
+
+fn window_json_rect(id: &str, rect: [i64; 4]) -> String {
+    let mut value: serde_json::Value =
+        serde_json::from_str(&window_json_at(id, 0)).expect("fixture parses");
+    value["rect"] = serde_json::json!([rect[0], rect[1], rect[2], rect[3]]);
+    value.to_string()
+}
+
+fn issued_focus_target(reply: &serde_json::Value) -> Option<String> {
+    // Core-issued focus authority: capture replies encode one-shot effects;
+    // presentation.foreground echoes staged native ingress instead.
+    let effects = reply["effects"].as_array()?;
+    effects
+        .iter()
+        .filter(|effect| effect["kind"] == "focus")
+        .filter_map(|effect| effect["target"].as_str())
+        .map(str::to_owned)
+        .next_back()
+}
+
+fn observe_from_reply(
+    reply: &serde_json::Value,
+    prev_a: [i64; 4],
+    prev_b: [i64; 4],
+    prev_focused: &str,
+) -> (String, [i64; 4], [i64; 4], String) {
+    let rect_a = published_rect(reply, "win-a").unwrap_or(prev_a);
+    let rect_b = published_rect(reply, "win-b").unwrap_or(prev_b);
+    // OFFLINE settlement: the next native report carries the last
+    // core-issued focus target, falling back to the previous native focus.
+    let focused = issued_focus_target(reply).unwrap_or_else(|| prev_focused.to_owned());
+    let native = inner_report_closed_focused(
+        &[
+            window_json_rect("win-a", rect_a),
+            window_json_rect("win-b", rect_b),
+        ],
+        &[],
+        &focused,
+    );
+    (native, rect_a, rect_b, focused)
+}
+
+fn outcome_pair(take: &serde_json::Value) -> (String, String) {
+    let outcome = take["outcome"].as_str().unwrap_or("?").to_owned();
+    let kind = take["kind"].as_str().unwrap_or("").to_owned();
+    (outcome, kind)
+}
+
+#[allow(clippy::type_complexity)]
+fn stabilize(
+    service: &WorldService,
+    generation: &str,
+) -> (String, String, String, [i64; 4], [i64; 4], String, u64) {
+    let admit = inner_report_closed_focused(
+        &[window_json_at("win-a", 0), window_json_at("win-b", 500)],
+        &[],
+        "win-a",
+    );
+    let admit_reply = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, generation, 1, 1, &admit))
+            .expect("admission capture accepted"),
+    );
+    // Map synthetic identity roles from the ACTUAL admitted publication:
+    // left/right by published x (`alloc` falling back to `frame`).
+    let xa = published_rect(&admit_reply, "win-a").expect("admission publishes win-a")[0];
+    let xb = published_rect(&admit_reply, "win-b").expect("admission publishes win-b")[0];
+    assert_ne!(
+        xa, xb,
+        "topology prerequisite: distinct published x origins"
+    );
+    let (left, right) = if xa < xb {
+        ("win-a".to_owned(), "win-b".to_owned())
+    } else {
+        ("win-b".to_owned(), "win-a".to_owned())
+    };
+    assert_admitted_left_right(&admit_reply, &left, &right);
+    let mut seq = 1u64;
+    let (mut native, mut rect_a, mut rect_b, mut focused) =
+        observe_from_reply(&admit_reply, [0, 0, 400, 300], [500, 0, 400, 300], "win-a");
+    // Left-focus the core when the admission focus sits elsewhere, then let
+    // the settled publication back into native before the sequence.
+    if focused != left {
+        file_command(service, generation, "1", &focus_cmd(&left));
+        seq += 1;
+        let setup_reply = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, generation, seq, seq, &native))
+                .expect("setup focus capture accepted"),
+        );
+        assert_eq!(
+            take_outcome(service, generation, "1")["outcome"],
+            "ready",
+            "setup focus settles"
+        );
+        (native, rect_a, rect_b, focused) =
+            observe_from_reply(&setup_reply, rect_a, rect_b, &focused);
+    }
+    seq += 1;
+    let stable_reply = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, generation, seq, seq, &native))
+            .expect("catch-up capture accepted"),
+    );
+    (native, rect_a, rect_b, focused) = observe_from_reply(&stable_reply, rect_a, rect_b, &focused);
+    assert_eq!(
+        focused, left,
+        "stabilized native and core focus on the published left window"
+    );
+    (left, right, native, rect_a, rect_b, focused, seq + 1)
+}
+
+#[test]
+fn rapid_input_live_sixty_sequence_batch_matches_serial() {
+    // Bounded OFFLINE discriminator for the live 60-command burst: ten cycles of
+    // focus-right, focus-left, resize-outwards-right, resize-inwards-right,
+    // move-right(group-with-neighbor), move-left(group-with-neighbor), all
+    // `win:{"currentFocus":true}` with resize `press:0`, driven only through the
+    // genuine broker/core lane (queue parks, capture drains, take settles; no
+    // test-side reimplementation of core action semantics).
+    // Both legs stabilize to the same left-focused native state first, with roles
+    // mapped from the ACTUAL admitted publication (live-like A-left/B-right with
+    // the left window focused). The batch leg then parks all 60 and drains in ONE
+    // capture over that stabilized report. The serial leg files one command per
+    // capture and rebuilds the next native report from each genuine publication
+    // (published frames as observed rects, the last core-issued focus effect
+    // as observed focus): an OFFLINE simulation of successful actuator settlement between
+    // slow presses, matching the contract's fresh-native-focus incorporation at
+    // each capture. Equal logical commands, subjects, press, geometry, topology,
+    // capabilities and settings. Per-command semantic outcomes plus the final
+    // logical world (foreground and frames only, excluding wire counters,
+    // revisions and operation tokens) must match; correct refusals are allowed in
+    // both legs.
+    // Resize press is 0 for every resize: out/in alternate on the same
+    // window+direction key and any membership/focus change resets the shared
+    // key-repeat counter, so each press is index 0 per
+    // `kwin/src/world-shortcuts.ts:createResizePressCounter`.
+    fn sequence() -> Vec<String> {
+        let mut out = Vec::with_capacity(60);
+        for _ in 0..10 {
+            out.push(implicit_focus_dir_cmd("right"));
+            out.push(implicit_focus_dir_cmd("left"));
+            out.push(implicit_resize_dir_cmd("right", "outwards"));
+            out.push(implicit_resize_dir_cmd("right", "inwards"));
+            out.push(implicit_move_dir_cmd("right"));
+            out.push(implicit_move_dir_cmd("left"));
+        }
+        out
+    }
+    fn logical_world(
+        focused: &str,
+        reply: &serde_json::Value,
+        what: &str,
+    ) -> (String, [i64; 4], [i64; 4]) {
+        (
+            focused.to_owned(),
+            published_rect(reply, "win-a").unwrap_or_else(|| panic!("{what} publishes win-a")),
+            published_rect(reply, "win-b").unwrap_or_else(|| panic!("{what} publishes win-b")),
+        )
+    }
+    let cmds = sequence();
+    assert_eq!(cmds.len(), 60, "ten cycles of six commands");
+
+    // Batch leg: stabilize, park all 60 with no capture between filings, drain
+    // in ONE capture over the stabilized native report.
+    let (service, generation) = discovered_service();
+    let (left, _right, stable_native, _rect_a, _rect_b, stable_focused, seq) =
+        stabilize(&service, &generation);
+    assert!(
+        stable_focused == left,
+        "stabilized start is left-focused: left={left} focused={stable_focused}"
+    );
+    for (index, cmd) in cmds.iter().enumerate() {
+        file_command(&service, &generation, &(index + 2).to_string(), cmd);
+    }
+    for n in 2..=61u64 {
+        assert_eq!(
+            take_outcome(&service, &generation, &n.to_string())["outcome"],
+            "pending",
+            "batch command {n} parks until the single capture"
+        );
+    }
+    let batch_reply = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, seq, seq, &stable_native))
+            .expect("batch capture drains all 60"),
+    );
+    let mut batch: Vec<(String, String)> = Vec::with_capacity(60);
+    for n in 2..=61u64 {
+        let take = take_outcome(&service, &generation, &n.to_string());
+        assert!(
+            take["outcome"] == "ready" || take["outcome"] == "failed",
+            "batch command {n} settles terminally: {take}"
+        );
+        batch.push(outcome_pair(&take));
+    }
+
+    // Serial leg: fresh service with identical stabilization, then one command
+    // per capture; each capture's native report is rebuilt from the previous
+    // genuine publication (settled frames and the last issued focus target).
+    let (serial, serial_gen) = discovered_service();
+    let (serial_left, _serial_right, mut native, mut rect_a, mut rect_b, mut focused, mut next) =
+        stabilize(&serial, &serial_gen);
+    assert_eq!(
+        serial_left, left,
+        "both legs stabilize to the same left role"
+    );
+    assert_eq!(
+        native, stable_native,
+        "both legs start from the same stabilized native report"
+    );
+    let mut serial_outcomes: Vec<(String, String)> = Vec::with_capacity(60);
+    let mut serial_reply = serde_json::Value::Null;
+    for (index, cmd) in cmds.iter().enumerate() {
+        let id = (index + 2).to_string();
+        file_command(&serial, &serial_gen, &id, cmd);
+        let reply = parse(
+            &serial
+                .evaluate_capture(&capture(ADAPTER, &serial_gen, next, next, &native))
+                .unwrap_or_else(|_| panic!("serial capture drains command {}", index + 1)),
+        );
+        next += 1;
+        let take = take_outcome(&serial, &serial_gen, &id);
+        assert!(
+            take["outcome"] == "ready" || take["outcome"] == "failed",
+            "serial command {} settles terminally: {take}",
+            index + 1
+        );
+        serial_outcomes.push(outcome_pair(&take));
+        (native, rect_a, rect_b, focused) = observe_from_reply(&reply, rect_a, rect_b, &focused);
+        serial_reply = reply;
+    }
+    let batch_ready = batch
+        .iter()
+        .filter(|(outcome, _)| outcome == "ready")
+        .count();
+    let serial_ready = serial_outcomes
+        .iter()
+        .filter(|(outcome, _)| outcome == "ready")
+        .count();
+    assert_eq!(
+        batch_ready, serial_ready,
+        "settled legs agree on the ready count: batch={batch:?} serial={serial_outcomes:?}"
+    );
+    assert_eq!(
+        batch_ready, 60,
+        "settled single-batch and settled serial execute every implicit command \
+         (in-batch post-prior focus resolution plus settlement-consistent native \
+         evidence); batch={batch:?} serial={serial_outcomes:?}"
+    );
+    for (index, (outcome, kind)) in batch.iter().enumerate() {
+        assert_eq!(
+            (outcome.as_str(), kind.as_str()),
+            ("ready", ""),
+            "settled batch command {} carries no reject kind: {batch:?}",
+            index + 1
+        );
+    }
+    assert_eq!(
+        batch, serial_outcomes,
+        "batch-vs-serial discriminator: same 60 implicit commands from the same \
+         stabilized left-focused state with settlement-consistent native evidence \
+         must settle identically per command"
+    );
+    assert_eq!(
+        logical_world(
+            &issued_focus_target(&batch_reply).unwrap_or_else(|| stable_focused.clone()),
+            &batch_reply,
+            "batch"
+        ),
+        logical_world(&focused, &serial_reply, "serial"),
+        "final logical world (foreground and frames) matches between batch and serial"
+    );
+}
+
+#[test]
+fn rapid_input_live_split_batch_unchanged_focus_matches_one_batch() {
+    // Capture-boundary companion to the settled 60-command replay: the same
+    // stabilized left-focused state and the first nine implicit commands of
+    // the 60-sequence, drained either in ONE capture or SPLIT 7+1+1 across
+    // three captures while staged native focus stays UNCHANGED (lagging).
+    // Both legs must settle every command ready with identical per-command
+    // outcomes: the execution-time subject is core state for every queued
+    // command, never the lagging capture. A following CHANGED (caught-up)
+    // native control succeeds as well.
+    let (service, generation) = discovered_service();
+    let (left, _right, stable_native, _rect_a, _rect_b, stable_focused, seq) =
+        stabilize(&service, &generation);
+    assert!(
+        stable_focused == left,
+        "stabilized start is left-focused: left={left} focused={stable_focused}"
+    );
+    // First nine commands of the 60-sequence: one full cycle plus focusR,
+    // focusL, resizeR-out.
+    let cmds = vec![
+        implicit_focus_dir_cmd("right"),
+        implicit_focus_dir_cmd("left"),
+        implicit_resize_dir_cmd("right", "outwards"),
+        implicit_resize_dir_cmd("right", "inwards"),
+        implicit_move_dir_cmd("right"),
+        implicit_move_dir_cmd("left"),
+        implicit_focus_dir_cmd("right"),
+        implicit_focus_dir_cmd("left"),
+        implicit_resize_dir_cmd("right", "outwards"),
+    ];
+    // One-batch leg: all nine park, one capture over the stabilized
+    // unchanged native drains them through in-batch post-prior focus.
+    for (index, cmd) in cmds.iter().enumerate() {
+        file_command(&service, &generation, &(index + 2).to_string(), cmd);
+    }
+    service
+        .evaluate_capture(&capture(ADAPTER, &generation, seq, seq, &stable_native))
+        .expect("nine-command batch drains");
+    let mut one: Vec<(String, String)> = Vec::with_capacity(9);
+    for n in 2..=10u64 {
+        let take = take_outcome(&service, &generation, &n.to_string());
+        assert_eq!(
+            take["outcome"], "ready",
+            "one-batch command {n} settles: {take}"
+        );
+        one.push(outcome_pair(&take));
+    }
+    // Split leg: fresh service, same stabilization, same commands split 7+1+1
+    // across three captures carrying the SAME unchanged native report.
+    let (split, split_gen) = discovered_service();
+    let (split_left, _split_right, split_native, _sra, _srb, mut focused, mut next) =
+        stabilize(&split, &split_gen);
+    assert_eq!(
+        split_left, left,
+        "both legs stabilize to the same left role"
+    );
+    assert_eq!(
+        split_native, stable_native,
+        "both legs start from the same stabilized native report"
+    );
+    let mut split_outcomes: Vec<(String, String)> = Vec::with_capacity(9);
+    for (index, cmd) in cmds[0..7].iter().enumerate() {
+        file_command(&split, &split_gen, &(index + 2).to_string(), cmd);
+    }
+    let leg1 = parse(
+        &split
+            .evaluate_capture(&capture(ADAPTER, &split_gen, next, next, &split_native))
+            .expect("split seven-command batch drains"),
+    );
+    next += 1;
+    for n in 2..=8u64 {
+        let take = take_outcome(&split, &split_gen, &n.to_string());
+        assert_eq!(
+            take["outcome"], "ready",
+            "split head command {n} settles: {take}"
+        );
+        split_outcomes.push(outcome_pair(&take));
+    }
+    focused = issued_focus_target(&leg1).unwrap_or(focused);
+    file_command(&split, &split_gen, "9", &cmds[7]);
+    let leg2 = parse(
+        &split
+            .evaluate_capture(&capture(ADAPTER, &split_gen, next, next, &split_native))
+            .expect("split single-command capture drains"),
+    );
+    next += 1;
+    let middle = take_outcome(&split, &split_gen, "9");
+    assert_eq!(
+        middle["outcome"], "ready",
+        "cross-capture implicit command keeps its core subject over unchanged native: {middle}"
+    );
+    split_outcomes.push(outcome_pair(&middle));
+    focused = issued_focus_target(&leg2).unwrap_or(focused);
+    file_command(&split, &split_gen, "10", &cmds[8]);
+    let leg3 = parse(
+        &split
+            .evaluate_capture(&capture(ADAPTER, &split_gen, next, next, &split_native))
+            .expect("split trailing capture drains"),
+    );
+    next += 1;
+    let tail = take_outcome(&split, &split_gen, "10");
+    assert_eq!(
+        tail["outcome"], "ready",
+        "trailing implicit command keeps its core subject over unchanged native: {tail}"
+    );
+    split_outcomes.push(outcome_pair(&tail));
+    focused = issued_focus_target(&leg3).unwrap_or(focused);
+    assert_eq!(
+        split_outcomes, one,
+        "split batches over unchanged native match the one-batch leg per command"
+    );
+    // CHANGED control: the same resize shape with caught-up native evidence
+    // (frames plus the last core-issued focus target) succeeds as well.
+    let ra = published_rect(&leg3, "win-a").expect("split publishes win-a");
+    let rb = published_rect(&leg3, "win-b").expect("split publishes win-b");
+    let changed_native = inner_report_closed_focused(
+        &[window_json_rect("win-a", ra), window_json_rect("win-b", rb)],
+        &[],
+        &focused,
+    );
+    file_command(
+        &split,
+        &split_gen,
+        "11",
+        &implicit_resize_dir_cmd("right", "outwards"),
+    );
+    split
+        .evaluate_capture(&capture(ADAPTER, &split_gen, next, next, &changed_native))
+        .expect("changed-native capture drains");
+    let fresh = take_outcome(&split, &split_gen, "11");
+    assert_eq!(
+        fresh["outcome"], "ready",
+        "same implicit resize with caught-up native evidence succeeds: {fresh}"
+    );
+}

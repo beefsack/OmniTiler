@@ -1199,3 +1199,290 @@ fn keyboard_resize_singleton_no_neighbor_v4_stays_operation_refused() {
         Err((kind, message)) => panic!("v4 refusal maps in-band, got {kind}: {message}"),
     }
 }
+
+fn v4issue(report: &WorldReportV4) -> EventIssue {
+    EventIssue {
+        owner: OwnerId::parse("adapter-1").expect("owner"),
+        correlation: CorrelationId::parse(&report.request_id).expect("correlation"),
+    }
+}
+
+fn v4verbatim_kind(engine: &mut WorldEngine, seq: u64, command: &WorldCommand) -> &'static str {
+    // The verbatim internal cause comes from the command seam itself, never
+    // from a hand-picked test string (same pattern as the legacy diagnostic
+    // test above).
+    match engine.execute_command(
+        &v4issue(&v4report(
+            seq,
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "w0",
+            None,
+            None,
+        )),
+        seq,
+        command,
+        &BTreeSet::new(),
+        None,
+        None,
+    ) {
+        CommandApplied::Rejected { kind, .. } => kind,
+        CommandApplied::NoEffect => panic!("expected refusal, got NoEffect"),
+        CommandApplied::Effect(_) => panic!("expected refusal, got Effect"),
+    }
+}
+
+#[test]
+fn v4_queued_resize_refusal_keeps_executing_identity_and_internal_kind() {
+    let mut engine = engine();
+    match engine.handle_report_v4_for_test(&v4report(
+        1,
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        None,
+        None,
+    )) {
+        Ok(_) => {}
+        Err((kind, message)) => panic!("v4 base accepted, got {kind}: {message}"),
+    }
+    let command = WorldCommand::Operation(CoreCommand::Resize {
+        window: "w0".to_owned(),
+        direction: "left".to_owned(),
+        mode: "outwards".to_owned(),
+        press_index: 0,
+    });
+    let kind = v4verbatim_kind(&mut engine, 2, &command);
+    // The queued batch shape carries no inline command; the per-command
+    // diagnostics bind the executing identity anyway (never the absent
+    // report pair).
+    let probe = v4report(2, vec![fact("w0", "out-a", 0)], "w0", None, None);
+    assert_eq!(
+        probe.command, None,
+        "queued batch shape carries no inline command"
+    );
+    // The drained batch settles the queued command under its own sequence
+    // with a typed refusal.
+    let queued = vec![(9, command.clone())];
+    let (outcome, settlements) = engine.handle_report_v4_batched(&probe, &v4issue(&probe), &queued);
+    let wire_kind = CommandRejectKind::parse(kind).unwrap_or(CommandRejectKind::OperationRefused);
+    match outcome {
+        crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
+        other => panic!("batch accepted, got {other:?}"),
+    }
+    assert_eq!(settlements.len(), 1, "one queued command settles once");
+    assert_eq!(
+        settlements[0].seq, 9,
+        "settlement keeps the queued sequence"
+    );
+    assert_eq!(
+        settlements[0].result,
+        Some(CommandResult::Rejected { kind: wire_kind }),
+        "settlement carries the mapped wire kind"
+    );
+    // The per-command diagnostic joins that same sequence to the resolved
+    // bookkeeping identity and the verbatim internal kind (not just the
+    // mapped wire token).
+    let bookkeeping = engine.bookkeeping_command(&command);
+    let line = engine.command_refusal_diagnostic_v4(&probe, &bookkeeping, 9, kind);
+    let wire = wire_kind.as_str();
+    for token in [
+        "cmdseq=9",
+        "op=resize",
+        "subject=w0",
+        "dir=left",
+        &format!("internal={kind}"),
+        &format!("wire={wire}"),
+    ] {
+        assert!(line.contains(token), "executing identity {token}: {line}");
+    }
+    assert!(
+        !line.contains('\n') && line.len() <= 512,
+        "bounded line: {line:?}"
+    );
+    // The queued resize keeps its staged-context detail line too, bound to
+    // the executing sequence instead of the absent report pair.
+    let detail = engine
+        .resize_refusal_diagnostic_v4_for_command(&probe, &bookkeeping, 9, kind)
+        .expect("queued resize keeps detail");
+    for token in [
+        "cmdseq=9",
+        "subject=w0",
+        &format!("internal={kind}"),
+        "homing=out-a/",
+        "subjgeom=0,0,40x90",
+    ] {
+        assert!(detail.contains(token), "staged context {token}: {detail}");
+    }
+    assert!(
+        !detail.contains("synthetic.exe") && !detail.contains("foreign-pid"),
+        "no process metadata: {detail:?}"
+    );
+}
+
+#[test]
+fn v4_command_refusal_diagnostic_covers_focus_and_move_with_actual_kind() {
+    let mut engine = engine();
+    match engine.handle_report_v4_for_test(&v4report(
+        1,
+        vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+        "w0",
+        None,
+        None,
+    )) {
+        Ok(_) => {}
+        Err((kind, message)) => panic!("v4 base accepted, got {kind}: {message}"),
+    }
+    let focus = WorldCommand::Focus {
+        window: WindowId("w-ghost".to_owned()),
+        direction: String::new(),
+    };
+    // A ghost-window local move stays production-reachable (the subject
+    // closes between park and drain) and refuses through the operation
+    // route instead of the directional NoEffect-with-cause lane.
+    let mov = WorldCommand::Operation(CoreCommand::Move {
+        window: "w-ghost".to_owned(),
+        direction: "left".to_owned(),
+        cross_output_transfer: false,
+        same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
+    });
+    let focus_kind = v4verbatim_kind(&mut engine, 2, &focus);
+    let move_kind = v4verbatim_kind(&mut engine, 3, &mov);
+    let probe = v4report(
+        2,
+        vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+        "w0",
+        None,
+        None,
+    );
+    let queued = vec![(7, focus.clone()), (8, mov.clone())];
+    let (outcome, settlements) = engine.handle_report_v4_batched(&probe, &v4issue(&probe), &queued);
+    match outcome {
+        crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
+        other => panic!("batch accepted, got {other:?}"),
+    }
+    assert_eq!(settlements.len(), 2, "every queued command settles once");
+    for settlement in &settlements {
+        assert!(
+            matches!(settlement.result, Some(CommandResult::Rejected { .. })),
+            "seq {} settles refused; got {:?}",
+            settlement.seq,
+            settlement.result
+        );
+    }
+    for (seq, command, kind) in [(7, &focus, focus_kind), (8, &mov, move_kind)] {
+        let bookkeeping = engine.bookkeeping_command(command);
+        let line = engine.command_refusal_diagnostic_v4(&probe, &bookkeeping, seq, kind);
+        let wire = CommandRejectKind::parse(kind)
+            .unwrap_or(CommandRejectKind::OperationRefused)
+            .as_str();
+        for token in [
+            format!("cmdseq={seq}"),
+            "subject=w-ghost".to_owned(),
+            format!("internal={kind}"),
+            format!("wire={wire}"),
+        ] {
+            assert!(line.contains(&token), "refusal joins seq {seq}: {line}");
+        }
+        assert!(
+            !line.contains('\n') && line.len() <= 512,
+            "bounded line: {line:?}"
+        );
+    }
+    let focus_line = engine.command_refusal_diagnostic_v4(
+        &probe,
+        &engine.bookkeeping_command(&focus),
+        7,
+        focus_kind,
+    );
+    assert!(focus_line.contains("op=focus"), "focus op: {focus_line}");
+    let move_line = engine.command_refusal_diagnostic_v4(
+        &probe,
+        &engine.bookkeeping_command(&mov),
+        8,
+        move_kind,
+    );
+    assert!(
+        move_line.contains("op=move") && move_line.contains("dir=left"),
+        "move op and direction: {move_line}"
+    );
+    // Non-resize commands keep no resize detail line.
+    assert_eq!(
+        engine.resize_refusal_diagnostic_v4_for_command(
+            &probe,
+            &engine.bookkeeping_command(&focus),
+            7,
+            focus_kind
+        ),
+        None,
+        "focus keeps the generic line only"
+    );
+}
+
+#[test]
+fn v4_command_refusal_diagnostic_is_safe_bounded_and_pure() {
+    let mut engine = engine();
+    match engine.handle_report_v4_for_test(&v4report(
+        1,
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        None,
+        None,
+    )) {
+        Ok(_) => {}
+        Err((kind, message)) => panic!("v4 base accepted, got {kind}: {message}"),
+    }
+    let mut probe = v4report(2, vec![fact("w0", "out-a", 0)], "w0", None, None);
+    probe.request_id = "evil\nid".to_owned();
+    let hostile = WorldCommand::Focus {
+        window: WindowId("w\n0".to_owned()),
+        direction: "LEFT".to_owned(),
+    };
+    let line = engine.command_refusal_diagnostic_v4(&probe, &hostile, 11, "weird kind!");
+    assert!(!line.contains('\n'), "no log injection: {line:?}");
+    for token in [
+        "req=-",
+        "cmdseq=11",
+        "op=focus",
+        "subject=-",
+        "dir=-",
+        "internal=-",
+        "wire=operation-refused",
+    ] {
+        assert!(line.contains(token), "sanitized to {token}: {line}");
+    }
+    assert!(
+        !line.contains("evil")
+            && !line.contains("weird")
+            && !line.contains("synthetic.exe")
+            && !line.contains("foreign-pid"),
+        "raw injected text and process metadata never echo: {line:?}"
+    );
+    assert!(line.len() <= 512, "bounded line: {line:?}");
+    // Pure formatting: repeated calls agree and engine state is untouched,
+    // so the surviving batch settles exactly as it would without the probe.
+    let again = engine.command_refusal_diagnostic_v4(&probe, &hostile, 11, "weird kind!");
+    assert_eq!(line, again, "diagnostic is deterministic");
+    let revision_before = engine.state_revision();
+    let clean = v4report(2, vec![fact("w0", "out-a", 0)], "w0", None, None);
+    let resize = WorldCommand::Operation(CoreCommand::Resize {
+        window: "w0".to_owned(),
+        direction: "left".to_owned(),
+        mode: "outwards".to_owned(),
+        press_index: 0,
+    });
+    let queued = vec![(12, resize)];
+    let (outcome, settlements) = engine.handle_report_v4_batched(&clean, &v4issue(&clean), &queued);
+    match outcome {
+        crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
+        other => panic!("batch accepted, got {other:?}"),
+    }
+    assert_eq!(settlements.len(), 1);
+    assert!(
+        matches!(settlements[0].result, Some(CommandResult::Rejected { .. })),
+        "diagnostic probes change no outcome: {:?}",
+        settlements[0].result
+    );
+    assert!(
+        engine.state_revision() > revision_before,
+        "only the batch advances revision"
+    );
+}

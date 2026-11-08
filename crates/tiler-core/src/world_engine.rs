@@ -161,6 +161,12 @@ const RESIZE_REFUSAL_DIAG_LEAVES: usize = 16;
 /// Truncation marker; the byte cap reserves exactly this length.
 const RESIZE_REFUSAL_DIAG_CUT: &str = "...";
 
+/// Diagnostic bound for one generic per-command refusal stderr line, suffix
+/// included. Covers the whole rejected-command evidence (executing identity
+/// plus the verbatim internal kind); resize commands additionally keep their
+/// existing detail line below.
+const COMMAND_REFUSAL_DIAG_MAX: usize = 512;
+
 /// Sanitized opaque id for diagnostics: the validated value or `-`.
 fn diag_id(value: &str) -> &str {
     if crate::bounds::is_opaque_id(value) {
@@ -179,6 +185,98 @@ fn diag_token(value: &str, max: usize) -> &str {
         value
     } else {
         "-"
+    }
+}
+
+/// Closed-vocabulary op token for a per-command refusal diagnostic: the
+/// top-level world command name, or the core `op` token for the operation
+/// route. Admission validates every shape, so every arm is reachable;
+/// `Implicit` unwraps to its payload (bookkeeping normally resolves it
+/// first, so that path only sees the raw inline spelling).
+fn diag_command_op(command: &WorldCommand) -> &'static str {
+    match command {
+        WorldCommand::Focus { .. } => "focus",
+        WorldCommand::Send { .. } => "send",
+        WorldCommand::SwitchView { .. } => "switch-view",
+        WorldCommand::SelectWorkspace { .. } => "select-workspace",
+        WorldCommand::SelectNumbered { .. } => "select-numbered",
+        WorldCommand::SelectRelative { .. } => "select-relative",
+        WorldCommand::SelectPrevious { .. } => "select-previous",
+        WorldCommand::SelectTrailing { .. } => "select-trailing",
+        WorldCommand::SendRelative { .. } => "send-relative",
+        WorldCommand::SendNumbered { .. } => "send-numbered",
+        WorldCommand::SetWorkspaceTiling { .. } => "set-workspace-tiling",
+        WorldCommand::ToggleWorkspaceTiling { .. } => "toggle-workspace-tiling",
+        WorldCommand::MigrateWorkspace { .. } => "migrate-workspace",
+        WorldCommand::FocusDirectional { .. } => "focus-directional",
+        WorldCommand::MoveDirectional { .. } => "move-directional",
+        WorldCommand::SendDirectional { .. } => "send-directional",
+        WorldCommand::MigrateDirectional { .. } => "migrate-directional",
+        WorldCommand::ToggleMaximize { .. } => "toggle-maximize",
+        WorldCommand::SetSticky { .. } => "set-sticky",
+        WorldCommand::ToggleSticky { .. } => "toggle-sticky",
+        WorldCommand::SetFullscreen { .. } => "set-fullscreen",
+        WorldCommand::ToggleFullscreen { .. } => "toggle-fullscreen",
+        WorldCommand::Operation(core) => core.op(),
+        WorldCommand::Implicit(inner) => diag_command_op(inner),
+    }
+}
+
+/// Window subject of a per-command refusal diagnostic, when the command
+/// names one. `Implicit` unwraps to its payload (a resolved bookkeeping
+/// command already carries the explicit subject).
+fn diag_command_subject(command: &WorldCommand) -> Option<&str> {
+    match command {
+        WorldCommand::Focus { window, .. }
+        | WorldCommand::Send { window, .. }
+        | WorldCommand::SendRelative { window, .. }
+        | WorldCommand::SendNumbered { window, .. }
+        | WorldCommand::FocusDirectional { window, .. }
+        | WorldCommand::MoveDirectional { window, .. }
+        | WorldCommand::SendDirectional { window, .. }
+        | WorldCommand::ToggleMaximize { window }
+        | WorldCommand::SetSticky { window, .. }
+        | WorldCommand::ToggleSticky { window }
+        | WorldCommand::SetFullscreen { window, .. }
+        | WorldCommand::ToggleFullscreen { window } => Some(window.0.as_str()),
+        WorldCommand::Operation(
+            crate::boundary::CoreCommand::Move { window, .. }
+            | crate::boundary::CoreCommand::Focus { window, .. }
+            | crate::boundary::CoreCommand::Resize { window, .. }
+            | crate::boundary::CoreCommand::PointerResize { window, .. }
+            | crate::boundary::CoreCommand::ToggleFloat { window, .. }
+            | crate::boundary::CoreCommand::ToggleOrientation { window, .. }
+            | crate::boundary::CoreCommand::SendToWorkspace { window, .. }
+            | crate::boundary::CoreCommand::SendToOutput { window, .. }
+            | crate::boundary::CoreCommand::DragDrop { window, .. }
+            | crate::boundary::CoreCommand::DragPreview { window, .. },
+        ) => Some(window.as_str()),
+        WorldCommand::Operation(_) => None,
+        WorldCommand::Implicit(inner) => diag_command_subject(inner),
+        _ => None,
+    }
+}
+
+/// Direction detail of a per-command refusal diagnostic, when the command
+/// carries one. Closed vocabulary on the wire; anything else sanitizes at
+/// the call site through [`diag_token`].
+fn diag_command_dir(command: &WorldCommand) -> Option<&str> {
+    match command {
+        WorldCommand::Focus { direction, .. }
+        | WorldCommand::FocusDirectional { direction, .. }
+        | WorldCommand::MoveDirectional { direction, .. }
+        | WorldCommand::SendDirectional { direction, .. }
+        | WorldCommand::MigrateDirectional { direction } => Some(direction.as_str()),
+        WorldCommand::Operation(
+            crate::boundary::CoreCommand::Move { direction, .. }
+            | crate::boundary::CoreCommand::Focus { direction, .. }
+            | crate::boundary::CoreCommand::Resize { direction, .. }
+            | crate::boundary::CoreCommand::PointerResize { direction, .. }
+            | crate::boundary::CoreCommand::MigrateWorkspace { direction },
+        ) => Some(direction.as_str()),
+        WorldCommand::Operation(_) => None,
+        WorldCommand::Implicit(inner) => diag_command_dir(inner),
+        _ => None,
     }
 }
 
@@ -285,18 +383,69 @@ impl WorldEngine {
         )
     }
 
-    /// v4 counterpart of [`WorldEngine::resize_refusal_diagnostic`].
-    pub(crate) fn resize_refusal_diagnostic_v4(
+    /// Diagnostic-only generic refusal line for one rejected v4 batch
+    /// command: the executing command sequence, the resolved bookkeeping
+    /// identity (op/subject/dir), the verbatim internal `kind`, the same
+    /// `parse`-or-default wire token production maps to, and the retained
+    /// focus. Pure formatting; the caller owns the stderr write and the
+    /// requester outcome is untouched. Always renders (never `None`), so
+    /// every refusal joins to its command even when the report carries no
+    /// inline command (queued entries) or the command is not a resize.
+    /// Ids pass the opaque gate, kinds/directions the closed gate; no
+    /// titles or process fields.
+    pub(crate) fn command_refusal_diagnostic_v4(
         &self,
         report: &WorldReportV4,
+        command: &WorldCommand,
+        command_seq: u64,
+        kind: &str,
+    ) -> String {
+        let wire = CommandRejectKind::parse(kind)
+            .unwrap_or(CommandRejectKind::OperationRefused)
+            .as_str();
+        let mut line = format!(
+            "omnitiler:command-refused req={} reqseq={} obsseq={} cmdseq={} op={} subject={} dir={} internal={} wire={wire} focused={}",
+            diag_id(&report.request_id),
+            report.request_seq,
+            report.observation_seq,
+            command_seq,
+            diag_command_op(command),
+            diag_command_subject(command).map(diag_id).unwrap_or("-"),
+            diag_command_dir(command)
+                .map(|dir| diag_token(dir, 16))
+                .unwrap_or("-"),
+            diag_token(kind, 32),
+            diag_id(&self.staged.observation.focused_global),
+        );
+        if line.len() > COMMAND_REFUSAL_DIAG_MAX {
+            let mut end = COMMAND_REFUSAL_DIAG_MAX - RESIZE_REFUSAL_DIAG_CUT.len();
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            line.truncate(end);
+            line.push_str(RESIZE_REFUSAL_DIAG_CUT);
+        }
+        line
+    }
+
+    /// v4 resize detail for the actually executing command: the same staged
+    /// context as [`WorldEngine::resize_refusal_diagnostic`] but bound
+    /// to the executing (bookkeeping-resolved) command and its sequence
+    /// instead of the report's inline pair, so queued resizes keep their
+    /// detail too. `None` for non-resize commands.
+    pub(crate) fn resize_refusal_diagnostic_v4_for_command(
+        &self,
+        report: &WorldReportV4,
+        command: &WorldCommand,
+        command_seq: u64,
         kind: &str,
     ) -> Option<String> {
         self.resize_refusal_line(
-            report.command.as_ref()?,
+            command,
             &report.request_id,
             report.request_seq,
             report.observation_seq,
-            report.command_seq,
+            Some(command_seq),
             kind,
         )
     }
@@ -1553,6 +1702,15 @@ pub struct WorldEngine {
     /// the baseline at snapshot and at run end, so genuine empty and
     /// outside-batch retained focus still fall back to staged capture.
     pub(crate) batch_command_focus: BTreeSet<WindowId>,
+    /// Resolved execution-time subject for the single implicit command
+    /// currently executing (set in the `WorldCommand::Implicit` arm,
+    /// restored after its recursive dispatch). Command-scoped proof for
+    /// [`WorldEngine::effective_operation_focus`]: only implicit execution
+    /// carries core-subject authority into the operation event focus, so
+    /// an unchanged lagging staged native never defeats the preserved
+    /// slot. Explicit seams never set it. `None` outside implicit
+    /// execution; refusal rollback restores the pre-command image with it.
+    pub(crate) implicit_event_focus: Option<WindowId>,
     /// Opt-in neutral focused-fullscreen presentation suspension (stage 5):
     /// when set, a focused surface that is truthfully fullscreen on its
     /// observed output suspends published border/underlay/pager shapes on
@@ -1871,6 +2029,7 @@ impl WorldEngine {
             implicit_focus: None,
             batch_base_focus: BTreeMap::new(),
             batch_command_focus: BTreeSet::new(),
+            implicit_event_focus: None,
             focused_fullscreen_presentation_suspension: false,
         })
     }

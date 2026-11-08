@@ -45,6 +45,20 @@ impl WorldEngine {
         domain: &DomainKey,
         staged_focus: &WindowId,
     ) -> WindowId {
+        // Command-scoped implicit subject authority: the currently executing
+        // implicit command resolved its subject from the preserved core slot
+        // before dispatch, so the operation event carries that subject even
+        // when the staged native focus lags unchanged behind it. Only the
+        // `WorldCommand::Implicit` arm sets this, and only for its own
+        // dispatch, so explicit seams keep their native gates unchanged.
+        // Guarded to the homed live subject: a subject that is empty or not
+        // homed in this domain falls through to the session logic below.
+        if let Some(subject) = self.implicit_event_focus.clone()
+            && !subject.0.is_empty()
+            && self.staged.homing.get(&subject).as_ref() == Some(&domain)
+        {
+            return subject;
+        }
         if let Some(session) = self.engine.session(domain) {
             let (focus_domain, focus_leaf) = session.focus();
             let current = match (focus_domain, focus_leaf) {

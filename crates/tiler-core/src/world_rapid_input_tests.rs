@@ -1926,3 +1926,160 @@ fn rapid_input_batch_rowcap_leaves_batch_unsettled() {
         "rowcap refusal preserves the exact cached reply"
     );
 }
+
+fn implicit_resize_press0(direction: &str, mode: &str) -> WorldCommand {
+    // Live-faithful press index: every resize in the 60-command burst carries
+    // `press:0` (out/in alternate on the same key and focus changes reset the
+    // shared key-repeat counter).
+    implicit(WorldCommand::Operation(CoreCommand::Resize {
+        window: String::new(),
+        direction: direction.to_owned(),
+        mode: mode.to_owned(),
+        press_index: 0,
+    }))
+}
+
+#[test]
+fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
+    // Capture-boundary invariant for the live 10..60 tail: after an in-batch
+    // focus reversal lands core focus on the right window while the queued
+    // native re-report stays on the left, the FIRST implicit command of the
+    // NEXT capture still executes against the preserved unlanded core choice
+    // (win-a). The execution-time subject is core state for every queued
+    // command irrespective of capture boundary; an unchanged lagging staged
+    // native never defeats it. A CHANGED (caught-up) native observation on
+    // the same slot succeeds, and an explicit by-id focus on the same stale
+    // native succeeds: the explicit seam is unaffected. Genuine no-focus and
+    // edge refusals stay intact elsewhere.
+    let mut engine = engine();
+    let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+    engine
+        .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
+        .expect("admission observes");
+    let (setup, _) = run_batched(
+        &mut engine,
+        &report(
+            2,
+            windows(),
+            "win-a",
+            Some(1),
+            Some(focus_cmd("win-b")),
+            Vec::new(),
+        ),
+        &[],
+    );
+    assert_accepted(&setup, "setup focus win-b executes");
+    assert!(has_focus_effect(&setup, "win-b"));
+    // Named left/right prerequisite before command 1: the engine inserts
+    // admitted clients into its own tiling order, so prove the plan (left
+    // is win-b, right is win-a) rather than assuming raw rect order.
+    assert_admitted_left_right(&setup, "win-b", "win-a");
+    let (caught, _) = run_batched(&mut engine, &observe(3, windows(), "win-b"), &[]);
+    assert_accepted(&caught, "native fact catches up to the pre-batch focus");
+    assert_eq!(
+        engine.implicit_focus,
+        Some(WindowId("win-b".to_owned())),
+        "precondition: slot, leaf and staged native all open on left win-b"
+    );
+    assert_eq!(
+        engine.staged.observation.focused_global, "win-b",
+        "precondition: staged native focus is left win-b"
+    );
+    // In-batch reversal: implicit focus-right moves left win-b to right
+    // win-a against the matching staged native. The unlanded choice (slot
+    // and session win-a) now leads the lagging staged native win-b.
+    let (reversal, reversal_settlements) = run_batched(
+        &mut engine,
+        &observe(4, windows(), "win-b"),
+        &[(4, implicit_focus_dir("right"))],
+    );
+    assert_eq!(
+        reversal_settlements.len(),
+        1,
+        "reversal settles exactly once"
+    );
+    assert_ready_settlement(&reversal_settlements[0]);
+    assert_eq!(
+        focus_effects(&reversal),
+        vec![&WindowId("win-a".to_owned())],
+        "reversal moves core focus to right win-a: {:?}",
+        reversal.effects
+    );
+    assert_eq!(
+        engine.implicit_focus,
+        Some(WindowId("win-a".to_owned())),
+        "reversal leaves the unlanded core choice on win-a while staged native lags win-b"
+    );
+    assert!(
+        engine.batch_command_focus.is_empty(),
+        "accepted finish clears batch-only provenance: {:?}",
+        engine.batch_command_focus
+    );
+    // STALE leg: the next capture re-reports the unchanged native focus
+    // win-b (no new information, so world_run_v4 keeps the slot win-a per
+    // the unchanged-re-report rule). The first implicit command resolves
+    // its subject from the slot (win-a) and the operation event carries the
+    // slot as its focus; the engine syncs to win-a and `propose_resize`
+    // plans. The resize grows leftwards into the neighbor: the right
+    // window's outer right edge has no planning pair in this two-window
+    // fixture, so left/outwards is the direction that plans (see the fresh
+    // leg below).
+    let (stale_reply, stale_settlements) = run_batched(
+        &mut engine,
+        &observe(5, windows(), "win-b"),
+        &[(5, implicit_resize_press0("left", "outwards"))],
+    );
+    assert_eq!(stale_settlements.len(), 1, "stale leg settles exactly once");
+    assert_ready_settlement(&stale_settlements[0]);
+    assert_accepted(
+        &stale_reply,
+        "unchanged lagging native keeps the implicit subject",
+    );
+    assert_eq!(
+        stale_reply.command_result, stale_settlements[0].result,
+        "stale-leg result rides the final publication"
+    );
+    assert_eq!(
+        engine.implicit_focus,
+        Some(WindowId("win-a".to_owned())),
+        "unchanged re-report preserves the unlanded core choice win-a"
+    );
+    // EXPLICIT control on the same stale native: a by-id focus names its
+    // own subject and never routes through the implicit slot/event-focus
+    // match, so it still succeeds. The explicit seam is unaffected.
+    let (explicit_reply, explicit_settlements) = run_batched(
+        &mut engine,
+        &observe(6, windows(), "win-b"),
+        &[(6, focus_cmd("win-a"))],
+    );
+    assert_eq!(
+        explicit_settlements.len(),
+        1,
+        "explicit control settles exactly once"
+    );
+    assert_ready_settlement(&explicit_settlements[0]);
+    assert_eq!(
+        focus_effects(&explicit_reply),
+        vec![&WindowId("win-a".to_owned())],
+        "explicit by-id focus succeeds on the same stale native: {:?}",
+        explicit_reply.effects
+    );
+    // CHANGED leg: the native fact catches up to the slot (genuine new
+    // focus event for win-a). Same slot, same command shape as the stale
+    // leg; now the event focus matches the subject and the resize plans.
+    let (fresh_reply, fresh_settlements) = run_batched(
+        &mut engine,
+        &observe(7, windows(), "win-a"),
+        &[(7, implicit_resize_press0("left", "outwards"))],
+    );
+    assert_eq!(fresh_settlements.len(), 1, "fresh leg settles exactly once");
+    assert_ready_settlement(&fresh_settlements[0]);
+    assert_accepted(
+        &fresh_reply,
+        "changed (caught-up) native lets the same implicit resize plan",
+    );
+    assert_eq!(
+        fresh_reply.command_result, fresh_settlements[0].result,
+        "final publication carries the fresh result"
+    );
+}

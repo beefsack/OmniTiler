@@ -34,8 +34,10 @@ key delivery and perceived latency remain separate acceptance checks.
 - Independent review checks the ingress encoding, ordering and native safety.
 - Scoped Rust formatting, tests, build and Clippy plus adapter typecheck, tests
   and unscoped build pass without changing existing v4 wire fixture bytes.
-- A bounded fixture-only injected-input burst establishes final native/core
-  agreement and no command refusals; physical acceptance remains user-run.
+- A bounded fixture-only injected-input burst establishes complete ordered
+  command settlement and final native/core agreement. Correct semantic refusals
+  (unchanged, no neighbour, outer edge or minimum size) are allowed; busy, dropped
+  or stale-subject refusals are not. Physical acceptance remains user-run.
 
 ## Approach
 
@@ -169,7 +171,8 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   `Meta+Shift+L`, `Meta+Shift+H`: 60 chords, 340 key events, one injection.
 - PASS, delivery and terminal accounting: all 60 callbacks and queue identities
   1 through 60 appear exactly once, with no missing identity or busy refusal.
-  Every identity has a terminal Take result. FAIL, no-refusal acceptance: only
+  Every identity has a terminal Take result. The initial blanket no-refusal
+  check did not pass: only
   identities 1 through 9 are READY; 10 through 60 fail `operation-refused`.
   Repeated terminal reads produce 13 READY and 77 failed log lines, not 90
   distinct commands. The first observed failing prefix ends at command 10,
@@ -206,7 +209,61 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   were left untouched. Raw basis: `dev-off.log`, `fixture-shutdown.json`,
   `desktops-final.json`, `current-final.json`, `restore-build.log`,
   `dev-status-final.txt`.
-- The no-refusal live criterion remains failed and needs bounded diagnosis of
-  the observed prefix before another acceptance leg. Latest-only native-history,
-  physical-key and perceived-latency acceptance remain unproved. Injected input
-  does not close physical or perceived acceptance; this note remains active.
+- The blanket no-refusal criterion is superseded by semantic classification
+  below. Latest-only native-history, physical-key and perceived-latency acceptance
+  remain unproved. Injected input does not close physical or perceived acceptance;
+  this note remains active.
+
+## Offline refusal diagnosis and capture-boundary correction
+
+- Correct edge, no-neighbour, unchanged and minimum-size outcomes are not
+  defects. The retained burst summaries contain only `operation-refused`, not
+  the internal reason or complete capture reports, so they cannot classify all
+  51 live refusals. The queued resize diagnostic also reads `report.command`,
+  which is absent when commands arrive through the queue; its internal-reason
+  line is therefore absent from this earlier evidence. No exact live attribution
+  is claimed from the reconstructed cases.
+- The genuine service/broker/core replay now compares the same 60-command
+  sequence as one batch and one command per capture with settled native feedback
+  from published frames and issued focus effects. Both legs return 60 READY
+  results and the same final focus/frames. Initial test setup incorrectly reused
+  stale native reports as a slow-input oracle and assumed native geometry fixed
+  core insertion order; those premises were corrected. Presentation foreground
+  is not an issued-focus-effect oracle.
+- A separate split-batch regression reproduces a real defect: implicit focus
+  changes the preserved core subject, then the next capture re-reports unchanged
+  lagging native focus. The next implicit resize resolves the preserved subject
+  but its internal operation event carries the lagging native focus, causing
+  `focus-mismatch`, normalized to `operation-refused`. This is not an edge or
+  minimum-size refusal and requires native settlement before another queued
+  batch can proceed, contrary to execution-time core-focus semantics.
+- RED: the core capture-boundary regression refuses the expected READY resize;
+  the service one-batch versus split-batch regression diverges on the first
+  post-boundary implicit command. The settled 60-command replay remains green.
+  An initial correction marking only in-batch focus provenance leaves these
+  failures unchanged because the observation sweep already synchronized the
+  session to the lagging capture.
+- The owning correction carries the resolved implicit subject as command-scoped
+  operation-event focus, guarded to its live homed domain, and restores that
+  context after dispatch. Raw native facts, explicit-command gates, changed
+  native-focus incorporation and genuine focus loss retain their existing
+  semantics. No transport or wire format changes are involved.
+- GREEN: 33 focused core regressions and 16 service burst tests pass, including
+  the split-batch equality and settled 60-command replay. The scoped three-package
+  Rust suite initially passes 3192 tests, including both stage5 proof files; only
+  `workspace_unsafe_posture` is excluded. Independent source review finds no
+  concrete defect in the correction.
+- Queued refusals now log the executing command sequence, resolved subject and
+  verbatim internal kind alongside the mapped wire kind. Queued resizes retain
+  their bounded staged-context detail under the same command identity, rather
+  than looking for an absent inline command. Three additional tests cover queued
+  identities, actual refusal kinds and safe formatting. Their initial RED is a
+  missing-formatter compile failure, not a second semantic reproduction.
+  Independent diagnostics review finds no blocking privacy or correctness defect;
+  emitted stderr is inspected but not asserted by the formatter tests.
+- Final seven scoped gates pass after mechanical Clippy repairs to two nested
+  diagnostic matches and a double-ended test iterator: formatting, 3195 Rust
+  tests with both stage5 proof files enabled, build, strict all-target Clippy,
+  adapter typecheck, all 1183 adapter tests and unscoped non-trace build. Protected
+  wire fixture bytes are unchanged. A bounded post-correction injected burst
+  remains pending; no final live outcome is claimed.

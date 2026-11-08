@@ -72,28 +72,43 @@ impl WorldEngine {
                         message: MSG_FOCUS,
                     };
                 };
+                // Capture-boundary subject authority: the execution-time
+                // subject is core state for every queued command in the
+                // batch, even when the staged native focus lags unchanged
+                // behind the preserved slot. Carry the resolved subject as
+                // command-scoped proof so `effective_operation_focus` puts
+                // it into the operation event instead of the lagging
+                // capture. Explicit seams never set this, so only implicit
+                // execution holds the authority; the carried value can only
+                // ever resolve to the homed live subject, never a foreign
+                // window. Restored after dispatch (and by refusal rollback),
+                // so it never leaks into sibling commands.
+                let previous = self.implicit_event_focus.replace(resolved.clone());
                 // The implicit maximize bypasses the settled-native focus
                 // gate (retained core focus is the subject proof); every
                 // other implicit command maps to its explicit form and
                 // reuses the identical dispatch.
-                if matches!(inner.as_ref(), WorldCommand::ToggleMaximize { .. }) {
-                    return self.toggle_maximize_inner(command_seq, &resolved, held_scopes, false);
-                }
-                let Some(explicit) = crate::world_report::explicit_for_implicit(inner, resolved)
-                else {
-                    return CommandApplied::Rejected {
+                let applied = if matches!(inner.as_ref(), WorldCommand::ToggleMaximize { .. }) {
+                    self.toggle_maximize_inner(command_seq, &resolved, held_scopes, false)
+                } else if let Some(explicit) =
+                    crate::world_report::explicit_for_implicit(inner, resolved)
+                {
+                    self.execute_command(
+                        issue,
+                        command_seq,
+                        &explicit,
+                        held_scopes,
+                        frozen_send_source,
+                        frozen_migration_source,
+                    )
+                } else {
+                    CommandApplied::Rejected {
                         kind: KIND_FOCUS,
                         message: MSG_FOCUS,
-                    };
+                    }
                 };
-                self.execute_command(
-                    issue,
-                    command_seq,
-                    &explicit,
-                    held_scopes,
-                    frozen_send_source,
-                    frozen_migration_source,
-                )
+                self.implicit_event_focus = previous;
+                applied
             }
             WorldCommand::Focus { window, direction } => {
                 // V4 by-id focus spells the removed direction as the

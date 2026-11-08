@@ -543,6 +543,12 @@ impl WorldEngine {
                 )
             {
                 *self = precommand;
+                crate::world_engine::emit_resize_refusal(self.command_refusal_diagnostic_v4(
+                    report,
+                    command,
+                    command_seq,
+                    reject.as_str(),
+                ));
                 self.note_command(command_seq);
                 let result = Some(CommandResult::Rejected { kind: reject });
                 crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
@@ -643,7 +649,18 @@ impl WorldEngine {
                         return (V4RunOutcome::Rejected { kind, message }, Vec::new());
                     }
                     *self = precommand;
-                    if let Some(line) = self.resize_refusal_diagnostic_v4(report, kind) {
+                    crate::world_engine::emit_resize_refusal(self.command_refusal_diagnostic_v4(
+                        report,
+                        &bookkeeping,
+                        command_seq,
+                        kind,
+                    ));
+                    if let Some(line) = self.resize_refusal_diagnostic_v4_for_command(
+                        report,
+                        &bookkeeping,
+                        command_seq,
+                        kind,
+                    ) {
                         crate::world_engine::emit_resize_refusal(line);
                     }
                     self.note_command(command_seq);
