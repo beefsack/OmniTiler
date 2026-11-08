@@ -582,9 +582,8 @@
   history, preimage API or fixture bytes changed. Shared binding construction
   replaces duplicated live-on inserts; no further obsolete caller closure was
   established for a separate cull.
-- Pending: one fixture-only orderly restart followed by sticky-off with
-  correlated protocol/storage capture and retained pre-chord focus readbacks.
-  This is not native restart acceptance; the broader note remains active.
+- Native restart/off evidence follows below. Offline gates do not establish
+  protocol/storage or physical-input acceptance; the broader note remains active.
 
 ## Sticky restart live re-check stopped before commands
 
@@ -603,6 +602,47 @@
   was removed. Fixture, input daemon and monitor processes and sockets are absent,
   the original desktop roster is retained, the unscoped non-trace bundle is
   rebuilt and production status is DOWN. KWin's owner remained unchanged.
-- The offline correction remains verified and committed. A fresh bounded native
-  restart/off leg with a verified owner-PID journal boundary, correlated capture
-  and retained pre-chord focus evidence is still required. The note stays active.
+- At that stop, native restart/off, retained pre-chord focus and complete
+  protocol capture remained unproved. The offline correction stayed verified;
+  the bounded native re-check below does not make protocol claims.
+
+## Fixture sticky restart/off re-check (2026-11-08)
+
+- PASS, bounded native journey: tiled A -> sticky-on -> one orderly production
+  stop/start -> sticky-off. Before and after restart, A had native all-desktop
+  membership, keep-above true and floating presentation with sticky intent.
+  Sticky-off returned A to its single native home, keep-above false and fresh
+  tiled admission. B remained readable and tiled, expanding while A floated and
+  contracting on release. Both output scopes remained Controlled. Prior-float
+  restart/off is covered offline, not by this native leg.
+- Exact sentinel/PID/native UUID joins preceded both chords. Exact native
+  activation and retained `focus-before-on.json` / `focus-before-off.json` show
+  A focused immediately before each injected `Meta+Shift+G`. This is not
+  physical-key acceptance or full-native-roster UUID uniqueness proof.
+- Both starts logged ready/discovered and matched dispatch/applied after fresh
+  user-journal cursors under the verified KWin D-Bus-owner PID. The restart
+  journal reports desktop and stacking preimage restoration and completion
+  before renewed above/sticky work. Independent native readbacks and presentation
+  confirm the final restored state; transient native recovery values were not
+  sampled independently. Raw basis: `before-*`, `on-*`, `restored-*`, `off-*`,
+  `start1-journal.txt`, `start2-journal.txt` and `chords1-journal.txt` /
+  `chords2-journal.txt`.
+- Planner diagnostics came from the verified owners' redirected output logs
+  (`planner1-output.log`, `planner2-output.log`); their journal streams were empty.
+  No bus monitor ran during the chords/restart. No protocol request/reply,
+  storage-ACK or no-pending-operation claim is made from these diagnostics or
+  `ReadWorldPresentation`. Spent property rows retained holds without holding
+  the output scopes or blocking sticky-off. Known load-time declaration warnings
+  and non-activatable-name errors remained; no evaluation exception was observed.
+- Capture defect: both over-captured raw monitor logs were deleted without
+  further extraction and are not acceptance evidence. The latest monitor had
+  remained running after overcapture detection; it was stopped before any chord.
+  No replacement monitor or additional filter attempt ran. A fixture credential
+  was inadvertently printed during inspection; cleanup shut down its endpoint.
+  No credential is included in repository records.
+- Cleanup verified: owned controller/Planner, fixture and input processes are
+  absent; fixture/input sockets and the exact appended desktop are removed;
+  original desktop roster/current are restored. KWin's owner is unchanged, the
+  unscoped non-trace bundle is rebuilt and final production status is DOWN.
+  This closes the bounded prior-tile native restart/off observation, not the
+  broader state-target slice, protocol/storage proof or physical-input checks.
