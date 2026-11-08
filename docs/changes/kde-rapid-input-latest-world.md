@@ -267,3 +267,42 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   adapter typecheck, all 1183 adapter tests and unscoped non-trace build. Protected
   wire fixture bytes are unchanged. A bounded post-correction injected burst
   remains pending; no final live outcome is claimed.
+
+## Post-correction staging stop (2026-11-09)
+
+- The correction is committed as `5883b47d`. The fixture-only re-check started
+  once on an appended workspace. Evaluated ready/discovered and two observation
+  dispatch/applied pairs appear under the verified KWin owner. Exact fixture
+  sentinel/PID/native-UUID joins and WindowsRunner activation of A passed;
+  fixture focus and presentation foreground agreed. Native resizability is not
+  exposed by `getWindowInfo`; only the fixture's default is established.
+- FAIL, initial-layout precondition: native and published frames agree, but B
+  is left and A right, the mirror of the required A-left/B-right start. The
+  journey stopped before input. No staging shortcut, input daemon or burst ran.
+  Raw basis: `16-info1.json`, `17-info2.json`, `18-match.json`,
+  `20-getfocus.json`, `21-pres2.json`.
+- NOT RUN, post-correction command accounting and semantic refusal counts:
+  zero commands were injected, queued or settled. There are no new refusals to
+  classify, not evidence that all 60 commands succeed. The earlier 51 remain
+  individually unclassifiable. Latest-only native history, physical-key and
+  perceived-latency acceptance also remain open. Raw basis: `planner-final.log`.
+- Diagnostic evidence shortfall: the retained journal has a `kwin_wayland` tag
+  filter, not the required unfiltered owner-PID stream; the separate
+  `QT_CATEGORY=kwin_scripting` query was omitted. A text grep is not an equivalent
+  error check. The captured pre-input window contains 129 declaration-order
+  warnings and four non-activatable-name errors, including a later pair; their
+  significance remains unclassified. No burst-window comparison exists. Raw
+  basis: `14-kwin-full.txt`.
+- Setup corrections: a local `busctl` argument-arity error was repaired before
+  any D-Bus mutation (`Properties.Set` requires `ssv`, not `ss`); native state
+  was unchanged after the rejected command. A journal-cursor formatting error
+  was corrected read-only. No effective mutation was repeated. Initial DOWN and
+  fixture PID/socket absence are transcript observations, not separately saved
+  raw files.
+- Cleanup: controller/Planner stopped, fixture shutdown accepted, original
+  workspace roster/current and KWin owner match their saved preimages, and the
+  unscoped non-trace bundle was rebuilt. Final production status DOWN was also
+  independently rechecked. Raw basis: `23-devoff.txt`, `24-shutdown.json`,
+  `27-final-roster.json`, `28-owner2.json`, `30-build.txt`, `31-devstatus.txt`.
+  The live result remains stopped/incomplete, not PASS; the change note stays
+  active.
