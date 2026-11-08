@@ -262,19 +262,32 @@ describe("world presentation subscriber", () => {
     it("hides display-only on malformed, foreign-lane, and mismatched reads", () => {
         const h = setup();
         h.sub.notifyGeneration(GEN);
+        const lastMalformed = (): string => {
+            const lines = h.logs.filter((l) => l.includes("presentation-malformed"));
+            assert.ok(lines.length > 0, "expected a malformed line");
+            return lines[lines.length - 1] as string;
+        };
         // Malformed JSON hides display-only, never resetting the stream.
         h.answerAll(() => "not-json");
         assert.ok(h.hides >= 1, "malformed hides");
         assert.equal(h.clears, 1, "rotation-only clear count unchanged by the error");
         assert.equal(h.paints.length, 0);
+        assert.ok(lastMalformed().includes("reason=invalid-reply"), "unparseable bytes name the lane refusal");
         // A queued-lane reply on the read hides too.
         h.sub.notifyInvalidated();
         h.answerAll(() => JSON.stringify({ v: 4, outcome: "queued", gen: GEN, client: "client-1", clientCmd: "1", globalCmd: "1" }));
         assert.equal(h.paints.length, 0);
+        assert.ok(lastMalformed().includes("reason=wrong-lane"), "foreign lane names the lane refusal");
         // A mismatched correlation hides instead of painting.
         h.sub.notifyInvalidated();
         h.answerAll(() => projection("pres-0-stale", "12", "12"));
         assert.equal(h.paints.length, 0);
+        assert.ok(lastMalformed().includes("reason=correlation"), "stale correlation names the lane refusal");
+        // A rotated-generation projection hides instead of painting.
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "12", "12", undefined, "gen-2"));
+        assert.equal(h.paints.length, 0);
+        assert.ok(lastMalformed().includes("reason=generation"), "rotated generation names the lane refusal");
         // The next good read repaints (no wedged clear), and an equal
         // retransmit of it never resends.
         h.sub.notifyInvalidated();
@@ -339,6 +352,10 @@ describe("world presentation subscriber", () => {
         assert.equal(h.paints.length, 1, "unexpected rejection paints nothing");
         assert.ok(h.hides > hidesBefore, "unexpected rejection hides the held paint");
         assert.ok(!h.logs.some((l) => l.includes("presentation-not-ready")), h.logs.join("\n"));
+        assert.ok(
+            h.logs.some((l) => l.includes("presentation-malformed") && l.includes("reason=unexpected-rejection")),
+            `unexpected rejection names the lane refusal: ${h.logs.join("\n")}`,
+        );
         h.sub.notifyInvalidated();
         assert.equal(h.calls.length, 1, "next event retries after the rejection");
         h.answerAll((r) => projection(r, "13", "13"));
@@ -363,6 +380,10 @@ describe("world presentation subscriber", () => {
         assert.equal(h.paints.length, 1, "foreign rejection paints nothing");
         assert.ok(h.hides > hidesBefore, "foreign rejection hides fail-closed");
         assert.ok(!h.logs.some((l) => l.includes("presentation-not-ready")), h.logs.join("\n"));
+        assert.ok(
+            h.logs.some((l) => l.includes("presentation-malformed") && l.includes("reason=unexpected-rejection")),
+            `foreign rejection names the lane refusal: ${h.logs.join("\n")}`,
+        );
         h.sub.notifyInvalidated();
         h.answerAll((r) => projection(r, "13", "13"));
         assert.equal(h.paints.length, 2, "covering paint renders after the foreign rejection");

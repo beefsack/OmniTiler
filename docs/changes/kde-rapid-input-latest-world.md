@@ -347,8 +347,9 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   `presentation-malformed recovery=hide`. Source ordering identifies the
   payload-formatter refusal and display-hide path, not a command refusal.
   The matching Planner summaries retain correlation but not reply payloads;
-  neither a defect nor an expected missing-proof outcome is established.
-  Independent evidence review confirms this unresolved display-path limit.
+  the initial evidence review left the display-path classification unresolved.
+  The offline classification below identifies the missing-proof path without
+  reconstructing the absent replies or the cause of missing native facts.
   Raw basis: `26-burst-full.txt` lines 125-126, 133-134, 228-229 and 257-258;
   `kwin/src/world-presentation.ts` payload formatting and reply handling.
 - NOT PROVEN, latest-only native history: 25 dispatches, 20 applied publications
@@ -365,6 +366,43 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   owner match their saved preimages. Unscoped non-trace build and independently
   rechecked production DOWN pass. Raw basis: `33-dev-off.txt` through
   `43-dev-status-final.txt`, including saved process/socket absence checkpoints.
-  Command settlement and final snapshot acceptance pass; display diagnostics,
-  independent native history and physical/perceived acceptance keep this note
-  active.
+  Command settlement and final snapshot acceptance pass; the live cause of
+  missing presentation proof, independent native history and physical/perceived
+  acceptance keep this note active.
+
+## Presentation refusal classification and diagnostics
+
+- Classification: expected missing-coverage fail-closed behavior, not a refusal
+  caused merely by overlapping publications. Continuity is logged only after
+  lane parsing; for genuine broker replies, the reachable formatter refusal is
+  paired-null `coveredInstance` / `coveredInvalid`. Border parsing is identical
+  in both paths, and the other formatter checks accept parser-proven shapes.
+  See `kwin/src/world-presentation.ts`, `kwin/src/world-report.ts` and
+  `crates/omnitiler/src/world_broker.rs` (`project_read`).
+- Coverage belongs to the accepted capture, not to the read flight. The broker
+  caches the projection and coverage together; unknown effect facts yield no
+  `nativeInvalidWitness` and therefore paired-null coverage. No drawable proof
+  is invented or inherited from an older publication. The four historical log
+  pairs identify this formatter path, but their absent payloads cannot establish
+  why native facts were unknown, or an actual visible dropout duration.
+- The retained production broker/adapter regression drains two queued presses
+  in one capture, serves genuine null-coverage presentation bytes during a dirty
+  read, and proves continuity-before-refusal, `reason=missing-coverage`, one
+  display-only hide and no paint. With proven effect coverage, overlapping
+  captures paint without a hide and converge with one deduplicated refetch.
+  A separate subscriber regression proves hide-after-paint and recovery.
+- Both malformed diagnostic sites now emit bounded static reasons, distinguishing
+  missing coverage, invalid shapes, wrong lanes, unexpected rejections and
+  generation/correlation mismatches. No reply bytes, titles or exception text
+  are logged. Paint, hide, ordering and coverage rules are unchanged.
+- Diagnostic negative control: removing only the reason tokens produces five
+  assertion failures among 36 targeted tests; restoring them passes the full
+  adapter suite. Independent source review's narrow test-assertion findings are
+  resolved. All seven scoped gates pass: Rust formatting, 3195 tests (both
+  stage5 proofs enabled, only `workspace_unsafe_posture` excluded), build and
+  strict all-target Clippy; adapter typecheck, 1185 tests and unscoped non-trace
+  build. Protected fixture bytes and native effect code are unchanged.
+- No additional live burst was run: this is a diagnostic-only change, not a
+  continuity fix, so disappearance of the expected missing-proof hides is not
+  an acceptance claim. A later recurrence can now name its exact refusal;
+  explaining live proof loss still requires contemporaneous facts evidence.

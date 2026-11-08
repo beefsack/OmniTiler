@@ -27,6 +27,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
+import { isWorldPresentationReply, parseWorldReply } from "../src/world-report";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -215,6 +216,13 @@ interface Harness {
     readonly answered: Set<number>;
     readonly replies: Map<number, string>;
     readonly takeReplies: string[];
+    // Presentation lane (recorded only, never auto-answered: the
+    // production subscriber stays in flight until a test forwards a read
+    // to the real broker, exactly like discover() does for DiscoverWorld).
+    readonly reads: CapturedCall[];
+    readonly readReplies: string[];
+    readonly renders: Array<{ method: string; payload: string }>;
+    readonly effectCalls: CapturedCall[];
     readonly timers: Timer[];
     readonly logs: string[];
     readonly geometryWrites: string[];
@@ -251,7 +259,7 @@ function truthfulClientFor(f: { x: number; y: number; width: number; height: num
     return { x, y, width: w, height: h };
 }
 
-async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
+async function makeHarness(focusId: string, ids: string[], opts?: { withEffectFacts?: boolean }): Promise<Harness> {
     const ws: FakeDesktop = { id: "ws1", name: "WS1" };
     const liveDesktops: FakeDesktop[] = [ws];
     const wins: FakeWindow[] = ids.map((id, i) => {
@@ -312,6 +320,10 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
         answered: new Set<number>(),
         replies: new Map<number, string>(),
         takeReplies: [],
+        reads: [],
+        readReplies: [],
+        renders: [],
+        effectCalls: [],
         timers: [],
         logs: [],
         geometryWrites,
@@ -537,6 +549,14 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
         owner: "owner-a",
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback): void => {
+            if (method === "ReadWorldPresentation") {
+                harness.reads.push({ method, payload, callback });
+                return;
+            }
+            if (method === "SetPresentation" || method === "HidePresentation" || method === "ClearPresentation") {
+                harness.renders.push({ method, payload: typeof payload === "string" ? payload : "" });
+                return;
+            }
             if (method !== "DiscoverWorld" && method !== "DescribeWorld" && method !== "QueueWorldCommand" && method !== "TakeCommandResult") {
                 return;
             }
@@ -576,6 +596,15 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
         registerShortcutFn: () => true,
         readWorkspaceModeFn: () => "per-output-local",
         readDefaultTiledFn: () => true,
+        highlightCallDbus: (_service: string, _path: string, _iface: string, method: string, ...args: ReadonlyArray<unknown>): void => {
+            const [payload] = args;
+            harness.renders.push({ method, payload: typeof payload === "string" ? payload : "" });
+        },
+        ...(opts?.withEffectFacts === true ? {
+            effectCallDbus: (_service: string, _path: string, _iface: string, method: string, payload: string, callback: (reply: unknown) => void): void => {
+                harness.effectCalls.push({ method, payload, callback });
+            },
+        } : {}),
     });
     assert.notEqual(handle, null, "world production entry starts on the fake surface");
     (harness as { handle: unknown }).handle = handle;
@@ -691,6 +720,52 @@ function takeReadys(h: Harness): Array<Record<string, unknown>> {
     return h.takeReplies
         .map((raw) => JSON.parse(raw) as Record<string, unknown>)
         .filter((r) => r["outcome"] === "ready");
+}
+
+async function flushReads(h: Harness): Promise<string[]> {
+    // Forward every pending presentation read to the retained real broker
+    // and deliver each genuine reply to its subscriber callback in call
+    // order (process lines preserve call order, like production D-Bus).
+    const pending = h.reads.splice(0);
+    const out: string[] = [];
+    for (const read of pending) {
+        const reply = await h.bridge.send("ReadWorldPresentation", read.payload);
+        h.readReplies.push(reply);
+        out.push(reply);
+        read.callback(reply);
+        h.runTimers();
+    }
+    return out;
+}
+
+function answerEffectFacts(h: Harness, invalidation: string, changed: boolean): void {
+    // Native-seam fixture (the effect service is stubbed here, as in
+    // world-entry-freshness.test.ts): answer the single held
+    // WaitPresentationFacts waiter with proven facts. Capture bytes stay
+    // genuine: only this native seam is scripted.
+    assert.equal(h.effectCalls.length, 1, "one held effect-facts waiter");
+    const wait = h.effectCalls.splice(0)[0] as CapturedCall;
+    wait.callback(JSON.stringify({
+        v: 1, instance: "effect-1", rev: "0", invalidation,
+        chord: 0, chordKnown: 0, gap: 0, width: 3, extension: -1,
+        changed: changed ? 1 : 0, superseded: 0, available: 1,
+    }));
+}
+
+async function awaitDescribeFrom(h: Harness, from: number): Promise<number> {
+    // Bounded wait for the next unanswered DescribeWorld at or after
+    // `from`: the entry dispatches on its debounce after real events.
+    for (let round = 0; round < 200; round += 1) {
+        const index = h.calls.findIndex((call, at) => at >= from && call.method === "DescribeWorld" && !h.answered.has(at));
+        if (index >= 0) {
+            return index;
+        }
+        h.runTimers();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    const tail = h.logs.slice(-12).join("\n");
+    assert.ok(false, `expected a dispatched capture through the production broker; recent logs:\n${tail}`);
+    throw new Error("unreachable");
 }
 
 async function awaitQueueCount(h: Harness, op: string, expected: number): Promise<void> {
@@ -1306,6 +1381,106 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             assert.ok(
                 h.wins.some((win) => frameOf(win).w !== (before[win.internalId] as number)),
                 "orientation rewrites geometry",
+            );
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("presentation overlap through the real broker: unproven capture hides fail-closed, proven overlap paints", async () => {
+        const h = await makeHarness("win-a", ["win-a", "win-b"], { withEffectFacts: true });
+        try {
+            const gen = await discover(h);
+            // The bind seeds presentation reads; the facts waiter is still
+            // held unanswered, so every capture so far is unproven.
+            assert.ok(h.reads.length >= 1, "bind seeds a presentation read");
+            assert.equal(h.effectCalls.length, 1, "one held effect-facts waiter");
+            // Rapid batch: two presses drain in one genuine capture, and
+            // both commands settle on the take lane.
+            h.handle.requestFocus("left");
+            h.handle.requestFocus("right");
+            await awaitQueueCount(h, "focus-directional", 2);
+            const batchIndex = await awaitDispatch(h);
+            const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(batchReply["outcome"], "rejected", "real Engine drains the batch");
+            assert.deepEqual(takeReadys(h).map((t) => t["globalCmd"]), ["1", "2"], "both batch commands settle FIFO");
+            // The overlapping publication dirtied the bind read. Serve the
+            // pending reads from the retained broker: the cache holds the
+            // batch projection with no covering witness.
+            const malformedBefore = h.logs.filter((l) => l.includes("presentation-malformed")).length;
+            const setsBefore = h.renders.filter((r) => r.method === "SetPresentation").length;
+            const hidesBefore = h.renders.filter((r) => r.method === "HidePresentation").length;
+            assert.equal(setsBefore, 0, "nothing painted before the unproven read");
+            const rawNull = await flushReads(h);
+            assert.ok(rawNull.length >= 1, "pending reads served");
+            const nullBody = JSON.parse(rawNull[rawNull.length - 1] as string) as Record<string, unknown>;
+            assert.equal(nullBody["outcome"], "presentation", "genuine broker serves the presentation lane");
+            assert.equal(nullBody["gen"], gen, "reply binds the serving generation");
+            assert.equal(nullBody["coveredInstance"], null, "unproven capture serves paired-null coverage");
+            assert.equal(nullBody["coveredInvalid"], null);
+            const parsedNull = parseWorldReply(rawNull[rawNull.length - 1] as string);
+            assert.ok(parsedNull !== null && isWorldPresentationReply(parsedNull), "null-coverage bytes pass the lane parser");
+            const continuityAt = h.logs.findIndex((l) => l.includes("presentation-continuity-during-flight"));
+            const malformedAt = h.logs.findIndex((l) => l.includes("presentation-malformed"));
+            assert.ok(continuityAt >= 0 && malformedAt > continuityAt, "formatter refusal follows dirty-flight continuity");
+            const malformed = h.logs.filter((l) => l.includes("presentation-malformed"));
+            assert.equal(malformed.length, malformedBefore + 1, "exactly one formatter refusal");
+            assert.ok((malformed[malformed.length - 1] as string).includes("recovery=hide"), "refusal hides");
+            assert.ok((malformed[malformed.length - 1] as string).includes("reason=missing-coverage"), "refusal names missing coverage");
+            assert.equal(h.renders.filter((r) => r.method === "SetPresentation").length, setsBefore, "unproven overlap paints nothing");
+            assert.equal(h.renders.filter((r) => r.method === "HidePresentation").length, hidesBefore + 1, "unproven overlap hides display-only");
+            // Settle the quiescence follow-up observation capture left
+            // unflushed by the batch flush: while any capture flight is
+            // open the entry correctly fences new dispatches, so the
+            // covering capture below needs the wire free first.
+            await h.settle();
+            // Proven leg: facts arrive, the covering capture carries the
+            // witness, and a second overlapping capture dirties the
+            // refetch read. The proven overlap must paint, never hide.
+            const callsBefore = h.calls.length;
+            answerEffectFacts(h, "5", true);
+            const coverIndex = await awaitDescribeFrom(h, callsBefore);
+            const coverReply = JSON.parse(h.replies.get(await h.flushAt(coverIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(coverReply["outcome"], "rejected", "covering capture accepted");
+            assert.equal(h.reads.length, 1, "covering acceptance re-drives one read");
+            const overFrom = h.calls.length;
+            h.fire("windowActivated");
+            const overIndex = await awaitDescribeFrom(h, overFrom);
+            assert.notEqual(
+                (JSON.parse(h.replies.get(await h.flushAt(overIndex)) as string) as Record<string, unknown>)["outcome"],
+                "rejected",
+                "overlapping capture accepted",
+            );
+            const setsBeforeProven = h.renders.filter((r) => r.method === "SetPresentation").length;
+            const hidesBeforeProven = h.renders.filter((r) => r.method === "HidePresentation").length;
+            const malformedBeforeProven = h.logs.filter((l) => l.includes("presentation-malformed")).length;
+            const rawProven = await flushReads(h);
+            assert.ok(rawProven.length >= 1, "overlapping read served");
+            const provenBody = JSON.parse(rawProven[rawProven.length - 1] as string) as Record<string, unknown>;
+            assert.equal(provenBody["coveredInstance"], "effect-1", "covering capture proves its witness");
+            assert.equal(provenBody["coveredInvalid"], "5");
+            assert.equal(
+                h.renders.filter((r) => r.method === "SetPresentation").length,
+                setsBeforeProven + 1,
+                "proven overlap paints through continuity",
+            );
+            assert.equal(
+                h.logs.filter((l) => l.includes("presentation-malformed")).length,
+                malformedBeforeProven,
+                "proven overlap never hides",
+            );
+            assert.equal(
+                h.renders.filter((r) => r.method === "HidePresentation").length,
+                hidesBeforeProven,
+                "proven overlap never hides display",
+            );
+            // The continuity refetch converges without resending.
+            const converged = await flushReads(h);
+            assert.equal(converged.length, 1, "one bounded refetch");
+            assert.equal(
+                h.renders.filter((r) => r.method === "SetPresentation").length,
+                setsBeforeProven + 1,
+                "converged refetch never resends",
             );
         } finally {
             await h.stop();

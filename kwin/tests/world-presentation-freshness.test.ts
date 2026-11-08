@@ -6,7 +6,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createWorldPresentationSubscriber } from "../src/world-presentation";
+import { createWorldPresentationSubscriber, formatPresentationPayload } from "../src/world-presentation";
 import { isWorldPresentationReply, parseWorldReply } from "../src/world-report";
 
 const GEN = "gen-1";
@@ -70,7 +70,7 @@ function projection(
 interface Call { payload: string; callback: (reply: unknown) => void }
 interface Timer { delay: number; cb: () => void; cancelled: boolean }
 
-function setup() {
+function setup(onLog?: (message: string) => void) {
     const calls: Call[] = [];
     const paints: string[] = [];
     let hides = 0;
@@ -90,7 +90,7 @@ function setup() {
         getInvalidation: () => invalidation,
         getGestureIdentity: () => liveGesture,
         isStopped: () => stopped,
-        log: () => {},
+        log: (m) => { onLog?.(m); },
         scheduleOnce: (delay, cb) => {
             const timer: Timer = { delay, cb, cancelled: false };
             timers.push(timer);
@@ -345,6 +345,54 @@ describe("world presentation freshness (production subscriber routing)", () => {
         h.answerAll((r) => projection(r, "14", "14", { coveredInvalid: "5", preview: previewB }));
         assert.equal(h.paints.length, 2, "foreign-producer stale cover never paints");
         assert.equal(h.calls.length, 0, "no refetch without a covering capture");
+    });
+
+    it("overlapping publications: dirty read served null-coverage bytes hides fail-closed, then converges", () => {
+        const logs: string[] = [];
+        const h = setup((m) => { logs.push(m); });
+        h.sub.notifyGeneration(GEN);
+        // First publication paints with proven coverage.
+        h.answerAll((r) => projection(r, "5", "5", { coveredInvalid: "5" }));
+        assert.equal(h.paints.length, 1);
+        // Hand-authored bytes in the exact broker shape for an unproven
+        // capture (paired null coverage): the lane parser accepts them,
+        // only the formatter refuses. A second notification dirties the
+        // flight first, so this also covers the continuity path.
+        h.sub.notifyInvalidated();
+        assert.equal(h.calls.length, 1, "overlapping read issued");
+        h.sub.notifyInvalidated();
+        const hidesBefore = h.hides;
+        const clearsBefore = h.clears;
+        const nullCover = (r: string): string => projection(r, "6", "6", {
+            coveredInstance: null, coveredInvalid: null,
+        });
+        // Pin the refusal to the missing-coverage gate: parser passes,
+        // formatter refuses.
+        const served = nullCover("pres-probe");
+        const parsed = parseWorldReply(served);
+        assert.ok(parsed !== null && isWorldPresentationReply(parsed), "null-coverage bytes pass the lane parser");
+        assert.equal(parsed.coveredInstance, null);
+        assert.equal(parsed.coveredInvalid, null);
+        assert.equal(formatPresentationPayload(parsed), null, "formatter refuses missing coverage only");
+        h.answerAll(nullCover);
+        assert.equal(h.paints.length, 1, "unproven overlapping publication never paints");
+        assert.equal(h.hides, hidesBefore + 1, "missing coverage hides display-only (fail-closed)");
+        assert.equal(h.clears, clearsBefore, "error-hide never resets the stream");
+        const continuityAt = logs.findIndex((m) => m.includes("presentation-continuity-during-flight"));
+        const malformedAt = logs.findIndex((m) => m.includes("presentation-malformed"));
+        assert.ok(continuityAt >= 0, "dirty flight logs continuity");
+        assert.ok(malformedAt > continuityAt, "formatter refusal follows continuity with recovery=hide");
+        assert.ok((logs[malformedAt] as string).includes("recovery=hide"));
+        assert.ok((logs[malformedAt] as string).includes("reason=missing-coverage"), "formatter names the missing-coverage refusal");
+        // Recovery: a covering publication re-drives one read that
+        // paints; the hide neither wedged nor reset the stream.
+        h.setInvalidation({ instance: "effect-1", counter: "6" });
+        h.sub.notifyInvalidated();
+        assert.equal(h.calls.length, 1, "next event retries after the fail-closed hide");
+        h.answerAll((r) => projection(r, "7", "7", { coveredInvalid: "6" }));
+        assert.equal(h.paints.length, 2, "covering paint renders after the hide");
+        const last = JSON.parse(h.paints[1] as string) as Record<string, unknown>;
+        assert.equal(last["coveredInvalid"], "6");
     });
 
     it("terminal: preview from a finished gesture strips to border/underlay", () => {

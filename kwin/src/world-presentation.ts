@@ -159,34 +159,55 @@ export interface WorldPresentationSubscriber {
 // hiding, never fabrication. Missing or invalid coverage fails closed to
 // null (never sent: no drawable coverage without proof).
 // Returns null on any unexpected shape (the caller hides instead of
-// sending).
-export function formatPresentationPayload(reply: WorldPresentationReply, includePreview = true): string | null {
+// sending), optionally reporting a bounded static reason without payload
+// bytes or exception text.
+export type PresentationFormatRefusal =
+    "bad-gen" | "missing-coverage" | "bad-border" | "bad-underlay" | "bad-preview" | "exception";
+
+export function formatPresentationPayload(
+    reply: WorldPresentationReply, includePreview = true,
+    onReason?: (reason: PresentationFormatRefusal) => void,
+): string | null {
+    const refuse = (reason: PresentationFormatRefusal): null => {
+        try {
+            onReason?.(reason);
+        } catch (error) {
+            void error;
+        }
+        return null;
+    };
     try {
         if (!isOpaqueId(reply.gen)) {
-            return null;
+            return refuse("bad-gen");
         }
         if (reply.coveredInstance === null || reply.coveredInvalid === null) {
-            return null;
+            return refuse("missing-coverage");
         }
-        const borderOut = (() => {
-            const b = parsePresentationBorder(reply.presentation.border as unknown);
-            return {
-                visible: b.visible,
-                reason: b.reason,
-                subject: b.subject,
-                outsets: b.outsets === null ? null : [...b.outsets],
-                width: b.width,
-                radius: b.radius,
-                witness: b.witness === null
-                    ? null
-                    : {
-                        win: b.witness.win,
-                        obs: b.witness.obs,
-                        frame: [...b.witness.frame],
-                        foreground: b.witness.foreground,
-                    },
-            };
-        })();
+        let borderOut: ReturnType<typeof parsePresentationBorder>;
+        try {
+            borderOut = (() => {
+                const b = parsePresentationBorder(reply.presentation.border as unknown);
+                return {
+                    visible: b.visible,
+                    reason: b.reason,
+                    subject: b.subject,
+                    outsets: b.outsets === null ? null : [...b.outsets],
+                    width: b.width,
+                    radius: b.radius,
+                    witness: b.witness === null
+                        ? null
+                        : {
+                            win: b.witness.win,
+                            obs: b.witness.obs,
+                            frame: [...b.witness.frame],
+                            foreground: b.witness.foreground,
+                        },
+                };
+            })();
+        } catch (error) {
+            void error;
+            return refuse("bad-border");
+        }
         const underlay = reply.presentation.underlay;
         const underlayOut = underlay.status === "found"
             ? {
@@ -204,11 +225,11 @@ export function formatPresentationPayload(reply: WorldPresentationReply, include
         if (underlayOut.status === "found") {
             const found = underlayOut as { status: string; win: unknown; outer: unknown; members: unknown };
             if (!isOpaqueId(found.win) || !ints(found.outer) || !Array.isArray(found.members)) {
-                return null;
+                return refuse("bad-underlay");
             }
             for (const m of found.members as ReadonlyArray<unknown>) {
                 if (!isOpaqueId(m)) {
-                    return null;
+                    return refuse("bad-underlay");
                 }
             }
         }
@@ -223,7 +244,7 @@ export function formatPresentationPayload(reply: WorldPresentationReply, include
                 producerSerial: reply.preview.producerSerial,
             };
         if (preview !== null && (!ints(preview.rect) || !isOpaqueId(preview.sourceOut) || !isOpaqueId(preview.sourceWs) || !isOpaqueId(preview.win))) {
-            return null;
+            return refuse("bad-preview");
         }
         if (
             preview !== null &&
@@ -231,7 +252,7 @@ export function formatPresentationPayload(reply: WorldPresentationReply, include
                 (preview.producerSerial !== null &&
                     (typeof preview.producerSerial !== "string" || !isCanonicalU64(preview.producerSerial))))
         ) {
-            return null;
+            return refuse("bad-preview");
         }
         return JSON.stringify({
             v: 2,
@@ -247,7 +268,7 @@ export function formatPresentationPayload(reply: WorldPresentationReply, include
         });
     } catch (error) {
         void error;
-        return null;
+        return refuse("exception");
     }
 }
 
@@ -483,8 +504,21 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
             // stale, then stand down to the next event (no self re-arm,
             // no polling; the armed watchdog was already cancelled above).
             // The last painted-or-hidden point is retained, so a stale
-            // retransmit of the same bytes can never resurrect.
-            env.log(`omnitiler:world:presentation-malformed req=${token(req)} recovery=hide`);
+            // retransmit of the same bytes can never resurrect. The reason
+            // is a bounded static token (never payload bytes).
+            let reason = "invalid-reply";
+            if (parsed !== null) {
+                if (isWorldRejection(parsed)) {
+                    reason = "unexpected-rejection";
+                } else if (!isWorldPresentationReply(parsed)) {
+                    reason = "wrong-lane";
+                } else if (parsed.gen !== boundGen) {
+                    reason = "generation";
+                } else {
+                    reason = "correlation";
+                }
+            }
+            env.log(`omnitiler:world:presentation-malformed req=${token(req)} reason=${reason} recovery=hide`);
             hideRendered();
             dirty = true;
             return;
@@ -566,9 +600,12 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
                 return;
             }
         }
-        const payload = formatPresentationPayload(parsed, previewOk);
+        let formatReason: PresentationFormatRefusal = "exception";
+        const payload = formatPresentationPayload(parsed, previewOk, (reason) => {
+            formatReason = reason;
+        });
         if (payload === null) {
-            env.log(`omnitiler:world:presentation-malformed req=${token(req)} recovery=hide`);
+            env.log(`omnitiler:world:presentation-malformed req=${token(req)} reason=${formatReason} recovery=hide`);
             hideRendered();
             dirty = true;
             return;
