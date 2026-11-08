@@ -78,18 +78,28 @@
 
 ## Retirement evidence and limits
 
-- `scripts/live-test.sh` is an inert provenance-carrier wrapper, not a native
+- (Superseded by the cull below.) `scripts/live-test.sh` was an inert provenance-carrier wrapper, not a native
   scenario runner. Its setup calls absent `start-test.sh provenance`; the
   [live guide](../live-kwin-testing.md#kwin-script-lifecycle) forbids using it.
   [README](../../README.md#live-test) still advertises it as the primary live
   path. Current executable caller evidence is its own hermetic test; references
   also occur in the guide, physical checklist and archived records.
-- Proposed cull after replacement: the obsolete wrapper and its hermetic tests,
-  with the README recipe replaced and active warnings reconciled. Keep archived
-  evidence. Audit any newly unreferenced carrier separately before removing it.
+- Culled (separate verified commit): `scripts/live-test.sh` and
+  `scripts/live-test.test.sh`. The wrapper was an inert provenance-carrier
+  wrapper, not a native scenario runner: its setup called the absent
+  `start-test.sh provenance`. Caller evidence before removal (repository-wide
+  `git grep` for the script and test names, excluding archived records): the
+  only executable reference was its own hermetic test; non-archived references
+  were the README recipe (replaced by the runner recipe), the live guide warning
+  and the physical checklist warning (both reconciled), the backlog line (not
+  edited) and this note. No justfile, CI workflow, package list or other script
+  referenced it. Archived records keep their historical mentions. The
+  provenance carrier source (`kwin/src/provenance-entry.ts`) and the
+  `start-test.sh` lifecycle stay; auditing the carrier for orphaning is a
+  separate unit.
 - Retain stage5 production-route tests, current-production `stage5-v2` recordings,
   immutable world-wire/stage5/stage5-v4 bytes and active migration records.
-  No cull or fixture regeneration has occurred.
+  No fixture regeneration has occurred.
 
 ## Acceptance and verification after selection
 

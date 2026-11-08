@@ -104,11 +104,12 @@ default above.
   unload/reload, guess an ID, or clean an unidentified occupant. Stop on any
   accounting mismatch. Require the evaluated-readiness gate below regardless
   of successful lifecycle receipts.
-- Do not use `scripts/live-test.sh run` for this procedure: its carrier setup
-  calls the absent `start-test.sh provenance` subcommand. It cannot establish
-  the claimed carrier lifecycle or controller readiness. Use the manual
-  lifecycle interface with helper accounting and the readiness gate below;
-  historical wrapper readiness flags are not acceptance evidence.
+- The obsolete `live-test.sh` carrier wrapper has been removed: its setup
+  called the absent `start-test.sh provenance` subcommand, so it never
+  established the carrier lifecycle or controller readiness. Use the manual
+  lifecycle interface with helper accounting and the readiness gate below, or
+  the fixture-driven scenario runner `scripts/kde-scenarios.mjs`; historical
+  wrapper readiness flags are not acceptance evidence.
 - The carrier (`kwin/src/provenance-entry.ts`: one
   `omnitiler:provenance-ready` line, no workspace, shortcut, timer, or D-Bus
   access) proves only its own evaluation via that single line. A carrier

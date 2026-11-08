@@ -17,7 +17,7 @@
 ### Session setup (once, repo root, inside devenv)
 
 - Preserve source/build identity, runtime float-intent store including absence, project settings, kwinrc, exact scope/filter, loaded/active effects, owned fixture/native joins, desktop/output occupancy and pointer, per the guide. Checker use is optional, never a per-leg gate; retain raw complete replies. Do not guess store paths or script IDs.
-- Start only from a verified DOWN stack. `just dev-status` is read-only. If a production script is already loaded without an authoritative exact restore route, stop: do not unload it to make room. Use the guide's receipt-bound manual lifecycle or documented scoped `just dev-on --scope-class OmniTilerTestWindow` / `just dev-off` route only after its preconditions hold. Re-prove evaluated readiness after every start. Do not use the obsolete `live-test.sh run` wrapper.
+- Start only from a verified DOWN stack. `just dev-status` is read-only. If a production script is already loaded without an authoritative exact restore route, stop: do not unload it to make room. Use the guide's receipt-bound manual lifecycle or documented scoped `just dev-on --scope-class OmniTilerTestWindow` / `just dev-off` route only after its preconditions hold. Re-prove evaluated readiness after every start.
 - Fixture T1 and T2, as in the [two-terminal recipe](../../crates/tiler-live-fixture/README.md#smoke-two-terminals-from-the-repo-root-after-an-env-restart):
 
 ```sh

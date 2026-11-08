@@ -140,44 +140,28 @@ same plugin IDs; the paths are intentionally non-coexistent and reversible.
 
 ### Live test
 
-The primary repeated live path is `scripts/live-test.sh run`: one nonce-owned
-run that performs a concise preflight (typecheck, build, tests, static scan;
-one pass/fail line per step with each step's combined output retained in
-`typecheck.txt`/`build.txt`/`tests.txt`/`static-scan.txt`), captures the exact
-baseline, then establishes and tears down only the inert checkout provenance
-carrier through `start-test.sh`. It does not load or run the controller or
-follow KWin logs.
+The repeated native KDE path is the fixture-driven scenario runner,
+`scripts/kde-scenarios.mjs`. Offline it does nothing (exit 2); `--live` runs the
+scenario against the real session. It requires a verified DOWN dev stack, starts
+the `tiler-live-fixture` server and the scoped production dev lifecycle
+(`just dev-on --scope-class OmniTilerTestWindow`), appends and uses a workspace
+beyond the whole roster, joins each fixture window to its native KWin lifetime,
+compares native frames with the published allocations exactly, then removes only
+what it owns and verifies process, socket and workspace cleanup. Only fixture
+windows are managed. The evidence directory must be absolute, canonical, outside
+the repository and not yet existing; it receives `result.json`.
 
 ```sh
-bash scripts/live-test.sh run                  # full preflight
-bash scripts/live-test.sh run --quick          # skip the full test suite
-bash scripts/live-test.sh run --verbose        # stream preflight step output
-bash scripts/live-test.sh run --quick --verbose
+devenv shell -- node scripts/kde-scenarios.mjs --live --evidence-dir ABS_PATH
+devenv shell -- node scripts/kde-scenarios.mjs --live --evidence-dir ABS_PATH --input
+devenv shell -- node --test scripts/kde-scenarios.test.mjs   # hermetic, no live effects
 ```
 
-Ctrl-C or SIGTERM stops only the exact carrier whose nonce-owned receipt was
-retained by the run, prints final status/diagnostics/desktops, and verifies
-exact project baseline restoration. The installed controller plugin state is
-observed and verified, never disabled, enabled, or reconfigured. The checkout
-carrier is bound operationally through its unguessable per-attempt plugin
-identity, exact `Script<ID>`, receipt, diagnostic, and unchanged KWin identity;
-this is not direct evaluated-memory source proof. Evidence is retained under
-`${XDG_RUNTIME_DIR:-/tmp}/omnitiler-live/<nonce>`. The carrier setup
-output is retained at `provenance.txt`; if no exact script ID is returned,
-cleanup refuses stale handle use. A `manifest.txt` retains the nonce, KWin PID,
-journal cursor, mode, observed controller state, carrier identity and cleanup,
-and exact baseline restoration result even when stdout is redirected away. The
-run never mutates shortcut records (drift is reported, not auto-applied) and
-never rolls back Custom Tile topology changes or persisted shortcuts made
-during the session. No Custom Tile runtime acceptance or journey is performed
-or claimed. Read
-`docs/live-kwin-testing.md` before any live run; the low-level
-`scripts/start-test.sh` commands remain the manual reference.
-
-After static checks, the next gate is a successful bounded carrier
-lifecycle setup/restore smoke. It establishes only operational binding, not
-direct evaluated-memory source proof. A separately authorized Custom Tile
-journey is a later gate and has not occurred.
+`--input` additionally starts and cleans up the `ydotoold` input daemon (lifecycle
+only until a scenario injects input). The scoped dev-on bakes the fixture scope into the KWin bundle, so
+rebuild the unscoped bundle afterwards (`env OMNITILER_SCOPE_CLASS= npm --prefix
+kwin run build`). Read `docs/live-kwin-testing.md` before any live run; the
+low-level `scripts/start-test.sh` commands remain the manual reference.
 
 ### Development entry point (`just dev`)
 
