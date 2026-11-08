@@ -80,15 +80,27 @@
   frame convergence and physical border/underlay paint after the change. Smallest
   check: two fixture windows on one output, observe frames and loaded-effect
   presentation, change display scale once, verify logical gaps/styles and native
-  convergence, then restore the display setting. No native test has run here.
+  convergence, then restore the display setting. Scale/mode changes remain
+  untested; the bounded current-scale check below does not close them.
 
-## Current-scale native check not run
+## Current-scale fixture check (2026-11-08)
 
-- The proposed two-output, different-scale check did not reach fixture staging.
-  The production lifecycle's desktop command exposes the roster, not
-  sticky-inclusive occupancy or fixture workspace placement. The existing
-  baseline helper collects broader foreign-window facts rather than an
-  occupancy-only result; no new capture was taken.
-- Per-output frames, cross-output convergence and border/underlay paint remain
-  unverified. No display setting changed. The unscoped non-trace bundle was
-  rebuilt; controller and Planner status remained down.
+- PASS, bounded geometry: two exact fixture sentinel/PID/native-lifetime joins
+  tiled on an appended workspace. Planner logical frames matched native outer
+  frames. At scale 1.25, observed physical inner size `[1255,1325]` divided by
+  scale matched logical inner size `[1004,1060]`; outer chrome is separate.
+- PASS, current-scale cross-output convergence: production `send-directional`
+  with follow moved the same fixture lifetime from scale 1.25 to 1.0 and back.
+  Destination native outer frame `[2056,124,1904,1020]` matched the projection;
+  observed inner size was `[1896,988]` at scale 1.0. Returning restored the
+  original tiled frame and scale 1.25. Raw basis: `host-extra-pres-after-cross`,
+  `host-extra-native-a-after-cross`, `host-extra-fixture-after-cross` and
+  corresponding `after-back` JSON captures, retained outside the repository.
+- An earlier same-output `send` trial used the wrong route for an output move;
+  its queued no-op is not classified as a product defect.
+- NOT RUN: physical border/underlay geometry, heterogeneous-output paint and
+  actual scale/mode-change notifications. No display setting changed and no
+  native effect was loaded in the real session. This note remains active.
+- Cleanup passed: fixtures and the appended workspace removed, original current
+  workspace restored, owned controller/Planner stopped, unscoped non-trace bundle
+  rebuilt. Final production status was DOWN.

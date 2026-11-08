@@ -66,11 +66,31 @@
   unchanged requester mapping. Detailed classification awaits the user re-check.
   This note stays active. No root-cause or resize defect fix is claimed.
 
-## Subsequent input check not run
+## Injected shortcut evidence (2026-11-08)
 
-- No resize shortcut was delivered: fixture workspace staging was not
-  established, and no synthetic keyboard/mouse injection tool was available in
-  the development environment. No physical input was tested either.
-- No new refusal diagnostic or classification evidence was collected. Direct
-  command ingress would not establish shortcut-callback or physical-key
-  acceptance. The real-key re-check remains pending; no resize defect is claimed.
+- PASS, actual callback route: fixture-focused ydotool input traversed
+  libinput/xkb and production resize shortcuts. This is injected input, not
+  direct queue ingress and not physical-key acceptance. The development
+  dependency was available through the re-evaluated environment.
+- A singleton grow-left produced a complete 486-byte diagnostic:
+  `internal=unchanged wire=operation-refused`, matching observed/retained focus,
+  singleton leaf and native unchanged frame. With no shared boundary, this is
+  an expected no-op, not a resize defect.
+- With two ordinary tiles, right-tile grow-left moved the shared boundary by
+  12 logical pixels: right tile x/width `1028/1012 -> 1016/1024`, left width
+  `1012 -> 1000`. Native frames independently confirm success.
+- Right-tile grow-right then preserved both frames and emitted a complete
+  589-byte `unchanged`/`operation-refused` diagnostic with both staged rows and
+  the horizontal root/leaf index. This sample is an outer-edge no-op, not
+  minimum/maximum exhaustion or a demonstrated policy defect.
+- An additional directional-focus/resize success was reported, but its final
+  native frame pair was not retained and is not accepted as geometry evidence.
+  It was focus selection within one populated workspace, NOT a populated-workspace
+  switch; after-populated-workspace-selection evidence remains NOT RUN.
+  These simple-root samples do not classify nested groups.
+- Raw basis: `leg4-refusal-*`, `leg4-growCleft-native-*` and bounded Planner
+  callback/result captures retained outside the repository. Physical input and
+  broader refusal classification remain open; no resize fix is claimed.
+- Cleanup passed: owned input daemon/socket, fixture windows/process/socket,
+  controller/Planner and appended workspace removed; original current workspace
+  restored. Unscoped non-trace build succeeded and final dev status was DOWN.

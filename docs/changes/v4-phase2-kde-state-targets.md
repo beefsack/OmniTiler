@@ -375,11 +375,36 @@
   is down and the unscoped/non-trace bundle is restored. The native proof remains
   incomplete and this note remains active.
 
-## Subsequent native check not run
+## Fixture native results (2026-11-08)
 
-- No state transition or startup-restoration journey started: sticky-inclusive
-  occupancy and fixture placement beyond the desktop roster were not established
-  through the production lifecycle and fixture interfaces. No native acceptance
-  condition is closed by this check, and no new state-target defect is claimed.
-- No fixtures or desktops were created. The unscoped non-trace bundle was
-  rebuilt; controller and Planner status remained down.
+- PASS, entry: on an appended workspace, fixture-focused ydotool input reached
+  the actual maximize/fullscreen callbacks. Native maximize axes changed from
+  zero to full maximize, then fullscreen became true with an output-sized frame.
+  Input was injected through libinput/xkb, not physical-key acceptance.
+- FAIL, exit: ordinary tile -> maximize-on -> fullscreen-on -> fullscreen-off
+  returned `state-unknown`; maximize-off returned the same failure. Native
+  fullscreen/maximize remained set. This reproducible exit defect is recorded
+  only; no product fix was attempted. Raw basis: `leg2-*` native captures and
+  `leg2-state-journal-full.log` command/result lines.
+- PASS, bounded startup recovery: one orderly production stop/start seeded the
+  stored maximize/fullscreen preimage, restored both original properties, then
+  logged newer-observation matches and acknowledged persisted slot clears.
+  Final independent native readback had fullscreen false, both maximize axes
+  zero and the original tiled frames. This proves these two touched-property
+  restores, not desktop/stacking recovery or compositor-restart recovery.
+- PASS, sticky/above acquisition: an independent ordinary-base sticky-on
+  callback produced native all-desktop membership and keep-above true.
+  FAIL, sticky release: sticky-off returned `scope-held`; presentation held the
+  output as `incomplete-inventory` and both fixture rows as unreadable, while
+  native sticky/above remained set. Raw basis: `host-extra-leg2-*` native,
+  presentation and callback journal captures. Cause is not established.
+- Ending that exact sticky fixture lifetime cleared the hold; the surviving
+  ordinary fixture reflowed and later shared-boundary resize callbacks succeeded.
+  This is lifetime cleanup, not successful sticky-off or above release.
+- NOT RUN: independent float on/off, above release and sticky/stacking startup
+  restoration. The earlier float/sticky refusals while fullscreen was stuck are
+  not independent state-target evidence. Physical-key acceptance remains open.
+- Cleanup passed: fixtures, owned controller/Planner and appended workspace
+  removed, original current workspace restored, unscoped non-trace bundle
+  rebuilt; final production status DOWN. Both defects remain unfixed and this
+  note remains active.

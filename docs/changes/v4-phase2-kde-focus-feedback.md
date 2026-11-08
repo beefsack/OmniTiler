@@ -418,13 +418,37 @@
   gates. No new product finding remains from offline verification. All live
   native gates above remain open and user-run; this note remains active.
 
-## Subsequent native check not run
+## Bounded nested check (2026-11-08)
 
-- No native-effect or interaction journey started. Fixture workspace staging
-  was not established, and the production lifecycle has no integrated nested
-  acceptance runner. No keyboard or mouse input was injected.
-- Frame follow without a broker round trip, minimize restore, version-mismatch
-  hiding, K5/R20, drag/resize release and cancel, and cross-output paint remain
-  open. No new rendering defect or dropout measurement is claimed.
-- No effect, fixtures or desktops were created. The unscoped non-trace bundle
-  was rebuilt; controller and Planner status remained down.
+- Production planner/controller and the staged native effect ran in a private
+  nested compositor. Effect preflight/load/unload succeeded. Fixture-only native
+  lifetime/frame joins agreed with projected border subject, foreground and
+  witness frame; closing the foreground fixture moved those projected values
+  to its peer. Native minimize readback was true and the surviving tile expanded.
+  These are wire/native-state agreements, not observed border paint.
+- The execution report records a version-1 `SetPresentation` call returning
+  without a D-Bus error; its empty output file alone does not retain exit status.
+  Subsequent tiling projections continued and controller/effect readbacks were
+  loaded.
+  No independent all-surface hide or effect-side quietness observation was
+  captured, so version-mismatch native acceptance remains UNPROVED.
+- Pausing/resuming only the nested Planner left the fixture responsive, but no
+  frame mutation plus independent rendered-border observation occurred during
+  the pause. This does not prove follow without a broker round trip.
+- Native minimize restore was explicitly unsupported by the Wayland fixture;
+  NOT RUN: successful restore, foreground maximize hide/re-arm, full K5/R20 join,
+  interactive drag and edge/corner resize release/cancel, dropout duration/rate,
+  and heterogeneous-output paint. No nested input was injected. A non-foreground
+  native maximize/unmaximize does not close foreground eligibility acceptance
+  or reproduce the separate maximize/fullscreen exit defect.
+- Evidence limitation: the retained compositor-environment capture was truncated
+  and omitted three private XDG values; host configuration lookup paths remained
+  inherited. Private launch arguments, bus, runtime socket and config were
+  retained, and the execution report describes live environment checks, but the
+  full isolation checkpoint is not accepted as durable evidence. No retry ran.
+  Host compositor configuration hash/mtime were unchanged.
+- Raw basis: nested `pres-*`, `native-*`, fixture replies and effect lifecycle
+  logs retained outside the repository. Owned nested processes, fixture socket,
+  controller receipt and effect were removed. Final host teardown also completed
+  and the unscoped non-trace bundle was rebuilt. All native rendering acceptance
+  remains open; this note stays active.
