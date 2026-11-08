@@ -408,3 +408,46 @@
   removed, original current workspace restored, unscoped non-trace bundle
   rebuilt; final production status DOWN. Both defects remain unfixed and this
   note remains active.
+
+## Exit and sticky-release diagnosis
+
+- Fullscreen exit is blocked by the KDE encoder's unconditional
+  `fullscreenExitable:null` (`world-report.ts`, `encodeV4WindowRow`). Core
+  requires positive exitability for fullscreen-off and maximize's fullscreen
+  clear. The captured command failures precede native preimage or setter work.
+  At the pinned KWin source, `fullScreenable` is script-readable and gates the
+  XDG fullscreen setter in both directions. Reporting this nullable native fact
+  fits the existing neutral-path availability contract; it is not completion
+  proof and does not bypass rules or readback.
+- Sticky all-desktop membership truthfully has no single `nativeWs`. The v4
+  core adoption fence (`world_run_v4.rs`) treats this missing receipt as unknown
+  and holds the retained home; `sticky_pregates` then refuses release. Output
+  publication maps any held scope to `incomplete-inventory`, so that presentation
+  label is not evidence of a separate adapter desktop-enumeration failure.
+- The parked unknown-sticky membership decision in
+  [layout and admission](../decisions/layout-and-admission.md#native-hidden-representation-and-unknown-sticky-membership)
+  must be resolved before changing this fence: whether positive all-desktop
+  facts for a known, same-lifetime core-owned sticky window may retain a usable
+  home for release while genuinely incomplete inventory and unknown newcomers
+  remain fenced. No current-desktop receipt may be fabricated.
+- These are source diagnoses supported by the retained callback and presentation
+  captures, not new regression or native acceptance evidence. No fix, RED/GREEN
+  regression, gate run or native re-check has been completed for either defect.
+
+## Verified fullscreen-exitability correction
+
+- KDE now captures nullable native `fullScreenable` and reports it as
+  `fullscreenExitable`. `fullscreenOwner` remains unknown. Missing, malformed
+  and throwing native reads remain null without holding an otherwise usable
+  report. Core exit policy, native execution and sticky behavior are unchanged.
+- Eight production capture/encoding regressions cover positive facts on ordinary,
+  fullscreen and maximized windows, false, unavailable and malformed reads,
+  throwing getters and absent ownership. Before the correction, four positive
+  or negative passthrough assertions fail with the hardcoded null; after it,
+  all 1168 adapter tests pass with zero skips.
+- Independent source review leaves no blocking finding. Scoped formatting,
+  core/protocol/service tests, locked build and all-target clippy with warnings
+  denied pass; only `workspace_unsafe_posture` is excluded. Adapter typechecking,
+  tests and the unscoped/non-trace build pass. No native-effect or fixture bytes
+  changed. Native exit and independent float on/off re-checks remain pending;
+  sticky release remains blocked on the membership decision above.

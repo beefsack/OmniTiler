@@ -149,6 +149,9 @@ export interface RawWindowFact {
     resizable: boolean | null;
     above: boolean | null;
     below: boolean | null;
+    // Neutral fullscreen-exit path availability (KWin `Window::isFullScreenable`):
+    // null when unreadable, never inferred from fullscreen state or ownership.
+    fullScreenable: boolean | null;
     role: string | null;
     appId: string | null;
     processId: string | null;
@@ -1056,6 +1059,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             const resizableV4 = lenientBool(readProp(ref, "resizeable"));
             const aboveV4 = lenientBool(readProp(ref, "keepAbove"));
             const belowV4 = lenientBool(readProp(ref, "keepBelow"));
+            const fullScreenableV4 = lenientBool(readProp(ref, "fullScreenable"));
             const kindFlag = (property: string): boolean => readProp(ref, property) === true;
             let windowTypeV4 = "other";
             if (normalWindow) {
@@ -1119,6 +1123,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 resizable: resizableV4,
                 above: aboveV4,
                 below: belowV4,
+                fullScreenable: fullScreenableV4,
                 role: roleV4,
                 appId: appIdV4,
                 processId: processIdV4,

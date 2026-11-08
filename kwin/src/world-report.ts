@@ -2555,7 +2555,7 @@ function encodeV4WindowRow(w: RawWindowFact, hostOwned: boolean): string | null 
         `"title":${w.title === null ? "null" : esc(w.title)},` +
         `"type":${esc(w.windowType)},` +
         `"activationPolicy":null,"layer":null,` +
-        `"fullscreenOwner":null,"fullscreenExitable":null,` +
+        `"fullscreenOwner":null,"fullscreenExitable":${encodeV4NullableBool(w.fullScreenable)},` +
         `"suppressionAvailable":false,` +
         `"visibility":{"visible":${encodeV4NullableBool(visible)},"suppressionOwned":false},` +
         `"lastWrite":null}`;
