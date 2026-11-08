@@ -424,15 +424,15 @@
   and holds the retained home; `sticky_pregates` then refuses release. Output
   publication maps any held scope to `incomplete-inventory`, so that presentation
   label is not evidence of a separate adapter desktop-enumeration failure.
-- The parked unknown-sticky membership decision in
+- The known all-desktop membership decision in
   [layout and admission](../decisions/layout-and-admission.md#native-hidden-representation-and-unknown-sticky-membership)
-  must be resolved before changing this fence: whether positive all-desktop
-  facts for a known, same-lifetime core-owned sticky window may retain a usable
-  home for release while genuinely incomplete inventory and unknown newcomers
-  remain fenced. No current-desktop receipt may be fabricated.
+  now preserves an already retained same-lifetime home without fencing its
+  scope, regardless of native or core sticky origin. Unknown/missing membership
+  and newcomers without a home keep existing fences. No current-desktop receipt
+  may be fabricated.
 - These are source diagnoses supported by the retained callback and presentation
-  captures, not new regression or native acceptance evidence. No fix, RED/GREEN
-  regression, gate run or native re-check has been completed for either defect.
+  captures, not new regression or native acceptance evidence. Corrections and
+  their separate verification appear below.
 
 ## Verified fullscreen-exitability correction
 
@@ -450,7 +450,7 @@
   denied pass; only `workspace_unsafe_posture` is excluded. Adapter typechecking,
   tests and the unscoped/non-trace build pass. No native-effect or fixture bytes
   changed. Native exit and independent float on/off re-checks remain pending;
-  sticky release remains blocked on the membership decision above.
+  sticky release is addressed by the separate correction below.
 
 ## Fixture exit and float re-check (2026-11-08)
 
@@ -478,6 +478,30 @@
 - Cleanup passed: owned controller, Planner, fixture and input daemon stopped;
   fixture/input sockets removed; appended workspace removed and original
   current workspace restored. The unscoped non-trace bundle was rebuilt and
-  final production status was DOWN. No sticky-on ran; sticky release and its
-  membership decision remain open, as do sticky/stacking startup restoration
+  final production status was DOWN. No sticky-on ran; sticky release remained
+  unverified in this leg, as did sticky/stacking startup restoration
   and physical-key acceptance. This note remains active.
+
+## Verified sticky-release correction
+
+- The v4 adoption fence now exempts positive all-desktop membership only when
+  the same lifetime already has a retained home. It neither fabricates a logical
+  receipt nor branches on sticky origin. Unknown membership, homeless newcomers,
+  native-order conflict and independent inventory/held-window gates stay intact.
+- Before the correction, both core-on/off and native-set-sticky/off regressions
+  reach the actual off command and fail with `ScopeHeld`. After the correction,
+  all five targeted tests pass: off publishes Controlled native clear authority,
+  correlated clear settles, prior tiled membership fresh-admits, prior float
+  remains float, and the tiled sibling remains readable. Unknown false/null
+  sticky membership and all three missing-receipt spellings retain their fences;
+  an all-desktop newcomer invents no home.
+- Independent review has no blocking finding. The legacy accepted-run fence is
+  not changed by this v4 correction; its removal belongs to the separate legacy
+  retirement work. No obsolete mechanism with proven caller closure was found
+  for a separate cull. Wire, codec, history and fixture bytes are unchanged.
+- Scoped formatting, core/protocol/service tests, locked build and all-target
+  clippy with warnings denied pass; only `workspace_unsafe_posture` is excluded.
+  Core unit tests pass 2018/2018. Adapter typechecking, 1168/1168 tests with zero
+  skips and the unscoped/non-trace build pass. Native sticky release and bounded
+  sticky/stacking startup restoration remain the next evidence gates; no live
+  pass is claimed for this correction yet.

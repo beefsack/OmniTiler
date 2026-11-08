@@ -209,7 +209,17 @@ impl WorldEngine {
                     continue;
                 }
                 if let Some(key) = self.staged.homing.get(window) {
-                    fence.push(key.clone());
+                    // Retained all-desktop home: positive sticky with no
+                    // single native workspace keeps its already-retained
+                    // same-lifetime home without fencing the scope.
+                    // Unknown/missing membership and newcomers with no
+                    // home stay fenced.
+                    let all_desktop = fact.sticky == Some(true)
+                        && fact.native_workspace.as_deref().is_none()
+                        && self.core_homing(window).is_some();
+                    if !all_desktop {
+                        fence.push(key.clone());
+                    }
                 }
             }
             if self.native_order_conflict() {

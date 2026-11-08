@@ -9,13 +9,15 @@ use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::ids::{CorrelationId, OwnerId};
 use crate::intent_data::{IntentData, encode_intent_data};
-use crate::world_directional::tests::{fact, screen};
+use crate::world_directional::tests::{fact, float_fact, screen};
 use crate::world_engine::{EventIssue, WorldEngine};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, EffectKind, FrameAttempt, FrameSetter, HeldPresentationRow,
-    HeldWindowRow, IntentRecord, PresentationIngressV4, PresentationPagerFrameV4,
+    AttemptOutcome, AuthorityScope, CommandRejectKind, CommandResult, EffectKind, FrameAttempt,
+    FrameSetter, HeldPresentationRow, HeldWindowRow, IntentRecord, NativeObservation,
+    NativeOccupancy, NativeWorkspaceFact, PresentationIngressV4, PresentationPagerFrameV4,
     PresentationRowV4, RenderTarget, RendererInput, RowDiagnosticKind, ScopeAuthority,
-    ScreenReport, SendSource, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
+    ScreenReport, SendSource, StateAttempt, StateProperty, WORLD_CONTRACT_VERSION_V4, WindowFact,
+    WorldCommand, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
 
@@ -1777,4 +1779,635 @@ fn migration_unknown_minimized_refuses_before_engine_commit() {
         ids.contains(&"w2".to_owned()),
         "new window publishes: {ids:?}"
     );
+}
+
+const HOST_N1: &str = "3f9a8c1e-1111-4b2a-9c3d-0000000000d1";
+const HOST_N2: &str = "3f9a8c1e-2222-4b2a-9c3d-0000000000d2";
+
+fn host_owned_engine_v4() -> WorldEngine {
+    WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            host_owned: true,
+            native_sticky: true,
+            maximize: true,
+            fullscreen: true,
+            window_suppression: true,
+            ..HostCapabilities::default()
+        },
+    )
+    .expect("valid generation")
+}
+
+fn native_row(output: &str, order: &[&str], current: Option<&str>) -> NativeObservation {
+    NativeObservation {
+        output: OutputId(output.to_owned()),
+        native_order: order.iter().map(|s| (*s).to_owned()).collect(),
+        current_native: current.map(str::to_owned),
+        occupancy: order
+            .iter()
+            .map(|s| NativeOccupancy {
+                native: (*s).to_owned(),
+                count: None,
+            })
+            .collect(),
+    }
+}
+
+fn known_fact(window: &str, output: &str, x: i32, native: &str) -> WindowFact {
+    let mut row = fact(window, output, x);
+    row.native_workspace = NativeWorkspaceFact::Value(native.to_owned());
+    row
+}
+
+fn unknown_fact(window: &str, output: &str, x: i32, sticky: Option<bool>) -> WindowFact {
+    let mut row = fact(window, output, x);
+    row.native_workspace = NativeWorkspaceFact::Omitted;
+    row.sticky = sticky;
+    row
+}
+
+fn host_report(
+    seq: u64,
+    windows: Vec<WindowFact>,
+    focused: &str,
+    native: Vec<NativeObservation>,
+) -> WorldReportV4 {
+    let mut out = report_full(
+        seq,
+        vec![screen("out-a", 0)],
+        windows,
+        focused,
+        PresentationRowV4::Valid(ingress(focused)),
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        true,
+        None,
+    );
+    out.native = native;
+    out
+}
+
+fn host_command(
+    seq: u64,
+    windows: Vec<WindowFact>,
+    focused: &str,
+    native: Vec<NativeObservation>,
+    command_seq: u64,
+    command: WorldCommand,
+) -> WorldReportV4 {
+    let mut out = host_report(seq, windows, focused, native);
+    out.command_seq = Some(command_seq);
+    out.command = Some(command);
+    out
+}
+
+fn sticky_state_row(
+    reply: &crate::world_report::WorldReplyV4,
+    window: &str,
+) -> Option<(bool, ScopeAuthority, Option<u64>)> {
+    reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == window)
+        .and_then(|row| {
+            row.state
+                .iter()
+                .find(|target| target.property == StateProperty::Sticky)
+                .map(|target| (target.value, target.authority, target.command_seq))
+        })
+}
+
+fn scope_authority(
+    reply: &crate::world_report::WorldReplyV4,
+    output: &str,
+    workspace: &str,
+) -> Option<ScopeAuthority> {
+    reply
+        .scopes
+        .iter()
+        .find(|status| {
+            status.scope
+                == AuthorityScope::Workspace {
+                    output: OutputId(output.to_owned()),
+                    workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+                }
+        })
+        .map(|status| status.authority)
+}
+
+#[test]
+fn retained_all_desktop_core_sticky_on_off_roundtrip() {
+    // Core origin: tiled admit -> SetSticky(true) command -> adapter
+    // reports sticky=true with no native membership (positive
+    // all-desktop) -> SetSticky(false) command executes (not scope-held)
+    // -> correlated attempt plus readable clear lands the prior tiled
+    // home. Sibling stays tiled/readable throughout.
+    let mut engine = host_owned_engine_v4();
+    let native = || vec![native_row("out-a", &[HOST_N1, HOST_N2], Some(HOST_N1))];
+    let first = accepted_reply(
+        1,
+        run(
+            &mut engine,
+            &host_report(
+                1,
+                vec![
+                    known_fact("win-a", "out-a", 0, HOST_N1),
+                    known_fact("win-s", "out-a", 100, HOST_N1),
+                ],
+                "win-a",
+                native(),
+            ),
+            false,
+        ),
+    );
+    let home = engine
+        .core_homing(&WindowId("win-s".to_owned()))
+        .expect("win-s admitted with a retained home");
+    let sibling_first = first
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a")
+        .expect("sibling publishes on admit");
+    assert_eq!(
+        (
+            sibling_first.membership_authority,
+            sibling_first.frame_authority
+        ),
+        (ScopeAuthority::Controlled, ScopeAuthority::Controlled),
+        "sibling stays readable from admit: {sibling_first:?}"
+    );
+    assert!(
+        sibling_first.allocation.is_some(),
+        "sibling keeps geometry from admit: {sibling_first:?}"
+    );
+    let on_reply = accepted_reply(
+        2,
+        run(
+            &mut engine,
+            &host_command(
+                2,
+                vec![
+                    known_fact("win-a", "out-a", 0, HOST_N1),
+                    known_fact("win-s", "out-a", 100, HOST_N1),
+                ],
+                "win-a",
+                native(),
+                1,
+                WorldCommand::SetSticky {
+                    window: WindowId("win-s".to_owned()),
+                    value: true,
+                },
+            ),
+            false,
+        ),
+    );
+    assert!(
+        on_reply.command_result.is_none(),
+        "sticky-on executes: {:?}",
+        on_reply.command_result
+    );
+    assert_eq!(
+        sticky_state_row(&on_reply, "win-s"),
+        Some((true, ScopeAuthority::Controlled, Some(1))),
+        "native Sticky=true target publishes: {:?}",
+        on_reply.windows
+    );
+    let on_rev = engine
+        .retained_states
+        .get(&(WindowId("win-s".to_owned()), StateProperty::Sticky))
+        .expect("on binding")
+        .target
+        .revision;
+    let mut sticky = fact("win-s", "out-a", 100);
+    sticky.sticky = Some(true);
+    sticky.native_workspace = NativeWorkspaceFact::Omitted;
+    let mut on_proof = host_report(
+        3,
+        vec![known_fact("win-a", "out-a", 0, HOST_N1), sticky],
+        "win-a",
+        native(),
+    );
+    on_proof.state_attempts = vec![StateAttempt {
+        window: WindowId("win-s".to_owned()),
+        property: StateProperty::Sticky,
+        target: true,
+        revision: on_rev,
+        setter: FrameSetter::Accepted,
+        pre: Some(false),
+        post: Some(true),
+        attempt_ms: 7,
+    }];
+    let all_desktop = accepted_reply(3, run(&mut engine, &on_proof, false));
+    let on_binding = engine
+        .retained_states
+        .get(&(WindowId("win-s".to_owned()), StateProperty::Sticky))
+        .expect("on binding");
+    assert_eq!(on_binding.disposition, AttemptOutcome::Applied);
+    assert!(on_binding.spent, "on-proof correlates");
+    // Collected here, asserted only after the off command below so a
+    // fencing regression fails at the off command with ScopeHeld proof.
+    let on_home = engine.core_homing(&WindowId("win-s".to_owned()));
+    let on_hold = engine.hold_reasons.clone();
+    let on_target = all_desktop
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-s");
+    let on_sibling = all_desktop
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a");
+    let mut sticky_off = fact("win-s", "out-a", 100);
+    sticky_off.sticky = Some(true);
+    sticky_off.native_workspace = NativeWorkspaceFact::Omitted;
+    let off_reply = accepted_reply(
+        4,
+        run(
+            &mut engine,
+            &host_command(
+                4,
+                vec![known_fact("win-a", "out-a", 0, HOST_N1), sticky_off],
+                "win-a",
+                native(),
+                2,
+                WorldCommand::SetSticky {
+                    window: WindowId("win-s".to_owned()),
+                    value: false,
+                },
+            ),
+            false,
+        ),
+    );
+    assert!(
+        off_reply.command_result.is_none(),
+        "sticky-off executes, not scope-held: {:?}",
+        off_reply.command_result
+    );
+    assert_eq!(
+        on_home,
+        Some(home.clone()),
+        "positive all-desktop never re-homes"
+    );
+    assert!(
+        on_hold.is_empty() && !engine.hold_reasons.contains_key(&home),
+        "retained all-desktop home fences nothing: before={on_hold:?} after={:?}",
+        engine.hold_reasons
+    );
+    for (tag, slot) in [("subject", on_target), ("sibling", on_sibling)] {
+        let row = slot.unwrap_or_else(|| panic!("{tag} publishes while all-desktop"));
+        if tag == "subject" {
+            assert!(row.floating, "sticky-on runs as sticky-float: {row:?}");
+            assert!(
+                row.state
+                    .iter()
+                    .any(|target| target.property == StateProperty::Sticky && target.value),
+                "readable sticky true publishes while all-desktop: {row:?}"
+            );
+            continue;
+        }
+        assert_eq!(
+            (row.membership_authority, row.frame_authority),
+            (ScopeAuthority::Controlled, ScopeAuthority::Controlled),
+            "{tag} tiled presentation stays readable: {row:?}"
+        );
+        assert!(row.allocation.is_some(), "{tag} keeps geometry: {row:?}");
+    }
+    assert_eq!(
+        sticky_state_row(&off_reply, "win-s"),
+        Some((false, ScopeAuthority::Controlled, Some(2))),
+        "native Sticky=false target publishes: {:?}",
+        off_reply.windows
+    );
+    let rev = engine
+        .retained_states
+        .get(&(WindowId("win-s".to_owned()), StateProperty::Sticky))
+        .expect("off binding")
+        .target
+        .revision;
+    let mut proof = host_report(
+        5,
+        vec![
+            known_fact("win-a", "out-a", 0, HOST_N1),
+            known_fact("win-s", "out-a", 100, HOST_N1),
+        ],
+        "win-a",
+        native(),
+    );
+    proof.windows[1].sticky = Some(false);
+    proof.state_attempts = vec![StateAttempt {
+        window: WindowId("win-s".to_owned()),
+        property: StateProperty::Sticky,
+        target: false,
+        revision: rev,
+        setter: FrameSetter::Accepted,
+        pre: Some(true),
+        post: Some(false),
+        attempt_ms: 7,
+    }];
+    let cleared = accepted_reply(5, run(&mut engine, &proof, false));
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-s".to_owned()), StateProperty::Sticky))
+        .expect("binding");
+    assert_eq!(binding.disposition, AttemptOutcome::Applied);
+    assert!(binding.sticky_meta.as_ref().expect("meta").followup_done);
+    let member = engine
+        .members
+        .get(&WindowId("win-s".to_owned()))
+        .expect("member");
+    assert!(!member.floating, "prior tiled fresh-admits tiled");
+    let sibling = cleared
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a")
+        .expect("sibling publishes");
+    assert_eq!(
+        (sibling.membership_authority, sibling.frame_authority),
+        (ScopeAuthority::Controlled, ScopeAuthority::Controlled)
+    );
+    assert!(sibling.allocation.is_some());
+}
+
+#[test]
+fn retained_all_desktop_unknown_membership_still_fenced() {
+    // Non-sticky unknown membership with a retained home keeps the home
+    // but fences the scope exactly as today.
+    let mut engine = host_owned_engine_v4();
+    let first = host_report(
+        1,
+        vec![
+            known_fact("win-a", "out-a", 0, HOST_N1),
+            known_fact("win-b", "out-a", 100, HOST_N2),
+        ],
+        "win-a",
+        vec![native_row("out-a", &[HOST_N1, HOST_N2], Some(HOST_N1))],
+    );
+    accepted_reply(1, run(&mut engine, &first, false));
+    let home = engine
+        .core_homing(&WindowId("win-a".to_owned()))
+        .expect("win-a admitted");
+    let second = host_report(
+        2,
+        vec![
+            unknown_fact("win-a", "out-a", 0, Some(false)),
+            known_fact("win-b", "out-a", 100, HOST_N2),
+        ],
+        "win-b",
+        vec![native_row("out-a", &[HOST_N1, HOST_N2], Some(HOST_N1))],
+    );
+    let reply = accepted_reply(2, run(&mut engine, &second, false));
+    let kept = engine
+        .core_homing(&WindowId("win-a".to_owned()))
+        .expect("unknown keeps its retained home");
+    assert_eq!(kept, home, "unknown never collapses");
+    assert_eq!(
+        scope_authority(&reply, &home.output.0, &home.workspace.0),
+        Some(ScopeAuthority::Hold(
+            crate::world_report::HoldReason::Unreadable
+        )),
+        "unknown membership still fences: {:?}",
+        reply.scopes
+    );
+    assert!(reply.transfers.is_empty(), "fence never re-homes");
+}
+
+#[test]
+fn retained_all_desktop_newcomer_cannot_invent_home() {
+    // A new all-desktop sticky lifetime without a retained home invents
+    // nothing: it publishes no row and authorizes no scope.
+    let mut engine = host_owned_engine_v4();
+    let reply = accepted_reply(
+        1,
+        run(
+            &mut engine,
+            &host_report(
+                1,
+                vec![
+                    known_fact("win-a", "out-a", 0, HOST_N1),
+                    unknown_fact("win-new", "out-a", 100, Some(true)),
+                ],
+                "win-a",
+                vec![native_row("out-a", &[HOST_N1, HOST_N2], Some(HOST_N1))],
+            ),
+            false,
+        ),
+    );
+    assert!(
+        reply.windows.iter().all(|row| row.lifetime.0 != "win-new"),
+        "new all-desktop newcomer publishes no row: {:?}",
+        reply.windows
+    );
+    assert!(
+        engine
+            .core_homing(&WindowId("win-new".to_owned()))
+            .is_none(),
+        "newcomer invents no retained home"
+    );
+    assert!(reply.transfers.is_empty());
+}
+
+#[test]
+fn retained_all_desktop_native_sticky_off_no_prior_on() {
+    // Native origin: float admit with a known native id, then the adapter
+    // flips to sticky with no native membership and no core command ever
+    // issued. SetSticky(false) still executes (not scope-held), and the
+    // correlated clear keeps the prior float instead of fresh-admitting
+    // tiled.
+    let mut engine = host_owned_engine_v4();
+    let native = || vec![native_row("out-a", &[HOST_N1, HOST_N2], Some(HOST_N1))];
+    let mut floated = float_fact("win-f", "out-a", 100, 100);
+    floated.native_workspace = NativeWorkspaceFact::Value(HOST_N1.to_owned());
+    accepted_reply(
+        1,
+        run(
+            &mut engine,
+            &host_report(
+                1,
+                vec![known_fact("win-a", "out-a", 0, HOST_N1), floated],
+                "win-a",
+                native(),
+            ),
+            false,
+        ),
+    );
+    assert!(
+        engine
+            .members
+            .get(&WindowId("win-f".to_owned()))
+            .expect("float member")
+            .floating,
+        "float admission stays floating"
+    );
+    let mut adopted = float_fact("win-f", "out-a", 100, 100);
+    adopted.sticky = Some(true);
+    adopted.native_workspace = NativeWorkspaceFact::Omitted;
+    accepted_reply(
+        2,
+        run(
+            &mut engine,
+            &host_report(
+                2,
+                vec![known_fact("win-a", "out-a", 0, HOST_N1), adopted],
+                "win-a",
+                native(),
+            ),
+            false,
+        ),
+    );
+    let home = engine
+        .core_homing(&WindowId("win-f".to_owned()))
+        .expect("adopted win-f keeps its home");
+    // Collected here, asserted only after the off command below so a
+    // fencing regression fails at the off command with ScopeHeld proof.
+    let adopted_hold = engine.hold_reasons.clone();
+    assert!(
+        engine
+            .members
+            .get(&WindowId("win-f".to_owned()))
+            .expect("member")
+            .floating,
+        "adopted sticky keeps prior float"
+    );
+    let mut adopted_cmd = float_fact("win-f", "out-a", 100, 100);
+    adopted_cmd.sticky = Some(true);
+    adopted_cmd.native_workspace = NativeWorkspaceFact::Omitted;
+    let off_reply = accepted_reply(
+        3,
+        run(
+            &mut engine,
+            &host_command(
+                3,
+                vec![known_fact("win-a", "out-a", 0, HOST_N1), adopted_cmd],
+                "win-a",
+                native(),
+                1,
+                WorldCommand::SetSticky {
+                    window: WindowId("win-f".to_owned()),
+                    value: false,
+                },
+            ),
+            false,
+        ),
+    );
+    assert!(
+        off_reply.command_result.is_none(),
+        "native sticky-off executes, not scope-held: {:?}",
+        off_reply.command_result
+    );
+    assert!(
+        adopted_hold.is_empty() && !engine.hold_reasons.contains_key(&home),
+        "adopted native sticky fences nothing: before={adopted_hold:?} after={:?}",
+        engine.hold_reasons
+    );
+    assert_eq!(
+        sticky_state_row(&off_reply, "win-f"),
+        Some((false, ScopeAuthority::Controlled, Some(1))),
+        "native Sticky=false target publishes: {:?}",
+        off_reply.windows
+    );
+    let rev = engine
+        .retained_states
+        .get(&(WindowId("win-f".to_owned()), StateProperty::Sticky))
+        .expect("off binding")
+        .target
+        .revision;
+    let mut clear = float_fact("win-f", "out-a", 100, 100);
+    clear.native_workspace = NativeWorkspaceFact::Value(HOST_N1.to_owned());
+    clear.sticky = Some(false);
+    let mut proof = host_report(
+        4,
+        vec![known_fact("win-a", "out-a", 0, HOST_N1), clear],
+        "win-a",
+        native(),
+    );
+    proof.state_attempts = vec![StateAttempt {
+        window: WindowId("win-f".to_owned()),
+        property: StateProperty::Sticky,
+        target: false,
+        revision: rev,
+        setter: FrameSetter::Accepted,
+        pre: Some(true),
+        post: Some(false),
+        attempt_ms: 7,
+    }];
+    accepted_reply(4, run(&mut engine, &proof, false));
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-f".to_owned()), StateProperty::Sticky))
+        .expect("binding");
+    assert_eq!(binding.disposition, AttemptOutcome::Applied);
+    assert!(
+        engine
+            .members
+            .get(&WindowId("win-f".to_owned()))
+            .expect("member")
+            .floating,
+        "native clear keeps prior float"
+    );
+}
+
+#[test]
+fn retained_all_desktop_unknown_sticky_missing_membership_still_fenced() {
+    // sticky=None with each unknown membership spelling keeps the retained
+    // home but still fences the scope: only positive sticky opts out.
+    for (tag, native) in [
+        ("omitted", NativeWorkspaceFact::Omitted),
+        ("null", NativeWorkspaceFact::Null),
+        ("empty", NativeWorkspaceFact::Value(String::new())),
+    ] {
+        let mut engine = host_owned_engine_v4();
+        accepted_reply(
+            1,
+            run(
+                &mut engine,
+                &host_report(
+                    1,
+                    vec![
+                        known_fact("win-a", "out-a", 0, HOST_N1),
+                        known_fact("win-b", "out-a", 100, HOST_N2),
+                    ],
+                    "win-a",
+                    vec![native_row("out-a", &[HOST_N1, HOST_N2], Some(HOST_N1))],
+                ),
+                false,
+            ),
+        );
+        let home = engine
+            .core_homing(&WindowId("win-a".to_owned()))
+            .expect("win-a admitted");
+        let mut unknown = fact("win-a", "out-a", 0);
+        unknown.sticky = None;
+        unknown.native_workspace = native;
+        let reply = accepted_reply(
+            2,
+            run(
+                &mut engine,
+                &host_report(
+                    2,
+                    vec![unknown, known_fact("win-b", "out-a", 100, HOST_N2)],
+                    "win-b",
+                    vec![native_row("out-a", &[HOST_N1, HOST_N2], Some(HOST_N1))],
+                ),
+                false,
+            ),
+        );
+        assert_eq!(
+            engine.core_homing(&WindowId("win-a".to_owned())),
+            Some(home.clone()),
+            "{tag}: unknown keeps its retained home"
+        );
+        assert_eq!(
+            scope_authority(&reply, &home.output.0, &home.workspace.0),
+            Some(ScopeAuthority::Hold(
+                crate::world_report::HoldReason::Unreadable
+            )),
+            "{tag}: sticky-None unknown still fences: {:?}",
+            reply.scopes
+        );
+        assert!(reply.transfers.is_empty(), "{tag}: fence never re-homes");
+    }
 }

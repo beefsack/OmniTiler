@@ -1826,7 +1826,9 @@ impl VisibilityReason {
 /// logical receipt from that mapping; the adapter never mints logical ids
 /// from native ids. All three unknown spellings mean unknown, never a proof
 /// of absence: with the capability set, unknown native membership holds
-/// (never collapses into the current view). The wire spelling is retained
+/// (never collapses into the current view), except a sticky window with
+/// an already retained home (positive all-desktop membership), whose home
+/// stays unfenced. The wire spelling is retained
 /// (`Omitted` for an absent key, `Null` for explicit `null`,
 /// `Value("")` for explicit empty, `Value(id)` for a known id) so a
 /// decoded row re-encodes to its exact carried bytes; `as_deref` exposes

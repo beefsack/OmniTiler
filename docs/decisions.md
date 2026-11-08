@@ -22,6 +22,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - 2026-11-08: User decision: every KDE user command press queues FIFO in press order with no busy refusal; core applies every action and resolves window subjects from its own state, while the platform applies only the latest publication ([KDE rapid input](decisions/commands.md#kde-rapid-input)).
 - 2026-11-08: User decision: retire aligned-grid lifecycle, destination replacement and aligned-only refill/spare rules in favor of the common v4 per-output model; retain displacement and physical return ([workspaces](decisions/workspaces.md#common-v4-per-output-workspaces)).
 - 2026-11-08: User decision: start the Windows port only after KDE phase 2 is complete offline including v3 removal, the user-run KDE state-target and reconnect live checks pass, and core scales resize minima, keyboard steps and group-edge zones per output; macOS follows Windows ([port start gate](decisions/contract.md#contract-authority-and-v4-migration)).
+- 2026-11-08: User decision: positive all-desktop membership keeps an already retained home usable without a scope fence, independent of sticky origin; unknown membership and homeless newcomers remain fenced, with no fabricated receipt ([native membership](decisions/layout-and-admission.md#native-hidden-representation-and-unknown-sticky-membership)).
 
 ## Tentative decisions
 

@@ -101,6 +101,12 @@ counterpart. Those sources do not prove macOS delivery or the sequences below.
 | --- | --- | --- |
 | Sticky-on an ordinary tile, then an ordinary float in separate runs; inspect the full saved record; restart and sticky-off. Separately import each float=null/false/true with stickyPrior=false/true | Sticky-on saves float=true and stickyPrior=previous mode; sticky-off saves float=prior and stickyPrior=null. Every non-null stickyPrior restores sticky-float intent and carries the off destination mode; the float lane never overrides that prior. Current-mode encoding, not new sticky behavior | Native save/delivery/restart and off admission remain TBD. [R-FLT-02](reference-outcomes/floating.md#r-flt-02-backfill-sticky-across-a-workspace-switch-scrolling) supports COSMIC's float-first, remembered-mode behavior, not this private record encoding |
 
+### Known all-desktop retained home
+
+| Minimal action sequence | Selected core outcome | Native evidence gate |
+| --- | --- | --- |
+| Admit A and tiled sibling B with known native membership; make A sticky through core, then sticky-off. Repeat with native-set sticky and no prior core sticky-on. Separately report unknown membership or a new all-desktop lifetime without a home | User 2026-11-08: positive all-desktop membership preserves A's already retained home without fencing A or B, independent of sticky origin. No current-desktop/logical receipt is invented. Sticky-off uses existing prior-mode and fresh-admission rules. Unknown/missing membership and newcomers without a retained home keep existing fences | Core command regressions prove release for both origins and sibling readability through the core roundtrip; native sticky release and sticky/stacking startup restoration remain TBD |
+
 ### Native-state attempt correlation
 
 | Minimal action sequence | Core correlation / settlement rule | Evidence / remaining gate |

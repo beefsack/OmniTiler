@@ -260,11 +260,11 @@
 - Evidence: [R19 review](../changes/core-interface-review.md).
 
 ### Native hidden representation and unknown sticky membership
-- Decision: Represent KDE inactive-Activity and macOS Cmd+H windows with existing `WindowFact.minimized=true`, no new core state; qualified workspace/output-loss/pending-transfer relocation is intentional. The later Activities default replaces earlier strict "never move" promise.
+- Decision: Represent KDE inactive-Activity and macOS Cmd+H windows with existing `WindowFact.minimized=true`, no new core state; qualified workspace/output-loss/pending-transfer relocation is intentional. The later Activities default replaces earlier strict "never move" promise. Positive all-desktop membership for a window with an already retained same-lifetime home preserves that home without fencing its scope, regardless of whether core or the native window manager set sticky. Do not fabricate a current-desktop or logical membership receipt. Genuinely unknown/missing membership and newcomers without a retained home keep existing fences.
 - Why: not recorded.
-- Assumes / revisit if: Activities native testing pending. Unknown sticky membership remains parked: either retain existing omission semantics or propose neutral all-desktop home/retention contract before claiming all-desktop slot retention.
-- Status: active, 2026-11-07
-- Evidence: [R19 review](../changes/core-interface-review.md).
+- Assumes / revisit if: Activities native testing pending. Known all-desktop retention does not change sticky-off origin/admission rules or authorize initial home inference.
+- Status: active, 2026-11-08
+- Evidence: [R19 review](../changes/core-interface-review.md), [sticky-release correction](../changes/v4-phase2-kde-state-targets.md#verified-sticky-release-correction).
 
 ### Shared core and adapter delivery coordination
 - Decision: Deliver the shared Rust core and KDE adapter on the KDE side first; wire the separate Windows adapter later. Correctness takes priority over preserving Windows behavior: Windows build/behavior breakage is acceptable when the backlog names the specific required Windows changes. Compile-only Windows fixes that preserve current behavior are allowed; correctness-first adapter wiring remains in the backlog handoff.
