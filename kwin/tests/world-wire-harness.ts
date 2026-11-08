@@ -46,14 +46,9 @@
 // sequencing key inside the inner report throws (production refuses it as
 // `unknown-field`).
 //
-// Broker auth/replay/duplicate/eviction semantics live in the Rust broker
-// tests; this file duplicates none of that. No D-Bus, no KWin.
-
-// Retired: production discovery binds the producer adapter lifetime, never
-// a broker incarnation, and stamps no `owner` key. Kept only so existing
-// imports keep compiling; new code must not use them.
-export const BROKER_INCARNATION = "broker-1";
-export const BROKER_OWNER = "omnitiler-broker";
+// Broker auth/replay/eviction semantics live in the Rust broker tests; this
+// file is not a full production auth/replay/eviction model; minimal
+// queue/take correlation only. No D-Bus, no KWin.
 
 // Honest v4 disabled presentation (mirrors the strict `parsePresentation`
 // shape): hidden border/underlay, empty pager, rev 0, no suspended output.
@@ -108,7 +103,6 @@ interface TerminalSettlement {
 }
 
 export interface MiniBroker {
-    incarnation: string;
     gen: string;
     lastResult: unknown;
     /** Filed commands drained by captures so far, in drain order. */
@@ -140,10 +134,7 @@ export interface MiniBroker {
     answerTake(takePayload: string): string;
 }
 
-export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
-    // `incarnation` is retained for call compatibility only: production
-    // discovery binds the producer adapter lifetime, so nothing here
-    // rewrites to it.
+export function createMiniBroker(): MiniBroker {
     let gen = "";
     let obs = "0";
     let reqSeq = "0";
@@ -157,7 +148,6 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
     let lastResult: unknown = null;
     const queueKey = (client: unknown, clientCmd: unknown): string => `${String(client)}\u0000${String(clientCmd)}`;
     return {
-        incarnation,
         get gen() {
             return gen;
         },
