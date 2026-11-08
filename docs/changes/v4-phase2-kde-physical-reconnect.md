@@ -1,7 +1,7 @@
 # v4 phase-2 KDE physical reconnect/rehome
 
-- Status: partial offline implementation verified; overlapping-displacement
-  return defect open and native acceptance pending, 2026-11-08. Keep active.
+- Status: offline implementation and overlapping-displacement return fix
+  verified; native acceptance pending, 2026-11-08. Keep active.
 - Goal: supply truthful physical output facts and prove disconnect, reconnect
   and rehome offline without regressing the prior dogfoodable slices.
 - Native acceptance remains unrun; offline evidence cannot establish physical
@@ -108,9 +108,9 @@
 - Targeted core tests cover renamed return, same-name different panel, unknown
   and duplicate identities, connector fallback/mismatch, repeated cycles,
   explicit move-out without pullback, no survivor, and exact workspace contents
-  and tiling when S is displaced through T to U and S alone returns. The chain
-  destination refresh does not establish the later return of T; see the open
-  defect below.
+  and tiling when S is displaced through T to U. Both separate return orders
+  and simultaneous returns now retain exact original affinity; see the
+  ownership correction below.
 - D23 leave-and-return-before-restore reproduced a stale source slot. Accepted,
   receipt-proved minimized per-window rehome now forgets that slot after sweep
   through the existing revision-neutral cleanup. No new wire envelope or
@@ -120,21 +120,22 @@
   whole-workspace relocation and close precedence. The topology discriminator
   settles focus on A in a separate accepted report before restoring B, proving
   fresh A/B grouping rather than resurrection of the old B/C slot.
-- Source review accepted the metadata/matching/D23 corrections; a separate
-  bounded source/log review confirmed the deferred chain defect and both
-  regressions. Native behavior is not established by either review.
+- Source review accepted the metadata/matching/D23 corrections and reproduced
+  the chain defect. Further independent source review caught the same-report
+  return failure in the first ownership approach and accepted the corrected
+  displacement-time affinity invariant. No native behavior is established.
 - Final integrated verification, 2026-11-08: all seven scoped commands below
-  exited 0 after the latest source/test changes. Rust tests: 3122 passed,
-  0 failed, 2 known-failing regressions ignored, 1 unsafe-posture check filtered
-  out. KWin tests: 1160 passed, 0 failed/skipped. Passing enabled checks do not
-  close the defect or establish full offline reconnect acceptance.
+  exited 0 after the latest relevant source/test changes. Rust tests: 3127
+  passed, 0 failed/ignored, 1 unsafe-posture check filtered out. KWin tests:
+  1160 passed, 0 failed/skipped. Both original chain regressions are enabled
+  with every assertion unchanged; three additional chain controls pass.
 - No immutable world-wire/stage5 fixture, golden or recording bytes changed.
   No native effect source changed, and no new native-effect or live evidence
   is claimed.
 
 ```sh
 devenv shell -- cargo fmt --all -- --check
-devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture --nocapture
+devenv shell -- cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture
 devenv shell -- cargo build --locked -p tiler-core -p tiler-protocol -p omnitiler
 devenv shell -- cargo clippy -q -p tiler-core -p tiler-protocol -p omnitiler --all-targets -- -D warnings
 devenv shell -- npm --prefix kwin run typecheck
@@ -142,31 +143,44 @@ devenv shell -- npm --prefix kwin test
 devenv shell -- env OMNITILER_SCOPE_CLASS= npm --prefix kwin run build
 ```
 
-## Open defect: overlapping displacement return order
+## Corrected: overlapping displacement return order
 
 - Minimal reproduction: start distinct occupied S, T and U outputs with readable
   unique identities. Disconnect S so its exact workspace rides T; disconnect T
   so both units ride U. Return S then T, or T then S, using renamed live handles
   and the original identities. Expected: each exact workspace exists once with
   its then-current contents on its original physical panel (or waits on U while
-  that panel is absent). Observed: S's viewed workspace ID has zero hosts when
-  T returns in either order, including after S already reclaimed it.
-- Both sequences reproduced failure before being marked explicitly ignored:
+  that panel is absent). Before correction, S's viewed workspace ID had zero
+  hosts when T returned in either order, even after S had reclaimed it.
+- Both sequences reproduced failure with their ignore attributes removed:
   `physical_chain_return_s_first_then_t_keeps_exact_affinity` and
   `physical_chain_return_t_first_then_s_keeps_exact_affinity` in
-  `world_restored_routing_tests.rs`. The targeted run had 0 passed and 2 failed;
-  these are known failing regressions, not passing coverage. The older
-  S-only-return regression still passes.
-- Source evidence: `world_model.rs` chain refresh updates overlapping records'
-  destination but does not partition their workspace sets. Return uses
-  `take_workspace_from_all`, which strips other mapping rings without reconciling
-  the other displaced records. Exact interior deletion/trim sequencing remains
-  unverified; the workspace-loss outcome and overlapping sets are reproduced.
-- This is not a small isolated fix: original affinity, hosting, session rekeying
-  and explicit move-out/no-pullback invariants need a coherent ownership design.
-  No fix is included. Next offline action: resolve that ownership invariant and
-  make both regressions pass without weakening their exact identity/content
-  assertions. Full offline reconnect acceptance remains open.
+  `world_restored_routing_tests.rs`. Baseline: 0 passed, 2 failed. Both are now
+  enabled and pass without changing any assertion or their overlap preconditions.
+- Root cause: `world_model.rs` used the full overlapping hosting set as return
+  ownership. Chain refresh updated the destination but not original affinity;
+  `take_workspace_from_all` let T reclaim S's exact ID as a rider rather than
+  leave it with its original owner. The resulting reply had no host for S's ID.
+- A return-time strict-subset ownership filter passed both separate return
+  orders but failed a new same-report S+T return regression: removing S's record
+  before processing T erased the ownership evidence and again left S's unit
+  with zero hosts. That approach was rejected, including its inferred equal-set
+  winner and batch special case; neither remains in the implementation.
+- Correction: `DisplacedEntry.owned` records the original-affinity subset at
+  displacement, excluding units already owned by other displaced origins.
+  Hosting sets may overlap, but owned sets are disjoint. Returns reclaim only
+  owned units, preserving existing tiling/session/member relocation; reclaimed
+  IDs leave every remaining hosting/affinity set, and empty records retire.
+  No adapter, wire or physical-identity matching changes were needed.
+- Five targeted regressions pass: both original separate orders, same-report
+  return with either lexical origin order, and explicit member move-out before
+  simultaneous return. The moved-out member stays on its chosen workspace;
+  ordinary lifecycle may trim the emptied unviewed source unit, as in the prior
+  single-hop control. No focus effect or hotplug pull-back is minted.
+- No further helper/rule/test is proved obsolete: full hosting sets still serve
+  retention and chain destination tracking. No additional cull was made.
+- Whole-workspace migration while displaced is not exercised here. Its D9
+  association-removal path remains unverified; no migration behavior changed.
 
 ## Native-only remainder
 

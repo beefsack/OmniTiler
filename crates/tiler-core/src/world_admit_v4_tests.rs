@@ -1179,6 +1179,7 @@ fn policy_terminal_reserve_matches_legacy_when_displaced() {
         "out-gone".to_owned(),
         DisplacedEntry {
             workspaces: vec!["ws-a".to_owned()],
+            owned: vec!["ws-a".to_owned()],
             dest: "out-a".to_owned(),
             origin_identity: crate::world_report::OutputIdentity::unknown(),
             origin_tuple_contested: false,

@@ -630,23 +630,26 @@ impl WorldEngine {
                 let Some(entry) = self.displaced.remove(&origin) else {
                     continue;
                 };
-                let home = entry.workspaces.clone();
-                for id in &home {
+                // Original affinity, established at displacement: only the
+                // owned subset returns. Riders owned by other origins stay
+                // on the survivor until their own origin returns.
+                let owned: Vec<String> = entry.owned.clone();
+                for id in &owned {
                     self.take_workspace_from_all(id, &live_handle);
                 }
                 {
                     let slot = self.mapping.entry(live_handle.clone()).or_default();
-                    for id in &home {
+                    for id in &owned {
                         if !slot.iter().any(|kept| kept == id) {
                             slot.push(id.clone());
                         }
                     }
                 }
-                for id in &home {
+                for id in &owned {
                     self.carry_tiling(id, &entry.dest, &live_handle);
                 }
                 let origin_id = OutputId(live_handle.clone());
-                for id in &home {
+                for id in &owned {
                     self.rekey_members(id, &entry.dest, &live_handle);
                     let source = DomainKey {
                         output: OutputId(entry.dest.clone()),
@@ -660,7 +663,7 @@ impl WorldEngine {
                     // homing (rehome covers it) for a later report.
                     let _ = self.relocate_session_for_move(&source, &target);
                 }
-                for id in &home {
+                for id in &owned {
                     fresh_views.push((origin_id.clone(), id.clone()));
                 }
                 // Members still homed away from the origin ride one policy
@@ -670,7 +673,7 @@ impl WorldEngine {
                     if self.derived_for(window).sticky {
                         continue;
                     }
-                    let moved_id = home.iter().find(|id| {
+                    let moved_id = owned.iter().find(|id| {
                         self.retained_homing(window).is_some_and(|key| {
                             key.output.0 == entry.dest && key.workspace.0 == **id
                         })
@@ -693,6 +696,25 @@ impl WorldEngine {
                         continue;
                     }
                     fresh_members.push((window.clone(), target, source));
+                }
+                // Reconcile the records left behind: reclaimed units leave
+                // every remaining hosting and affinity set so a later
+                // return never yanks them back. Emptied records drop with
+                // their stale view and history, as on displacement.
+                for record in self.displaced.values_mut() {
+                    record.workspaces.retain(|id| !owned.contains(id));
+                    record.owned.retain(|id| !owned.contains(id));
+                }
+                let emptied: Vec<String> = self
+                    .displaced
+                    .iter()
+                    .filter(|(_, record)| record.workspaces.is_empty())
+                    .map(|(other, _)| other.clone())
+                    .collect();
+                for other in emptied {
+                    self.displaced.remove(&other);
+                    self.views.remove(&other);
+                    self.history.discard_output(&other);
                 }
             }
             // Displacement: removed origins place their units on one survivor.
@@ -853,6 +875,20 @@ impl WorldEngine {
                     origin.clone(),
                     DisplacedEntry {
                         workspaces: candidates.clone(),
+                        // Original affinity, established here rather than
+                        // inferred at return: units already owned by an
+                        // earlier displaced origin ride as hosted guests
+                        // only. First displacer wins, so owned sets stay
+                        // disjoint while hosting sets may overlap.
+                        owned: candidates
+                            .iter()
+                            .filter(|id| {
+                                !self.displaced.iter().any(|(other, record)| {
+                                    other != &origin && record.owned.iter().any(|kept| kept == *id)
+                                })
+                            })
+                            .cloned()
+                            .collect(),
                         dest: dest.clone(),
                         origin_identity: identity,
                         origin_tuple_contested: tuple_contested,

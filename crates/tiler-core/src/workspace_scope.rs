@@ -213,10 +213,17 @@ pub fn claim_visible_currents(
 /// `origin_identity` snapshots the panel identity at displacement; the
 /// contention flags snapshot whether a peer shared the tuple/connector
 /// then, so a later solo lookalike never reclaims by itself.
+/// `owned` is the original-affinity subset of `workspaces`: units this
+/// origin displaced itself, excluding riders already owned by earlier
+/// displaced origins. `workspaces` keeps the full overlapping hosting
+/// set so chained records still track the live host; only `owned`
+/// returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplacedEntry {
     /// Live native workspace ids displaced from the origin.
     pub workspaces: Vec<String>,
+    /// Original-affinity subset of `workspaces` that returns here.
+    pub owned: Vec<String>,
     /// Stable key of the surviving output hosting them.
     pub dest: String,
     /// Disconnect-time panel identity of the origin.

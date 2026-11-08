@@ -4377,7 +4377,6 @@ fn physical_return_survivor_leaves_then_origin_returns_renamed() {
 }
 
 #[test]
-#[ignore = "Known failure: overlapping displacement loses S unit when T returns; see v4-phase2-kde-physical-reconnect note"]
 fn physical_chain_return_s_first_then_t_keeps_exact_affinity() {
     // S -> T -> U chain, then S returns renamed, then T returns renamed.
     // Final affinity must be exact: each viewed unit hosted once on its
@@ -4651,7 +4650,6 @@ fn physical_chain_return_s_first_then_t_keeps_exact_affinity() {
 }
 
 #[test]
-#[ignore = "Known failure: overlapping displacement loses S unit when T returns; see v4-phase2-kde-physical-reconnect note"]
 fn physical_chain_return_t_first_then_s_keeps_exact_affinity() {
     // Same S -> T -> U chain, opposite return order: T returns renamed
     // first while S is still absent. The S unit must stay on the survivor
@@ -4909,6 +4907,668 @@ fn physical_chain_return_t_first_then_s_keeps_exact_affinity() {
             && row.output.0 == "out-u"
             && row.workspace == view_u),
         "U member stays on its unit: {rows:?}"
+    );
+    assert!(
+        both_back.effects.is_empty(),
+        "returns mint no focus: {:?}",
+        both_back.effects
+    );
+    assert!(
+        both_back
+            .transfers
+            .iter()
+            .all(|t| !t.operation_id.starts_with("op-hp-")),
+        "no pull-back flights: {:?}",
+        both_back.transfers
+    );
+}
+
+#[test]
+fn physical_chain_return_simultaneous_partition_keeps_exact_affinity() {
+    // S -> T -> U chain, then S and T return together in one report on
+    // renamed handles. Each viewed unit must land once on its original
+    // panel; the batch must not let one returner yank the other's unit.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-s", rect(0, 0, 800, 600), tuple_only("s")),
+                screen_ident("out-t", rect(800, 0, 800, 600), tuple_only("t")),
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+            ],
+            vec![
+                fact("win-s", "out-s", 0),
+                fact("win-t", "out-t", 800),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_s = output_view(&first, "out-s").expect("view s");
+    let view_t = output_view(&first, "out-t").expect("view t");
+    let view_u = output_view(&first, "out-u").expect("view u");
+    let tiling_s = first
+        .workspaces
+        .iter()
+        .find(|row| row.id == view_s)
+        .map(|row| row.tiling_mode)
+        .expect("tiling s");
+    let tiling_t = first
+        .workspaces
+        .iter()
+        .find(|row| row.id == view_t)
+        .map(|row| row.tiling_mode)
+        .expect("tiling t");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![
+                screen_ident("out-t", rect(800, 0, 800, 600), tuple_only("t")),
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+            ],
+            vec![
+                fact("win-s", "out-t", 800),
+                fact("win-t", "out-t", 900),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen_ident(
+                "out-u",
+                rect(1600, 0, 800, 600),
+                tuple_only("u"),
+            )],
+            vec![
+                fact("win-s", "out-u", 1600),
+                fact("win-t", "out-u", 1700),
+                fact("win-u", "out-u", 1800),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .displaced
+            .get("out-t")
+            .map(|entry| entry.workspaces.contains(&view_s))
+            .unwrap_or(false),
+        "chained T record overlaps the S unit: {:?}",
+        engine.displaced
+    );
+    let both_back = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+                screen_ident("out-s2", rect(0, 0, 800, 600), tuple_only("s")),
+                screen_ident("out-t2", rect(800, 0, 800, 600), tuple_only("t")),
+            ],
+            vec![
+                fact("win-s", "out-s2", 0),
+                fact("win-t", "out-t2", 800),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.is_empty(),
+        "both origins reclaim: {:?}",
+        engine.displaced
+    );
+    for (id, output, tiling) in [(&view_s, "out-s2", tiling_s), (&view_t, "out-t2", tiling_t)] {
+        let rows: Vec<_> = both_back
+            .workspaces
+            .iter()
+            .filter(|row| &row.id == id)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "unit {id} hosted exactly once: {:?}",
+            both_back.workspaces
+        );
+        assert_eq!(rows[0].output.0, output, "{:?}", rows[0]);
+        assert_eq!(rows[0].tiling_mode, tiling, "{:?}", rows[0]);
+    }
+    let u_rows: Vec<_> = both_back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_u)
+        .collect();
+    assert_eq!(
+        u_rows.len(),
+        1,
+        "viewed U unit hosted once: {:?}",
+        both_back.workspaces
+    );
+    assert_eq!(u_rows[0].output.0, "out-u", "{:?}", u_rows[0]);
+    let rows: Vec<_> = both_back
+        .windows
+        .iter()
+        .filter(|row| ["win-s", "win-t", "win-u"].contains(&row.lifetime.0.as_str()))
+        .collect();
+    assert_eq!(rows.len(), 3, "every member exactly homed once: {rows:?}");
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-s"
+            && row.output.0 == "out-s2"
+            && row.workspace == view_s),
+        "S member rides its exact unit home: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-t"
+            && row.output.0 == "out-t2"
+            && row.workspace == view_t),
+        "T member rides its exact unit home: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-u"
+            && row.output.0 == "out-u"
+            && row.workspace == view_u),
+        "U member stays on its unit: {rows:?}"
+    );
+    assert!(
+        both_back.effects.is_empty(),
+        "returns mint no focus: {:?}",
+        both_back.effects
+    );
+    assert!(
+        both_back
+            .transfers
+            .iter()
+            .all(|t| !t.operation_id.starts_with("op-hp-")),
+        "no pull-back flights: {:?}",
+        both_back.transfers
+    );
+}
+
+#[test]
+fn physical_chain_return_simultaneous_reverse_order_keeps_exact_affinity() {
+    // B -> A -> U chain, then A and B return together in one report on
+    // renamed handles. The chained A record overlaps the B unit but owns
+    // only its own; the batch processes A first (lexical order), so the
+    // returner must not yank the other's unit in either order.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-b", rect(0, 0, 800, 600), tuple_only("b")),
+                screen_ident("out-a", rect(800, 0, 800, 600), tuple_only("a")),
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+            ],
+            vec![
+                fact("win-b", "out-b", 0),
+                fact("win-a", "out-a", 800),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_b = output_view(&first, "out-b").expect("view b");
+    let view_a = output_view(&first, "out-a").expect("view a");
+    let view_u = output_view(&first, "out-u").expect("view u");
+    // Initial ring: the viewed unit plus its trailing spare, both
+    // originally B's.
+    let mut ring_b: Vec<_> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-b")
+        .collect();
+    ring_b.sort_by_key(|row| row.order);
+    let ring_b: Vec<String> = ring_b.into_iter().map(|row| row.id.clone()).collect();
+    let tiling_b = first
+        .workspaces
+        .iter()
+        .find(|row| row.id == view_b)
+        .map(|row| row.tiling_mode)
+        .expect("tiling b");
+    let tiling_a = first
+        .workspaces
+        .iter()
+        .find(|row| row.id == view_a)
+        .map(|row| row.tiling_mode)
+        .expect("tiling a");
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![
+                screen_ident("out-a", rect(800, 0, 800, 600), tuple_only("a")),
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+            ],
+            vec![
+                fact("win-b", "out-a", 800),
+                fact("win-a", "out-a", 900),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen_ident(
+                "out-u",
+                rect(1600, 0, 800, 600),
+                tuple_only("u"),
+            )],
+            vec![
+                fact("win-b", "out-u", 1600),
+                fact("win-a", "out-u", 1700),
+                fact("win-u", "out-u", 1800),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine
+            .displaced
+            .get("out-a")
+            .map(|entry| entry.workspaces.contains(&view_b))
+            .unwrap_or(false),
+        "chained A record overlaps the B unit: {:?}",
+        engine.displaced
+    );
+    assert_eq!(
+        engine
+            .displaced
+            .get("out-b")
+            .map(|entry| entry.owned.clone())
+            .unwrap_or_default(),
+        ring_b,
+        "B owns its original ring: {:?}",
+        engine.displaced
+    );
+    assert_eq!(
+        engine
+            .displaced
+            .get("out-a")
+            .map(|entry| entry.owned.clone())
+            .unwrap_or_default(),
+        vec![view_a.clone()],
+        "A owns only its original unit: {:?}",
+        engine.displaced
+    );
+    let both_back = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+                screen_ident("out-b2", rect(0, 0, 800, 600), tuple_only("b")),
+                screen_ident("out-a2", rect(800, 0, 800, 600), tuple_only("a")),
+            ],
+            vec![
+                fact("win-b", "out-b2", 0),
+                fact("win-a", "out-a2", 800),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.is_empty(),
+        "both origins reclaim: {:?}",
+        engine.displaced
+    );
+    for (id, output, tiling) in [(&view_b, "out-b2", tiling_b), (&view_a, "out-a2", tiling_a)] {
+        let rows: Vec<_> = both_back
+            .workspaces
+            .iter()
+            .filter(|row| &row.id == id)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "unit {id} hosted exactly once: {:?}",
+            both_back.workspaces
+        );
+        assert_eq!(rows[0].output.0, output, "{:?}", rows[0]);
+        assert_eq!(rows[0].tiling_mode, tiling, "{:?}", rows[0]);
+    }
+    let u_rows: Vec<_> = both_back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_u)
+        .collect();
+    assert_eq!(
+        u_rows.len(),
+        1,
+        "viewed U unit hosted once: {:?}",
+        both_back.workspaces
+    );
+    assert_eq!(u_rows[0].output.0, "out-u", "{:?}", u_rows[0]);
+    let rows: Vec<_> = both_back
+        .windows
+        .iter()
+        .filter(|row| ["win-b", "win-a", "win-u"].contains(&row.lifetime.0.as_str()))
+        .collect();
+    assert_eq!(rows.len(), 3, "every member exactly homed once: {rows:?}");
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-b"
+            && row.output.0 == "out-b2"
+            && row.workspace == view_b),
+        "B member rides its exact unit home: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-a"
+            && row.output.0 == "out-a2"
+            && row.workspace == view_a),
+        "A member rides its exact unit home: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-u"
+            && row.output.0 == "out-u"
+            && row.workspace == view_u),
+        "U member stays on its unit: {rows:?}"
+    );
+    assert!(
+        both_back.effects.is_empty(),
+        "returns mint no focus: {:?}",
+        both_back.effects
+    );
+    assert!(
+        both_back
+            .transfers
+            .iter()
+            .all(|t| !t.operation_id.starts_with("op-hp-")),
+        "no pull-back flights: {:?}",
+        both_back.transfers
+    );
+}
+
+#[test]
+fn physical_chain_return_moved_out_member_stays_away() {
+    // S -> T -> U chain, then win-s explicitly moves out of its unit onto
+    // the survivor's own unit while displaced. Both origins return together
+    // in one report: the S unit returns with then-current contents (without
+    // the moved member) and no return pulls the member back.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                screen_ident("out-s", rect(0, 0, 800, 600), tuple_only("s")),
+                screen_ident("out-t", rect(800, 0, 800, 600), tuple_only("t")),
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+            ],
+            vec![
+                fact("win-s", "out-s", 0),
+                fact("win-t", "out-t", 800),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_s = output_view(&first, "out-s").expect("view s");
+    let view_t = output_view(&first, "out-t").expect("view t");
+    let view_u = output_view(&first, "out-u").expect("view u");
+    // Initial ring: the viewed unit plus its trailing spare, both
+    // originally S's.
+    let mut ring_s: Vec<_> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-s")
+        .collect();
+    ring_s.sort_by_key(|row| row.order);
+    let ring_s: Vec<String> = ring_s.into_iter().map(|row| row.id.clone()).collect();
+    let tiling_t = first
+        .workspaces
+        .iter()
+        .find(|row| row.id == view_t)
+        .map(|row| row.tiling_mode)
+        .expect("tiling t");
+    let spare_s = ring_s
+        .iter()
+        .find(|id| *id != &view_s)
+        .expect("S trailing spare")
+        .clone();
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![
+                screen_ident("out-t", rect(800, 0, 800, 600), tuple_only("t")),
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+            ],
+            vec![
+                fact("win-s", "out-t", 800),
+                fact("win-t", "out-t", 900),
+                fact("win-u", "out-u", 1600),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen_ident(
+                "out-u",
+                rect(1600, 0, 800, 600),
+                tuple_only("u"),
+            )],
+            vec![
+                fact("win-s", "out-u", 1600),
+                fact("win-t", "out-u", 1700),
+                fact("win-u", "out-u", 1800),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        engine
+            .displaced
+            .get("out-s")
+            .map(|entry| entry.owned.clone())
+            .unwrap_or_default(),
+        ring_s,
+        "S owns its original ring: {:?}",
+        engine.displaced
+    );
+    assert_eq!(
+        engine
+            .displaced
+            .get("out-t")
+            .map(|entry| entry.owned.clone())
+            .unwrap_or_default(),
+        vec![view_t.clone()],
+        "T owns only its original unit: {:?}",
+        engine.displaced
+    );
+    // Explicit move-out while displaced: win-s leaves its unit for the
+    // survivor's own unit through the ordinary send route.
+    let moved = match engine.handle_report_legacy(&report(
+        4,
+        4,
+        vec![screen_ident(
+            "out-u",
+            rect(1600, 0, 800, 600),
+            tuple_only("u"),
+        )],
+        vec![
+            fact("win-s", "out-u", 1600),
+            fact("win-t", "out-u", 1700),
+            fact("win-u", "out-u", 1800),
+        ],
+        "win-s",
+        Some(11),
+        Some(WorldCommand::Operation(CoreCommand::SendToWorkspace {
+            window: "win-s".to_owned(),
+            target_output: "out-u".to_owned(),
+            target_workspace: view_u.clone(),
+            follow: false,
+        })),
+    )) {
+        LegacyWorldOutcome::Accepted(reply) => reply,
+        other => panic!("explicit move-out must accept, got {other:?}"),
+    };
+    let transfer = moved
+        .transfers
+        .iter()
+        .find(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-s"))
+        .expect("explicit move-out retains a window transfer");
+    assert_eq!(transfer.target_output.0, "out-u", "{transfer:?}");
+    assert_eq!(transfer.target_workspace, view_u, "{transfer:?}");
+    assert_eq!(row_of(&moved, "win-s").output.0, "out-u");
+    assert_eq!(row_of(&moved, "win-s").workspace, view_u);
+    let both_back = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![
+                screen_ident("out-u", rect(1600, 0, 800, 600), tuple_only("u")),
+                screen_ident("out-s2", rect(0, 0, 800, 600), tuple_only("s")),
+                screen_ident("out-t2", rect(800, 0, 800, 600), tuple_only("t")),
+            ],
+            vec![
+                fact("win-s", "out-u", 1600),
+                fact("win-t", "out-t2", 800),
+                fact("win-u", "out-u", 1800),
+            ],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.is_empty(),
+        "both origins reclaim: {:?}",
+        engine.displaced
+    );
+    // The emptied S unit dissolves through ordinary trailing lifecycle
+    // (unviewed and unoccupied after the move-out); affinity is proven by
+    // its spare coming home, its members staying put, and no pull-back
+    // flight. The unit itself must never surface on another host.
+    let s_rows: Vec<_> = both_back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_s)
+        .collect();
+    assert!(
+        s_rows.iter().all(|row| row.output.0 == "out-s2"),
+        "S unit never yanked elsewhere: {:?}",
+        both_back.workspaces
+    );
+    let spare_rows: Vec<_> = both_back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == *spare_s)
+        .collect();
+    assert_eq!(
+        spare_rows.len(),
+        1,
+        "S spare hosted exactly once: {:?}",
+        both_back.workspaces
+    );
+    assert_eq!(spare_rows[0].output.0, "out-s2", "{:?}", spare_rows[0]);
+    {
+        let (id, output, tiling) = (&view_t, "out-t2", tiling_t);
+        let rows: Vec<_> = both_back
+            .workspaces
+            .iter()
+            .filter(|row| &row.id == id)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "unit {id} hosted exactly once: {:?}",
+            both_back.workspaces
+        );
+        assert_eq!(rows[0].output.0, output, "{:?}", rows[0]);
+        assert_eq!(rows[0].tiling_mode, tiling, "{:?}", rows[0]);
+    }
+    let u_rows: Vec<_> = both_back
+        .workspaces
+        .iter()
+        .filter(|row| row.id == view_u)
+        .collect();
+    assert_eq!(
+        u_rows.len(),
+        1,
+        "viewed U unit hosted once: {:?}",
+        both_back.workspaces
+    );
+    assert_eq!(u_rows[0].output.0, "out-u", "{:?}", u_rows[0]);
+    let rows: Vec<_> = both_back
+        .windows
+        .iter()
+        .filter(|row| ["win-s", "win-t", "win-u"].contains(&row.lifetime.0.as_str()))
+        .collect();
+    assert_eq!(rows.len(), 3, "every member exactly homed once: {rows:?}");
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-s"
+            && row.output.0 == "out-u"
+            && row.workspace == view_u),
+        "moved-out member is not pulled back: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-t"
+            && row.output.0 == "out-t2"
+            && row.workspace == view_t),
+        "T member rides its exact unit home: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.lifetime.0 == "win-u"
+            && row.output.0 == "out-u"
+            && row.workspace == view_u),
+        "U member stays on its unit: {rows:?}"
+    );
+    assert!(
+        both_back
+            .windows
+            .iter()
+            .filter(|row| row.lifetime.0 == "win-s")
+            .all(|row| row.workspace != view_s),
+        "S unit returns with then-current contents: {:?}",
+        both_back.windows
     );
     assert!(
         both_back.effects.is_empty(),
