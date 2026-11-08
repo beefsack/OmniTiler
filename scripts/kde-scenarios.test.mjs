@@ -20,7 +20,7 @@ import {
   frameOf, frameEqual, frameDiff, frameInside, frameArea, parseReadiness, readinessPass,
   parsePresentation, parseWindowInfo, devStatusCmd, devOffCmd, devOnCmd,
   fixtureServeCmd, fixtureSendCmd, ydotooldCmd, ydotoolKeyCmd, STATE_CHORDS, presentationReq, plannerReadCmd,
-  windowInfoCmd, runScenario, liveMain, parseProcStat, createLiveIo,
+  windowInfoCmd, runScenario, liveMain, parseProcStat, createLiveIo, RESIZE_STEP_PX, parseResizeRefusalTokens,
 } from "./kde-scenarios.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -330,14 +330,16 @@ function makeFake(opts) {
       if (!o || !o.env || o.env.YDOTOOL_SOCKET !== F.ydSock) {
         return { status: 1, stdout: "", stderr: "ydotool without the owned socket" };
       }
-      if (F.activeUuid !== UUID_A) {
-        return { status: 1, stdout: "", stderr: "chord without active A" };
+      if (F.activeUuid !== UUID_A && F.activeUuid !== UUID_B) {
+        return { status: 1, stdout: "", stderr: "chord without an active fixture" };
       }
       const kinds = {
         "125:1 50:1 50:0 125:0": "maximize",
         "125:1 87:1 87:0 125:0": "fullscreen",
         "125:1 34:1 34:0 125:0": "float",
         "125:1 42:1 34:1 34:0 42:0 125:0": "sticky",
+        "125:1 56:1 105:1 105:0 56:0 125:0": "resizeLeft",
+        "125:1 56:1 106:1 106:0 56:0 125:0": "resizeRight",
       };
       const kind = kinds[seq];
       if (!kind) { return { status: 1, stdout: "", stderr: "unknown chord argv" }; }
@@ -407,6 +409,11 @@ function makeFake(opts) {
       }
       if (s.indexOf("getWindowInfo") >= 0) {
         const uuid = argv[argv.length - 1];
+        // Resize step-1 unknown fact: once the journey starts, B stops
+        // answering getWindowInfo, so the step can never PASS.
+        if (F.fail.resizeFault === "step1UnknownInfo" && F.resizeStarted && uuid === UUID_B) {
+          return { status: 0, stdout: J({ type: "a{sv}", data: [{}] }) + "\n", stderr: "" };
+        }
         const w = F.wins.find((x) => x.internalId === uuid);
         if (!w) { return { status: 0, stdout: J({ type: "a{sv}", data: [{}] }) + "\n", stderr: "" }; }
         F.winfoCount = (F.winfoCount || 0) + 1;
@@ -479,6 +486,13 @@ function makeFake(opts) {
             else if (F.fail.stateFault === "ordinaryDriftA") { ga = [0, 0, 100, 100]; }
             else if (F.fail.stateFault === "ordinarySameSlot") { gb = [0, 0, 960, 1080]; }
           }
+          // Resize step 1 moves the shared boundary by one keyboard step in
+          // both the native model and the published allocations (native faults
+          // move only the native side, so the oracle names the divergence).
+          if (F.resized12 && !F.closedB && F.fail.resizeFault !== "step1AllocMismatch") {
+            ga = [0, 0, 948, 1080];
+            gb = [948, 0, 972, 1080];
+          }
           F.presentCount = (F.presentCount || 0) + 1;
           // First-divergence probes: a one-time bad allocation resolves on the
           // next poll (transient), while admitDrift keeps disagreeing with a
@@ -496,6 +510,18 @@ function makeFake(opts) {
             w.resourceClass === SCOPE_CLASS && typeof w.pid === "number" && w.pid > 0) {
             rows.push(win(w, [0, 0, 100, 100]));
           }
+        }
+        // A stray presentation row appearing only once the resize journey
+        // starts (admission still sees exactly {A,B}): the exact-set oracle
+        // must refuse it at the step.
+        if (F.fail.resizeFault === "extraRow" && F.resizeStarted && !F.closedB) {
+          rows.push({
+            win: "zz9extra01", out: "out-1", ws: "ws-1",
+            alloc: [0, 0, 100, 100], frame: null, frame_auth: "controlled", frame_hold: "",
+            member_auth: "controlled", member_hold: "",
+            floating: false, float_origin: "",
+            cmdSeq: null, visibility: null, visibility_auth: "controlled", visibility_hold: "", state: [],
+          });
         }
         const body = {
           v: 4, outcome: "presentation", gen: "g9", req: reqOut, rev: "78", obs: "91",
@@ -522,6 +548,25 @@ function makeFake(opts) {
           .map((e) => J({ MESSAGE: e.msg }));
         return { status: 0, stdout: lines.join("\n") + (lines.length ? "\n" : ""), stderr: "" };
       }
+    }
+    // Planner log boundary (read-only): readlink resolves the merged log,
+    // stat sizes it, tail reads new bytes. Faults model unreadable logs.
+    if (argv[0] === "readlink") {
+      const rf = (F.fail && F.fail.resizeFault) || null;
+      if (rf === "logReadlinkFail") { return { status: 1, stdout: "", stderr: "no such file" }; }
+      if (rf === "logPathMismatch") { return { status: 0, stdout: "/tmp/wrong-path.log\n", stderr: "" }; }
+      return { status: 0, stdout: F.plannerLogPath + "\n", stderr: "" };
+    }
+    if (argv[0] === "stat") {
+      if ((F.fail && F.fail.resizeFault) === "logStatFail") { return { status: 1, stdout: "", stderr: "boom" }; }
+      if (argv[argv.length - 1] !== F.plannerLogPath) { return { status: 1, stdout: "", stderr: "no such file" }; }
+      return { status: 0, stdout: String(F.plannerLog.length) + "\n", stderr: "" };
+    }
+    if (argv[0] === "tail") {
+      if (argv[argv.length - 1] !== F.plannerLogPath) { return { status: 1, stdout: "", stderr: "no such file" }; }
+      const cArg = argv.filter((a) => a.indexOf("+") === 0)[0] || "+1";
+      const off = Number(cArg.slice(1)) - 1;
+      return { status: 0, stdout: F.plannerLog.slice(off), stderr: "" };
     }
     throw new ScenarioError("fake: unstubbed exec: " + s.slice(0, 140));
   };
@@ -745,6 +790,53 @@ function makeFake(opts) {
       }
     } else if (kind === "sticky") {
       A.stickySt = !A.stickySt;
+    } else if (kind === "resizeLeft" || kind === "resizeRight") {
+      F.resizeStarted = true;
+      const rf = (F.fail && F.fail.resizeFault) || null;
+      const B = F.wins.find((w) => w.internalId === UUID_B);
+      if (kind === "resizeLeft" && !F.closedB) {
+        // Step 1: B grows toward the shared boundary by one keyboard step.
+        const dx = rf === "step1Delta11" ? 11 : 12;
+        if (A) { A.frameGeometry = { x: 0, y: 0, width: 960 - dx, height: 1080 }; }
+        if (B) { B.frameGeometry = { x: 960 - dx, y: 0, width: 960 + dx, height: 1080 }; }
+        F.resized12 = true;
+        if (rf === "step1SpuriousRefusal") {
+          F.plannerLog += F.makeRefusalLine({ dir: "left", mode: "outwards", internal: "unchanged", wire: "operation-refused", rowsTotal: "2", rowsShown: "2" }) + "\n";
+        }
+      } else if (kind === "resizeRight" && !F.closedB) {
+        // Step 2: outer edge, no neighbour: refused, frames stay at step 1.
+        if (rf !== "step2NoRefusal") {
+          const n = rf === "step2TwoLines" ? 2 : 1;
+          const internal = rf === "step2WrongKind" ? "geometry" : "unchanged";
+          let subject, press = "0", rowsTotal = "2", rowsShown = "2";
+          if (rf === "step2SubjectA") { subject = BARE(UUID_A); }
+          else if (rf === "step2SubjectForeign") { subject = BARE(UUID_X); }
+          else if (rf === "step2Press1") { press = "1"; }
+          else if (rf === "step2Rows1") { rowsTotal = "1"; rowsShown = "1"; }
+          for (let i = 0; i < n; i++) {
+            F.plannerLog += F.makeRefusalLine({ subject, dir: "right", mode: "outwards", internal, wire: "operation-refused", press, rowsTotal, rowsShown }) + "\n";
+          }
+        }
+        if (rf === "step2FramesMoved" && B && B.frameGeometry) {
+          B.frameGeometry = { x: B.frameGeometry.x + 1, y: 0, width: B.frameGeometry.width, height: 1080 };
+        }
+      } else if (kind === "resizeLeft" && F.closedB) {
+        // Step 3: singleton A grows toward its outer edge: refused.
+        if (rf !== "step3RefusalMissing") {
+          let subject = BARE(UUID_A), rowsTotal = "1", rowsShown = "1";
+          if (rf === "step3SubjectB") { subject = BARE(UUID_B); }
+          else if (rf === "step3Rows2") { rowsTotal = "2"; rowsShown = "2"; }
+          F.plannerLog += F.makeRefusalLine({ subject, dir: "left", mode: "outwards", internal: "unchanged", wire: "operation-refused", press: "0", rowsTotal, rowsShown }) + "\n";
+        }
+        if (rf === "step3FrameChanged" && A && A.frameGeometry) {
+          A.frameGeometry = { x: 0, y: 0, width: 1919, height: 1080 };
+        }
+      } else {
+        return "unknown resize context";
+      }
+      // The state-target model below would reset the resized geometry, and
+      // resize never touches keepAbove: return with the resize geometry kept.
+      return null;
     } else {
       return "unknown state kind";
     }
@@ -752,6 +844,20 @@ function makeFake(opts) {
     F.applyStateModel();
     return null;
   };
+  // Resize-refusal model: planner log reachable through the fake exec
+  // boundary (readlink/stat/tail), refusal lines, and the 12px boundary
+  // move. Faults via F.fail.resizeFault target one oracle each.
+  F.plannerLogPath = "/tmp/omnitiler-planner-dev.a1B2c3D4.log";
+  F.plannerLog = "";
+  F.resized12 = false;
+  F.resizeStarted = false;
+  F.makeRefusalLine = (o) => (
+    "omnitiler:resize-refused req=r1 reqseq=1 obsseq=2 cmdseq=3 op=resize subject=" +
+    (o.subject || BARE(UUID_B)) + " dir=" + o.dir + " mode=" + o.mode + " press=" + (o.press || "0") +
+    " internal=" + o.internal + " wire=" + o.wire + " focused=f1 homing=out-1/ws-1 focus=f1 tree=root" +
+    " subjgeom=948,0,972x1080 subjhints=- rowsTotal=" + o.rowsTotal + " rowsShown=" + o.rowsShown +
+    " rows=[a@0,0,948x1080/- b@948,0,972x1080/-]"
+  );
   return F;
 }
 
@@ -1242,6 +1348,7 @@ test("ST-CLI: scenario flag defaults, parses, and fails closed before io", async
 test("ST-BUILDER: exact chord argv, keycodes, and closed construction", () => {
   assert.deepEqual(STATE_CHORDS, {
     maximize: [125, 50], fullscreen: [125, 87], float: [125, 34], sticky: [125, 42, 34],
+    resizeLeft: [125, 56, 105], resizeRight: [125, 56, 106],
   });
   assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "maximize"),
     ["ydotool", "key", "125:1", "50:1", "50:0", "125:0"]);
@@ -1251,6 +1358,10 @@ test("ST-BUILDER: exact chord argv, keycodes, and closed construction", () => {
     ["ydotool", "key", "125:1", "34:1", "34:0", "125:0"]);
   assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "sticky"),
     ["ydotool", "key", "125:1", "42:1", "34:1", "34:0", "42:0", "125:0"]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "resizeLeft"),
+    ["ydotool", "key", "125:1", "56:1", "105:1", "105:0", "56:0", "125:0"]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "resizeRight"),
+    ["ydotool", "key", "125:1", "56:1", "106:1", "106:0", "56:0", "125:0"]);
   assert.throws(() => ydotoolKeyCmd("/tmp/x.sock", "bogus"), /unknown chord/);
   assert.throws(() => ydotoolKeyCmd("rel.sock", "maximize"), /absolute/);
 });
@@ -1486,6 +1597,253 @@ test("ST-SHAPES: state-key signatures match the captured KWin-derived shapes", a
   }
   assert.equal(body.maximizeHorizontal.data, 0);
   assert.equal(body.maximizeVertical.data, 0);
+});
+
+// ---------------------------------------------------------------------------
+// RR. resize-refusal scenario (keyboard grow-towards-direction with planner
+// refusal-line oracles)
+// ---------------------------------------------------------------------------
+
+test("RR-CLI: resize-refusal parses, is documented, and requires --input before io", async () => {
+  assert.equal(parseArgs(["--scenario", "resize-refusal"]).scenario, "resize-refusal");
+  assert.equal(parseArgs(["--scenario=resize-refusal"]).scenario, "resize-refusal");
+  assert.ok(helpText().indexOf("resize-refusal") >= 0, "help documents resize-refusal");
+  assert.throws(() => parseArgs(["--scenario=resize-refusal", "--scenario=tiling-reflow"]), /duplicate --scenario/);
+  const noIo = () => { throw new Error("io must not be built"); };
+  assert.equal(await liveMain({
+    argv: ["--live", "--evidence-dir", "/tmp/kde-rr-noinput-1", "--scenario", "resize-refusal"],
+    ioFactory: noIo, root: ROOT, templatePath: TEMPLATE,
+  }), 2);
+  const f = makeFake();
+  await assert.rejects(
+    runScenario(Object.assign(baseOpts(), { io: f.io, scenario: "resize-refusal" })),
+    /resize-refusal requires --input/);
+  assert.equal(f.execCalls.length, 0, "no exec before the input guard");
+});
+
+test("RR-BUILDER: resize chord keycodes and exact argv", () => {
+  assert.equal(RESIZE_STEP_PX, 12);
+  assert.deepEqual(STATE_CHORDS.resizeLeft, [125, 56, 105]);
+  assert.deepEqual(STATE_CHORDS.resizeRight, [125, 56, 106]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "resizeLeft"),
+    ["ydotool", "key", "125:1", "56:1", "105:1", "105:0", "56:0", "125:0"]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "resizeRight"),
+    ["ydotool", "key", "125:1", "56:1", "106:1", "106:0", "56:0", "125:0"]);
+});
+
+test("RR-TOKENS: refusal token parser keeps only the bounded vocabulary", () => {
+  const line = "omnitiler:resize-refused req=r1 reqseq=1 obsseq=2 cmdseq=3 op=resize subject=deadbeef " +
+    "dir=right mode=outwards press=0 internal=unchanged wire=operation-refused focused=f1 homing=o/w " +
+    "focus=f1 tree=root subjgeom=1,2,3x4 subjhints=- rowsTotal=2 rowsShown=2 rows=[a b]";
+  const tok = parseResizeRefusalTokens(line);
+  assert.deepEqual(tok, {
+    internal: "unchanged", wire: "operation-refused", dir: "right", mode: "outwards",
+    press: "0", rowsTotal: "2", rowsShown: "2", tree: "root", subject: "deadbeef",
+  });
+  assert.equal(parseResizeRefusalTokens("no refusal here").internal, undefined);
+});
+
+test("RR-PASS: grow/refuse/close/refuse journey passes with exact events and checks", async () => {
+  const f = makeFake({});
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "resize-refusal" }));
+  assert.equal(res.category, "PASS", J({ div: res.divergence, checks: res.checks }));
+  assert.equal(res.rc, 0, J(res.cleanupFailed));
+  assert.equal(res.scenario, "done");
+  assert.equal(res.scenarioRan, "resize-refusal");
+  const seq = ["preflight", "kwin-identity", "fixture-serve", "ydotoold-start", "journal-cursor",
+    "workspace-read", "workspace-append", "workspace-reread", "workspace-setcurrent",
+    "dev-on", "readiness", "fixture-spawn", "native-read", "join", "activate",
+    "scenario-resize-refusal",
+    "resize-step1", "resize-step2", "resize-close-b", "resize-step3",
+    "scenario-done", "cleanup",
+    "cleanup-fixture-shutdown", "cleanup-workspace-restore", "cleanup-dev-off",
+    "cleanup-workspace-remove", "cleanup-ydotoold-stop",
+    "verify-fixture-pid-gone", "verify-cargo-pid-gone",
+    "verify-fixture-socket-absent", "verify-rundir-removed", "verify-planner-pid-gone",
+    "verify-ydotoold-gone", "verify-current-restored", "verify-appended-absent", "verify-dev-down"];
+  assert.deepEqual(res.events, seq);
+  const names = res.checks.map((c) => c.name);
+  for (const n of ["resize-admit-a-frame-equals-alloc", "resize-admit-b-frame-equals-alloc",
+    "resize-admit-disjoint", "resize-admit-inside-output", "resize-admit-same-ws",
+    "resize-step1", "resize-step2",
+    "reflow-b-gone-from-presentation", "reflow-b-absent-native",
+    "reflow-a-alloc-changed-larger", "reflow-a-frame-equals-alloc", "reflow-a-inside-output",
+    "resize-step3"]) {
+    assert.ok(names.includes(n), "missing check " + n + ": " + J(names));
+  }
+  assert.ok(res.checks.every((c) => c.pass), J(res.checks));
+  // Chord multiset: resizeLeft 2 (step1, step3), resizeRight 1 (step2).
+  const keys = f.execCalls.filter((c) => c.indexOf("ydotool key") === 0);
+  assert.equal(keys.length, 3, J(keys));
+  assert.equal(keys.filter((c) => c.indexOf("125:1 56:1 105:1 105:0 56:0 125:0") >= 0).length, 2);
+  assert.equal(keys.filter((c) => c.indexOf("125:1 56:1 106:1 106:0 56:0 125:0") >= 0).length, 1);
+  // Exact one-press geometry.
+  assert.deepEqual(res.receipts.resizeBase, {
+    a: { x: 0, y: 0, w: 960, h: 1080 }, b: { x: 960, y: 0, w: 960, h: 1080 },
+  });
+  assert.deepEqual(res.receipts.resizeStep1, {
+    a: { x: 0, y: 0, w: 948, h: 1080 }, b: { x: 948, y: 0, w: 972, h: 1080 },
+  });
+  // Bounded refusal receipts only: two lines (step2 right, step3 left).
+  assert.equal(res.receipts["planner-log-resolved"], true);
+  assert.deepEqual(res.receipts.resizeRefusals, [
+    { step: "step2", internal: "unchanged", wire: "operation-refused", dir: "right", mode: "outwards", press: "0", rowsTotal: "2", rowsShown: "2", subjectBound: true },
+    { step: "step3", internal: "unchanged", wire: "operation-refused", dir: "left", mode: "outwards", press: "0", rowsTotal: "1", rowsShown: "1", subjectBound: true },
+  ]);
+  // The log path and whole refusal lines are never recorded; no leakage.
+  const blob = J(res) +
+    [...f.files.values()].map((x) => String(x.data)).join("\n");
+  assert.ok(!blob.includes("omnitiler-planner-dev."), "planner log path recorded");
+  assert.ok(!blob.includes("omnitiler:resize-refused"), "refusal line recorded");
+  assert.ok(!blob.includes(FIX_NONCE), "fixture nonce leaked");
+  assert.ok(!/helper-[0-9a-f]{32}/.test(J(res)), "helper nonce leaked into evidence");
+  assert.ok(!blob.includes("Foreign Files"), "foreign caption leaked");
+  assert.ok(!blob.includes("org.kde.dolphin"), "foreign class leaked");
+  assert.equal(res.counts.foreign, 1);
+});
+
+test("RR-NEG: step-1 faults fail closed at resize-step1 with no retry", async () => {
+  for (const [fault, oracle] of [
+    ["step1Delta11", /stepped allocation/],
+    ["step1AllocMismatch", /published allocation/],
+    ["step1SpuriousRefusal", /unexpected planner refusal line/],
+    ["extraRow", /not exactly \{A,B\}/],
+  ]) {
+    const f = makeFake({ fail: { resizeFault: fault } });
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "resize-refusal" }));
+    assert.equal(res.rc, 1, fault);
+    assert.equal(res.category, "FAIL", fault);
+    assert.match(res.divergence || "", /resize-step1/, fault);
+    assert.match(res.divergence || "", oracle, fault);
+    assert.ok(!res.events.includes("scenario-done"), fault);
+    assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 1,
+      fault + ": failing chord is never retried");
+  }
+});
+
+test("RR-NEG: step-2 faults fail closed at resize-step2", async () => {
+  for (const [fault, oracle] of [
+    ["step2NoRefusal", /expected exactly one resize refusal line since resize-step2, saw 0/],
+    ["step2TwoLines", /expected exactly one resize refusal line since resize-step2, saw 2/],
+    ["step2WrongKind", /refusal token mismatch at resize-step2: internal/],
+    ["step2FramesMoved", /b frame moved on refused resize/],
+  ]) {
+    const f = makeFake({ fail: { resizeFault: fault } });
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "resize-refusal" }));
+    assert.equal(res.rc, 1, fault);
+    assert.equal(res.category, "FAIL", fault);
+    assert.match(res.divergence || "", /resize-step2/, fault);
+    assert.match(res.divergence || "", oracle, fault);
+    assert.ok(!res.events.includes("scenario-done"), fault);
+    assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 2,
+      fault + ": failing chord is never retried");
+  }
+});
+
+test("RR-NEG: step-2 refusal subject/press/rows faults fail closed at resize-step2", async () => {
+  for (const [fault, oracle] of [
+    ["step2SubjectA", /subject mismatch/],
+    ["step2SubjectForeign", /subject mismatch/],
+    ["step2Press1", /press='1' \(need '0'\)/],
+    ["step2Rows1", /rowsTotal='1' \(need '2'\)/],
+  ]) {
+    const f = makeFake({ fail: { resizeFault: fault } });
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "resize-refusal" }));
+    assert.equal(res.rc, 1, fault);
+    assert.equal(res.category, "FAIL", fault);
+    assert.match(res.divergence || "", /resize-step2/, fault);
+    assert.match(res.divergence || "", oracle, fault);
+    assert.ok(!res.events.includes("scenario-done"), fault);
+    assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 2,
+      fault + ": failing chord is never retried");
+  }
+});
+
+test("RR-NEG: step-3 refusal subject/rows faults fail closed at resize-step3", async () => {
+  for (const [fault, oracle] of [
+    ["step3SubjectB", /subject mismatch/],
+    ["step3Rows2", /rowsTotal='2' \(need '1'\)/],
+  ]) {
+    const f = makeFake({ fail: { resizeFault: fault } });
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "resize-refusal" }));
+    assert.equal(res.rc, 1, fault);
+    assert.equal(res.category, "FAIL", fault);
+    assert.match(res.divergence || "", /resize-step3/, fault);
+    assert.match(res.divergence || "", oracle, fault);
+    assert.ok(!res.events.includes("scenario-done"), fault);
+    assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 3,
+      fault + ": failing chord is never retried");
+  }
+});
+
+test("RR-NEG: step-3 and planner-log faults fail closed", async () => {
+  for (const [fault, step, oracle] of [
+    ["step3RefusalMissing", /resize-step3/, /expected exactly one resize refusal line since resize-step3, saw 0/],
+    ["step3FrameChanged", /resize-step3/, /a frame changed on refused singleton resize/],
+    ["logReadlinkFail", null, /planner log resolve failed/],
+    ["logPathMismatch", null, /planner log unresolvable/],
+  ]) {
+    const f = makeFake({ fail: { resizeFault: fault } });
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "resize-refusal" }));
+    assert.equal(res.rc, 1, fault);
+    assert.equal(res.category, "FAIL", fault);
+    if (step) {
+      assert.match(res.divergence || "", step, fault);
+    } else {
+      assert.ok(!res.events.includes("resize-step1"), fault + ": log failure precedes the journey");
+    }
+    assert.match(res.divergence || "", oracle, fault);
+    assert.ok(!res.events.includes("scenario-done"), fault);
+  }
+});
+
+test("RR-PENDING: missing/unknown facts never PASS", async () => {
+  const f = makeFake({ fail: { resizeFault: "step1UnknownInfo" } });
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "resize-refusal" }));
+  assert.equal(res.rc, 1);
+  assert.equal(res.category, "PENDING", J(res.divergence));
+  assert.match(res.divergence || "", /resize-step1/);
+  // Unknown published allocation at step 1 is PENDING too.
+  const g = makeFake({});
+  g.allocPatch = (which, v) => (which === "b0" && g.resizeStarted ? null : v);
+  const res2 = await runScenario(Object.assign(baseOpts(), { io: g.io, input: true, scenario: "resize-refusal" }));
+  assert.equal(res2.rc, 1);
+  assert.equal(res2.category, "PENDING", J(res2.divergence));
+  assert.match(res2.divergence || "", /resize-step1/);
+});
+
+test("RR-CLI: liveMain runs resize-refusal end to end and the mismatch tripwire holds", async () => {
+  const rr = await liveMainFake(["--live", "--evidence-dir", EVID, "--input", "--scenario", "resize-refusal"]);
+  assert.equal(rr.rc, 0, rr.out);
+  assert.equal(rr.result.requestedScenario, "resize-refusal");
+  assert.equal(rr.result.scenarioRan, "resize-refusal");
+  assert.equal(rr.result.scenarioMismatch, false);
+  assert.ok(rr.result.events.includes("scenario-resize-refusal"), "resize-refusal events ran");
+  assert.ok(rr.result.events.includes("resize-step1"));
+  assert.ok(rr.result.events.includes("resize-step2"));
+  assert.ok(rr.result.events.includes("resize-step3"));
+  assert.ok(!rr.result.events.includes("scenario-admission"), "tiling-reflow did not run");
+  // A ran-vs-requested scenario mismatch fails the run and is recorded.
+  const f = makeFake({});
+  f.dirs.delete(EVID);
+  const wrong = async (opts) => runScenario(Object.assign({}, opts, { scenario: "tiling-reflow" }));
+  const origLog = console.log; const origErr = console.error;
+  const sink = [];
+  console.log = (...a) => { sink.push(a.join(" ")); };
+  console.error = (...a) => { sink.push(a.join(" ")); };
+  let rc;
+  try {
+    rc = await liveMain({
+      argv: ["--live", "--evidence-dir", EVID, "--input", "--scenario", "resize-refusal"],
+      ioFactory: () => f.io, root: ROOT, execEnv: ENV, templatePath: TEMPLATE, runScenarioFn: wrong,
+    });
+  } finally { console.log = origLog; console.error = origErr; }
+  assert.equal(rc, 1);
+  assert.match(sink.join("\n"), /requested scenario 'resize-refusal' but ran 'tiling-reflow'/);
+  const result = JSON.parse(f.files.get(EVID + "/result.json").data);
+  assert.equal(result.scenarioMismatch, true);
+  assert.equal(result.requestedScenario, "resize-refusal");
+  assert.equal(result.scenarioRan, "tiling-reflow");
 });
 
 test("PROCSTAT: production parser accepts the real stat shape (trailing newline) and fails closed", () => {

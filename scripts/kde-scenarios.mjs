@@ -75,10 +75,12 @@ export function helpText() {
     "usage: node scripts/kde-scenarios.mjs [--help] [--live --evidence-dir PATH [--input] [--scenario NAME]]",
     "",
     "Fixture-driven KDE native scenario runner. Offline by default.",
-    "Two scenarios on a workspace appended beyond the whole roster:",
+    "Three scenarios on a workspace appended beyond the whole roster:",
     "  tiling-reflow: admission A/B tiling then close-B/A-reflow (default).",
     "  state-targets:  maximize/fullscreen/float/sticky chord journey with an",
     "                  orderly production restart (requires --input).",
+    "  resize-refusal: keyboard grow-towards-direction journey with planner",
+    "                  refusal-line oracles (requires --input).",
     "",
     "  --help            show this help and exit (never mutates)",
     "  --live            explicit live mode against the real session.",
@@ -87,8 +89,9 @@ export function helpText() {
     "                    canonical, outside the repository, and not pre-exist.",
     "  --input           also start ydotoold (lifecycle only for tiling-reflow,",
     "                    chord injection for state-targets). Default off.",
-    "  --scenario NAME   tiling-reflow (default) or state-targets. state-targets",
-    "                    REQUIRES --input. Unknown values exit 2 before any io.",
+    "  --scenario NAME   tiling-reflow (default), state-targets, or",
+    "                    resize-refusal. state-targets and resize-refusal",
+    "                    REQUIRE --input. Unknown values exit 2 before any io.",
   ].join("\n");
 }
 
@@ -117,13 +120,13 @@ export function parseArgs(argv) {
       const v = argv[++i];
       if (!v) { throw new ScenarioError("--scenario requires a value"); }
       if (out.scenario !== "tiling-reflow") { throw new ScenarioError("duplicate --scenario"); }
-      if (v !== "tiling-reflow" && v !== "state-targets") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
+      if (v !== "tiling-reflow" && v !== "state-targets" && v !== "resize-refusal") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
       out.scenario = v;
     } else if (a.startsWith("--scenario=")) {
       const v = a.slice("--scenario=".length);
       if (!v) { throw new ScenarioError("--scenario requires a value"); }
       if (out.scenario !== "tiling-reflow") { throw new ScenarioError("duplicate --scenario"); }
-      if (v !== "tiling-reflow" && v !== "state-targets") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
+      if (v !== "tiling-reflow" && v !== "state-targets" && v !== "resize-refusal") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
       out.scenario = v;
     } else { throw new ScenarioError("unknown argument '" + a + "'"); }
   }
@@ -228,6 +231,20 @@ export function frameDiff(a, e) {
 export function frameInside(f, o) {
   if (!f || !o) { return false; }
   return f.x >= o.x && f.y >= o.y && f.x + f.w <= o.x + o.w && f.y + f.h <= o.y + o.h;
+}
+
+// Planner `omnitiler:resize-refused` diagnostic tokens (world_engine.rs):
+// extract only the bounded closed-vocabulary tokens plus the opaque subject
+// window id (never titles, captions, or focus ids). The subject is compared
+// in memory only and never recorded. Missing keys read undefined (never a
+// guess).
+export function parseResizeRefusalTokens(line) {
+  const out = {};
+  const re = /(?:^|\s)(internal|wire|dir|mode|press|rowsTotal|rowsShown|tree|subject)=([^\s]+)/g;
+  let m;
+  const text = String(line);
+  while ((m = re.exec(text)) !== null) { out[m[1]] = m[2]; }
+  return out;
 }
 
 function rectsOverlap(a, b) {
@@ -403,17 +420,24 @@ export function ydotooldCmd(sockPath) {
   }
   return ["ydotoold", "--socket-path=" + sockPath, "--socket-perm=0600"];
 }
-// State-target chord keycodes (Linux input-event-codes.h UAPI, stable ABI;
-// verified against local linux-headers: KEY_LEFTMETA 125, KEY_LEFTSHIFT 42,
-// KEY_G 34, KEY_M 50, KEY_F11 87). Sequences mirror the registered defaults
-// in kwin/src/world-shortcuts.ts: Meta+M maximize, Meta+F11 fullscreen,
-// Meta+G float, Meta+Shift+G sticky. Press in order, release in reverse.
+// State-target and resize chord keycodes (Linux input-event-codes.h UAPI,
+// stable ABI; verified against local linux-headers: KEY_LEFTMETA 125,
+// KEY_LEFTSHIFT 42, KEY_LEFTALT 56, KEY_G 34, KEY_M 50, KEY_F11 87,
+// KEY_LEFT 105, KEY_RIGHT 106). Sequences mirror the registered defaults in
+// kwin/src/world-shortcuts.ts: Meta+M maximize, Meta+F11 fullscreen,
+// Meta+G float, Meta+Shift+G sticky; grow-towards-direction is Meta+Alt+Arrow
+// (world-shortcuts.ts:205). Press in order, release in reverse.
 export const STATE_CHORDS = {
   maximize: [125, 50],
   fullscreen: [125, 87],
   float: [125, 34],
   sticky: [125, 42, 34],
+  resizeLeft: [125, 56, 105],
+  resizeRight: [125, 56, 106],
 };
+// One keyboard resize press in the allocation coordinate space (the first
+// press of a series; crates/tiler-core/src/cosmic_v1.rs:233).
+export const RESIZE_STEP_PX = 12;
 export function ydotoolKeyCmd(sockPath, chord) {
   if (typeof sockPath !== "string" || !sockPath || sockPath[0] !== "/") {
     throw new ScenarioError("input socket must be absolute");
@@ -456,11 +480,11 @@ export async function runScenario(o) {
   if (typeof templatePath !== "string" || !templatePath) { throw new ScenarioError("templatePath required"); }
 
   const scenarioName = o.scenario === undefined ? "tiling-reflow" : o.scenario;
-  if (scenarioName !== "tiling-reflow" && scenarioName !== "state-targets") {
+  if (scenarioName !== "tiling-reflow" && scenarioName !== "state-targets" && scenarioName !== "resize-refusal") {
     throw new ScenarioError("unknown scenario '" + String(scenarioName) + "'");
   }
-  if (scenarioName === "state-targets" && !withInput) {
-    throw new ScenarioError("state-targets requires --input");
+  if ((scenarioName === "state-targets" || scenarioName === "resize-refusal") && !withInput) {
+    throw new ScenarioError(scenarioName + " requires --input");
   }
 
   const S = {
@@ -823,16 +847,37 @@ export async function runScenario(o) {
     return admit;
   };
 
-  // Ordinary two-fixture tiling and close/reflow over the shared context.
-  const scenarioTilingReflow = async () => {
-    S.scenario = "admission";
-    event("scenario-admission");
-    const bare = (u) => normalizeNativeId(u);
-    const admit = await pollAdmission("admission", "admit");
-    S.receipts.presentationRev = admit.proj.rev;
-    event("scenario-close-b");
+  // Planner log path (read-only, through the existing exec boundary, never a
+  // new io primitive). The Planner starts with stdout+stderr merged into one
+  // regular file; resolve it once via the /proc fd of the receipted planner
+  // pid. The resolved path must be absolute and match the production shape,
+  // else fail closed. Only `planner-log-resolved: true` is recorded, never
+  // the path itself.
+  const PLANNER_LOG_RE = /^\/tmp\/omnitiler-planner-dev\.[A-Za-z0-9]+\.log$/;
+  const resolvePlannerLogPath = async () => {
+    const r = await mustExec(["readlink", "/proc/" + S.planner.pid + "/fd/2"], "planner log resolve");
+    const p = String(r.stdout).split("\n").map((l) => l.trim()).filter(Boolean).pop() || "";
+    if (!PLANNER_LOG_RE.test(p)) { fail("planner log unresolvable (need an absolute /tmp/omnitiler-planner-dev.*.log path)"); }
+    // No secret, but transcripts stay generic: later stat/tail argv carrying
+    // the path are recorded redacted, and receipts keep only the boolean.
+    S.secrets.push(p);
+    S.receipts["planner-log-resolved"] = true;
+    return p;
+  };
+  const plannerLogOffset = async (logPath) => {
+    const r = await mustExec(["stat", "-c", "%s", logPath], "planner log size");
+    const n = Number(String(r.stdout).trim());
+    if (!Number.isInteger(n) || n < 0) { fail("planner log size unreadable (" + String(r.stdout).slice(0, 40) + ")"); }
+    return n;
+  };
+  const plannerLogRefusalsSince = async (logPath, offset) => {
+    const r = await mustExec(["tail", "-c", "+" + (offset + 1), logPath], "planner log tail");
+    return String(r.stdout).split("\n").filter((l) => l.indexOf("omnitiler:resize-refused") >= 0);
+  };
 
-    S.scenario = "reflow";
+  // Shared close-B + reflow oracle, used by tiling-reflow and resize-refusal.
+  // `before` is the pre-close A frame the reflowed allocation must grow past.
+  const closeFixtureB = async () => {
     mutOnce("fixture-close-b");
     {
       const r = await exec(fixtureSendCmd(S.fixture.socket, S.fixture.nonce,
@@ -847,7 +892,9 @@ export async function runScenario(o) {
       } catch (e) { fail("fixture close: unparsable fixture reply"); }
       if (!crep.length || crep.some((x) => !x || x.ok !== true)) { fail("fixture close: no ok acknowledgement"); }
     }
-    const before = admit.fA;
+  };
+  const pollReflowAfterClose = async (before) => {
+    const bare = (u) => normalizeNativeId(u);
     const reflow = await (async () => {
       const end = io.now() + T.reflow;
       let first = "no read yet";
@@ -910,6 +957,20 @@ export async function runScenario(o) {
     check("reflow-a-alloc-changed-larger", frameArea(reflow.expA) > frameArea(before), frameArea(before), frameArea(reflow.expA));
     check("reflow-a-frame-equals-alloc", frameEqual(reflow.fA, reflow.expA), reflow.expA, reflow.fA);
     check("reflow-a-inside-output", frameInside(reflow.expA, reflow.out), reflow.out, reflow.out);
+    return reflow;
+  };
+
+  // Ordinary two-fixture tiling and close/reflow over the shared context.
+  const scenarioTilingReflow = async () => {
+    S.scenario = "admission";
+    event("scenario-admission");
+    const admit = await pollAdmission("admission", "admit");
+    S.receipts.presentationRev = admit.proj.rev;
+    event("scenario-close-b");
+
+    S.scenario = "reflow";
+    await closeFixtureB();
+    await pollReflowAfterClose(admit.fA);
     S.scenario = "done";
     S.category = "PASS";
     event("scenario-done");
@@ -1238,6 +1299,280 @@ export async function runScenario(o) {
     event("scenario-done");
   };
 
+  // Resize-refusal journey over the shared context: A left, B right after
+  // admission. Step 1 grows B toward the shared boundary (Meta+Alt+Left) and
+  // expects the exact one-press delta with no refusal line; step 2 grows B
+  // toward the outer edge (Meta+Alt+Right) and expects exactly one
+  // `omnitiler:resize-refused` diagnostic with unchanged frames; step 3
+  // closes B exactly as tiling-reflow does, then grows the singleton A
+  // toward its outer edge and expects exactly one refusal line with the
+  // reflowed frame unchanged. Native oracles come from getWindowInfo (exact
+  // frames, never tolerance); refusal oracles from the planner log.
+  // Missing/unknown facts are PENDING, never PASS.
+  const scenarioResizeRefusal = async () => {
+    S.scenario = "resize-refusal";
+    event("scenario-resize-refusal");
+    const bare = (u) => normalizeNativeId(u);
+    const uuidA = joins[0].uuid, uuidB = joins[1].uuid;
+    const admit = await pollAdmission("resize-admit", "resize-admit");
+    const outRect = admit.out;
+    const baseA = admit.expA, baseB = admit.expB;
+    S.receipts.resizeBase = { a: baseA, b: baseB };
+    const logPath = await resolvePlannerLogPath();
+    const bad = (note) => ({ note });
+    const good = (expected, actual) => ({ ok: true, expected, actual });
+    const prow = (s, uuid) => s.proj.windows.filter((w) => w.win === bare(uuid))[0] || null;
+    const frameStr = (f) => (f ? "[" + f.x + "," + f.y + "," + f.w + "," + f.h + "]" : "null");
+    const readAllPair = async () => {
+      const proj = await readPresentation();
+      const bareA = normalizeNativeId(uuidA), bareB = normalizeNativeId(uuidB);
+      const set = proj.windows.map((w) => w.win).sort().join(",");
+      if (proj.windows.length !== 2 || set !== [bareA, bareB].sort().join(",")) {
+        return { fail: "presentation window set is not exactly {A,B}: [" + proj.windows.map((w) => w.win).sort().join(",") + "]" };
+      }
+      const nat = await helperOp({ op: "read" });
+      const row = nat.filter((r) => Array.isArray(r.owned))[0];
+      if (!row) { return { fail: "native read produced no roster" }; }
+      const infoA = await windowInfo(uuidA);
+      const infoB = await windowInfo(uuidB);
+      return { proj, row, infoA, infoB };
+    };
+    const readAllSingle = async () => {
+      const proj = await readPresentation();
+      if (proj.windows.length !== 1 || proj.windows[0].win !== bare(uuidA)) {
+        return { fail: "presentation window set is not exactly {A} after close: [" +
+          proj.windows.map((w) => w.win).sort().join(",") + "]" };
+      }
+      const nat = await helperOp({ op: "read" });
+      const row = nat.filter((r) => Array.isArray(r.owned))[0];
+      if (!row) { return { fail: "native read produced no roster" }; }
+      const infoA = await windowInfo(uuidA);
+      return { proj, row, infoA };
+    };
+    const joinHomePair = (s) => {
+      if (s.infoA.uuid !== uuidA || s.infoB.uuid !== uuidB) {
+        return "fixture join changed (UUIDs differ)";
+      }
+      for (const pair of [["a", s.infoA], ["b", s.infoB]]) {
+        if (pair[1].desks.length !== 1 || pair[1].desks[0] !== S.appended) {
+          return "fixture '" + pair[0] + "' home is not exactly the appended workspace (desks " + JSON.stringify(pair[1].desks) + ")";
+        }
+      }
+      return null;
+    };
+    const nativeAllocFrame = (s, uuid, tag) => {
+      const p = prow(s, uuid);
+      if (!p) { return { fail: "presentation lost " + tag }; }
+      if (p.alloc === null) { return { fail: tag + " published allocation unknown (null never matches)" }; }
+      const info = tag === "a" ? s.infoA : s.infoB;
+      if (info.frame === null) { return { fail: tag + " native frame unknown (null never matches)" }; }
+      if (!frameEqual(info.frame, frameOf(p.alloc))) {
+        return { fail: tag + " native frame != published allocation (" + frameDiff(info.frame, frameOf(p.alloc)).join(",") + "): native " + frameStr(info.frame) + " != alloc " + JSON.stringify(p.alloc) };
+      }
+      return { alloc: p.alloc };
+    };
+    const activateNative = async (stepKey, uuid) => {
+      mutOnce("activate-" + stepKey);
+      await helperOp({ op: "activate", uuid }, { mutate: true });
+      const end = io.now() + T.admit;
+      for (;;) {
+        const ar = await helperOp({ op: "read" });
+        const arow = ar.filter((r) => Array.isArray(r.owned))[0];
+        const observed = arow ? normalizeNativeId(arow.active) : null;
+        if (arow && observed === bare(uuid)) { return; }
+        if (io.now() >= end) { break; }
+        await io.sleep(T.poll);
+      }
+      fail("resize-" + stepKey + ": activation unverified within the bounded wait");
+    };
+    const injectResizeChord = async (stepKey, chord) => {
+      mutOnce("chord-" + stepKey);
+      const argv = ydotoolKeyCmd(S.ydoc.sock, chord);
+      S.calls.push(redact(argv.map(String).join(" ")));
+      const r = await io.exec(argv, { timeoutMs: T.exec, env: Object.assign({}, env, { YDOTOOL_SOCKET: S.ydoc.sock }), cwd: root });
+      if (!r || typeof r.status !== "number") { fail("bad exec result"); }
+      if (r.status !== 0) { fail("resize-" + stepKey + ": chord '" + chord + "' failed (status " + r.status + ")"); }
+    };
+    const pollResizeStep = async (name, verify) => {
+      const end = io.now() + T.stateStep;
+      let first = "no read yet";
+      let last = "no read yet";
+      const note = (m) => { if (first === "no read yet") { first = m; } last = m; };
+      for (;;) {
+        let v = null;
+        try {
+          v = await verify(name);
+        } catch (e) {
+          const msg = e && e.message ? e.message : String(e);
+          if (e instanceof ScenarioError && msg.indexOf("getWindowInfo") >= 0) {
+            note("native state unknown (" + msg.slice(0, 120) + ")");
+          } else { throw e; }
+        }
+        if (v && v.ok === true) {
+          check("resize-" + name, true, v.expected, v.actual);
+          return;
+        }
+        if (v && v.note) { note(v.note); }
+        if (io.now() >= end) {
+          if (last.indexOf("unknown") >= 0 || last.indexOf("PENDING") >= 0) { S.category = "PENDING"; }
+          fail("resize-" + name + ": " + first + (last !== first ? " (last: " + last + ")" : ""));
+        }
+        await io.sleep(T.poll);
+      }
+    };
+    const noteRefusalReceipt = (step, tok) => {
+      const kept = {
+        step, internal: tok.internal, wire: tok.wire, dir: tok.dir,
+        mode: tok.mode, press: tok.press, rowsTotal: tok.rowsTotal, rowsShown: tok.rowsShown,
+        subjectBound: true,
+      };
+      const rest = (S.receipts.resizeRefusals || []).filter((r) => r.step !== step);
+      rest.push(kept);
+      S.receipts.resizeRefusals = rest;
+    };
+    const checkRefusalTokens = (step, tok, wantDir, wantSubject, wantRowsTotal) => {
+      const want = { internal: "unchanged", wire: "operation-refused", dir: wantDir, mode: "outwards" };
+      for (const k of Object.keys(want)) {
+        if (tok[k] !== want[k]) {
+          return "refusal token mismatch at resize-" + step + ": " + k + "='" +
+            (tok[k] === undefined ? "missing" : tok[k]) + "' (need '" + want[k] + "')";
+        }
+      }
+      // The subject window id is asserted in memory only: the message names
+      // the field but never prints the id.
+      if (tok.subject !== wantSubject) {
+        return "refusal subject mismatch at resize-" + step + " (need bound subject)";
+      }
+      if (tok.press !== "0") {
+        return "refusal token mismatch at resize-" + step + ": press='" +
+          (tok.press === undefined ? "missing" : tok.press) + "' (need '0')";
+      }
+      if (tok.rowsTotal !== wantRowsTotal) {
+        return "refusal token mismatch at resize-" + step + ": rowsTotal='" +
+          (tok.rowsTotal === undefined ? "missing" : tok.rowsTotal) + "' (need '" + wantRowsTotal + "')";
+      }
+      if (tok.rowsShown !== wantRowsTotal) {
+        return "refusal token mismatch at resize-" + step + ": rowsShown='" +
+          (tok.rowsShown === undefined ? "missing" : tok.rowsShown) + "' (need '" + wantRowsTotal + "')";
+      }
+      return null;
+    };
+    // Step 1: B grows toward the shared boundary by exactly one press.
+    const expA1 = { x: baseA.x, y: baseA.y, w: baseA.w - RESIZE_STEP_PX, h: baseA.h };
+    const expB1 = { x: baseB.x - RESIZE_STEP_PX, y: baseB.y, w: baseB.w + RESIZE_STEP_PX, h: baseB.h };
+    let step1Frames = null;
+    const verifyResizeStep1 = (logOff) => async () => {
+      const s = await readAllPair();
+      if (s.fail) { return bad(s.fail); }
+      const jh = joinHomePair(s);
+      if (jh) { return bad(jh); }
+      const lines = await plannerLogRefusalsSince(logPath, logOff);
+      if (lines.length) { return bad("unexpected planner refusal line(s) at resize-step1 (" + lines.length + ")"); }
+      if (s.infoA.frame === null) { return bad("a native frame unknown (null never matches)"); }
+      if (s.infoB.frame === null) { return bad("b native frame unknown (null never matches)"); }
+      if (!frameEqual(s.infoA.frame, expA1)) {
+        return bad("a frame != stepped allocation (" + frameDiff(s.infoA.frame, expA1).join(",") + "): native " + frameStr(s.infoA.frame) + " != stepped " + frameStr(expA1));
+      }
+      if (!frameEqual(s.infoB.frame, expB1)) {
+        return bad("b frame != stepped allocation (" + frameDiff(s.infoB.frame, expB1).join(",") + "): native " + frameStr(s.infoB.frame) + " != stepped " + frameStr(expB1));
+      }
+      const af = nativeAllocFrame(s, uuidA, "a");
+      if (af.fail) { return bad(af.fail); }
+      const bf = nativeAllocFrame(s, uuidB, "b");
+      if (bf.fail) { return bad(bf.fail); }
+      if (!frameInside(s.infoA.frame, outRect) || !frameInside(s.infoB.frame, outRect)) {
+        return bad("resized tile frame outside its output (a " + frameStr(s.infoA.frame) + " b " + frameStr(s.infoB.frame) + ")");
+      }
+      if (rectsOverlap(s.infoA.frame, s.infoB.frame)) { return bad("tiles A/B overlap after resize"); }
+      step1Frames = { a: s.infoA.frame, b: s.infoB.frame };
+      return good("a==base-12 b==base+12 a/b==alloc disjoint inside no-refusal",
+        "a=" + frameStr(s.infoA.frame) + " b=" + frameStr(s.infoB.frame));
+    };
+    // Step 2: B grows toward the outer edge (no neighbour): refused, frames stay.
+    const verifyResizeStep2 = (logOff) => async () => {
+      const s = await readAllPair();
+      if (s.fail) { return bad(s.fail); }
+      const jh = joinHomePair(s);
+      if (jh) { return bad(jh); }
+      if (s.infoA.frame === null) { return bad("a native frame unknown (null never matches)"); }
+      if (s.infoB.frame === null) { return bad("b native frame unknown (null never matches)"); }
+      if (!frameEqual(s.infoA.frame, step1Frames.a)) {
+        return bad("a frame moved on refused resize (" + frameDiff(s.infoA.frame, step1Frames.a).join(",") + "): native " + frameStr(s.infoA.frame) + " != step1 " + frameStr(step1Frames.a));
+      }
+      if (!frameEqual(s.infoB.frame, step1Frames.b)) {
+        return bad("b frame moved on refused resize (" + frameDiff(s.infoB.frame, step1Frames.b).join(",") + "): native " + frameStr(s.infoB.frame) + " != step1 " + frameStr(step1Frames.b));
+      }
+      const af = nativeAllocFrame(s, uuidA, "a");
+      if (af.fail) { return bad(af.fail); }
+      const bf = nativeAllocFrame(s, uuidB, "b");
+      if (bf.fail) { return bad(bf.fail); }
+      const lines = await plannerLogRefusalsSince(logPath, logOff);
+      if (lines.length !== 1) {
+        return bad("expected exactly one resize refusal line since resize-step2, saw " + lines.length);
+      }
+      const tok = parseResizeRefusalTokens(lines[0]);
+      const mismatch = checkRefusalTokens("step2", tok, "right", bare(uuidB), "2");
+      if (mismatch) { return bad(mismatch); }
+      noteRefusalReceipt("step2", tok);
+      return good("refusal unchanged/operation-refused right/outwards frames==step1 a/b==alloc",
+        "dir=" + tok.dir + " mode=" + tok.mode);
+    };
+    // Step 3: singleton A grows toward its outer edge: refused, frame stays.
+    const verifyResizeStep3 = (logOff, reflow) => async () => {
+      const s = await readAllSingle();
+      if (s.fail) { return bad(s.fail); }
+      if (s.infoA.uuid !== uuidA) { return bad("fixture join changed (UUIDs differ)"); }
+      if (s.infoA.desks.length !== 1 || s.infoA.desks[0] !== S.appended) {
+        return bad("a home is not exactly the appended workspace (desks " + JSON.stringify(s.infoA.desks) + ")");
+      }
+      const scopeOwned = s.row.owned.filter((w) => w.class === SCOPE_CLASS);
+      if (scopeOwned.length !== 1 || scopeOwned[0].uuid !== uuidA) {
+        return bad("native scope roster is not exactly {A} after close");
+      }
+      if (s.infoA.frame === null) { return bad("a native frame unknown (null never matches)"); }
+      if (!frameEqual(s.infoA.frame, reflow.fA)) {
+        return bad("a frame changed on refused singleton resize (" + frameDiff(s.infoA.frame, reflow.fA).join(",") + "): native " + frameStr(s.infoA.frame) + " != reflowed " + frameStr(reflow.fA));
+      }
+      const pA = s.proj.windows[0];
+      if (pA.alloc === null) { return bad("a published allocation unknown (null never matches)"); }
+      if (!frameEqual(s.infoA.frame, frameOf(pA.alloc))) {
+        return bad("a native frame != published allocation (" + frameDiff(s.infoA.frame, frameOf(pA.alloc)).join(",") + "): native " + frameStr(s.infoA.frame) + " != alloc " + JSON.stringify(pA.alloc));
+      }
+      const lines = await plannerLogRefusalsSince(logPath, logOff);
+      if (lines.length !== 1) {
+        return bad("expected exactly one resize refusal line since resize-step3, saw " + lines.length);
+      }
+      const tok = parseResizeRefusalTokens(lines[0]);
+      const mismatch = checkRefusalTokens("step3", tok, "left", bare(uuidA), "1");
+      if (mismatch) { return bad(mismatch); }
+      noteRefusalReceipt("step3", tok);
+      return good("refusal unchanged/operation-refused left/outwards a==reflowed a==alloc",
+        "dir=" + tok.dir + " mode=" + tok.mode);
+    };
+    event("resize-step1");
+    await activateNative("resize-step1", uuidB);
+    const off1 = await plannerLogOffset(logPath);
+    await injectResizeChord("resize-step1", "resizeLeft");
+    await pollResizeStep("step1", verifyResizeStep1(off1));
+    S.receipts.resizeStep1 = step1Frames;
+    event("resize-step2");
+    await activateNative("resize-step2", uuidB);
+    const off2 = await plannerLogOffset(logPath);
+    await injectResizeChord("resize-step2", "resizeRight");
+    await pollResizeStep("step2", verifyResizeStep2(off2));
+    event("resize-close-b");
+    await closeFixtureB();
+    const reflow = await pollReflowAfterClose(step1Frames.a);
+    event("resize-step3");
+    await activateNative("resize-step3", uuidA);
+    const off3 = await plannerLogOffset(logPath);
+    await injectResizeChord("resize-step3", "resizeLeft");
+    await pollResizeStep("step3", verifyResizeStep3(off3, reflow));
+    S.scenario = "done";
+    S.category = "PASS";
+    event("scenario-done");
+  };
+
   let rc = 1;
   try {
     // 1. Preflight: dev mode must be DOWN. Anything else: stop, nothing mutated.
@@ -1559,11 +1894,15 @@ export async function runScenario(o) {
       normalizeNativeId(joins[0].uuid), S.activeObserved);
 
     // 12. Scenario dispatch over the shared context (S, helpers, joins).
-    // Ordinary two-fixture tiling and close/reflow (default), or the
-    // state-targets chord journey. Each scenario function is defined above.
+    // Ordinary two-fixture tiling and close/reflow (default), the
+    // state-targets chord journey, or the resize-refusal journey. Each
+    // scenario function is defined above.
     if (scenarioName === "state-targets") {
       S.scenarioRan = "state-targets";
       await scenarioStateTargets();
+    } else if (scenarioName === "resize-refusal") {
+      S.scenarioRan = "resize-refusal";
+      await scenarioResizeRefusal();
     } else {
       S.scenarioRan = "tiling-reflow";
       await scenarioTilingReflow();
@@ -1778,6 +2117,10 @@ export async function liveMain(o) {
   }
   if (args.scenario === "state-targets" && !args.input) {
     console.error("kde-scenarios: --scenario state-targets requires --input");
+    return 2;
+  }
+  if (args.scenario === "resize-refusal" && !args.input) {
+    console.error("kde-scenarios: --scenario resize-refusal requires --input");
     return 2;
   }
   const root = o.root || repoRoot();

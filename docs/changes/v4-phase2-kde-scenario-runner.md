@@ -251,13 +251,56 @@
 - Limits: physical keyboard input is not exercised (injected uinput chords
   through the daemon); chord keycodes are the stable Linux input-event codes.
 
+## Resize-refusal scenario
+
+- `--scenario resize-refusal` (requires `--input`) reproduces the injected
+  shortcut evidence in [kde-resize-refusal-diagnostics](kde-resize-refusal-diagnostics.md)
+  as a repeatable native check. Chords are the production grow-toward-direction
+  registrations (`kwin/src/world-shortcuts.ts`): Meta+Alt+Left and Meta+Alt+Right.
+  The target fixture is natively activated before each chord (own once-keys).
+- Journey and oracles, on the appended workspace with fixture A left and B right:
+  (1) B grows left: A narrower by exactly 12 and B wider by exactly 12 with its
+  left edge 12 earlier (12 is the first-press keyboard step, `keyboard_step_px(0)`),
+  each native frame equal to its published allocation, disjoint, inside the
+  output, and no refusal line; (2) B grows right (outer edge): exactly one new
+  Planner `omnitiler:resize-refused` line with `internal=unchanged
+  wire=operation-refused dir=right mode=outwards press=0 rowsTotal=2`, subject
+  bound to fixture B, frames exactly the step-1 frames; (3) fixture B is closed
+  (same close/reflow oracle as tiling-reflow, shared helper), then A grows left
+  as a singleton: exactly one line `internal=unchanged wire=operation-refused
+  dir=left mode=outwards press=0 rowsTotal=1`, subject bound to fixture A, A
+  frame exactly the reflowed frame.
+- Planner log: the runner resolves the Planner's stderr file through
+  `/proc/<planner pid>/fd/2` (regular file under the temporary directory, name
+  pattern checked), snapshots its size before each chord and reads only the
+  bytes after it, parsing bounded tokens. An unreadable or unresolvable log is a
+  FAIL, never a skip. Receipts keep only token extracts and
+  `planner-log-resolved`; the subject id is compared in memory and recorded only
+  as `subjectBound`.
+- Review: one independent read-only review. Findings fixed: the refusal line was
+  not bound to the actuated window (subject, `press`, `rowsTotal` and
+  `rowsShown` are now asserted, with fakes using real subject ids); an
+  unchecked cross-API frame source difference is fail-closed flake risk only.
+- Live (fractional-scale output, no display change): exit 0, PASS, 25 checks
+  passing, `scenarioRan` resize-refusal, no cleanup failures. Step 1 frames
+  `[8,52,1000,1092]` and `[1016,52,1024,1092]` (from `[8,52,1012,1092]` and
+  `[1028,52,1012,1092]`), step 2 and step 3 each produced exactly one
+  `unchanged`/`operation-refused` line with the expected tokens. No resize
+  defect found; these are the expected no-op outcomes.
+  Cleanup verified (dev DOWN, no leftover processes or sockets, current workspace
+  restored, appended workspace removed, unscoped bundle rebuilt after the scoped
+  dev-on).
+- Gates: runner tests 102/102 (adapter and Rust unchanged).
+- Limits: nested-group, minimum/maximum-exhaustion and after-populated-workspace
+  refusals are not exercised; injected (not physical) keys. The Planner's
+  temporary dev log written by `just dev-on` is not removed by this runner.
+
 ## Follow-up units
 
 - Genuine-producer offline ordered journeys through the real adapter/broker/core.
 - Further fixture-driven native scenarios after the lifecycle and one-scenario
   tool are proved: selection with continued tiling; state targets including
-  sticky restart/off (state targets delivered above); scaled-metric frames at current scales; resize-refusal
-  diagnostics; rapid-input burst. Retain physical-key/hotplug/scale-change/paint
+  sticky restart/off (state targets and resize-refusal delivered above); scaled-metric frames at current scales; rapid-input burst. Retain physical-key/hotplug/scale-change/paint
   exclusions.
 - Replace the advertised live-test recipe and cull the obsolete wrapper/tests
   in a separate verified commit once the replacement covers their purpose.

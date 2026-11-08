@@ -157,9 +157,10 @@ devenv shell -- node scripts/kde-scenarios.mjs --live --scenario state-targets -
 devenv shell -- node --test scripts/kde-scenarios.test.mjs   # hermetic, no live effects
 ```
 
-`--scenario NAME` selects `tiling-reflow` (default) or `state-targets`
-(maximize, fullscreen, float and sticky chords with an orderly restart, which
-requires `--input`). `--input` additionally starts and cleans up the `ydotoold`
+`--scenario NAME` selects `tiling-reflow` (default), `state-targets` (maximize,
+fullscreen, float and sticky chords with an orderly restart) or
+`resize-refusal` (keyboard resize success and no-op refusal diagnostics); the
+last two require `--input`. `--input` additionally starts and cleans up the `ydotoold`
 input daemon used to inject those chords. The scoped dev-on bakes the fixture scope into the KWin bundle, so
 rebuild the unscoped bundle afterwards (`env OMNITILER_SCOPE_CLASS= npm --prefix
 kwin run build`). Read `docs/live-kwin-testing.md` before any live run; the
