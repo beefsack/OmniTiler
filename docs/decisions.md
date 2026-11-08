@@ -23,18 +23,13 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - 2026-11-08: User decision: retire aligned-grid lifecycle, destination replacement and aligned-only refill/spare rules in favor of the common v4 per-output model; retain displacement and physical return ([workspaces](decisions/workspaces.md#common-v4-per-output-workspaces)).
 - 2026-11-08: User decision: start the Windows port only after KDE phase 2 is complete offline including v3 removal, the user-run KDE state-target and reconnect live checks pass, and core scales resize minima, keyboard steps and group-edge zones per output; macOS follows Windows ([port start gate](decisions/contract.md#contract-authority-and-v4-migration)).
 - 2026-11-08: User decision: positive all-desktop membership keeps an already retained home usable without a scope fence, independent of sticky origin; unknown membership and homeless newcomers remain fenced, with no fabricated receipt ([native membership](decisions/layout-and-admission.md#native-hidden-representation-and-unknown-sticky-membership)).
+- 2026-11-09: User decision: retire the parked floating/exception/non-leaf command-memory storage entry as superseded by the one-slot floating/sticky/tiled [workspace active-window memory](decisions/focus.md#workspace-active-window-memory) and [command-owned linked-focus recording](decisions/focus.md#command-owned-linked-focus-recording).
+- 2026-11-09: User decision: retire the KDE unload/restart keep-above ownership question as answered by [R12 native-write preimages](decisions/contract.md#native-writes-difficult-to-undo-r12); retire the KDE v2 stage/transport tentative choices and the shared transient three-way classification as superseded by the [v4 contract](porting/world-contract.md); accept independent birth-clear authority under geometry holds as active ([birth clear](decisions/contract.md#core-birth-clear-ownership)). KDE world placement traces and Activities defaults were already accepted on 2026-11-07 ([traces](decisions/observability.md#kde-world-placement-traces); [Activities](decisions/kde.md#deferred-activities-support)).
 
 ## Tentative decisions
 
-- Floating/exception/non-leaf command-memory storage remains parked ([Windows decisions](decisions/windows.md#windows-decision-set)).
 - macOS preview entry point and preview configuration/observation recovery remain tentative ([development](decisions/development.md#tentative-macos-development-preview); [macOS](decisions/macos.md#fixture-and-scoped-input-defaults)).
 - macOS preview presets and native shortcut ownership remain tentative ([shortcuts](decisions/reference-and-shortcuts.md#macos-preview-presets-and-native-shortcut-ownership)).
-- KDE unload/restart ownership-restoration question remains open ([fixed-size](decisions/layout-and-admission.md#automatic-fixed-float-stacking-and-gaming-safety)).
-- KDE world placement traces remain tentative ([observability](decisions/observability.md#kde-world-placement-traces)).
-- Activities defaults remain tentative ([KDE](decisions/kde.md#deferred-activities-support)).
-- KDE v2 stage sequencing, capture transport/reset and migration/backing oracle remain tentative ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions)).
-- Shared transient three-way classification remains tentative ([port record](changes/macos-world-v2-port.md#shared-transient-classification-2026-10-25)).
-- Independent birth-clear authority under geometry holds remains tentative ([contract](decisions/contract.md#core-birth-clear-ownership)).
 - macOS fullscreen-game direction remains tentative ([macOS](decisions/macos.md#fullscreen-games)).
 
 ## Topics
