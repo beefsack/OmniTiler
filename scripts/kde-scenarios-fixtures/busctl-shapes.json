@@ -1,0 +1,49 @@
+{
+  "provenance": "Envelope shapes captured from real read-only busctl --user --json=short calls (values redacted/synthetic; no window data). getWindowInfo value types are derived from KWin v6.7.4 src/dbusinterface.cpp clientToVariantMap; an unknown UUID returns the real empty map below.",
+  "getNameOwner": {
+    "type": "s",
+    "data": [
+      ":1.0"
+    ]
+  },
+  "getConnectionUnixProcessID": {
+    "type": "u",
+    "data": [
+      1234
+    ]
+  },
+  "isScriptLoaded": {
+    "type": "b",
+    "data": [
+      false
+    ]
+  },
+  "getWindowInfoUnknown": {
+    "type": "a{sv}",
+    "data": [
+      {}
+    ]
+  },
+  "variantDictEnvelope": {
+    "type": "a{sv}",
+    "data": [
+      {
+        "UnixUserID": {
+          "type": "u",
+          "data": 1000
+        },
+        "ProcessID": {
+          "type": "u",
+          "data": 1234
+        },
+        "UnixGroupIDs": {
+          "type": "au",
+          "data": [
+            1,
+            2
+          ]
+        }
+      }
+    ]
+  }
+}

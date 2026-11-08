@@ -1,0 +1,7 @@
+{
+  "procStat": {
+    "comment": "Shape of a real /proc/<pid>/stat read: single line, ends with ONE trailing newline; field 22 (index 19 after the comm close) is starttime. Values are synthetic.",
+    "plain": "4242 (kwin_wayland) S 4100 4100 4100 0 -1 4194560 913155 1792 484 8 70552 33323 0 0 -2 -12 59 0 2241 2805841920 146105 18446744073709551615 1 1 0 0 0 0 0 4096 17643 0 0 0 17 5 1 2 0 0 0 0 0 0 0 0 0 0 0\n",
+    "commWithParens": "4243 (a b) c) S 4100 4100 4100 0 -1 4194560 913155 1792 484 8 70552 33323 0 0 -2 -12 59 0 2241 2805841920 146105 18446744073709551615 1 1 0 0 0 0 0 4096 17643 0 0 0 17 5 1 2 0 0 0 0 0 0 0 0 0 0 0\n"
+  }
+}
