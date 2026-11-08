@@ -505,3 +505,45 @@
   skips and the unscoped/non-trace build pass. Native sticky release and bounded
   sticky/stacking startup restoration remain the next evidence gates; no live
   pass is claimed for this correction yet.
+
+## Fixture sticky-release re-check (2026-11-08)
+
+- PASS, observed native roundtrip: injected `Meta+Shift+G` made the tiled
+  subject all-desktop with keep-above true, then returned it to its single
+  native home with keep-above false. The subject returned to tiled presentation
+  with an allocation matching native readback; the companion remained tiled
+  and Controlled, expanding while the subject floated and contracting on release.
+  Both output scopes remained Controlled. Raw basis: `native-pre-A.json`,
+  `native-after1-A.txt`, `native-after2-A.txt`, matching companion captures,
+  `present-before1.txt`, `present-after1b.txt`, `present-after2.txt` and
+  `journal-chord1.txt` / `journal-chord2.txt`. Spent state rows still carry
+  property-level holds; they did not hold the scope or refuse release.
+- FAIL, sticky-intent carry across orderly stop/start: after another sticky-on,
+  the subject returned on one native desktop, still floating and above, with no
+  sticky target in the retained post-start presentation. The journal reports
+  desktop and stacking preimage restoration, slot clears and stored completion,
+  followed by runtime above acquisition. Restoring original native preimages
+  is distinct from resuming sticky intent; no cause or new policy is inferred.
+  Raw basis: `native-preoff-A.txt`, `native-postrestart-A.txt`,
+  `present-preoff.txt`, `present-postrestart.txt` and `journal-devon2.txt`.
+- Evidence limits: both starts logged ready/discovered and matched
+  dispatch/applied under the same compositor lifetime. Exact sentinel/PID joins
+  used only the two fixture UUID candidates and `getWindowInfo`; no full-roster
+  uniqueness claim. Focus readbacks before the three chords were checked but
+  not retained individually; desktop away/back supplied focus rather than exact
+  window activation. Input was injected, not physical-key acceptance. No complete
+  correlated D-Bus capture ran, so storage/protocol acceptance remains unproved
+  despite the journal and native observations. This leg is not full live
+  acceptance and does not close physical input or sticky restart persistence.
+- Setup initially placed fixtures on the original desktop; they were shut down
+  and recreated on the appended workspace before the command journeys. A
+  pre-effect desktop-create signature error was corrected. Neither production
+  start nor its evaluated-readiness gate failed; no retry around an inert
+  controller ran. External intent-store access was rejected as non-owner;
+  periodic non-activatable-name errors and load-time declaration warnings were
+  retained without attributing them to the corrected fence.
+- Cleanup verified: controller/Planner DOWN, fixture and input processes/sockets
+  absent, exact appended desktop removed and original roster/current restored;
+  the unscoped non-trace bundle was rebuilt. Sticky-intent resumption needs a
+  separate bounded diagnosis, and complete capture/focus evidence remains open.
+  This broader state-target note stays active.
