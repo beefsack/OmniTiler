@@ -152,10 +152,37 @@
   a cleanup failure.
 - Non-blocking notes (unfixed): fixture replies are not correlated by request id;
   the remove-path restore uses a different once-key than the order-20 restore;
-  fixtures on different outputs abort the run (fail-closed); fractional-scale
-  outputs abort via integer rounding (prefer scale 1.0); helper list decoding has
-  no length cap; the fixture server nonce is visible on its argv (no non-argv
+  fixtures on different outputs abort the run (fail-closed); helper list decoding
+  has no length cap; the fixture server nonce is visible on its argv (no non-argv
   route exists).
+
+## Fractional-scale support
+
+- The helper's integer reader accepted only values within 1e-6 of an integer, so
+  logical doubles at a fractional-scale output read as unknown. It now mirrors
+  the adapter's ordinary-fact rule (`world-observe.ts` `toInt`): per-component
+  `Math.round` (halves toward positive infinity), non-finite or unrepresentable
+  unknown, rounded width/height must be positive, bounds checked on the rounded
+  value. This is the contract normalization ([scale and rounding](../porting/world-contract.md#scale-and-rounding),
+  [native coordinate normalization](../porting/kde-port-notes.md#v4-native-coordinate-normalization)),
+  not a tolerance: frame equality against the published integer allocation stays
+  exact. Native rows also carry the unrounded frame and the output
+  `devicePixelRatio`; the result records the output name, scale, rectangle and
+  raw A/B frames, and a frame mismatch names the raw doubles.
+- Hermetic: helper rounding on 1.25/1.5/1.0 grids, exact halves, null cases,
+  bounds; runner PASS with fractional native frames equal to the allocation after
+  normalization; FAIL naming the field when one rounded component differs by 1.
+  Runner tests 66/66.
+- Live (fractional-scale output, active output, scale 1.25, no display change):
+  exit 0, PASS, 21 checks passing, cleanup verified (dev DOWN, no leftover
+  processes or sockets, run dir removed, current workspace restored, appended
+  workspace removed, unscoped bundle rebuilt after the scoped dev-on). Native
+  frames equal the allocations exactly: tiles `[8,52,1012,1092]` and
+  `[1028,52,1012,1092]` in a 2048x1152 output, then the reflowed
+  `[8,52,2032,1092]`. Limit: this allocation set was integer at this scale (the
+  run recorded no raw doubles; the receipt now does), so this live pass
+  confirms the runner on a 1.25 output but did not itself witness a fractional
+  native frame. The fractional-normalization proof is the hermetic one.
 
 ## Follow-up units
 

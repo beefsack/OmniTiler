@@ -1268,6 +1268,157 @@ test("F: helper source is non-module ES2017 IIFE with no Qt/import/optional synt
 });
 
 // ---------------------------------------------------------------------------
+// H. Fractional-scale native coordinates (adapter toInt mirror, no tolerance)
+// ---------------------------------------------------------------------------
+
+test("H: helper rounds fractional QRectF doubles per component (1.25 grid)", () => {
+  const m = modelWs();
+  m.wins[0].frameGeometry = { x: 0.8, y: 1.6, width: 960.8, height: 1079.2 };
+  m.wins[0].output = { name: "HDMI-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 }, devicePixelRatio: 1.25 };
+  const r = runTemplate({ op: "read", scope: SCOPE_CLASS }, m.workspace);
+  assert.equal(r.rows.length, 1);
+  assert.equal(r.rows[0].owned.length, 1);
+  assert.deepEqual(r.rows[0].owned[0].frame, { x: 1, y: 2, w: 961, h: 1079 });
+  assert.deepEqual(r.rows[0].owned[0].outRect, { x: 0, y: 0, w: 1920, h: 1080 });
+});
+
+test("H: helper rounds 1.5-grid and integer values per component", () => {
+  const m = modelWs();
+  m.wins[0].frameGeometry = { x: 100 + 2 / 3, y: 5, width: 10, height: 10 };
+  const r = runTemplate({ op: "read", scope: SCOPE_CLASS }, m.workspace);
+  assert.deepEqual(r.rows[0].owned[0].frame, { x: 101, y: 5, w: 10, h: 10 });
+});
+
+test("H: helper rounds exact halves toward positive infinity", () => {
+  const m = modelWs();
+  m.wins[0].frameGeometry = { x: 10.5, y: 11.5, width: 12.5, height: 13.5 };
+  const r = runTemplate({ op: "read", scope: SCOPE_CLASS }, m.workspace);
+  assert.deepEqual(r.rows[0].owned[0].frame, { x: 11, y: 12, w: 13, h: 14 });
+  const m2 = modelWs();
+  m2.wins[0].frameGeometry = { x: -0.5, y: -1.5, width: 10, height: 10 };
+  const r2 = runTemplate({ op: "read", scope: SCOPE_CLASS }, m2.workspace);
+  assert.deepEqual(r2.rows[0].owned[0].frame, { x: 0, y: -1, w: 10, h: 10 });
+});
+
+test("H: helper nulls non-finite or non-number components", () => {
+  for (const bad of [NaN, Infinity, -Infinity, "10", null, undefined]) {
+    const m = modelWs();
+    m.wins[0].frameGeometry = { x: bad, y: 0, width: 10, height: 10 };
+    const r = runTemplate({ op: "read", scope: SCOPE_CLASS }, m.workspace);
+    assert.equal(r.rows[0].owned[0].frame, null, "x=" + String(bad));
+  }
+  const m = modelWs();
+  m.wins[0].frameGeometry = { x: 0, y: NaN, width: 10, height: 10 };
+  assert.equal(runTemplate({ op: "read", scope: SCOPE_CLASS }, m.workspace).rows[0].owned[0].frame, null);
+  const m2 = modelWs();
+  m2.wins[0].output = { name: "HDMI-1", geometry: { x: NaN, y: 0, width: 1920, height: 1080 }, devicePixelRatio: 1 };
+  assert.equal(runTemplate({ op: "read", scope: SCOPE_CLASS }, m2.workspace).rows[0].owned[0].outRect, null);
+});
+
+test("H: helper nulls sizes whose rounding reaches zero", () => {
+  const m = modelWs();
+  m.wins[0].frameGeometry = { x: 0, y: 0, width: 0.4, height: 10 };
+  assert.equal(runTemplate({ op: "read", scope: SCOPE_CLASS }, m.workspace).rows[0].owned[0].frame, null);
+  const m2 = modelWs();
+  m2.wins[0].frameGeometry = { x: 0, y: 0, width: 10, height: 0.4 };
+  assert.equal(runTemplate({ op: "read", scope: SCOPE_CLASS }, m2.workspace).rows[0].owned[0].frame, null);
+  const m3 = modelWs();
+  m3.wins[0].output = { name: "HDMI-1", geometry: { x: 0, y: 0, width: 0.4, height: 1080 }, devicePixelRatio: 1 };
+  assert.equal(runTemplate({ op: "read", scope: SCOPE_CLASS }, m3.workspace).rows[0].owned[0].outRect, null);
+});
+
+test("H: helper still bounds rounded frame and outRect by GEO_BOUND", () => {
+  const m = modelWs();
+  m.wins[0].frameGeometry = { x: 16384.4, y: 0, width: 10, height: 10 };
+  assert.deepEqual(runTemplate({ op: "read", scope: SCOPE_CLASS }, m.workspace).rows[0].owned[0].frame,
+    { x: 16384, y: 0, w: 10, h: 10 });
+  const m2 = modelWs();
+  m2.wins[0].frameGeometry = { x: 16384.6, y: 0, width: 10, height: 10 };
+  assert.equal(runTemplate({ op: "read", scope: SCOPE_CLASS }, m2.workspace).rows[0].owned[0].frame, null);
+  const m3 = modelWs();
+  m3.wins[0].frameGeometry = { x: 0, y: 0, width: 16384.6, height: 10 };
+  assert.equal(runTemplate({ op: "read", scope: SCOPE_CLASS }, m3.workspace).rows[0].owned[0].frame, null);
+  const m4 = modelWs();
+  m4.wins[0].output = { name: "HDMI-1", geometry: { x: 0, y: 0, width: 16384.4, height: 1080 }, devicePixelRatio: 1 };
+  assert.deepEqual(runTemplate({ op: "read", scope: SCOPE_CLASS }, m4.workspace).rows[0].owned[0].outRect,
+    { x: 0, y: 0, w: 16384, h: 1080 });
+  const m5 = modelWs();
+  m5.wins[0].output = { name: "HDMI-1", geometry: { x: 0, y: 0, width: 16384.6, height: 1080 }, devicePixelRatio: 1 };
+  assert.equal(runTemplate({ op: "read", scope: SCOPE_CLASS }, m5.workspace).rows[0].owned[0].outRect, null);
+});
+
+test("H: helper emits frameRaw and outScale; invalid scale is null; foreign stays hidden", () => {
+  const m = modelWs();
+  m.wins[0].frameGeometry = { x: 0.8, y: 1.6, width: 960.8, height: 1079.2 };
+  m.wins[0].output = { name: "HDMI-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 }, devicePixelRatio: 1.25 };
+  const r = runTemplate({ op: "read", scope: SCOPE_CLASS }, m.workspace);
+  const row = r.rows[0].owned[0];
+  assert.deepEqual(row.frameRaw, { x: 0.8, y: 1.6, w: 960.8, h: 1079.2 });
+  assert.equal(row.outScale, 1.25);
+  assert.equal(row.out, "HDMI-1");
+  for (const l of r.logs) { assert.ok(!l.includes("FOREIGN-SECRET-CAPTION")); }
+  for (const bad of [0, -1, NaN, Infinity, "1.25", null, undefined]) {
+    const mb = modelWs();
+    mb.wins[0].output = { name: "HDMI-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 }, devicePixelRatio: bad };
+    const rb = runTemplate({ op: "read", scope: SCOPE_CLASS }, mb.workspace);
+    assert.equal(rb.rows[0].owned[0].outScale, null, "scale=" + String(bad));
+  }
+  const mn = modelWs();
+  delete mn.wins[0].output;
+  const rn = runTemplate({ op: "read", scope: SCOPE_CLASS }, mn.workspace);
+  assert.equal(rn.rows[0].owned[0].outScale, null);
+  assert.equal(rn.rows[0].owned[0].out, null);
+  assert.equal(rn.rows[0].owned[0].outRect, null);
+  const mu = modelWs();
+  mu.wins[0].frameGeometry = { x: NaN, y: 0, width: 10, height: 10 };
+  const ru = runTemplate({ op: "read", scope: SCOPE_CLASS }, mu.workspace);
+  assert.equal(ru.rows[0].owned[0].frame, null);
+  assert.equal(ru.rows[0].owned[0].frameRaw, null);
+});
+
+test("SCALE: runner PASSES at a 1.25 output scale with fractional native frames", async () => {
+  const f = makeFake();
+  for (const w of f.wins) {
+    if (w.internalId === UUID_A || w.internalId === UUID_B) {
+      w.output = { name: "HDMI-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 }, devicePixelRatio: 1.25 };
+    }
+  }
+  f.wins.find((w) => w.internalId === UUID_A).frameGeometry = { x: 0, y: 0, width: 960.8, height: 1080 };
+  f.wins.find((w) => w.internalId === UUID_B).frameGeometry = { x: 960.8, y: 0, width: 959.2, height: 1080 };
+  f.allocPatch = (which, g) => {
+    if (which === "a0") { return [0, 0, 961, 1080]; }
+    if (which === "b0") { return [961, 0, 959, 1080]; }
+    return g;
+  };
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io }));
+  assert.equal(res.category, "PASS", J({ div: res.divergence, checks: res.checks }));
+  assert.equal(res.rc, 0, J(res.cleanupFailed));
+  assert.deepEqual(res.receipts.output, { name: "HDMI-1", scale: 1.25, rect: { x: 0, y: 0, w: 1920, h: 1080 },
+    raw: { a: { x: 0, y: 0, w: 960.8, h: 1080 }, b: { x: 960.8, y: 0, w: 959.2, h: 1080 } } });
+  assert.ok(res.checks.some((c) => c.name === "reflow-a-frame-equals-alloc" && c.pass));
+});
+
+test("SCALE: runner FAILS naming the exact field when one rounded component differs by 1", async () => {
+  const f = makeFake();
+  for (const w of f.wins) {
+    if (w.internalId === UUID_A || w.internalId === UUID_B) {
+      w.output = { name: "HDMI-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 }, devicePixelRatio: 1.25 };
+    }
+  }
+  f.wins.find((w) => w.internalId === UUID_A).frameGeometry = { x: 0, y: 0, width: 960.8, height: 1080 };
+  f.wins.find((w) => w.internalId === UUID_B).frameGeometry = { x: 960.8, y: 0, width: 959.2, height: 1080 };
+  f.allocPatch = (which, g) => {
+    if (which === "a0") { return [0, 0, 961, 1080]; }
+    if (which === "b0") { return [961, 0, 960, 1080]; }
+    return g;
+  };
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io }));
+  assert.equal(res.rc, 1);
+  assert.equal(res.category, "FAIL");
+  assert.match(res.divergence, /tile B frame mismatch \(w\)/);
+});
+
+// ---------------------------------------------------------------------------
 // G. CLI / hygiene
 // ---------------------------------------------------------------------------
 

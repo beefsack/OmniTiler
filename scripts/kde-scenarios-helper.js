@@ -22,7 +22,6 @@
   function needInt(value) {
     if (typeof value !== "number" || !isFinite(value)) { return null; }
     var r = Math.round(value);
-    if (r !== value && Math.abs(value - r) > 0.000001) { return null; }
     if (Math.abs(r) > 9007199254740991) { return null; }
     return r;
   }
@@ -53,6 +52,24 @@
     if (x < -GEO_BOUND || x > GEO_BOUND || y < -GEO_BOUND || y > GEO_BOUND) { return null; }
     if (w > GEO_BOUND || h > GEO_BOUND) { return null; }
     return { x: x, y: y, w: w, h: h };
+  }
+  function readRawRect(geom) {
+    if (geom === null || typeof geom !== "object") { return null; }
+    var x = geom.x;
+    var y = geom.y;
+    var w = geom.width !== undefined ? geom.width : geom.w;
+    var h = geom.height !== undefined ? geom.height : geom.h;
+    if (typeof x !== "number" || !isFinite(x)) { return null; }
+    if (typeof y !== "number" || !isFinite(y)) { return null; }
+    if (typeof w !== "number" || !isFinite(w)) { return null; }
+    if (typeof h !== "number" || !isFinite(h)) { return null; }
+    return { x: x, y: y, w: w, h: h };
+  }
+  function readScale(output) {
+    var s;
+    try { s = output.devicePixelRatio; } catch (e) { return null; }
+    if (typeof s !== "number" || !isFinite(s) || s <= 0) { return null; }
+    return s;
   }
   function workspaceOf() {
     if (typeof workspace === "undefined" || !workspace) { fail("workspace unavailable"); }
@@ -134,16 +151,20 @@
         } catch (e) { title = ""; }
         if (cls === scope && pid > 0 && title) {
           var frame = null;
+          var frameRaw = null;
           try { frame = readRect(w.frameGeometry); } catch (e) { frame = null; }
+          try { frameRaw = readRawRect(w.frameGeometry); } catch (e) { frameRaw = null; }
           var outName = null;
           var outRect = null;
+          var outScale = null;
           try {
             if (w.output) {
               outName = String(w.output.name || "");
               if (!outName) { outName = null; }
               outRect = readRect(w.output.geometry);
+              outScale = readScale(w.output);
             }
-          } catch (e) { outName = null; outRect = null; }
+          } catch (e) { outName = null; outRect = null; outScale = null; }
           var members = null;
           try {
             var mraw = decodeList(w.desktops);
@@ -152,7 +173,7 @@
               for (var mi = 0; mi < mraw.length; mi++) { members.push(desktopId(mraw[mi])); }
             }
           } catch (e) { members = null; }
-          owned.push({ uuid: uuid, class: cls, pid: pid, title: title, frame: frame, out: outName, outRect: outRect, desks: members });
+          owned.push({ uuid: uuid, class: cls, pid: pid, title: title, frame: frame, frameRaw: frameRaw, out: outName, outRect: outRect, outScale: outScale, desks: members });
         } else {
           foreign++;
         }

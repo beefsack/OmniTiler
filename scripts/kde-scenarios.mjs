@@ -981,8 +981,8 @@ export async function runScenario(o) {
             else if (!rA.outRect || !rB.outRect) { note("native output geometry unknown (PENDING, never PASS)"); }
             else {
               const expA = frameOf(wA.alloc), expB = frameOf(wB.alloc);
-              if (!frameEqual(rA.frame, expA)) { note("tile A frame mismatch (" + frameDiff(rA.frame, expA).join(",") + "): native " + JSON.stringify(rA.frame) + " != alloc " + JSON.stringify(expA)); }
-              else if (!frameEqual(rB.frame, expB)) { note("tile B frame mismatch (" + frameDiff(rB.frame, expB).join(",") + "): native " + JSON.stringify(rB.frame) + " != alloc " + JSON.stringify(expB)); }
+              if (!frameEqual(rA.frame, expA)) { note("tile A frame mismatch (" + frameDiff(rA.frame, expA).join(",") + "): native " + JSON.stringify(rA.frame) + " != alloc " + JSON.stringify(expA) + " raw " + JSON.stringify(rA.frameRaw)); }
+              else if (!frameEqual(rB.frame, expB)) { note("tile B frame mismatch (" + frameDiff(rB.frame, expB).join(",") + "): native " + JSON.stringify(rB.frame) + " != alloc " + JSON.stringify(expB) + " raw " + JSON.stringify(rB.frameRaw)); }
               else if (!frameInside(rA.frame, rA.outRect) || !frameInside(rB.frame, rB.outRect)) { note("tile frame outside its output"); }
               else if (rectsOverlap(rA.frame, rB.frame)) { note("tiles A/B overlap: not an ordinary split"); }
               else if (wA.ws !== wB.ws) { note("A/B in different presentation workspaces"); }
@@ -999,6 +999,8 @@ export async function runScenario(o) {
                 else {
                   return {
                     proj, expA, expB, fA: rA.frame, fB: rB.frame, out: rA.outRect,
+                    outName: rA.out, rawA: rA.frameRaw, rawB: rB.frameRaw,
+                    outScale: (typeof rA.outScale === "number" && isFinite(rA.outScale) && rA.outScale > 0) ? rA.outScale : null,
                     sameOut: rA.out === rB.out, wsA: wA.ws, wsB: wB.ws,
                   };
                 }
@@ -1014,6 +1016,12 @@ export async function runScenario(o) {
       }
     })();
     if (admit.sameOut !== true) { fail("admission: A/B on different outputs here"); }
+    S.receipts.output = {
+      name: admit.outName,
+      scale: (typeof admit.outScale === "number" && isFinite(admit.outScale) && admit.outScale > 0) ? admit.outScale : null,
+      rect: admit.out,
+      raw: { a: admit.rawA, b: admit.rawB },
+    };
     check("admit-a-frame-equals-alloc", frameEqual(admit.fA, admit.expA), admit.expA, admit.fA);
     check("admit-b-frame-equals-alloc", frameEqual(admit.fB, admit.expB), admit.expB, admit.fB);
     check("admit-disjoint", !rectsOverlap(admit.fA, admit.fB), "disjoint", "disjoint");
@@ -1069,7 +1077,7 @@ export async function runScenario(o) {
               else if (scopeOwned.length !== 1 || scopeOwned[0].uuid !== joins[0].uuid) {
                 note("native scope roster is not exactly {A} after close");
               }
-              else if (!frameEqual(rA.frame, expA)) { note("reflow A frame mismatch (" + frameDiff(rA.frame, expA).join(",") + "): native " + JSON.stringify(rA.frame) + " != alloc " + JSON.stringify(expA)); }
+              else if (!frameEqual(rA.frame, expA)) { note("reflow A frame mismatch (" + frameDiff(rA.frame, expA).join(",") + "): native " + JSON.stringify(rA.frame) + " != alloc " + JSON.stringify(expA) + " raw " + JSON.stringify(rA.frameRaw)); }
               else if (!frameInside(expA, rA.outRect)) { note("reflow allocation outside output bounds"); }
               else if (frameEqual(expA, before)) { note("reflowed A alloc unchanged after closing B"); }
               else if (!(frameArea(expA) > frameArea(before))) { note("reflow did not grow A after closing B"); }
