@@ -148,19 +148,65 @@ identity constants had no importers, its factory's twenty callers pass no
 arguments, and its identity field had no readers. Scoped Rust gates and adapter
 typecheck, all 1183 tests and the unscoped build remain green after these culls.
 
-## Native acceptance blocker
+## Native acceptance blocker and injected burst (2026-11-08)
 
-A fixture-only live attempt reached evaluated controller readiness, discovery
-and two applied observation publications. Two fixture sentinel/PID/native-UUID
-joins matched controlled tiled frames. Native activation did not establish the
-required focused fixture: after a pointer move and click, both fixture focus
-readbacks were false and the presentation foreground was empty. No command-key
-burst ran, so rapid-input delivery and final native/core agreement remain
-unverified. Startup also emitted declaration-order warnings and D-Bus errors;
-their significance is unclassified, not dismissed as environmental.
-
-Teardown removed the owned fixture and input daemon, their sockets and both
-created workspaces. The original workspace roster and current workspace were
-observed again, the unscoped non-trace bundle was rebuilt, and final status is
-DOWN. Injected-input acceptance is blocked before key delivery; physical-key
-and perceived-latency acceptance remain pending. No completed outcome is claimed.
+- The earlier pointer-activation attempt stopped before command input. The
+  replacement fixture-only leg used an appended workspace, two joined Wayland
+  fixtures and the exact `OmniTilerTestWindow` filter. Evaluated readiness,
+  discovery and matched observation dispatch/applied pairs passed after a fresh
+  journal cursor under the verified KWin D-Bus-owner PID.
+- PASS, activation: exact sentinel/PID/native-UUID joins preceded KWin
+  `WindowsRunner.Match` on the fixture title and `WindowsRunner.Run` with the
+  returned `0_{UUID}` identity and empty second argument. Fixture A reported
+  `focused:true`, B false, and presentation foreground matched A before input.
+  No pointer activation or full-native-roster uniqueness claim is involved.
+  Raw basis: `match-a.json`, `match-b.json`, `native-a.json`, `native-b.json`,
+  `focus-before.json` and `present-focused.json`.
+- Repro: start with A left and B right, both tiled, A focused. Inject ten
+  uninterrupted repetitions of focus-right, focus-left, grow-right,
+  shrink-right, move-right, move-left using ydotool's one-millisecond key delay.
+  These are `Meta+L`, `Meta+H`, `Meta+Alt+L`, `Meta+Alt+Shift+L`,
+  `Meta+Shift+L`, `Meta+Shift+H`: 60 chords, 340 key events, one injection.
+- PASS, delivery and terminal accounting: all 60 callbacks and queue identities
+  1 through 60 appear exactly once, with no missing identity or busy refusal.
+  Every identity has a terminal Take result. FAIL, no-refusal acceptance: only
+  identities 1 through 9 are READY; 10 through 60 fail `operation-refused`.
+  Repeated terminal reads produce 13 READY and 77 failed log lines, not 90
+  distinct commands. The first observed failing prefix ends at command 10,
+  the second shrink-right; this is not a minimized reproducer or root-cause
+  classification. Raw basis: `burst-events-list.txt`, `journal-burst.txt` and
+  `planner-output-final.log` (first failed result at line 122).
+- PASS, final snapshot agreement: both joined native frames equal the final
+  published allocations, and fixture B alone reports focused, matching the
+  final foreground. This proves agreement with the published result, not
+  successful execution of all 60 requested actions. Presentation rows are
+  desires; native `getWindowInfo` supplies frames and fixture `get` supplies
+  focus. Fixture client sizes are not outer-frame measurements. Raw basis:
+  `present-after.json`, `native-after-a.json`, `native-after-b.json`,
+  `get-after.json`.
+- NOT RUN, independent latest-only native-history proof: the trace contains
+  29 dispatches, 27 applied publications and two superseded-in-flight messages,
+  but sparse native samples cannot exclude per-press intermediate native work
+  or paints. One capture per batch is intended; no per-press dispatch/applied
+  pairing, full protocol capture or no-pending-operation claim is made.
+- Startup repeated 129 declaration-order warnings and two non-activatable-name
+  D-Bus errors. Neither recurred in the burst journal window; their significance
+  remains unclassified. Raw basis: `start-journal.txt`, `start-errors.txt`,
+  `journal-burst.txt`, `journal-burst-errors.txt`. Planner evidence comes from
+  its receipt-selected redirected output, not the systemd journal.
+- Evidence corrections: an initial fixture-JSON extraction was corrected
+  before input; a read-only input-help query first used a missing default socket
+  before using the private socket. Review corrected an inaccurate zero-warning
+  count and deduplicated terminal results. No mutating call was repeated and
+  no controller restart or additional command burst ran.
+- Cleanup passed: owned controller, Planner, fixture and input daemon stopped;
+  fixture/input sockets and the single appended workspace were removed, original
+  workspace roster/current restored, KWin owner unchanged, unscoped non-trace
+  bundle rebuilt and final production status DOWN. Existing shortcut records
+  were left untouched. Raw basis: `dev-off.log`, `fixture-shutdown.json`,
+  `desktops-final.json`, `current-final.json`, `restore-build.log`,
+  `dev-status-final.txt`.
+- The no-refusal live criterion remains failed and needs bounded diagnosis of
+  the observed prefix before another acceptance leg. Latest-only native-history,
+  physical-key and perceived-latency acceptance remain unproved. Injected input
+  does not close physical or perceived acceptance; this note remains active.
