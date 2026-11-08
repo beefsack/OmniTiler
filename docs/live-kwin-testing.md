@@ -8,15 +8,16 @@ grant authorization beyond [Current Decisions](./decisions/kde.md#live-test-evid
 
 ## Safety Boundary
 
-- Durable default (user 2026-11-06, supersedes nested-only and exact-baseline
-  rules): n is the max occupied workspace ordinal across the relevant inventory,
-  inventoried fresh each run and never hardcoded; occupancy counts non-fixture
-  native windows too, but that is occupancy only, never a full protected-window
-  inventory; run tests on workspaces >n; use `tiler-live-fixture` with the
-  exact platform filter so only fixture windows are managed. All-desktop/sticky
-  membership is recorded as observed, never fabricated; unsupported outcomes
-  stay TBD. The user accepts incidental stray effects on existing windows, so
-  there is no routine baseline capture/compare, exact-restoration proof,
+- Durable default (user 2026-11-08, practicality; supersedes the per-run
+  occupancy requirement when appending beyond the whole desktop roster): append
+  the test workspace beyond the whole existing roster. It is >n by construction,
+  where n is the max occupied workspace ordinal; no per-run occupancy inventory
+  is needed for this route. Otherwise inventory occupancy fresh, including sticky
+  windows on every desktop, and use workspaces >n. Use `tiler-live-fixture` with
+  the exact platform filter so only fixture windows are managed. Sticky foreign
+  windows may appear on the appended workspace but remain unmanaged; record
+  membership as observed, never fabricated, and leave unsupported outcomes TBD.
+  There is no routine baseline capture/compare, exact-restoration proof,
   protected-window inventory, or stop-on-baseline surprise.
 - Live work needs user authorization, which may be standing for the session.
   This guide grants none. Never record session grants, input grants, or other
@@ -188,10 +189,13 @@ startup:
   delivery. Manual journeys require physical input and matching state evidence.
 - The trailing-empty workspace proof is a separate executable procedure at
   [live oscillation verification](live-oscillation-verification.md).
-- Before each run, inventory occupied workspaces through n fresh (never
-  hardcode n); run tests on workspaces >n. See the store implementation
-  rather than guessing its path. No routine full baseline capture/compare,
-  protected-window inventory, or exact-restoration proof.
+- User decision 2026-11-08 (practicality): appending the test workspace beyond
+  the whole existing roster needs no per-run occupancy inventory; it is >n by
+  construction. Otherwise inventory occupied workspaces through n fresh, never
+  hardcode n, and test on workspaces >n. Observe sticky membership honestly and
+  leave foreign windows unmanaged through the exact fixture filter. No routine
+  full baseline capture/compare, protected-window inventory, or exact-restoration
+  proof.
 - The evaluated readiness gate above is the routine cheap evidence. No prior
   leg's capture establishes later state.
 - The test-only checker at `kwin/tests/baseline-check/` remains available and
@@ -261,18 +265,19 @@ startup:
   not prove a window is shown on the current desktop/activity. Membership
   exclusion is not independent compositor hide/reveal evidence; retain that
   outcome as TBD without a shown observer.
-- Prefer workspaces >n for test windows (n inventoried fresh each run, never
-  hardcoded). Use disposable kwrite, kcalc or kolourpaint clients;
-  use a genuine fixed-size Qt client when fixed-size behavior is required.
+- Prefer test workspaces appended beyond the whole existing roster, or
+  workspaces >n after fresh occupancy inventory. Use disposable kwrite, kcalc or
+  kolourpaint clients; use a genuine fixed-size Qt client when fixed-size
+  behavior is required.
   Fixture choice grants no additional mutation authorization.
 - Preserve normal desktop retirement/appending as documented lifecycle churn,
   not a restoration target; see the live-boundary decision.
 
 ## Fixture-First Live Tests
 
-- Agent live legs test fixture windows only, scoped fixture-only, on
-  workspaces >n (n inventoried fresh each run, never hardcoded). Start the
-  fixture (`tiler-live-fixture serve`), then scope the tiler to its identity
+- Agent live legs test fixture windows only, scoped fixture-only, on workspaces
+  appended beyond the whole existing roster or >n after fresh occupancy
+  inventory. Start the fixture (`tiler-live-fixture serve`), then scope the tiler to its identity
   before any mutation: `just dev-on --scope-class OmniTilerTestWindow`
   (teardown with `just dev-off`); agent-driven runs stay scoped so only
   listed-`resourceClass` fixture windows are managed. Full protocol, flags,

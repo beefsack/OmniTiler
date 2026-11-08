@@ -20,6 +20,7 @@
     zip
     kdePackages.kpackage
     weston
+    ydotool
     # Runtime display libraries for the dev-only tiler-live-fixture helper.
     # The helper compiles without X11/Wayland headers (dynamic-loading Cargo
     # features) but dlopens these at runtime for live use.
