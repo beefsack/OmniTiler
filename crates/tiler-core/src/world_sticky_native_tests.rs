@@ -503,7 +503,7 @@ fn native_spent_retry_reemits_canonical_save_preserving_prior() {
     assert!(!rebound.spent, "replacement binding is fresh");
     assert_eq!(rebound.disposition, AttemptOutcome::Unattempted);
     let meta = rebound.sticky_meta.as_ref().expect("meta");
-    assert_eq!(meta.command_seq, 3);
+    assert_eq!(meta.command_seq, Some(3));
     assert_eq!(meta.prior_restored_sticky, Some(false));
     assert_eq!(
         meta.requested_save,
@@ -586,7 +586,7 @@ fn native_on_applied_marks_done_no_extra_save() {
     assert!(binding.spent);
     let meta = binding.sticky_meta.as_ref().expect("meta");
     assert!(meta.followup_done, "on applied marks done");
-    assert_eq!(meta.command_seq, 1);
+    assert_eq!(meta.command_seq, Some(1));
     assert_eq!(reply.intent_writes.len(), 0, "no extra save on applied");
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-a".to_owned())),
@@ -2443,7 +2443,10 @@ fn native_off_overlay_deferred_restick_holds_until_fresh_false() {
         "original attempt stays spent with no new target"
     );
     assert_eq!(held.target.revision, rev, "no new target minted");
-    assert_eq!(held.sticky_meta.as_ref().expect("meta").command_seq, 2);
+    assert_eq!(
+        held.sticky_meta.as_ref().expect("meta").command_seq,
+        Some(2)
+    );
     assert!(
         !held.sticky_meta.as_ref().expect("meta").followup_done,
         "restick retains proof with no completion"
@@ -2804,7 +2807,10 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
     let binding = rollback_binding(&engine, "win-a");
     assert!(!binding.spent);
     assert!(!binding.target.value);
-    assert_eq!(binding.sticky_meta.as_ref().expect("meta").command_seq, 2);
+    assert_eq!(
+        binding.sticky_meta.as_ref().expect("meta").command_seq,
+        Some(2)
+    );
     assert_eq!(reply.intent_writes.len(), 1);
 
     // Distinct new binding at the cap refuses with a typed result: the

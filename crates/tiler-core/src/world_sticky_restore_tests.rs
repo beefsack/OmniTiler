@@ -7,7 +7,7 @@ use crate::boundary::CoreCommand;
 use crate::directional::WindowId;
 use crate::geometry::Rect;
 use crate::intent_data::{IntentData, encode_intent_data};
-use crate::world_directional::tests::{accepted, fact, report_full, screen};
+use crate::world_directional::tests::{accepted, fact, float_fact, report_full, screen};
 use crate::world_engine::WorldEngine;
 use crate::world_report::{IntentRecord, WorldCommand, WorldReport};
 
@@ -107,6 +107,53 @@ fn is_floated(engine: &WorldEngine, win: &str) -> bool {
             .session(key)
             .is_some_and(|s| s.is_exception(&id))
     })
+}
+
+/// Fresh restart admission of one saved sticky import through the record
+/// lane. Shared by the restart tests so each case stays a few lines.
+fn restart_with_import(
+    saved: &IntentData,
+    sticky: Option<bool>,
+) -> (WorldEngine, crate::world_report::WorldReply) {
+    let mut fresh = engine();
+    let mut restart_fact = fact("win-a", "out-a", 0);
+    restart_fact.rect = Some(Rect {
+        x: 100,
+        y: 100,
+        w: 200,
+        h: 200,
+    });
+    restart_fact.sticky = sticky;
+    let reply = accepted(
+        &mut fresh,
+        &with_records(
+            report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![restart_fact],
+                vec![],
+                "",
+                None,
+                None,
+            ),
+            vec![record("win-a", &encode_intent_data(saved))],
+        ),
+    );
+    (fresh, reply)
+}
+
+fn restart_binding<'a>(
+    engine: &'a WorldEngine,
+    window: &str,
+) -> &'a crate::world_state::RetainedStateBinding {
+    engine
+        .retained_states
+        .get(&(
+            WindowId(window.to_owned()),
+            crate::world_report::StateProperty::Sticky,
+        ))
+        .expect("restored binding")
 }
 
 #[test]
@@ -1518,4 +1565,710 @@ fn sticky_toggle_refuses_only_usable_pending_or_restored() {
         );
         assert_eq!(reply.intent_writes[0].win, WindowId("win-b".to_owned()));
     }
+}
+
+#[test]
+fn sticky_restart_reacquires_native_and_off_restores_prior() {
+    use crate::world_report::{
+        FrameSetter, ScopeAuthority, StateAttempt, StateProperty, WorldCommand,
+    };
+
+    fn set_sticky(window: &str, value: bool) -> WorldCommand {
+        WorldCommand::SetSticky {
+            window: WindowId(window.to_owned()),
+            value,
+        }
+    }
+
+    fn sticky_row(
+        reply: &crate::world_report::WorldReply,
+        window: &str,
+    ) -> Option<(bool, ScopeAuthority, Option<u64>)> {
+        reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == window)
+            .and_then(|row| {
+                row.state
+                    .iter()
+                    .find(|target| target.property == StateProperty::Sticky)
+                    .map(|target| (target.value, target.authority, target.command_seq))
+            })
+    }
+
+    for prior in [false, true] {
+        // Origin: a real sticky-on command mints the exact saved intent.
+        let mut origin = engine();
+        if prior {
+            accepted(
+                &mut origin,
+                &report_full(
+                    1,
+                    1,
+                    vec![screen("out-a", 0)],
+                    vec![float_fact("win-a", "out-a", 0, 0)],
+                    vec![],
+                    "",
+                    None,
+                    None,
+                ),
+            );
+            let mut on_fact = float_fact("win-a", "out-a", 0, 0);
+            on_fact.sticky = Some(false);
+            let on_reply = accepted(
+                &mut origin,
+                &report_full(
+                    2,
+                    2,
+                    vec![screen("out-a", 0)],
+                    vec![on_fact],
+                    vec![],
+                    "",
+                    Some(1),
+                    Some(set_sticky("win-a", true)),
+                ),
+            );
+            assert!(on_reply.command_result.is_none(), "prior={prior}");
+            let save = on_reply.intent_writes.first().expect("save").clone();
+            assert_eq!(
+                crate::intent_data::decode_intent_data(save.data.as_deref().expect("bytes"))
+                    .expect("decodes"),
+                crate::intent_data::IntentData::new(Some(true), Some(true)),
+                "prior={prior}"
+            );
+            assert_eq!(save.win.0, "win-a");
+        } else {
+            accepted(
+                &mut origin,
+                &report_full(
+                    1,
+                    1,
+                    vec![screen("out-a", 0)],
+                    vec![fact("win-a", "out-a", 0)],
+                    vec![],
+                    "",
+                    None,
+                    None,
+                ),
+            );
+            let on_reply = accepted(
+                &mut origin,
+                &report_full(
+                    2,
+                    2,
+                    vec![screen("out-a", 0)],
+                    vec![fact("win-a", "out-a", 0)],
+                    vec![],
+                    "",
+                    Some(1),
+                    Some(set_sticky("win-a", true)),
+                ),
+            );
+            assert!(on_reply.command_result.is_none(), "prior={prior}");
+            let save = on_reply.intent_writes.first().expect("save").clone();
+            assert_eq!(
+                crate::intent_data::decode_intent_data(save.data.as_deref().expect("bytes"))
+                    .expect("decodes"),
+                crate::intent_data::IntentData::new(Some(true), Some(false)),
+                "prior={prior}"
+            );
+            assert_eq!(save.win.0, "win-a");
+        }
+        let saved_data = origin
+            .sticky_saved
+            .get(&WindowId("win-a".to_owned()))
+            .copied()
+            .expect("origin saved");
+        assert_eq!(saved_data.sticky_prior, Some(prior));
+
+        // Restart: fresh owner, native original preimage (sticky false)
+        // restored first, saved intent replays through the record lane.
+        let mut fresh = engine();
+        let mut restart_fact = fact("win-a", "out-a", 0);
+        restart_fact.rect = Some(Rect {
+            x: 100,
+            y: 100,
+            w: 200,
+            h: 200,
+        });
+        restart_fact.sticky = Some(false);
+        let saved_bytes = encode_intent_data(&saved_data);
+        let restart_reply = accepted(
+            &mut fresh,
+            &with_records(
+                report_full(
+                    1,
+                    1,
+                    vec![screen("out-a", 0)],
+                    vec![restart_fact],
+                    vec![],
+                    "",
+                    None,
+                    None,
+                ),
+                vec![record("win-a", &saved_bytes)],
+            ),
+        );
+        assert!(restart_reply.intent_writes.is_empty(), "prior={prior}");
+        assert!(is_floated(&fresh, "win-a"), "prior={prior}");
+        assert_eq!(
+            fresh.restored_sticky.get(&WindowId("win-a".to_owned())),
+            Some(&prior),
+            "prior={prior}"
+        );
+        // The restored intent must reacquire native all-desktop membership
+        // through an ordinary authorized target, not semantic float alone.
+        assert_eq!(
+            sticky_row(&restart_reply, "win-a"),
+            Some((true, ScopeAuthority::Controlled, None)),
+            "prior={prior}: restart must publish native sticky reacquire"
+        );
+        let binding = fresh
+            .retained_states
+            .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
+            .expect("restored binding");
+        assert!(binding.target.value, "prior={prior}");
+        assert!(!binding.spent, "prior={prior}");
+        assert_eq!(
+            binding.sticky_meta.as_ref().expect("meta").command_seq,
+            None,
+            "prior={prior}: commandless restart mints no sequence"
+        );
+        assert_eq!(
+            binding
+                .sticky_meta
+                .as_ref()
+                .expect("meta")
+                .prior_restored_sticky,
+            Some(prior),
+            "prior={prior}"
+        );
+        let rev = binding.target.revision;
+
+        // Adapter performs the authorized write; the correlated evidence
+        // settles without a new command or save.
+        let mut proof_fact = fact("win-a", "out-a", 0);
+        proof_fact.rect = Some(Rect {
+            x: 100,
+            y: 100,
+            w: 200,
+            h: 200,
+        });
+        proof_fact.sticky = Some(true);
+        let mut proof = report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![proof_fact],
+            vec![],
+            "",
+            None,
+            None,
+        );
+        proof.state_attempts = vec![StateAttempt {
+            window: WindowId("win-a".to_owned()),
+            property: StateProperty::Sticky,
+            target: true,
+            revision: rev,
+            setter: FrameSetter::Accepted,
+            pre: Some(false),
+            post: Some(true),
+            attempt_ms: 7,
+        }];
+        let proof_reply = accepted(&mut fresh, &proof);
+        assert!(proof_reply.intent_writes.is_empty(), "prior={prior}");
+        let settled = fresh
+            .retained_states
+            .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
+            .expect("binding");
+        assert!(settled.spent, "prior={prior}");
+        assert_eq!(
+            settled.disposition,
+            crate::world_report::AttemptOutcome::Applied,
+            "prior={prior}"
+        );
+
+        // A real sticky-off command restores the exact prior mode.
+        let mut off_fact = fact("win-a", "out-a", 0);
+        off_fact.rect = Some(Rect {
+            x: 100,
+            y: 100,
+            w: 200,
+            h: 200,
+        });
+        off_fact.sticky = Some(true);
+        let off_reply = accepted(
+            &mut fresh,
+            &report_full(
+                3,
+                3,
+                vec![screen("out-a", 0)],
+                vec![off_fact],
+                vec![],
+                "",
+                Some(1),
+                Some(set_sticky("win-a", false)),
+            ),
+        );
+        assert!(off_reply.command_result.is_none(), "prior={prior}");
+        let off_save = off_reply.intent_writes.first().expect("off save").clone();
+        assert_eq!(
+            crate::intent_data::decode_intent_data(off_save.data.as_deref().expect("bytes"))
+                .expect("decodes"),
+            crate::intent_data::IntentData::new(Some(prior), None),
+            "prior={prior}"
+        );
+        let off_rev = fresh
+            .retained_states
+            .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
+            .expect("off binding")
+            .target
+            .revision;
+        assert_eq!(
+            fresh
+                .retained_states
+                .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
+                .expect("off binding")
+                .sticky_meta
+                .as_ref()
+                .expect("meta")
+                .command_seq,
+            Some(1),
+            "prior={prior}: real OFF commands keep their sequence"
+        );
+        let mut off_proof_fact = fact("win-a", "out-a", 0);
+        off_proof_fact.sticky = Some(false);
+        if prior {
+            off_proof_fact.rect = Some(Rect {
+                x: 100,
+                y: 100,
+                w: 200,
+                h: 200,
+            });
+        }
+        let mut off_proof = report_full(
+            4,
+            4,
+            vec![screen("out-a", 0)],
+            vec![off_proof_fact],
+            vec![],
+            "",
+            None,
+            None,
+        );
+        off_proof.state_attempts = vec![StateAttempt {
+            window: WindowId("win-a".to_owned()),
+            property: StateProperty::Sticky,
+            target: false,
+            revision: off_rev,
+            setter: FrameSetter::Accepted,
+            pre: Some(true),
+            post: Some(false),
+            attempt_ms: 8,
+        }];
+        accepted(&mut fresh, &off_proof);
+        assert!(
+            !fresh
+                .restored_sticky
+                .contains_key(&WindowId("win-a".to_owned())),
+            "prior={prior}"
+        );
+        if prior {
+            assert!(is_floated(&fresh, "win-a"), "prior float stays float");
+            assert!(!is_tiled(&fresh, "win-a"), "prior float never tiles");
+        } else {
+            assert!(is_tiled(&fresh, "win-a"), "prior tile fresh-admits tile");
+            assert!(!is_floated(&fresh, "win-a"), "prior tile leaves float");
+        }
+    }
+}
+
+#[test]
+fn sticky_restart_refusal_preserves_import_without_retry() {
+    use crate::world_report::{AttemptOutcome, FrameSetter, StateAttempt, StateProperty};
+    let saved = IntentData::new(Some(true), Some(false));
+    let (mut fresh, restart_reply) = restart_with_import(&saved, Some(false));
+    assert!(restart_reply.intent_writes.is_empty());
+    let rev = restart_binding(&fresh, "win-a").target.revision;
+    // Exact-tuple refusal: the write never landed, so rollback re-asserts
+    // the same import instead of erasing sticky provenance.
+    let mut refused_fact = fact("win-a", "out-a", 0);
+    refused_fact.rect = Some(Rect {
+        x: 101,
+        y: 100,
+        w: 200,
+        h: 200,
+    });
+    refused_fact.sticky = Some(false);
+    let mut refused = report_full(
+        2,
+        2,
+        vec![screen("out-a", 0)],
+        vec![refused_fact],
+        vec![],
+        "",
+        None,
+        None,
+    );
+    refused.state_attempts = vec![StateAttempt {
+        window: WindowId("win-a".to_owned()),
+        property: StateProperty::Sticky,
+        target: true,
+        revision: rev,
+        setter: FrameSetter::Refused,
+        pre: Some(false),
+        post: Some(false),
+        attempt_ms: 7,
+    }];
+    let reply = accepted(&mut fresh, &refused);
+    assert_eq!(
+        reply.intent_writes,
+        vec![crate::world_report::IntentWrite {
+            win: WindowId("win-a".to_owned()),
+            data: Some(encode_intent_data(&saved)),
+        }]
+    );
+    assert_eq!(
+        fresh.restored_sticky.get(&WindowId("win-a".to_owned())),
+        Some(&false),
+        "proven refusal keeps the import"
+    );
+    assert_eq!(
+        fresh.sticky_saved.get(&WindowId("win-a".to_owned())),
+        Some(&saved)
+    );
+    let binding = restart_binding(&fresh, "win-a");
+    assert!(binding.spent);
+    assert_eq!(binding.disposition, AttemptOutcome::RefusedProven);
+    // A retried proof under a fresh sequence emits nothing further.
+    refused.request_seq = 3;
+    refused.observation_seq = 3;
+    refused.request_id = "req-3".to_owned();
+    let again = accepted(&mut fresh, &refused);
+    assert!(again.intent_writes.is_empty(), "one proof, one write");
+}
+
+#[test]
+fn sticky_restart_ambiguous_evidence_keeps_import_without_retry() {
+    use crate::world_report::{AttemptOutcome, FrameSetter, StateAttempt, StateProperty};
+    let saved = IntentData::new(Some(true), Some(true));
+    let (mut fresh, restart_reply) = restart_with_import(&saved, Some(false));
+    assert!(restart_reply.intent_writes.is_empty());
+    let rev = restart_binding(&fresh, "win-a").target.revision;
+    // Accepted setter whose post misses the target: ambiguous evidence
+    // spends the binding but never settles and never retries.
+    let mut ambiguous_fact = fact("win-a", "out-a", 0);
+    ambiguous_fact.rect = Some(Rect {
+        x: 101,
+        y: 100,
+        w: 200,
+        h: 200,
+    });
+    ambiguous_fact.sticky = Some(false);
+    let mut ambiguous = report_full(
+        2,
+        2,
+        vec![screen("out-a", 0)],
+        vec![ambiguous_fact],
+        vec![],
+        "",
+        None,
+        None,
+    );
+    ambiguous.state_attempts = vec![StateAttempt {
+        window: WindowId("win-a".to_owned()),
+        property: StateProperty::Sticky,
+        target: true,
+        revision: rev,
+        setter: FrameSetter::Accepted,
+        pre: Some(false),
+        post: Some(false),
+        attempt_ms: 7,
+    }];
+    let reply = accepted(&mut fresh, &ambiguous);
+    assert!(reply.intent_writes.is_empty());
+    let binding = restart_binding(&fresh, "win-a");
+    assert!(binding.spent);
+    assert_eq!(binding.disposition, AttemptOutcome::PossiblyExecuted);
+    assert!(
+        !binding.sticky_meta.as_ref().expect("meta").followup_done,
+        "ambiguous never completes"
+    );
+    assert_eq!(
+        fresh.restored_sticky.get(&WindowId("win-a".to_owned())),
+        Some(&true)
+    );
+    assert_eq!(
+        fresh.sticky_saved.get(&WindowId("win-a".to_owned())),
+        Some(&saved)
+    );
+    // A retried proof under a fresh sequence emits nothing further.
+    ambiguous.request_seq = 3;
+    ambiguous.observation_seq = 3;
+    ambiguous.request_id = "req-3".to_owned();
+    let again = accepted(&mut fresh, &ambiguous);
+    assert!(again.intent_writes.is_empty(), "ambiguous never retries");
+}
+
+#[test]
+fn sticky_restart_unknown_holds_then_record_free_recovers() {
+    use crate::world_report::StateProperty;
+    let saved = IntentData::new(Some(true), Some(true));
+    let (mut fresh, reply) = restart_with_import(&saved, None);
+    assert!(reply.intent_writes.is_empty());
+    assert!(
+        fresh
+            .pending_intent
+            .contains_key(&WindowId("win-a".to_owned())),
+        "unknown sticky holds pending"
+    );
+    assert!(!is_floated(&fresh, "win-a"));
+    assert!(
+        !fresh
+            .retained_states
+            .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Sticky)),
+        "held import mints no binding"
+    );
+    // Record-free known-bool arrival consumes the retained pending into
+    // the exact prior and mints the commandless binding.
+    let mut known = fact("win-a", "out-a", 0);
+    known.rect = Some(Rect {
+        x: 100,
+        y: 100,
+        w: 200,
+        h: 200,
+    });
+    known.sticky = Some(false);
+    let reply = accepted(
+        &mut fresh,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![known],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(reply.intent_writes.is_empty());
+    assert!(is_floated(&fresh, "win-a"));
+    assert_eq!(
+        fresh.restored_sticky.get(&WindowId("win-a".to_owned())),
+        Some(&true),
+        "prior stays exact, not the raw fact"
+    );
+    let binding = restart_binding(&fresh, "win-a");
+    assert!(!binding.spent);
+    assert_eq!(
+        binding.sticky_meta.as_ref().expect("meta").command_seq,
+        None
+    );
+}
+
+#[test]
+fn sticky_restart_floating_route_mints_binding_next_observation() {
+    use crate::world_report::{ScopeAuthority, StateProperty, WorldCommand};
+    // Floating workspace: a new window first appears there, so the
+    // finish-lane latch (not the session route) admits the import.
+    let mut engine = engine();
+    let reply = accepted(
+        &mut engine,
+        &report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-t", "out-a", 0)],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let ws = reply
+        .workspaces
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .expect("workspace");
+    accepted(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![fact("win-t", "out-a", 0)],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SetWorkspaceTiling {
+                output: crate::directional::OutputId("out-a".to_owned()),
+                workspace: ws,
+                tiled: false,
+            }),
+        ),
+    );
+    let saved = IntentData::new(Some(false), Some(true));
+    let reply = accepted(
+        &mut engine,
+        &with_records(
+            report_full(
+                3,
+                3,
+                vec![screen("out-a", 0)],
+                vec![fact("win-t", "out-a", 0), fact("win-n", "out-a", 400)],
+                vec![],
+                "",
+                None,
+                None,
+            ),
+            vec![record("win-n", &encode_intent_data(&saved))],
+        ),
+    );
+    assert!(reply.intent_writes.is_empty());
+    assert_eq!(
+        engine.restored_sticky.get(&WindowId("win-n".to_owned())),
+        Some(&true)
+    );
+    let binding = engine
+        .retained_states
+        .get(&(WindowId("win-n".to_owned()), StateProperty::Sticky))
+        .expect("floating binding");
+    assert_eq!(
+        binding.sticky_meta.as_ref().expect("meta").command_seq,
+        None
+    );
+    assert!(
+        reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-n")
+            .and_then(|row| row
+                .state
+                .iter()
+                .find(|target| target.property == StateProperty::Sticky))
+            .is_none(),
+        "floating route lands next observation, not the committing reply"
+    );
+    let next = accepted(
+        &mut engine,
+        &report_full(
+            4,
+            4,
+            vec![screen("out-a", 0)],
+            vec![fact("win-t", "out-a", 0), fact("win-n", "out-a", 400)],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let target = next
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-n")
+        .and_then(|row| {
+            row.state
+                .iter()
+                .find(|target| target.property == StateProperty::Sticky)
+        })
+        .expect("next-observation target");
+    assert_eq!(
+        (target.value, target.authority, target.command_seq),
+        (true, ScopeAuthority::Controlled, None)
+    );
+}
+
+#[test]
+fn sticky_restart_import_shapes_share_binding_policy() {
+    use crate::connection::HostCapabilities;
+    use crate::world_report::{ScopeAuthority, StateProperty};
+    // Already-native-true fact: the write is idempotent, still commandless.
+    let saved = IntentData::new(Some(true), Some(true));
+    let (fresh, reply) = restart_with_import(&saved, Some(true));
+    let target = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a")
+        .and_then(|row| {
+            row.state
+                .iter()
+                .find(|target| target.property == StateProperty::Sticky)
+        })
+        .expect("already-true target");
+    assert_eq!(
+        (target.value, target.authority, target.command_seq),
+        (true, ScopeAuthority::Controlled, None)
+    );
+    assert_eq!(
+        restart_binding(&fresh, "win-a")
+            .sticky_meta
+            .as_ref()
+            .expect("meta")
+            .command_seq,
+        None
+    );
+    // Composed keeps provenance with no state target. Suppression-capable
+    // null facts are the composed admission shape; raw sticky stays null.
+    let mut composed = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            native_sticky: false,
+            window_suppression: true,
+            maximize: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation");
+    let mut composed_fact = fact("win-a", "out-a", 0);
+    composed_fact.rect = Some(Rect {
+        x: 100,
+        y: 100,
+        w: 200,
+        h: 200,
+    });
+    composed_fact.sticky = None;
+    composed_fact.suppression_available = Some(true);
+    composed_fact.visibility.suppression_owned = Some(false);
+    let reply = accepted(
+        &mut composed,
+        &with_records(
+            report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![composed_fact],
+                vec![],
+                "",
+                None,
+                None,
+            ),
+            vec![record("win-a", &encode_intent_data(&saved))],
+        ),
+    );
+    assert!(reply.intent_writes.is_empty());
+    assert_eq!(
+        composed.restored_sticky.get(&WindowId("win-a".to_owned())),
+        Some(&true)
+    );
+    assert!(
+        !composed
+            .retained_states
+            .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Sticky)),
+        "composed mints no state target"
+    );
+    assert!(
+        reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-a")
+            .and_then(|row| row
+                .state
+                .iter()
+                .find(|target| target.property == StateProperty::Sticky))
+            .is_none(),
+        "composed publishes no sticky target"
+    );
 }

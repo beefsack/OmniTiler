@@ -385,6 +385,111 @@ impl WorldEngine {
             || self.retained_states.len() < MAX_RETAINED_STATE_BINDINGS
     }
 
+    /// Shared native sticky-on binding mint: one unspent `Sticky=true`
+    /// target with the exact pre-command runtime snapshot. Live commands
+    /// and restart reacquirement both establish through here so
+    /// publication, settlement, and rollback stay uniform.
+    #[allow(clippy::too_many_arguments)]
+    fn mint_native_sticky_on_binding(
+        &mut self,
+        window: &WindowId,
+        home: DomainKey,
+        dest: DomainKey,
+        command_seq: Option<u64>,
+        requested_save: IntentData,
+        prior_saved: Option<IntentData>,
+        prior_restored_sticky: Option<bool>,
+        prior_restored_floats: bool,
+        prior_float: bool,
+    ) {
+        let revision = self.state_revision + 1;
+        let meta = NativeStickyMeta {
+            command_seq,
+            prior_saved,
+            prior_restored_sticky,
+            prior_restored_floats,
+            prior_float,
+            home,
+            dest: dest.clone(),
+            requested: true,
+            requested_save,
+            is_toggle_float_clear: false,
+            followup_done: false,
+        };
+        self.retained_states.insert(
+            (window.clone(), StateProperty::Sticky),
+            crate::world_state::RetainedStateBinding {
+                target: crate::world_state::RetainedStateTarget {
+                    window: window.clone(),
+                    property: StateProperty::Sticky,
+                    value: true,
+                    revision,
+                },
+                pending: None,
+                spent: false,
+                disposition: AttemptOutcome::Unattempted,
+                sticky_meta: Some(meta),
+                fullscreen_meta: None,
+                maximize_meta: None,
+                above_meta: None,
+            },
+        );
+    }
+
+    /// Restart reacquirement for one committed sticky restore: absent-only
+    /// native `Sticky=true` binding through the shared live establishment
+    /// so the ordinary authorized target reacquires all-desktop membership.
+    /// Native-only; composed keeps visibility provenance without a state
+    /// target. No save is queued here (import mints none) and existing
+    /// bindings are never replaced, so repeat observations cannot mint
+    /// over spent/Applied proof. An already-true native fact still mints:
+    /// the write is idempotent and settlement stays uniform with live
+    /// sticky-on, which likewise mints when already sticky.
+    pub(crate) fn ensure_restored_sticky_binding(&mut self, window: &WindowId, prior: bool) {
+        if self.sticky_route() != StickyRoute::Native {
+            return;
+        }
+        if self
+            .retained_states
+            .contains_key(&(window.clone(), StateProperty::Sticky))
+        {
+            return;
+        }
+        if !self.native_check_binding_cap(window) {
+            return;
+        }
+        // Fail-closed knowledge gates mirror live sticky-on: a latched
+        // incomplete prior, conflict, saturation, or full saved map never
+        // mints a target. This keeps the null/null-coherence refusals
+        // binding-free while healthy restores still reacquire.
+        if self.native_prior_exact(window).1 {
+            return;
+        }
+        let Some(home) = self.staged_homing(window) else {
+            return;
+        };
+        let Some(dest) = self.sticky_dest(&home, window) else {
+            return;
+        };
+        let prior_saved = self.sticky_saved.get(window).copied();
+        let prior_restored_floats = self.restored_floats.contains(window);
+        let prior_float = self.is_exception_window_any(window);
+        let requested_save = IntentData::new(Some(true), Some(prior));
+        // Rollback preserve: the snapshot keeps the just-committed import,
+        // so a proven refusal restores (not erases) sticky provenance.
+        self.mint_native_sticky_on_binding(
+            window,
+            home,
+            dest,
+            None,
+            requested_save,
+            prior_saved,
+            Some(prior),
+            prior_restored_floats,
+            prior_float,
+        );
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn run_native_sticky_on(
         &mut self,
@@ -432,37 +537,16 @@ impl WorldEngine {
                 win: window.clone(),
                 data: Some(encode_intent_data(&requested_save)),
             });
-            let revision = self.state_revision + 1;
-            let meta = NativeStickyMeta {
-                command_seq,
-                prior_saved,
-                prior_restored_sticky: snap_restored,
-                prior_restored_floats: snap_floats,
-                prior_float: snap_float,
+            self.mint_native_sticky_on_binding(
+                window,
                 home,
-                dest: dest_key.clone(),
-                requested: true,
+                dest_key,
+                Some(command_seq),
                 requested_save,
-                is_toggle_float_clear: false,
-                followup_done: false,
-            };
-            self.retained_states.insert(
-                (window.clone(), StateProperty::Sticky),
-                crate::world_state::RetainedStateBinding {
-                    target: crate::world_state::RetainedStateTarget {
-                        window: window.clone(),
-                        property: StateProperty::Sticky,
-                        value: true,
-                        revision,
-                    },
-                    pending: None,
-                    spent: false,
-                    disposition: AttemptOutcome::Unattempted,
-                    sticky_meta: Some(meta),
-                    fullscreen_meta: None,
-                    maximize_meta: None,
-                    above_meta: None,
-                },
+                prior_saved,
+                snap_restored,
+                snap_floats,
+                snap_float,
             );
             self.note_command(command_seq);
             return CommandApplied::NoEffect;
@@ -473,43 +557,21 @@ impl WorldEngine {
             (CommandApplied::NoEffect, None) => {}
             _ => return applied,
         }
-        let revision = self.state_revision + 1;
-        let key = (window.clone(), StateProperty::Sticky);
         let requested_save = self
             .sticky_saved
             .get(window)
             .copied()
             .unwrap_or(IntentData::new(Some(true), Some(snap_float)));
-        let meta = NativeStickyMeta {
-            command_seq,
-            prior_saved,
-            prior_restored_sticky: snap_restored,
-            prior_restored_floats: snap_floats,
-            prior_float: snap_float,
+        self.mint_native_sticky_on_binding(
+            window,
             home,
-            dest: dest_key.clone(),
-            requested: true,
+            dest_key,
+            Some(command_seq),
             requested_save,
-            is_toggle_float_clear: false,
-            followup_done: false,
-        };
-        self.retained_states.insert(
-            key.clone(),
-            crate::world_state::RetainedStateBinding {
-                target: crate::world_state::RetainedStateTarget {
-                    window: window.clone(),
-                    property: StateProperty::Sticky,
-                    value: true,
-                    revision,
-                },
-                pending: None,
-                spent: false,
-                disposition: AttemptOutcome::Unattempted,
-                sticky_meta: Some(meta),
-                fullscreen_meta: None,
-                maximize_meta: None,
-                above_meta: None,
-            },
+            prior_saved,
+            snap_restored,
+            snap_floats,
+            snap_float,
         );
         CommandApplied::NoEffect
     }
@@ -572,7 +634,7 @@ impl WorldEngine {
             data: Some(encode_intent_data(&requested_save)),
         });
         let meta = NativeStickyMeta {
-            command_seq,
+            command_seq: Some(command_seq),
             prior_saved,
             prior_restored_sticky: snap_restored,
             prior_restored_floats: snap_floats,
@@ -1498,10 +1560,16 @@ impl WorldEngine {
             let mut staged = self.clone();
             let pre_cmd_save = staged.sticky_command_save.clone();
             let pre_result = staged.command_result.clone();
+            // OFF followups replay the originating command: commandless
+            // restore bindings (requested ON) never reach here, and a
+            // missing sequence must never invent one.
+            let Some(cmd_seq) = meta.command_seq else {
+                continue;
+            };
             let applied = if meta.is_toggle_float_clear {
                 staged.run_sticky_toggle_float(
                     issue,
-                    meta.command_seq,
+                    cmd_seq,
                     &window,
                     &meta.home,
                     &meta.dest,
@@ -1510,7 +1578,7 @@ impl WorldEngine {
             } else {
                 staged.run_sticky_transition(
                     issue,
-                    meta.command_seq,
+                    cmd_seq,
                     &window,
                     &meta.home,
                     &meta.dest,
@@ -1672,7 +1740,8 @@ impl WorldEngine {
     /// Central native sticky state publication over the assembled rows.
     /// Only native-capable sticky bindings with exact metadata publish a
     /// `StateTarget { property: Sticky, value, authority, command_seq }`.
-    /// The command sequence is the original typed command; the retained
+    /// The command sequence is the original typed command, or `None` for
+    /// a commandless restart reacquirement; the retained
     /// authorizing revision (`target.revision`, `state_revision + 1` at
     /// issue) stays internal and never mints from raw facts or revision
     /// changes. Targets retain across observations; observation-only
@@ -1779,7 +1848,7 @@ impl WorldEngine {
                 property: StateProperty::Sticky,
                 value: binding.target.value,
                 authority,
-                command_seq: Some(meta.command_seq),
+                command_seq: meta.command_seq,
             });
         }
     }

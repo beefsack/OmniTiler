@@ -903,7 +903,10 @@ fn native_route_accepts_sticky_on_with_target() {
     assert!(binding.sticky_meta.is_some());
     assert!(binding.target.value);
     assert_eq!(binding.target.revision, 2);
-    assert_eq!(binding.sticky_meta.as_ref().expect("meta").command_seq, 1);
+    assert_eq!(
+        binding.sticky_meta.as_ref().expect("meta").command_seq,
+        Some(1)
+    );
     let row = reply
         .windows
         .iter()

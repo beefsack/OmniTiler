@@ -9193,7 +9193,7 @@ fn sticky_binding(engine: &mut WorldEngine, window: &str, home: &DomainKey, comm
             spent: false,
             disposition: AttemptOutcome::Unattempted,
             sticky_meta: Some(crate::world_state::NativeStickyMeta {
-                command_seq,
+                command_seq: Some(command_seq),
                 prior_saved: None,
                 prior_restored_sticky: None,
                 prior_restored_floats: false,
@@ -9665,7 +9665,7 @@ fn staged_native_sticky_followup_uses_staged_gates_and_original_seq() {
                     spent: true,
                     disposition: AttemptOutcome::Applied,
                     sticky_meta: Some(crate::world_state::NativeStickyMeta {
-                        command_seq: 7,
+                        command_seq: Some(7),
                         prior_saved: None,
                         prior_restored_sticky: None,
                         prior_restored_floats: false,
@@ -9729,7 +9729,7 @@ fn staged_native_sticky_followup_uses_staged_gates_and_original_seq() {
                 .as_ref()
                 .expect("sticky meta")
                 .command_seq,
-            7
+            Some(7)
         );
     }
 }
@@ -9773,7 +9773,7 @@ fn v4_staged_native_sticky_refused_proven_rolls_back_with_original_seq() {
                     spent: true,
                     disposition: AttemptOutcome::RefusedProven,
                     sticky_meta: Some(crate::world_state::NativeStickyMeta {
-                        command_seq: 7,
+                        command_seq: Some(7),
                         prior_saved: None,
                         prior_restored_sticky: None,
                         prior_restored_floats: false,
@@ -9843,7 +9843,7 @@ fn v4_staged_native_sticky_refused_proven_rolls_back_with_original_seq() {
         );
         // Original producer identity untouched by the distinct issue.
         assert_eq!(binding.target.revision, 1);
-        assert_eq!(meta.command_seq, 7);
+        assert_eq!(meta.command_seq, Some(7));
         // Exactly-once queue: a second run writes nothing new.
         engine.run_native_sticky_followups(&issue, &BTreeSet::new());
         assert_eq!(engine.sticky_rollback_saves.len(), 1);

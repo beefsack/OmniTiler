@@ -23,7 +23,7 @@ pub(crate) struct RetainedStateTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeStickyMeta {
-    pub(crate) command_seq: u64,
+    pub(crate) command_seq: Option<u64>,
     pub(crate) prior_saved: Option<IntentData>,
     pub(crate) prior_restored_sticky: Option<bool>,
     pub(crate) prior_restored_floats: bool,

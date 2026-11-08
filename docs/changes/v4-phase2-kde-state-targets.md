@@ -547,3 +547,41 @@
   the unscoped non-trace bundle was rebuilt. Sticky-intent resumption needs a
   separate bounded diagnosis, and complete capture/focus evidence remains open.
   This broader state-target note stays active.
+
+## Verified sticky restart correction (offline)
+
+- Required outcome follows the opaque-intent contract: non-null `stickyPrior`
+  restores sticky-float intent, including native all-desktop membership. Startup
+  recovery first restores touched native originals; core then reacquires sticky
+  and above through normal authorized targets. Sticky-off retains the saved
+  prior-mode semantics. Composed maximize's runtime-only restart rule does not
+  apply to sticky.
+- Source diagnosis: opaque import restores semantic float and sticky provenance,
+  but native sticky publication requires a retained binding that import does not
+  establish. Native desktop recovery therefore removes all-desktop membership
+  while ordinary float policy reacquires above. This is a defect, not a selected
+  partial restoration outcome.
+- Healthy sticky import now establishes the same native sticky-on binding as
+  live commands, absent-only on both admission routes. Commandless restoration
+  publishes null command correlation; live commands retain their exact sequence.
+  Existing property authority, spent and settlement gates remain unchanged.
+  Refusal restores the imported provenance and saved record without retry.
+- RED: a real sticky-on save replayed into a fresh owner restored float but
+  emitted no native sticky target. GREEN: six restart regressions cover prior
+  tile/float release, false/true native facts, unknown-to-readable import,
+  floating-workspace admission, composed no-target behavior, proven refusal
+  and ambiguous evidence without retry. All 117 sticky tests pass.
+- Initial binding creation omitted the existing incomplete-saved-knowledge gate;
+  three coherence tests caught that and the shared gate now remains in force.
+  Review corrected invented command correlation and refusal rollback provenance
+  before acceptance; independent follow-up review has no unresolved finding.
+- Seven scoped gates pass: core/protocol/service formatting, locked offline
+  tests and build, all-target clippy with warnings denied, adapter typechecking,
+  1168/1168 tests with zero skips and unscoped non-trace build. Core unit tests
+  pass 2024/2024; only `workspace_unsafe_posture` is excluded. No wire, codec,
+  history, preimage API or fixture bytes changed. Shared binding construction
+  replaces duplicated live-on inserts; no further obsolete caller closure was
+  established for a separate cull.
+- Pending: one fixture-only orderly restart followed by sticky-off with
+  correlated protocol/storage capture and retained pre-chord focus readbacks.
+  This is not native restart acceptance; the broader note remains active.

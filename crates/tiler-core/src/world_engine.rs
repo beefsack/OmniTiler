@@ -3294,6 +3294,7 @@ impl WorldEngine {
                 // joint ledger count steady.
                 self.pending_intent.remove(&win);
                 self.restored_sticky.insert(win.clone(), prior);
+                self.ensure_restored_sticky_binding(&win, prior);
                 // Composed restore initializes the stable visibility
                 // revision absent-only: first safe admission authorizes,
                 // ordinary observations never renew.
@@ -3423,6 +3424,7 @@ impl WorldEngine {
                 // joint ledger count steady.
                 self.pending_intent.remove(&win);
                 self.restored_sticky.insert(win.clone(), prior);
+                self.ensure_restored_sticky_binding(&win, prior);
                 // Composed floating restore initializes the stable
                 // visibility revision absent-only, same as the session
                 // route above.
