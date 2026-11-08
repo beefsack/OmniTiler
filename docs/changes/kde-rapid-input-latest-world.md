@@ -402,7 +402,71 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   stage5 proofs enabled, only `workspace_unsafe_posture` excluded), build and
   strict all-target Clippy; adapter typecheck, 1185 tests and unscoped non-trace
   build. Protected fixture bytes and native effect code are unchanged.
-- No additional live burst was run: this is a diagnostic-only change, not a
-  continuity fix, so disappearance of the expected missing-proof hides is not
-  an acceptance claim. A later recurrence can now name its exact refusal;
-  explaining live proof loss still requires contemporaneous facts evidence.
+- The diagnostic-only verification above did not include another live burst.
+  The bounded follow-up below exercises the reason diagnostics; it is not a
+  continuity fix or an effect-loaded flicker acceptance claim.
+
+## Reason-bearing live burst (2026-11-09)
+
+- One fixture-only trace leg appended a workspace beyond the existing roster,
+  joined two Wayland fixtures by exact sentinel/PID/native UUID, and passed
+  evaluated readiness plus matched observation dispatch/applied checks. Native
+  frames and published allocations established `a` left and `b` right before
+  WindowsRunner activated the joined left fixture. Fixture focus and published
+  foreground agreed immediately before input. One uninterrupted ten-cycle,
+  60-chord injection used the observed-order sequence above, with 340 events
+  and one-millisecond key delay. No second injection or controller restart ran.
+- All 60 callbacks and ordered unique queue identities 1 through 60 have
+  terminal Take READY results, with no command refusal. The 103 READY lines
+  include 43 repeated terminal reads. Final native outer frames match both
+  published allocations; fixture `a` alone is focused, matching foreground.
+  Raw basis: `18-observed-mapping.json`, `19-match-left.json`,
+  `28-focus-at-input.json`, `30-burst-full.txt`, `32-planner-burst.log`,
+  `48-queue-accounting.json`, `49-take-accounting.json`, `50-final-agreement.json`.
+- Every malformed read is listed below. Each follows continuity for the same
+  request and says `reason=missing-coverage recovery=hide`. Planner egress joins
+  the read request to its served revision and the accepted capture at that
+  revision, within the one bound generation. Exact served observation numbers
+  and reply payloads were not captured for these three reads.
+
+  | Read request | Served revision | Accepted capture | Raw journal / Planner lines |
+  | --- | --- | --- | --- |
+  | `pres-b-1terqkb` | 12 | `src-c-c70v2u` | `30-burst-full.txt:125`; `32-planner-burst.log:258,294` |
+  | `pres-h-e0s1un` | 18 | `src-i-1n4xxdy` | `30-burst-full.txt:202`; `32-planner-burst.log:436,462` |
+  | `pres-i-2esoqr` | 20 | `src-k-1wbabfz` | `30-burst-full.txt:222`; `32-planner-burst.log:488,490` |
+
+- Supported cause: native facts were unavailable, rather than proof merely
+  waiting behind a newer actuator publication. The native border endpoint was
+  unowned before startup, after startup, immediately before input and after
+  input. Independent pre/post presentation reads carry paired-null coverage and
+  hidden/null border witnesses. The whole-leg owner-PID journal records repeated
+  non-activatable-name errors at the existing host-deadline cadence, including
+  before input. Endpoint snapshots do not prove uninterrupted absence between
+  samples. Successful facts arrival is not separately traced, so no claim of a
+  complete facts-message history is made. Raw basis:
+  `04-border-owner-initial.json`, `14-border-owner-start.json`,
+  `25-border-owner-preburst.json`, `34-border-owner-postburst.json`;
+  `15-presentation-before.json`, `22-presentation-preburst.json`,
+  `33-presentation-postburst.json`;
+  `51-whole-leg-full.txt`, `52-whole-leg-category.txt`.
+- Classification: expected fail-closed handling of unavailable native coverage;
+  no formatter, ordering or latest-wins proof-loss defect is demonstrated. This
+  is not a transient-publication explanation: no working native renderer or
+  covering facts chain was established before the burst. The broker binds
+  coverage to its accepted capture before the adapter's latest-publication apply
+  slot (`crates/omnitiler/src/world_broker.rs:903-904`); that slot cannot supply
+  proof absent from the capture. The earlier four reads still lack their own
+  contemporaneous facts evidence; this new leg does not retroactively establish
+  their endpoint state.
+- User-visible hide duration and paint outcome remain UNKNOWN: there is no
+  independent rendered-border observation and no `presentation-painted` line.
+  The endpoint was unavailable at every sampled point, so this leg does not
+  establish a visible border disappearing or continuity with the effect loaded.
+  Independent evidence review finds no contradictory product outcome.
+- Cleanup: controller/Planner, fixture and private input daemon stopped; owned
+  sockets disappeared; original workspace roster/current and KWin owner match
+  their preimages. Unscoped non-trace build and final production DOWN pass.
+  Raw basis: `39-dev-off.log` through `47-kwin-owner-final.json`. No product code
+  or fixture bytes changed in this leg; the seven scoped gates above remain the
+  current code verification. A read-only accounting query's raw-input option
+  error was corrected after cleanup; no effective live mutation was repeated.
