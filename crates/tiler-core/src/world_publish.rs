@@ -1536,7 +1536,6 @@ impl WorldEngine {
     pub(crate) fn publish(
         &mut self,
         report: &WorldReport,
-        command: Option<&WorldCommand>,
         command_consumed: bool,
         effects: Vec<OneShotEffect>,
         command_result: Option<CommandResult>,
@@ -1568,7 +1567,8 @@ impl WorldEngine {
         // sticky-command save drains exactly once on its successful fresh
         // command, else the ordinary ToggleFloat save; the exact-encoding
         // gate below still commits it atomically with the rest of the reply.
-        let intent_writes = self.drain_intent_saves(command, command_consumed, &command_result);
+        let intent_writes =
+            self.drain_intent_saves(report.command.as_ref(), command_consumed, &command_result);
         // Per-report switch terminals: taken here so the next unrelated
         // report publishes empty. Duplicates repeat the cached reply.
         let switch_settled = std::mem::take(&mut self.switch_settled);

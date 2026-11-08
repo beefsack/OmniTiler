@@ -3964,14 +3964,7 @@ impl WorldEngine {
         if consumed {
             crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
             let result = self.command_result.take();
-            let reply = self.publish(
-                report,
-                report.command.as_ref(),
-                true,
-                effects,
-                result,
-                &held_scopes,
-            );
+            let reply = self.publish(report, true, effects, result, &held_scopes);
             return self.finish(report, digest, reply);
         }
         if let Some(command) = report.command.as_ref() {
@@ -3983,10 +3976,6 @@ impl WorldEngine {
             // this image so no partial command mutation survives, while
             // pre-command observation effects stay published.
             let precommand = self.clone();
-            // Post-command bookkeeping runs against the resolved
-            // execution subject, never the implicit placeholder: carry
-            // the pre-execution identity (not focus after the action).
-            let bookkeeping = self.bookkeeping_command(command);
             match self.execute_command(
                 &issue,
                 command_seq,
@@ -4004,7 +3993,7 @@ impl WorldEngine {
                     // in-flight members home by raw screen.
                     self.build_staged_domains();
                     self.settle_intent_admissions();
-                    self.sync_toggle_float_command(&bookkeeping);
+                    self.sync_toggle_float_command(command);
                     // Admission intent first: an explicit command
                     // focuses after it, so user intent wins when they
                     // coincide. A same-target admission duplicate is
@@ -4018,14 +4007,7 @@ impl WorldEngine {
                     }
                     effects.push(effect);
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                    let reply = self.publish(
-                        report,
-                        Some(&bookkeeping),
-                        false,
-                        effects,
-                        result,
-                        &held_scopes,
-                    );
+                    let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
                 }
                 CommandApplied::NoEffect => {
@@ -4033,17 +4015,10 @@ impl WorldEngine {
                     // See above: restage against committed ownership.
                     self.build_staged_domains();
                     self.settle_intent_admissions();
-                    self.sync_toggle_float_command(&bookkeeping);
+                    self.sync_toggle_float_command(command);
                     let result = self.command_result.take();
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                    let reply = self.publish(
-                        report,
-                        Some(&bookkeeping),
-                        false,
-                        effects,
-                        result,
-                        &held_scopes,
-                    );
+                    let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
                 }
                 CommandApplied::Rejected { kind, message } => {
@@ -4068,28 +4043,14 @@ impl WorldEngine {
                     self.command_result = Some(CommandResult::Rejected { kind: typed });
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
                     let result = self.command_result.take();
-                    let reply = self.publish(
-                        report,
-                        report.command.as_ref(),
-                        false,
-                        effects,
-                        result,
-                        &held_scopes,
-                    );
+                    let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
                 }
             }
         }
         let result = self.command_result.take();
         crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-        let reply = self.publish(
-            report,
-            report.command.as_ref(),
-            false,
-            effects,
-            result,
-            &held_scopes,
-        );
+        let reply = self.publish(report, false, effects, result, &held_scopes);
         self.finish(report, digest, reply)
     }
 
