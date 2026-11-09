@@ -504,6 +504,14 @@ without queuing/replaying user commands. Summaries contain no native IDs,
 application content, bus owners, geometry, paths or raw payloads. See the
 [Q3 record](changes/archive/kde-intentional-float-restart.md).
 
+Native-preimage reads use a separate slot and `op=preimage-read` summaries.
+Unlike the opaque intent diagnostic above, a bus-id or KWin-owner mismatch
+returns `outcome=ok stored=0 returned=0`, yielding a usable empty seed; the first
+persist atomically replaces the stale file without importing its old UUIDs.
+Corrupt/unreadable native-preimage files still return degraded and block native
+state writes. `namespace-mismatch` remains an opaque-intent degraded reason,
+not a current native-preimage read reason. See [R12](decisions/contract.md#native-writes-difficult-to-undo-r12).
+
 Rust owner-monitor and tray startup diagnostics use fixed, redacted records:
 
 - `omnitiler:route-diag component=planner stage=owner event=signal outcome=<malformed-signal|invalid-args>` (one malformed signal skipped; a later valid signal is processed)

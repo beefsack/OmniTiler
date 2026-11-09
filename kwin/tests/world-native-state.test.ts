@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 
 import {
     createNativePreimageStore,
+    mapWorldStatePropertyToPreimage,
     NATIVE_PREIMAGE_VERSION,
     type NativePreimageTransport,
 } from "../src/world-native-preimage";
@@ -26,6 +27,7 @@ import {
     type NativeStateFences,
     type NativeStateHost,
 } from "../src/world-native-state";
+import { createNativeRecoveryCoordinator } from "../src/world-native-recovery";
 import { WorldAdapterState } from "../src/world-state";
 import type {
     WorldReply,
@@ -242,25 +244,39 @@ interface Harness {
     setFence: (patch: Partial<NativeStateFences>) => void;
     setGen: (gen: string) => void;
     writeCount: () => number;
+    coord: ReturnType<typeof createNativeRecoveryCoordinator> | null;
+    logs: () => string[];
 }
 
-function setup(wins: FakeWin[]): Harness {
+function setup(
+    wins: FakeWin[],
+    seed: "ok-empty" | { degraded: string } = "ok-empty",
+    opts: { recoveryAuth?: boolean } = {},
+): Harness {
     let gen: string | null = "gen-1";
     const bus = makeBus(() => gen);
     const store = createNativePreimageStore(bus.transport, true);
-    const answerSeed = (): void => {
+    const answerSeed = (mode: "ok-empty" | { degraded: string }): void => {
         const read = bus.calls.find((c) => c.method === "ReadNativePreimage" && !c.answered) as BusCall | undefined;
         assert.ok(read !== undefined);
         const corr = (JSON.parse(read.payload) as Record<string, unknown>)["correlation_id"] as string;
         read.answered = true;
-        read.callback(JSON.stringify({
-            v: NATIVE_PREIMAGE_VERSION, correlation_id: corr,
-            outcome: "ok", records: [], stored: 0, returned: 0,
-        }));
+        if (mode === "ok-empty") {
+            read.callback(JSON.stringify({
+                v: NATIVE_PREIMAGE_VERSION, correlation_id: corr,
+                outcome: "ok", records: [], stored: 0, returned: 0,
+            }));
+        } else {
+            read.callback(JSON.stringify({
+                v: NATIVE_PREIMAGE_VERSION, correlation_id: corr,
+                outcome: "degraded", records: [], stored: 0, returned: 0,
+                reason: mode.degraded,
+            }));
+        }
     };
     store.seed("gen-1");
-    answerSeed();
-    assert.equal(store.isAvailable("gen-1"), true);
+    answerSeed(seed);
+    assert.equal(store.isAvailable("gen-1"), seed === "ok-empty");
 
     const surface: Record<string, unknown> = {
         windowList: () => wins.map((w) => w),
@@ -346,12 +362,56 @@ function setup(wins: FakeWin[]): Harness {
     };
     const fencesBox = { cur: fences };
     const auth = new Map<string, boolean>();
+    // Optional production-shaped authorization: the entry's
+    // isStillAuthorized consults the real recovery gate then the real
+    // store gate (world-entry.ts), so the executor's pre-arm check drops
+    // `stale` here exactly when the seed is unusable. Off by default:
+    // existing callers keep the auth-map-only predicate.
+    const coordBox: { coord: ReturnType<typeof createNativeRecoveryCoordinator> | null } = { coord: null };
+    if (opts.recoveryAuth === true) {
+        coordBox.coord = createNativeRecoveryCoordinator({
+            store,
+            getFences: () => ({ ...fencesBox.cur }),
+            log: (m) => {
+                logs.push(m);
+            },
+            requestObservation: () => undefined,
+        });
+        coordBox.coord.seed("gen-1");
+    }
     const exec = createNativeStateExecutor({
         state,
         store,
         host,
         getFences: () => ({ ...fencesBox.cur }),
-        isStillAuthorized: (win, property) => auth.get(`${win}\u0000${property}`) ?? true,
+        isStillAuthorized: (win, property) => {
+            if (auth.get(`${win}\u0000${property}`) === false) {
+                return false;
+            }
+            if (opts.recoveryAuth === true) {
+                const coord = coordBox.coord;
+                if (coord === null) {
+                    return false;
+                }
+                try {
+                    if (coord.isBlocked(win, mapWorldStatePropertyToPreimage(property), fencesBox.cur.generation)) {
+                        return false;
+                    }
+                } catch (error) {
+                    void error;
+                    return false;
+                }
+                try {
+                    if (!store.isAvailable(fencesBox.cur.generation)) {
+                        return false;
+                    }
+                } catch (error) {
+                    void error;
+                    return false;
+                }
+            }
+            return auth.get(`${win}\u0000${property}`) ?? true;
+        },
     });
     const writes = (mode: "ok" | "fail", onlyWin?: string): void => {
         // The store serializes FIFO: answer the oldest unanswered write,
@@ -386,8 +446,9 @@ function setup(wins: FakeWin[]): Harness {
         setGen: (g: string) => {
             gen = g;
             store.seed(g);
-            answerSeed();
+            answerSeed("ok-empty");
             assert.equal(store.isAvailable(g), true);
+            coordBox.coord?.seed(g);
         },
         run: (reply) => {
             Object.assign(fencesBox.cur, { acceptedRev: reply.rev });
@@ -400,6 +461,8 @@ function setup(wins: FakeWin[]): Harness {
         },
         spentCount: () => exec.spentCountForTest(),
         writeCount: () => bus.calls.filter((c) => c.method === "WriteNativePreimage").length,
+        coord: coordBox.coord,
+        logs: () => [...logs],
     };
 }
 
@@ -1366,5 +1429,71 @@ describe("mid-call completion fences", () => {
         assert.equal(done.length, 1);
         assert.equal(done[0]?.rev, "8");
         assert.equal(done[0]?.target, false);
+    });
+
+    it("stale-namespace usable-empty seed arms executor targets; old and corrupt envelopes stay blocked", () => {
+        // Split-boundary note: these envelopes are asserted
+        // field-equivalent to the Rust service replies, not byte-identical;
+        // correlation ids and key order differ by design. The executor
+        // authorization here consults the real recovery gate then the real
+        // store gate, mirroring production entry wiring.
+        const droppedStale = (h: Harness): string[] => h.logs().filter((l) =>
+            l.includes("native-state-dropped") && l.includes("target=fullscreen") && l.includes("reason=stale"));
+        const droppedAny = (h: Harness): string[] => h.logs().filter((l) =>
+            l.includes("native-state-dropped") && l.includes("target=fullscreen"));
+        // Control 1: the old service envelope for a bus-id or KWin-owner
+        // mismatch. The composed authorization drops the target stale
+        // pre-arm: zero persist, zero native calls, zero attempts.
+        const oldNs = setup([makeWin({ internalId: "win-a", fullScreen: false })],
+            { degraded: "namespace-mismatch" }, { recoveryAuth: true });
+        assert.equal(oldNs.store.isAvailable("gen-1"), false);
+        assert.equal(oldNs.coord?.isBlocked("win-a", "fullscreen", "gen-1"), true);
+        oldNs.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("fullscreen", true)] }]));
+        assert.equal(droppedStale(oldNs).length, 1);
+        assert.equal(oldNs.writeCount(), 0);
+        assert.deepEqual(oldNs.setterCalls("win-a"), []);
+        assert.deepEqual(attemptsOf(oldNs, "win-a", "fullscreen"), []);
+        assert.equal(oldNs.spentCount(), 0);
+        oldNs.writes("ok");
+        assert.equal(oldNs.writeCount(), 0);
+        assert.deepEqual(oldNs.setterCalls("win-a"), []);
+        // Control 2: corrupt stays blocking through the same composed path.
+        const c = setup([makeWin({ internalId: "win-a", fullScreen: false })],
+            { degraded: "corrupt" }, { recoveryAuth: true });
+        assert.equal(c.store.isAvailable("gen-1"), false);
+        assert.equal(c.coord?.isBlocked("win-a", "fullscreen", "gen-1"), true);
+        c.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("fullscreen", true)] }]));
+        assert.equal(droppedStale(c).length, 1);
+        assert.equal(c.writeCount(), 0);
+        assert.deepEqual(c.setterCalls("win-a"), []);
+        assert.deepEqual(attemptsOf(c, "win-a", "fullscreen"), []);
+        assert.equal(c.spentCount(), 0);
+        c.writes("ok");
+        assert.equal(c.writeCount(), 0);
+        assert.deepEqual(c.setterCalls("win-a"), []);
+        // Fixed envelope for a bus-id or KWin-owner mismatch: `ok` empty
+        // with zero counts. Recovery unblocks, the target arms, persists
+        // before any setter, then runs exactly once on the stored ack.
+        const h = setup([makeWin({ internalId: "win-a", fullScreen: false })],
+            "ok-empty", { recoveryAuth: true });
+        assert.equal(h.store.isAvailable("gen-1"), true);
+        assert.equal(h.coord?.pendingCountForTest(), 0);
+        assert.equal(h.coord?.isBlocked("win-a", "fullscreen", "gen-1"), false);
+        h.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("fullscreen", true)] }]));
+        // Persist-before-write: the snapshot persists and the write
+        // dispatches before any native setter runs; nothing drops stale.
+        assert.deepEqual(droppedAny(h), []);
+        assert.equal(h.writeCount(), 1);
+        assert.equal(h.store.recordFor("win-a")?.fullscreen, false);
+        assert.deepEqual(h.setterCalls("win-a"), []);
+        assert.deepEqual(attemptsOf(h, "win-a", "fullscreen"), []);
+        assert.equal(h.spentCount(), 0);
+        h.writes("ok");
+        // Exactly one actual setter on the exact stored ack.
+        assert.deepEqual(droppedAny(h), []);
+        assert.deepEqual(h.setterCalls("win-a"), ["set:fullScreen"]);
+        assert.equal(attemptsOf(h, "win-a", "fullscreen").length, 1);
+        assert.equal(attemptsOf(h, "win-a", "fullscreen")[0]?.setter, "accepted");
+        assert.equal(h.spentCount(), 1);
     });
 });

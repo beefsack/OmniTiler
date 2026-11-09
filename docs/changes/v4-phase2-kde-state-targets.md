@@ -810,3 +810,14 @@
   local link checks and `git diff --check`. No test suite or native command ran;
   previous offline/fixture passes are not refreshed. The state-target note stays
   active; no settled state/wire/history/restart contract is reopened.
+
+### Namespace correction follow-up (2026-11-09)
+
+- The approved [namespace-boundary correction](archive/kde-native-preimage-namespace.md)
+  is verified offline: bus/KWin-owner mismatch now returns a usable successful
+  empty seed, never old restoration records; first persist replaces the stale
+  file. Corrupt/unreadable files remain blocking. R12 and the decision index
+  record the policy. The triage above describes the pre-fix baseline.
+- The linked record updates the same three traced diagnostic sequences: expect
+  a successful seed and fresh native arming, not namespace-driven stale drops.
+  No live rerun occurred; ST and the separate sticky/unfloat item remain open.

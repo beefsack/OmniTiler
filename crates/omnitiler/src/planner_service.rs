@@ -2513,7 +2513,8 @@ mod tests {
             assert_eq!(stored["outcome"], "stored");
         }
         // A KWin restart invalidates the namespace: the new owner reads
-        // empty instead of stale preimages, and its next write replaces.
+        // usable empty (ok, zero counts) instead of stale preimages, and
+        // its next write atomically replaces the stale file.
         drop(first);
         let Some(second) = bus.session() else {
             panic!("private bus daemon dropped the replacement connection");
@@ -2526,9 +2527,10 @@ mod tests {
             r#"{"v":1,"correlation_id":"preimage-ns-2"}"#,
         ))
         .expect("read reply is JSON");
-        assert_eq!(read["outcome"], "degraded");
-        assert_eq!(read["reason"], "namespace-mismatch");
+        assert_eq!(read["outcome"], "ok");
         assert_eq!(read["records"].as_array().expect("array").len(), 0);
+        assert_eq!(read["stored"], 0);
+        assert_eq!(read["returned"], 0);
         let replaced: serde_json::Value = serde_json::from_str(&call_intent(
             &proxy,
             WRITE,
@@ -2540,6 +2542,15 @@ mod tests {
         .expect("write reply is JSON");
         assert_eq!(replaced["outcome"], "stored");
         assert_eq!(replaced["stored"], 1);
+        let reread: serde_json::Value = serde_json::from_str(&call_intent(
+            &proxy,
+            READ,
+            r#"{"v":1,"correlation_id":"preimage-ns-4"}"#,
+        ))
+        .expect("read reply is JSON");
+        assert_eq!(reread["outcome"], "ok");
+        assert_eq!(reread["stored"], 1);
+        assert_eq!(reread["records"][0]["win"], "win-b");
         let _ = std::fs::remove_dir_all(&root);
     }
 

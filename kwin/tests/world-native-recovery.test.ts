@@ -839,6 +839,49 @@ describe("world-native-recovery", () => {
         assert.deepEqual(fresh.calls, []);
     });
 
+    it("stale-namespace usable-empty seed arms fresh targets; corrupt stays blocked", () => {
+        // Fixed-service wire for a bus-id or KWin-owner mismatch: `ok`
+        // empty with zero counts, field-equivalent to a missing file (split
+        // boundary: fields asserted, not cross-language bytes). Stale
+        // records never authorize restoration; the first persist replaces.
+        const a = makeWin({ internalId: "win-a" });
+        const h = setup([a]);
+        h.store.seed("gen-1");
+        answerSeed(h.bus, []);
+        assert.equal(h.store.isAvailable("gen-1"), true);
+        h.coord.seed("gen-1");
+        assert.equal(h.coord.pendingCountForTest(), 0);
+        assert.equal(h.coord.isBlocked("win-a", "fullscreen", "gen-1"), false);
+        assert.equal(h.store.canWrite("win-a", "fullscreen", "gen-1"), true);
+        assert.equal(h.store.arm("win-a", { fullscreen: true }), true);
+        let settled: boolean | null = null;
+        h.store.flush([{ win: "win-a", property: "fullscreen" }], (ok) => {
+            settled = ok;
+        });
+        assert.equal(answerFlushes(h.bus, true), 1);
+        assert.equal(settled, true);
+        assert.deepEqual(h.store.recordFor("win-a"), {
+            win: "win-a", maximize_mode: null, fullscreen: true,
+            desktops: null, stacking: null,
+        });
+        // Corrupt-file counterpart stays blocking: no arm, no persist.
+        const c = makeWin({ internalId: "win-a" });
+        const bad = setup([c]);
+        bad.store.seed("gen-1");
+        answerSeedDegraded(bad.bus, "corrupt");
+        assert.equal(bad.store.isAvailable("gen-1"), false);
+        bad.coord.seed("gen-1");
+        assert.equal(bad.coord.isBlocked("win-a", "fullscreen", "gen-1"), true);
+        assert.equal(bad.store.canWrite("win-a", "fullscreen", "gen-1"), false);
+        assert.equal(bad.store.arm("win-a", { fullscreen: true }), false);
+        let refused: boolean | null = null;
+        bad.store.flush([{ win: "win-a", property: "fullscreen" }], (ok) => {
+            refused = ok;
+        });
+        assert.equal(refused, false);
+        assert.equal(bad.bus.writeCount(), 0);
+    });
+
     it("fail-closed gates: invalid input, unknown generation, stopped, non-string ids", () => {
         const a = makeWin({ internalId: "win-a" });
         const h = setup([a]);

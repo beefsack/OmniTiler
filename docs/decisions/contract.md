@@ -147,11 +147,12 @@
 
 ### Native writes difficult to undo (R12)
 - Decision: before hiding, stripping fullscreen chrome, setting project keep-above or sticky stacking preimage, adapter records original state in host slot outliving tiler; next start restores leftovers. Windows watcher also restores stripped chrome. Advertise per-window suppression only when this rule holds; untouched native state remains untouched.
+- KDE native-preimage boundary: a readable file whose bus id or KWin owner differs from the current namespace yields a usable empty seed, exactly like a missing file; none of its old UUIDs authorizes restoration. The first persist atomically replaces that stale file. Corrupt and unreadable files retain their blocking, degraded behavior. A changed session or KWin instance has no surviving windows described by the old namespace (User 2026-11-09).
 - Why: only Windows hides were crash-safe; fullscreen chrome and KDE keep-above could be left behind.
 - Rejected: rule without Windows watcher extension; no rule and known limitations.
 - Assumes / revisit if: host has pre-write slot readable next start. KWin unload without later start leaves state until next start.
-- Status: active, 2026-10-31
-- Evidence: [review R12, F23](../changes/core-interface-review.md).
+- Status: active, 2026-10-31; KDE native-preimage namespace amendment approved, 2026-11-09.
+- Evidence: [review R12, F23](../changes/core-interface-review.md); User 2026-11-09; [namespace correction](../changes/archive/kde-native-preimage-namespace.md).
 
 ### Window-state commands (R14)
 - Decision: maximize/fullscreen/sticky are core world commands on every platform; fullscreen/sticky on/off/toggle, maximize via `ToggleMaximize`. Core owns refusal and sticky-off result; adapters apply authorized native targets and report facts, never own maximize policy. `maximize:true` keeps the existing native overlay route; `maximize:false` with available frame writes selects a core-composed work-area overlay, generalizing the nativeSticky/composed-sticky split. Core retains the base tile allocation or float placement, emits frame authority but no maximized StateTarget, and requires native maximized=null on that route (non-null holds the conflicting row). Fullscreen fact carries ownership and exit capability so neutral exit only targets tiler-exitable fullscreen. Fullscreen-on from maximized enters immediately, preserving maximize underneath; ordinary exit returns to the latest requested maximize state under the [pending-target hold rule](window-state.md#fullscreen-and-maximize-overlays). For settled maximize, the native route issues no unmaximize on entry or extra maximize on exit (host retention remains TBD); composed route retains its owned bit and recomputes the work-area frame on exit. Explicit R-MAX-11 replacement remains separate. Bindings unchanged.

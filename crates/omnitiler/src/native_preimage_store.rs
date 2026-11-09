@@ -27,8 +27,9 @@
 //! no-follow root/project gates, atomic replace, and temp discipline, with
 //! the serving bus id plus current `org.kde.KWin` owner as namespace
 //! (`IntentNamespace`, derived from the bus by the service layer, never from
-//! the caller). Mismatch degrades to empty; the next full write replaces.
-//! Missing content reads plain empty; unreadable, corrupt (including any
+//! the caller). A bus-id or owner mismatch reads usable empty exactly
+//! like a missing file; the next full write atomically replaces the
+//! stale file. Missing content reads plain empty; unreadable, corrupt (including any
 //! non-`v:1` store body), or oversize content degrades with a fixed reason
 //! and zero counts. Write failures retain local preimages; no retry
 //! machinery. The server returns the stored snapshot only; joining it to
@@ -38,7 +39,7 @@
 //! Wire contract on `com.omnitiler.Planner1` (see planner_service):
 //! `ReadNativePreimage({"v":1,"correlation_id":..})` returns `ok` with
 //! `records`/`stored`/`returned`, or `degraded` empty with
-//! `namespace-unavailable|unreadable|corrupt|namespace-mismatch`, or
+//! `namespace-unavailable|unreadable|corrupt`, or
 //! `rejected` with `unauthorized|not-kwin-owner`.
 //! `WriteNativePreimage({"v":1,"correlation_id":..,"records":[{win,
 //! maximize_mode,fullscreen,desktops,stacking}..]})` persists the full
@@ -392,7 +393,7 @@ fn parse_store_bytes(
         return Err("corrupt");
     }
     if file.bus != namespace.bus_id() || file.kwin != namespace.kwin_owner() {
-        return Err("namespace-mismatch");
+        return Ok(Vec::new());
     }
     let mut records = Vec::with_capacity(file.records.len());
     for entry in &file.records {
@@ -720,22 +721,44 @@ mod tests {
     }
 
     #[test]
-    fn namespace_mismatch_degrades_empty_and_write_replaces() {
+    fn namespace_mismatch_reads_usable_empty_and_write_replaces() {
         let root = fresh_root("ns");
         let store = NativePreimageStore::with_root(root.clone());
         let first = namespace("bus-one", ":1.7");
-        let new_bus = namespace("bus-two", ":1.7");
+        let bus_ns = namespace("bus-two", ":1.7");
+        let owner_ns = namespace("bus-two", ":1.9");
         store
             .write_preimages(&first, &[preimage("win-a")])
             .expect("write");
-        let read = store.read_preimages(&new_bus);
-        assert_eq!(read.degraded, Some("namespace-mismatch"));
+        // Bus-id mismatch is a usable empty seed exactly like a missing
+        // file: stale records never authorize restoration.
+        let read = store.read_preimages(&bus_ns);
+        assert_eq!(read.degraded, None);
         assert!(read.records.is_empty());
         assert_eq!(read.stored, 0);
-        assert_eq!(store.write_preimages(&new_bus, &[preimage("win-b")]), Ok(1));
+        // First persist under the new bus atomically replaces the stale
+        // file: the old subject never resurfaces.
+        assert_eq!(store.write_preimages(&bus_ns, &[preimage("win-b")]), Ok(1));
         assert_eq!(
-            store.read_preimages(&new_bus).records,
+            store.read_preimages(&bus_ns).records,
             vec![preimage("win-b")]
+        );
+        let reread = store.read_preimages(&first);
+        assert_eq!(reread.degraded, None);
+        assert!(reread.records.is_empty());
+        // Owner-only mismatch (same bus, new KWin owner) is likewise usable
+        // empty, and its first persist replaces too.
+        let read = store.read_preimages(&owner_ns);
+        assert_eq!(read.degraded, None);
+        assert!(read.records.is_empty());
+        assert_eq!(read.stored, 0);
+        assert_eq!(
+            store.write_preimages(&owner_ns, &[preimage("win-c")]),
+            Ok(1)
+        );
+        assert_eq!(
+            store.read_preimages(&owner_ns).records,
+            vec![preimage("win-c")]
         );
         drop_root(&root);
     }
