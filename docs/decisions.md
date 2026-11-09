@@ -34,12 +34,17 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - 2026-11-10: User decision: the KDE state-target desktop/stacking and compositor-boundary recovery sub-legs are deferred until after the macOS start; with physical ST passed, the macOS port start gate is clear ([port start gate](decisions/contract.md#contract-authority-and-v4-migration)).
 - 2026-11-09: User decision: retire standalone KDE K35; approve v4 M18 minimum-settlement, K24 diagnostics and K38 resize oracles while retaining native acceptance ([KDE route](decisions/engine.md#kde-sole-world-route); [minimums](decisions/layout-and-admission.md#placement-and-minimums); [diagnostics](decisions/observability.md#cross-component-diagnostics); [resize](decisions/visuals.md#drag-and-resize-completion-rules)).
 - 2026-11-09: User decision: a native-preimage bus/KWin-owner mismatch yields a usable empty seed, never stale restoration authority; first persist replaces it, while corrupt/unreadable files remain degraded and blocking ([R12 native-write preimages](decisions/contract.md#native-writes-difficult-to-undo-r12)).
+- 2026-11-10: User approved macOS starting while KDE ST/RC continue; slice 5/7 acceptance waits for both checks and resulting core changes ([port gate](decisions/contract.md#contract-authority-and-v4-migration)).
+- 2026-11-10: User decision: active fullscreen membership/core policy and known-exitability-only explicit exit; exact native switch/send outcomes TBD ([fullscreen games](decisions/macos.md#fullscreen-games)).
+- 2026-11-10: User decision: active JSON/CLI defaults and scoped test-safety boundaries, amended to M1 own-process exclusion and core revisioned validation; AX recovery cadence remains provisional ([fixture/scoped input](decisions/macos.md#fixture-and-scoped-input-defaults)).
+- 2026-11-10: User decision: active signed foreground macOS development preview with exact-run teardown; native v4 acceptance and fixture chord/workspace harness remain pending ([development preview](decisions/development.md#tentative-macos-development-preview)).
+- 2026-11-10: User decision: confirm explicit Apply only; remove Authentic startup Apply during the port; remaining presets/ownership stay tentative ([shortcuts](decisions/reference-and-shortcuts.md#macos-preview-presets-and-native-shortcut-ownership)).
+- 2026-11-10: User decision: host-settled geometry design after macOS slice 1, brought for approval before slice 3 and before any core change ([design timing](decisions/layout-and-admission.md#host-settled-geometry-design-timing)).
 
 ## Tentative decisions
 
-- macOS preview entry point and preview configuration/observation recovery remain tentative ([development](decisions/development.md#tentative-macos-development-preview); [macOS](decisions/macos.md#fixture-and-scoped-input-defaults)).
-- macOS preview presets and native shortcut ownership remain tentative ([shortcuts](decisions/reference-and-shortcuts.md#macos-preview-presets-and-native-shortcut-ownership)).
-- macOS fullscreen-game direction remains tentative ([macOS](decisions/macos.md#fullscreen-games)).
+- macOS event-first AX recovery with deduplicated 1 s reread remains provisional/tunable, not renderer/paint proof; configuration and scoped defaults are active ([macOS](decisions/macos.md#fixture-and-scoped-input-defaults)).
+- macOS preview presets and remaining native shortcut ownership remain tentative; explicit Apply only is active ([shortcuts](decisions/reference-and-shortcuts.md#macos-preview-presets-and-native-shortcut-ownership)).
 
 ## Topics
 

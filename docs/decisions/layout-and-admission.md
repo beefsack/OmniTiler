@@ -7,6 +7,13 @@
 - Status: active, 2026-11-09
 - Evidence: [Windows placement](../changes/archive/windows-placement-correctness.md), [historical KDE B6](../changes/archive/kde-minimum-origin-placement.md), [core settlement](engine.md#core-derived-native-settlement), [approved KDE acceptance](../changes/kde-v4-acceptance-checklist.md#approved-acceptance-decisions).
 
+### Host-settled geometry design timing
+- Decision: defer shared host-settled geometry research/design until after macOS slice 1; bring the design for user approval before slice 3. Approval is still required before any core change; this timing decision does not approve a settlement rule.
+- Why: restore a usable v4 macOS baseline before designing from host evidence.
+- Assumes / revisit if: keep one core-owned, platform-neutral solution; the learned-size-limits candidate remains rejected for complexity.
+- Status: active, 2026-11-10; design pending
+- Evidence: User 2026-11-10; [pending design and evidence cases](../changes/learned-size-limits.md#original-backlog-lines-1038-1060), [macOS slices](../changes/v4-phase3-macos-port.md#proposed-dogfoodable-slices).
+
 ### Windows declared minimum hints
 - Decision: Query fresh application-declared minimum track sizes and provide visible-frame physical-pixel hints to shared minimum-aware projection. Do not learn limits; generic learned limits remain parked. On query timeout, reuse each live window's last-good declared hint without a time bound; replace only on successful query, including success with no usable hint, and drop on close or identity change. Failed, unperformed, and budget-skipped queries remain unknown without erasing last-good state.
 - Why: not recorded.

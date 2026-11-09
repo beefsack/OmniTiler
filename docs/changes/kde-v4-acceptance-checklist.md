@@ -21,6 +21,11 @@
   and compositor-boundary recovery, deferred by the user until after macOS start.
   Those sub-legs remain open KDE acceptance. RC instead gates the macOS
   reconnect/rehome slice and 0.1; it is not cleared by ST.
+- KDE ST/RC remain prerequisites for macOS slice 5 (state targets)
+  and slice 7 (physical reconnect/rehome) acceptance, not port start (amended
+  2026-11-10, [ordering](../decisions/contract.md#contract-authority-and-v4-migration)).
+  Both checks must pass and resulting core changes be absorbed before either
+  slice's acceptance; all existing 0.1 gates remain. Offline completion clears neither.
 - Disposition of the 54 historical KDE checks: **53 retained user-run, 0 fully
   closed by scenario/offline coverage, 1 retired (K35)**. Partial coverage is listed
   below; no result from this records work is native acceptance. Six obsolete

@@ -6,7 +6,7 @@
   usable increments modelled on KDE's [dogfoodable slices](archive/v4-phase2-kde-port.md#later-dogfoodable-slices).
   The linked contracts, decisions and native records own the detail; this plan
   neither replaces them nor reopens approved behavior.
-- **Not started; start gate cleared 2026-11-10.** Under the [migration decision](../decisions/contract.md#contract-authority-and-v4-migration),
+- KDE gate evidence from the upstream acceptance record: under the [migration decision](../decisions/contract.md#contract-authority-and-v4-migration),
   KDE phase 2 is complete offline, including remaining v3 removal, and the
   [user-run physical ST acceptance passed 2026-11-10](v4-phase2-kde-state-targets.md#2026-11-10-physical-state-target-acceptance)
   apart from desktop/stacking and compositor-boundary (KWin restart) recovery.
@@ -16,14 +16,20 @@
   The KDE reconnect (RC) leg-2 fix and merge decision
   must land before this port reaches its reconnect/rehome slice and before 0.1. Other KDE acceptance remains separate, not implicitly
   cleared by opening this port.
-- Complete the [pre-port backlog items](../backlog.md#open-work): review the
-  tentative [fullscreen-games](../decisions/macos.md#fullscreen-games),
-  [fixture/scoped-input](../decisions/macos.md#fixture-and-scoped-input-defaults)
-  and [development-preview](../decisions/development.md#tentative-macos-development-preview)
-  decisions on macOS, bringing each to the user with a recommendation; resolve
-  Authentic's startup Apply versus the [explicit-Apply decision](../decisions/reference-and-shortcuts.md#macos-preview-presets-and-native-shortcut-ownership);
-  and design the shared [host-settled geometry rule](learned-size-limits.md#original-backlog-lines-1038-1060)
-  before this port, with design approval before any core change.
+- **Started under the amended gate (2026-11-10); slice 1 implementation pending.**
+  Under the [migration decision](../decisions/contract.md#contract-authority-and-v4-migration),
+  KDE phase 2 offline completion including v3 removal is done. macOS may start
+  while KDE ST/RC work continues. Neither slice 5 (state targets) nor slice 7
+  (physical reconnect/rehome) acceptance is claimed until both user-run KDE
+  ST/RC checks pass and resulting core changes are absorbed; see the
+  [single acceptance checklist](kde-v4-acceptance-checklist.md#additional-kde-acceptance-and-diagnostic-legs).
+  The RC leg-2 fix and merge decision remain pending before acceptance and 0.1.
+  Other KDE acceptance is separate, not implicitly cleared by opening this port.
+- The [pre-port review outcomes](#pre-port-review-outcomes-2026-11-10) are decided;
+  their implementation/native proof remains below. Shared
+  [host-settled geometry design](../decisions/layout-and-admission.md#host-settled-geometry-design-timing)
+  is deferred until after slice 1 and brought for user approval before slice 3;
+  approval remains required before any core change.
 - Port/build/live work runs on a macOS host through the [development environment](../macos-dev-environment.md)
   and [live-testing guide](../live-macos-testing.md). Use the signed
   [fixture bundle and exact scope](../live-macos-testing.md#fixture-first-live-tests),
@@ -34,6 +40,27 @@
   [port ordering and any later overlap](../decisions/contract.md#contract-authority-and-v4-migration)
   remain unchanged. Native/release scope stays in the [macOS 0.1 gate](../decisions/macos.md#macos-0-1-scope-and-gate)
   and [remaining port acceptance](macos-world-v2-port.md#original-backlog-lines-1767-1959).
+
+## Pre-port review outcomes (2026-11-10)
+
+- Records-only outcome: the approved choices below amend existing policy;
+  this review changes no code or v4 contract and claims no native acceptance.
+- Records verification: `git diff --check` passed; changed decision links and
+  heading anchors were checked. No build, mocked suite or native leg was rerun.
+- Evidence boundary from the read-only pre-port review (reported execution,
+  not rerun for this records change):
+  `mise exec -- cargo build --locked --offline -p tiler-core -p tiler-protocol -p tiler-macos`
+  failed with 80 errors from retired v3 APIs. `scripts/macos-dev.test.sh`
+  reported `PASS=104 FAIL=0`, mocked only. Native evidence was unrun because
+  the current `tiler-macos` HEAD did not build. Source-read facts below are not
+  native proof; the historical signed-fixture result does not establish v4 acceptance.
+
+| Approved topic | Pending port implementation / native evidence |
+| --- | --- |
+| [Fullscreen games](../decisions/macos.md#fullscreen-games) | Slice 5: remove blanket pre-core fullscreen-send policy (`runtime_thread.rs:2242-2267`); core decides membership/policy and adapter reports truthful native refusal. Keep known-exitability-only explicit exit and no autonomous exit. Exact switch/send mechanics remain TBD in the [discriminator](../spec/reference-outcomes.md#v4-macos-platform-fit-discriminators). |
+| [Fixture/scoped input](../decisions/macos.md#fixture-and-scoped-input-defaults) | Slice 1: JSON/CLI raw acquisition feeds core revisioned validation/defaulting/per-field diagnostics. Remove missing-bundle-to-own (`native_facts.rs:301-321`) and bundle-wide product self-exclusion, including unscoped probe/helper exclusions (`dev_selection.rs:75-100`); retain scoped test-safety fences. Keep event-first AX recovery plus provisional tunable deduplicated 1 s reread. Native chord/conflict, minimize/restore notification coverage, stale/unwatched suppression and M2 continuity remain evidence, not M7 paint proof. |
+| [Development preview](../decisions/development.md#tentative-macos-development-preview) | Preserve signed LaunchServices foreground dev, ordinary apps on each display's current user Space, bounded exact-run teardown with clean owner proof, and scoped finite runs. After slice 1 builds, prove v4 native rebuild/teardown/readiness, permission survival across rebuild and GUI-session recovery. M6 still requires core `exist:false` for native-Space removal. Signed fixture tiling passed 2026-10-20 (`crates/tiler-live-fixture/README.md:228-267`); a chord/workspace harness with explicit fixture ownership remains missing. Retire legacy helper exceptions only after replacement proof. |
+| [Explicit Apply only](../decisions/reference-and-shortcuts.md#macos-preview-presets-and-native-shortcut-ownership) | Remove Authentic startup Apply (`tile.rs:2091-2127`) so `SESSION_PERSISTENCE_NOTE` (`desktop_shortcuts.rs:58-61`) is true. After slice 1 builds, verify native per-drain refusal (`workspace_send_managed.rs:753-838`, `desktop_shortcuts.rs:438-458`; test `workspace_send_managed_tests.rs:985-1034` present, unrun) and first-run setup cost. Other preset/ownership choices remain tentative. |
 
 ## Contract map
 
@@ -71,9 +98,9 @@
 
 ## First-slice source baseline
 
-- Source inspection only: no macOS toolchain is available here; no compilation,
-  cargo tests or native execution was performed for this plan. Historical v2
-  build results do not establish current v4 buildability.
+- The original plan's source-only baseline is now supplemented by the reported
+  failed build above. No native execution or passing v4 build is established;
+  historical v2 build results do not establish current v4 buildability.
 - Production [world_builder.rs](../../crates/tiler-macos/src/world_builder.rs)
   still imports/constructs the retired `WorldReport` in `build_report`, carrying
   `owner`, `views`, host capabilities and policy/settings fields. Current
@@ -85,7 +112,7 @@
   `floating/fit_excluded/fixed_auto/fixed_suppress/observed_workspace` fields,
   bool state facts and old native-membership shapes instead of current nullable
   neutral `WindowFact` fields. These are source-confirmed API mismatches, not
-  an executed compiler-error inventory.
+  a complete per-error compiler inventory; the reported build independently fails.
 - Test-only legacy constructors also remain in
   [pager.rs](../../crates/tiler-macos/src/pager.rs),
   [world_dispatch.rs](../../crates/tiler-macos/src/world_dispatch.rs) and
@@ -107,9 +134,9 @@
 | 2. Selection | Port native selector and view-attempt correlation; prove focusless terminal selection and continued ordinary tiling. Explicitly bound/document populated-selection limitations; no fabricated focus acknowledgement. |
 | 3. Arrival | Port W2 native before/after membership and settlement. Prove fixture transfer to the intended native home, refusal/unknown holds and arrival before follow/departure; setter acceptance alone never passes. |
 | 4. Focus feedback | Port causal one-shot focus evidence and anchored-descriptor consumption. Prove authorized focus/refusal without replay, exact lifetime joins and K5/M7 native event/render evidence, including stale/unwatched suppression. |
-| 5. State targets | Port fullscreen/sticky/stacking and composed-maximize frame application, attempts and recovery. Prove base restore, external-clear/fullscreen replacement, send/work-area changes and restart-to-base; retain durable intent/preimages where required. M4 implementation dependencies belong in shared core, not adapter-owned policy. |
+| 5. State targets | Port fullscreen/sticky/stacking and composed-maximize frame application, attempts and recovery. Prove base restore, external-clear/fullscreen replacement, send/work-area changes and restart-to-base; retain durable intent/preimages where required. M4 implementation dependencies belong in shared core, not adapter-owned policy. Acceptance waits for both KDE ST/RC passes and absorption of resulting core changes. |
 | 6. Scaled metrics at scale 1 | Apply logical metrics once, separate native fractional-coordinate normalization from scaling, and recheck tiling/rendering on backing-scale changes while report scale stays 1. Do not absorb the Windows non-unit-scale prerequisite. |
-| 7. Physical reconnect/rehome | Supply M9 physical identity facts and prove user-run disconnect/return, ambiguous identity holds, FULL/work geometry and rehome behavior without regressing prior slices. Rehomed members are not new admissions. M8 crossing and two-display acceptance remain explicit gates. |
+| 7. Physical reconnect/rehome | Supply M9 physical identity facts and prove user-run disconnect/return, ambiguous identity holds, FULL/work geometry and rehome behavior without regressing prior slices. Rehomed members are not new admissions. M8 crossing and two-display acceptance remain explicit gates. Acceptance waits for both KDE ST/RC passes and absorption of resulting core changes, including the RC fix/merge decision. |
 | 8. Scenario runner | Add a fixture-first ordered native runner with exact owned-state cleanup, plus offline genuine-producer journeys using real native shapes. Cover earlier slices and FIFO bursts; transport/readiness receipts never substitute for native outcomes. Physical keys, paint, hotplug and crash recovery remain separately named evidence. |
 | 9. Remaining v2/v3 removal | Map each supported legacy assertion to genuine v4 coverage; port uncovered behavior first. Cull obsolete implementations separately with no-live-path evidence and review. Retain immutable recorded fixtures, active migration records and both shared stage5 proofs. Cull proved-obsolete touched code earlier; no dedicated broad sweep. |
 
@@ -137,8 +164,9 @@
 
 ## Open decisions and unknowns for the macOS port
 
-- Pre-port choices above remain user decisions: confirm/amend/retire tentative
-  rules, resolve startup Apply, and approve shared host-settled geometry design.
+- The pre-port choices above are approved; implementation/evidence remains.
+  Shared host-settled geometry design still needs user approval after slice 1
+  and before slice 3, and before any core change.
 - M3: select/prove atomic storage and within-session reacquisition, numeric
   launch-date/process/session fences and re-login namespace changes; no store
   adoption is established by finite CG ID churn experiments.
