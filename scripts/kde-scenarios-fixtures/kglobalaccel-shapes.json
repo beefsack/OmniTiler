@@ -1,0 +1,39 @@
+{
+  "provenance": "Read-only KGlobalAccel reply shapes captured live via busctl --user --json=short (allComponents + allShortcutInfos s default). Dev mode was DOWN; omnitiler records persist with active sequences. Values below are real except where marked synthetic; no window data, no secrets, no local paths.",
+  "allComponents": {
+    "type": "ao",
+    "data": [
+      [
+        "/component/kwin",
+        "/component/ksmserver",
+        "/component/org_kde_powerdevil",
+        "/component/ActivityManager",
+        "/component/KDE_Keyboard_Layout_Switcher",
+        "/component/kmix",
+        "/component/mediacontrol",
+        "/component/plasmashell",
+        "/component/plasma_manager_commands_desktop",
+        "/component/org_kde_krunner_desktop",
+        "/component/org_kde_touchpadshortcuts_desktop",
+        "/component/systemsettings_desktop",
+        "/component/org_kde_plasma_emojier_desktop",
+        "/component/org_kde_konsole_desktop",
+        "/component/org_kde_plasma_systemmonitor_desktop",
+        "/component/org_kde_dolphin_desktop",
+        "/component/org_kde_screenreader_desktop",
+        "/component/org_kde_spectacle_desktop",
+        "/component/org_kde_kscreen_desktop"
+      ]
+    ]
+  },
+  "tupleFields": ["action", "label", "component", "componentLabel", "context", "contextLabel", "active", "default"],
+  "tupleType": "a(ssssssaiai)",
+  "exampleProjectRow": ["omnitiler-workspace-1", "Focus workspace 1", "kwin", "KWin", "default", "Default Context", [268435505], []],
+  "exampleUnrelatedRow": ["previous activity", "Walk through activities (Reverse)", "plasmashell", "plasmashell", "default", "Default Context", [301989953], []],
+  "exampleEmptyActiveRow": ["switch to previous activity", "Switch to Previous Activity", "plasmashell", "plasmashell", "default", "Default Context", [], []],
+  "metaDigitEncoding": {
+    "note": "Real actives observed: omnitiler-workspace-0 -> [268435504], -1 -> [268435505], -2 -> [268435506], -3 -> [268435507], -4 -> [268435508], -5 -> [268435509], -6 -> [268435510], -7 -> [268435511], -8 -> [268435512], -9 -> [268435513]. Meta+N = 268435456 (Qt MetaModifier) + (48 + N) (Qt Key_0..Key_9). Cross-checks against in-repo EXPECTED_SEQUENCES in scripts/start-test.sh: Meta+H 268435528 = 268435456+72, Meta+G 268435527 = 268435456+71.",
+    "metaModifier": 268435456,
+    "key0": 48
+  }
+}

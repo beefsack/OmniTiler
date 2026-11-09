@@ -80,7 +80,7 @@ export function helpText() {
     "usage: node scripts/kde-scenarios.mjs [--help] [--live --evidence-dir PATH [--input] [--scenario NAME]]",
     "",
     "Fixture-driven KDE native scenario runner. Offline by default.",
-    "Three scenarios on a workspace appended beyond the whole roster:",
+    "Five scenarios on a workspace appended beyond the whole roster:",
     "  tiling-reflow: admission A/B tiling then close-B/A-reflow (default).",
     "  state-targets:  maximize/fullscreen/float/sticky chord journey with an",
     "                  orderly production restart (requires --input).",
@@ -88,6 +88,10 @@ export function helpText() {
     "                  refusal-line oracles (requires --input).",
     "  rapid-burst:    60-chord FIFO focus/move burst with journal-order and",
     "                  settled-geometry oracles (requires --input).",
+    "  selection:      workspace selection round trip (numbered chords) with",
+    "                  continued tiling after the return (requires --input;",
+    "                  the pointer must be on the output holding the",
+    "                  fixtures: selection acts on the pointer's output).",
     "",
     "  --help            show this help and exit (never mutates)",
     "  --live            explicit live mode against the real session.",
@@ -95,10 +99,12 @@ export function helpText() {
     "  --evidence-dir P  fresh private dir for evidence. Must be absolute,",
     "                    canonical, outside the repository, and not pre-exist.",
     "  --input           also start ydotoold (lifecycle only for tiling-reflow,",
-    "                    chord injection for state-targets). Default off.",
+    "                    chord injection for state-targets, resize-refusal,",
+    "                    rapid-burst, and selection). Default off.",
     "  --scenario NAME   tiling-reflow (default), state-targets,",
-    "                    resize-refusal, or rapid-burst. state-targets,",
-    "                    resize-refusal, and rapid-burst REQUIRE --input.",
+    "                    resize-refusal, rapid-burst, or selection.",
+    "                    state-targets, resize-refusal, rapid-burst, and",
+    "                    selection REQUIRE --input.",
     "                    Unknown values exit 2 before any io.",
   ].join("\n");
 }
@@ -128,13 +134,13 @@ export function parseArgs(argv) {
       const v = argv[++i];
       if (!v) { throw new ScenarioError("--scenario requires a value"); }
       if (out.scenario !== "tiling-reflow") { throw new ScenarioError("duplicate --scenario"); }
-      if (v !== "tiling-reflow" && v !== "state-targets" && v !== "resize-refusal" && v !== "rapid-burst") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
+      if (v !== "tiling-reflow" && v !== "state-targets" && v !== "resize-refusal" && v !== "rapid-burst" && v !== "selection") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
       out.scenario = v;
     } else if (a.startsWith("--scenario=")) {
       const v = a.slice("--scenario=".length);
       if (!v) { throw new ScenarioError("--scenario requires a value"); }
       if (out.scenario !== "tiling-reflow") { throw new ScenarioError("duplicate --scenario"); }
-      if (v !== "tiling-reflow" && v !== "state-targets" && v !== "resize-refusal" && v !== "rapid-burst") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
+      if (v !== "tiling-reflow" && v !== "state-targets" && v !== "resize-refusal" && v !== "rapid-burst" && v !== "selection") { throw new ScenarioError("unknown --scenario '" + v + "'"); }
       out.scenario = v;
     } else { throw new ScenarioError("unknown argument '" + a + "'"); }
   }
@@ -239,6 +245,15 @@ export function frameDiff(a, e) {
 export function frameInside(f, o) {
   if (!f || !o) { return false; }
   return f.x >= o.x && f.y >= o.y && f.x + f.w <= o.x + o.w && f.y + f.h <= o.y + o.h;
+}
+
+// Pointer containment in an output rect: inclusive left/top, exclusive
+// right/bottom (a pointer on the far edge belongs to the next output).
+export function pointInside(p, o) {
+  if (!p || !o) { return false; }
+  if (!Number.isInteger(p.x) || !Number.isInteger(p.y)) { return false; }
+  if (!Number.isInteger(o.x) || !Number.isInteger(o.y) || !Number.isInteger(o.w) || !Number.isInteger(o.h)) { return false; }
+  return p.x >= o.x && p.y >= o.y && p.x < o.x + o.w && p.y < o.y + o.h;
 }
 
 // Planner `omnitiler:resize-refused` diagnostic tokens (world_engine.rs):
@@ -428,16 +443,17 @@ export function ydotooldCmd(sockPath) {
   }
   return ["ydotoold", "--socket-path=" + sockPath, "--socket-perm=0600"];
 }
-// State-target, resize, and rapid-burst chord keycodes (Linux
-// input-event-codes.h UAPI, stable ABI; verified against local
+// State-target, resize, rapid-burst, and workspace-selection chord keycodes
+// (Linux input-event-codes.h UAPI, stable ABI; verified against local
 // linux-headers: KEY_LEFTMETA 125, KEY_LEFTSHIFT 42, KEY_LEFTALT 56,
-// KEY_G 34, KEY_M 50, KEY_F11 87, KEY_LEFT 105, KEY_RIGHT 106).
-// Sequences mirror the registered defaults in
+// KEY_G 34, KEY_M 50, KEY_F11 87, KEY_LEFT 105, KEY_RIGHT 106,
+// KEY_1..KEY_9 2..10). Sequences mirror the registered defaults in
 // kwin/src/world-shortcuts.ts: Meta+M maximize, Meta+F11 fullscreen,
 // Meta+G float, Meta+Shift+G sticky; grow-towards-direction is
 // Meta+Alt+Arrow (world-shortcuts.ts:205); directional focus is
-// Meta+Arrow and directional move is Meta+Shift+Arrow. Press in order,
-// release in reverse.
+// Meta+Arrow and directional move is Meta+Shift+Arrow; workspace selection
+// is Meta+N (workspace-native.ts workspaceShortcutCatalog select rows).
+// Press in order, release in reverse.
 export const STATE_CHORDS = {
   maximize: [125, 50],
   fullscreen: [125, 87],
@@ -449,6 +465,15 @@ export const STATE_CHORDS = {
   focusRight: [125, 106],
   moveLeft: [125, 42, 105],
   moveRight: [125, 42, 106],
+  workspace1: [125, 2],
+  workspace2: [125, 3],
+  workspace3: [125, 4],
+  workspace4: [125, 5],
+  workspace5: [125, 6],
+  workspace6: [125, 7],
+  workspace7: [125, 8],
+  workspace8: [125, 9],
+  workspace9: [125, 10],
 };
 // One keyboard resize press in the allocation coordinate space (the first
 // press of a series; crates/tiler-core/src/cosmic_v1.rs:233).
@@ -524,6 +549,121 @@ export function rapidBurstSequence(leftFixture) {
 // space after `command`, every failure token carries `-...` there instead.
 export const RAPID_BURST_FAILURE_RE =
   /omnitiler:world:(command-failed|command-dropped|command-refused|command-busy|queue-rejected|queue-stale|queue-timeout|queue-transport|queue-dropped|queue-malformed|queue-oversize|take-stale|take-duplicate|take-malformed|request-oversize|shortcut-failed|scope-invalid)/;
+
+// Workspace-selection identities (read-only KGlobalAccel holder preflight).
+// Route: allComponents on org.kde.KGlobalAccel /kglobalaccel, then
+// allShortcutInfos on each org.kde.kglobalaccel.Component path (the same
+// read-only route scripts/start-test.sh collect_project_action_records
+// uses). Tuple field order [action, label, component, componentLabel,
+// context, contextLabel, active[], default[]] verified against the live
+// service; captured shapes live in kde-scenarios-fixtures/
+// kglobalaccel-shapes.json. The project component "kwin" mirrors the
+// start-test.sh ownership rule (a project action anywhere else is not ours).
+export const KGLOBALACCEL_BUS = "org.kde.kglobalaccel";
+export const KGLOBALACCEL_PATH = "/kglobalaccel";
+export const KGLOBALACCEL_IFACE = "org.kde.KGlobalAccel";
+export const KGLOBALACCEL_COMP_IFACE = "org.kde.kglobalaccel.Component";
+export const KGLOBALACCEL_PROJECT_COMPONENT = "kwin";
+// Qt MetaModifier bit (0x10000000) OR Qt Key_0..Key_9 (0x30..0x39):
+// evidenced by scripts/start-test.sh EXPECTED_SEQUENCES (Meta+H is
+// 268435528 = 268435456+72) and the live allShortcutInfos actives
+// (omnitiler-workspace-1 carries [268435505]).
+export const WORKSPACE_SELECT_META = 268435456;
+export const WORKSPACE_SELECT_KEY0 = 48;
+export function workspaceSelectAction(n) {
+  if (!Number.isInteger(n) || n < 1 || n > 9) { throw new ScenarioError("workspace selection needs a digit 1..9"); }
+  return "omnitiler-workspace-" + n;
+}
+export function workspaceSelectKeyInt(n) {
+  if (!Number.isInteger(n) || n < 1 || n > 9) { throw new ScenarioError("workspace selection needs a digit 1..9"); }
+  return WORKSPACE_SELECT_META + WORKSPACE_SELECT_KEY0 + n;
+}
+// Numbered-ordinal gate. A numbered selection N reaches the native desktop
+// at roster index N-1 (crates/tiler-core/src/workspace.rs
+// select_existing: pos = index-1 over 1..=9, resolved positionally by
+// workspace_scope.rs resolve_numbered; kwin/src/world-shortcuts.ts submits
+// cmdSelectNumbered(null, row.index) with label row.action, and the journal
+// command line carries op=<cmd op> label=<action>). O is the original
+// workspace's position in the pre-append roster, X is appended last so its
+// position is the pre-append length + 1. Both must be 1..9 (Meta+0 is the
+// trailing path, >9 has no chord).
+export function workspaceOrdinals(roster, original) {
+  if (!Array.isArray(roster) || !roster.length) { throw new ScenarioError("selection ordinals need a nonempty roster"); }
+  const oIdx = roster.indexOf(original);
+  if (oIdx < 0) { throw new ScenarioError("selection ordinals: original workspace not in roster"); }
+  const o = oIdx + 1, x = roster.length + 1;
+  if (o < 1 || o > 9 || x < 1 || x > 9) {
+    throw new ScenarioError("selection ordinals unrepresentable (o=" + o + " x=" + x + " roster=" + roster.length + "): need 1..9, Meta+0 and >9 are not used");
+  }
+  return { o, x };
+}
+export function parseKGlobalAccelComponents(text) {
+  let body;
+  try { body = JSON.parse(String(text)); } catch (e) { throw new ScenarioError("kglobalaccel allComponents: unparsable JSON"); }
+  if (!body || body.type !== "ao" || !Array.isArray(body.data) || body.data.length !== 1 || !Array.isArray(body.data[0])) {
+    throw new ScenarioError("kglobalaccel allComponents: need {type:ao,data:[[paths]]}");
+  }
+  const paths = body.data[0];
+  for (const p of paths) {
+    if (typeof p !== "string" || !p) { throw new ScenarioError("kglobalaccel allComponents: bad component path"); }
+  }
+  return paths.slice();
+}
+export function parseShortcutInfos(text, comp) {
+  let body;
+  try { body = JSON.parse(String(text)); } catch (e) { throw new ScenarioError("kglobalaccel allShortcutInfos " + comp + ": unparsable JSON"); }
+  if (!body || body.type !== "a(ssssssaiai)" || !Array.isArray(body.data) || body.data.length !== 1 || !Array.isArray(body.data[0])) {
+    throw new ScenarioError("kglobalaccel allShortcutInfos " + comp + ": need {type:a(ssssssaiai),data:[[rows]]}");
+  }
+  return body.data[0].map((t, i) => {
+    const what = "kglobalaccel allShortcutInfos " + comp + " row " + i;
+    if (!Array.isArray(t) || t.length !== 8) { throw new ScenarioError(what + ": need an 8-tuple"); }
+    for (let k = 0; k < 6; k++) {
+      if (typeof t[k] !== "string") { throw new ScenarioError(what + ": field " + k + " must be a string"); }
+    }
+    for (let k = 6; k < 8; k++) {
+      if (!Array.isArray(t[k]) || !t[k].every((n) => Number.isInteger(n) && n >= 0)) {
+        throw new ScenarioError(what + ": field " + k + " must be an int array");
+      }
+    }
+    return { action: t[0], label: t[1], component: t[2], active: t[6].slice(), def: t[7].slice() };
+  });
+}
+// Holder verdict over every component's rows for one project action:
+// exactly one record, under the project component, with the exact active
+// key int. Malformed inputs never reach here (the parsers reject them);
+// absence, duplication, misplacement, and mismatch are wrong (FAIL on use),
+// never PASS.
+export function holderVerdict(matches, action, expectedActive) {
+  if (!matches.length) {
+    return { ok: false, note: "shortcut '" + action + "' has no KGlobalAccel record (need exactly one under '" + KGLOBALACCEL_PROJECT_COMPONENT + "')" };
+  }
+  if (matches.length !== 1) {
+    return { ok: false, note: "shortcut '" + action + "' has " + matches.length + " KGlobalAccel records (need exactly one)" };
+  }
+  const m = matches[0];
+  if (m.component !== KGLOBALACCEL_PROJECT_COMPONENT) {
+    return { ok: false, note: "shortcut '" + action + "' is held under '" + m.component + "' (need '" + KGLOBALACCEL_PROJECT_COMPONENT + "')" };
+  }
+  const actual = KGLOBALACCEL_PROJECT_COMPONENT + ":" + m.active.join(",");
+  if (!(m.active.length === 1 && m.active[0] === expectedActive)) {
+    return {
+      ok: false,
+      note: "shortcut '" + action + "' active '" + (m.active.join(",") || "empty") + "' (need '" + expectedActive + "')",
+      actual,
+    };
+  }
+  return { ok: true, expected: KGLOBALACCEL_PROJECT_COMPONENT + ":" + expectedActive, actual };
+}
+export function kglobalaccelComponentsCmd() {
+  return ["busctl", "--user", "--json=short", "call",
+    KGLOBALACCEL_BUS, KGLOBALACCEL_PATH, KGLOBALACCEL_IFACE, "allComponents"];
+}
+export function kglobalaccelInfosCmd(comp) {
+  if (typeof comp !== "string" || !comp || comp[0] !== "/") { throw new ScenarioError("kglobalaccel component path required"); }
+  return ["busctl", "--user", "--json=short", "call",
+    KGLOBALACCEL_BUS, comp, KGLOBALACCEL_COMP_IFACE, "allShortcutInfos", "s", "default"];
+}
 export function presentationReq() {
   return "kde-scen-" + randomBytes(8).toString("hex");
 }
@@ -556,10 +696,10 @@ export async function runScenario(o) {
   if (typeof templatePath !== "string" || !templatePath) { throw new ScenarioError("templatePath required"); }
 
   const scenarioName = o.scenario === undefined ? "tiling-reflow" : o.scenario;
-  if (scenarioName !== "tiling-reflow" && scenarioName !== "state-targets" && scenarioName !== "resize-refusal" && scenarioName !== "rapid-burst") {
+  if (scenarioName !== "tiling-reflow" && scenarioName !== "state-targets" && scenarioName !== "resize-refusal" && scenarioName !== "rapid-burst" && scenarioName !== "selection") {
     throw new ScenarioError("unknown scenario '" + String(scenarioName) + "'");
   }
-  if ((scenarioName === "state-targets" || scenarioName === "resize-refusal" || scenarioName === "rapid-burst") && !withInput) {
+  if ((scenarioName === "state-targets" || scenarioName === "resize-refusal" || scenarioName === "rapid-burst" || scenarioName === "selection") && !withInput) {
     throw new ScenarioError(scenarioName + " requires --input");
   }
 
@@ -1922,6 +2062,277 @@ export async function runScenario(o) {
     event("scenario-done");
   };
 
+  // Workspace-selection journey over the shared context: admission on the
+  // appended workspace X, then a numbered round trip Meta+O (original) and
+  // Meta+X (appended) driven by injected ydotool digit chords, then the
+  // shared close-B/reflow proves continued tiling after the return. The
+  // read-only KGlobalAccel holder preflight proves the exact chord held by
+  // the project's omnitiler-workspace-N action before any injection
+  // (fail-closed; malformed/unreadable holder facts are PENDING, never
+  // PASS). The fail-closed pointer gate then proves the pointer lies inside
+  // the fixtures' output before any injection (numbered selection switches
+  // the workspace on the pointer's output: cursor-first switch target);
+  // pointer outside is FAIL, unknown is PENDING, and chord 2 injects only
+  // after a re-check proves the pointer unchanged and still inside. Per-leg
+  // oracles: native current is the target desktop, exactly
+  // one omnitiler:world:command journal line with the exact action label
+  // since the pre-injection cursor with zero failure/loss lines, A/B
+  // desktops exactly [X] (getWindowInfo only), helper-row frames equal the
+  // admission baseline, presentation set exactly {A,B} with unchanged
+  // allocations, disjoint inside the output. Unknown is PENDING, never
+  // PASS; the first divergence is preserved. The observed active window
+  // after the return is a receipt only (focus-bearing completion is out of
+  // scope). Chord 2 injects only after chord 1 passes.
+  const scenarioSelection = async () => {
+    S.scenario = "selection";
+    event("scenario-selection");
+    const bare = (u) => normalizeNativeId(u);
+    const uuidA = joins[0].uuid, uuidB = joins[1].uuid;
+    const admit = await pollAdmission("selection-admit", "selection-admit");
+    const baseA = admit.expA, baseB = admit.expB;
+    const outRect = admit.out;
+    S.receipts.selectionBase = { a: baseA, b: baseB };
+    const ord = S.selectionOrdinals;
+    const actionO = workspaceSelectAction(ord.o), actionX = workspaceSelectAction(ord.x);
+    const keyO = workspaceSelectKeyInt(ord.o), keyX = workspaceSelectKeyInt(ord.x);
+    const frameStr = (f) => (f ? "[" + f.x + "," + f.y + "," + f.w + "," + f.h + "]" : "null");
+    const bad = (note) => ({ note });
+    const good = (expected, actual) => ({ ok: true, expected, actual });
+    const journeyCursor = await showCursor("selection journey cursor");
+    event("selection-preflight");
+    let wantO = null, wantX = null;
+    // Reverse-collision scan: a DIFFERENT action holding one of the wanted
+    // digit key ints would steal the chord, so it fails the preflight here.
+    // Rows carrying a wanted action flow to the holder verdict below (which
+    // owns absence/duplication/misplacement/mismatch), never to this scan.
+    let collision = null;
+    try {
+      const compR = await mustExec(kglobalaccelComponentsCmd(), "kglobalaccel allComponents");
+      const comps = parseKGlobalAccelComponents(compR.stdout);
+      wantO = [];
+      wantX = [];
+      for (const comp of comps) {
+        const infoR = await mustExec(kglobalaccelInfosCmd(comp), "kglobalaccel allShortcutInfos");
+        const rows = parseShortcutInfos(infoR.stdout, comp);
+        for (const r of rows) {
+          if (r.action === actionO) { wantO.push(r); }
+          else if (r.action === actionX) { wantX.push(r); }
+          else if (!collision && r.active.indexOf(keyO) >= 0) {
+            collision = "key " + keyO + " for chord '" + actionO + "' also held by '" + r.component + ":" + r.action + "' (ambiguous shortcut)";
+          } else if (!collision && r.active.indexOf(keyX) >= 0) {
+            collision = "key " + keyX + " for chord '" + actionX + "' also held by '" + r.component + ":" + r.action + "' (ambiguous shortcut)";
+          }
+        }
+      }
+    } catch (e) {
+      S.category = "PENDING";
+      fail("selection-preflight: holder unknown (" + (e && e.message ? e.message : String(e)).slice(0, 160) + ")");
+    }
+    if (collision) { fail("selection-preflight: " + collision); }
+    const verdictO = holderVerdict(wantO, actionO, keyO);
+    if (!verdictO.ok) { fail("selection-preflight: " + verdictO.note); }
+    const verdictX = holderVerdict(wantX, actionX, keyX);
+    if (!verdictX.ok) { fail("selection-preflight: " + verdictX.note); }
+    check("selection-holder-o", true, verdictO.expected, verdictO.actual);
+    check("selection-holder-x", true, verdictX.expected, verdictX.actual);
+    // Fail-closed pointer gate BEFORE any chord injection: numbered
+    // selection switches the workspace on the output holding the POINTER
+    // (cursor-first switch target, no cached active-output preselection),
+    // so the pointer must lie inside the fixtures' output (the admission
+    // baseline output rect). Pointer outside is FAIL naming the pointer
+    // and the output rect; pointer unknown is PENDING, never PASS. Both
+    // refuse with zero injections; standard cleanup still runs.
+    const outStr = "[" + outRect.x + "," + outRect.y + "," + outRect.w + "," + outRect.h + "]";
+    const ptrStr = (c) => (c ? "[" + c.x + "," + c.y + "]" : "unknown");
+    const strictCursor = (row) => {
+      const c = row ? row.cursor : null;
+      if (!c || typeof c !== "object") { return null; }
+      if (!Number.isInteger(c.x) || !Number.isInteger(c.y)) { return null; }
+      return { x: c.x, y: c.y };
+    };
+    const readPointer = async () => {
+      const nat = await helperOp({ op: "read" });
+      const row = nat.filter((r) => Array.isArray(r.owned))[0];
+      if (!row) { return { row: null, cur: null }; }
+      return { row, cur: strictCursor(row) };
+    };
+    const ptr0 = await readPointer();
+    if (ptr0.cur === null) {
+      check("selection-pointer-output", false, outStr, "unknown");
+      S.category = "PENDING";
+      fail("selection-pointer: pointer unknown (need inside fixtures output " + outStr + ")");
+    }
+    check("selection-pointer-output", pointInside(ptr0.cur, outRect), outStr, ptrStr(ptr0.cur));
+    if (!pointInside(ptr0.cur, outRect)) {
+      fail("selection-pointer: pointer " + ptrStr(ptr0.cur) + " outside fixtures output " + outStr);
+    }
+    const readSelJournal = async (cursor, leg) => {
+      const j = await mustExec(["journalctl", "--user", "--after-cursor", cursor, "-o", "json", "_PID=" + S.kwin.pid], "selection journal");
+      const cmds = [];
+      let failures = 0;
+      for (const line of j.stdout.split("\n")) {
+        if (!line.trim()) { continue; }
+        let entry;
+        try { entry = JSON.parse(line); } catch (e) { fail(leg + ": journal: unparsable -o json line"); }
+        if (typeof entry.MESSAGE !== "string") { fail(leg + ": journal: MESSAGE missing"); }
+        let msg = entry.MESSAGE;
+        if (msg.indexOf("js:") === 0) { msg = msg.slice(3).replace(/^ /, ""); }
+        if (RAPID_BURST_FAILURE_RE.test(msg)) { failures++; }
+        if (msg.indexOf("omnitiler:world:command ") >= 0) {
+          const lbM = /label=([^\s]+)/.exec(msg);
+          cmds.push({ label: lbM ? lbM[1] : null });
+        }
+      }
+      return { cmds, failures };
+    };
+    const verifySelectionLeg = (leg, cursor, ordinal, action, targetDesk) => async () => {
+      const nat = await helperOp({ op: "read" });
+      const row = nat.filter((r) => Array.isArray(r.owned))[0];
+      if (!row) { return bad("native read produced no roster"); }
+      if (row.current !== targetDesk) {
+        return bad("current desktop mismatch (need '" + targetDesk + "' saw '" + row.current + "')");
+      }
+      const bj = await readSelJournal(cursor, leg);
+      if (bj.failures !== 0) {
+        return bad("journal shows " + bj.failures + " failure/loss line(s) (need zero)");
+      }
+      if (bj.cmds.length !== 1) {
+        return bad("journal shows " + bj.cmds.length + " command lines (need 1)");
+      }
+      if (bj.cmds[0].label !== action) {
+        return bad("journal label mismatch: saw '" + bj.cmds[0].label + "' (need '" + action + "')");
+      }
+      const proj = await readPresentation();
+      const bareA = bare(uuidA), bareB = bare(uuidB);
+      const set = proj.windows.map((w) => w.win).sort().join(",");
+      if (proj.windows.length !== 2 || set !== [bareA, bareB].sort().join(",")) {
+        return bad("presentation window set is not exactly {A,B}: [" + proj.windows.map((w) => w.win).sort().join(",") + "]");
+      }
+      const pA = proj.windows.filter((w) => w.win === bareA)[0];
+      const pB = proj.windows.filter((w) => w.win === bareB)[0];
+      if (!pA || !pB) { return bad("presentation lost a fixture after selection"); }
+      if (pA.alloc === null || pB.alloc === null) {
+        return bad("published allocation unknown (null never matches)");
+      }
+      if (!frameEqual(frameOf(pA.alloc), baseA) || !frameEqual(frameOf(pB.alloc), baseB)) {
+        return bad("published allocation changed after selection (need baseline a " + frameStr(baseA) + " b " + frameStr(baseB) + ")");
+      }
+      const rA = row.owned.filter((w) => w.uuid === uuidA)[0];
+      const rB = row.owned.filter((w) => w.uuid === uuidB)[0];
+      if (!rA || !rB) { return bad("native rows for A/B absent after selection"); }
+      if (rA.frame === null || rB.frame === null) {
+        return bad("native frame unknown (null never matches)");
+      }
+      if (!frameEqual(rA.frame, baseA) || !frameEqual(rB.frame, baseB)) {
+        const which = !frameEqual(rA.frame, baseA) ? "a" : "b";
+        const got = which === "a" ? rA.frame : rB.frame;
+        const want = which === "a" ? baseA : baseB;
+        return bad("native frame != baseline allocation (" + which + " " + frameDiff(got, want).join(",") + "): native " + frameStr(got) + " != baseline " + frameStr(want));
+      }
+      const infoA = await windowInfo(uuidA);
+      const infoB = await windowInfo(uuidB);
+      if (infoA.uuid !== uuidA || infoB.uuid !== uuidB) {
+        return bad("fixture join changed (UUIDs differ)");
+      }
+      for (const pair of [["a", infoA], ["b", infoB]]) {
+        if (pair[1].desks.length !== 1 || pair[1].desks[0] !== S.appended) {
+          return bad("fixture '" + pair[0] + "' desktops mismatch after selection (need exactly the appended workspace): " + JSON.stringify(pair[1].desks));
+        }
+      }
+      if (rectsOverlap(rA.frame, rB.frame)) { return bad("tiles A/B overlap after selection"); }
+      if (!frameInside(rA.frame, outRect) || !frameInside(rB.frame, outRect)) {
+        return bad("tile frame outside its output after selection (a " + frameStr(rA.frame) + " b " + frameStr(rB.frame) + ")");
+      }
+      return good("current=" + targetDesk + " label=" + action + " frames==baseline desks==appended",
+        "current=" + row.current + " label=" + bj.cmds[0].label);
+    };
+    const pollSelectionLeg = async (leg, ordinal, action, targetDesk) => {
+      const cursor = await showCursor("selection " + leg + " cursor");
+      mutOnce("chord-" + leg);
+      {
+        const chord = "workspace" + ordinal;
+        const argv = ydotoolKeyCmd(S.ydoc.sock, chord);
+        S.calls.push(redact(argv.map(String).join(" ")));
+        const r = await io.exec(argv, { timeoutMs: T.exec, env: Object.assign({}, env, { YDOTOOL_SOCKET: S.ydoc.sock }), cwd: root });
+        if (!r || typeof r.status !== "number") { fail("bad exec result"); }
+        if (r.status !== 0) { fail(leg + ": chord '" + chord + "' failed (status " + r.status + ")"); }
+      }
+      const end = io.now() + T.stateStep;
+      let first = "no read yet";
+      let last = "no read yet";
+      const note = (m) => { if (first === "no read yet") { first = m; } last = m; };
+      for (;;) {
+        let v = null;
+        try {
+          v = await verifySelectionLeg(leg, cursor, ordinal, action, targetDesk)();
+        } catch (e) {
+          const msg = e && e.message ? e.message : String(e);
+          if (e instanceof ScenarioError && msg.indexOf("getWindowInfo") >= 0) {
+            note("native state unknown (" + msg.slice(0, 120) + ")");
+          } else { throw e; }
+        }
+        if (v && v.ok === true) {
+          check(leg, true, v.expected, v.actual);
+          return;
+        }
+        if (v && v.note) { note(v.note); }
+        if (io.now() >= end) {
+          if (last.indexOf("unknown") >= 0 || last.indexOf("PENDING") >= 0) { S.category = "PENDING"; }
+          fail(leg + ": " + first + (last !== first ? " (last: " + last + ")" : ""));
+        }
+        await io.sleep(T.poll);
+      }
+    };
+    event("selection-chord-to-o");
+    await pollSelectionLeg("selection-to-o", ord.o, actionO, S.original);
+    // Re-check before chord 2: a leg-1 side effect must not send chord 2
+    // to the other output. Pointer unknown is PENDING; moved or outside
+    // is FAIL naming both readings and the output rect; chord 2 never
+    // injects. No new event: the refusal lands before selection-chord-to-x.
+    {
+      const ptr1 = await readPointer();
+      const stillOk = ptr1.cur !== null && ptr1.cur.x === ptr0.cur.x && ptr1.cur.y === ptr0.cur.y &&
+        pointInside(ptr1.cur, outRect);
+      check("selection-pointer-output-2", stillOk, ptrStr(ptr0.cur), ptrStr(ptr1.cur));
+      if (ptr1.cur === null) {
+        S.category = "PENDING";
+        fail("selection-to-x: pointer unknown before chord 2 (was " + ptrStr(ptr0.cur) + ", need inside fixtures output " + outStr + ")");
+      }
+      if (!stillOk) {
+        fail("selection-to-x: pointer " + ptrStr(ptr1.cur) + " before chord 2 (was " + ptrStr(ptr0.cur) + ", need inside fixtures output " + outStr + ")");
+      }
+    }
+    event("selection-chord-to-x");
+    await pollSelectionLeg("selection-to-x", ord.x, actionX, S.appended);
+    {
+      const fin = await helperOp({ op: "read" });
+      const finRow = fin.filter((r) => Array.isArray(r.owned))[0];
+      S.receipts.selectionReturnActive = finRow ? normalizeNativeId(finRow.active) : null;
+    }
+    event("selection-close-b");
+    await closeFixtureB();
+    await pollReflowAfterClose(admit.fA);
+    {
+      const j = await mustExec(["journalctl", "--user", "--after-cursor", journeyCursor, "-o", "json", "_PID=" + S.kwin.pid], "selection journal");
+      let failures = 0;
+      for (const line of j.stdout.split("\n")) {
+        if (!line.trim()) { continue; }
+        let entry;
+        try { entry = JSON.parse(line); } catch (e) { fail("selection-journal-clean: journal: unparsable -o json line"); }
+        if (typeof entry.MESSAGE !== "string") { fail("selection-journal-clean: journal: MESSAGE missing"); }
+        let msg = entry.MESSAGE;
+        if (msg.indexOf("js:") === 0) { msg = msg.slice(3).replace(/^ /, ""); }
+        if (RAPID_BURST_FAILURE_RE.test(msg)) { failures++; }
+      }
+      S.receipts.selectionFailureLines = failures;
+      check("selection-journal-clean", failures === 0, 0, failures);
+      if (failures !== 0) { fail("selection-journal-clean: journal shows " + failures + " failure/loss line(s) (need zero)"); }
+    }
+    S.scenario = "done";
+    S.category = "PASS";
+    event("scenario-done");
+  };
+
   let rc = 1;
   try {
     // 1. Preflight: dev mode must be DOWN. Anything else: stop, nothing mutated.
@@ -2051,6 +2462,15 @@ export async function runScenario(o) {
     S.roster = ids0;
     S.original = w0.current;
     S.counts.desktopsBefore = ids0.length;
+
+    // Fail-closed numbered-ordinal gate BEFORE any mutation: O is the
+    // original workspace's position in the pre-append roster, X is appended
+    // last. Numbered N reaches roster index N-1; Meta+0 and >9 are unused.
+    if (scenarioName === "selection") {
+      S.selectionOrdinals = workspaceOrdinals(ids0, S.original);
+      S.receipts.selectionOrdinals = { o: S.selectionOrdinals.o, x: S.selectionOrdinals.x };
+      event("selection-ordinals");
+    }
 
     // The append cleanup is armed BEFORE the append call. When the append never
     // reported an id, the victim derives from a roster diff (never a guess);
@@ -2244,7 +2664,8 @@ export async function runScenario(o) {
 
     // 12. Scenario dispatch over the shared context (S, helpers, joins).
     // Ordinary two-fixture tiling and close/reflow (default), the
-    // state-targets chord journey, or the resize-refusal journey. Each
+    // state-targets chord journey, the resize-refusal journey, the
+    // rapid-burst journey, or the workspace-selection journey. Each
     // scenario function is defined above.
     if (scenarioName === "state-targets") {
       S.scenarioRan = "state-targets";
@@ -2255,6 +2676,9 @@ export async function runScenario(o) {
     } else if (scenarioName === "rapid-burst") {
       S.scenarioRan = "rapid-burst";
       await scenarioRapidBurst();
+    } else if (scenarioName === "selection") {
+      S.scenarioRan = "selection";
+      await scenarioSelection();
     } else {
       S.scenarioRan = "tiling-reflow";
       await scenarioTilingReflow();
@@ -2477,6 +2901,10 @@ export async function liveMain(o) {
   }
   if (args.scenario === "rapid-burst" && !args.input) {
     console.error("kde-scenarios: --scenario rapid-burst requires --input");
+    return 2;
+  }
+  if (args.scenario === "selection" && !args.input) {
+    console.error("kde-scenarios: --scenario selection requires --input");
     return 2;
   }
   const root = o.root || repoRoot();

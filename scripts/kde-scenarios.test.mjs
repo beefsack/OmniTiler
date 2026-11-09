@@ -22,6 +22,11 @@ import {
   fixtureServeCmd, fixtureSendCmd, ydotooldCmd, ydotoolKeyCmd, ydotoolBurstCmd, rapidBurstSequence,
   RAPID_BURST_LEN, RAPID_BURST_FAILURE_RE, STATE_CHORDS, presentationReq, plannerReadCmd,
   windowInfoCmd, runScenario, liveMain, parseProcStat, createLiveIo, RESIZE_STEP_PX, parseResizeRefusalTokens,
+  workspaceSelectAction, workspaceSelectKeyInt, workspaceOrdinals, pointInside,
+  parseKGlobalAccelComponents, parseShortcutInfos, holderVerdict,
+  kglobalaccelComponentsCmd, kglobalaccelInfosCmd,
+  KGLOBALACCEL_BUS, KGLOBALACCEL_PATH, KGLOBALACCEL_IFACE, KGLOBALACCEL_COMP_IFACE,
+  KGLOBALACCEL_PROJECT_COMPONENT, WORKSPACE_SELECT_META, WORKSPACE_SELECT_KEY0,
 } from "./kde-scenarios.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -44,6 +49,11 @@ const BARE = (u) => u.slice(1, 37);
 // reality instead of agreeing with the parser on an invented shape.
 const SHAPES = JSON.parse(fs.readFileSync(path.join(HERE, "kde-scenarios-fixtures", "busctl-shapes.json"), "utf8"));
 const STAT = JSON.parse(fs.readFileSync(path.join(HERE, "kde-scenarios-fixtures", "proc-stat-shapes.json"), "utf8")).procStat;
+// Read-only KGlobalAccel reply shapes, captured live (allComponents roster,
+// one project tuple, one unrelated tuple, one empty-active tuple, and the
+// Meta+N integer encoding note). Fakes replay these shapes; the parsers
+// under test never seed them.
+const KG = JSON.parse(fs.readFileSync(path.join(HERE, "kde-scenarios-fixtures", "kglobalaccel-shapes.json"), "utf8"));
 const wrap = (type, data) => ({ type, data });
 
 // ---------------------------------------------------------------------------
@@ -66,6 +76,7 @@ function makeFake(opts) {
     sawRemove: false, postRemoveRuns: 0,
     desktops: [{ id: "d1", name: "Desktop 1" }, { id: "d2", name: "Desktop 2" }],
     current: "d1", appended: null, activeUuid: null,
+    cursorPos: { x: 100, y: 100 },
     burstStarted: false, burstFinalFrames: null,
     wins: [],
     journal: [], cursorSeq: 0,
@@ -113,6 +124,14 @@ function makeFake(opts) {
   // suffix, as KWin reports it), so the captionNormal-first join stays live.
   F.wins[0].caption = F.wins[0].captionNormal + " - Suffix";
   if (F.fail.readEmpty) { F.desktops = []; }
+  if (F.fail.manyDesktops) {
+    // Nine pre-existing desktops: the appended workspace lands at position
+    // 10, so the selection ordinal gate must refuse before any mutation.
+    F.desktops = [];
+    for (let i = 1; i <= 9; i++) { F.desktops.push({ id: "d" + i, name: "Desktop " + i }); }
+    F.current = "d1";
+    F.homeDesktop = "d1";
+  }
   F.newCursor = () => "CUR" + (F.cursorSeq++);
   F.journalPush = (pid, msg) => { F.journal.push({ cursor: F.newCursor(), pid, msg }); };
   const count = (k) => { F.runCount.set(k, (F.runCount.get(k) || 0) + 1); };
@@ -154,6 +173,17 @@ function makeFake(opts) {
         if (v === null || typeof v !== "object") { throw new Error("activeWindow needs a window object"); }
         if (F.wins.indexOf(v) < 0) { throw new Error("activeWindow unknown object"); }
         F.activeUuid = v.internalId;
+      },
+      // Pointer model: the real KWin scripting API exposes
+      // workspace.cursorPos as a QPoint-like {x, y}; the real helper
+      // source under test reads it. Faults via F.fail.pointerFault.
+      get cursorPos() {
+        const pf = (F.fail && F.fail.pointerFault) || null;
+        if (pf === "unknown") { throw new Error("cursorPos unreadable"); }
+        if (pf === "missing") { return undefined; }
+        if (pf === "outside") { return { x: 5000, y: 100 }; }
+        if (pf === "nonNumber") { return { x: "a", y: 0 }; }
+        return { x: F.cursorPos.x, y: F.cursorPos.y };
       },
       windowList() { return F.wins; },
       createDesktop(pos, name) {
@@ -352,7 +382,21 @@ function makeFake(opts) {
         "125:1 56:1 106:1 106:0 56:0 125:0": "resizeRight",
       };
       const kind = kinds[seq];
-      if (!kind) { return { status: 1, stdout: "", stderr: "unknown chord argv" }; }
+      if (!kind) {
+        // Workspace-selection digit chords (Meta+N, evdev KEY_N = N+1):
+        // press Meta, press digit, release digit, release Meta. Anything
+        // else stays an unknown chord argv (never silently accepted).
+        const selM = /^125:1 ([0-9]+):1 ([0-9]+):0 125:0$/.exec(seq);
+        if (selM && selM[1] === selM[2]) {
+          const code = Number(selM[1]);
+          if (code < 2 || code > 10) { return { status: 1, stdout: "", stderr: "unknown chord argv" }; }
+          F.selectionChords.push(code - 1);
+          const err = F.applySelection(code - 1, F.selectionChords.length);
+          if (err) { return { status: 1, stdout: "", stderr: err }; }
+          return { status: 0, stdout: "", stderr: "" };
+        }
+        return { status: 1, stdout: "", stderr: "unknown chord argv" };
+      }
       F.stateArmed = true;
       const err = F.toggleState(kind);
       if (err) { return { status: 1, stdout: "", stderr: err }; }
@@ -592,6 +636,25 @@ function makeFake(opts) {
         };
         return { status: 0, stdout: J({ type: "s", data: [J(body)] }) + "\n", stderr: "" };
       }
+      // KGlobalAccel holder boundary (read-only): the real captured roster
+      // is replayed verbatim; per-component infos carry the wanted project
+      // rows (kwin) and the captured unrelated shapes (plasmashell).
+      if (s.indexOf("allComponents") >= 0 && s.indexOf("org.kde.kglobalaccel") >= 0) {
+        if ((F.fail && F.fail.kglobalFault) === "componentsMalformed") {
+          return { status: 0, stdout: J({ type: "s", data: ["nope"] }) + "\n", stderr: "" };
+        }
+        return { status: 0, stdout: J(F.kgComponents) + "\n", stderr: "" };
+      }
+      if (s.indexOf("allShortcutInfos") >= 0 && s.indexOf("org.kde.kglobalaccel") >= 0) {
+        const comp = argv.filter((a) => String(a).indexOf("/component/") === 0)[0] || "";
+        if ((F.fail && F.fail.kglobalFault) === "infosMalformed" && comp === "/component/kwin") {
+          return { status: 0, stdout: J({ type: "s", data: ["nope"] }) + "\n", stderr: "" };
+        }
+        let rows = [];
+        if (comp === "/component/kwin") { rows = F.kgKwinRows(); }
+        else if (comp === "/component/plasmashell") { rows = F.kgPlasmaRows(); }
+        return { status: 0, stdout: J({ type: "a(ssssssaiai)", data: [rows] }) + "\n", stderr: "" };
+      }
       throw new ScenarioError("fake: unstubbed busctl: " + s.slice(0, 120));
     }
     if (argv[0] === "journalctl") {
@@ -761,7 +824,10 @@ function makeFake(opts) {
       return parseProcStat(text, pid);
     },
     sleep: async (ms) => {},
-    now: (() => { let t = 1000; return () => (t += 5); })(),
+    // Coarse fake clock: timeout loops still exercise first/last divergence
+    // tracking and PENDING-vs-FAIL classification, but a full-budget failure
+    // costs ~150 polls instead of ~3000 (no oracle is weakened).
+    now: (() => { let t = 1000; return () => (t += 100); })(),
   };
   // Hosting hook: after the appended workspace exists and is current, fixture
   // windows land on it. Windows in F.hostSkip keep their desks, so tests can
@@ -1018,6 +1084,83 @@ function makeFake(opts) {
     " subjgeom=948,0,972x1080 subjhints=- rowsTotal=" + o.rowsTotal + " rowsShown=" + o.rowsShown +
     " rows=[a@0,0,948x1080/- b@948,0,972x1080/-]"
   );
+  // KGlobalAccel holder model: the real captured component roster is replayed
+  // verbatim; kwin rows carry the two wanted workspace actions with the live
+  // observed actives (Meta+1, Meta+3 for the default two-desktop fake),
+  // plasmashell rows replay the captured unrelated shapes. Faults via
+  // F.fail.kglobalFault target one gate oracle each.
+  F.kgComponents = KG.allComponents;
+  F.kgKwinRows = () => {
+    const kf = (F.fail && F.fail.kglobalFault) || null;
+    let rows = [
+      ["omnitiler-workspace-1", "Focus workspace 1", "kwin", "KWin", "default", "Default Context", [268435505], []],
+      ["omnitiler-workspace-3", "Focus workspace 3", "kwin", "KWin", "default", "Default Context", [268435507], []],
+    ];
+    if (kf === "holderMissing") { rows = []; }
+    else if (kf === "holderWrongActive") { rows = rows.map((r) => [r[0], r[1], r[2], r[3], r[4], r[5], [999], r[7]]); }
+    else if (kf === "holderWrongComp") { rows = []; }
+    else if (kf === "holderDuplicate") { rows = rows.concat([rows[0].slice()]); }
+    return rows;
+  };
+  F.kgPlasmaRows = () => {
+    const rows = [KG.exampleUnrelatedRow.slice(), KG.exampleEmptyActiveRow.slice()];
+    if ((F.fail && F.fail.kglobalFault) === "holderWrongComp") {
+      rows.push(["omnitiler-workspace-1", "Focus workspace 1", "plasmashell", "plasmashell", "default", "Default Context", [268435505], []]);
+      rows.push(["omnitiler-workspace-3", "Focus workspace 3", "plasmashell", "plasmashell", "default", "Default Context", [268435507], []]);
+    }
+    // Reverse-collision faults: a foreign action holding one of the wanted
+    // digit key ints (Meta+O / Meta+X for the default two-desktop fake).
+    if ((F.fail && F.fail.kglobalFault) === "holderCollisionO") {
+      rows.push(["other-action-o", "Other O", "plasmashell", "plasmashell", "default", "Default Context", [268435505], []]);
+    }
+    if ((F.fail && F.fail.kglobalFault) === "holderCollisionX") {
+      rows.push(["other-action-x", "Other X", "plasmashell", "plasmashell", "default", "Default Context", [268435507], []]);
+    }
+    return rows;
+  };
+  // Workspace-selection native model: a digit chord switches the fake current
+  // desktop to the roster position and emits one select-numbered journal line
+  // with the exact action label (the runner's oracles read both back).
+  // Faults via F.fail.selectionFault target one leg oracle each; chord 1 is
+  // the first injected selection chord, chord 2 the second.
+  F.selectionChords = [];
+  F.selectionStarted = false;
+  F.applySelection = (ordinal, n) => {
+    const ids = F.desktops.map((d) => d.id);
+    const target = ids[ordinal - 1];
+    if (!target) { return "ordinal out of roster"; }
+    const fault = (F.fail && F.fail.selectionFault) || null;
+    const tag = n === 1 ? "chord1" : "chord2";
+    const bad = (suf) => fault === tag + suf;
+    F.selectionStarted = true;
+    // Pointer drift: after the first injected chord the pointer sits on the
+    // other output, so the pre-chord-2 recheck must refuse chord 2.
+    if (F.fail.pointerDrift && n === 1) { F.cursorPos = { x: 5000, y: 100 }; }
+    if (!bad("NoSwitch")) { F.current = target; }
+    if (!bad("JournalDrop")) {
+      const label = bad("WrongLabel") ? "omnitiler-workspace-9" : "omnitiler-workspace-" + ordinal;
+      F.journalPush(F.kwinPid, "js: omnitiler:world:command op=select-numbered label=" + label + " nwinv=0 depth=0");
+    }
+    if (bad("Failure")) {
+      F.journalPush(F.kwinPid, "js: omnitiler:world:command-failed kind=take msg=boom recovery=on-next-event");
+    }
+    if (bad("Extra")) {
+      F.journalPush(F.kwinPid, "js: omnitiler:world:command op=select-numbered label=omnitiler-workspace-" + ordinal + " nwinv=0 depth=1");
+    }
+    if (bad("FrameDrift")) {
+      const B = F.wins.find((w) => w.internalId === UUID_B);
+      if (B && B.frameGeometry) { B.frameGeometry = { x: B.frameGeometry.x + 1, y: 0, width: B.frameGeometry.width, height: 1080 }; }
+    }
+    if (bad("Desks")) {
+      const A = F.wins.find((w) => w.internalId === UUID_A);
+      if (A) { A.desktops = [{ id: "d1" }]; }
+    }
+    if (bad("UnknownFrame")) {
+      const B = F.wins.find((w) => w.internalId === UUID_B);
+      if (B) { B.frameGeometry = null; }
+    }
+    return null;
+  };
   return F;
 }
 
@@ -1510,6 +1653,9 @@ test("ST-BUILDER: exact chord argv, keycodes, and closed construction", () => {
     maximize: [125, 50], fullscreen: [125, 87], float: [125, 34], sticky: [125, 42, 34],
     resizeLeft: [125, 56, 105], resizeRight: [125, 56, 106],
     focusLeft: [125, 105], focusRight: [125, 106], moveLeft: [125, 42, 105], moveRight: [125, 42, 106],
+    workspace1: [125, 2], workspace2: [125, 3], workspace3: [125, 4],
+    workspace4: [125, 5], workspace5: [125, 6], workspace6: [125, 7],
+    workspace7: [125, 8], workspace8: [125, 9], workspace9: [125, 10],
   });
   assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "maximize"),
     ["ydotool", "key", "125:1", "50:1", "50:0", "125:0"]);
@@ -2320,6 +2466,416 @@ test("RB-CLI: rapid-burst parses, requires --input before io, and runs end to en
   assert.equal(result.scenarioRan, "tiling-reflow");
 });
 
+// ---------------------------------------------------------------------------
+// SEL. selection scenario (workspace selection round trip with continued
+// tiling: numbered Meta+N chords across the selection, then close/reflow)
+// ---------------------------------------------------------------------------
+
+test("SEL-CLI: selection parses, is documented, and requires --input before io", async () => {
+  assert.equal(parseArgs(["--scenario", "selection"]).scenario, "selection");
+  assert.equal(parseArgs(["--scenario=selection"]).scenario, "selection");
+  assert.ok(helpText().indexOf("selection") >= 0, "help documents selection");
+  assert.throws(() => parseArgs(["--scenario=selection", "--scenario=tiling-reflow"]), /duplicate --scenario/);
+  const noIo = () => { throw new Error("io must not be built"); };
+  assert.equal(await liveMain({
+    argv: ["--live", "--evidence-dir", "/tmp/kde-sel-noinput-1", "--scenario", "selection"],
+    ioFactory: noIo, root: ROOT, templatePath: TEMPLATE,
+  }), 2);
+  const f = makeFake();
+  await assert.rejects(
+    runScenario(Object.assign(baseOpts(), { io: f.io, scenario: "selection" })),
+    /selection requires --input/);
+  assert.equal(f.execCalls.length, 0, "no exec before the input guard");
+  const sel = await liveMainFake(["--live", "--evidence-dir", EVID, "--input", "--scenario", "selection"]);
+  assert.equal(sel.rc, 0, sel.out);
+  assert.equal(sel.result.requestedScenario, "selection");
+  assert.equal(sel.result.scenarioRan, "selection");
+  assert.equal(sel.result.scenarioMismatch, false);
+  assert.ok(sel.result.events.includes("scenario-selection"), "selection events ran");
+  assert.ok(!sel.result.events.includes("scenario-admission"), "tiling-reflow did not run");
+  // A ran-vs-requested scenario mismatch fails the run and is recorded.
+  const h = makeFake({});
+  h.dirs.delete(EVID);
+  const wrong = async (opts) => runScenario(Object.assign({}, opts, { scenario: "tiling-reflow" }));
+  const origLog = console.log; const origErr = console.error;
+  const sink = [];
+  console.log = (...a) => { sink.push(a.join(" ")); };
+  console.error = (...a) => { sink.push(a.join(" ")); };
+  let rc;
+  try {
+    rc = await liveMain({
+      argv: ["--live", "--evidence-dir", EVID, "--input", "--scenario", "selection"],
+      ioFactory: () => h.io, root: ROOT, execEnv: ENV, templatePath: TEMPLATE, runScenarioFn: wrong,
+    });
+  } finally { console.log = origLog; console.error = origErr; }
+  assert.equal(rc, 1);
+  assert.match(sink.join("\n"), /requested scenario 'selection' but ran 'tiling-reflow'/);
+  const result = JSON.parse(h.files.get(EVID + "/result.json").data);
+  assert.equal(result.scenarioMismatch, true);
+  assert.equal(result.requestedScenario, "selection");
+  assert.equal(result.scenarioRan, "tiling-reflow");
+});
+
+test("SEL-POINT: pointInside is inclusive left/top, exclusive right/bottom", () => {
+  const o = { x: 10, y: 20, w: 100, h: 50 };
+  assert.equal(pointInside({ x: 10, y: 20 }, o), true);
+  assert.equal(pointInside({ x: 109, y: 69 }, o), true);
+  assert.equal(pointInside({ x: 110, y: 40 }, o), false);
+  assert.equal(pointInside({ x: 50, y: 70 }, o), false);
+  assert.equal(pointInside({ x: 9, y: 40 }, o), false);
+  assert.equal(pointInside({ x: 50, y: 19 }, o), false);
+  assert.equal(pointInside({ x: 1.5, y: 40 }, o), false);
+  assert.equal(pointInside(null, o), false);
+  assert.equal(pointInside({ x: 50, y: 40 }, null), false);
+});
+
+test("SEL-ORDINAL: roster ordinals, action names, and Qt key ints", () => {
+  assert.deepEqual(workspaceOrdinals(["d1", "d2"], "d1"), { o: 1, x: 3 });
+  assert.deepEqual(workspaceOrdinals(["d1", "d2"], "d2"), { o: 2, x: 3 });
+  assert.deepEqual(
+    workspaceOrdinals(["d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8"], "d8"),
+    { o: 8, x: 9 });
+  assert.throws(
+    () => workspaceOrdinals(["d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9"], "d1"),
+    /unrepresentable \(o=1 x=10 roster=9\)/);
+  assert.throws(() => workspaceOrdinals(["d1", "d2"], "dx"), /not in roster/);
+  assert.throws(() => workspaceOrdinals([], "d1"), /nonempty roster/);
+  assert.equal(workspaceSelectAction(1), "omnitiler-workspace-1");
+  assert.equal(workspaceSelectAction(9), "omnitiler-workspace-9");
+  assert.throws(() => workspaceSelectAction(0), /1\.\.9/);
+  assert.throws(() => workspaceSelectAction(10), /1\.\.9/);
+  const wantKeys = {
+    1: 268435505, 2: 268435506, 3: 268435507, 4: 268435508, 5: 268435509,
+    6: 268435510, 7: 268435511, 8: 268435512, 9: 268435513,
+  };
+  for (let n = 1; n <= 9; n++) {
+    assert.equal(workspaceSelectKeyInt(n), wantKeys[n], "Meta+" + n);
+  }
+  assert.throws(() => workspaceSelectKeyInt(0), /1\.\.9/);
+  assert.throws(() => workspaceSelectKeyInt(10), /1\.\.9/);
+  // Live-captured cross-check: the real omnitiler-workspace-1 record holds Meta+1.
+  assert.equal(KG.exampleProjectRow[0], "omnitiler-workspace-1");
+  assert.deepEqual(KG.exampleProjectRow[6], [workspaceSelectKeyInt(1)]);
+  assert.equal(KG.metaDigitEncoding.metaModifier, WORKSPACE_SELECT_META);
+  assert.equal(KG.metaDigitEncoding.key0, WORKSPACE_SELECT_KEY0);
+});
+
+test("SEL-BUILDER: digit chord keycodes and exact argv", () => {
+  assert.deepEqual(STATE_CHORDS.workspace1, [125, 2]);
+  assert.deepEqual(STATE_CHORDS.workspace5, [125, 6]);
+  assert.deepEqual(STATE_CHORDS.workspace9, [125, 10]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "workspace1"),
+    ["ydotool", "key", "125:1", "2:1", "2:0", "125:0"]);
+  assert.deepEqual(ydotoolKeyCmd("/tmp/x.sock", "workspace9"),
+    ["ydotool", "key", "125:1", "10:1", "10:0", "125:0"]);
+});
+
+test("SEL-SHAPES: holder parsers match the captured KGlobalAccel shapes", () => {
+  const comps = parseKGlobalAccelComponents(JSON.stringify(KG.allComponents));
+  assert.ok(comps.includes("/component/kwin"), "roster holds kwin");
+  assert.ok(comps.includes("/component/plasmashell"), "roster holds plasmashell");
+  assert.deepEqual(comps, KG.allComponents.data[0], "roster replays the capture verbatim");
+  const rows = parseShortcutInfos(JSON.stringify({
+    type: "a(ssssssaiai)",
+    data: [[KG.exampleProjectRow, KG.exampleUnrelatedRow, KG.exampleEmptyActiveRow]],
+  }), "/component/kwin");
+  assert.deepEqual(rows[0], {
+    action: "omnitiler-workspace-1", label: "Focus workspace 1", component: "kwin",
+    active: [268435505], def: [],
+  });
+  assert.deepEqual(rows[1].active, [301989953]);
+  assert.deepEqual(rows[2].active, []);
+  const ok = holderVerdict([rows[0]], "omnitiler-workspace-1", 268435505);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.expected, "kwin:268435505");
+  assert.equal(ok.actual, "kwin:268435505");
+  assert.match(holderVerdict([], "omnitiler-workspace-1", 268435505).note, /no KGlobalAccel record/);
+  assert.match(holderVerdict([rows[0], rows[0]], "omnitiler-workspace-1", 268435505).note, /2 KGlobalAccel records/);
+  assert.match(holderVerdict([rows[1]], "previous activity", 301989953).note, /held under 'plasmashell'/);
+  assert.match(holderVerdict([rows[0]], "omnitiler-workspace-1", 999).note, /active '268435505' \(need '999'\)/);
+  const emptyActive = { action: "omnitiler-workspace-1", label: "Focus workspace 1", component: "kwin", active: [], def: [] };
+  assert.match(holderVerdict([emptyActive], "omnitiler-workspace-1", 268435505).note, /active 'empty'/);
+  // Wrong-value envelopes fail closed, never an empty roster.
+  assert.throws(() => parseKGlobalAccelComponents(JSON.stringify({ type: "s", data: ["x"] })), /need \{type:ao/);
+  assert.throws(() => parseKGlobalAccelComponents(JSON.stringify({ type: "ao", data: [[42]] })), /bad component path/);
+  assert.throws(() => parseShortcutInfos(JSON.stringify({ type: "s", data: ["x"] }), "/component/kwin"), /need \{type:a\(ssssssaiai\)/);
+  assert.throws(() => parseShortcutInfos(
+    JSON.stringify({ type: "a(ssssssaiai)", data: [[["a", "b"]]] }), "/component/kwin"), /8-tuple/);
+  assert.throws(() => parseShortcutInfos(
+    JSON.stringify({ type: "a(ssssssaiai)", data: [[["a", "b", "c", "d", "e", "f", ["x"], []]]] }),
+    "/component/kwin"), /int array/);
+  assert.deepEqual(kglobalaccelComponentsCmd(),
+    ["busctl", "--user", "--json=short", "call",
+      KGLOBALACCEL_BUS, KGLOBALACCEL_PATH, KGLOBALACCEL_IFACE, "allComponents"]);
+  assert.equal(KGLOBALACCEL_BUS, "org.kde.kglobalaccel");
+  assert.equal(KGLOBALACCEL_PATH, "/kglobalaccel");
+  assert.equal(KGLOBALACCEL_IFACE, "org.kde.KGlobalAccel");
+  assert.equal(KGLOBALACCEL_COMP_IFACE, "org.kde.kglobalaccel.Component");
+  assert.equal(KGLOBALACCEL_PROJECT_COMPONENT, "kwin");
+  assert.deepEqual(kglobalaccelInfosCmd("/component/kwin"),
+    ["busctl", "--user", "--json=short", "call",
+      "org.kde.kglobalaccel", "/component/kwin", "org.kde.kglobalaccel.Component",
+      "allShortcutInfos", "s", "default"]);
+  assert.throws(() => kglobalaccelInfosCmd("rel-path"), /component path required/);
+});
+
+test("SEL-PASS: selection round trip with continued tiling passes", async () => {
+  const f = makeFake({});
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "selection" }));
+  assert.equal(res.category, "PASS", J({ div: res.divergence, checks: res.checks }));
+  assert.equal(res.rc, 0, J(res.cleanupFailed));
+  assert.equal(res.scenario, "done");
+  assert.equal(res.scenarioRan, "selection");
+  const seq = ["preflight", "kwin-identity", "fixture-serve", "ydotoold-start", "journal-cursor",
+    "workspace-read", "selection-ordinals", "workspace-append", "workspace-reread", "workspace-setcurrent",
+    "dev-on", "readiness", "fixture-spawn", "native-read", "join", "activate",
+    "scenario-selection",
+    "selection-preflight", "selection-chord-to-o", "selection-chord-to-x", "selection-close-b",
+    "scenario-done", "cleanup",
+    "cleanup-fixture-shutdown", "cleanup-workspace-restore", "cleanup-dev-off",
+    "cleanup-workspace-remove", "cleanup-ydotoold-stop",
+    "verify-fixture-pid-gone", "verify-cargo-pid-gone",
+    "verify-fixture-socket-absent", "verify-rundir-removed", "verify-planner-pid-gone",
+    "verify-ydotoold-gone", "verify-current-restored", "verify-appended-absent", "verify-dev-down"];
+  assert.deepEqual(res.events, seq);
+  const names = res.checks.map((c) => c.name);
+  for (const n of ["selection-admit-a-frame-equals-alloc", "selection-admit-b-frame-equals-alloc",
+    "selection-admit-disjoint", "selection-admit-inside-output", "selection-admit-same-ws",
+    "selection-holder-o", "selection-holder-x",
+    "selection-pointer-output", "selection-pointer-output-2",
+    "selection-to-o", "selection-to-x",
+    "reflow-b-gone-from-presentation", "reflow-b-absent-native",
+    "reflow-a-alloc-changed-larger", "reflow-a-frame-equals-alloc", "reflow-a-inside-output",
+    "selection-journal-clean"]) {
+    assert.ok(names.includes(n), "missing check " + n + ": " + J(names));
+  }
+  assert.ok(res.checks.every((c) => c.pass), J(res.checks));
+  // Exactly two injections, one per leg, with the exact digit argv; never retried.
+  const keys = f.execCalls.filter((c) => c.indexOf("ydotool key") === 0);
+  assert.deepEqual(keys, [
+    "ydotool key 125:1 2:1 2:0 125:0",
+    "ydotool key 125:1 4:1 4:0 125:0",
+  ]);
+  assert.deepEqual(res.receipts.selectionOrdinals, { o: 1, x: 3 });
+  assert.deepEqual(res.receipts.selectionBase, {
+    a: { x: 0, y: 0, w: 960, h: 1080 }, b: { x: 960, y: 0, w: 960, h: 1080 },
+  });
+  // Observed active window after the return is a receipt only, never a check.
+  assert.equal(res.receipts.selectionReturnActive, BARE(UUID_A));
+  assert.equal(res.receipts.selectionFailureLines, 0);
+  const holderO = res.checks.filter((c) => c.name === "selection-holder-o")[0];
+  assert.equal(holderO.expected, "kwin:268435505");
+  assert.equal(holderO.actual, "kwin:268435505");
+  const holderX = res.checks.filter((c) => c.name === "selection-holder-x")[0];
+  assert.equal(holderX.expected, "kwin:268435507");
+  assert.equal(holderX.actual, "kwin:268435507");
+  // No leakage: letters and counts only, no ids beyond the joins, no raw journal.
+  const blob = J(res) +
+    [...f.files.values()].map((x) => String(x.data)).join("\n");
+  assert.ok(!blob.includes("omnitiler:world:command"), "raw journal line recorded");
+  assert.ok(!blob.includes(FIX_NONCE), "fixture nonce leaked");
+  assert.ok(!/helper-[0-9a-f]{32}/.test(J(res)), "helper nonce leaked into evidence");
+  assert.ok(!blob.includes("Foreign Files"), "foreign caption leaked");
+  assert.ok(!blob.includes("org.kde.dolphin"), "foreign class leaked");
+  assert.equal(res.counts.foreign, 1);
+});
+
+test("SEL-NEG: unrepresentable ordinals fail closed before the first mutation", async () => {
+  const f = makeFake({ fail: { manyDesktops: true } });
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "selection" }));
+  assert.equal(res.rc, 1);
+  assert.equal(res.category, "FAIL");
+  assert.match(res.divergence || "", /unrepresentable/);
+  assert.match(res.divergence || "", /x=10/);
+  assert.ok(!res.events.includes("selection-ordinals"), "gate fired before any ordinal event");
+  assert.ok(!res.events.includes("workspace-append"), "no mutation after the gate");
+  assert.ok(!res.events.includes("workspace-setcurrent"), "no mutation after the gate");
+  assert.ok(res.events.includes("cleanup"), "cleanup ran");
+  assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 0, "no injection");
+});
+
+test("SEL-NEG: holder faults fail closed before any injection", async () => {
+  for (const [fault, oracle] of [
+    ["holderMissing", /no KGlobalAccel record/],
+    ["holderWrongActive", /active '999' \(need '268435505'\)/],
+    ["holderWrongComp", /held under 'plasmashell'/],
+    ["holderDuplicate", /2 KGlobalAccel records/],
+  ]) {
+    const f = makeFake({ fail: { kglobalFault: fault } });
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "selection" }));
+    assert.equal(res.rc, 1, fault);
+    assert.equal(res.category, "FAIL", fault);
+    assert.match(res.divergence || "", /selection-preflight/, fault);
+    assert.match(res.divergence || "", oracle, fault);
+    assert.ok(res.events.includes("selection-preflight"), fault);
+    assert.ok(!res.events.includes("selection-chord-to-o"), fault + ": no injection");
+    assert.ok(!res.events.includes("scenario-done"), fault);
+    assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 0,
+      fault + ": no injection");
+  }
+});
+
+test("SEL-PENDING: unreadable holder facts never PASS", async () => {
+  for (const fault of ["componentsMalformed", "infosMalformed"]) {
+    const f = makeFake({ fail: { kglobalFault: fault } });
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "selection" }));
+    assert.equal(res.rc, 1, fault);
+    assert.equal(res.category, "PENDING", J(res.divergence));
+    assert.match(res.divergence || "", /selection-preflight/, fault);
+    assert.match(res.divergence || "", /holder unknown/, fault);
+    assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 0,
+      fault + ": no injection");
+  }
+});
+
+test("SEL-NEG: foreign key-collision rows fail closed before any injection", async () => {
+  for (const [fault, key, action, foreign] of [
+    ["holderCollisionO", "268435505", "omnitiler-workspace-1", "plasmashell:other-action-o"],
+    ["holderCollisionX", "268435507", "omnitiler-workspace-3", "plasmashell:other-action-x"],
+  ]) {
+    const f = makeFake({ fail: { kglobalFault: fault } });
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "selection" }));
+    assert.equal(res.rc, 1, fault);
+    assert.equal(res.category, "FAIL", fault);
+    assert.match(res.divergence || "", /selection-preflight/, fault);
+    assert.match(res.divergence || "", new RegExp(key), fault + ": names the collided key int");
+    assert.match(res.divergence || "", new RegExp(action), fault + ": names the chord");
+    assert.match(res.divergence || "", new RegExp(foreign.replace(":", "\\:")), fault + ": names the foreign holder");
+    assert.ok(res.events.includes("selection-preflight"), fault);
+    assert.ok(!res.events.includes("selection-chord-to-o"), fault + ": no injection");
+    assert.ok(!res.events.includes("scenario-done"), fault);
+    assert.ok(res.events.includes("cleanup"), fault + ": cleanup ran");
+    assert.deepEqual(res.cleanupFailed, [], fault + ": clean cleanup: " + J(res.cleanupFailed));
+    assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 0,
+      fault + ": no injection");
+  }
+});
+
+test("SEL-POS: unrelated foreign rows with other key ints pass the preflight", async () => {
+  const f = makeFake({});
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "selection" }));
+  assert.equal(res.category, "PASS", J({ div: res.divergence, checks: res.checks }));
+  assert.equal(res.rc, 0, J(res.cleanupFailed));
+  assert.ok(res.events.includes("selection-chord-to-o"), "preflight passed with unrelated foreign rows");
+  assert.ok(res.events.includes("selection-chord-to-x"), "both chords injected");
+});
+
+test("SEL-NEG: chord-1 faults fail at selection-to-o with one injection", async () => {
+  for (const [fault, oracle] of [
+    ["chord1NoSwitch", /current desktop mismatch \(need 'd1' saw 'desk-new'\)/],
+    ["chord1JournalDrop", /shows 0 command lines \(need 1\)/],
+    ["chord1WrongLabel", /journal label mismatch: saw 'omnitiler-workspace-9'/],
+    ["chord1Failure", /1 failure\/loss line\(s\) \(need zero\)/],
+    ["chord1Extra", /shows 2 command lines \(need 1/],
+    ["chord1FrameDrift", /native frame != baseline allocation/],
+    ["chord1Desks", /desktops mismatch after selection/],
+  ]) {
+    const f = makeFake({ fail: { selectionFault: fault } });
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "selection" }));
+    assert.equal(res.rc, 1, fault);
+    assert.equal(res.category, "FAIL", fault);
+    assert.match(res.divergence || "", /selection-to-o/, fault);
+    assert.match(res.divergence || "", oracle, fault);
+    assert.ok(res.events.includes("selection-chord-to-o"), fault);
+    assert.ok(!res.events.includes("selection-chord-to-x"), fault + ": chord 2 never injected");
+    assert.ok(!res.events.includes("scenario-done"), fault);
+    assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 1,
+      fault + ": the chord is never retried");
+  }
+  // Changed published allocations after the selection fail the leg too.
+  const g = makeFake({});
+  g.allocPatch = (which, v) => (which === "a0" && g.selectionStarted ? [0, 0, 100, 100] : v);
+  const res2 = await runScenario(Object.assign(baseOpts(), { io: g.io, input: true, scenario: "selection" }));
+  assert.equal(res2.rc, 1);
+  assert.equal(res2.category, "FAIL");
+  assert.match(res2.divergence || "", /selection-to-o/);
+  assert.match(res2.divergence || "", /published allocation changed after selection/);
+});
+
+test("SEL-NEG: chord-2 failure while O is current still restores and removes", async () => {
+  const f = makeFake({ fail: { selectionFault: "chord2NoSwitch" } });
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "selection" }));
+  assert.equal(res.rc, 1);
+  assert.equal(res.category, "FAIL");
+  assert.match(res.divergence || "", /selection-to-x/);
+  assert.match(res.divergence || "", /current desktop mismatch \(need 'desk-new' saw 'd1'\)/);
+  assert.ok(res.events.includes("selection-chord-to-o"), "chord 1 passed");
+  assert.ok(res.events.includes("selection-chord-to-x"), "chord 2 injected once");
+  assert.ok(!res.events.includes("scenario-done"));
+  assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 2);
+  assert.deepEqual(res.cleanupFailed, [], J(res.cleanupFailed));
+  assert.ok(res.events.includes("verify-current-restored"), "original current re-verified");
+  assert.ok(res.events.includes("verify-appended-absent"), "appended absence re-verified");
+  const restored = res.checks.filter((c) => c.name === "cleanup-current-restored")[0];
+  assert.ok(restored && restored.pass, "current restore passes while O is current");
+  const absent = res.checks.filter((c) => c.name === "cleanup-appended-absent")[0];
+  assert.ok(absent && absent.pass, "appended removal passes while O is current");
+});
+
+test("SEL-PENDING: unknown leg facts never PASS", async () => {
+  const f = makeFake({ fail: { selectionFault: "chord1UnknownFrame" } });
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "selection" }));
+  assert.equal(res.rc, 1);
+  assert.equal(res.category, "PENDING", J(res.divergence));
+  assert.match(res.divergence || "", /selection-to-o/);
+  assert.match(res.divergence || "", /native frame unknown/);
+  const g = makeFake({});
+  g.allocPatch = (which, v) => (which === "a0" && g.selectionStarted ? null : v);
+  const res2 = await runScenario(Object.assign(baseOpts(), { io: g.io, input: true, scenario: "selection" }));
+  assert.equal(res2.rc, 1);
+  assert.equal(res2.category, "PENDING", J(res2.divergence));
+  assert.match(res2.divergence || "", /selection-to-o/);
+  assert.match(res2.divergence || "", /published allocation unknown/);
+});
+
+test("SEL-NEG: pointer on the other output fails closed before any injection", async () => {
+  const f = makeFake({ fail: { pointerFault: "outside" } });
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "selection" }));
+  assert.equal(res.rc, 1);
+  assert.equal(res.category, "FAIL", J(res.divergence));
+  assert.match(res.divergence || "", /selection-pointer/);
+  assert.match(res.divergence || "", /5000,100/, "names the pointer");
+  assert.match(res.divergence || "", /1920,1080/, "names the fixtures output rect");
+  assert.ok(res.events.includes("selection-preflight"), "preflight ran before the gate");
+  assert.ok(!res.events.includes("selection-chord-to-o"), "no injection");
+  assert.ok(!res.events.includes("scenario-done"));
+  assert.ok(res.events.includes("cleanup"), "cleanup ran");
+  assert.deepEqual(res.cleanupFailed, [], "clean cleanup: " + J(res.cleanupFailed));
+  assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 0, "no injection");
+});
+
+test("SEL-PENDING: unknown pointer never injects and never PASSes", async () => {
+  for (const fault of ["unknown", "missing", "nonNumber"]) {
+    const f = makeFake({ fail: { pointerFault: fault } });
+    const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "selection" }));
+    assert.equal(res.rc, 1, fault);
+    assert.equal(res.category, "PENDING", fault + ": " + J(res.divergence));
+    assert.match(res.divergence || "", /selection-pointer/, fault);
+    assert.match(res.divergence || "", /pointer unknown/, fault);
+    assert.ok(!res.events.includes("selection-chord-to-o"), fault + ": no injection");
+    assert.ok(!res.events.includes("scenario-done"), fault);
+    assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 0,
+      fault + ": no injection");
+  }
+});
+
+test("SEL-NEG: pointer drifting out after leg 1 fails before chord 2 with one injection", async () => {
+  const f = makeFake({ fail: { pointerDrift: true } });
+  const res = await runScenario(Object.assign(baseOpts(), { io: f.io, input: true, scenario: "selection" }));
+  assert.equal(res.rc, 1);
+  assert.equal(res.category, "FAIL", J(res.divergence));
+  assert.match(res.divergence || "", /selection-to-x/);
+  assert.match(res.divergence || "", /pointer/, "names the drifted pointer");
+  assert.ok(res.events.includes("selection-chord-to-o"), "chord 1 passed");
+  assert.ok(!res.events.includes("selection-chord-to-x"), "chord 2 never injected");
+  assert.ok(!res.events.includes("scenario-done"));
+  assert.equal(f.execCalls.filter((c) => c.indexOf("ydotool key") === 0).length, 1,
+    "exactly one injection so far");
+  assert.deepEqual(res.cleanupFailed, [], "clean cleanup: " + J(res.cleanupFailed));
+  assert.ok(res.events.includes("verify-current-restored"), "original current re-verified");
+  assert.ok(res.events.includes("verify-appended-absent"), "appended absence re-verified");
+});
+
 test("PROCSTAT: production parser accepts the real stat shape (trailing newline) and fails closed", () => {
   assert.equal(parseProcStat(STAT.plain, 4242), "2241");
   assert.equal(parseProcStat(STAT.plain.slice(0, -1), 4242), "2241");
@@ -2505,6 +3061,9 @@ function modelWs() {
       set activeWindow(v) {
         if (typeof v !== "object" || v === null) { throw new Error("need object"); }
       },
+      // QPoint-like pointer shaped from the real KWin scripting type
+      // (QPoint Workspace::cursorPos at the pinned revision).
+      cursorPos: { x: 10, y: 10 },
       windowList() { return wins; },
       createDesktop(pos, name) { desks.push({ id: "desk-new", name }); },
       removeDesktop(o) { desks.splice(desks.findIndex((d) => d.id === o.id), 1); },
@@ -2542,6 +3101,27 @@ test("F: helper reports captionNormal, not the suffixed caption, with caption fa
   delete m2.wins[0].captionNormal;
   const r2 = runTemplate({ op: "read", scope: SCOPE_CLASS }, m2.workspace);
   assert.equal(r2.rows[0].owned[0].title, "OmniTilerTestWindow:a:t (Suffix)");
+});
+
+test("F: helper reports workspace.cursorPos as a bounded integer pair; unreadable/missing reads null", () => {
+  const m = modelWs();
+  const r = runTemplate({ op: "read", scope: SCOPE_CLASS }, m.workspace);
+  assert.equal(r.rows.length, 1);
+  assert.deepEqual(r.rows[0].cursor, { x: 10, y: 10 });
+  const mMissing = modelWs();
+  delete mMissing.workspace.cursorPos;
+  assert.equal(runTemplate({ op: "read", scope: SCOPE_CLASS }, mMissing.workspace).rows[0].cursor, null);
+  const mThrow = modelWs();
+  Object.defineProperty(mThrow.workspace, "cursorPos", { get() { throw new Error("boom"); }, configurable: true });
+  assert.equal(runTemplate({ op: "read", scope: SCOPE_CLASS }, mThrow.workspace).rows[0].cursor, null);
+  for (const bad of [{ x: "a", y: 0 }, { x: 0, y: NaN }, { x: 0 }, { x: Infinity, y: 0 }]) {
+    const mb = modelWs();
+    mb.workspace.cursorPos = bad;
+    assert.equal(runTemplate({ op: "read", scope: SCOPE_CLASS }, mb.workspace).rows[0].cursor, null, "cursor=" + J(bad));
+  }
+  const mFrac = modelWs();
+  mFrac.workspace.cursorPos = { x: 10.5, y: 11.5 };
+  assert.deepEqual(runTemplate({ op: "read", scope: SCOPE_CLASS }, mFrac.workspace).rows[0].cursor, { x: 11, y: 12 });
 });
 
 test("F: helper source is non-module ES2017 IIFE with no Qt/import/optional syntax", () => {

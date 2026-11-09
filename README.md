@@ -159,10 +159,14 @@ devenv shell -- node --test scripts/kde-scenarios.test.mjs   # hermetic, no live
 
 `--scenario NAME` selects `tiling-reflow` (default), `state-targets` (maximize,
 fullscreen, float and sticky chords with an orderly restart),
-`resize-refusal` (keyboard resize success and no-op refusal diagnostics) or
-`rapid-burst` (60 rapid focus/move chords); all but the default require
+`resize-refusal` (keyboard resize success and no-op refusal diagnostics),
+`rapid-burst` (60 rapid focus/move chords) or `selection` (workspace selection
+round trip with continued tiling); all but the default require
 `--input`, which starts and cleans up the `ydotoold` input daemon used to
-inject the chords. The scoped dev-on bakes the fixture scope into the KWin bundle, so
+inject the chords. Selection acts on the output holding the pointer, so the
+pointer must be on the output holding the fixtures (a fail-closed
+pre-injection check refuses otherwise; the roster-position to native-desktop
+mapping still assumes that output). The scoped dev-on bakes the fixture scope into the KWin bundle, so
 rebuild the unscoped bundle afterwards (`env OMNITILER_SCOPE_CLASS= npm --prefix
 kwin run build`). Read `docs/live-kwin-testing.md` before any live run; the
 low-level `scripts/start-test.sh` commands remain the manual reference.

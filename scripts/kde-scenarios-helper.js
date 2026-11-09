@@ -71,6 +71,20 @@
     if (typeof s !== "number" || !isFinite(s) || s <= 0) { return null; }
     return s;
   }
+  // Pointer position from the KWin scripting API (QPoint
+  // Workspace::cursorPos at the pinned revision: a QPoint-like {x, y}).
+  // Integer-normalised via needInt; unreadable/missing reads null (unknown).
+  function readCursor(ws) {
+    var cp;
+    try { cp = ws.cursorPos; } catch (e) { return null; }
+    if (cp === null || typeof cp !== "object") { return null; }
+    var cx, cy;
+    try { cx = cp.x; cy = cp.y; } catch (e) { return null; }
+    cx = needInt(cx);
+    cy = needInt(cy);
+    if (cx === null || cy === null) { return null; }
+    return { x: cx, y: cy };
+  }
   function workspaceOf() {
     if (typeof workspace === "undefined" || !workspace) { fail("workspace unavailable"); }
     return workspace;
@@ -178,7 +192,7 @@
           foreign++;
         }
       }
-      out({ op: "read", desktops: ids, current: current, count: ids.length, active: active, owned: owned, foreignCount: foreign });
+      out({ op: "read", desktops: ids, current: current, count: ids.length, active: active, owned: owned, foreignCount: foreign, cursor: readCursor(ws) });
     } else if (OP.op === "append") {
       var name = needStr(OP.name, "append.name");
       var before = desktopObjs(ws);
