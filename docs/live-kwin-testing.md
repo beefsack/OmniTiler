@@ -110,11 +110,11 @@ default above.
   lifecycle interface with helper accounting and the readiness gate below, or
   the fixture-driven scenario runner `scripts/kde-scenarios.mjs`; historical
   wrapper readiness flags are not acceptance evidence.
-- The carrier (`kwin/src/provenance-entry.ts`: one
-  `omnitiler:provenance-ready` line, no workspace, shortcut, timer, or D-Bus
-  access) proves only its own evaluation via that single line. A carrier
-  load receipt is lifecycle binding evidence and never controller-readiness
-  evidence; every controller claim additionally requires the gate below.
+- The inert provenance carrier (`kwin/src/provenance-entry.ts`) has been
+  removed: no lifecycle script, build target or test loaded it. A helper or
+  other lifecycle load receipt is binding evidence only and never
+  controller-readiness evidence; every controller claim additionally requires
+  the gate below.
 
 ## Evaluated Readiness Gate (Controller)
 
