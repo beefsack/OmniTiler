@@ -1,10 +1,10 @@
 # v4 phase-2 KDE physical reconnect/rehome
 
-- Status: offline implementation and overlapping-displacement return fix
-  verified; native acceptance pending, 2026-11-08. Keep active.
+- Status: offline implementation verified; native RC partial, leg 2 failed,
+  2026-11-09. Keep active; the MAC gate remains open.
 - Goal: supply truthful physical output facts and prove disconnect, reconnect
   and rehome offline without regressing the prior dogfoodable slices.
-- Native acceptance remains unrun; offline evidence cannot establish physical
+- Native evidence is bounded below; offline evidence cannot establish physical
   unplug/reconnect, compositor ordering or physical shortcut delivery.
 
 ## Scope and acceptance
@@ -232,3 +232,108 @@ devenv shell -- env OMNITILER_SCOPE_CLASS= npm --prefix kwin run build
   focus/paint and native state transitions separately; offline state-target
   evidence is not native acceptance. Retain ordered before/after reports and
   first divergence, then restore only recorded owned state.
+
+## 2026-11-09 native reconnect triage
+
+- RC is **PARTIAL; leg 2 FAIL**. These were user-run physical two-output,
+  unscoped real-window journeys in per-output workspace mode, not fixture runs.
+  A is the survivor, B the removed output; F is a browser and T1-T3 terminals.
+  Start: A ws1 active with T1; B ws1 has T2, B ws2 active has F/T3.
+- Evidence: unchanged copies of `omnitiler-dev.kQ5Uh3.log` (L1, 391 lines)
+  and `omnitiler-dev.hKnZHu.log` (L2, 377 lines), preserved outside the
+  repository and byte-compared with the originals before investigation.
+  They contain summaries, not report/reply payloads: no physical identities,
+  native bindings, logical homes, transfer rows or focus readbacks. `nwinv`
+  is a local invalidation watermark, not a topology count
+  (`kwin/src/world-state.ts:133-137`). Action-to-revision attribution is unknown.
+
+| RC sub-leg | User-observed native result | Verdict / evidence boundary |
+| --- | --- | --- |
+| Leg 1: focus removed output, unplug/return | F initially focused. Unplug: A ws1 remains active with T1/T2; A ws2 has F/T3, F hidden and no window focused. Return: exact original layout, F still selected | PARTIAL: return PASS as reported; separate-layout rule diverges if T1/T2 share one tiling unit. No-focus matches the narrow native-rehome/no-admission-focus decision, not the older keep-focused-workspace-visible intent. Unit/focus attribution unproved by L1 |
+| Leg 2: focus survivor, explicit move during absence, return | T1 keeps focus on unplug. On A ws2 select T3, send to ws1. Return: A ws1 T1 focused; A ws2 F; B ws1 T2/T3, B ws2 empty (B's active view uncertain) | FAIL: survivor-focus PASS as reported; F return and T3 no-pullback FAIL. L2 proves command/apply ordering, not the causal transfer or its settlement |
+| Leg 3: post-return sanity | Ordinary tiling worked | Bounded reported PASS only; full selection/arrival/focus/paint/state-transition permutations NOT RUN |
+
+- Changed connector/identity ambiguity, three-output nearest survivor and both
+  minimized D23 variants remain NOT RUN; no whole-RC or MAC-gate pass.
+
+### Ordered evidence and first divergence
+
+- L1: setup `move-directional` dispatch -> planned-focus accepted/proven ->
+  apply rev11 `geom=2 fx=1` (:150-158). Later observe captures rev14/15
+  are superseded; rev16 applies `geom=4 member=0 views=0 fx=0`
+  (:186-207). Later rev22/23 captures are superseded; rev24 applies zero
+  membership/view/effect writes (:259-292). These are ordered summaries,
+  **not identified unplug/replug boundaries**. They do not prove homing,
+  native focus, return matching or a separate-versus-merged tree.
+- L2: `select-numbered` ws2 -> dispatch -> planned-focus accepted/proven ->
+  apply rev10 `views=1 fx=1` (:118-127); later `send-numbered` ws1 ->
+  dispatch -> apply rev14 `geom=2 member=1 views=1 fx=0` (:176-183) ->
+  observe/apply rev15 `geom=1 member=0 views=0 fx=0` (:188-189).
+  Subsequent rev18/19 observations are superseded, rev20/21 apply with
+  `member=0 views=0 fx=0` (:217-269). Unplug/replug cannot be assigned to
+  these revisions. `applied` counts accepted setter calls, not native/core
+  settlement (`kwin/src/world-entry.ts:4668`, `world-apply.ts:1035-1059`;
+  `crates/tiler-core/src/world_observe.rs:942-949`).
+- **First reported divergence** is already the unplug-time T2/T1 co-location
+  versus the generic never-merge rule; the leg-2 return-specific divergence is
+  F staying on A and explicitly sent T3 appearing on B. **First causal
+  report/reply divergence is unknown**: neither capture exposes the relevant
+  native receipts, retained homes, owned-unit membership or pending transfers.
+  Absence of `op-hp-*` text in summaries cannot exclude a core transfer.
+
+### Source-grounded explanation, not a proved live cause
+
+- Native removal can change output without changing desktop membership.
+  Core maps `(output, native desktop)` to a logical unit
+  (`crates/tiler-core/src/world_native.rs:64-68,120-130`), with distinct
+  logical IDs allocated per output (:1266-1298). Known native receipts win
+  over retained desire (`world_observe.rs:997-1013`). Thus T2 can join A's
+  occupied ws1 and F/T3 A's ws2, emptying B's preserved units. This is
+  **member rehoming, not equal-logical-ID deduplication**. The existing
+  [producer journey](../../kwin/tests/world-producer-disconnect.test.ts):100-120
+  lands only on an empty survivor unit; :154-217 returns empty displaced
+  units while all members stay on A. It does not establish native member return.
+- Core preserves displaced unit IDs (`world_model.rs:831-856`), matches
+  physical identity (:590-632), then reclaims the origin's owned subset and
+  transfers only members whose retained homes still qualify (:633-703).
+  **Hypothesis H1:** F rehomed to A's native-bound unit, so reclaiming B's
+  empty unit cannot return F. **H2:** T3's send resolved/settled differently
+  from intent, leaving a return-eligible home or pending transfer. Full native
+  membership/readback and transfer payloads are needed to distinguish these.
+- **H3, native pullback:** same-output sends skip the output setter
+  (`kwin/src/world-apply.ts:901-909,939-947`) and set desktop membership
+  (:1025-1059; `world-native.ts:676-692`). Pinned KWin
+  `1b798c05c19b1124edb1e16623191fcd2c128fd0` invokes layout restoration at
+  `src/workspace.cpp:1509`; `src/placementtracker.cpp:102-134` gates restoration
+  on interactive-move/state changes, not desktops, and restores geometry.
+  A desktop-only send therefore does not itself invalidate native restoration;
+  native geometry/output restoration could pull T3 back without a core
+  hotplug transfer. Why F and T3 differed is **unproved**, not explained by
+  the summaries or this source-only hypothesis.
+- No-focus is consistent with the selected no-admission-focus mechanism
+  (`world_model.rs:1257-1265`) and the [2026-11-09 native-rehome case](../spec/reference-outcomes.md#selection-accounting-without-logical-echoes).
+  The logs do not establish whether KWin cleared focus or when F became hidden.
+  T2 joining T1 is source-permitted by receipt homing, but **not established as
+  expected product behavior**: the [generic disconnect rule](../decisions/workspaces.md#kde-common-model-output-disconnection)
+  still says never merge. Recommendation pending decision: retain separate
+  displaced units rather than silently add a same-native occupied-unit exception;
+  reconcile that rule with native receipt authority before choosing a fix.
+
+### Suggested offline regression
+
+- Extend the producer journey with the exact four-member/two-desktop setup
+  above, including T2 colliding with occupied A ws1 and T1 focused. Capture
+  every native report/reply across removal; assert unit IDs, bindings, members,
+  tree/frames, views and focus, not only the final pager. The collision oracle
+  remains [TBD pending decision](../spec/reference-outcomes.md#selection-accounting-without-logical-echoes).
+- Select A ws2/T3, send to ws1, retain immediate pre/post membership evidence,
+  then supply a separate receipt proving membership settlement before return.
+  Reconnect the same physical identity: F returns to B ws2, T3 stays A ws1,
+  T2 returns B ws1, survivor view/focus remains, no stale snapshot or T3 pullback.
+  Split native-restoration inputs from core-transfer outputs to locate the
+  first divergence; include an outstanding-send control. Existing
+  `physical_return_explicit_send_away_not_pulled_back`
+  (`world_restored_routing_tests.rs:3539-3642`) does not exercise this producer/
+  native-rehome/occupied-unit combination. This regression is proposed, not run.
+- Verification of this record: source/evidence review, local link/anchor checks
+  and `git diff --check`; no new native or offline execution evidence.
