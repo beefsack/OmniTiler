@@ -884,6 +884,7 @@ impl WorldEngine {
                 rect: None,
                 no_space: false,
             });
+            staged.reset_frame_burst(window);
             staged.note_command(command_seq);
             *self = staged;
             return CommandApplied::NoEffect;
@@ -1223,6 +1224,7 @@ impl WorldEngine {
         if !landing_float {
             staged.engine.commit_fixed_tile_override(window);
         }
+        staged.reset_frame_burst(window);
         staged.note_command(command_seq);
         *self = staged;
         CommandApplied::NoEffect

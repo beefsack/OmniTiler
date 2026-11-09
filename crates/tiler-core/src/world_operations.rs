@@ -1891,9 +1891,8 @@ impl WorldEngine {
             window,
             rect,
             no_space,
-        }) = &self.command_result
+        }) = self.command_result.clone()
         {
-            let window = window.clone();
             match rect {
                 Some(target) => {
                     let source = event
@@ -1913,12 +1912,13 @@ impl WorldEngine {
                             )
                         });
                     self.retained_floats.retain(|held| held.window != window);
+                    self.reset_frame_burst(&window);
                     self.retained_floats
                         .push(crate::world_engine::RetainedFloat {
                             operation_id: format!("op-{command_seq}"),
                             command_seq,
                             window,
-                            target: *target,
+                            target,
                             source,
                             output,
                             workspace,
@@ -1929,6 +1929,7 @@ impl WorldEngine {
                 None => {
                     if !no_space {
                         self.retained_floats.retain(|held| held.window != window);
+                        self.reset_frame_burst(&window);
                     }
                 }
             }

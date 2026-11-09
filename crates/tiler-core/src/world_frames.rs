@@ -551,6 +551,16 @@ impl WorldEngine {
             }
         }
     }
+    /// Re-arm the tiled burst budget after an accepted core placement-mode
+    /// transition (float, unfloat, sticky on/off/clear): the budget bounds
+    /// client drift against an unchanged core target, never core state
+    /// transitions. Call only on applied transitions (never refusals or
+    /// same-state no-ops); observation gaps and native-only fact flaps keep
+    /// the budget via the untouched continuity path.
+    pub(crate) fn reset_frame_burst(&mut self, window: &WindowId) {
+        self.frame_bursts.remove(window);
+    }
+
     /// Refresh burst continuity from the current staged facts before
     /// consuming this report's attempts: eligible readable tiled rows only.
     /// Identical observations change nothing; exact target echoes refresh

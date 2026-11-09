@@ -3118,8 +3118,950 @@ fn learned_float_excursion_preserves_and_reapplies() {
     );
 }
 
-// --- frame-burst anti-loop bound (two attempts per observed-change burst) ---
+// --- rapid float/unfloat burst replay (production 8tHpKS ticks) ---
+//
+// Replay of the captured sequence through the core producer: tiled baseline,
+// alternating float/unfloat takes with asynchronous readbacks and a completed
+// tiled write. Interleaved observations distinguish clamp and burst memory.
 
+fn toggle_float(report: &mut WorldReportV4, window: &str, seq: u64, rect: Option<Rect>) {
+    use crate::boundary::CoreCommand;
+    use crate::world_report::WorldCommand;
+    report.command_seq = Some(seq);
+    report.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: window.to_owned(),
+        float_rect: rect,
+    }));
+}
+
+fn above_fact(window: &str, frame: Option<Rect>, above: bool) -> WindowFact {
+    let mut out = fact(window, frame);
+    out.above = Some(above);
+    out
+}
+
+fn sticky_fact(window: &str, frame: Option<Rect>) -> WindowFact {
+    let mut out = fact(window, frame);
+    out.sticky = Some(true);
+    out
+}
+
+fn transient_fact(window: &str, frame: Option<Rect>) -> WindowFact {
+    let mut out = fact(window, frame);
+    out.transient = Some(true);
+    out
+}
+
+/// Null-sticky fact for the composed (no native capability) route:
+/// projected sticky values grade to held without native support, so the
+/// live row carries null while intent provenance drives placement.
+fn composed_fact(window: &str, frame: Option<Rect>) -> WindowFact {
+    let mut out = fact(window, frame);
+    out.sticky = None;
+    out
+}
+
+fn set_sticky(report: &mut WorldReportV4, window: &str, seq: u64, value: bool) {
+    use crate::world_report::WorldCommand;
+    report.command_seq = Some(seq);
+    report.command = Some(WorldCommand::SetSticky {
+        window: WindowId(window.to_owned()),
+        value,
+    });
+}
+
+#[test]
+fn rapid_toggle_burst_ending_tile_reconverges() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let key = WindowId("w1".to_owned());
+    // Baseline tiled.
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![above_fact("w1", Some(rect(0, 0, 800, 560)), false)],
+            vec![],
+            vec![],
+            2400,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&first, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    let tiled = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let floated_target = rect(100, 100, 200, 150);
+    // cmd1 float.
+    let mut r2 = report(
+        2,
+        vec![above_fact("w1", Some(tiled), false)],
+        vec![],
+        vec![],
+        2500,
+        true,
+    );
+    toggle_float(&mut r2, "w1", 1, Some(floated_target));
+    let r2r = accepted(&mut engine, &r2);
+    assert!(frame_row(&r2r, "w1").floating);
+    // cmd2 unfloat (A1: float write accepted, async readback).
+    let mut r3 = report(
+        3,
+        vec![above_fact("w1", Some(floated_target), true)],
+        vec![],
+        vec![attempt(
+            "w1",
+            floated_target,
+            FrameSetter::Accepted,
+            Some(tiled),
+            2600,
+        )],
+        2600,
+        true,
+    );
+    toggle_float(&mut r3, "w1", 2, None);
+    let r3r = accepted(&mut engine, &r3);
+    assert!(!frame_row(&r3r, "w1").floating);
+    assert_eq!(
+        frame_row(&r3r, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    // Empty (A: unfloat write accepted, async readback) -> one clamp hold.
+    let r4 = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![above_fact("w1", Some(floated_target), true)],
+            vec![],
+            vec![attempt(
+                "w1",
+                tiled,
+                FrameSetter::Accepted,
+                Some(floated_target),
+                2700,
+            )],
+            2700,
+            true,
+        ),
+    );
+    assert!(is_hold(&r4, "w1"), "async unfloat mismatch holds once");
+    assert!(
+        engine.frames.get(&key).is_some_and(|memory| memory.clamped),
+        "clamp lane pins the async pair: {:?}",
+        engine.frames.get(&key)
+    );
+    assert_eq!(
+        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        Some(1),
+        "first tiled spend: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // cmd3 float re-arms the tiled budget and retains its placement token.
+    let mut r5 = report(
+        5,
+        vec![above_fact("w1", Some(tiled), false)],
+        vec![],
+        vec![],
+        2800,
+        true,
+    );
+    toggle_float(&mut r5, "w1", 3, Some(floated_target));
+    let r5r = accepted(&mut engine, &r5);
+    assert!(frame_row(&r5r, "w1").floating);
+    assert!(frame_row(&r5r, "w1").frame_operation.is_some());
+    // cmd4 unfloat (B: float write accepted, async readback) -> controlled.
+    let mut r6 = report(
+        6,
+        vec![above_fact("w1", Some(floated_target), true)],
+        vec![],
+        vec![attempt(
+            "w1",
+            floated_target,
+            FrameSetter::Accepted,
+            Some(tiled),
+            2900,
+        )],
+        2900,
+        true,
+    );
+    toggle_float(&mut r6, "w1", 4, None);
+    let r6r = accepted(&mut engine, &r6);
+    assert!(!frame_row(&r6r, "w1").floating);
+    assert_eq!(
+        frame_row(&r6r, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert!(
+        engine.frame_bursts.get(&key).is_none(),
+        "float excursion re-arms the tiled burst: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // Empty (C: unfloat write converged fast) -> controlled; the cmd3/cmd4
+    // excursion re-armed the budget, so this exact-converge spend opens a
+    // fresh burst at one instead of wedging at two.
+    let r7 = accepted(
+        &mut engine,
+        &report(
+            7,
+            vec![above_fact("w1", Some(tiled), true)],
+            vec![],
+            vec![attempt(
+                "w1",
+                tiled,
+                FrameSetter::Accepted,
+                Some(tiled),
+                3000,
+            )],
+            3000,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&r7, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert_eq!(
+        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        Some(1),
+        "re-armed burst spends fresh: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // cmd5 float.
+    let mut r8 = report(
+        8,
+        vec![above_fact("w1", Some(tiled), false)],
+        vec![],
+        vec![],
+        3100,
+        true,
+    );
+    toggle_float(&mut r8, "w1", 5, Some(floated_target));
+    let r8r = accepted(&mut engine, &r8);
+    assert!(frame_row(&r8r, "w1").floating);
+    assert!(frame_row(&r8r, "w1").frame_operation.is_some());
+    // cmd6 unfloat (D) -> must reconverge to CONTROLLED tiled desire.
+    let mut r9 = report(
+        9,
+        vec![above_fact("w1", Some(floated_target), true)],
+        vec![],
+        vec![attempt(
+            "w1",
+            floated_target,
+            FrameSetter::Accepted,
+            Some(tiled),
+            3200,
+        )],
+        3200,
+        true,
+    );
+    toggle_float(&mut r9, "w1", 6, None);
+    let r9r = accepted(&mut engine, &r9);
+    assert!(!frame_row(&r9r, "w1").floating);
+    assert_eq!(frame_row(&r9r, "w1").effective_frame, Some(tiled));
+    assert_eq!(
+        frame_row(&r9r, "w1").frame_authority,
+        ScopeAuthority::Controlled,
+        "third unfloat must not wedge: bursts={:?} frames={:?}",
+        engine.frame_bursts.get(&key),
+        engine.frames.get(&key)
+    );
+    // Settlement converges on the latest desired frame.
+    let r10 = accepted(
+        &mut engine,
+        &report(
+            10,
+            vec![above_fact("w1", Some(tiled), false)],
+            vec![],
+            vec![],
+            3300,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&r10, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert_eq!(frame_row(&r10, "w1").effective_frame, Some(tiled));
+}
+
+#[test]
+fn rapid_toggle_burst_ending_float_keeps_token() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![above_fact("w1", Some(rect(0, 0, 800, 560)), false)],
+            vec![],
+            vec![],
+            2400,
+            true,
+        ),
+    );
+    let tiled = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let floated_target = rect(100, 100, 200, 150);
+    let mut r2 = report(
+        2,
+        vec![above_fact("w1", Some(tiled), false)],
+        vec![],
+        vec![],
+        2500,
+        true,
+    );
+    toggle_float(&mut r2, "w1", 1, Some(floated_target));
+    accepted(&mut engine, &r2);
+    let mut r3 = report(
+        3,
+        vec![above_fact("w1", Some(floated_target), true)],
+        vec![],
+        vec![attempt(
+            "w1",
+            floated_target,
+            FrameSetter::Accepted,
+            Some(tiled),
+            2600,
+        )],
+        2600,
+        true,
+    );
+    toggle_float(&mut r3, "w1", 2, None);
+    accepted(&mut engine, &r3);
+    // Burst ends on a float: untouched float row with the placement token.
+    let mut r4 = report(
+        4,
+        vec![above_fact("w1", Some(tiled), false)],
+        vec![],
+        vec![],
+        2700,
+        true,
+    );
+    toggle_float(&mut r4, "w1", 3, Some(floated_target));
+    let r4r = accepted(&mut engine, &r4);
+    let row = frame_row(&r4r, "w1");
+    assert!(row.floating);
+    assert_eq!(row.frame_authority, ScopeAuthority::Untouched);
+    assert_eq!(row.effective_frame, Some(floated_target));
+    assert!(row.frame_operation.is_some());
+}
+
+#[test]
+fn rapid_toggle_odd_burst_ending_float_keeps_token() {
+    // One spent tiled attempt (odd burst length), then a core float
+    // excursion ending float: the placement token survives and the
+    // excursion re-arms the tiled burst for the next re-tiling.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let key = WindowId("w1".to_owned());
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![above_fact("w1", Some(rect(0, 0, 800, 560)), false)],
+            vec![],
+            vec![],
+            2400,
+            true,
+        ),
+    );
+    let tiled = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let drifted = shrink(tiled, 100);
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![above_fact("w1", Some(drifted), false)],
+            vec![],
+            vec![attempt(
+                "w1",
+                tiled,
+                FrameSetter::Refused,
+                Some(drifted),
+                2500,
+            )],
+            2500,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        Some(1),
+        "single tiled spend: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // Core float excursion ending float.
+    let floated_target = rect(100, 100, 200, 150);
+    let mut r3 = report(
+        3,
+        vec![above_fact("w1", Some(drifted), false)],
+        vec![],
+        vec![],
+        2600,
+        true,
+    );
+    toggle_float(&mut r3, "w1", 1, Some(floated_target));
+    let r3r = accepted(&mut engine, &r3);
+    assert!(frame_row(&r3r, "w1").floating);
+    assert!(frame_row(&r3r, "w1").frame_operation.is_some());
+    // Floating observe while native still shows the old frame (async):
+    // untouched row with the token outstanding, budget re-armed.
+    let r4r = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![above_fact("w1", Some(drifted), false)],
+            vec![],
+            vec![],
+            2700,
+            true,
+        ),
+    );
+    let row = frame_row(&r4r, "w1");
+    assert!(row.floating);
+    assert_eq!(row.frame_authority, ScopeAuthority::Untouched);
+    assert_eq!(row.effective_frame, Some(floated_target));
+    assert!(row.frame_operation.is_some());
+    assert!(
+        engine.frame_bursts.get(&key).is_none(),
+        "float excursion re-arms: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // Converged observe proves the placement: the one-shot token spends
+    // while the row keeps the float target.
+    let r5r = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![above_fact("w1", Some(floated_target), true)],
+            vec![],
+            vec![],
+            2800,
+            true,
+        ),
+    );
+    let row = frame_row(&r5r, "w1");
+    assert!(row.floating);
+    assert_eq!(row.effective_frame, Some(floated_target));
+    assert_eq!(row.frame_operation, None);
+    assert!(engine.frame_bursts.get(&key).is_none());
+}
+
+#[test]
+fn rapid_toggle_exhausted_burst_ending_float_keeps_token() {
+    // Two spent tiled attempts (even, exhausted burst), then a core float
+    // excursion ending float: the exhausted budget must not veto the
+    // placement token, and the excursion re-arms for the next re-tiling.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let key = WindowId("w1".to_owned());
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![above_fact("w1", Some(rect(0, 0, 800, 560)), false)],
+            vec![],
+            vec![],
+            2400,
+            true,
+        ),
+    );
+    let tiled = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let drifted1 = shrink(tiled, 100);
+    let drifted2 = shrink(tiled, 50);
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![above_fact("w1", Some(drifted1), false)],
+            vec![],
+            vec![attempt(
+                "w1",
+                tiled,
+                FrameSetter::Refused,
+                Some(drifted1),
+                2500,
+            )],
+            2500,
+            true,
+        ),
+    );
+    let spent = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![above_fact("w1", Some(drifted2), false)],
+            vec![],
+            vec![attempt(
+                "w1",
+                tiled,
+                FrameSetter::Refused,
+                Some(drifted2),
+                2600,
+            )],
+            2600,
+            true,
+        ),
+    );
+    assert!(is_hold(&spent, "w1"), "exhausted burst holds");
+    assert_eq!(
+        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        Some(2),
+        "both retries spent: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // Core float excursion ending float: token issued despite exhaustion.
+    let floated_target = rect(100, 100, 200, 150);
+    let mut r4 = report(
+        4,
+        vec![above_fact("w1", Some(drifted2), false)],
+        vec![],
+        vec![],
+        2700,
+        true,
+    );
+    toggle_float(&mut r4, "w1", 1, Some(floated_target));
+    let r4r = accepted(&mut engine, &r4);
+    assert!(frame_row(&r4r, "w1").floating);
+    assert!(frame_row(&r4r, "w1").frame_operation.is_some());
+    // Floating observe while native still shows the old frame (async):
+    // untouched row with the token outstanding, budget re-armed.
+    let r5r = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![above_fact("w1", Some(drifted2), false)],
+            vec![],
+            vec![],
+            2800,
+            true,
+        ),
+    );
+    let row = frame_row(&r5r, "w1");
+    assert!(row.floating);
+    assert_eq!(row.frame_authority, ScopeAuthority::Untouched);
+    assert_eq!(row.effective_frame, Some(floated_target));
+    assert!(row.frame_operation.is_some());
+    assert!(
+        engine.frame_bursts.get(&key).is_none(),
+        "float excursion re-arms: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // Converged observe proves the placement: the one-shot token spends
+    // while the row keeps the float target.
+    let r6r = accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![above_fact("w1", Some(floated_target), true)],
+            vec![],
+            vec![],
+            2900,
+            true,
+        ),
+    );
+    let row = frame_row(&r6r, "w1");
+    assert!(row.floating);
+    assert_eq!(row.effective_frame, Some(floated_target));
+    assert_eq!(row.frame_operation, None);
+    assert!(engine.frame_bursts.get(&key).is_none());
+}
+
+#[test]
+fn rapid_toggle_sticky_excursion_rearms_with_gap_protection() {
+    // Only accepted core placement transitions re-arm the tiled burst
+    // budget. Observation gaps and native-only fact flaps (transient or
+    // sticky with no command) keep it. One spent tiled attempt, a
+    // minimized gap (keeps), a transient flap (keeps), a sticky flap with
+    // no command (keeps), a tiled drift observe (Controlled, keeps), a
+    // fresh spend reaching the two-attempt cap, then an accepted native
+    // SetSticky that resets the budget. Tight timestamps keep every
+    // eligible observation inside one drift burst (no proven quiet).
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let key = WindowId("w1".to_owned());
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            0,
+            true,
+        ),
+    );
+    let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let drifted = shrink(desired, 100);
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(drifted))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Refused,
+                Some(drifted),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        Some(1),
+        "single tiled spend: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // Minimized gap: continuity breaks but the count survives.
+    accepted(
+        &mut engine,
+        &report(3, vec![minimized_fact("w1")], vec![], vec![], 1100, true),
+    );
+    let burst = engine.frame_bursts.get(&key).expect("gap keeps budget");
+    assert_eq!(burst.attempts, 1);
+    assert_eq!(burst.last_change_ms, 0);
+    // Transient flap with no command: keeps the budget.
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![transient_fact("w1", Some(drifted))],
+            vec![],
+            vec![],
+            1200,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        Some(1),
+        "transient flap keeps budget: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // Sticky flap with no command: keeps the budget (an accepted sticky
+    // command resets; a native-only fact change never does).
+    accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![sticky_fact("w1", Some(drifted))],
+            vec![],
+            vec![],
+            1300,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        Some(1),
+        "sticky flap keeps budget: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // Tiled reconvergence on the exact target publishes controlled with
+    // the budget intact (exact echoes never spend).
+    let observed = accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![fact("w1", Some(desired))],
+            vec![],
+            vec![],
+            1400,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&observed, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert_eq!(
+        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        Some(1),
+        "observe keeps budget: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // A fresh refusal spends the kept budget to the two-attempt cap.
+    let capped = accepted(
+        &mut engine,
+        &report(
+            7,
+            vec![fact("w1", Some(shrink(desired, 50)))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Refused,
+                Some(shrink(desired, 50)),
+                1500,
+            )],
+            1500,
+            true,
+        ),
+    );
+    assert!(is_hold(&capped, "w1"), "second attempt caps");
+    assert_eq!(
+        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        Some(2),
+        "two-attempt cap intact: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // An accepted native SetSticky is an applied core placement
+    // transition: the budget resets and sticky provenance records.
+    let mut sticky_cmd = report(
+        8,
+        vec![fact("w1", Some(shrink(desired, 50)))],
+        vec![],
+        vec![],
+        1600,
+        true,
+    );
+    set_sticky(&mut sticky_cmd, "w1", 1, true);
+    let stuck = accepted(&mut engine, &sticky_cmd);
+    assert!(
+        stuck.command_result.is_none(),
+        "sticky command accepted: {:?}",
+        stuck.command_result
+    );
+    assert!(
+        engine.frame_bursts.get(&key).is_none(),
+        "accepted sticky transition re-arms: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    assert_eq!(
+        engine.restored_sticky.get(&key),
+        Some(&false),
+        "sticky records the tiled prior"
+    );
+}
+
+#[test]
+fn composed_sticky_round_trip_rearms_burst() {
+    // Composed sticky route (no native capability): spend to the cap,
+    // accept SetSticky(true) (resets), unfloat back to tiled (resets),
+    // then spend fresh from one.
+    use crate::connection::HostCapabilities;
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            native_sticky: false,
+            window_suppression: true,
+            maximize: true,
+            ..HostCapabilities::default()
+        },
+    )
+    .expect("generation");
+    let key = WindowId("w1".to_owned());
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![composed_fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            0,
+            true,
+        ),
+    );
+    let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let drifted = shrink(desired, 100);
+    let redrifted = shrink(desired, 50);
+    for (seq, frame, ms) in [(2u64, drifted, 1000u64), (3u64, redrifted, 1100u64)] {
+        accepted(
+            &mut engine,
+            &report(
+                seq,
+                vec![composed_fact("w1", Some(frame))],
+                vec![],
+                vec![attempt(
+                    "w1",
+                    desired,
+                    FrameSetter::Refused,
+                    Some(frame),
+                    ms,
+                )],
+                ms,
+                true,
+            ),
+        );
+    }
+    assert_eq!(
+        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        Some(2),
+        "spent to cap: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // Accepted composed SetSticky(true) resets the exhausted budget.
+    let mut sticky_on = report(
+        4,
+        vec![composed_fact("w1", Some(redrifted))],
+        vec![],
+        vec![],
+        1200,
+        true,
+    );
+    set_sticky(&mut sticky_on, "w1", 1, true);
+    let on_reply = accepted(&mut engine, &sticky_on);
+    assert!(
+        on_reply.command_result.is_none(),
+        "composed sticky accepted: {:?}",
+        on_reply.command_result
+    );
+    assert!(
+        engine.frame_bursts.get(&key).is_none(),
+        "accepted sticky-on re-arms: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    assert!(
+        engine.restored_sticky.contains_key(&key),
+        "sticky provenance records"
+    );
+    assert!(
+        frame_row(&on_reply, "w1").floating,
+        "sticky-on floats the carrier"
+    );
+    // Accepted unfloat back to tiled resets again and reconverges.
+    let mut unfloat = report(
+        5,
+        vec![composed_fact("w1", Some(desired))],
+        vec![],
+        vec![],
+        1300,
+        true,
+    );
+    toggle_float(&mut unfloat, "w1", 2, None);
+    let off_reply = accepted(&mut engine, &unfloat);
+    assert_eq!(
+        off_reply.command_result,
+        Some(crate::world_report::CommandResult::Float {
+            window: key.clone(),
+            rect: None,
+            no_space: false,
+        }),
+        "unfloat publishes the applied withdraw result"
+    );
+    assert!(!frame_row(&off_reply, "w1").floating);
+    assert_eq!(
+        frame_row(&off_reply, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert!(
+        engine.frame_bursts.get(&key).is_none(),
+        "accepted unfloat re-arms: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+    // A fresh refusal spends the re-armed budget from one.
+    accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![composed_fact("w1", Some(drifted))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Refused,
+                Some(drifted),
+                1400,
+            )],
+            1400,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        Some(1),
+        "re-armed burst spends fresh: {:?}",
+        engine.frame_bursts.get(&key)
+    );
+}
+
+#[test]
+fn float_command_refusal_keeps_budget_over_observation_gap() {
+    // A float command issued against an observation gap (minimized or
+    // unreadable fact) is refused on partial observation and keeps the
+    // tiled burst budget: no placement transition applies, so nothing
+    // re-arms. (An accepted float would reset despite the gap; that
+    // outcome is covered by the sticky round-trip and rapid-toggle
+    // tests. This test pins the verified refusal shape.)
+    for (label, gap) in [
+        ("minimized", minimized_fact("w1")),
+        ("unreadable", fact("w1", None)),
+    ] {
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        let key = WindowId("w1".to_owned());
+        let target = rect(100, 100, 200, 150);
+        let first = accepted(
+            &mut engine,
+            &report(
+                1,
+                vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+                vec![],
+                vec![],
+                0,
+                true,
+            ),
+        );
+        let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+        let drifted = shrink(desired, 100);
+        accepted(
+            &mut engine,
+            &report(
+                2,
+                vec![fact("w1", Some(drifted))],
+                vec![],
+                vec![attempt(
+                    "w1",
+                    desired,
+                    FrameSetter::Refused,
+                    Some(drifted),
+                    1000,
+                )],
+                1000,
+                true,
+            ),
+        );
+        assert_eq!(
+            engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+            Some(1),
+            "{label}: single tiled spend"
+        );
+        let mut floated = report(3, vec![gap], vec![], vec![], 1100, true);
+        toggle_float(&mut floated, "w1", 1, Some(target));
+        match engine.handle_report(&floated) {
+            WorldOutcome::Accepted(reply) => {
+                assert!(
+                    !frame_row(&reply, "w1").floating,
+                    "{label}: gap float must not place"
+                );
+                assert!(
+                    matches!(
+                        reply.command_result,
+                        Some(crate::world_report::CommandResult::Rejected { .. })
+                    ),
+                    "{label}: gap float refuses: {:?}",
+                    reply.command_result
+                );
+                assert_eq!(
+                    engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+                    Some(1),
+                    "{label}: refused float keeps budget: {:?}",
+                    engine.frame_bursts.get(&key)
+                );
+            }
+            WorldOutcome::Rejected { kind, message } => {
+                assert_eq!(
+                    engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+                    Some(1),
+                    "{label}: snapshot refusal ({kind} {message}) keeps budget: {:?}",
+                    engine.frame_bursts.get(&key)
+                );
+            }
+            other => panic!("{label}: unexpected outcome {other:?}"),
+        }
+    }
+}
+
+// --- frame-burst anti-loop bound (two attempts per observed-change burst) ---
 fn is_hold(reply: &crate::world_report::WorldReplyV4, window: &str) -> bool {
     frame_row(reply, window).frame_authority == ScopeAuthority::Hold(HoldReason::ConstraintClamp)
 }

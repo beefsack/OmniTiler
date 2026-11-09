@@ -16,9 +16,13 @@
   lifetime and unchanged desired frame in a continuous observed-change burst
   (initial layout writes count). Exact target echoes preserve the count. A target
   change or >=500ms observed quiet re-arms, without retry timers or polling.
-  Missing/unreadable/ineligible observations break continuity without clearing
-  the budget; zero clocks cannot prove quiet. Existing clamp/transient gates
-  remain additional vetoes. Floating placements do not use the burst budget.
+  Accepted core placement-mode transitions (float/unfloat and sticky-float
+  entry/exit) re-arm as desired-target changes: the budget bounds client-driven
+  drift against an unchanged core target, never core state transitions.
+  Missing, unreadable, minimized and other ineligible observations alone break
+  continuity without clearing the budget; native-only classification changes
+  do not re-arm it, and zero clocks cannot prove quiet. Existing clamp/transient
+  gates remain additional vetoes. Floating placements do not use the burst budget.
 - Acceptance: failing-first offline regressions for prompt observation, safe
   own-write echoes, changing-pair/exact-echo loop bounds, quiet/target/lifetime
   reset and replay handling. Existing float, fullscreen, gesture, hint and clamp
