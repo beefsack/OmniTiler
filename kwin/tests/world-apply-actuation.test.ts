@@ -1399,7 +1399,7 @@ describe("world apply safety reads", () => {
             domains: [{
                 id: "out", ws: "ws1", bounds: { x: 0, y: 0, w: 800, h: 600 },
                 gap: 8, outer: 0, focused: "", readable: true, hold: "",
-                adjacent: {}, complete: true,
+                complete: true,
                 windows: [{
                     win: "win-a", ref, out: "out", ws: "ws1",
                     rect: { x: 0, y: 0, w: 100, h: 100 },
@@ -1666,7 +1666,7 @@ describe("world admission focus on settled floats", () => {
             domains: [{
                 id: "out", ws: "ws1", bounds: { x: 0, y: 0, w: 800, h: 600 },
                 gap: 8, outer: 0, focused: "win-b", readable: true, hold: "",
-                adjacent: {}, complete: true,
+                complete: true,
                 windows: [{
                     win: "win-b", ref, out: "out", ws: "ws1",
                     rect: { x: 0, y: 0, w: 100, h: 100 },

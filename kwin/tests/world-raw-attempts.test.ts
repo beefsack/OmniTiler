@@ -817,7 +817,7 @@ function setterObservation(homings: Array<{ win: string; ref: object; out: strin
         domains: [{
             id: "dom-1", ws: "d1",
             bounds: { x: 0, y: 0, w: 800, h: 600 }, gap: 8, outer: 8,
-            focused: "", readable: true, hold: "", adjacent: {},
+            focused: "", readable: true, hold: "",
             windows: homings.map((h) => ({
                 win: h.win, ref: h.ref, out: h.out, ws: h.ws,
                 rect: { x: 0, y: 0, w: 100, h: 100 },

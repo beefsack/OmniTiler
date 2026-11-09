@@ -78,7 +78,7 @@ function observationFor(homeWs: string, ref: object): ApplyEnv["observation"] {
         domains: [{
             id: "out-1", ws: homeWs, bounds: { x: 0, y: 0, w: 800, h: 600 },
             gap: 8, outer: 0, focused: "", readable: true, hold: "",
-            adjacent: {}, complete: true,
+            complete: true,
             windows: [{
                 win: "win-a", ref, out: "out-1", ws: homeWs,
                 rect: { x: 0, y: 0, w: 100, h: 100 },

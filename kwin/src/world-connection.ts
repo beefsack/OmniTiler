@@ -2,9 +2,9 @@
 // connection shapes routed by `type` through
 // `tiler_protocol::connection_protocol::route_connection_request` on the
 // single discovery D-Bus method. No report/reply/capture vocabulary lives
-// here; the v3 report lane (world-report) is untouched until the K1b
-// cutover, and there is deliberately no dual protocol route: handshake and
-// settings are new, the report route keeps its single v3 shape.
+// here; the report lane (world-report) speaks the same v4 contract
+// (WORLD_CONTRACT_VERSION), and there is deliberately no dual protocol
+// route: handshake, settings, and report each keep a single v4 shape.
 //
 // Key orders below mirror the Rust codecs exactly (handshake_request,
 // settings, handshake_reply, settings_reply, error); decoders accept order
@@ -19,9 +19,8 @@ import {
     utf8ByteLength,
 } from "./world-seq";
 
-// Connection wire version: v4 only. The report lane keeps its own
-// WORLD_CONTRACT_VERSION until the K1b cutover; connection messages always
-// carry 4.
+// Connection wire version: v4 only. The report lane shares the same
+// WORLD_CONTRACT_VERSION; connection messages always carry 4.
 export const WORLD_CONNECTION_VERSION = 4;
 
 // Fixed own-process identity token. The KWin scripting surface exposes no

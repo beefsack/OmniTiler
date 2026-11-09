@@ -92,13 +92,13 @@ function makeObservation(world: FakeWorld): WorldObservation {
             {
                 id: "out-a", ws: "wa1",
                 bounds: { x: 0, y: 0, w: 800, h: 600 }, gap: 8, outer: 4,
-                focused: "win-a", readable: true, hold: "", adjacent: {},
+                focused: "win-a", readable: true, hold: "",
                 windows: [win("win-a", { x: 0, y: 0, w: 100, h: 100 })], closed: [], complete: true,
             },
             {
                 id: "out-b", ws: "wb1",
                 bounds: { x: 800, y: 0, w: 800, h: 600 }, gap: 8, outer: 4,
-                focused: "win-b", readable: true, hold: "", adjacent: {},
+                focused: "win-b", readable: true, hold: "",
                 windows: [win("win-b", { x: 800, y: 0, w: 100, h: 100 })], closed: [], complete: true,
             },
         ],

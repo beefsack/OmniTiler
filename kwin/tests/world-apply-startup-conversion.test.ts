@@ -172,14 +172,14 @@ function observe(surf: ReturnType<typeof makeSurface>): WorldObservation {
             {
                 id: OUT_1, ws: WS_1,
                 bounds: { x: 0, y: 0, w: 800, h: 600 }, gap: 8, outer: 4,
-                focused: "win-a", readable: true, hold: "", adjacent: {},
+                focused: "win-a", readable: true, hold: "",
                 windows: liveWins.filter((w) => w.output.name === OUT_1).map(winObs),
                 closed: [], complete: true,
             },
             {
                 id: OUT_2, ws: WS_1,
                 bounds: { x: 800, y: 0, w: 800, h: 600 }, gap: 8, outer: 4,
-                focused: "", readable: true, hold: "", adjacent: {},
+                focused: "", readable: true, hold: "",
                 windows: liveWins.filter((w) => w.output.name === OUT_2).map(winObs),
                 closed: [], complete: true,
             },

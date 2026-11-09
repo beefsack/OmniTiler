@@ -1010,11 +1010,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         return "unknown";
     };
 
-    // v4 bound generation-mismatch on a v3 lane: the broker binds every
-    // rejection (including generation mismatches) with source/watermark/
-    // clock, which the v3 lane parser refuses. Recognize exactly that case
-    // so a rotated broker still reconnects the entry; every other v4
-    // shape stays malformed-class on v3 lanes until the K1b cutover.
+    // Bound generation-mismatch in the connection-error shape on the
+    // report route: the broker binds every rejection (including
+    // generation mismatches) with source/watermark/clock, which the
+    // report-route reply parser refuses. Recognize exactly that case
+    // so a rotated broker still reconnects the entry; every other
+    // unexpected shape stays malformed-class.
     const isGenerationMismatch = (reply: string): boolean => {
         const failure = parseConnectionError(reply);
         return failure !== null && failure.kind === "generation-mismatch";

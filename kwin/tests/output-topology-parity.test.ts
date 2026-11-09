@@ -17,8 +17,7 @@ import { join } from "node:path";
 // no wrap). Provenance: verbatim copy of the removed production function,
 // retained here only to prove the shared fixture is an exact capture of
 // the original KDE behavior. No production code derives topology; the core
-// owns selection from FULL `topology[].rect`, with wire `adjacent` always
-// empty.
+// owns selection from FULL `topology[].rect`; no adjacency rides the wire.
 function frozenOriginalAdjacency(
     names: ReadonlyArray<string>,
     rects: ReadonlyArray<{ x: number; y: number; w: number; h: number }>,
@@ -136,15 +135,15 @@ describe("output topology parity (frozen KDE oracle vs shared fixture)", () => {
 
 describe("output topology parity (adapter emits no adjacency)", () => {
     it("wire domains stay empty (core-owned topology only)", () => {
-        // The production observer always emits empty wire-compat adjacent
-        // maps; strict resolution reads FULL topology rects instead. This
-        // test guards the emission absence without invoking KWin.
+        // The production observer carries no adjacency; strict
+        // resolution reads FULL topology rects instead. This test
+        // guards the absence without invoking KWin.
         const { cases } = loadFixture();
         const two = cases.find((c) => c.name === "two-output-horizontal");
         assert.ok(two !== undefined);
         // The shared fixture still carries the resolving strict map for the
-        // oracle, but production wire domains must be empty: covered by the
-        // world-wire byte fixtures (report-*.json carry "adjacent":{}).
+        // oracle, but production wire domains carry no adjacency: covered
+        // by the world-wire byte fixtures (report-*.json have no key).
         assert.deepEqual(two.expected["left"], { right: "right" });
     });
 });

@@ -109,7 +109,6 @@ function makeObservation(world: FakeWorld): WorldObservation {
             id: "out", ws: "ws",
             bounds: { x: 0, y: 0, w: 800, h: 600 },
             gap: 8, outer: 4, focused: "win-a", readable: true, hold: "",
-            adjacent: {},
             windows: [win("win-a"), win("win-b")], closed: [], complete: true,
         }],
         minimized: [],

@@ -193,14 +193,14 @@ function observe(surf: ReturnType<typeof makeSurface>): WorldObservation {
             {
                 id: DP, ws: D6,
                 bounds: { x: 0, y: 0, w: 800, h: 600 }, gap: 8, outer: 4,
-                focused: "win-a", readable: true, hold: "", adjacent: {},
+                focused: "win-a", readable: true, hold: "",
                 windows: surf.wins.filter((w) => w.output.name === DP).map(winObs),
                 closed: [], complete: true,
             },
             {
                 id: HDMI, ws: DE,
                 bounds: { x: 800, y: 0, w: 800, h: 600 }, gap: 8, outer: 4,
-                focused: "", readable: true, hold: "", adjacent: {},
+                focused: "", readable: true, hold: "",
                 windows: surf.wins.filter((w) => w.output.name === HDMI).map(winObs),
                 closed: [], complete: true,
             },

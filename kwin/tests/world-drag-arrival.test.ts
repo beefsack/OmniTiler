@@ -101,13 +101,13 @@ function makeObservation(world: FakeWorld): WorldObservation {
             {
                 id: "out-a", ws: "wa1",
                 bounds: { x: 0, y: 0, w: 800, h: 600 }, gap: 8, outer: 4,
-                focused: "win-a", readable: true, hold: "", adjacent: { right: "out-b" },
+                focused: "win-a", readable: true, hold: "",
                 windows: [win("win-a")], closed: [], complete: true,
             },
             {
                 id: "out-b", ws: "wb1",
                 bounds: { x: 800, y: 0, w: 800, h: 600 }, gap: 8, outer: 4,
-                focused: "win-b", readable: true, hold: "", adjacent: { left: "out-a" },
+                focused: "win-b", readable: true, hold: "",
                 windows: [win("win-b")], closed: [], complete: true,
             },
         ],
@@ -299,7 +299,7 @@ function distinctObservation(world: FakeWorld): WorldObservation {
             {
                 id: home.out, ws: home.ws,
                 bounds: { x: 0, y: 0, w: 800, h: 600 }, gap: 8, outer: 4,
-                focused: "win-a", readable: true, hold: "", adjacent: {},
+                focused: "win-a", readable: true, hold: "",
                 windows: [{ ...template, out: home.out, ws: home.ws }],
                 closed: [], complete: true,
             },

@@ -77,7 +77,6 @@ function makeObservation(opts: {
             id: "out-a", ws: opts.homeWs,
             bounds: { x: 0, y: 0, w: 816, h: 600 },
             gap: 8, outer: 4, focused: "win-a", readable: true, hold: "",
-            adjacent: {},
             windows: [win], closed: [], complete: true,
         }],
         minimized: [],

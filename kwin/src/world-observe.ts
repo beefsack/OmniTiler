@@ -232,11 +232,6 @@ export interface ObservedDomain {
     focused: string;
     readable: boolean;
     hold: string;
-    // Deprecated wire-compat carrier, always empty: the core owns output
-    // topology from the FULL `topology[].rect` rectangles and ignores any
-    // carried adjacency, even when contradictory. Retained only so older
-    // core decoders that require the key keep accepting reports.
-    adjacent: Record<string, string>;
     windows: ObservedWindow[];
     closed: string[];
     complete: boolean;
@@ -262,7 +257,7 @@ export interface WorldObservation {
     gesture: boolean;
     focusedGlobal: string;
     // Raw KWin-shaped classification facts (Stage 4 broker-classified
-    // lane). The broker normalizes these into projected v3 facts via the
+    // lane). The broker normalizes these into projected v4 facts via the
     // shared Rust predicates; the adapter never preselects verdicts here.
     screens: ObservedScreenFact[];
     windowFacts: RawWindowFact[];
@@ -687,8 +682,7 @@ export interface ObserveEnv {
 // FULL output rectangles for the core-owned topology authority (the
 // membership and selection decisions stay in core). The adapter reports
 // every live screen's FULL geometry in `topology[].rect` plus separate
-// per-desktop work-area `bounds`/outer gaps, and always emits an empty
-// wire-compat `adjacent` map that the core ignores. No adapter-side
+// per-desktop work-area `bounds`/outer gaps. No adapter-side
 // target derivation exists; direction-only commands carry no endpoint.
 function readScreenGeometry(ref: object): { x: number; y: number; w: number; h: number } | null {
     let geometry: unknown = undefined;
@@ -1308,9 +1302,8 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     }
     const screenRects: Array<{ x: number; y: number; w: number; h: number } | null> =
         screenEntries.map((s) => readScreenGeometry(s.ref));
-    // No adapter-owned adjacency map is computed or emitted: the core owns
-    // output topology from the FULL `topology[].rect` rectangles below and
-    // ignores the deprecated wire-compat `adjacent` carrier (always empty).
+    // No adapter-owned adjacency is computed: the core owns
+    // output topology from the FULL `topology[].rect` rectangles below.
     const gap = env.readGap();
     const outer = env.readOuterGap();
     const gesture = (() => {
@@ -1342,7 +1335,6 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             focused: ws === screenCurrent ? activeId : "",
             readable: readable && bounds !== null,
             hold: bounds === null ? "unreadable" : hold,
-            adjacent: {},
             windows: readable ? members.filter((m) => !m.minimized) : [],
             closed: [],
             complete: readable && bounds !== null,
@@ -1459,7 +1451,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     }));
     const complete = topologyCompleteAll && windowsReadable && desktopsReadable && !domainsTruncated && !inventoryTruncated;
     const predicateWire = predicate === FIXED_SIZE_PREDICATE_EITHER ? FIXED_SIZE_PREDICATE_EITHER : FIXED_SIZE_PREDICATE_DEFAULT;
-    // Projected v3 facts. hostOwned requires a readable native inventory
+    // Projected v4 facts. hostOwned requires a readable native inventory
     // with a known current per screen; without it every nativeWs reads null
     // and native rides empty (core refuses nativeWs without hostOwned).
     const hostOwned = desktopsReadable && screenEntries.every((s) => s.current !== "");
@@ -1471,7 +1463,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     const nativeOrderFull = hostOwned
         ? (orderTruncated ? nativeOrder.slice(0, MAX_NATIVE_PER_OUTPUT) : nativeOrder)
         : [];
-    // Native occupancy (v3 wire `native[].occupancy`): a dedicated pass over
+    // Native occupancy (v4 wire `native[].occupancy`): a dedicated pass over
     // the raw capped window list, BEFORE any managed/unmanaged filtering, so
     // counts cover every enumerated native window (including unmanaged,
     // deleted, minimized, non-normal, and scope-foreign windows). Sticky

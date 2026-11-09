@@ -148,7 +148,7 @@ function makeObservation(world: FakeWorld): WorldObservation {
     const domain = (id: string, ws: string, ids: string[], focused: string) => ({
         id, ws,
         bounds: { x: 0, y: 0, w: 800, h: 600 }, gap: 8, outer: 4,
-        focused, readable: true, hold: "", adjacent: {},
+        focused, readable: true, hold: "",
         windows: ids.map(win), closed: [], complete: true,
     });
     return {

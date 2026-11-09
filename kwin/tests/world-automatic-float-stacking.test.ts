@@ -62,7 +62,7 @@ function applyObservation(focused: string, focusIsFloat: boolean) {
                 id: "out", ws: "ws",
                 bounds: { x: 0, y: 0, w: 800, h: 600 },
                 gap: 8, outer: 4, focused: focused, readable: true, hold: "",
-                adjacent: {}, closed: [], complete: true,
+                closed: [], complete: true,
                 windows: [
                     win("win-a", false, false),
                     win("win-b", focusIsFloat, focusIsFloat),
