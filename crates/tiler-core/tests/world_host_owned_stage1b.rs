@@ -1,17 +1,19 @@
 //! Host-owned native adoption Stage 1b tests: native-only receipts,
 //! strict `current_native` nulls, and core-owned creation desires with raw
 //! creation attempts. Opaque native ids (UUID-like and numeric Space ids);
-//! fullscreen Spaces are never ordered desktops.
+//! fullscreen Spaces are never ordered desktops. V4: native current is the
+//! view proof (no `views` echo); logical echoes retire per the v4 contract.
 
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     FrameSetter, HoldReason, NativeCreationAttempt, NativeObservation, NativeOccupancy,
-    ScopeAuthority, ScreenReport, ScreenView, TransferKind, WORLD_CONTRACT_VERSION_LEGACY,
-    WindowFact, WorldCommand, WorldReport,
+    ScopeAuthority, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION_V4, WindowFact,
+    WorldCommand, WorldReportV4,
 };
+use tiler_core::world_report_v4_checks::validate_report_v4_reason;
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -136,9 +138,9 @@ fn report(
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
     inventory_complete: bool,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -148,9 +150,9 @@ fn report(
         command,
         screens,
         windows: windows.clone(),
-        views: vec![],
         closed: vec![],
         native,
+        held_native: Vec::new(),
         focused_global: windows
             .first()
             .map(|f| f.window.0.clone())
@@ -172,20 +174,24 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: creations,
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
+        presentation: tiler_core::world_report::PresentationRowV4::Valid(
+            tiler_core::world_report::PresentationIngressV4::default(),
+        ),
 
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
 fn accepted(
     engine: &mut WorldEngine,
-    report: &WorldReport,
-) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    report: &WorldReportV4,
+) -> tiler_core::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -194,7 +200,10 @@ fn one_screen() -> Vec<ScreenReport> {
     vec![screen("out-a", 0)]
 }
 
-fn bound_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<(String, String)> {
+fn bound_ids(
+    reply: &tiler_core::world_report::WorldReplyV4,
+    output: &str,
+) -> Vec<(String, String)> {
     reply
         .workspaces
         .iter()
@@ -204,7 +213,7 @@ fn bound_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<
 }
 
 fn workspace_hold(
-    reply: &tiler_core::world_report::WorldReply,
+    reply: &tiler_core::world_report::WorldReplyV4,
     output: &str,
     id: &str,
 ) -> Option<HoldReason> {
@@ -1362,16 +1371,11 @@ fn migrated_workspace_desires_creation_then_binds_late_desktop() {
         .expect("migrated backing desired");
     assert!(desire.operation_id.starts_with("op-native-"));
     const LATE: &str = "late-native-4";
-    // The stored source refill rides the reply: both views must prove for
-    // the migration to settle (target shows the migrated logical now that
+    // The stored source refill rides the reply: both native currents must
+    // prove for the migration to settle (v4: native current is the view
+    // proof, no `views` echo; target shows the migrated logical now that
     // the created desktop is current).
-    let refill_a = migrated
-        .outputs
-        .iter()
-        .find(|row| row.output.0 == "out-a")
-        .and_then(|row| row.logical_view.clone())
-        .expect("source refill");
-    let mut step3 = report(
+    let step3 = report(
         3,
         3,
         screens.clone(),
@@ -1397,16 +1401,6 @@ fn migrated_workspace_desires_creation_then_binds_late_desktop() {
         None,
         true,
     );
-    step3.views = vec![
-        ScreenView {
-            output: OutputId("out-a".to_owned()),
-            view: refill_a,
-        },
-        ScreenView {
-            output: OutputId("out-b".to_owned()),
-            view: view_a.clone(),
-        },
-    ];
     let settled = accepted(&mut engine, &step3);
     let rebound: Vec<(String, Option<String>)> = settled
         .workspaces
@@ -1724,8 +1718,8 @@ fn changed_replay_marks_ambiguous() {
 fn creation_triple_mismatch_is_invalid() {
     // One op naming two different triples is contradictory evidence, never
     // a silent absent-fallback for the wrong row.
-    let report = WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+    let report = WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: 1,
@@ -1735,9 +1729,9 @@ fn creation_triple_mismatch_is_invalid() {
         command: None,
         screens: one_screen(),
         windows: vec![],
-        views: vec![],
         closed: vec![],
         native: vec![native_obs("out-a", &[D1], Some(D1))],
+        held_native: Vec::new(),
         focused_global: String::new(),
         action_foreground: None,
         action_cached: None,
@@ -1777,14 +1771,18 @@ fn creation_triple_mismatch_is_invalid() {
                 1,
             ),
         ],
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
+        presentation: tiler_core::world_report::PresentationRowV4::Valid(
+            tiler_core::world_report::PresentationIngressV4::default(),
+        ),
 
         intent_records: Vec::new(),
+        renderer_input: None,
     };
     assert_eq!(
-        tiler_core::world_report::validate_report_reason(&report),
+        validate_report_v4_reason(&report),
         Some("creation-triple-mismatch")
     );
 }
@@ -2521,10 +2519,7 @@ fn creation_receipt_validation_rejects_reuse_and_bad_ids() {
         None,
         true,
     );
-    assert_eq!(
-        tiler_core::world_report::validate_report_reason(&bad),
-        Some("creation-id-invalid")
-    );
+    assert_eq!(validate_report_v4_reason(&bad), Some("creation-id-invalid"));
     // One correlated id claimed by two operations is contradictory
     // evidence and refuses outright, like a triple mismatch.
     let reused = report(
@@ -2565,7 +2560,7 @@ fn creation_receipt_validation_rejects_reuse_and_bad_ids() {
         true,
     );
     assert_eq!(
-        tiler_core::world_report::validate_report_reason(&reused),
+        validate_report_v4_reason(&reused),
         Some("creation-receipt-reused")
     );
 }
@@ -3066,8 +3061,9 @@ fn none_current_conflicting_view_holds_flight_until_native_proof() {
             true,
         ),
     );
-    // Unknown current echoing the flight target logically: proves nothing.
-    let mut bogus = report(
+    // Unknown current holds the retained flight (v4: no `views` echo; the
+    // native current alone is the view proof, and `None` proves nothing).
+    let bogus = report(
         3,
         3,
         one_screen(),
@@ -3083,18 +3079,14 @@ fn none_current_conflicting_view_holds_flight_until_native_proof() {
         None,
         true,
     );
-    bogus.views = vec![ScreenView {
-        output: OutputId("out-a".to_owned()),
-        view: bound[D2].clone(),
-    }];
     let held = accepted(&mut engine, &bogus);
     assert_eq!(
         held.transfers.len(),
         1,
-        "unknown current holds the flight despite the logical echo: {:?}",
+        "unknown current holds the flight: {:?}",
         held.transfers
     );
-    // The native current later proves the target with no logical echo.
+    // The native current later proves the target.
     let settled = accepted(
         &mut engine,
         &report(
@@ -3172,8 +3164,9 @@ fn actual_native_current_settles_despite_bogus_view() {
             true,
         ),
     );
-    // The host shows the target natively while the logical echo is stale.
-    let mut stale = report(
+    // The host shows the target natively (v4: no `views` echo; the native
+    // current alone proves the flight).
+    let stale = report(
         3,
         3,
         one_screen(),
@@ -3189,14 +3182,10 @@ fn actual_native_current_settles_despite_bogus_view() {
         None,
         true,
     );
-    stale.views = vec![ScreenView {
-        output: OutputId("out-a".to_owned()),
-        view: bound[D1].clone(),
-    }];
     let settled = accepted(&mut engine, &stale);
     assert!(
         settled.transfers.is_empty(),
-        "actual native current wins despite the bogus echo: {:?}",
+        "actual native current wins: {:?}",
         settled.transfers
     );
 }

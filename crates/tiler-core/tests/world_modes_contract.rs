@@ -9,10 +9,10 @@ use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    FrameSetter, MemberAttempt, ScreenReport, ScreenView, TransferKind, WindowFact, WorkspaceRef,
-    WorldCommand, WorldReport,
+    FrameSetter, MemberAttempt, PresentationIngressV4, PresentationRowV4, ScreenReport,
+    TransferKind, WindowFact, WorkspaceRef, WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -87,9 +87,17 @@ fn report(
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
     member_attempts: Vec<tiler_core::world_report::MemberAttempt>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    // v4 carries no view-echo lane: all call sites pass an empty lane
+    // except the two previous-toggle echoes, which the port drops (noted
+    // per test); the assert locks that.
+    assert!(
+        views.is_empty(),
+        "v4 has no views lane: {} view echo(s) cannot convert",
+        views.len()
+    );
+    WorldReportV4 {
+        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -98,19 +106,15 @@ fn report(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: views
-            .into_iter()
-            .map(|(output, view)| ScreenView {
-                output: OutputId(output.to_owned()),
-                view: view.to_owned(),
-            })
-            .collect(),
+        held_windows: Vec::new(),
         closed: closed
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -118,8 +122,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -129,11 +131,12 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
@@ -177,15 +180,15 @@ fn engine_for_mode_with_capabilities(
 
 fn accepted(
     engine: &mut WorldEngine,
-    report: &WorldReport,
-) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    report: &WorldReportV4,
+) -> tiler_core::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
-fn view_of(reply: &tiler_core::world_report::WorldReply, output: &str) -> Option<String> {
+fn view_of(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Option<String> {
     reply
         .outputs
         .iter()
@@ -193,7 +196,7 @@ fn view_of(reply: &tiler_core::world_report::WorldReply, output: &str) -> Option
         .and_then(|row| row.logical_view.clone())
 }
 
-fn ring_of(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<String> {
+fn ring_of(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Vec<String> {
     let mut ids: Vec<String> = reply
         .workspaces
         .iter()
@@ -310,6 +313,9 @@ fn global_unique_swaps_visible_elsewhere_instead_of_duplicating() {
     // The swapped-out ids left their scopes, so the per-output previous
     // entries invalidate (moved ids clear, never reinterpreted):
     // previous-toggle is a no-op until the next recorded change.
+    // v4 carries no view-echo lane: the port drops the post-swap echo and
+    // keeps the same no-op expectation; the green run proves the toggle
+    // reads engine history, not the echo.
     let third = accepted(
         &mut engine,
         &report(
@@ -317,7 +323,7 @@ fn global_unique_swaps_visible_elsewhere_instead_of_duplicating() {
             3,
             two_screens(),
             vec![],
-            vec![("out-a", view_b.as_str()), ("out-b", view_a.as_str())],
+            vec![],
             vec![],
             "",
             Some(12),
@@ -350,7 +356,7 @@ fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
     );
     let view_b = view_of(&first, "out-b").expect("view b");
     // Local mode refuses a foreign id: no cross-output duplication.
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         2,
         2,
         two_screens(),
@@ -365,7 +371,7 @@ fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
         }),
         vec![],
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::ViewTargetUnknown
@@ -429,6 +435,9 @@ fn shared_mode_shares_one_ring_view_and_history() {
     );
     assert_eq!(ring_of(&second, "out-a"), ring_of(&second, "out-b"));
     // Previous-toggle walks the one shared history.
+    // v4 carries no view-echo lane: the port drops the trailing echo and
+    // keeps the same restore-shared expectation; the green run proves the
+    // toggle reads engine history, not the echo.
     let third = accepted(
         &mut engine,
         &report(
@@ -436,7 +445,7 @@ fn shared_mode_shares_one_ring_view_and_history() {
             3,
             two_screens(),
             vec![],
-            vec![("out-a", trailing.as_str()), ("out-b", trailing.as_str())],
+            vec![],
             vec![],
             "",
             Some(12),
@@ -469,7 +478,7 @@ fn shared_mode_refuses_whole_workspace_migration() {
         ),
     );
     let shared = view_of(&first, "out-a").expect("shared view");
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         2,
         2,
         two_screens(),
@@ -485,7 +494,7 @@ fn shared_mode_refuses_whole_workspace_migration() {
         }),
         vec![],
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::MigrationRefused

@@ -1427,14 +1427,14 @@ fn inset_bounds_of(
 mod staged_pause_tests {
     //! Staged-observation game-pause pin: the gesture predicate exempts its
     //! own subject while the cursor predicate does not. Nested
-    //! private-predicate tests; they drive the real `stage_facts` lane,
+    //! private-predicate tests; they drive the real `stage_facts_v4` lane,
     //! never a production test seam.
 
     use crate::directional::{OutputId, WindowId, WorkspaceId};
     use crate::gesture::GestureKind;
     use crate::session::DomainKey;
-    use crate::world_directional::tests::{fact, report_full, screen};
     use crate::world_engine::WorldEngine;
+    use crate::world_v4_support_tests::{fact, report_full, screen};
 
     use super::RetainedGesture;
 
@@ -1476,7 +1476,7 @@ mod staged_pause_tests {
             None,
             None,
         );
-        engine.stage_facts(&report);
+        engine.stage_facts_v4(&report);
         // The cursor lane pauses on a focused fullscreen game with no
         // subject exemption; the gesture lane pauses for other subjects
         // but exempts its own.
@@ -1495,7 +1495,7 @@ mod staged_pause_tests {
             None,
             None,
         );
-        engine.stage_facts(&clear);
+        engine.stage_facts_v4(&clear);
         assert!(!crate::world_cursor::cursor_game_paused(&engine));
         assert!(!engine.gesture_game_paused(&retained("win-a")));
         assert!(!engine.gesture_game_paused(&retained("game")));

@@ -6,11 +6,11 @@
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport,
-    TransferKind, ViewAttempt, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorkspaceRef,
-    WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, FrameSetter, MemberAttempt, PresentationIngressV4,
+    PresentationRowV4, ScopeAuthority, ScreenReport, TransferKind, ViewAttempt,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -331,9 +331,9 @@ fn report(
     command: Option<WorldCommand>,
     member_attempts: Vec<MemberAttempt>,
     view_attempts: Vec<ViewAttempt>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -342,10 +342,12 @@ fn report(
         command_seq,
         command,
         screens: vec![screen("out-a", 0), screen("out-b", 800)],
+        held_screens: Vec::new(),
         windows,
-        views: vec![],
+        held_windows: Vec::new(),
         closed: vec![],
         native: vec![],
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -355,8 +357,6 @@ fn report(
         // tests below resolve through it.
         action_outputs: vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())],
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -366,17 +366,18 @@ fn report(
         view_attempts,
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -849,9 +850,9 @@ fn report_with_screens(
     view_attempts: Vec<ViewAttempt>,
     inventory_complete: bool,
     closed: Vec<WindowId>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -860,10 +861,12 @@ fn report_with_screens(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: vec![],
+        held_windows: Vec::new(),
         closed,
         native: vec![],
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -873,8 +876,6 @@ fn report_with_screens(
         // tests below resolve through it.
         action_outputs: vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())],
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
@@ -886,9 +887,10 @@ fn report_with_screens(
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         creation_attempts: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        held_attempts: Vec::new(),
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
@@ -1574,7 +1576,7 @@ fn rejected_logical_supersession_does_not_replay_migration() {
     );
     // V4 rejects the historical logical-selector supersession proof. The
     // incomplete inventory still cannot erase migration state.
-    match engine.handle_report_legacy(&report_with_screens(
+    match engine.handle_report(&report_with_screens(
         5,
         5,
         vec![screen("out-a", 0), screen("out-b", 800)],
@@ -1593,7 +1595,7 @@ fn rejected_logical_supersession_does_not_replay_migration() {
         false,
         vec![],
     )) {
-        LegacyWorldOutcome::Rejected { message, .. } => {
+        WorldOutcome::Rejected { message, .. } => {
             assert_eq!(message, "native-without-capability")
         }
         other => panic!("logical ViewAttempt must reject, got {other:?}"),
@@ -1991,7 +1993,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
     // No adjacent target: eastmost output heading right. The action
     // context stages the out-b foreground so the core resolves the
     // eastmost source with its current view, then refuses topology.
-    let east = WorldReport {
+    let east = WorldReportV4 {
         screens: screens_two(),
         windows: vec![fact("win-a", "out-b", 800)],
         focused_global: "win-a".to_owned(),
@@ -2011,8 +2013,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         inventory_complete: true,
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
-    match engine.handle_report_legacy(&east) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&east) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2034,8 +2036,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     inv.inventory_complete = false;
-    match engine.handle_report_legacy(&inv) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&inv) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2061,8 +2063,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
     );
     ghost.action_outputs.push(OutputId("out-z".to_owned()));
     ghost.action_cached = Some(OutputId("out-z".to_owned()));
-    match engine.handle_report_legacy(&ghost) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&ghost) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2087,8 +2089,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
         vec![],
     );
-    match engine.handle_report_legacy(&bad_src) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&bad_src) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2117,8 +2119,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     tgt.screens = inc_screens.clone();
-    match engine.handle_report_legacy(&tgt) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&tgt) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2141,8 +2143,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     topo.screens = inc_screens;
-    match engine.handle_report_legacy(&topo) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&topo) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2195,8 +2197,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
         vec![],
     );
-    match flight_engine.handle_report_legacy(&again) {
-        LegacyWorldOutcome::Accepted(reply) => {
+    match flight_engine.handle_report(&again) {
+        WorldOutcome::Accepted(reply) => {
             let source = reply
                 .command_result
                 .clone()
@@ -2294,7 +2296,7 @@ fn offset_two_output_migration_applies() {
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
-        &WorldReport {
+        &WorldReportV4 {
             screens: screens.clone(),
             windows: wins(),
             focused_global: "m1".to_owned(),
@@ -2311,7 +2313,7 @@ fn offset_two_output_migration_applies() {
     // current view; the strict largest-edge target is unchanged.
     let reply = accepted(
         &mut engine,
-        &WorldReport {
+        &WorldReportV4 {
             screens: screens.clone(),
             windows: wins(),
             focused_global: "m1".to_owned(),
@@ -2383,7 +2385,7 @@ fn logical_view_attempt_is_rejected_without_losing_migration_membership() {
     );
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let windows = vec![fact("win-a", "out-a", 0)];
-    match engine.handle_report_legacy(&report_with_screens(
+    match engine.handle_report(&report_with_screens(
         5,
         5,
         screens.clone(),
@@ -2402,7 +2404,7 @@ fn logical_view_attempt_is_rejected_without_losing_migration_membership() {
         true,
         vec![],
     )) {
-        LegacyWorldOutcome::Rejected { message, .. } => {
+        WorldOutcome::Rejected { message, .. } => {
             assert_eq!(message, "native-without-capability")
         }
         other => panic!("logical ViewAttempt must be rejected, got {other:?}"),
@@ -2488,7 +2490,7 @@ fn logical_selector_attempt_rejects_while_migration_remains_in_flight() {
     );
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let windows = vec![fact("win-a", "out-a", 0)];
-    match engine.handle_report_legacy(&report_with_screens(
+    match engine.handle_report(&report_with_screens(
         5,
         5,
         screens.clone(),
@@ -2507,7 +2509,7 @@ fn logical_selector_attempt_rejects_while_migration_remains_in_flight() {
         true,
         vec![],
     )) {
-        LegacyWorldOutcome::Rejected { message, .. } => {
+        WorldOutcome::Rejected { message, .. } => {
             assert_eq!(message, "native-without-capability")
         }
         other => panic!("logical ViewAttempt must be rejected, got {other:?}"),
@@ -2749,7 +2751,10 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_already_retired() {
         .cloned()
         .expect("third known source workspace");
     // The former logical-selector refusal proof is invalid in v4.
-    let mut external = report_with_screens(
+    // v4 carries no view-echo lane; the adapter echoes here were inert
+    // (native-free engines never stage or consult the views lane), so
+    // the v4 port observes the same facts with an empty lane.
+    let external = report_with_screens(
         7,
         7,
         vec![screen("out-a", 0), screen("out-b", 800)],
@@ -2762,26 +2767,6 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_already_retired() {
         true,
         vec![],
     );
-    external.views = vec![
-        crate::world_report::ScreenView {
-            output: OutputId("out-a".to_owned()),
-            view: third.clone(),
-        },
-        crate::world_report::ScreenView {
-            output: OutputId("out-b".to_owned()),
-            view: engine
-                .logical_ring("out-b")
-                .into_iter()
-                .find(|id| id == &view_a)
-                .unwrap_or_else(|| {
-                    engine
-                        .logical_ring("out-b")
-                        .first()
-                        .cloned()
-                        .unwrap_or_default()
-                }),
-        },
-    ];
     let mut invalid = external.clone();
     invalid.view_attempts.push(ViewAttempt {
         operation_id: refill_op.clone(),
@@ -2793,8 +2778,8 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_already_retired() {
         baseline: Some(native_ref("out-a", &refill_ws)),
         attempt_ms: 7,
     });
-    match engine.handle_report_legacy(&invalid) {
-        LegacyWorldOutcome::Rejected { message, .. } => {
+    match engine.handle_report(&invalid) {
+        WorldOutcome::Rejected { message, .. } => {
             assert_eq!(message, "native-without-capability")
         }
         other => panic!("logical ViewAttempt must reject, got {other:?}"),
@@ -2854,8 +2839,8 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
         cursor: Option<(i32, i32)>,
         cached: Option<&str>,
         direction: &str,
-    ) -> WorldReport {
-        WorldReport {
+    ) -> WorldReportV4 {
+        WorldReportV4 {
             cursor,
             action_foreground: foreground.map(|out| OutputId(out.to_owned())),
             action_cached: cached.map(|out| OutputId(out.to_owned())),
@@ -2879,7 +2864,7 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
             )
         }
     }
-    fn migrated(reply: &crate::world_report::WorldReply) -> (String, String) {
+    fn migrated(reply: &crate::world_report::WorldReplyV4) -> (String, String) {
         let transfer = reply
             .transfers
             .iter()
@@ -2950,7 +2935,7 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
     // A stale-but-registered cache still selects and refuses downstream
     // instead of silently retargeting live state.
     let (mut engine, _, _) = seeded();
-    match engine.handle_report_legacy(&context_cmd(
+    match engine.handle_report(&context_cmd(
         2,
         registry(&["out-a", "out-b", "out-z"]),
         None,
@@ -2958,7 +2943,7 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
         Some("out-z"),
         "right",
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2971,7 +2956,7 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
     // struct-update base carries a registry, so clear it explicitly:
     // empty screens plus an empty registry resolve nothing.
     let (mut engine, _, _) = seeded();
-    let empty = WorldReport {
+    let empty = WorldReportV4 {
         screens: vec![],
         windows: vec![],
         focused_global: String::new(),
@@ -2987,8 +2972,8 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
         }),
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
-    match engine.handle_report_legacy(&empty) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&empty) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -3009,7 +2994,7 @@ fn migrate_directional_freezes_source_view_pre_observation() {
     // Fresh engine, no prior observation: no retained view exists, so the
     // frozen source is unknown and the command refuses without mutation.
     let mut fresh = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
-    let unbootstrapped = WorldReport {
+    let unbootstrapped = WorldReportV4 {
         request_seq: 1,
         observation_seq: 1,
         request_id: "req-1".to_owned(),
@@ -3019,8 +3004,8 @@ fn migrate_directional_freezes_source_view_pre_observation() {
         }),
         ..report(1, 1, vec![], "", None, None, vec![], vec![])
     };
-    match fresh.handle_report_legacy(&unbootstrapped) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match fresh.handle_report(&unbootstrapped) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -3047,7 +3032,7 @@ fn migrate_directional_freezes_source_view_pre_observation() {
     );
     let reply = accepted(
         &mut engine,
-        &WorldReport {
+        &WorldReportV4 {
             request_seq: 2,
             observation_seq: 2,
             request_id: "req-2".to_owned(),
@@ -3100,7 +3085,7 @@ fn migrate_directional_ignores_same_report_view_creation() {
             vec![],
         ),
     );
-    let hotplug = WorldReport {
+    let hotplug = WorldReportV4 {
         screens: vec![screen("out-a", 0), screen("out-b", 800)],
         cursor: Some((900, 10)),
         action_outputs: vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())],
@@ -3125,8 +3110,8 @@ fn migrate_directional_ignores_same_report_view_creation() {
             vec![],
         )
     };
-    match engine.handle_report_legacy(&hotplug) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&hotplug) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -3155,7 +3140,7 @@ fn migrate_directional_ignores_same_report_view_creation() {
     );
     let reply = accepted(
         &mut engine,
-        &WorldReport {
+        &WorldReportV4 {
             screens: vec![screen("out-a", 0), screen("out-b", 800)],
             cursor: Some((900, 10)),
             action_outputs: vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())],

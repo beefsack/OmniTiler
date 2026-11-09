@@ -7,10 +7,10 @@
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, ScopeAuthority, ScreenReport, ScreenView,
-    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, PresentationIngressV4, PresentationRowV4, ScopeAuthority,
+    ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -108,9 +108,16 @@ fn report(
     views: Vec<(&str, &str)>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    // v4 carries no view-echo lane; the single legacy echo here (re-tile
+    // receipt) was inert, so the v4 port passes an empty lane.
+    assert!(
+        views.is_empty(),
+        "v4 has no views lane: {} echo(s) cannot convert",
+        views.len()
+    );
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -119,16 +126,12 @@ fn report(
         command_seq,
         command,
         screens: vec![screen("out-a", 0), screen("out-b", 800)],
+        held_screens: Vec::new(),
         windows,
-        views: views
-            .into_iter()
-            .map(|(output, view)| ScreenView {
-                output: OutputId(output.to_owned()),
-                view: view.to_owned(),
-            })
-            .collect(),
+        held_windows: Vec::new(),
         closed: vec![],
         native: vec![],
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
@@ -136,8 +139,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -147,17 +148,18 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -316,7 +318,7 @@ fn floating_toggle_keeps_membership_across_view_switch_and_unchanged_report() {
             6,
             6,
             members.clone(),
-            vec![("out-a", other.as_str())],
+            vec![],
             Some(13),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
@@ -397,9 +399,9 @@ fn report_screens(
     windows: Vec<WindowFact>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -408,10 +410,12 @@ fn report_screens(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: Vec::new(),
+        held_windows: Vec::new(),
         closed: vec![],
         native: vec![],
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
@@ -419,8 +423,6 @@ fn report_screens(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -432,16 +434,17 @@ fn report_screens(
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         creation_attempts: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        held_attempts: Vec::new(),
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
 fn migrate_floating_workspace(
     screens: Vec<ScreenReport>,
     members: Vec<WindowFact>,
-) -> crate::world_report::WorldReply {
+) -> crate::world_report::WorldReplyV4 {
     migrated_session(screens, members, false).1
 }
 
@@ -449,14 +452,14 @@ fn migrated_session(
     screens: Vec<ScreenReport>,
     members: Vec<WindowFact>,
     host_owned: bool,
-) -> (WorldEngine, crate::world_report::WorldReply, String) {
+) -> (WorldEngine, crate::world_report::WorldReplyV4, String) {
     fn owned_report(
         seq: u64,
         screens: Vec<ScreenReport>,
         mut members: Vec<WindowFact>,
         command_seq: Option<u64>,
         command: Option<WorldCommand>,
-    ) -> WorldReport {
+    ) -> WorldReportV4 {
         use crate::world_report::{NativeObservation, NativeOccupancy};
         for fact in &mut members {
             fact.native_workspace = crate::world_report::NativeWorkspaceFact::Value(format!(
@@ -578,7 +581,7 @@ fn migrated_session(
 }
 
 fn row_of<'a>(
-    reply: &'a crate::world_report::WorldReply,
+    reply: &'a crate::world_report::WorldReplyV4,
     window: &str,
 ) -> &'a crate::world_report::WindowDesire {
     reply
@@ -1121,7 +1124,7 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
     assert!(back.transfers.is_empty(), "{:?}", back.transfers);
 
     // Dependent toggle stays fail-closed without replacing nulls.
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         4,
         4,
         vec![
@@ -1137,7 +1140,7 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
             },
         )),
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused

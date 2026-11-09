@@ -11,7 +11,8 @@ use crate::size_hints::WindowSizeHints;
 use crate::workspace_scope::WorkspaceMode;
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
-    PresentationIngress, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldReport,
+    PresentationIngressV4, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact,
+    WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -79,9 +80,9 @@ fn report(
     screens: Vec<ScreenReport>,
     complete: bool,
     _equal_count: bool,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: 1,
@@ -90,10 +91,12 @@ fn report(
         command_seq: None,
         command: None,
         screens,
+        held_screens: Vec::new(),
         windows: Vec::new(),
-        views: Vec::new(),
+        held_windows: Vec::new(),
         closed: vec![],
         native: vec![],
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
@@ -101,8 +104,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: complete,
         gesture_barrier: false,
         gesture: None,
@@ -112,11 +113,27 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: PresentationIngress::disabled(),
+        presentation: PresentationRowV4::Valid(PresentationIngressV4 {
+            foreground: String::new(),
+            foreground_minimized: Some(false),
+            foreground_maximized: Some(false),
+            foreground_fullscreen: Some(false),
+            foreground_host_hidden: Some(false),
+            foreground_hidden_workspace: Some(false),
+            foreground_frame: None,
+            chord_held: false,
+            move_window: String::new(),
+            pager_order: Vec::new(),
+            pager_frames: Vec::new(),
+            witness: None,
+            foreground_out: None,
+        }),
 
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
@@ -174,7 +191,7 @@ fn home(engine: &mut WorldEngine, window: &str, output: &str, workspace: &str) {
     );
 }
 
-fn stage_report_gates(engine: &mut WorldEngine, report: &WorldReport) {
+fn stage_report_gates(engine: &mut WorldEngine, report: &WorldReportV4) {
     // The marker reads inventory/screen gates from the staged observation:
     // mirror the hand-built report lanes into staged capture.
     engine.staged.observation.inventory_complete = report.inventory_complete;
@@ -190,9 +207,9 @@ fn plan_marks(engine: &mut WorldEngine, output: &str) -> Vec<(String, bool)> {
         .collect()
 }
 
-fn pager_marks(report: &WorldReport, engine: &WorldEngine, output: &str) -> Vec<(String, bool)> {
+fn pager_marks(engine: &WorldEngine, output: &str) -> Vec<(String, bool)> {
     engine
-        .presentation_for_publish(report)
+        .presentation_for_publish_v4()
         .pager
         .iter()
         .find(|screen| screen.output == output)
@@ -235,12 +252,12 @@ fn shared_union_occupied_elsewhere_suppresses_both_outputs() {
             .all(|(_, marked)| !marked)
     );
     assert!(
-        pager_marks(&report, &engine, "out-a")
+        pager_marks(&engine, "out-a")
             .iter()
             .all(|(_, marked)| !marked)
     );
     assert!(
-        pager_marks(&report, &engine, "out-b")
+        pager_marks(&engine, "out-b")
             .iter()
             .all(|(_, marked)| !marked)
     );
@@ -263,11 +280,7 @@ fn occupied_tail_marks_nothing() {
             .iter()
             .all(|(_, marked)| !marked)
     );
-    assert!(
-        pager_marks(&report, &engine, "o")
-            .iter()
-            .all(|(_, marked)| !marked)
-    );
+    assert!(pager_marks(&engine, "o").iter().all(|(_, marked)| !marked));
 }
 
 #[test]
@@ -296,7 +309,7 @@ fn bound_visible_tail_still_marks() {
         vec![("w1".to_owned(), false), ("w2".to_owned(), true)]
     );
     assert_eq!(
-        pager_marks(&report, &engine, "o"),
+        pager_marks(&engine, "o"),
         vec![("w1".to_owned(), false), ("w2".to_owned(), true)]
     );
 }
@@ -329,7 +342,7 @@ fn publication_final_only_over_unequal_rings() {
         vec![("w1".to_owned(), false), ("w2".to_owned(), true)]
     );
     assert_eq!(
-        pager_marks(&report, &engine, "a"),
+        pager_marks(&engine, "a"),
         vec![
             ("w1".to_owned(), false),
             ("w2".to_owned(), false),
@@ -337,7 +350,7 @@ fn publication_final_only_over_unequal_rings() {
         ]
     );
     assert_eq!(
-        pager_marks(&report, &engine, "b"),
+        pager_marks(&engine, "b"),
         vec![("w1".to_owned(), false), ("w2".to_owned(), true)]
     );
 }
@@ -358,7 +371,7 @@ fn empty_tail_marks_the_final_spare_in_both_streams() {
         vec![("w1".to_owned(), false), ("w2".to_owned(), true)]
     );
     assert_eq!(
-        pager_marks(&report, &engine, "o"),
+        pager_marks(&engine, "o"),
         vec![("w1".to_owned(), false), ("w2".to_owned(), true)]
     );
 }
@@ -379,9 +392,5 @@ fn incomplete_inventory_fails_closed_at_the_helper() {
             .iter()
             .all(|(_, marked)| !marked)
     );
-    assert!(
-        pager_marks(&report, &engine, "o")
-            .iter()
-            .all(|(_, marked)| !marked)
-    );
+    assert!(pager_marks(&engine, "o").iter().all(|(_, marked)| !marked));
 }

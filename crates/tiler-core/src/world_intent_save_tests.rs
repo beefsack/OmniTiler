@@ -14,9 +14,9 @@ use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::intent_data::{IntentData, encode_intent_data};
 use crate::size_hints::WindowSizeHints;
-use crate::world_directional::tests::{accepted, fact, report_full, screen};
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
-use crate::world_report::{IntentRecord, WorldCommand, WorldReport};
+use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_report::{IntentRecord, WorldCommand, WorldReportV4};
+use crate::world_v4_support_tests::{accepted, fact, report_full, screen};
 
 fn engine() -> WorldEngine {
     WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
@@ -56,7 +56,7 @@ fn fixed_fact(window: &str, output: &str, x: i32) -> crate::world_report::Window
     f
 }
 
-fn with_records(mut report: WorldReport, records: Vec<IntentRecord>) -> WorldReport {
+fn with_records(mut report: WorldReportV4, records: Vec<IntentRecord>) -> WorldReportV4 {
     report.intent_records = records;
     report
 }
@@ -91,7 +91,7 @@ fn toggle(window: &str) -> WorldCommand {
     })
 }
 
-fn toggle_report(seq: u64, windows: Vec<crate::world_report::WindowFact>) -> WorldReport {
+fn toggle_report(seq: u64, windows: Vec<crate::world_report::WindowFact>) -> WorldReportV4 {
     report_full(
         seq,
         seq,
@@ -104,7 +104,7 @@ fn toggle_report(seq: u64, windows: Vec<crate::world_report::WindowFact>) -> Wor
     )
 }
 
-fn assert_save(reply: &crate::world_report::WorldReply, win: &str, data: &str) {
+fn assert_save(reply: &crate::world_report::WorldReplyV4, win: &str, data: &str) {
     assert_eq!(reply.intent_writes.len(), 1, "{reply:?}");
     assert_eq!(reply.intent_writes[0].win, WindowId(win.to_owned()));
     assert_eq!(reply.intent_writes[0].data.as_deref(), Some(data));
@@ -131,7 +131,7 @@ fn is_floated(engine: &WorldEngine, win: &str) -> bool {
 }
 
 fn row_for<'a>(
-    reply: &'a crate::world_report::WorldReply,
+    reply: &'a crate::world_report::WorldReplyV4,
     win: &str,
 ) -> Option<&'a crate::world_report::WindowDesire> {
     reply.windows.iter().find(|row| row.lifetime.0 == win)
@@ -409,8 +409,8 @@ fn duplicate_repeats_cached_save() {
     );
     let first = accepted(&mut engine, &report);
     assert_save(&first, "win-a", &float_true());
-    match engine.handle_report_legacy(&report) {
-        LegacyWorldOutcome::Duplicate(cached) => {
+    match engine.handle_report(&report) {
+        WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.intent_writes, first.intent_writes);
             assert_save(&cached, "win-a", &float_true());
         }
@@ -448,8 +448,8 @@ fn consumed_command_report_emits_no_save() {
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
     );
     consumed.command_seq = Some(2);
-    match engine.handle_report_legacy(&consumed) {
-        LegacyWorldOutcome::CommandConsumed(reply) => {
+    match engine.handle_report(&consumed) {
+        WorldOutcome::CommandConsumed(reply) => {
             assert!(reply.command_consumed);
             assert_eq!(reply.based_on_observation_seq, 3);
             assert!(reply.command_result.is_none(), "{:?}", reply.command_result);
@@ -491,8 +491,8 @@ fn refused_unknown_window_preserves_state_for_retry() {
         Some(2),
         Some(toggle("win-nope")),
     );
-    match engine.handle_report_legacy(&bad) {
-        LegacyWorldOutcome::Accepted(reply) => {
+    match engine.handle_report(&bad) {
+        WorldOutcome::Accepted(reply) => {
             // Unknown toggle subject never reaches the engine: the staged
             // observation cannot prove it.
             assert_eq!(
@@ -546,8 +546,8 @@ fn held_scope_toggle_refuses_without_mutation() {
         Some(2),
         Some(toggle("win-a")),
     );
-    match engine.handle_report_legacy(&held) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&held) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(crate::world_report::CommandResult::Rejected {
                 kind: crate::world_report::CommandRejectKind::OperationRefused
@@ -595,8 +595,8 @@ fn hints_null_toggle_refuses_without_mutation() {
         Some(2),
         Some(toggle("win-a")),
     );
-    match engine.handle_report_legacy(&refused) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&refused) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(crate::world_report::CommandResult::Rejected {
                 kind: crate::world_report::CommandRejectKind::OperationRefused
@@ -1845,7 +1845,8 @@ fn save_data_canonical_widths_match_bound_constant() {
 
 #[test]
 fn max_bound_reserves_one_row_only_for_toggle_float() {
-    use crate::world_sizing::{json_string_len, max_intent_save_bound};
+    use crate::world_sizing::json_string_len;
+    use crate::world_sizing_v4::max_intent_save_bound_v4 as max_intent_save_bound;
     let toggle = report_full(
         1,
         1,
@@ -1907,7 +1908,8 @@ fn max_bound_reserves_one_row_only_for_toggle_float() {
 
 #[test]
 fn max_bound_reserves_one_save_row_for_sticky_commands() {
-    use crate::world_sizing::{json_string_len, max_intent_save_bound};
+    use crate::world_sizing::json_string_len;
+    use crate::world_sizing_v4::max_intent_save_bound_v4 as max_intent_save_bound;
     let sticky = |command: WorldCommand| {
         report_full(
             1,
@@ -1995,7 +1997,10 @@ fn sticky_save_canonical_widths_match_bound_constant() {
 
 #[test]
 fn reply_upper_bound_adds_exactly_one_save_row() {
-    use crate::world_sizing::{max_intent_save_bound, reply_upper_bound, report_estimate};
+    use crate::world_sizing_v4::{
+        max_intent_save_bound_v4 as max_intent_save_bound,
+        reply_upper_bound_v4 as reply_upper_bound, report_estimate_v4 as report_estimate,
+    };
     let windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
     let toggle = toggle_report(2, windows.clone());
     let plain = report_full(
@@ -2018,9 +2023,10 @@ fn reply_upper_bound_adds_exactly_one_save_row() {
 
 #[test]
 fn actual_one_save_reply_fits_estimate_with_exact_row() {
-    use crate::world_sizing::{
-        encode_reply_canonical, intent_writes_estimate, json_string_len, reply_estimate,
-        reply_upper_bound,
+    use crate::world_sizing::{intent_writes_estimate, json_string_len};
+    use crate::world_sizing_v4::{
+        reply_estimate_v4 as reply_estimate, reply_exact_bytes_v4,
+        reply_upper_bound_v4 as reply_upper_bound,
     };
     let mut engine = engine();
     accepted(
@@ -2057,28 +2063,28 @@ fn actual_one_save_reply_fits_estimate_with_exact_row() {
         intent_writes_estimate(&reply.intent_writes),
         18 + 16 + json_string_len("win-a") + json_string_len(&data)
     );
-    let actual = encode_reply_canonical(&reply);
+    // Exact v4 reply bytes (length arithmetic mirroring the protocol
+    // `encode_reply_v4` writer field-by-field; no core v4 writer exists).
+    // The save payload itself is already pinned typed by `assert_save`
+    // above; the wire-substring check has no typed-v4-writer counterpart.
+    let actual = reply_exact_bytes_v4(&reply);
     assert!(
-        reply_estimate(&reply) >= actual.len(),
+        reply_estimate(&reply) >= actual,
         "estimate {} covers actual {}",
         reply_estimate(&reply),
-        actual.len()
+        actual
     );
     assert!(
-        actual.len() <= pre_bound,
+        actual <= pre_bound,
         "exact one-save reply {} fits the pre-mutation upper bound {pre_bound}",
-        actual.len()
-    );
-    assert!(
-        actual.contains("\\\"float\\\":true"),
-        "canonical reply carries the save"
+        actual
     );
 }
 
 #[test]
 fn oversized_toggle_report_rejected_without_mutation() {
     use crate::world_report::WORLD_MAX_REQUEST_BYTES;
-    use crate::world_sizing::report_estimate;
+    use crate::world_sizing_v4::report_estimate_v4 as report_estimate;
     let mut engine = engine();
     accepted(
         &mut engine,
@@ -2114,8 +2120,8 @@ fn oversized_toggle_report_rejected_without_mutation() {
         report_estimate(&oversized) > WORLD_MAX_REQUEST_BYTES,
         "fixture really is oversized"
     );
-    match engine.handle_report_legacy(&oversized) {
-        LegacyWorldOutcome::Rejected { kind, .. } => {
+    match engine.handle_report(&oversized) {
+        WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_OVERSIZED);
         }
         other => panic!("expected oversized, got {other:?}"),
@@ -2139,7 +2145,10 @@ fn reply_bound_toggle_report_rejected_without_mutation() {
     // bound WITH the ToggleFloat save row exceeds it, proving the new
     // reservation is the discriminator.
     use crate::world_report::WORLD_MAX_REPLY_BYTES;
-    use crate::world_sizing::{max_intent_save_bound, reply_upper_bound, report_estimate};
+    use crate::world_sizing_v4::{
+        max_intent_save_bound_v4 as max_intent_save_bound,
+        reply_upper_bound_v4 as reply_upper_bound, report_estimate_v4 as report_estimate,
+    };
     let mut engine = engine();
     accepted(
         &mut engine,
@@ -2231,8 +2240,8 @@ fn reply_bound_toggle_report_rejected_without_mutation() {
     let conflicts = engine.intent_conflicts.clone();
     let blocks = engine.intent_sticky_blocks.clone();
     let restored = engine.restored_floats.clone();
-    match engine.handle_report_legacy(&report) {
-        LegacyWorldOutcome::Rejected { kind, .. } => {
+    match engine.handle_report(&report) {
+        WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
         }
         other => panic!("expected reply-oversize, got {other:?}"),
@@ -2264,7 +2273,10 @@ fn reply_bound_target_lanes_rejected_without_mutation() {
     // discriminator. The engine then refuses before any mutation and the
     // same inventory still accepts once the report fits.
     use crate::world_report::WORLD_MAX_REPLY_BYTES;
-    use crate::world_sizing::{MAX_TARGET_LANES_PER_WINDOW, reply_upper_bound, report_estimate};
+    use crate::world_sizing::MAX_TARGET_LANES_PER_WINDOW;
+    use crate::world_sizing_v4::{
+        reply_upper_bound_v4 as reply_upper_bound, report_estimate_v4 as report_estimate,
+    };
     let mut engine = engine();
     accepted(
         &mut engine,
@@ -2345,8 +2357,8 @@ fn reply_bound_target_lanes_rejected_without_mutation() {
         "lane term is the discriminator: {without_lanes} + {lanes}"
     );
     let revision = engine.state_revision;
-    match engine.handle_report_legacy(&report) {
-        LegacyWorldOutcome::Rejected { kind, .. } => {
+    match engine.handle_report(&report) {
+        WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
         }
         other => panic!("expected reply-oversize, got {other:?}"),
@@ -2365,8 +2377,8 @@ fn reply_bound_target_lanes_rejected_without_mutation() {
         None,
         None,
     );
-    match engine.handle_report_legacy(&retry) {
-        LegacyWorldOutcome::Accepted(_) | LegacyWorldOutcome::CommandConsumed(_) => {}
+    match engine.handle_report(&retry) {
+        WorldOutcome::Accepted(_) | WorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected accepted retry, got {other:?}"),
     }
 }

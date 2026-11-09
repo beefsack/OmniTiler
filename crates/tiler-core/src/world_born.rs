@@ -52,7 +52,7 @@ use crate::window_policy::{
     should_clear_maximize_at_admission_with_born_mode, should_hold_born_fullscreen,
 };
 use crate::world_engine::{RetainedBornClear, WorldEngine};
-use crate::world_report::{ClearAttempt, FrameSetter, OperationOutcome, TilingMode, WorldReport};
+use crate::world_report::{ClearAttempt, FrameSetter, OperationOutcome, TilingMode};
 
 /// Exact-correlated raw clear evidence for one retained born operation.
 /// Forged rows (operation or window mismatch) are never evidence: they
@@ -241,29 +241,6 @@ impl WorldEngine {
                 self.born_clear_authorized(presentation_paused, window, &retained.home)
             })
             .map(|retained| retained.operation_id.clone())
-    }
-
-    /// Update born lifetime tracking and mint commandless clear bindings.
-    /// Runs after the sweep (so `pre_known`/`pre_slotted` name the pre-sweep
-    /// retained lifetimes and slots) and before publish (so new desires ride
-    /// this same reply).
-    ///
-    /// `pre_known` is the union of lifetimes the engine retained before this
-    /// report's sweep (later maximizes of these keep their overlay);
-    /// `pre_slotted` is the union of retained tile slots (the honest
-    /// `known_slot` context for the shared predicates). Birth identity is
-    /// first evaluable sighting: unevaluable arrivals (unhomed, unreadable
-    /// scope, minimized, unreadable rect) mark nothing, so a later provable
-    /// report decides (late admission is never defeated by an earlier
-    /// non-decision). Sweep geometry holds do not block evaluation: the
-    /// property authority in `born_clear_authorized` decides.
-    pub(crate) fn mint_born_clears(
-        &mut self,
-        report: &WorldReport,
-        pre_known: &BTreeSet<WindowId>,
-        pre_slotted: &BTreeSet<WindowId>,
-    ) {
-        self.mint_born_clears_inner(report.presentation.paused, pre_known, pre_slotted);
     }
 
     /// Report-independent born-clear minting for the parallel v4 accepted

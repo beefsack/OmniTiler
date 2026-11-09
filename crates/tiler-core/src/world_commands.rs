@@ -37,7 +37,7 @@ impl WorldEngine {
     /// Staged carriers back the planning index; logical rings and views
     /// authorize every target. `frozen_send_source` carries the implicit
     /// send source resolved from pre-observation retained homing in
-    /// [`run_accepted`](crate::world_engine::WorldEngine::run_accepted)
+    /// [`run_accepted_v4_batched`](crate::world_engine::WorldEngine::run_accepted_v4_batched)
     /// before staging (`None` unless the report carries an implicit send
     /// that resolved, or an implicit send that did not resolve): the
     /// command below must use it verbatim and never re-resolve, so

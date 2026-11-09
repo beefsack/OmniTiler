@@ -6,11 +6,11 @@ use crate::boundary::CoreCommand;
 use crate::connection::FactName;
 use crate::directional::{OutputId, WindowId};
 use crate::size_hints::WindowSizeHints;
-use crate::world_directional::tests::{accepted, fact, report_full, screen};
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    HeldWindowRow, RowDiagnosticKind, ScopeAuthority, WorldCommand, WorldReport,
+    HeldWindowRow, RowDiagnosticKind, ScopeAuthority, WorldCommand, WorldReplyV4, WorldReportV4,
 };
+use crate::world_v4_support_tests::{accepted, fact, report_full, screen};
 
 fn engine() -> WorldEngine {
     WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
@@ -52,24 +52,23 @@ fn overlong_title() -> String {
     "x".repeat(crate::world_report::MAX_METADATA_TEXT_BYTES + 1)
 }
 
-fn views_two() -> Vec<(&'static str, &'static str)> {
-    vec![("out-a", "ws-1"), ("out-b", "ws-1")]
-}
-
-fn two_output_report(seq: u64, windows: Vec<crate::world_report::WindowFact>) -> WorldReport {
+// The legacy lane echoed views [("out-a", "ws-1"), ("out-b", "ws-1")] here;
+// that echo is inert (membership/hold/diagnostic rows carry the proof) and
+// has no v4 slot, so the v4 port admits with an empty views lane.
+fn two_output_report(seq: u64, windows: Vec<crate::world_report::WindowFact>) -> WorldReportV4 {
     report_full(
         seq,
         seq,
         vec![screen("out-a", 0), screen("out-b", 800)],
         windows,
-        views_two(),
+        Vec::new(),
         "",
         None,
         None,
     )
 }
 
-fn controlled_row(reply: &crate::world_report::WorldReply, window: &str) -> bool {
+fn controlled_row(reply: &WorldReplyV4, window: &str) -> bool {
     reply.windows.iter().any(|row| {
         row.lifetime.0 == window
             && row.membership_authority == ScopeAuthority::Controlled
@@ -77,7 +76,7 @@ fn controlled_row(reply: &crate::world_report::WorldReply, window: &str) -> bool
     })
 }
 
-fn hold_row(reply: &crate::world_report::WorldReply, window: &str) -> bool {
+fn hold_row(reply: &WorldReplyV4, window: &str) -> bool {
     reply.windows.iter().any(|row| {
         row.lifetime.0 == window
             && matches!(row.membership_authority, ScopeAuthority::Hold(_))
@@ -85,7 +84,7 @@ fn hold_row(reply: &crate::world_report::WorldReply, window: &str) -> bool {
     })
 }
 
-fn scope_hold(reply: &crate::world_report::WorldReply, output: &str, workspace: &str) -> bool {
+fn scope_hold(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool {
     reply.scopes.iter().any(|status| {
         status
             .scope
@@ -94,11 +93,7 @@ fn scope_hold(reply: &crate::world_report::WorldReply, output: &str, workspace: 
     })
 }
 
-fn scope_controlled(
-    reply: &crate::world_report::WorldReply,
-    output: &str,
-    workspace: &str,
-) -> bool {
+fn scope_controlled(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool {
     reply.scopes.iter().any(|status| {
         status
             .scope
@@ -325,8 +320,8 @@ fn held_plus_closed_same_id_refuses() {
     let mut report = two_output_report(1, vec![held_fact, fact("win-b", "out-b", 800)]);
     report.closed = vec![WindowId("win-a".to_owned())];
     assert!(matches!(
-        engine.handle_report_legacy(&report),
-        LegacyWorldOutcome::Rejected { .. }
+        engine.handle_report(&report),
+        WorldOutcome::Rejected { .. }
     ));
 }
 
@@ -893,8 +888,8 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.command = Some(WorldCommand::MigrateDirectional {
         direction: "right".to_owned(),
     });
-    match eng.handle_report_legacy(&report) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match eng.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(crate::world_report::CommandResult::Rejected {
                 kind: crate::world_report::CommandRejectKind::MigrationRefused
@@ -928,8 +923,8 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.command = Some(WorldCommand::MigrateDirectional {
         direction: "right".to_owned(),
     });
-    match sticky_engine.handle_report_legacy(&report) {
-        LegacyWorldOutcome::Accepted(reply) => match &reply.command_result {
+    match sticky_engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => match &reply.command_result {
             Some(crate::world_report::CommandResult::Migration { members, .. }) => {
                 assert!(members.is_empty(), "sticky stays: {members:?}");
             }
@@ -950,8 +945,8 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.command = Some(WorldCommand::MigrateDirectional {
         direction: "right".to_owned(),
     });
-    match proven_engine.handle_report_legacy(&report) {
-        LegacyWorldOutcome::Accepted(reply) => {
+    match proven_engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => {
             assert!(reply.transfers.iter().any(|transfer| matches!(
                 transfer.kind,
                 crate::world_report::TransferKind::Migration

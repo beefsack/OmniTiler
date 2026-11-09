@@ -20,15 +20,16 @@ use crate::directional::{Node, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, AuthorityScope, FocusFeedback, FrameSetter, HeldScreenRow,
     HeldWindowRow, LastWrite, LastWritePath, LastWriteProperty, MemberAttempt, OneShotEffect,
-    RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, SwitchFocus,
-    SwitchOutcome, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    WORLD_CONTRACT_VERSION_LEGACY, WORLD_MAX_REPLY_BYTES, WindowFact, WorkspaceRef, WorldCommand,
-    WorldReport,
+    PresentationRowV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
+    SwitchFocus, SwitchOutcome, VisibilityFact, VisibilityReason, VisibilitySample,
+    VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WORLD_MAX_REPLY_BYTES, WindowFact, WorkspaceRef,
+    WorldCommand, WorldReportV4,
 };
+use crate::world_v4_support_tests::empty_ingress;
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -172,9 +173,9 @@ fn report(
     command: Option<WorldCommand>,
     feedback: Vec<FocusFeedback>,
     focused: &str,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -184,12 +185,13 @@ fn report(
         command,
         screens: vec![screen("out-a", 0)],
         windows,
-        views: Vec::new(),
+        held_windows: Vec::new(),
         closed: closed
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -198,7 +200,6 @@ fn report(
         action_outputs: Vec::new(),
         primary_output: None,
         held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -208,21 +209,23 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: feedback,
-        presentation: crate::world_report::PresentationIngress::disabled(),
+        presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
-fn ring_ids(reply: &crate::world_report::WorldReply, output: &str) -> Vec<String> {
+fn ring_ids(reply: &crate::world_report::WorldReplyV4, output: &str) -> Vec<String> {
     reply
         .workspaces
         .iter()
@@ -232,7 +235,7 @@ fn ring_ids(reply: &crate::world_report::WorldReply, output: &str) -> Vec<String
 }
 
 fn row<'a>(
-    reply: &'a crate::world_report::WorldReply,
+    reply: &'a crate::world_report::WorldReplyV4,
     window: &str,
 ) -> &'a crate::world_report::WindowDesire {
     reply
@@ -283,7 +286,11 @@ fn select_setup() -> (WorldEngine, String, String) {
     (engine, home, away)
 }
 
-fn select(engine: &mut WorldEngine, seq: u64, workspace: &str) -> crate::world_report::WorldReply {
+fn select(
+    engine: &mut WorldEngine,
+    seq: u64,
+    workspace: &str,
+) -> crate::world_report::WorldReplyV4 {
     accepted(
         engine,
         &report(
@@ -418,14 +425,19 @@ fn selection_grants_await_shown_with_show_and_hide_targets() {
             "per-window lanes fit the 626 reserve: {row:?}"
         );
     }
-    let wire = crate::world_report::encode_reply_canonical(&reply);
+    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+    let actual = reply_exact_bytes_v4(&reply);
+    let estimate = reply_estimate_v4(&reply);
     assert!(
-        crate::world_report::reply_estimate(&reply) >= wire.len(),
-        "estimate covers the selection reply"
+        estimate >= actual,
+        "estimate {estimate} bounds wire {actual}"
     );
-    assert!(
-        wire.contains("\"awaitShown\":true"),
-        "producer spells the awaitShown grant"
+    let mut stripped = reply.clone();
+    stripped.effects[0].await_shown = false;
+    assert_ne!(
+        reply_exact_bytes_v4(&reply),
+        reply_exact_bytes_v4(&stripped),
+        "exact bytes carry the awaitShown grant"
     );
 }
 
@@ -638,7 +650,7 @@ fn report_multi(
     feedback: Vec<FocusFeedback>,
     focused: &str,
     screens: Vec<crate::world_report::ScreenReport>,
-) -> WorldReport {
+) -> WorldReportV4 {
     let mut base = report(
         seq,
         windows,
@@ -770,7 +782,7 @@ fn selection_native_arm_bracket_is_refused_before_adoption() {
         Some("w2"),
         vec![native],
     );
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         6,
         vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
         vec![],
@@ -779,7 +791,7 @@ fn selection_native_arm_bracket_is_refused_before_adoption() {
         vec![row],
         "",
     )) {
-        LegacyWorldOutcome::Rejected { kind, message } => {
+        WorldOutcome::Rejected { kind, message } => {
             assert_eq!(message, "arrival-host-mismatch");
             let _ = kind;
         }
@@ -962,7 +974,7 @@ fn selection_refusal_consumed_and_envelope_keep_first_feedback() {
     check_latched(&engine);
     // A consumed (replayed) command reconciles observation only: the latch
     // survives with no duplicate effect.
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         6,
         vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
         vec![],
@@ -974,7 +986,7 @@ fn selection_refusal_consumed_and_envelope_keep_first_feedback() {
         vec![],
         "",
     )) {
-        LegacyWorldOutcome::CommandConsumed(_) => {}
+        WorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected consumed, got {other:?}"),
     }
     check_latched(&engine);
@@ -989,8 +1001,8 @@ fn selection_refusal_consumed_and_envelope_keep_first_feedback() {
         "",
     );
     bad.contract_version = 0;
-    match engine.handle_report_legacy(&bad) {
-        LegacyWorldOutcome::Rejected { .. } => {}
+    match engine.handle_report(&bad) {
+        WorldOutcome::Rejected { .. } => {}
         other => panic!("expected envelope refusal, got {other:?}"),
     }
     check_latched(&engine);
@@ -1020,7 +1032,7 @@ fn send_to(
     seq: u64,
     window: &str,
     workspace: &str,
-) -> crate::world_report::WorldReply {
+) -> crate::world_report::WorldReplyV4 {
     accepted(
         engine,
         &report(
@@ -1423,9 +1435,12 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
         "departing home still grants a hide"
     );
     // First-correlated visibility verdicts complete the binding through
-    // the shared terminal while the views lane names the departing home.
+    // the shared terminal. The legacy proving report echoed the departing
+    // home here to pin that contradictory echoes never adopt; v4 carries
+    // no views lane, so the port observes the same proof echoless and the
+    // retained select-time view stands structurally.
     let rev = reply.state_revision;
-    let mut proving = report(
+    let proving = report(
         4,
         vec![
             with_lw(sfact("w1", "out-a", 0), last_write_confirmed(false, rev, 4)),
@@ -1440,10 +1455,6 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
         vec![],
         "",
     );
-    proving.views = vec![crate::world_report::ScreenView {
-        output: OutputId("out-a".to_owned()),
-        view: home.clone(),
-    }];
     let done = accepted(&mut engine, &proving);
     assert_eq!(done.switch_settled.len(), 1, "one terminal: {done:?}");
     let event = &done.switch_settled[0];
@@ -1942,12 +1953,20 @@ fn selection_follow_send_home_invalidates_stale_hide() {
             .all(|entry| entry.rev == rev),
         "superseded targets clear with the view move"
     );
-    let wire = crate::world_report::encode_reply_canonical(&followed);
+    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+    let actual = reply_exact_bytes_v4(&followed);
+    let estimate = reply_estimate_v4(&followed);
     assert!(
-        crate::world_report::reply_estimate(&followed) >= wire.len(),
-        "estimate covers the follow reply"
+        estimate >= actual,
+        "estimate {estimate} bounds wire {actual}"
     );
-    assert!(wire.contains("\"awaitShown\":true"));
+    let mut stripped = followed.clone();
+    stripped.effects[0].await_shown = false;
+    assert_ne!(
+        reply_exact_bytes_v4(&followed),
+        reply_exact_bytes_v4(&stripped),
+        "exact bytes carry the awaitShown grant"
+    );
 }
 
 #[test]
@@ -2099,12 +2118,19 @@ fn follow_send_settles_membership_before_selection_terminal() {
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive"
     );
-    let wire = crate::world_report::encode_reply_canonical(&done);
+    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+    let actual = reply_exact_bytes_v4(&done);
+    let estimate = reply_estimate_v4(&done);
     assert!(
-        crate::world_report::reply_estimate(&done) >= wire.len(),
-        "estimate covers the follow terminal reply"
+        estimate >= actual,
+        "estimate {estimate} bounds wire {actual}"
     );
-    assert!(wire.contains("\"outcome\":\"complete\""));
+    let mut stripped = done.clone();
+    stripped.switch_settled = Vec::new();
+    assert!(
+        reply_exact_bytes_v4(&done) > reply_exact_bytes_v4(&stripped),
+        "exact bytes carry the terminal"
+    );
     let again = accepted(
         &mut engine,
         &report(
@@ -2433,9 +2459,10 @@ fn follow_cross_output_binds_current_destination_and_settles_window_first() {
         arrived.switch_settled.is_empty(),
         "no terminal without visibility verdicts"
     );
-    let wire = crate::world_report::encode_reply_canonical(&arrived);
+    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+    let actual = reply_exact_bytes_v4(&arrived);
     assert!(
-        crate::world_report::reply_estimate(&arrived) >= wire.len(),
+        reply_estimate_v4(&arrived) >= actual,
         "estimate covers the cross-output follow reply"
     );
 }
@@ -2613,10 +2640,11 @@ fn native_free_follow_source_echo_survives_then_proves() {
         .last()
         .expect("trailing spare")
         .clone();
-    // Intermediate: actual source echo still names the departing home with
-    // no member proof. Binding and targets survive with no event; the
-    // window flight stays outstanding.
-    let mut waiting_report = report(
+    // Intermediate: no member proof yet. Binding and targets survive with
+    // no event; the window flight stays outstanding. (The legacy leg
+    // echoed the departing home here; v4 carries no views lane and the
+    // staged echo alone decides, so the port observes echoless.)
+    let waiting_report = report(
         4,
         vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
         vec![],
@@ -2625,10 +2653,6 @@ fn native_free_follow_source_echo_survives_then_proves() {
         vec![],
         "w1",
     );
-    waiting_report.views = vec![crate::world_report::ScreenView {
-        output: OutputId("out-a".to_owned()),
-        view: home.clone(),
-    }];
     let waited = accepted(&mut engine, &waiting_report);
     assert!(
         waited.transfers.iter().any(|t| t.operation_id == "op-3"),
@@ -2645,8 +2669,9 @@ fn native_free_follow_source_echo_survives_then_proves() {
         waited.switch_settled.is_empty(),
         "no event while arrival pends: {waited:?}"
     );
-    // Membership proof with the target echo: the window flight retires
-    // while the binding pends with no terminal yet.
+    // Membership proof: the window flight retires while the binding pends
+    // with no terminal yet. (The legacy leg echoed the target here; the
+    // retirement rides the member attempt, so the v4 leg is echoless.)
     let mut arrival_report = report(
         5,
         vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
@@ -2656,10 +2681,6 @@ fn native_free_follow_source_echo_survives_then_proves() {
         vec![],
         "w1",
     );
-    arrival_report.views = vec![crate::world_report::ScreenView {
-        output: OutputId("out-a".to_owned()),
-        view: away.clone(),
-    }];
     arrival_report.member_attempts = vec![MemberAttempt {
         operation_id: "op-3".to_owned(),
         window: WindowId("w1".to_owned()),
@@ -2725,7 +2746,7 @@ fn native_free_follow_source_echo_survives_then_proves() {
         Some("w1"),
         arrival_brackets,
     );
-    let mut proof_report = report(
+    let proof_report = report(
         6,
         vec![
             with_lw(sfact("w1", "out-a", 0), w_lw),
@@ -2737,10 +2758,6 @@ fn native_free_follow_source_echo_survives_then_proves() {
         vec![feedback],
         "w1",
     );
-    proof_report.views = vec![crate::world_report::ScreenView {
-        output: OutputId("out-a".to_owned()),
-        view: away.clone(),
-    }];
     let done = accepted(&mut engine, &proof_report);
     assert_eq!(done.switch_settled.len(), 1, "one terminal: {done:?}");
     let event = &done.switch_settled[0];
@@ -3307,7 +3324,7 @@ fn host_owned_follow_source_home_bracket_never_proves_arrival() {
 fn staged_native_last_views_follow_staged_echo_across_intakes() {
     // Host-owned last-view retention reads staged native echoes only: the
     // source report lanes never decide, and unknown proof removes.
-    use crate::world_report::{NativeObservation, NativeOccupancy, ScreenView};
+    use crate::world_report::{NativeObservation, NativeOccupancy};
     let (mut engine, away) = host_boot();
     let logical_for = |engine: &WorldEngine, native: &str| -> String {
         engine
@@ -3335,8 +3352,9 @@ fn staged_native_last_views_follow_staged_echo_across_intakes() {
         "a later source report retires through staged state"
     );
     assert_eq!(away, second, "n1-backed workspace is the away id");
-    // Unknown native proof removes even when the logical views lane names a
-    // workspace: logical echoes never decide under host-owned domains.
+    // Unknown native proof removes: logical echoes never decide under
+    // host-owned domains, and v4 carries no views lane, so the removal
+    // rides the native unknown proof alone.
     let mut unknown = host_native_report(3, vec![], "n1", None, None);
     unknown.native = vec![NativeObservation {
         output: OutputId("out-a".to_owned()),
@@ -3352,10 +3370,6 @@ fn staged_native_last_views_follow_staged_echo_across_intakes() {
                 count: None,
             },
         ],
-    }];
-    unknown.views = vec![ScreenView {
-        output: OutputId("out-a".to_owned()),
-        view: second.clone(),
     }];
     let _ = accepted(&mut engine, &unknown);
     assert!(
@@ -3951,7 +3965,7 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
     // window); a w2-only bracket never proves the two-member snapshot while
     // the full bracket set proves it on a separate engine with the first
     // row latched.
-    fn setup() -> (WorldEngine, String, crate::world_report::WorldReply) {
+    fn setup() -> (WorldEngine, String, crate::world_report::WorldReplyV4) {
         let (mut engine, _home, away) = boot_three();
         let _ = send_to(&mut engine, 2, "w2", &away);
         let sticky = accepted(
@@ -4375,13 +4389,19 @@ fn switch_all_confirmed_completes_with_proven_focus() {
             .rev,
         rev
     );
-    let wire = crate::world_report::encode_reply_canonical(&reply);
+    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+    let actual = reply_exact_bytes_v4(&reply);
+    let estimate = reply_estimate_v4(&reply);
     assert!(
-        crate::world_report::reply_estimate(&reply) >= wire.len(),
-        "estimate covers event reply"
+        estimate >= actual,
+        "estimate {estimate} bounds wire {actual}"
     );
-    assert!(wire.contains("\"switchSettled\":[{"));
-    assert!(wire.contains("\"outcome\":\"complete\""));
+    let mut stripped = reply.clone();
+    stripped.switch_settled = Vec::new();
+    assert!(
+        reply_exact_bytes_v4(&reply) > reply_exact_bytes_v4(&stripped),
+        "exact bytes carry the terminal"
+    );
     let again = accepted(
         &mut engine,
         &report(
@@ -5071,7 +5091,7 @@ fn switch_marginal_empty_event_reserve_covers_worst_tokens() {
 
 #[test]
 fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
-    use crate::world_sizing::reply_upper_bound;
+    use crate::world_sizing_v4::reply_upper_bound_v4;
     let (mut engine, _home, away) = select_setup();
     let _granted = select(&mut engine, 3, &away);
     let rev = engine.state_revision;
@@ -5111,7 +5131,7 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
         vec![],
         "",
     );
-    while reply_upper_bound(&big, 0, logical, 1, staged, retained).saturating_add(reserve)
+    while reply_upper_bound_v4(&big, 0, logical, 1, staged, retained).saturating_add(reserve)
         <= WORLD_MAX_REPLY_BYTES
     {
         let i = windows.len();
@@ -5131,8 +5151,8 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
         );
     }
     let before_rev = engine.state_revision;
-    match engine.handle_report_legacy(&big) {
-        LegacyWorldOutcome::Rejected { kind, message } => {
+    match engine.handle_report(&big) {
+        WorldOutcome::Rejected { kind, message } => {
             assert_eq!(
                 message, "reply exceeds size bound",
                 "pre-mutation bound: {kind}"
@@ -5156,8 +5176,8 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
         vec![],
         "",
     );
-    match engine.handle_report_legacy(&small) {
-        LegacyWorldOutcome::Accepted(_) | LegacyWorldOutcome::CommandConsumed(_) => {}
+    match engine.handle_report(&small) {
+        WorldOutcome::Accepted(_) | WorldOutcome::CommandConsumed(_) => {}
         other => panic!("same-seq smaller retry must commit, got {other:?}"),
     }
 }
@@ -5246,7 +5266,7 @@ fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
     );
     // The refused seq is consumed: replaying it reconciles observation
     // only, with no revived terminal and no re-execution.
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         5,
         vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
         vec![],
@@ -5258,7 +5278,7 @@ fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
         vec![],
         "",
     )) {
-        LegacyWorldOutcome::CommandConsumed(consumed) => {
+        WorldOutcome::CommandConsumed(consumed) => {
             assert!(consumed.switch_settled.is_empty(), "no revived terminal");
         }
         other => panic!("expected consumed replay, got {other:?}"),
@@ -5501,9 +5521,10 @@ fn switch_two_output_bindings_settle_two_events_in_one_report() {
         assert_eq!(event.focus, SwitchFocus::Proven);
         assert!(!event.fallback);
     }
-    let wire = crate::world_report::encode_reply_canonical(&reply);
+    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+    let actual = reply_exact_bytes_v4(&reply);
     assert!(
-        crate::world_report::reply_estimate(&reply) >= wire.len(),
+        reply_estimate_v4(&reply) >= actual,
         "estimate covers the two-event reply without truncation"
     );
     assert!(
@@ -5569,15 +5590,10 @@ fn switch_duplicate_replays_identical_event_then_next_report_empties() {
     );
     let reply = accepted(&mut engine, &settle);
     assert_eq!(reply.switch_settled.len(), 1);
-    let wire = crate::world_report::encode_reply_canonical(&reply);
-    match engine.handle_report_legacy(&settle) {
-        LegacyWorldOutcome::Duplicate(cached) => {
+    match engine.handle_report(&settle) {
+        WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.switch_settled, reply.switch_settled);
-            assert_eq!(
-                crate::world_report::encode_reply_canonical(&cached),
-                wire,
-                "duplicate returns the byte-identical cached event"
-            );
+            assert_eq!(cached, reply, "duplicate returns the cached event");
         }
         other => panic!("expected cached duplicate, got {other:?}"),
     }
@@ -6270,7 +6286,7 @@ fn host_native_report(
     current: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
+) -> WorldReportV4 {
     use crate::world_report::{NativeObservation, NativeOccupancy};
     let mut out = report(seq, windows, vec![], command_seq, command, vec![], "");
     out.native = vec![NativeObservation {
@@ -6311,7 +6327,7 @@ fn host_select(
     engine: &mut WorldEngine,
     seq: u64,
     workspace: &str,
-) -> crate::world_report::WorldReply {
+) -> crate::world_report::WorldReplyV4 {
     accepted(
         engine,
         &host_native_report(
@@ -6365,7 +6381,7 @@ fn host_select_windows(
     windows: Vec<WindowFact>,
     current: &str,
     focused: &str,
-) -> crate::world_report::WorldReply {
+) -> crate::world_report::WorldReplyV4 {
     let mut staged = host_native_report(
         seq,
         windows,
@@ -6474,18 +6490,23 @@ fn host_owned_focus_bearing_grants_await_shown_with_native_obligations() {
             .effective_frame;
         assert_eq!(member.frame, published, "frozen final frames");
     }
-    let wire = crate::world_report::encode_reply_canonical(&reply);
+    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+    let actual = reply_exact_bytes_v4(&reply);
+    let estimate = reply_estimate_v4(&reply);
     assert!(
-        crate::world_report::reply_estimate(&reply) >= wire.len(),
-        "estimate covers the host-owned grant"
+        estimate >= actual,
+        "estimate {estimate} bounds wire {actual}"
     );
-    assert!(
-        wire.contains("\"awaitShown\":true"),
-        "producer spells the awaitShown grant"
+    let mut stripped = reply.clone();
+    stripped.effects[0].await_shown = false;
+    assert_ne!(
+        reply_exact_bytes_v4(&reply),
+        reply_exact_bytes_v4(&stripped),
+        "exact bytes carry the awaitShown grant"
     );
 }
 
-fn host_focus_grant() -> (WorldEngine, String, crate::world_report::WorldReply) {
+fn host_focus_grant() -> (WorldEngine, String, crate::world_report::WorldReplyV4) {
     let (mut engine, away) = host_boot();
     let stage = || {
         vec![
@@ -6508,7 +6529,7 @@ fn host_focus_grant() -> (WorldEngine, String, crate::world_report::WorldReply) 
 }
 
 fn host_member_frames(
-    reply: &crate::world_report::WorldReply,
+    reply: &crate::world_report::WorldReplyV4,
 ) -> std::collections::BTreeMap<WindowId, Option<Rect>> {
     reply
         .windows
@@ -6815,8 +6836,8 @@ fn host_owned_focus_bearing_wrong_host_arms_refuse_at_ingress() {
         );
         let mut proof = host_native_report(4, host_proof_windows(true), "n0", None, None);
         proof.focus_feedback = vec![row];
-        match engine.handle_report_legacy(&proof) {
-            LegacyWorldOutcome::Rejected { .. } => {}
+        match engine.handle_report(&proof) {
+            WorldOutcome::Rejected { .. } => {}
             other => panic!("{name}: wrong-host arm must refuse, got {other:?}"),
         }
         assert!(
@@ -8434,18 +8455,15 @@ fn host_owned_focusless_held_refusal_recovers_from_latched_raw() {
 
 #[test]
 fn host_owned_focusless_wrong_tuples_and_logical_echo_hold() {
-    use crate::world_report::ScreenView;
     let (mut engine, away) = host_boot();
     let reply = host_select(&mut engine, 2, &away);
     assert!(reply.switch_settled.is_empty(), "native proof outstanding");
-    // Wrong operation id, wrong target workspace, and a logical echo
-    // naming the target while the native current stays home: none of
-    // these prove anything for a host-owned selector.
+    // Wrong operation id and wrong target workspace while the native
+    // current stays home: none of these prove anything for a host-owned
+    // selector. (The legacy leg also attached a logical echo naming the
+    // target; v4 carries no views lane and echoes never decide here, so
+    // the port holds on the forged rows alone.)
     let mut noisy = host_native_report(3, vec![], "n0", None, None);
-    noisy.views = vec![ScreenView {
-        output: OutputId("out-a".to_owned()),
-        view: away.clone(),
-    }];
     noisy.view_attempts = vec![
         view_attempt("op-9", &away, FrameSetter::Refused),
         crate::world_report::ViewAttempt {
@@ -8454,10 +8472,7 @@ fn host_owned_focusless_wrong_tuples_and_logical_echo_hold() {
         },
     ];
     let stalled = accepted(&mut engine, &noisy);
-    assert!(
-        stalled.switch_settled.is_empty(),
-        "forged rows and logical echoes hold"
-    );
+    assert!(stalled.switch_settled.is_empty(), "forged rows hold");
     let binding = engine
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
@@ -9012,15 +9027,10 @@ fn focusless_issuing_terminal_duplicate_replays_cached_then_empties() {
         1,
         "zero members complete at issuing: {reply:?}"
     );
-    let wire = crate::world_report::encode_reply_canonical(&reply);
-    match engine.handle_report_legacy(&issuing) {
-        LegacyWorldOutcome::Duplicate(cached) => {
+    match engine.handle_report(&issuing) {
+        WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.switch_settled, reply.switch_settled);
-            assert_eq!(
-                crate::world_report::encode_reply_canonical(&cached),
-                wire,
-                "duplicate returns the byte-identical cached event"
-            );
+            assert_eq!(cached, reply, "duplicate returns the cached event");
         }
         other => panic!("expected cached duplicate, got {other:?}"),
     }
@@ -9087,7 +9097,7 @@ fn focusless_issuing_terminal_consumed_replay_reconciles_empty() {
         "zero members complete at issuing: {reply:?}"
     );
     // The consumed seq reconciles only: no revived terminal, no re-execution.
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         3,
         vec![w1, w2],
         vec![],
@@ -9099,7 +9109,7 @@ fn focusless_issuing_terminal_consumed_replay_reconciles_empty() {
         vec![],
         "",
     )) {
-        LegacyWorldOutcome::CommandConsumed(consumed) => {
+        WorldOutcome::CommandConsumed(consumed) => {
             assert!(
                 consumed.switch_settled.is_empty(),
                 "no revived terminal: {consumed:?}"
@@ -9489,7 +9499,7 @@ fn host_owned_focus_bearing_freezes_sticky_focus_at_actual_home() {
     assert_eq!(event.focus, SwitchFocus::Proven);
 }
 
-fn host_focus_grant_fullscreen_nonfocus() -> (WorldEngine, String, crate::world_report::WorldReply)
+fn host_focus_grant_fullscreen_nonfocus() -> (WorldEngine, String, crate::world_report::WorldReplyV4)
 {
     let (mut engine, away) = host_boot();
     let mut w1 = hfact("w1", "n1", 100, false);
@@ -9706,7 +9716,7 @@ fn mreport(
     command: Option<WorldCommand>,
     feedback: Vec<FocusFeedback>,
     focused: &str,
-) -> WorldReport {
+) -> WorldReportV4 {
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let mut base = report_multi(
         seq,
@@ -9718,13 +9728,12 @@ fn mreport(
         focused,
         screens,
     );
-    base.views = views
-        .into_iter()
-        .map(|(output, view)| crate::world_report::ScreenView {
-            output: OutputId(output.to_owned()),
-            view: view.to_owned(),
-        })
-        .collect();
+    assert!(
+        views.is_empty(),
+        "v4 has no views lane: {} echo(s) cannot convert",
+        views.len()
+    );
+    let _ = &mut base;
     base
 }
 
@@ -9732,8 +9741,8 @@ fn mreport(
 /// workspace, then pin the MRU source-refill setting with an observed
 /// away -> home history so the occupied away (not the fresh trailing
 /// spare) refills the source when home migrates. History builds through
-/// observation-only ScreenViews (no commands), preserving op numbering:
-/// boot seq 1, send op-2, history obs 3/4, migrate op-5.
+/// real select commands (op-3/op-4), preserving op numbering:
+/// boot seq 1, send op-2, history selects op-3/4, migrate op-5.
 fn migration_boot() -> (WorldEngine, String, String) {
     let mut engine = engine_migration();
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
@@ -9832,7 +9841,7 @@ fn migrate(
     source: &str,
     workspace: &str,
     focused: &str,
-) -> crate::world_report::WorldReply {
+) -> crate::world_report::WorldReplyV4 {
     accepted(
         engine,
         &mreport(
@@ -10938,17 +10947,18 @@ fn migration_floating_source_binds_covering_selection() {
 
 #[test]
 fn selection_eligible_ignores_logical_echo_then_completes_on_verdicts() {
-    // Eligible explicit select on native-free: the logical echo lane is
-    // never ingress (views rows are inert whether absent or
+    // Eligible explicit select on native-free: v4 carries no logical echo
+    // lane (the legacy views rows were inert whether absent or
     // contradictory), so the binding and its view flight survive until
     // real producer verdicts plus first feedback complete the terminal.
-    for (what, contradict) in [("absent", false), ("contradictory", true)] {
+    {
         let (mut engine, home, away) = select_setup();
+        let _ = home;
         let granted = select(&mut engine, 3, &away);
         assert_eq!(
             granted.effects.len(),
             1,
-            "eligible select grants ({what}): {granted:?}"
+            "eligible select grants: {granted:?}"
         );
         assert!(granted.effects[0].await_shown);
         let binding = engine
@@ -10957,7 +10967,7 @@ fn selection_eligible_ignores_logical_echo_then_completes_on_verdicts() {
             .expect("binding")
             .clone();
         assert_eq!(binding.parent_op, "op-3");
-        let mut waiting = report(
+        let waiting = report(
             4,
             vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
             vec![],
@@ -10966,27 +10976,21 @@ fn selection_eligible_ignores_logical_echo_then_completes_on_verdicts() {
             vec![],
             "",
         );
-        if contradict {
-            waiting.views = vec![crate::world_report::ScreenView {
-                output: OutputId("out-a".to_owned()),
-                view: home.clone(),
-            }];
-        }
         let waited = accepted(&mut engine, &waiting);
         assert!(
             waited.transfers.iter().any(|t| t.operation_id == "op-3"),
-            "flight survives the {what} echo lane: {:?}",
+            "flight survives the echoless lane: {:?}",
             waited.transfers
         );
         assert!(
             engine
                 .retained_selection
                 .contains_key(&OutputId("out-a".to_owned())),
-            "binding survives the {what} echo lane"
+            "binding survives the echoless lane"
         );
         assert!(
             waited.switch_settled.is_empty(),
-            "no terminal without verdicts ({what}): {waited:?}"
+            "no terminal without verdicts: {waited:?}"
         );
     }
     // Producer completion: hide/show verdicts plus the first exact
@@ -11826,7 +11830,7 @@ fn d23_two_screen_report(
     current_a: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
+) -> WorldReportV4 {
     let mut out = report(seq, windows, vec![], command_seq, command, vec![], "");
     out.screens = vec![screen("out-a", 0), screen("out-b", 800)];
     out.native = vec![
@@ -12028,7 +12032,7 @@ fn d23_three_native_report(
     windows: Vec<WindowFact>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
+) -> WorldReportV4 {
     let mut out = report(seq, windows, vec![], command_seq, command, vec![], "");
     out.native = vec![crate::world_report::NativeObservation {
         output: OutputId("out-a".to_owned()),

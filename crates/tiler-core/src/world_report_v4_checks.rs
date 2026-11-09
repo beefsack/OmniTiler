@@ -1,9 +1,9 @@
-//! Staged v4 report twins: pure-function counterparts of the legacy
-//! [`crate::world_report`] report gate, conflicting-fact grader, and digest
-//! over [`WorldReportV4`](crate::world_report::WorldReportV4). The engine
-//! calls the composed [`graded_effective_v4`] twin on the typed path and the
+//! Staged v4 report validation, grading, and digest over
+//! [`WorldReportV4`](crate::world_report::WorldReportV4). The engine
+//! calls the composed [`graded_effective_v4`] on the typed path and the
 //! protocol codec mirrors the invalid twins on the wire path; row-level
-//! helpers stay shared with v3.
+//! structural primitives stay shared in [`crate::world_report`], with no
+//! living legacy path.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -42,9 +42,7 @@ fn held_native_order_len(held: &crate::world_report::HeldNativeRow) -> usize {
         .unwrap_or(0)
 }
 
-/// Staged v4 twin of
-/// [`validate_report_reason`](crate::world_report::validate_report_reason):
-/// version gate against [`WORLD_CONTRACT_VERSION_V4`], no `views` lane,
+/// V4 report validation: version gate against [`WORLD_CONTRACT_VERSION_V4`], no `views` lane,
 /// section caps mirroring the protocol `decode_report_v4` valid-plus-held
 /// counting (including `held_native` and per-lane
 /// `held_attempts`), the v4 renderer/command pairing
@@ -746,7 +744,7 @@ fn valid_attempt_workspace_ref(reference: &WorkspaceRef) -> bool {
     }
 }
 
-/// Staged v4 twin of [`grade_invalid_screens`](crate::world_report::grade_invalid_screens):
+/// Staged v4 twin of [`grade_invalid_screens_v4`](crate::world_report_v4_checks::grade_invalid_screens_v4):
 /// identifiable invalid scale/identity rows become narrow `InvalidFact`
 /// holds with retained fields, mirroring the decoder. Structural
 /// violations refuse: prechecks cover every carried screen, and the
@@ -802,7 +800,7 @@ pub fn grade_invalid_screens_v4(report: &WorldReportV4) -> Option<WorldReportV4>
     }
 }
 
-/// Staged v4 twin of [`grade_invalid_windows`](crate::world_report::grade_invalid_windows):
+/// Staged v4 twin of [`grade_invalid_windows_v4`](crate::world_report_v4_checks::grade_invalid_windows_v4):
 /// identifiable invalid metadata/process rows become narrow `InvalidFact`
 /// holds with retained fields, mirroring the decoder. A `cursor_hit`
 /// naming a gradable row refuses at validation before grading (the row is
@@ -903,7 +901,7 @@ pub(crate) fn graded_effective_v4(
 }
 
 /// Staged v4 twin of
-/// [`grade_conflicting_windows`](crate::world_report::grade_conflicting_windows):
+/// [`grade_conflicting_windows_v4`](crate::world_report_v4_checks::grade_conflicting_windows_v4):
 /// unavailable-fact contradictions move to `held_windows` with a
 /// `ConflictingFact` diagnostic. A `cursor_hit` naming a newly graded window
 /// is cleared on the effective (normalized) rows; the input report is never
@@ -1003,7 +1001,7 @@ pub fn grade_conflicting_windows_v4(
     Some(normalized)
 }
 
-/// Staged v4 twin of [`report_digest`](crate::world_report::report_digest):
+/// Staged v4 twin of [`report_digest_v4`](crate::world_report_v4_checks::report_digest_v4):
 /// deterministic FNV-1a over the canonical v4 report content. Covers every
 /// [`WorldReportV4`] lane including `held_native`, `held_attempts`, the
 /// presentation row (Valid and Held arms), and `renderer_input`; no views.

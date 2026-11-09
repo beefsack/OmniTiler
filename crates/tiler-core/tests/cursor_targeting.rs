@@ -14,8 +14,8 @@ use tiler_core::cursor_targeting::{FreshPlacement, SwitchTarget};
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
-use tiler_core::world_report::{ScreenReport, SendSource, WindowFact, WorldCommand, WorldReport};
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_report::{ScreenReport, SendSource, WindowFact, WorldCommand, WorldReportV4};
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -200,9 +200,9 @@ fn report(
     cursor: Option<(i32, i32)>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -212,9 +212,9 @@ fn report(
         command,
         screens: two_screens(),
         windows,
-        views: vec![],
         closed: vec![],
         native: vec![],
+        held_native: Vec::new(),
         cursor,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -233,25 +233,29 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
+        presentation: tiler_core::world_report::PresentationRowV4::Valid(
+            tiler_core::world_report::PresentationIngressV4::default(),
+        ),
 
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
 fn accepted(
     engine: &mut WorldEngine,
-    report: &WorldReport,
-) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    report: &WorldReportV4,
+) -> tiler_core::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
-fn homed(reply: &tiler_core::world_report::WorldReply, window: &str) -> (String, String) {
+fn homed(reply: &tiler_core::world_report::WorldReplyV4, window: &str) -> (String, String) {
     let row = reply
         .windows
         .iter()
@@ -260,7 +264,7 @@ fn homed(reply: &tiler_core::world_report::WorldReply, window: &str) -> (String,
     (row.output.0.clone(), row.workspace.clone())
 }
 
-fn allocation(reply: &tiler_core::world_report::WorldReply, window: &str) -> Rect {
+fn allocation(reply: &tiler_core::world_report::WorldReplyV4, window: &str) -> Rect {
     reply
         .windows
         .iter()
@@ -270,7 +274,7 @@ fn allocation(reply: &tiler_core::world_report::WorldReply, window: &str) -> Rec
         .expect("tiled allocation")
 }
 
-fn view_of(reply: &tiler_core::world_report::WorldReply, output: &str) -> Option<String> {
+fn view_of(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Option<String> {
     reply
         .outputs
         .iter()
@@ -1139,7 +1143,7 @@ fn retained_settings_are_observable() {
 
 #[test]
 fn out_of_bounds_cursor_refuses_at_validation() {
-    use tiler_core::world_report::{report_digest, validate_report, validate_report_reason};
+    use tiler_core::world_report_v4_checks::{report_digest_v4, validate_report_v4_reason};
     let mut engine = engine_for(SwitchTarget::Cursor, FreshPlacement::CursorOutputMru);
     let bad = report(
         1,
@@ -1149,10 +1153,10 @@ fn out_of_bounds_cursor_refuses_at_validation() {
         None,
         None,
     );
-    assert!(!validate_report(&bad));
-    assert_eq!(validate_report_reason(&bad), Some("cursor-invalid"));
-    match engine.handle_report_legacy(&bad) {
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+    assert!(validate_report_v4_reason(&bad).is_some());
+    assert_eq!(validate_report_v4_reason(&bad), Some("cursor-invalid"));
+    match engine.handle_report(&bad) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("expected snapshot-invalid, got {other:?}"),
     }
     // The digest seats the cursor: a carried cursor never aliases the
@@ -1166,7 +1170,7 @@ fn out_of_bounds_cursor_refuses_at_validation() {
         None,
     );
     let plain = report(1, vec![fact("win-a", "out-a", 0)], "", None, None, None);
-    assert_ne!(report_digest(&with_cursor), report_digest(&plain));
+    assert_ne!(report_digest_v4(&with_cursor), report_digest_v4(&plain));
 }
 
 #[test]

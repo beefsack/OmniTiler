@@ -8,11 +8,12 @@ use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    FloatOrigin, ScopeAuthority, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY, WindowFact,
-    WorldCommand, WorldReport,
+    FloatOrigin, PresentationRowV4, ScopeAuthority, ScreenReport, WORLD_CONTRACT_VERSION_V4,
+    WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
+use crate::world_v4_support_tests::empty_ingress;
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -81,9 +82,9 @@ fn report(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -93,9 +94,9 @@ fn report(
         command,
         screens,
         windows,
-        views: Vec::new(),
         closed: Vec::new(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -114,17 +115,18 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -180,7 +182,7 @@ fn report_with_frames(
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
     frames: Vec<crate::world_report::FrameAttempt>,
-) -> WorldReport {
+) -> WorldReportV4 {
     let mut out = report(request_seq, screens, windows, focused, command_seq, command);
     out.monotonic_ms = 1000 + request_seq * 1000;
     out.frames = frames;
@@ -254,10 +256,7 @@ fn float_attempt(
     }
 }
 
-fn row_of<'a>(
-    reply: &'a crate::world_report::WorldReply,
-    id: &str,
-) -> &'a crate::world_report::WindowDesire {
+fn row_of<'a>(reply: &'a WorldReplyV4, id: &str) -> &'a crate::world_report::WindowDesire {
     reply
         .windows
         .iter()
@@ -403,7 +402,7 @@ fn place_float(
     windows: Vec<WindowFact>,
     window: &str,
     target: Option<Rect>,
-) -> crate::world_report::WorldReply {
+) -> WorldReplyV4 {
     accepted(
         engine,
         &report(
@@ -561,7 +560,7 @@ fn float_placement_drops_on_newer_native_input_and_proven_refusal() {
     );
 }
 
-fn sole_view(reply: &crate::world_report::WorldReply) -> String {
+fn sole_view(reply: &WorldReplyV4) -> String {
     reply
         .outputs
         .iter()
@@ -1686,7 +1685,7 @@ fn float_lost_result_recovers_stale_never_replays() {
     );
     assert_eq!(row_of(&next, "win-a").effective_frame, Some(target));
     // Consumed command sequence reconciles only, never re-executes.
-    let replay = WorldReport {
+    let replay = WorldReportV4 {
         command_seq: Some(12),
         command: Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
             window: "win-a".to_owned(),
@@ -1694,8 +1693,8 @@ fn float_lost_result_recovers_stale_never_replays() {
         })),
         ..report(4, roomy, two_tiled(), "", None, None)
     };
-    match engine.handle_report_legacy(&replay) {
-        LegacyWorldOutcome::CommandConsumed(reply) => {
+    match engine.handle_report(&replay) {
+        WorldOutcome::CommandConsumed(reply) => {
             assert_eq!(reply.command_result, None);
             assert_eq!(
                 row_of(&reply, "win-a").frame_operation.as_deref(),

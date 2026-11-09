@@ -15,10 +15,10 @@ use crate::gesture::{
     DropDestination, GestureIngress, GestureIntent, GestureKind, GesturePhase, classify_gesture,
     drop_point_in_domain, pointer_output, prefer_modal_move, resolve_drop_destination,
 };
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandResult, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION_LEGACY, WindowFact,
-    WorldReport,
+    CommandResult, PresentationIngressV4, PresentationRowV4, ScreenReport, TransferKind,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -131,9 +131,9 @@ fn report_on(
     gesture: Option<GestureIngress>,
     closed: Vec<WindowId>,
     inventory_complete: bool,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -142,10 +142,12 @@ fn report_on(
         command_seq: None,
         command: None,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: Vec::new(),
+        held_windows: Vec::new(),
         closed,
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -153,8 +155,6 @@ fn report_on(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier: gesture.is_some(),
         gesture,
@@ -164,17 +164,18 @@ fn report_on(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -218,7 +219,7 @@ fn report(
     gesture: Option<GestureIngress>,
     closed: Vec<WindowId>,
     inventory_complete: bool,
-) -> WorldReport {
+) -> WorldReportV4 {
     report_on(
         screens(),
         request_seq,
@@ -254,7 +255,7 @@ fn rig() -> (WorldEngine, Rect, Rect) {
 }
 
 fn row_of<'a>(
-    reply: &'a crate::world_report::WorldReply,
+    reply: &'a crate::world_report::WorldReplyV4,
     window: &str,
 ) -> &'a crate::world_report::WindowDesire {
     reply
@@ -264,7 +265,7 @@ fn row_of<'a>(
         .unwrap_or_else(|| panic!("missing row {window}"))
 }
 
-fn preview_of(reply: &crate::world_report::WorldReply) -> Rect {
+fn preview_of(reply: &crate::world_report::WorldReplyV4) -> Rect {
     let Some(CommandResult::DragPreview { rect, .. }) = reply.command_result.clone() else {
         panic!(
             "expected drag-preview result, got {:?}",
@@ -1151,12 +1152,12 @@ fn cross_output_release_retains_follow_and_settles_on_receipt() {
     assert_eq!(transfer.target_output.0, "out-b");
     assert!(transfer.follow, "cross drop follows like the native path");
     assert_eq!(row_of(&released, "win-a").output.0, "out-b");
-    // Truthful arrival receipt settles the retained flight: the
-    // membership receipt plus the exact target-view echo (cross follow
-    // proves the view like a send).
-    let target_view = transfer.target_workspace.clone();
+    // Truthful arrival receipt settles the retained flight. The legacy
+    // setup also sent the exact target-view echo, but echoes are inert
+    // on native-free engines (and have no v4 slot), so the v4 port
+    // observes the same arrival with an empty lane.
     let arrived_a = fact("win-a", "out-b", moved_a);
-    let mut settle = report(
+    let settle = report(
         3,
         3,
         vec![arrived_a, fact("win-b", "out-a", rb)],
@@ -1165,10 +1166,6 @@ fn cross_output_release_retains_follow_and_settles_on_receipt() {
         vec![],
         true,
     );
-    settle.views = vec![crate::world_report::ScreenView {
-        output: OutputId("out-b".to_owned()),
-        view: target_view,
-    }];
     let settled = accepted(&mut engine, &settle);
     assert!(
         settled
@@ -1391,8 +1388,8 @@ fn consumed_command_reports_still_carry_gesture_preview() {
         window: WindowId("win-a".to_owned()),
         direction: "right".to_owned(),
     });
-    match engine.handle_report_legacy(&resend) {
-        LegacyWorldOutcome::CommandConsumed(reply) => {
+    match engine.handle_report(&resend) {
+        WorldOutcome::CommandConsumed(reply) => {
             preview_of(&reply);
         }
         other => panic!("expected command-consumed with gesture overlay, got {other:?}"),
@@ -1447,8 +1444,8 @@ fn incarnation_reset_clears_the_session() {
     let mut stale_old_generation = old_generation.clone();
     stale_old_generation.adapter_incarnation = "adapter-2".to_owned();
     assert!(matches!(
-        engine.handle_report_legacy(&stale_old_generation),
-        LegacyWorldOutcome::Rejected {
+        engine.handle_report(&stale_old_generation),
+        WorldOutcome::Rejected {
             kind: "generation-mismatch",
             ..
         }
@@ -1988,8 +1985,8 @@ fn terminal_id_zero_never_binds() {
         true,
     );
     let _ = &mut bad;
-    match engine.handle_report_legacy(&bad) {
-        LegacyWorldOutcome::Rejected { .. } => {}
+    match engine.handle_report(&bad) {
+        WorldOutcome::Rejected { .. } => {}
         other => panic!("expected rejection for id 0, got {other:?}"),
     }
     assert!(engine.gesture_terminal.is_none());
@@ -2458,9 +2455,14 @@ fn missing_ingress_close_records_terminal() {
 
 #[test]
 fn reply_carries_terminal_and_bounds_wire_bytes() {
+    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
     // The terminal rides the reply, not a sidechannel: id plus commit
-    // flag, canonical bytes carry it, and the structural estimate plus
-    // the exact encoding both fit the reply budget.
+    // flag, exact v4 bytes carry it, and the structural estimate plus
+    // the exact encoding both fit the reply budget. No core v4
+    // canonical writer exists, so the wire-substring check becomes
+    // exact-byte accounting through `reply_exact_bytes_v4` (which pins
+    // the gesture-settled section field-by-field like the protocol
+    // `encode_reply_v4` writer).
     let (mut engine, ra, rb) = rig();
     let moved_a = rect(100, 0, 40, 90);
     let released = accepted(
@@ -2485,18 +2487,19 @@ fn reply_carries_terminal_and_bounds_wire_bytes() {
         released.gesture_settled.map(|t| (t.id, t.committed)),
         Some((1, true))
     );
-    let wire = crate::world_report::encode_reply_canonical(&released);
+    let mut stripped = released.clone();
+    stripped.gesture_settled = None;
     assert!(
-        wire.contains("\"gestureSettled\":{\"id\":\"1\",\"committed\":true}"),
-        "canonical bytes carry the terminal: {wire}"
+        reply_exact_bytes_v4(&released) > reply_exact_bytes_v4(&stripped),
+        "exact bytes carry the terminal"
     );
-    let estimate = crate::world_report::reply_estimate(&released);
+    let actual = reply_exact_bytes_v4(&released);
+    let estimate = reply_estimate_v4(&released);
     assert!(
-        estimate >= wire.len(),
-        "estimate {estimate} bounds wire {}",
-        wire.len()
+        estimate >= actual,
+        "estimate {estimate} bounds wire {actual}"
     );
-    assert!(wire.len() <= crate::world_report::WORLD_MAX_REPLY_BYTES);
+    assert!(actual <= crate::world_report::WORLD_MAX_REPLY_BYTES);
 }
 
 #[test]
@@ -2525,8 +2528,8 @@ fn terminal_does_not_leak_into_next_report() {
         released.gesture_settled.map(|t| (t.id, t.committed)),
         Some((1, true))
     );
-    match engine.handle_report_legacy(&terminal_report) {
-        LegacyWorldOutcome::Duplicate(cached) => assert_eq!(
+    match engine.handle_report(&terminal_report) {
+        WorldOutcome::Duplicate(cached) => assert_eq!(
             cached.gesture_settled.map(|t| (t.id, t.committed)),
             Some((1, true)),
             "duplicate repeats the cached terminal"
@@ -2624,8 +2627,8 @@ fn rejected_report_consumes_no_gesture_identity() {
         vec![],
         true,
     );
-    match engine.handle_report_legacy(&bad) {
-        LegacyWorldOutcome::Rejected { .. } => {}
+    match engine.handle_report(&bad) {
+        WorldOutcome::Rejected { .. } => {}
         other => panic!("expected rejection, got {other:?}"),
     }
     let mut start = ingress_id(

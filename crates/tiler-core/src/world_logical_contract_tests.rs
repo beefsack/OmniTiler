@@ -8,12 +8,13 @@
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     CommandRejectKind, CommandResult, FrameSetter, HoldReason, LastWrite, LastWritePath,
-    LastWriteProperty, MemberAttempt, ScopeAuthority, ScreenReport, ScreenView, SendSource,
-    TransferKind, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
+    LastWriteProperty, MemberAttempt, PresentationIngressV4, PresentationRowV4, ScopeAuthority,
+    ScreenReport, SendSource, TransferKind, VisibilityFact, VisibilityReason, VisibilitySample,
+    VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand,
+    WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -105,7 +106,7 @@ fn report(
     command: Option<WorldCommand>,
     inventory_complete: bool,
     gesture_barrier: bool,
-) -> WorldReport {
+) -> WorldReportV4 {
     report_mode(
         request_seq,
         observation_seq,
@@ -136,7 +137,7 @@ fn report_mode(
     inventory_complete: bool,
     gesture_barrier: bool,
     workspace_mode: crate::workspace_scope::WorkspaceMode,
-) -> WorldReport {
+) -> WorldReportV4 {
     report_attempts(
         request_seq,
         observation_seq,
@@ -171,9 +172,14 @@ fn report_attempts(
     _workspace_mode: crate::workspace_scope::WorkspaceMode,
     member_attempts: Vec<crate::world_report::MemberAttempt>,
     view_attempts: Vec<crate::world_report::ViewAttempt>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    assert!(
+        views.is_empty(),
+        "v4 has no views lane: {} echo(s) cannot convert",
+        views.len()
+    );
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -182,19 +188,19 @@ fn report_attempts(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: views
-            .into_iter()
-            .map(|(output, view)| ScreenView {
-                output: OutputId(output.to_owned()),
-                view: view.to_owned(),
-            })
-            .collect(),
+        held_windows: Vec::new(),
+        // v4 carries no view-echo lane; the adapter echoes here were
+        // inert (the staged echo derives solely from the native
+        // current map, never from this lane), so the v4 port keeps the
+        // parameter and asserts it stays empty.
         closed: closed
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -202,8 +208,6 @@ fn report_attempts(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier,
         gesture: None,
@@ -213,11 +217,12 @@ fn report_attempts(
         view_attempts,
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
@@ -225,9 +230,9 @@ fn two_screens() -> Vec<ScreenReport> {
     vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -256,7 +261,11 @@ fn engine_with_mode(mode: crate::workspace_scope::WorkspaceMode) -> WorldEngine 
     .expect("valid generation")
 }
 
-fn with_native_context(mut report: WorldReport, current_a: &str, current_b: &str) -> WorldReport {
+fn with_native_context(
+    mut report: WorldReportV4,
+    current_a: &str,
+    current_b: &str,
+) -> WorldReportV4 {
     use crate::world_report::{NativeObservation, NativeOccupancy};
     report.native = [
         ("out-a", ["native-a-0", "native-a-1"], current_a),
@@ -279,7 +288,7 @@ fn with_native_context(mut report: WorldReport, current_a: &str, current_b: &str
     report
 }
 
-fn workspace_ids(reply: &crate::world_report::WorldReply, output: &str) -> Vec<String> {
+fn workspace_ids(reply: &crate::world_report::WorldReplyV4, output: &str) -> Vec<String> {
     let mut ids: Vec<String> = reply
         .workspaces
         .iter()
@@ -291,7 +300,7 @@ fn workspace_ids(reply: &crate::world_report::WorldReply, output: &str) -> Vec<S
 }
 
 fn scope_of(
-    reply: &crate::world_report::WorldReply,
+    reply: &crate::world_report::WorldReplyV4,
     output: &str,
     workspace: &str,
 ) -> ScopeAuthority {
@@ -308,7 +317,7 @@ fn scope_of(
 }
 
 fn window_row<'a>(
-    reply: &'a crate::world_report::WorldReply,
+    reply: &'a crate::world_report::WorldReplyV4,
     window: &str,
 ) -> &'a crate::world_report::WindowDesire {
     reply
@@ -318,7 +327,7 @@ fn window_row<'a>(
         .unwrap_or_else(|| panic!("missing window row {window}"))
 }
 
-fn output_view(reply: &crate::world_report::WorldReply, output: &str) -> Option<String> {
+fn output_view(reply: &crate::world_report::WorldReplyV4, output: &str) -> Option<String> {
     reply
         .outputs
         .iter()
@@ -555,31 +564,30 @@ fn send_follow_and_stay_commit_window_transfers() {
     assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
     assert!(row.effective_frame.is_some(), "{row:?}");
     // Arrival proves through the staged homing: same fact on out-b.
-    // Follow proves through the exact observed view: the target output
-    // must echo the destination, otherwise the cross-output Window holds
-    // persistently (never silently settling on membership alone).
+    // Follow proves through the staged echo (native current map on
+    // host-owned engines; retained view on native-free ones): the v4
+    // port observes the same arrival with an empty views lane, which
+    // is inert on both intakes.
     follow.request_seq = 3;
     follow.request_id = "req-3".to_string();
     follow.observation_seq = 3;
     follow.command_seq = None;
     follow.command = None;
     follow.windows = vec![fact("win-a", "out-b", 800), fact("win-b", "out-a", 100)];
-    follow.views = vec![crate::world_report::ScreenView {
-        output: OutputId("out-b".to_owned()),
-        view: view_b.clone(),
-    }];
     let settled = accepted(&mut engine, &follow);
     assert!(settled.transfers.is_empty());
     let row = window_row(&settled, "win-a");
     assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
     assert!(row.allocation.is_some());
     // Stay send leaves a survivor and names exact source focus.
-    let mut stay = report(
+    // (The legacy setup echoed current views here; echoes are inert,
+    // so the v4 report carries an empty lane.)
+    let stay = report(
         4,
         4,
         two_screens(),
         vec![fact("win-a", "out-b", 800), fact("win-b", "out-a", 100)],
-        vec![("out-a", ""), ("out-b", "")],
+        vec![],
         vec![],
         "win-b",
         Some(12),
@@ -591,8 +599,6 @@ fn send_follow_and_stay_commit_window_transfers() {
         true,
         false,
     );
-    // Echo current views so homing stays truthful.
-    let _ = &mut stay;
     let reply = accepted(&mut engine, &stay);
     assert!(
         reply.effects.is_empty(),
@@ -755,7 +761,7 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
         3,
         two_screens(),
         vec![arrived, fact("win-b", "out-a", 100)],
-        vec![("out-a", ring_a[1].as_str())],
+        vec![],
         vec![],
         "win-a",
         None,
@@ -782,7 +788,7 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
         "membership proof settles: {:?}",
         settled.transfers
     );
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         4,
         4,
         two_screens(),
@@ -800,7 +806,7 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
         true,
         false,
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -926,7 +932,7 @@ fn directional_focus_up_never_crosses_outputs() {
     );
     // Up never crosses: the outcome stays local (an effect on the home
     // output) or refuses as unchanged, never an out-b target.
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         2,
         2,
         two_screens(),
@@ -946,7 +952,7 @@ fn directional_focus_up_never_crosses_outputs() {
         true,
         false,
     )) {
-        LegacyWorldOutcome::Accepted(reply) | LegacyWorldOutcome::CommandConsumed(reply) => {
+        WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
             assert!(
                 reply
                     .effects
@@ -954,7 +960,7 @@ fn directional_focus_up_never_crosses_outputs() {
                     .all(|effect| effect.target.0 != "win-b")
             );
         }
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "unchanged"),
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "unchanged"),
         other => panic!("unexpected outcome: {other:?}"),
     }
 }
@@ -1032,7 +1038,7 @@ fn selection_commands_resolve_over_logical_rings() {
             3,
             two_screens(),
             vec![],
-            vec![("out-a", ring_a[1].as_str())],
+            vec![],
             vec![],
             "",
             Some(12),
@@ -1050,7 +1056,7 @@ fn selection_commands_resolve_over_logical_rings() {
     );
     // Unknown targets refuse without mutation.
     let seq = 4;
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         4,
         4,
         two_screens(),
@@ -1066,7 +1072,7 @@ fn selection_commands_resolve_over_logical_rings() {
         true,
         false,
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::ViewTargetUnknown
@@ -1084,7 +1090,7 @@ fn selection_commands_resolve_over_logical_rings() {
             5,
             two_screens(),
             vec![],
-            vec![("out-a", view_a.as_str())],
+            vec![],
             vec![],
             "",
             Some(14),
@@ -1220,7 +1226,7 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
     // alike.
     for (i, (seq, index)) in [(2u64, 0u8), (3u64, 1u8)].iter().enumerate() {
         let command_seq = 11 + i as u64;
-        match engine.handle_report_legacy(&report(
+        match engine.handle_report(&report(
             *seq,
             *seq,
             two_screens(),
@@ -1238,7 +1244,7 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
             false,
             false,
         )) {
-            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+            WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::OperationRefused
@@ -1297,8 +1303,8 @@ fn implicit_send_source_freezes_pre_observation_home() {
         cached: Option<&str>,
         registry: Vec<&str>,
         command: WorldCommand,
-    ) -> WorldReport {
-        WorldReport {
+    ) -> WorldReportV4 {
+        WorldReportV4 {
             cursor,
             action_foreground: None,
             action_cached: cached.map(|out| OutputId(out.to_owned())),
@@ -1321,7 +1327,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             )
         }
     }
-    fn sent_to(reply: &crate::world_report::WorldReply, window: &str) -> Option<String> {
+    fn sent_to(reply: &crate::world_report::WorldReplyV4, window: &str) -> Option<String> {
         reply.transfers.iter().find_map(|t| match &t.kind {
             TransferKind::Window(w) if w.0 == window => Some(t.target_output.0.clone()),
             _ => None,
@@ -1383,7 +1389,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match engine.handle_report_legacy(&staged(
+    match engine.handle_report(&staged(
         2,
         vec![fact("win-a", "out-b", 800)],
         "win-a",
@@ -1397,7 +1403,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1425,7 +1431,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match engine.handle_report_legacy(&staged(
+    match engine.handle_report(&staged(
         2,
         vec![fact("win-n", "out-a", 10)],
         "win-n",
@@ -1439,7 +1445,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1469,7 +1475,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match live_cached.handle_report_legacy(&staged(
+    match live_cached.handle_report(&staged(
         2,
         vec![fact("win-n", "out-a", 10)],
         "win-n",
@@ -1483,7 +1489,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1513,7 +1519,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match cli.handle_report_legacy(&staged(
+    match cli.handle_report(&staged(
         2,
         vec![fact("win-n", "out-a", 10)],
         "win-n",
@@ -1527,7 +1533,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1553,7 +1559,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match keyboard.handle_report_legacy(&staged(
+    match keyboard.handle_report(&staged(
         2,
         vec![fact("win-n", "out-a", 10), fact("win-m", "out-a", 100)],
         "win-n",
@@ -1567,7 +1573,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             follow: false,
         },
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::SendTargetUnknown
@@ -1647,7 +1653,7 @@ fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
             4,
             two_screens(),
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-            vec![("out-a", view_b.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -1663,7 +1669,7 @@ fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
             5,
             two_screens(),
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-            vec![("out-a", view_b.as_str())],
+            vec![],
             vec![],
             "win-a",
             Some(12),
@@ -2279,7 +2285,7 @@ fn valid_migration_holds_target_without_suppression_then_retires_on_arrival() {
             5,
             two_screens(),
             vec![fact("win-a", "out-b", 800)],
-            vec![("out-b", view_a.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -2304,7 +2310,7 @@ fn valid_migration_holds_target_without_suppression_then_retires_on_arrival() {
             6,
             two_screens(),
             vec![fact("win-a", "out-b", 800)],
-            vec![("out-b", view_a.as_str()), ("out-a", refill.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -2337,7 +2343,7 @@ fn valid_migration_holds_target_without_suppression_then_retires_on_arrival() {
             7,
             two_screens(),
             vec![fact("win-a", "out-b", 800)],
-            vec![("out-b", view_a.as_str()), ("out-a", refill.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -2549,8 +2555,8 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 }),
                 attempt_ms: 3,
             };
-            match engine.handle_report_legacy(&make_report(vec![logical_attempt])) {
-                LegacyWorldOutcome::Rejected { message, .. } => {
+            match engine.handle_report(&make_report(vec![logical_attempt])) {
+                WorldOutcome::Rejected { message, .. } => {
                     assert_eq!(message, "native-without-capability")
                 }
                 other => panic!("logical ViewAttempt must reject: {other:?}"),
@@ -2834,7 +2840,7 @@ fn multi_member_migration_preserves_tree_and_focus() {
             3,
             two_screens(),
             vec![fact("win-a", "out-b", 800), fact("win-b", "out-b", 900)],
-            vec![("out-b", view_a.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -2843,7 +2849,7 @@ fn multi_member_migration_preserves_tree_and_focus() {
             false,
         ),
     );
-    let refill = output_view(&settled, "out-a").expect("refill");
+    let _refill = output_view(&settled, "out-a").expect("refill");
     let settled = accepted(
         &mut engine,
         &report(
@@ -2851,7 +2857,7 @@ fn multi_member_migration_preserves_tree_and_focus() {
             4,
             two_screens(),
             vec![fact("win-a", "out-b", 800), fact("win-b", "out-b", 900)],
-            vec![("out-b", view_a.as_str()), ("out-a", refill.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -3018,7 +3024,7 @@ fn migration_refill_prefers_mru_history() {
         3,
         two_screens(),
         vec![fact("win-a", "out-a", 0)],
-        vec![("out-a", spare.as_str())],
+        vec![],
         vec![],
         "",
         Some(12),
@@ -3036,7 +3042,7 @@ fn migration_refill_prefers_mru_history() {
         4,
         two_screens(),
         vec![fact("win-a", "out-a", 0)],
-        vec![("out-a", head.as_str())],
+        vec![],
         vec![],
         "",
         Some(13),
@@ -3405,7 +3411,7 @@ fn generations_watermarks_and_command_consumption_hold() {
             false,
         ),
     );
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         2,
         2,
         two_screens(),
@@ -3418,13 +3424,13 @@ fn generations_watermarks_and_command_consumption_hold() {
         true,
         false,
     )) {
-        LegacyWorldOutcome::Duplicate(cached) => {
+        WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.state_revision, first.state_revision)
         }
         other => panic!("expected duplicate, got {other:?}"),
     }
     // Reused sequence with different input is invalid, never executed.
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         2,
         2,
         two_screens(),
@@ -3437,11 +3443,11 @@ fn generations_watermarks_and_command_consumption_hold() {
         true,
         false,
     )) {
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
         other => panic!("expected request-reused, got {other:?}"),
     }
     // Older sequences are superseded.
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         1,
         1,
         two_screens(),
@@ -3454,11 +3460,11 @@ fn generations_watermarks_and_command_consumption_hold() {
         true,
         false,
     )) {
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-superseded"),
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-superseded"),
         other => panic!("expected request-superseded, got {other:?}"),
     }
     // Foreign generations never reset ordering.
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         3,
         3,
         two_screens(),
@@ -3471,7 +3477,7 @@ fn generations_watermarks_and_command_consumption_hold() {
         true,
         false,
     )) {
-        LegacyWorldOutcome::Accepted(_) => {}
+        WorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
     // A consumed command reconciles observations without re-executing.
@@ -3498,7 +3504,7 @@ fn generations_watermarks_and_command_consumption_hold() {
     assert_eq!(view_reply.switch_settled.len(), 1);
     let transfers = view_reply.transfers.len();
     assert_eq!(transfers, 0);
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         5,
         5,
         two_screens(),
@@ -3513,7 +3519,7 @@ fn generations_watermarks_and_command_consumption_hold() {
         true,
         false,
     )) {
-        LegacyWorldOutcome::CommandConsumed(reply) => assert_eq!(reply.transfers.len(), transfers),
+        WorldOutcome::CommandConsumed(reply) => assert_eq!(reply.transfers.len(), transfers),
         other => panic!("expected command-consumed, got {other:?}"),
     }
     // A wrong generation is rejected outright.
@@ -3531,14 +3537,19 @@ fn generations_watermarks_and_command_consumption_hold() {
         false,
     );
     bad.core_generation = "gen-2".to_owned();
-    match engine.handle_report_legacy(&bad) {
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "generation-mismatch"),
+    match engine.handle_report(&bad) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "generation-mismatch"),
         other => panic!("expected generation-mismatch, got {other:?}"),
     }
 }
 
 #[test]
-fn unknown_outputs_and_views_hold_fail_closed() {
+fn unknown_outputs_hold_fail_closed() {
+    // Retired: the legacy `views`/`ScreenView` unknown-echo fail-closed
+    // hold (world-contract.md:349-352 removes `views`; G1 native-only
+    // logical echo cannot prove completion; the v4 wire refuses views
+    // outright) has no v4 lane, so the echo arm is dropped. What stays:
+    // facts on unknown screens still route on the v4 lane.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
         &mut engine,
@@ -3556,16 +3567,17 @@ fn unknown_outputs_and_views_hold_fail_closed() {
             false,
         ),
     );
-    // Unknown view echoes never authorize: the output holds instead of
-    // adopting a workspace the core does not own.
-    let reply = accepted(
+    // Facts on unknown screens route: the new screen joins the scopes.
+    let mut screens = two_screens();
+    screens.push(screen("out-z", 1600));
+    let ok = accepted(
         &mut engine,
         &report(
             2,
             2,
-            two_screens(),
-            vec![fact("win-a", "out-a", 0)],
-            vec![("out-a", "ws-ghost")],
+            screens,
+            vec![fact("win-a", "out-a", 0), fact("win-x", "out-z", 0)],
+            vec![],
             vec![],
             "",
             None,
@@ -3574,28 +3586,6 @@ fn unknown_outputs_and_views_hold_fail_closed() {
             false,
         ),
     );
-    let output = reply
-        .outputs
-        .iter()
-        .find(|row| row.output.0 == "out-a")
-        .expect("output row");
-    assert_eq!(output.hold, Some(HoldReason::IncompleteInventory));
-    // Facts on unknown screens refuse the whole report.
-    let mut bad = report(
-        3,
-        3,
-        two_screens(),
-        vec![fact("win-a", "out-a", 0), fact("win-x", "out-z", 0)],
-        vec![],
-        vec![],
-        "",
-        None,
-        None,
-        true,
-        false,
-    );
-    bad.screens.push(screen("out-z", 1600));
-    let ok = accepted(&mut engine, &bad);
     assert!(ok.scopes.iter().any(|status| {
         status
             .scope
@@ -3629,8 +3619,8 @@ fn host_owned_capability_gates_native_observations() {
             count: None,
         }],
     });
-    match engine.handle_report_legacy(&bad) {
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+    match engine.handle_report(&bad) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("expected snapshot-invalid, got {other:?}"),
     }
     // With the capability native observations adopt: out-a builds one
@@ -3905,7 +3895,7 @@ fn cross_output_follow_ineligible_moves_view_without_binding() {
             6,
             two_screens(),
             vec![fact("win-a", "out-b", 800), fact("win-b", "out-a", 100)],
-            vec![("out-b", view_b.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -4043,7 +4033,7 @@ fn standalone_view_hold_completes_through_member_verdict_not_echo() {
     let ring_a = workspace_ids(&first, "out-a");
     assert!(ring_a.len() >= 2);
     let target = ring_a[1].clone();
-    let current = output_view(&first, "out-a").expect("current view");
+    let _current = output_view(&first, "out-a").expect("current view");
     accepted(
         &mut engine,
         &report(
@@ -4124,7 +4114,7 @@ fn standalone_view_hold_completes_through_member_verdict_not_echo() {
             4,
             two_screens(),
             vec![hidden],
-            vec![("out-a", current.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -4178,7 +4168,7 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
     let ring_a = workspace_ids(&first, "out-a");
     assert!(ring_a.len() >= 2);
     let target = ring_a[1].clone();
-    let current = output_view(&first, "out-a").expect("current view");
+    let _current = output_view(&first, "out-a").expect("current view");
     accepted(
         &mut engine,
         &with_native_context(
@@ -4215,7 +4205,7 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
                 3,
                 incomplete,
                 vec![fact("win-a", "out-a", 0)],
-                vec![("out-a", current.as_str())],
+                vec![],
                 vec![],
                 "",
                 None,
@@ -4262,7 +4252,7 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
                 4,
                 two_screens(),
                 vec![fact("win-a", "out-a", 0)],
-                vec![("out-a", current.as_str())],
+                vec![],
                 vec![],
                 "",
                 None,
@@ -4417,7 +4407,7 @@ fn floating_select_workspace_completes_empty_at_issuing() {
             6,
             two_screens(),
             vec![],
-            vec![("out-a", other.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -4508,7 +4498,7 @@ fn floating_select_previous_returns_to_floating_target() {
             4,
             two_screens(),
             vec![],
-            vec![("out-a", other.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -4524,7 +4514,7 @@ fn floating_select_previous_returns_to_floating_target() {
             5,
             two_screens(),
             vec![],
-            vec![("out-a", other.as_str())],
+            vec![],
             vec![],
             "",
             Some(13),
@@ -4543,7 +4533,7 @@ fn floating_select_previous_returns_to_floating_target() {
             6,
             two_screens(),
             vec![],
-            vec![("out-a", head.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -4560,7 +4550,7 @@ fn floating_select_previous_returns_to_floating_target() {
             7,
             two_screens(),
             vec![],
-            vec![("out-a", head.as_str())],
+            vec![],
             vec![],
             "",
             Some(14),
@@ -4589,7 +4579,7 @@ fn floating_select_previous_returns_to_floating_target() {
             8,
             two_screens(),
             vec![],
-            vec![("out-a", other.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -4665,7 +4655,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             3,
             two_screens(),
             vec![],
-            vec![("out-a", trailing.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -4681,7 +4671,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             4,
             two_screens(),
             vec![],
-            vec![("out-a", trailing.as_str())],
+            vec![],
             vec![],
             "",
             Some(12),
@@ -4703,7 +4693,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             5,
             two_screens(),
             vec![],
-            vec![("out-a", trailing.as_str())],
+            vec![],
             vec![],
             "",
             Some(13),
@@ -4722,7 +4712,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             6,
             two_screens(),
             vec![],
-            vec![("out-a", head.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -4738,7 +4728,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             7,
             two_screens(),
             vec![],
-            vec![("out-a", head.as_str())],
+            vec![],
             vec![],
             "",
             Some(14),
@@ -4773,7 +4763,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             8,
             two_screens(),
             vec![],
-            vec![("out-a", trailing.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -4866,7 +4856,7 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
     );
     // Logical selector attempts are rejected in v4 rather than acting as
     // synthetic proof. The floating workspace membership remains intact.
-    match engine.handle_report_legacy(&report_attempts(
+    match engine.handle_report(&report_attempts(
         4,
         4,
         two_screens(),
@@ -4900,7 +4890,7 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
             attempt_ms: 4,
         }],
     )) {
-        LegacyWorldOutcome::Rejected { message, .. } => {
+        WorldOutcome::Rejected { message, .. } => {
             assert_eq!(message, "native-without-capability")
         }
         other => panic!("native-free logical selector evidence must reject, got {other:?}"),
@@ -4914,7 +4904,7 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
             5,
             two_screens(),
             vec![],
-            vec![("out-a", current.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -4967,7 +4957,7 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
         ),
     );
     let view_a = output_view(&first, "out-a").expect("view a");
-    let other = workspace_ids(&first, "out-a")
+    let _other = workspace_ids(&first, "out-a")
         .into_iter()
         .find(|id| id != &view_a)
         .expect("second workspace");
@@ -5068,7 +5058,7 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
             4,
             two_screens(),
             vec![fact("win-a", "out-b", 800)],
-            vec![("out-b", view_a.as_str()), ("out-a", other.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -5091,7 +5081,7 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
             5,
             two_screens(),
             vec![fact("win-a", "out-b", 800)],
-            vec![("out-b", view_a.as_str()), ("out-a", other.as_str())],
+            vec![],
             vec![],
             "",
             Some(13),
@@ -5183,7 +5173,7 @@ fn queued_implicit_selection_resolves_at_execution_cursor() {
         3,
         two_screens(),
         vec![fact("win-a", "out-a", 0)],
-        vec![("out-b", moved_b.as_str())],
+        vec![],
         vec![],
         "win-a",
         Some(12),
@@ -5209,7 +5199,7 @@ fn queued_implicit_selection_resolves_at_execution_cursor() {
         4,
         two_screens(),
         vec![fact("win-a", "out-a", 0)],
-        vec![("out-b", view_b.as_str())],
+        vec![],
         vec![],
         "win-a",
         Some(13),
@@ -5338,7 +5328,7 @@ fn focused_mode_and_explicit_selection_survive_disagreeing_cursor() {
         5,
         two_screens(),
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
-        vec![("out-b", moved_b.as_str())],
+        vec![],
         vec![],
         "win-b",
         Some(12),

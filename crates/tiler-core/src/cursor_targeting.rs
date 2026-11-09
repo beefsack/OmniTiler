@@ -2,7 +2,7 @@
 //!
 //! Shared policy for workspace-switch targeting and fresh-window placement
 //! over adapter-normalized integer geometry. The adapter reports the cursor
-//! position with each complete [`crate::world_report::WorldReport`]; core
+//! position with each complete [`crate::world_report::WorldReportV4`]; core
 //! resolves every target from that plus retained focused facts, never from
 //! an adapter-preselected output.
 //!

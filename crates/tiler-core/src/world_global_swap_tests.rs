@@ -6,10 +6,10 @@
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    ScopeAuthority, ScreenReport, ScreenView, TransferKind, WORLD_CONTRACT_VERSION_LEGACY,
-    WindowFact, WorldCommand, WorldReport,
+    PresentationIngressV4, PresentationRowV4, ScopeAuthority, ScreenReport, TransferKind,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -104,9 +104,17 @@ fn report(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    // v4 carries no view-echo lane; arrival/held echoes here were inert
+    // (command-driven swap + member facts carry the proof), so the v4
+    // port passes an empty lane.
+    assert!(
+        views.is_empty(),
+        "v4 has no views lane: {} echo(s) cannot convert",
+        views.len()
+    );
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -115,16 +123,12 @@ fn report(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: views
-            .into_iter()
-            .map(|(output, view)| ScreenView {
-                output: OutputId(output.to_owned()),
-                view: view.to_owned(),
-            })
-            .collect(),
+        held_windows: Vec::new(),
         closed: vec![],
         native: vec![],
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -132,8 +136,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -143,11 +145,12 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
@@ -155,16 +158,16 @@ fn two_screens() -> Vec<ScreenReport> {
     vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
-fn test_issue(report: &WorldReport) -> crate::world_engine::EventIssue {
+fn test_issue(report: &WorldReportV4) -> crate::world_engine::EventIssue {
     crate::world_engine::EventIssue {
         owner: crate::ids::OwnerId::parse("adapter-1").expect("owner"),
         correlation: crate::ids::CorrelationId::parse(&report.request_id).expect("correlation"),
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -188,7 +191,7 @@ fn global_unique_engine() -> WorldEngine {
     .expect("generation")
 }
 
-fn view_of(reply: &crate::world_report::WorldReply, output: &str) -> Option<String> {
+fn view_of(reply: &crate::world_report::WorldReplyV4, output: &str) -> Option<String> {
     reply
         .outputs
         .iter()
@@ -197,7 +200,7 @@ fn view_of(reply: &crate::world_report::WorldReply, output: &str) -> Option<Stri
 }
 
 fn window_row<'a>(
-    reply: &'a crate::world_report::WorldReply,
+    reply: &'a crate::world_report::WorldReplyV4,
     window: &str,
 ) -> &'a crate::world_report::WindowDesire {
     reply
@@ -413,7 +416,7 @@ fn global_unique_swap_preserves_nonempty_units() {
             7,
             two_screens(),
             arrived_windows.clone(),
-            vec![("out-a", view_b.as_str()), ("out-b", view_a.as_str())],
+            vec![],
             "",
             None,
             None,
@@ -487,7 +490,7 @@ fn global_unique_swap_preserves_nonempty_units() {
             8,
             two_screens(),
             arrived_windows,
-            vec![("out-a", view_b.as_str()), ("out-b", view_a.as_str())],
+            vec![],
             "",
             Some(12),
             Some(WorldCommand::SelectPrevious {
@@ -626,16 +629,7 @@ fn global_unique_swap_keeps_sticky_on_physical_source() {
     ];
     let arrived = accepted(
         &mut engine,
-        &report(
-            6,
-            6,
-            two_screens(),
-            arrived_windows,
-            vec![("out-a", view_b.as_str()), ("out-b", view_a.as_str())],
-            "",
-            None,
-            None,
-        ),
+        &report(6, 6, two_screens(), arrived_windows, vec![], "", None, None),
     );
     assert!(
         arrived.transfers.is_empty(),
@@ -654,7 +648,7 @@ fn global_unique_swap_keeps_sticky_on_physical_source() {
 }
 
 fn sticky_rows<'a>(
-    reply: &'a crate::world_report::WorldReply,
+    reply: &'a crate::world_report::WorldReplyV4,
     window: &str,
 ) -> Vec<&'a crate::world_report::WindowDesire> {
     reply
@@ -674,7 +668,7 @@ fn global_unique_swap_sticky_only_side_keeps_both_rows() {
         &mut engine,
         &report(1, 1, two_screens(), vec![], vec![], "", None, None),
     );
-    let view_a = view_of(&first, "out-a").expect("view a");
+    let _view_a = view_of(&first, "out-a").expect("view a");
     let view_b = view_of(&first, "out-b").expect("view b");
     let windows = vec![
         fact("win-a1", "out-a", 0),
@@ -727,16 +721,7 @@ fn global_unique_swap_sticky_only_side_keeps_both_rows() {
     ];
     let arrived = accepted(
         &mut engine,
-        &report(
-            6,
-            6,
-            two_screens(),
-            arrived_windows,
-            vec![("out-a", view_b.as_str()), ("out-b", view_a.as_str())],
-            "",
-            None,
-            None,
-        ),
+        &report(6, 6, two_screens(), arrived_windows, vec![], "", None, None),
     );
     assert!(
         arrived.transfers.is_empty(),
@@ -760,7 +745,7 @@ fn global_unique_swap_empty_side_keeps_sticky_row() {
         &mut engine,
         &report(1, 1, two_screens(), vec![], vec![], "", None, None),
     );
-    let view_a = view_of(&first, "out-a").expect("view a");
+    let _view_a = view_of(&first, "out-a").expect("view a");
     let view_b = view_of(&first, "out-b").expect("view b");
     let windows = vec![
         fact("win-a1", "out-a", 0),
@@ -814,16 +799,7 @@ fn global_unique_swap_empty_side_keeps_sticky_row() {
     ];
     let arrived = accepted(
         &mut engine,
-        &report(
-            6,
-            6,
-            two_screens(),
-            arrived_windows,
-            vec![("out-a", view_b.as_str()), ("out-b", view_a.as_str())],
-            "",
-            None,
-            None,
-        ),
+        &report(6, 6, two_screens(), arrived_windows, vec![], "", None, None),
     );
     assert!(
         arrived.transfers.is_empty(),
@@ -1182,7 +1158,7 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
                 fact("win-a1", "out-b", 800),
                 sticky_float("win-as", "out-a", 0),
             ],
-            vec![("out-a", view_b.as_str()), ("out-b", view_a.as_str())],
+            vec![],
             "",
             None,
             None,

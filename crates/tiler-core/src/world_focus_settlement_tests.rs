@@ -5,12 +5,14 @@
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_focus::FocusVerdict;
 use crate::world_report::{
-    FocusFeedback, OneShotEffect, RowDiagnosticKind, VisibilityReason, VisibilitySetter,
-    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
+    FocusFeedback, OneShotEffect, PresentationRowV4, RowDiagnosticKind, VisibilityReason,
+    VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4,
+    WorldReportV4,
 };
+use crate::world_v4_support_tests::empty_ingress;
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
@@ -79,9 +81,9 @@ fn report(
     closed: Vec<&str>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -91,12 +93,12 @@ fn report(
         command,
         screens: vec![screen("out-a", 0)],
         windows,
-        views: Vec::new(),
         closed: closed
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -115,10 +117,12 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
+        presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
@@ -150,7 +154,7 @@ fn feedback_row(
     }
 }
 
-fn with_feedback(mut base: WorldReport, rows: Vec<FocusFeedback>) -> WorldReport {
+fn with_feedback(mut base: WorldReportV4, rows: Vec<FocusFeedback>) -> WorldReportV4 {
     base.focus_feedback = rows;
     base
 }
@@ -159,9 +163,9 @@ fn test_engine() -> WorldEngine {
     WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -853,14 +857,21 @@ fn observation_revisions_retain_pending_batch_until_delayed_feedback() {
 }
 
 #[test]
-fn admission_plus_explicit_batch_binds_two_grants() {
+fn explicit_batch_focus_supersedes_admission_grant() {
+    // V4 supersession (docs/decisions/commands.md#kde-rapid-input: the adapter
+    // applies only the latest publication, superseded unissued targets drop;
+    // world_run_v4.rs batch-focus resolution: the first explicit batch Focus
+    // supersedes every unissued prior Focus): the newcomer admission Focus for
+    // w1 drops under the explicit batch Focus for w0, so only the explicit
+    // grant publishes.
+    // Map: world_rapid_input_tests::rapid_input_batch_focus_supersedes_admission_focus.
     let mut engine = test_engine();
     accepted(
         &mut engine,
         &report(1, vec![fact("w0", "out-a", 0)], "", vec![], None, None),
     );
-    // Newcomer admission plus an explicit command focus share one reply:
-    // the real max-two production batch.
+    // Newcomer admission plus an explicit command focus share one reply, but
+    // only the explicit grant publishes.
     let reply = accepted(
         &mut engine,
         &report(
@@ -872,14 +883,15 @@ fn admission_plus_explicit_batch_binds_two_grants() {
             Some(focus_command("w0")),
         ),
     );
-    assert_eq!(reply.effects.len(), 2, "admission + explicit: {reply:?}");
+    assert_eq!(reply.effects.len(), 1, "explicit-only grant: {reply:?}");
+    assert_eq!(reply.effects[0].target.0, "w0");
     assert_eq!(
         engine.retained_focus.len(),
-        2,
-        "bound follows the real batch"
+        1,
+        "bound follows the surviving grant"
     );
-    // The full real batch is tracked: every emitted effect retained in
-    // publish order, none dropped or truncated.
+    // The surviving grant is tracked: the emitted effect retained as issued,
+    // nothing dropped or truncated.
     let retained_effects: Vec<OneShotEffect> = engine
         .retained_focus
         .iter()
@@ -897,8 +909,8 @@ fn admission_plus_explicit_batch_binds_two_grants() {
         .iter()
         .map(|grant| grant.effect.target.0.clone())
         .collect();
-    assert_eq!(targets, vec!["w1".to_owned(), "w0".to_owned()]);
-    // Both grants settle independently by opaque tuple.
+    assert_eq!(targets, vec!["w0".to_owned()]);
+    // The retained grant settles by opaque tuple.
     let rows: Vec<FocusFeedback> = engine
         .retained_focus
         .iter()
@@ -940,6 +952,13 @@ fn admission_plus_explicit_batch_binds_two_grants() {
 
 #[test]
 fn newer_emitted_batch_supersedes_older_and_stale_tuples_ignore() {
+    // V4 supersession (docs/decisions/commands.md#kde-rapid-input: the adapter
+    // applies only the latest publication, superseded unissued targets drop;
+    // world_run_v4.rs batch-focus resolution: the first explicit batch Focus
+    // supersedes every unissued prior Focus): the first batch publishes only
+    // the explicit grant for w0, and a newer command batch supersedes it with
+    // a fresh grant for w1. Stale tuples from the superseded batch cannot
+    // settle the newer grant.
     let mut engine = test_engine();
     accepted(
         &mut engine,
@@ -956,7 +975,8 @@ fn newer_emitted_batch_supersedes_older_and_stale_tuples_ignore() {
             Some(focus_command("w0")),
         ),
     );
-    assert_eq!(first.effects.len(), 2);
+    assert_eq!(first.effects.len(), 1, "explicit-only grant: {first:?}");
+    assert_eq!(first.effects[0].target.0, "w0");
     let stale: Vec<FocusFeedback> = first
         .effects
         .iter()
@@ -1364,8 +1384,8 @@ fn envelope_rejection_adopts_nothing() {
         true,
         9,
     )];
-    match engine.handle_report_legacy(&reused) {
-        LegacyWorldOutcome::Rejected { kind, .. } => {
+    match engine.handle_report(&reused) {
+        WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REUSED)
         }
         other => panic!("expected reused fence, got {other:?}"),
@@ -1401,8 +1421,8 @@ fn consumed_command_report_still_settles_feedback() {
         Some(focus_command("w0")),
     );
     consumed.focus_feedback = vec![row];
-    match engine.handle_report_legacy(&consumed) {
-        LegacyWorldOutcome::CommandConsumed(reply) => {
+    match engine.handle_report(&consumed) {
+        WorldOutcome::CommandConsumed(reply) => {
             assert_eq!(reply.command_result, None);
             assert!(reply.effects.is_empty());
         }
@@ -1439,8 +1459,8 @@ fn duplicate_replay_keeps_settlement_unchanged() {
     );
     let reply = accepted(&mut engine, &settled);
     let revision = engine.state_revision;
-    match engine.handle_report_legacy(&settled) {
-        LegacyWorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
+    match engine.handle_report(&settled) {
+        WorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
         other => panic!("expected duplicate, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision);

@@ -9,9 +9,9 @@ use crate::directional::WindowId;
 use crate::geometry::Rect;
 use crate::intent_data::{IntentData, encode_intent_data};
 use crate::size_hints::WindowSizeHints;
-use crate::world_directional::tests::{accepted, fact, report_full, screen};
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
-use crate::world_report::{IntentRecord, WorldCommand, WorldReport};
+use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_report::{IntentRecord, WorldCommand, WorldReportV4};
+use crate::world_v4_support_tests::{accepted, fact, report_full, screen};
 
 fn engine() -> WorldEngine {
     WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
@@ -32,7 +32,7 @@ fn fixed_fact(window: &str, output: &str, x: i32) -> crate::world_report::Window
     f
 }
 
-fn with_records(mut report: WorldReport, records: Vec<IntentRecord>) -> WorldReport {
+fn with_records(mut report: WorldReportV4, records: Vec<IntentRecord>) -> WorldReportV4 {
     report.intent_records = records;
     report
 }
@@ -73,7 +73,7 @@ fn is_floated(engine: &WorldEngine, win: &str) -> bool {
 }
 
 fn row_for<'a>(
-    reply: &'a crate::world_report::WorldReply,
+    reply: &'a crate::world_report::WorldReplyV4,
     win: &str,
 ) -> Option<&'a crate::world_report::WindowDesire> {
     reply.windows.iter().find(|row| row.lifetime.0 == win)
@@ -597,8 +597,8 @@ fn duplicate_and_oversize_are_non_mutating() {
     assert!(is_tiled(&engine, "win-a"));
 
     // Identical latest duplicate returns the cached reply with no revision.
-    match engine.handle_report_legacy(&first) {
-        LegacyWorldOutcome::Duplicate(cached) => assert_eq!(cached.state_revision, revision),
+    match engine.handle_report(&first) {
+        WorldOutcome::Duplicate(cached) => assert_eq!(cached.state_revision, revision),
         other => panic!("expected duplicate, got {other:?}"),
     }
     assert!(is_tiled(&engine, "win-a"));
@@ -619,8 +619,8 @@ fn duplicate_and_oversize_are_non_mutating() {
     );
     reused.request_id = "req-1".to_owned();
     assert!(matches!(
-        engine.handle_report_legacy(&reused),
-        LegacyWorldOutcome::Rejected { .. }
+        engine.handle_report(&reused),
+        WorldOutcome::Rejected { .. }
     ));
     assert!(is_tiled(&engine, "win-a"));
     assert!(!is_tiled(&engine, "win-b"));
@@ -638,8 +638,8 @@ fn duplicate_and_oversize_are_non_mutating() {
     );
     big.screens = vec![screen("out-a", 0); 10_000];
     assert!(matches!(
-        engine.handle_report_legacy(&big),
-        LegacyWorldOutcome::Rejected { .. }
+        engine.handle_report(&big),
+        WorldOutcome::Rejected { .. }
     ));
     assert!(is_tiled(&engine, "win-a"));
 

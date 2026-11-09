@@ -1,13 +1,13 @@
 //! Internal state-attempt settlement.
 
 use crate::directional::{OutputId, WindowId};
-use crate::world_directional::tests::{accepted, fact, report_full, screen};
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
     AttemptOutcome, FrameSetter, RowDiagnosticKind, RowDiagnosticLane, StateAttempt, StateProperty,
-    WorldReport,
+    WorldReportV4,
 };
 use crate::world_state::{RetainedStateBinding, RetainedStateTarget};
+use crate::world_v4_support_tests::{accepted, fact, report_full, screen};
 
 fn caps_all() -> crate::connection::HostCapabilities {
     crate::connection::HostCapabilities {
@@ -82,7 +82,7 @@ fn binding(
         .cloned()
 }
 
-fn with_attempts(mut report: WorldReport, attempts: Vec<StateAttempt>) -> WorldReport {
+fn with_attempts(mut report: WorldReportV4, attempts: Vec<StateAttempt>) -> WorldReportV4 {
     report.state_attempts = attempts;
     report
 }
@@ -996,7 +996,7 @@ fn offroute_matrix_all_four_properties_narrow() {
             rows.clone(),
         ),
     );
-    let last = engine.last_report.as_ref().expect("last report");
+    let last = engine.last_report_v4.as_ref().expect("last report");
     assert_eq!(last.state_attempts, rows);
     assert_eq!(reply.diagnostics.len(), 4);
     for diagnostic in &reply.diagnostics {
@@ -1103,7 +1103,7 @@ fn offroute_scope_falls_back_to_proven_home_then_no_invention() {
     assert!(reply.diagnostics.is_empty());
     assert_eq!(
         engine
-            .last_report
+            .last_report_v4
             .as_ref()
             .expect("last")
             .state_attempts
@@ -1175,7 +1175,7 @@ fn offroute_held_first_appearance_uses_held_output() {
     ];
     held_report.state_attempts = rows.clone();
     let reply = accepted(&mut engine, &held_report);
-    let last = engine.last_report.as_ref().expect("last");
+    let last = engine.last_report_v4.as_ref().expect("last");
     assert_eq!(last.state_attempts, rows);
     let attempt_diags: Vec<_> = reply
         .diagnostics
@@ -1243,13 +1243,13 @@ fn offroute_diagnostics_survive_command_restage() {
         rows.clone(),
     );
     commanded.request_seq = 2;
-    let reply = match engine.handle_report_legacy(&commanded) {
-        crate::world_engine::LegacyWorldOutcome::Accepted(reply) => reply,
-        crate::world_engine::LegacyWorldOutcome::CommandConsumed(reply) => reply,
+    let reply = match engine.handle_report(&commanded) {
+        crate::world_engine::WorldOutcome::Accepted(reply) => reply,
+        crate::world_engine::WorldOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     assert_eq!(
-        engine.last_report.as_ref().expect("last").state_attempts,
+        engine.last_report_v4.as_ref().expect("last").state_attempts,
         rows
     );
     assert_eq!(reply.diagnostics.len(), 1);
@@ -1621,8 +1621,9 @@ fn rehandshake_starts_with_no_bindings() {
 #[test]
 fn reply_bound_state_term_rejected_without_mutation() {
     use crate::world_report::WORLD_MAX_REPLY_BYTES;
-    use crate::world_sizing::{
-        MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES, reply_upper_bound, report_estimate,
+    use crate::world_sizing::MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES;
+    use crate::world_sizing_v4::{
+        reply_upper_bound_v4 as reply_upper_bound, report_estimate_v4 as report_estimate,
     };
     let mut engine = engine_with(crate::connection::HostCapabilities {
         native_sticky: true,
@@ -1649,7 +1650,7 @@ fn reply_bound_state_term_rejected_without_mutation() {
     let retained = engine.retained_publish_footprint();
     let attempts = 400usize;
     let mut windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
-    let mut report: WorldReport = report_full(
+    let mut report: WorldReportV4 = report_full(
         2,
         2,
         vec![screen("out-a", 0)],
@@ -1709,8 +1710,8 @@ fn reply_bound_state_term_rejected_without_mutation() {
     assert!(without_state + state_term > WORLD_MAX_REPLY_BYTES);
     assert_eq!(crate::world_sizing::MAX_TARGET_LANES_PER_WINDOW, 626);
     let revision = engine.state_revision;
-    match engine.handle_report_legacy(&report) {
-        crate::world_engine::LegacyWorldOutcome::Rejected { kind, .. } => {
+    match engine.handle_report(&report) {
+        crate::world_engine::WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
         }
         other => panic!("expected reply-oversize, got {other:?}"),
@@ -1726,9 +1727,9 @@ fn reply_bound_state_term_rejected_without_mutation() {
         None,
         None,
     );
-    match engine.handle_report_legacy(&retry) {
-        crate::world_engine::LegacyWorldOutcome::Accepted(_)
-        | crate::world_engine::LegacyWorldOutcome::CommandConsumed(_) => {}
+    match engine.handle_report(&retry) {
+        crate::world_engine::WorldOutcome::Accepted(_)
+        | crate::world_engine::WorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected accepted retry, got {other:?}"),
     }
 }

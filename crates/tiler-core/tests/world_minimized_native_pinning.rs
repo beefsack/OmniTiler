@@ -11,10 +11,11 @@
 use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    AuthorityScope, HoldReason, NativeObservation, NativeOccupancy, ScopeAuthority,
-    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
+    AuthorityScope, HoldReason, NativeObservation, NativeOccupancy, PresentationIngressV4,
+    PresentationRowV4, ScopeAuthority, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand,
+    WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -134,9 +135,9 @@ fn report(
     native: Vec<NativeObservation>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -145,10 +146,12 @@ fn report(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows: windows.clone(),
-        views: vec![],
+        held_windows: Vec::new(),
         closed: vec![],
         native,
+        held_native: Vec::new(),
         focused_global: windows
             .first()
             .map(|f| f.window.0.clone())
@@ -157,8 +160,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -170,20 +171,21 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
 fn accepted(
     engine: &mut WorldEngine,
-    report: &WorldReport,
-) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    report: &WorldReportV4,
+) -> tiler_core::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -203,7 +205,10 @@ fn native_obs(output: &str, order: &[&str], current: Option<&str>) -> NativeObse
     }
 }
 
-fn bound_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<(String, String)> {
+fn bound_ids(
+    reply: &tiler_core::world_report::WorldReplyV4,
+    output: &str,
+) -> Vec<(String, String)> {
     reply
         .workspaces
         .iter()
@@ -535,8 +540,8 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         }),
     );
     send_report.focused_global = "win-a".to_owned();
-    match engine.handle_report_legacy(&send_report) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&send_report) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::SendWindowUnknown
@@ -562,8 +567,8 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         }),
     );
     focus_report.focused_global = "win-a".to_owned();
-    match engine.handle_report_legacy(&focus_report) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&focus_report) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::FocusUnknown
@@ -1116,8 +1121,8 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
         }),
     );
     click_minimized.focused_global = "win-a".to_owned();
-    match engine.handle_report_legacy(&click_minimized) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&click_minimized) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::FocusUnknown

@@ -10,9 +10,9 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    NativeObservation, NativeOccupancy, ScreenReport, WindowFact, WorldCommand, WorldReport,
+    NativeObservation, NativeOccupancy, ScreenReport, WindowFact, WorldCommand, WorldReportV4,
 };
 
 fn engine_host_owned(mode: WorkspaceMode, equal_count: bool) -> WorldEngine {
@@ -117,9 +117,9 @@ fn report(
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
     inventory_complete: bool,
-) -> WorldReport {
-    WorldReport {
-        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -129,9 +129,9 @@ fn report(
         command,
         screens,
         windows: windows.clone(),
-        views: vec![],
         closed: vec![],
         native,
+        held_native: Vec::new(),
         focused_global: windows
             .first()
             .map(|f| f.window.0.clone())
@@ -153,20 +153,24 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
+        presentation: tiler_core::world_report::PresentationRowV4::Valid(
+            tiler_core::world_report::PresentationIngressV4::default(),
+        ),
 
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
 fn accepted(
     engine: &mut WorldEngine,
-    report: &WorldReport,
-) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    report: &WorldReportV4,
+) -> tiler_core::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -197,7 +201,10 @@ fn empty_obs(output: &str, order: &[&str], current: &str) -> NativeObservation {
     native_obs_occ(output, order, Some(current), &vec![Some(0); order.len()])
 }
 
-fn bound_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<(String, String)> {
+fn bound_ids(
+    reply: &tiler_core::world_report::WorldReplyV4,
+    output: &str,
+) -> Vec<(String, String)> {
     reply
         .workspaces
         .iter()
@@ -206,7 +213,7 @@ fn bound_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<
         .collect()
 }
 
-fn ring_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<String> {
+fn ring_ids(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Vec<String> {
     reply
         .workspaces
         .iter()
@@ -216,7 +223,7 @@ fn ring_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<S
 }
 
 fn existence(
-    reply: &tiler_core::world_report::WorldReply,
+    reply: &tiler_core::world_report::WorldReplyV4,
     output: &str,
     logical: &str,
 ) -> Option<bool> {
@@ -228,7 +235,7 @@ fn existence(
 }
 
 fn logical_for(
-    reply: &tiler_core::world_report::WorldReply,
+    reply: &tiler_core::world_report::WorldReplyV4,
     output: &str,
     native: &str,
 ) -> Option<String> {
@@ -242,7 +249,7 @@ fn single_screen() -> Vec<ScreenReport> {
     vec![screen("out-a", 0)]
 }
 
-fn setup_four(engine: &mut WorldEngine) -> tiler_core::world_report::WorldReply {
+fn setup_four(engine: &mut WorldEngine) -> tiler_core::world_report::WorldReplyV4 {
     accepted(
         engine,
         &report(
@@ -948,7 +955,7 @@ fn missing_native_row_refuses_report() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     setup_four(&mut engine);
     // No observation row for the live output: nothing may retire.
-    if let LegacyWorldOutcome::Accepted(reply) = engine.handle_report_legacy(&report(
+    if let WorldOutcome::Accepted(reply) = engine.handle_report(&report(
         2,
         2,
         single_screen(),
@@ -971,7 +978,7 @@ fn occupancy_coverage_gap_refuses_report() {
     setup_four(&mut engine);
     let mut obs = empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1");
     obs.occupancy.pop();
-    let outcome = engine.handle_report_legacy(&report(
+    let outcome = engine.handle_report(&report(
         2,
         2,
         single_screen(),
@@ -982,7 +989,7 @@ fn occupancy_coverage_gap_refuses_report() {
         true,
     ));
     assert!(
-        !matches!(outcome, LegacyWorldOutcome::Accepted(_)),
+        !matches!(outcome, WorldOutcome::Accepted(_)),
         "coverage gap must not accept: {outcome:?}"
     );
 }

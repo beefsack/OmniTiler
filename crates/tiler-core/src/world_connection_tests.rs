@@ -2,15 +2,20 @@ use crate::boundary::CoreCommand;
 use crate::connection::*;
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine, WorldEngineConfig};
+use crate::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use crate::world_report::{
-    RowDiagnosticLane, ScopeAuthority, ScreenReport, ScreenView, WindowFact, WorldCommand,
-    WorldReport,
+    PresentationIngressV4, PresentationRowV4, RowDiagnosticLane, ScopeAuthority, ScreenReport,
+    WindowFact, WorldCommand, WorldReportV4,
+};
+use crate::world_report_v4_checks::{
+    grade_conflicting_windows_v4 as grade_conflicting_windows,
+    grade_invalid_windows_v4 as grade_invalid_windows,
+    validate_report_v4_reason as validate_report_reason,
 };
 
-fn report(seq: u64, complete: bool) -> WorldReport {
-    WorldReport {
-        contract_version: crate::world_report::WORLD_CONTRACT_VERSION_LEGACY,
+fn report(seq: u64, complete: bool) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: crate::world_report::WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".into(),
         core_generation: "gen-1".into(),
         observation_seq: seq,
@@ -37,12 +42,11 @@ fn report(seq: u64, complete: bool) -> WorldReport {
             identity: crate::world_report::OutputIdentity::unknown(),
         }],
         windows: Vec::new(),
-        views: vec![ScreenView {
-            output: OutputId("out-1".into()),
-            view: String::new(),
-        }],
+        // v4 carries no view-echo lane; the legacy empty echo here was inert
+        // (identity/membership proof rides the window facts).
         closed: Vec::new(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
@@ -63,7 +67,9 @@ fn report(seq: u64, complete: bool) -> WorldReport {
         creation_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
+        held_attempts: Vec::new(),
+        renderer_input: None,
 
         intent_records: Vec::new(),
     }
@@ -152,7 +158,7 @@ fn reports_wait_for_initial_settings_and_ready_latches_across_gaps() {
     let first_handshake = handshake("adapter-1");
     let generation = engine.handshake(&first_handshake).generation.unwrap();
     let initial = report(1, true);
-    let LegacyWorldOutcome::Accepted(bootstrap) = engine.handle_report_legacy(&initial) else {
+    let WorldOutcome::Accepted(bootstrap) = engine.handle_report(&initial) else {
         panic!("valid pre-settings report should receive a bootstrap reply");
     };
     assert_eq!(bootstrap.request_id, initial.request_id);
@@ -177,21 +183,19 @@ fn reports_wait_for_initial_settings_and_ready_latches_across_gaps() {
     assert_eq!(settings.status, SettingsStatus::Accepted);
     assert!(!settings.diagnostics.is_empty());
 
-    let LegacyWorldOutcome::Accepted(ready) = engine.handle_report_legacy(&initial) else {
+    let WorldOutcome::Accepted(ready) = engine.handle_report(&initial) else {
         panic!("same pre-settings report should process normally after settings");
     };
     assert!(ready.ready);
     assert!(engine.is_ready());
 
-    let LegacyWorldOutcome::Accepted(incomplete) = engine.handle_report_legacy(&report(2, false))
-    else {
+    let WorldOutcome::Accepted(incomplete) = engine.handle_report(&report(2, false)) else {
         panic!("incomplete first report should receive a bootstrap reply");
     };
     assert!(incomplete.ready);
     assert!(engine.is_ready());
 
-    let LegacyWorldOutcome::Accepted(gapped) = engine.handle_report_legacy(&report(3, false))
-    else {
+    let WorldOutcome::Accepted(gapped) = engine.handle_report(&report(3, false)) else {
         panic!("later incomplete report should be accepted after readiness latches");
     };
     assert!(gapped.ready);
@@ -218,8 +222,7 @@ fn incomplete_first_report_after_settings_does_not_authorize_effects_or_readines
         .unwrap();
 
     let incomplete_report = report(1, false);
-    let LegacyWorldOutcome::Accepted(bootstrap) = engine.handle_report_legacy(&incomplete_report)
-    else {
+    let WorldOutcome::Accepted(bootstrap) = engine.handle_report(&incomplete_report) else {
         panic!("incomplete first report should receive a bootstrap reply");
     };
     assert_eq!(bootstrap.request_id, incomplete_report.request_id);
@@ -231,7 +234,7 @@ fn incomplete_first_report_after_settings_does_not_authorize_effects_or_readines
     assert_eq!(engine.state_revision(), 0);
     assert!(!engine.is_ready());
 
-    let LegacyWorldOutcome::Accepted(ready) = engine.handle_report_legacy(&report(2, true)) else {
+    let WorldOutcome::Accepted(ready) = engine.handle_report(&report(2, true)) else {
         panic!("first usable complete report should process normally");
     };
     assert!(ready.ready);
@@ -248,8 +251,8 @@ fn foreign_and_malformed_reports_reject_before_not_ready_bootstrap() {
     foreign_adapter.adapter_incarnation = "adapter-2".into();
     assert!(
         matches!(
-            engine.handle_report_legacy(&foreign_adapter),
-            LegacyWorldOutcome::Rejected { .. }
+            engine.handle_report(&foreign_adapter),
+            WorldOutcome::Rejected { .. }
         ),
         "foreign adapter must reject, never bootstrap"
     );
@@ -258,8 +261,8 @@ fn foreign_and_malformed_reports_reject_before_not_ready_bootstrap() {
     foreign_generation.core_generation = "gen-2".into();
     assert!(
         matches!(
-            engine.handle_report_legacy(&foreign_generation),
-            LegacyWorldOutcome::Rejected { .. }
+            engine.handle_report(&foreign_generation),
+            WorldOutcome::Rejected { .. }
         ),
         "foreign generation must reject, never bootstrap"
     );
@@ -269,8 +272,8 @@ fn foreign_and_malformed_reports_reject_before_not_ready_bootstrap() {
     unpaired.command_seq = Some(7);
     assert!(
         matches!(
-            engine.handle_report_legacy(&unpaired),
-            LegacyWorldOutcome::Rejected { .. }
+            engine.handle_report(&unpaired),
+            WorldOutcome::Rejected { .. }
         ),
         "unpaired command sequence must reject, never bootstrap"
     );
@@ -286,7 +289,7 @@ fn pre_settings_command_sequence_is_not_consumed_or_retained() {
     let mut commanded = report(1, true);
     commanded.command_seq = Some(7);
     commanded.command = Some(WorldCommand::Operation(CoreCommand::Reconcile));
-    let LegacyWorldOutcome::Accepted(bootstrap) = engine.handle_report_legacy(&commanded) else {
+    let WorldOutcome::Accepted(bootstrap) = engine.handle_report(&commanded) else {
         panic!("valid pre-settings commanded report should receive a bootstrap reply");
     };
     assert!(!bootstrap.ready);
@@ -305,7 +308,7 @@ fn pre_settings_command_sequence_is_not_consumed_or_retained() {
 
     // The same sequence after accepted settings executes instead of
     // replaying a consumed command.
-    let LegacyWorldOutcome::Accepted(executed) = engine.handle_report_legacy(&commanded) else {
+    let WorldOutcome::Accepted(executed) = engine.handle_report(&commanded) else {
         panic!("same command sequence after settings must execute");
     };
     assert!(executed.ready);
@@ -315,7 +318,7 @@ fn pre_settings_command_sequence_is_not_consumed_or_retained() {
     let mut replay = report(2, true);
     replay.command_seq = Some(7);
     replay.command = Some(WorldCommand::Operation(CoreCommand::Reconcile));
-    let LegacyWorldOutcome::CommandConsumed(consumed) = engine.handle_report_legacy(&replay) else {
+    let WorldOutcome::CommandConsumed(consumed) = engine.handle_report(&replay) else {
         panic!("reused command sequence must report consumed");
     };
     assert!(consumed.command_consumed);
@@ -468,15 +471,15 @@ fn test_bound_helper_passes_caller_capabilities_through_unmodified() {
 
 fn accepted_reply(
     engine: &mut WorldEngine,
-    report: &WorldReport,
-) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    report: &WorldReportV4,
+) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
-fn identity_report(seq: u64, windows: Vec<WindowFact>) -> WorldReport {
+fn identity_report(seq: u64, windows: Vec<WindowFact>) -> WorldReportV4 {
     let mut base = report(seq, true);
     base.windows = windows;
     base
@@ -538,7 +541,7 @@ fn identity_fact(
     }
 }
 
-fn controlled_lifetimes(reply: &crate::world_report::WorldReply) -> Vec<String> {
+fn controlled_lifetimes(reply: &crate::world_report::WorldReplyV4) -> Vec<String> {
     reply
         .windows
         .iter()
@@ -550,7 +553,7 @@ fn controlled_lifetimes(reply: &crate::world_report::WorldReply) -> Vec<String> 
         .collect()
 }
 
-fn effect_targets(reply: &crate::world_report::WorldReply) -> Vec<String> {
+fn effect_targets(reply: &crate::world_report::WorldReplyV4) -> Vec<String> {
     reply
         .effects
         .iter()
@@ -558,7 +561,7 @@ fn effect_targets(reply: &crate::world_report::WorldReply) -> Vec<String> {
         .collect()
 }
 
-fn transfer_targets(reply: &crate::world_report::WorldReply) -> Vec<String> {
+fn transfer_targets(reply: &crate::world_report::WorldReplyV4) -> Vec<String> {
     reply
         .transfers
         .iter()
@@ -877,9 +880,7 @@ fn output_none_new_unhomed_authorizes_nothing() {
 
 #[test]
 fn held_invalid_and_conflicting_keep_kind_parity() {
-    use crate::world_report::{
-        RowDiagnosticKind, grade_conflicting_windows, grade_invalid_windows,
-    };
+    use crate::world_report::RowDiagnosticKind;
     // Overbound text grades to an InvalidFact hold with no fabricated scope.
     let mut overbound = identity_fact(
         "win-over",
@@ -925,7 +926,7 @@ fn held_invalid_and_conflicting_keep_kind_parity() {
 
 #[test]
 fn masked_owner_with_overbound_refuses_typed() {
-    use crate::world_report::{grade_invalid_windows, validate_report_reason};
+    // (grade/validate twins via the file-scope v4 aliases.)
     // Overbound text must not mask a bad owner reference in the same row.
     let mut masked = identity_fact(
         "win-masked",
@@ -952,10 +953,7 @@ fn masked_owner_with_overbound_refuses_typed() {
     );
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     assert!(
-        matches!(
-            engine.handle_report_legacy(&base),
-            LegacyWorldOutcome::Rejected { .. }
-        ),
+        matches!(engine.handle_report(&base), WorldOutcome::Rejected { .. }),
         "engine refuses masked owner"
     );
 }

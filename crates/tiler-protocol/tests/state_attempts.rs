@@ -1,23 +1,23 @@
-//! Required native-state attempt lane (`stateAttempts`).
+//! Required native-state attempt lane (`stateAttempts`) on the genuine v4
+//! wire.
 //!
 //! Raw fullscreen/maximize/sticky/above write/proof rows ride every staged
 //! report (possibly empty); the core owns every verdict. The nested rows
 //! below are extracted from the immutable v4 fixtures and run through the
-//! staged wire path: the in-progress envelope decoder preserves them as
-//! typed mechanical facts, closed shape/counter/duplicate/cap gates refuse
-//! with fixed vocabulary, the digest separates every raw field so changed
-//! reuse still fences, and the size estimate covers the rows exactly. The
-//! full v4 envelopes are NOT decoded here: they stage the rendererInput
-//! lane beyond this increment and a newer wire version.
+//! genuine v4 ingress: [`decode_request`](tiler_protocol::world_protocol::decode_request)
+//! preserves them as typed mechanical facts, closed shape/counter/
+//! duplicate/cap gates refuse with fixed vocabulary, the digest separates
+//! every raw field so changed reuse still fences, and the size estimate
+//! covers the rows exactly. The staged envelope carries the v4 wire version
+//! and the required `rendererInput` lane.
 //!
 //! Offline only: no D-Bus, no KWin.
 
 use tiler_core::directional::WindowId;
-use tiler_core::world_report::{
-    FrameSetter, StateAttempt, StateProperty, report_digest, report_estimate,
-    validate_report_reason,
-};
-use tiler_protocol::world_protocol::{decode_request_legacy, decode_state_attempt};
+use tiler_core::world_report::{FrameSetter, StateAttempt, StateProperty};
+use tiler_core::world_report_v4_checks::{report_digest_v4, validate_report_v4_reason};
+use tiler_core::world_sizing_v4::report_estimate_v4;
+use tiler_protocol::world_protocol::{decode_request, decode_state_attempt};
 
 fn fixture(name: &str) -> serde_json::Value {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -27,37 +27,17 @@ fn fixture(name: &str) -> serde_json::Value {
         .expect("fixture JSON")
 }
 
-/// Otherwise-accepted staged envelope (v3 shape) carrying the state rows
-/// under test. Raw rows ride verbatim; only this lane varies.
+/// Otherwise-accepted v4 envelope carrying the state rows under test. The
+/// base is an immutable v4 fixture (valid screens, windows, presentation,
+/// and the required `rendererInput` lane); only this lane varies. Raw rows
+/// ride verbatim.
 fn envelope(rows: &serde_json::Value) -> String {
-    format!(
-        "{{\"v\":3,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\
-          \"obs\":\"1\",\"reqSeq\":\"1\",\"req\":\"req-1\",\"cmdSeq\":null,\
-          \"command\":null,\
-          \"screens\":[{{\"out\":\"out\",\"full\":[0,0,800,600],\"work\":[0,0,800,560],\
-          \"complete\":true,\"scale\":1.0,\
-          \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
-          \"windows\":[{{\"win\":\"win-a\",\"out\":\"out\",\"rect\":[0,0,200,200],\
-          \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\
-          \"minimized\":false,\
-          \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}},\
-          \"hostHidden\":false,\"privileged\":false,\"managed\":true,\
-          \"acceptsInput\":true,\"activationInhibited\":false,\
-          \"toolWindow\":false,\"owned\":false,\"transient\":false,\
-          \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\
-          \"owner\":null,\"parent\":null,\"role\":null,\"appId\":null,\
-          \"executable\":null,\"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\
-          \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
-          \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
-          \"suppressionAvailable\":null,\
-          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
-          \"lastWrite\":null}}],\
-          \"views\":[{{\"out\":\"out\",\"view\":\"\"}}],\"closed\":[],\"native\":[],\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
-          \"actionOutputs\":[\"out\"],\
-          \"focused\":\"\",\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}},\
-          \"intentRecords\":[],\"stateAttempts\":{rows},\"focusFeedback\":[]}}"
-    )
+    let mut base = fixture("report-attempt-state");
+    base["adapter"] = serde_json::json!("adapter-1");
+    base["gen"] = serde_json::json!("gen-1");
+    base["req"] = serde_json::json!("req-1");
+    base["stateAttempts"] = rows.clone();
+    base.to_string()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -160,7 +140,7 @@ fn immutable_state_rows_decode_through_the_typed_shape() {
             .target
     );
     // The staged envelope accepts the immutable rows verbatim.
-    let report = decode_request_legacy(&envelope(&serde_json::Value::Array(rows.clone())))
+    let report = decode_request(&envelope(&serde_json::Value::Array(rows.clone())))
         .expect("immutable rows ride the staged envelope");
     assert_eq!(report.state_attempts.len(), 3);
     assert!(
@@ -181,7 +161,7 @@ fn missing_lane_refuses_without_backfill() {
         .as_object_mut()
         .expect("object")
         .remove("stateAttempts");
-    let error = decode_request_legacy(&value.to_string()).expect_err("missing refuses");
+    let error = decode_request(&value.to_string()).expect_err("missing refuses");
     assert_eq!(error.kind, "malformed");
 }
 
@@ -302,7 +282,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
         ),
     ] {
         let error =
-            decode_request_legacy(&envelope(&serde_json::json!([row]))).expect_err("shape refuses");
+            decode_request(&envelope(&serde_json::json!([row]))).expect_err("shape refuses");
         assert_eq!(error.kind, kind);
     }
     // Untouched coverage for the remaining arms: bad window id, JSON
@@ -310,7 +290,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     let mut bad_win = base();
     bad_win["win"] = serde_json::json!("not an id!!");
     assert_eq!(
-        decode_request_legacy(&envelope(&serde_json::json!([bad_win])))
+        decode_request(&envelope(&serde_json::json!([bad_win])))
             .expect_err("bad id refuses")
             .kind,
         "unknown-value"
@@ -318,7 +298,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     let mut num_rev = base();
     num_rev["rev"] = serde_json::json!(20);
     assert_eq!(
-        decode_request_legacy(&envelope(&serde_json::json!([num_rev])))
+        decode_request(&envelope(&serde_json::json!([num_rev])))
             .expect_err("number stamp refuses")
             .kind,
         "malformed"
@@ -326,7 +306,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     let mut null_target = base();
     null_target["target"] = serde_json::Value::Null;
     assert_eq!(
-        decode_request_legacy(&envelope(&serde_json::json!([null_target])))
+        decode_request(&envelope(&serde_json::json!([null_target])))
             .expect_err("null target refuses")
             .kind,
         "malformed"
@@ -334,7 +314,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     let mut dropped = base();
     dropped.as_object_mut().expect("object").remove("pre");
     assert_eq!(
-        decode_request_legacy(&envelope(&serde_json::json!([dropped])))
+        decode_request(&envelope(&serde_json::json!([dropped])))
             .expect_err("dropped key refuses")
             .kind,
         "malformed"
@@ -367,7 +347,7 @@ fn duplicates_refuse_per_window_property_across_revisions() {
             "21"
         ),
     ]);
-    let error = decode_request_legacy(&envelope(&rows)).expect_err("duplicate refuses");
+    let error = decode_request(&envelope(&rows)).expect_err("duplicate refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "duplicate-state-attempt");
     // Bad window ids refuse at the wire alphabet gate.
@@ -381,12 +361,11 @@ fn duplicates_refuse_per_window_property_across_revisions() {
         serde_json::json!(true),
         "20"
     ),]);
-    let error = decode_request_legacy(&envelope(&rows)).expect_err("bad id refuses");
+    let error = decode_request(&envelope(&rows)).expect_err("bad id refuses");
     assert_eq!(error.kind, "unknown-value");
     // The core gate names the same lane for directly constructed rows
     // (duplicate delivery of a decoded report never reaches it).
-    let mut report =
-        decode_request_legacy(&envelope(&serde_json::json!([]))).expect("empty decodes");
+    let mut report = decode_request(&envelope(&serde_json::json!([]))).expect("empty decodes");
     report.state_attempts.push(StateAttempt {
         window: WindowId("not an id!!".into()),
         property: StateProperty::Above,
@@ -398,7 +377,7 @@ fn duplicates_refuse_per_window_property_across_revisions() {
         attempt_ms: 20,
     });
     assert_eq!(
-        validate_report_reason(&report),
+        validate_report_v4_reason(&report),
         Some("state-window-invalid")
     );
 }
@@ -424,9 +403,9 @@ fn cap_1024_accepts_and_1025_refuses() {
                 .collect(),
         )
     }
-    let report = decode_request_legacy(&envelope(&rows(1024))).expect("cap accepts");
+    let report = decode_request(&envelope(&rows(1024))).expect("cap accepts");
     assert_eq!(report.state_attempts.len(), 1024);
-    let error = decode_request_legacy(&envelope(&rows(1025))).expect_err("cap refuses");
+    let error = decode_request(&envelope(&rows(1025))).expect_err("cap refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "section-over-cap");
 }
@@ -446,8 +425,8 @@ fn digest_separates_every_raw_field_so_changed_reuse_fences() {
         )
     };
     let digest = |row: serde_json::Value| {
-        let report = decode_request_legacy(&envelope(&serde_json::json!([row]))).expect("decodes");
-        report_digest(&report)
+        let report = decode_request(&envelope(&serde_json::json!([row]))).expect("decodes");
+        report_digest_v4(&report)
     };
     let baseline = digest(row());
     // Identical bytes redeliver the identical digest: reuse fences hold.
@@ -490,11 +469,11 @@ fn estimate_covers_state_rows_exactly_at_the_margin() {
     let rows = fixture("report-attempt-state")["stateAttempts"].clone();
     let empty = envelope(&serde_json::json!([]));
     let full = envelope(&rows);
-    let empty_report = decode_request_legacy(&empty).expect("empty decodes");
-    let full_report = decode_request_legacy(&full).expect("rows decode");
+    let empty_report = decode_request(&empty).expect("empty decodes");
+    let full_report = decode_request(&full).expect("rows decode");
     assert_eq!(full_report.state_attempts.len(), 3);
-    let empty_estimate = report_estimate(&empty_report);
-    let full_estimate = report_estimate(&full_report);
+    let empty_estimate = report_estimate_v4(&empty_report);
+    let full_estimate = report_estimate_v4(&full_report);
     assert!(
         empty_estimate >= empty.len(),
         "estimate {empty_estimate} bounds empty wire {}",
@@ -519,10 +498,10 @@ fn estimate_covers_state_rows_exactly_at_the_margin() {
         serde_json::Value::Null,
         "20",
     )]));
-    let one_report = decode_request_legacy(&one).expect("single row decodes");
+    let one_report = decode_request(&one).expect("single row decodes");
     assert_eq!(one_report.state_attempts.len(), 1);
     assert_eq!(
-        report_estimate(&one_report) - empty_estimate,
+        report_estimate_v4(&one_report) - empty_estimate,
         one.len() - empty.len(),
         "one state row costs its exact wire bytes"
     );
@@ -540,7 +519,7 @@ fn wire_level_duplicates_and_trailing_refuse() {
         serde_json::json!(true),
         "20"
     ),]));
-    decode_request_legacy(&wire).expect("valid staged request decodes");
+    decode_request(&wire).expect("valid staged request decodes");
     // Literal duplicate row key refuses (scoped to the state row: the
     // envelope spells rows with sorted keys, and the windows array
     // carries its own `win` fact earlier in the wire).
@@ -550,7 +529,7 @@ fn wire_level_duplicates_and_trailing_refuse() {
         1,
     );
     assert_ne!(nested, wire);
-    let error = decode_request_legacy(&nested).expect_err("duplicate row key refuses");
+    let error = decode_request(&nested).expect_err("duplicate row key refuses");
     assert_eq!(error.kind, "malformed");
     // Escaped-equivalent duplicate row key (`\u0077` is `w`) refuses.
     let escaped = wire.replacen(
@@ -559,15 +538,15 @@ fn wire_level_duplicates_and_trailing_refuse() {
         1,
     );
     assert_ne!(escaped, wire);
-    let error = decode_request_legacy(&escaped).expect_err("escaped duplicate refuses");
+    let error = decode_request(&escaped).expect_err("escaped duplicate refuses");
     assert_eq!(error.kind, "malformed");
     // Trailing tokens after an otherwise-valid request refuse.
     for trailing in [format!("{wire} {{}}"), format!("{wire}x")] {
-        let error = decode_request_legacy(&trailing).expect_err("trailing refuses");
+        let error = decode_request(&trailing).expect_err("trailing refuses");
         assert_eq!(error.kind, "malformed");
     }
     // Harmless control: a single escaped key spelling still decodes.
     let single = wire.replacen("\"property\"", "\"\\u0070roperty\"", 1);
     assert_ne!(single, wire);
-    decode_request_legacy(&single).expect("single escaped key decodes");
+    decode_request(&single).expect("single escaped key decodes");
 }

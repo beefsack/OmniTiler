@@ -12,10 +12,10 @@
 use crate::directional::{Direction, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, EffectKind, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY,
-    WindowFact, WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, EffectKind, PresentationIngressV4, PresentationRowV4,
+    ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -177,9 +177,16 @@ fn report(
     command: Option<WorldCommand>,
     action_foreground: Option<&str>,
     cursor: Option<(i32, i32)>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    // v4 carries no view-echo lane; every call site here already passes an
+    // empty lane, so the port asserts that.
+    assert!(
+        views.is_empty(),
+        "v4 has no views lane: {} echo(s) cannot convert",
+        views.len()
+    );
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -188,16 +195,12 @@ fn report(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: views
-            .into_iter()
-            .map(|(output, view)| crate::world_report::ScreenView {
-                output: OutputId(output.to_owned()),
-                view: view.to_owned(),
-            })
-            .collect(),
+        held_windows: Vec::new(),
         closed: Vec::new(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -209,8 +212,6 @@ fn report(
             OutputId("out-c".to_owned()),
         ],
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -220,17 +221,18 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -243,7 +245,7 @@ fn no_focus_command(direction: &str) -> WorldCommand {
 }
 
 fn focus_effects(
-    reply: &crate::world_report::WorldReply,
+    reply: &crate::world_report::WorldReplyV4,
 ) -> Vec<&crate::world_report::OneShotEffect> {
     reply
         .effects
@@ -252,7 +254,7 @@ fn focus_effects(
         .collect()
 }
 
-fn retained_outcome(reply: &crate::world_report::WorldReply) -> (String, Option<String>) {
+fn retained_outcome(reply: &crate::world_report::WorldReplyV4) -> (String, Option<String>) {
     match &reply.command_result {
         Some(crate::world_report::CommandResult::Directional { outcome, cause, .. }) => {
             (outcome.as_str().to_owned(), cause.clone())
@@ -959,8 +961,8 @@ fn no_focus_invalid_direction_rejects() {
         Some("out-a"),
         None,
     );
-    match engine.handle_report_legacy(&report) {
-        LegacyWorldOutcome::Rejected { message, .. } => assert_eq!(message, "command-invalid"),
+    match engine.handle_report(&report) {
+        WorldOutcome::Rejected { message, .. } => assert_eq!(message, "command-invalid"),
         other => panic!("expected validation refusal, got {other:?}"),
     }
 }
@@ -1182,8 +1184,8 @@ fn no_focus_unreadable_source_refuses() {
         Some("out-a"),
         None,
     );
-    match engine.handle_report_legacy(&report) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1295,7 +1297,7 @@ fn no_focus_held_source_refuses_without_mutation() {
         Some("out-a"),
         None,
     );
-    engine.stage_facts(&probe);
+    engine.stage_facts_v4(&probe);
     engine.build_staged_domains();
     let revision_before = engine.state_revision();
     match engine.focus_directional_no_focus(11, Direction::Right, &held, &by_id) {

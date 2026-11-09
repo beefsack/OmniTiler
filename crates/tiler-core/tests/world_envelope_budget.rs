@@ -12,9 +12,10 @@
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    ScreenReport, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
+    PresentationIngressV4, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact,
+    WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -92,7 +93,7 @@ fn report(
     windows: Vec<WindowFact>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
+) -> WorldReportV4 {
     report_obs(request_seq, request_seq, windows, command_seq, command)
 }
 
@@ -102,9 +103,9 @@ fn report_obs(
     windows: Vec<WindowFact>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -113,10 +114,12 @@ fn report_obs(
         command_seq,
         command,
         screens: screens(),
+        held_screens: Vec::new(),
         windows,
-        views: Vec::new(),
+        held_windows: Vec::new(),
         closed: Vec::new(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
@@ -124,8 +127,6 @@ fn report_obs(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -135,27 +136,28 @@ fn report_obs(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
 fn accepted(
     engine: &mut WorldEngine,
-    report: &WorldReport,
-) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    report: &WorldReportV4,
+) -> tiler_core::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
-fn rejected_kind(engine: &mut WorldEngine, report: &WorldReport) -> &'static str {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Rejected { kind, .. } => kind,
+fn rejected_kind(engine: &mut WorldEngine, report: &WorldReportV4) -> &'static str {
+    match engine.handle_report(report) {
+        WorldOutcome::Rejected { kind, .. } => kind,
         other => panic!("expected rejected, got {other:?}"),
     }
 }
@@ -236,14 +238,14 @@ fn observation_stale_and_duplicates_hold_the_watermark() {
     assert_eq!(engine.state_revision(), revision);
     // An identical latest report duplicates with the cached reply and no
     // new revision.
-    match engine.handle_report_legacy(&report_obs(
+    match engine.handle_report(&report_obs(
         1,
         2,
         vec![fact("win-a", "out-a", 0)],
         None,
         None,
     )) {
-        LegacyWorldOutcome::Duplicate(reply) => assert_eq!(reply.state_revision, revision),
+        WorldOutcome::Duplicate(reply) => assert_eq!(reply.state_revision, revision),
         other => panic!("expected duplicate, got {other:?}"),
     }
     assert_eq!(engine.state_revision(), revision);
@@ -317,7 +319,7 @@ fn late_command_refusal_rolls_back_without_mutation() {
     // Same-output send to an unknown workspace refuses after staging:
     // no transfer retained, no ring/view churn; the refused sequence still
     // consumes and the issuing revision advances by exactly one.
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         4,
         vec![fact("win-a", "out-a", 0)],
         Some(11),
@@ -328,7 +330,7 @@ fn late_command_refusal_rolls_back_without_mutation() {
             follow: false,
         }),
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::SendTargetUnknown
@@ -360,7 +362,7 @@ fn oversized_request_refuses_before_any_mutation() {
         .map(|n| fact(&long("win", n), "out-a", 0))
         .collect();
     let big = report(2, windows, None, None);
-    assert!(tiler_core::world_report::report_estimate(&big) > WORLD_MAX_REQUEST_BYTES);
+    assert!(tiler_core::world_sizing_v4::report_estimate_v4(&big) > WORLD_MAX_REQUEST_BYTES);
     assert_eq!(rejected_kind(&mut engine, &big), "oversized");
     assert_eq!(engine.state_revision(), revision);
     assert!(engine.retained_transfers().is_empty());

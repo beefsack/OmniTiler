@@ -3,7 +3,7 @@
 //! Runs the authored duo/trio cases over all three simulated-host schedules
 //! through the real public v4 boundary
 //! ([`WorldEngine::handle_report`], matched on [`WorldOutcome`]), with no
-//! legacy [`WorldReport`](tiler_core::world_report::WorldReport) conversion,
+//! legacy report conversion,
 //! no logical [`ViewAttempt`](tiler_core::world_report::ViewAttempt)
 //! fabrication (that lane is native-only and refused without the host-owned
 //! capability), and no generic report engine. Selector-attempt ingress is absent
@@ -1485,6 +1485,30 @@ mod tests {
         )
     }
 
+    fn duo_value() -> serde_json::Value {
+        let text = std::fs::read_to_string(duo_path()).expect("read duo fixture");
+        serde_json::from_str(&text).expect("parse duo fixture")
+    }
+
+    /// JSON-round-trip loader mirroring the legacy `load_value` mutator
+    /// path, including the shared validated-loader precondition.
+    fn load_value(value: &serde_json::Value) -> Result<StressCase, String> {
+        let text = serde_json::to_string(value).expect("re-encode");
+        let case: StressCase =
+            serde_json::from_str(&text).map_err(|e| format!("parse case: {e}"))?;
+        crate::world_stress::validate_case(&case)?;
+        Ok(case)
+    }
+
+    fn action_of<'v>(value: &'v mut serde_json::Value, name: &str) -> &'v mut serde_json::Value {
+        value["actions"]
+            .as_array_mut()
+            .expect("actions")
+            .iter_mut()
+            .find(|a| a["op"] == "checkpoint" && a["name"] == name)
+            .unwrap_or_else(|| panic!("checkpoint {name}"))
+    }
+
     /// Minimal real-path drive to duo seq16 (first changed select, home to
     /// away): bootstrap plus the one command, so verdict derivation reads
     /// the actual issuing reply instead of a fabricated shape.
@@ -1738,5 +1762,226 @@ mod tests {
         let (_, stats) = run_stress_v4(&case, StressSchedule::Reordered).expect("reordered");
         assert_eq!(stats.reports, 158);
         assert_eq!(stats.checkpoints, 19);
+    }
+
+    #[test]
+    fn reordered_uses_more_reports_than_batched_v4() {
+        // The reordered split receipts are genuine extra round-trips, not
+        // relabeled batching: reordered must emit strictly more reports.
+        let case = load_stress_case(&duo_path()).expect("load duo");
+        let (_, batched) = run_stress_v4(&case, StressSchedule::Batched).expect("batched");
+        let (_, reordered) = run_stress_v4(&case, StressSchedule::Reordered).expect("reordered");
+        assert!(reordered.reports > batched.reports);
+        assert_eq!(reordered.checkpoints, batched.checkpoints);
+    }
+
+    #[test]
+    fn subject_without_foreground_refuses_v4() {
+        // Dropping the explicit acquisition before the first stay-send
+        // leaves the subject off the predicted foreground: the command is
+        // not natively honorable and must refuse, never silently refocus.
+        let mut value = duo_value();
+        let actions = value["actions"].as_array_mut().expect("actions");
+        let send = actions
+            .iter()
+            .position(|a| a["op"] == "send" && a["follow"] == false)
+            .expect("stay send");
+        let focus = actions[..send]
+            .iter()
+            .rposition(|a| a["op"] == "focus-window")
+            .expect("acquisition");
+        actions.remove(focus);
+        let case = load_value(&value).expect("loads; honorability is runtime");
+        let error = run_stress_v4(&case, StressSchedule::Ordered).expect_err("must reject");
+        assert!(
+            error.contains("does not hold the predicted foreground"),
+            "unexpected: {error}"
+        );
+    }
+
+    #[test]
+    fn focus_window_outside_shown_view_refuses_v4() {
+        // Acquiring a window homed in the hidden workspace cannot produce
+        // a real foreground: the observation refuses instead of fabricating
+        // one.
+        let mut value = duo_value();
+        let actions = value["actions"].as_array_mut().expect("actions");
+        let hide = actions
+            .iter()
+            .position(|a| a["op"] == "checkpoint" && a["name"] == "hide-L05")
+            .expect("hide checkpoint");
+        actions.insert(
+            hide,
+            serde_json::json!({"op": "focus-window", "window": "win-a"}),
+        );
+        let case = load_value(&value).expect("loads; visibility is runtime");
+        let error = run_stress_v4(&case, StressSchedule::Ordered).expect_err("must reject");
+        assert!(
+            error.contains("outside the shown view"),
+            "unexpected: {error}"
+        );
+    }
+
+    #[test]
+    fn wrong_final_tiles_rejected_v4() {
+        let mut value = duo_value();
+        value["final"]["tiles"]["win-a"] = serde_json::json!([0, 0, 399, 560]);
+        let case = load_value(&value).expect("loads; oracle is wrong, not the shape");
+        for schedule in StressSchedule::all() {
+            let error = run_stress_v4(&case, schedule).expect_err("must reject");
+            assert!(error.contains("authored tile"), "unexpected: {error}");
+        }
+    }
+
+    #[test]
+    fn wrong_final_focus_rejected_v4() {
+        let mut value = duo_value();
+        value["final"]["focus"] = serde_json::json!("win-a");
+        let case = load_value(&value).expect("loads");
+        let error = run_stress_v4(&case, StressSchedule::Ordered).expect_err("must reject");
+        assert!(error.contains("tracked focus"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn wrong_final_foreground_rejected_v4() {
+        // Retained core focus and expected real foreground diverge on
+        // purpose (empty views keep the effect target but name no
+        // foreground); corrupting either side must fail distinctly.
+        let mut value = duo_value();
+        value["final"]["foreground"] = serde_json::json!(null);
+        let case = load_value(&value).expect("loads");
+        let error = run_stress_v4(&case, StressSchedule::Ordered).expect_err("must reject");
+        assert!(
+            error.contains("predicted foreground"),
+            "unexpected: {error}"
+        );
+    }
+
+    #[test]
+    fn wrong_checkpoint_view_rejected_v4() {
+        let mut value = duo_value();
+        action_of(&mut value, "show-F1")["view"] = serde_json::json!("away");
+        let case = load_value(&value).expect("loads");
+        let error = run_stress_v4(&case, StressSchedule::Ordered).expect_err("must reject");
+        assert!(error.contains("expected view"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn wrong_checkpoint_focus_rejected_v4() {
+        let mut value = duo_value();
+        action_of(&mut value, "hide-F1")["focus"] = serde_json::json!("win-b");
+        let case = load_value(&value).expect("loads");
+        for schedule in StressSchedule::all() {
+            let error = run_stress_v4(&case, schedule).expect_err("must reject");
+            assert!(error.contains("tracked focus"), "unexpected: {error}");
+        }
+    }
+
+    #[test]
+    fn wrong_checkpoint_foreground_rejected_v4() {
+        // hide-L05 names no foreground (empty shown view) while retaining
+        // the effect target; naming a hidden window as foreground must fail
+        // as a predicted-foreground mismatch, not a focus mismatch.
+        let mut value = duo_value();
+        action_of(&mut value, "hide-L05")["foreground"] = serde_json::json!("win-b");
+        let case = load_value(&value).expect("loads");
+        for schedule in StressSchedule::all() {
+            let error = run_stress_v4(&case, schedule).expect_err("must reject");
+            assert!(
+                error.contains("predicted foreground"),
+                "unexpected: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrong_checkpoint_tiles_rejected_v4() {
+        let mut value = duo_value();
+        action_of(&mut value, "show-F1")["tiles"]["win-a"] = serde_json::json!([0, 0, 399, 560]);
+        let case = load_value(&value).expect("loads");
+        let error = run_stress_v4(&case, StressSchedule::Ordered).expect_err("must reject");
+        assert!(error.contains("tile"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn mismatched_pending_view_cannot_settle_v4() {
+        // v4 port of the retired legacy `stale_view_echo_cannot_settle`
+        // (world-contract.md:349-353): there is no `views` echo lane and no
+        // echo insertion on v4, so nothing "stale-echo" can settle. The
+        // same mutator (hide-F1 view pointed home) still must fail at the
+        // checkpoint on the pending-view mechanics: the batched receipt
+        // flushes proofs only, never the commanded view, so the oracle
+        // reads a mismatched shown view (or an outstanding transfer).
+        let mut value = duo_value();
+        action_of(&mut value, "hide-F1")["view"] = serde_json::json!("home");
+        let case = load_value(&value).expect("loads");
+        let error = run_stress_v4(&case, StressSchedule::Batched).expect_err("must reject");
+        assert!(
+            error.contains("expected view") || error.contains("transfer"),
+            "unexpected: {error}"
+        );
+    }
+
+    #[test]
+    fn wrong_trio_admit_tiles_rejected_v4() {
+        let text = std::fs::read_to_string(trio_path()).expect("read trio fixture");
+        let mut value: serde_json::Value = serde_json::from_str(&text).expect("parse trio fixture");
+        let actions = value["actions"].as_array_mut().expect("actions");
+        let cp = actions
+            .iter_mut()
+            .find(|a| a["op"] == "checkpoint" && a["name"] == "readmit-b")
+            .expect("readmit-b");
+        cp["tiles"]["win-a"] = serde_json::json!([0, 0, 401, 280]);
+        let case = load_value(&value).expect("loads; oracle is wrong, not the shape");
+        let error = run_stress_v4(&case, StressSchedule::Ordered).expect_err("must reject");
+        assert!(error.contains("tile"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn trio_admit_carries_explicit_anchor_precondition_v4() {
+        // Shared-definition anchor guard: the first admit-c must carry an
+        // explicit focus-window win-a immediately before it. Native
+        // bootstrap retains no focused managed window, so without this
+        // observation the admission anchor falls back to enumeration order
+        // while the core simulation retains its own order; the explicit
+        // foreground pins the retained-focus anchor (win-a's leaf) under
+        // the unchanged policy on both legs.
+        let text = std::fs::read_to_string(trio_path()).expect("read trio fixture");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("parse trio");
+        let actions = value["actions"].as_array().expect("actions");
+        let admit = actions
+            .iter()
+            .position(|a| a["op"] == "admit")
+            .expect("trio opens with an admit");
+        assert!(
+            admit >= 1
+                && actions[admit - 1]["op"] == "focus-window"
+                && actions[admit - 1]["window"] == "win-a",
+            "first admit must be pinned by an explicit focus-window win-a"
+        );
+        // Anchor equivalence: the precondition adds exactly one observation
+        // report per schedule and the full hand-authored oracle (all 19
+        // checkpoints plus final) holds identically with and without it.
+        // The +1 delta is the focus report itself; any other drift fails.
+        let with = load_value(&value).expect("trio loads");
+        let mut without_value = value.clone();
+        without_value["actions"]
+            .as_array_mut()
+            .expect("actions")
+            .remove(admit - 1);
+        let without = load_value(&without_value).expect("trio loads without precondition");
+        for schedule in StressSchedule::all() {
+            let (_, with_stats) = run_stress_v4(&with, schedule).expect("trio with precondition");
+            let (_, without_stats) =
+                run_stress_v4(&without, schedule).expect("trio without precondition");
+            assert_eq!(with_stats.checkpoints, 19);
+            assert_eq!(without_stats.checkpoints, 19);
+            assert_eq!(
+                with_stats.reports,
+                without_stats.reports + 1,
+                "{} schedule: precondition must add exactly its own report",
+                schedule.as_str()
+            );
+        }
     }
 }

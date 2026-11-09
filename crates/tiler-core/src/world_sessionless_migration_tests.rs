@@ -9,10 +9,10 @@
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    ScopeAuthority, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand,
-    WorldReport,
+    PresentationIngressV4, PresentationRowV4, ScopeAuthority, ScreenReport,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -82,9 +82,9 @@ fn report_screens(
     windows: Vec<WindowFact>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -93,10 +93,12 @@ fn report_screens(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: Vec::new(),
+        held_windows: Vec::new(),
         closed: vec![],
         native: vec![],
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
@@ -104,8 +106,6 @@ fn report_screens(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -115,17 +115,33 @@ fn report_screens(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
+        presentation: PresentationRowV4::Valid(PresentationIngressV4 {
+            foreground: String::new(),
+            foreground_minimized: Some(false),
+            foreground_maximized: Some(false),
+            foreground_fullscreen: Some(false),
+            foreground_host_hidden: Some(false),
+            foreground_hidden_workspace: Some(false),
+            foreground_frame: None,
+            chord_held: false,
+            move_window: String::new(),
+            pager_order: Vec::new(),
+            pager_frames: Vec::new(),
+            witness: None,
+            foreground_out: None,
+        }),
 
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -133,14 +149,14 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
 fn migrate_floating_workspace(
     screens: Vec<ScreenReport>,
     members: Vec<WindowFact>,
-) -> crate::world_report::WorldReply {
+) -> WorldReplyV4 {
     migrated_session(screens, members).1
 }
 
 fn migrated_session(
     screens: Vec<ScreenReport>,
     members: Vec<WindowFact>,
-) -> (WorldEngine, crate::world_report::WorldReply, String) {
+) -> (WorldEngine, WorldReplyV4, String) {
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
@@ -183,10 +199,7 @@ fn migrated_session(
     (engine, migrated, view_a)
 }
 
-fn row_of<'a>(
-    reply: &'a crate::world_report::WorldReply,
-    window: &str,
-) -> &'a crate::world_report::WindowDesire {
+fn row_of<'a>(reply: &'a WorldReplyV4, window: &str) -> &'a crate::world_report::WindowDesire {
     reply
         .windows
         .iter()
@@ -329,8 +342,8 @@ fn sessionless_incomplete_screens_carry_no_placement() {
         }),
     ] {
         let (mut engine, _, _) = migrated_session(screens(), members());
-        match engine.handle_report_legacy(&report_screens(4, lossy, members(), None, None)) {
-            LegacyWorldOutcome::Rejected { kind, message } => {
+        match engine.handle_report(&report_screens(4, lossy, members(), None, None)) {
+            WorldOutcome::Rejected { kind, message } => {
                 assert_eq!(kind, "snapshot-invalid", "{label}");
                 assert!(
                     message.contains("screen-rect-partial"),

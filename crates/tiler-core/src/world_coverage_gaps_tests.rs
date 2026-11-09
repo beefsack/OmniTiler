@@ -10,12 +10,16 @@ use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine, WorldEngineConfig};
+use crate::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use crate::world_report::{
     CommandRejectKind, CommandResult, EffectCause, FrameSetter, HoldReason, MemberAttempt,
-    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScreenReport, TransferKind,
-    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorkspaceRef, WorldCommand, WorldReport,
-    validate_report_reason,
+    PresentationIngressV4, PresentationRowV4, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
+    ScreenReport, TransferKind, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand,
+    WorldReportV4,
+};
+use crate::world_report_v4_checks::{
+    grade_invalid_screens_v4 as grade_invalid_screens,
+    validate_report_v4_reason as validate_report_reason,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -102,9 +106,9 @@ fn report(
     closed: Vec<&str>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -113,13 +117,15 @@ fn report(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: Vec::new(),
+        held_windows: Vec::new(),
         closed: closed
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -127,8 +133,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -140,15 +144,16 @@ fn report(
         creation_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        held_attempts: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -173,7 +178,7 @@ fn engine_with_zero_outer_gap() -> WorldEngine {
 }
 
 fn row_of<'a>(
-    reply: &'a crate::world_report::WorldReply,
+    reply: &'a crate::world_report::WorldReplyV4,
     window: &str,
 ) -> &'a crate::world_report::WindowDesire {
     reply
@@ -183,7 +188,7 @@ fn row_of<'a>(
         .unwrap_or_else(|| panic!("missing row {window}"))
 }
 
-fn view_of(reply: &crate::world_report::WorldReply, output: &str) -> String {
+fn view_of(reply: &crate::world_report::WorldReplyV4, output: &str) -> String {
     reply
         .outputs
         .iter()
@@ -1961,8 +1966,8 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
                 follow: true,
             }),
         );
-        match engine.handle_report_legacy(&send) {
-            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        match engine.handle_report(&send) {
+            WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::SendRefused
@@ -2018,8 +2023,8 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             }),
         );
         let revision_before = engine.state_revision();
-        match engine.handle_report_legacy(&send) {
-            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        match engine.handle_report(&send) {
+            WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::SendTargetUnknown
@@ -2104,8 +2109,8 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             }),
         );
         let revision_before = engine.state_revision();
-        match engine.handle_report_legacy(&send) {
-            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        match engine.handle_report(&send) {
+            WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::ScopeHeld
@@ -2189,8 +2194,8 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
     retry_explicit.action_foreground = Some(OutputId("out-a".to_owned()));
     retry_explicit.action_outputs =
         vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
-    match engine.handle_report_legacy(&retry_explicit) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&retry_explicit) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
@@ -2220,8 +2225,8 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
     retry_directional.action_foreground = Some(OutputId("out-a".to_owned()));
     retry_directional.action_outputs =
         vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
-    let applied = match engine.handle_report_legacy(&retry_directional) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    let applied = match engine.handle_report(&retry_directional) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("directional retry: expected apply, got {other:?}"),
     };
     let flight = applied
@@ -2368,7 +2373,7 @@ fn floating_source_migration_carries_without_engine_tree() {
         "no refill child: {:?}",
         reply.transfers
     );
-    let (affected, source_selected_ws) = {
+    let affected = {
         let binding = engine
             .retained_selection
             .values()
@@ -2376,13 +2381,7 @@ fn floating_source_migration_carries_without_engine_tree() {
             .expect("frozen selection binding");
         let mut affected = binding.affected.clone();
         affected.sort();
-        let source_selected_ws = binding
-            .selected
-            .iter()
-            .find(|home| home.output.0 == "out-a")
-            .map(|home| home.workspace.0.clone())
-            .expect("source selected home");
-        (affected, source_selected_ws)
+        affected
     };
     assert_eq!(
         affected,
@@ -2446,11 +2445,11 @@ fn floating_source_migration_carries_without_engine_tree() {
         );
     }
     // Arrival retires the sessionless carry with no echo proof: the
-    // parent drops once every member homing names the target.
-    let refill_ws = source_selected_ws;
+    // parent drops once every member homing names the target (v4 has no
+    // view-echo lane; the legacy views echo here was inert).
     let arrived = fact("w0", "out-b", 800);
     let arrived_float = float_fact("wf", "out-b", 900);
-    let mut arrival = report(
+    let arrival = report(
         5,
         screens.clone(),
         vec![arrived, arrived_float],
@@ -2459,16 +2458,6 @@ fn floating_source_migration_carries_without_engine_tree() {
         None,
         None,
     );
-    arrival.views = vec![
-        crate::world_report::ScreenView {
-            output: OutputId("out-a".to_owned()),
-            view: refill_ws,
-        },
-        crate::world_report::ScreenView {
-            output: OutputId("out-b".to_owned()),
-            view: view_a.clone(),
-        },
-    ];
     let settled = accepted(&mut engine, &arrival);
     assert!(
         settled.transfers.is_empty(),
@@ -3485,7 +3474,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     // Maximize still refuses on the same command path, both directions.
     let mut maxed = fact("w1", "out-a", 100);
     maxed.maximized = Some(true);
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         5,
         screens.clone(),
         vec![fact("w0", "out-a", 0), maxed],
@@ -3497,7 +3486,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             float_rect: None,
         })),
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -3538,7 +3527,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     let mut maxed_float = fact("w1", "out-a", 100);
     maxed_float.transient = Some(true);
     maxed_float.maximized = Some(true);
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         3,
         screens.clone(),
         vec![fact("w0", "out-a", 0), maxed_float],
@@ -3550,7 +3539,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             float_rect: None,
         })),
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -3571,7 +3560,7 @@ fn toggle_maximize_command_decides_and_reports() {
             window: WindowId(window.to_owned()),
         }
     }
-    fn maximize_of(reply: &crate::world_report::WorldReply) -> (bool, bool, bool) {
+    fn maximize_of(reply: &crate::world_report::WorldReplyV4) -> (bool, bool, bool) {
         match &reply.command_result {
             Some(CommandResult::Maximize {
                 window,
@@ -3748,8 +3737,8 @@ fn toggle_maximize_command_decides_and_reports() {
     let mut bare = with_cmd.clone();
     bare.command = None;
     assert_eq!(
-        crate::world_report::report_estimate(&with_cmd)
-            - crate::world_report::report_estimate(&bare),
+        crate::world_sizing_v4::report_estimate_v4(&with_cmd)
+            - crate::world_sizing_v4::report_estimate_v4(&bare),
         wire.len() - 4,
         "command estimate is exact"
     );
@@ -3772,7 +3761,7 @@ fn toggle_maximize_command_decides_and_reports() {
     );
     // A newer report reusing a consumed sequence reconciles only: the
     // stale command never re-emits its result.
-    let replay = match engine.handle_report_legacy(&report(
+    let replay = match engine.handle_report(&report(
         7,
         screens.clone(),
         vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
@@ -3781,7 +3770,7 @@ fn toggle_maximize_command_decides_and_reports() {
         Some(2),
         Some(toggle("w1")),
     )) {
-        LegacyWorldOutcome::CommandConsumed(reply) => reply,
+        WorldOutcome::CommandConsumed(reply) => reply,
         other => panic!("consumed sequence replays quiet, got {other:?}"),
     };
     assert!(
@@ -3873,7 +3862,7 @@ fn toggle_maximize_command_decides_and_reports() {
     }
 
     // Refusal: a command naming an unfocused window never executes.
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         8,
         screens.clone(),
         vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
@@ -3882,7 +3871,7 @@ fn toggle_maximize_command_decides_and_reports() {
         Some(8),
         Some(toggle("w1")),
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::FocusUnknown
@@ -3944,7 +3933,7 @@ fn toggle_maximize_command_decides_and_reports() {
             },
             roomy("out-b", 800),
         ];
-        match held_engine.handle_report_legacy(&report(
+        match held_engine.handle_report(&report(
             2,
             clamped,
             vec![fact("w0", "out-a", 710), fact("wb", "out-b", 800)],
@@ -3953,7 +3942,7 @@ fn toggle_maximize_command_decides_and_reports() {
             Some(11),
             Some(toggle("w0")),
         )) {
-            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+            WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::ScopeHeld
@@ -4011,7 +4000,7 @@ fn toggle_maximize_command_decides_and_reports() {
                 .any(|t| matches!(&t.kind, TransferKind::Window(_))),
             "send retains a window transfer"
         );
-        match flight_engine.handle_report_legacy(&report(
+        match flight_engine.handle_report(&report(
             3,
             screens.clone(),
             vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
@@ -4020,7 +4009,7 @@ fn toggle_maximize_command_decides_and_reports() {
             Some(3),
             Some(toggle("w0")),
         )) {
-            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+            WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::TransferInFlight
@@ -4210,8 +4199,8 @@ fn bootstrap_first_bad_identifiable_output_has_no_authority() {
     let mut engine = engine_with_gaps(8.0, 8.0);
     let mut bad_first = report(1, Vec::new(), Vec::new(), "", vec![], None, None);
     bad_first.held_screens = vec![held_unreadable_row("out-b", 0)];
-    let reply = match engine.handle_report_legacy(&bad_first) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report(&bad_first) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected bootstrap, got {other:?}"),
     };
     assert!(!reply.ready);
@@ -4252,8 +4241,8 @@ fn after_ready_bad_screen_holds_only_affected_output() {
         None,
     );
     narrow.held_screens = vec![held_unreadable_row("out-b", 1)];
-    let reply = match engine.handle_report_legacy(&narrow) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report(&narrow) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted narrow hold, got {other:?}"),
     };
     assert!(reply.ready);
@@ -4327,8 +4316,8 @@ fn direct_invalid_scale_first_report_grades_to_hold_without_authority() {
         None,
     );
     assert_eq!(validate_report_reason(&bad), Some("screen-scale-invalid"));
-    let reply = match engine.handle_report_legacy(&bad) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report(&bad) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected bootstrap narrow hold, got {other:?}"),
     };
     assert!(!reply.ready);
@@ -4371,8 +4360,8 @@ fn direct_invalid_scale_after_ready_holds_only_affected_output() {
         validate_report_reason(&narrow),
         Some("screen-scale-invalid")
     );
-    let reply = match engine.handle_report_legacy(&narrow) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report(&narrow) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted narrow hold, got {other:?}"),
     };
     assert!(reply.ready);
@@ -4444,14 +4433,14 @@ fn direct_nonfinite_scale_grades_to_hold_without_null_encoding() {
         validate_report_reason(&narrow),
         Some("screen-scale-invalid")
     );
-    let graded = crate::world_report::grade_invalid_screens(&narrow).expect("grades");
+    let graded = grade_invalid_screens(&narrow).expect("grades");
     assert_eq!(graded.held_screens.len(), 1);
     assert!(
         crate::world_report::encode_held_screen_canonical(&graded.held_screens[0]).is_err(),
         "retained non-finite fact never spells null"
     );
-    let reply = match engine.handle_report_legacy(&narrow) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report(&narrow) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted narrow hold, got {other:?}"),
     };
     assert!(reply.ready);
@@ -4488,15 +4477,15 @@ fn direct_invalid_scale_with_preheld_row_keeps_ordinals() {
         None,
     );
     mixed.held_screens = vec![held_unreadable_row("out-c", 1)];
-    let graded = crate::world_report::grade_invalid_screens(&mixed).expect("grades");
+    let graded = grade_invalid_screens(&mixed).expect("grades");
     let ordinals: Vec<usize> = graded
         .held_screens
         .iter()
         .map(|held| held.ordinal)
         .collect();
     assert_eq!(ordinals, vec![1, 2]);
-    let reply = match engine.handle_report_legacy(&mixed) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    let reply = match engine.handle_report(&mixed) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted mixed hold, got {other:?}"),
     };
     assert!(reply.ready);
@@ -4543,8 +4532,8 @@ fn direct_invalid_scale_with_structural_violation_still_refuses() {
         None,
     );
     bad_id.screens[0].output = OutputId(String::new());
-    match engine.handle_report_legacy(&bad_id) {
-        LegacyWorldOutcome::Rejected { kind, message } => {
+    match engine.handle_report(&bad_id) {
+        WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, "snapshot-invalid");
             assert_eq!(message, "screen-id-invalid");
         }
@@ -4559,8 +4548,8 @@ fn direct_invalid_scale_with_structural_violation_still_refuses() {
         None,
         None,
     );
-    match engine.handle_report_legacy(&duplicate) {
-        LegacyWorldOutcome::Rejected { kind, message } => {
+    match engine.handle_report(&duplicate) {
+        WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, "snapshot-invalid");
             assert_eq!(message, "duplicate-screen");
         }

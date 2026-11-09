@@ -453,9 +453,9 @@ impl WorldEngine {
 mod tests {
     use super::*;
     use crate::directional::WindowId;
-    use crate::world_directional::tests::{accepted, fact, float_fact, report_full, screen};
     use crate::world_engine::WorldEngine;
     use crate::world_report::{FrameSetter, StateAttempt, StateProperty};
+    use crate::world_v4_support_tests::{accepted, fact, float_fact, report_full, screen};
 
     fn caps_above() -> crate::connection::HostCapabilities {
         crate::connection::HostCapabilities {
@@ -481,7 +481,7 @@ mod tests {
         .expect("generation")
     }
 
-    fn above_row(reply: &crate::world_report::WorldReply, window: &str) -> Option<StateTarget> {
+    fn above_row(reply: &crate::world_report::WorldReplyV4, window: &str) -> Option<StateTarget> {
         reply
             .windows
             .iter()

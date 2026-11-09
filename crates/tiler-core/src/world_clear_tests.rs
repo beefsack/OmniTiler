@@ -5,15 +5,15 @@
 //! Split from [`crate::world_directional`] tests for source size: the
 //! directional policy unit tests stay there; every test here drives the
 //! retained clear lifecycle through [`crate::world_engine::WorldEngine`].
-//! Shared report builders live in [`crate::world_directional::tests`].
+//! Shared report builders live in [`crate::world_v4_support_tests`].
 
 use crate::directional::{OutputId, WindowId};
-use crate::world_directional::tests::{
-    accepted, fact, float_fact, outcome_str, rect, report, report_full, screen,
-};
-use crate::world_engine::WorldEngine;
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandResult, ScopeAuthority, ScreenReport, WindowFact, WorldCommand, WorldReport,
+    CommandResult, ScopeAuthority, ScreenReport, WindowFact, WorldCommand, WorldReportV4,
+};
+use crate::world_v4_support_tests::{
+    accepted, desire, fact, float_fact, outcome_str, rect, report, report_full, screen,
 };
 
 fn clear_attempt(
@@ -41,7 +41,7 @@ fn report_clears(
     windows: Vec<WindowFact>,
     focused: &str,
     clears: Vec<crate::world_report::ClearAttempt>,
-) -> WorldReport {
+) -> WorldReportV4 {
     let mut report = report_full(
         request_seq,
         observation_seq,
@@ -56,34 +56,31 @@ fn report_clears(
     report
 }
 
-pub(crate) fn desire<'a>(
-    reply: &'a crate::world_report::WorldReply,
-    window: &str,
-) -> &'a crate::world_report::WindowDesire {
-    reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == window)
-        .expect("window keeps a row")
+/// Row-tail wire span: `"clear_op":"{op}"` plus the shared canonical lane
+/// encoding of the row's correlation tail (`cmdSeq`, visibility, state).
+/// The v4 lane has no full-reply canonical encoder in core (wire encoding
+/// lives in the protocol crate), but this span is version-independent:
+/// the same shared [`WindowDesire`](crate::world_report::WindowDesire)
+/// type through the same shared
+/// [`encode_window_target_lanes`](crate::world_sizing::encode_window_target_lanes).
+fn row_tail_wire(row: &crate::world_report::WindowDesire) -> String {
+    let mut out = String::from("\"clear_op\":\"");
+    out.push_str(row.clear_operation.as_deref().unwrap_or_default());
+    out.push('"');
+    crate::world_sizing::encode_window_target_lanes(&mut out, row);
+    out
 }
 
-/// Row-scoped frozen target suffix straight off the canonical wire bytes:
-/// from the row's `,"cmdSeq":` (the first `cmdSeq` after the row's `win`
-/// key belongs to that row) through the state-array close (the first `]}`
-/// after it; no earlier array sits inside the suffix). Asserts the
-/// slicing assumption instead of trusting it.
-fn row_suffix<'a>(wire: &'a str, window: &str) -> &'a str {
-    let row = wire
-        .find(&format!("\"win\":\"{window}\""))
-        .expect("row on the wire");
-    let after_row = &wire[row..];
-    let start = after_row
+/// Frozen target suffix within a row-tail span: from the row's `,"cmdSeq":`
+/// through the state-array close (the first `]` after it); no earlier
+/// array sits inside the suffix (the single `[` opens the state array).
+/// Asserts the slicing assumption instead of trusting it.
+fn row_suffix(tail: &str) -> &str {
+    let start = tail
         .find(",\"cmdSeq\":")
-        .expect("cmdSeq lane after the row key");
-    let after_start = &after_row[start..];
-    let end = after_start
-        .find("]}")
-        .expect("state close plus window close");
+        .expect("cmdSeq lane after the clear token");
+    let after_start = &tail[start..];
+    let end = after_start.find(']').expect("state close");
     assert_eq!(
         after_start[..end].matches('[').count(),
         1,
@@ -1144,10 +1141,10 @@ fn clear_changed_focus_view_domain_abandons() {
         reply.operation_settled
     );
     // Displayed-view change abandons. The logical-echo views lane is
-    // inert native-free, so the view move rides a real SelectWorkspace
-    // command on its own report: settle runs pre-command, so the proof
-    // report follows and observes the moved view. The old views-echo
-    // setup never moved the view.
+    // inert native-free (and has no v4 slot), so the view move rides a
+    // real SelectWorkspace command on its own report: settle runs
+    // pre-command, so the proof report follows and observes the moved
+    // view. The old views-echo setup never moved the view.
     bind(&mut engine, 5, 15);
     let spare = engine
         .mapping
@@ -1162,7 +1159,7 @@ fn clear_changed_focus_view_domain_abandons() {
         7,
         vec![screen("out-a", 0)],
         vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
-        vec![("out-a", spare.as_str())],
+        vec![],
         "win-max",
         Some(16),
         Some(WorldCommand::SelectWorkspace {
@@ -1664,9 +1661,9 @@ fn clear_consumed_replay_does_not_supersede() {
         Some(true),
         Some(false),
     )];
-    let outcome = engine.handle_report_legacy(&replay);
+    let outcome = engine.handle_report(&replay);
     match outcome {
-        crate::world_engine::LegacyWorldOutcome::CommandConsumed(reply) => {
+        WorldOutcome::CommandConsumed(reply) => {
             assert!(
                 reply.transfers.iter().any(|t| t.operation_id == "op-13"),
                 "consumed replay still continues old op-13, got {:?}",
@@ -2413,8 +2410,8 @@ fn float_settled_events_are_one_shot_and_replay_cached() {
     );
     // Replay of the identical report repeats the cached reply with its
     // events instead of settling twice.
-    match engine.handle_report_legacy(&confirming) {
-        crate::world_engine::LegacyWorldOutcome::Duplicate(cached) => {
+    match engine.handle_report(&confirming) {
+        WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.operation_settled, reply.operation_settled);
         }
         other => panic!("expected duplicate, got {other:?}"),
@@ -2483,14 +2480,14 @@ fn desire_cmdseq_explicit_clear_retained_across_observation_only_replies() {
     assert_eq!(row.command_seq, Some(13), "explicit token carries origin");
     // Wire bytes: the frozen target suffix rides directly after the
     // clear token with the quoted original sequence.
-    let wire = crate::world_sizing::encode_reply_canonical(&reply);
-    assert!(wire.contains(
+    let tail = row_tail_wire(row);
+    assert!(tail.contains(
         "\"clear_op\":\"op-13\",\"cmdSeq\":\"13\",\"visibility\":null,\
          \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
          \"state\":[]"
     ));
     assert_eq!(
-        row_suffix(&wire, "win-max"),
+        row_suffix(&tail),
         ",\"cmdSeq\":\"13\",\"visibility\":null,\
          \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
          \"state\":[]"
@@ -2530,14 +2527,14 @@ fn desire_cmdseq_explicit_clear_retained_across_observation_only_replies() {
         Some(13),
         "retained across observation-only"
     );
-    let wire = crate::world_sizing::encode_reply_canonical(&reply);
-    assert!(wire.contains(
+    let tail = row_tail_wire(row);
+    assert!(tail.contains(
         "\"clear_op\":\"op-13\",\"cmdSeq\":\"13\",\"visibility\":null,\
          \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
          \"state\":[]"
     ));
     assert_eq!(
-        row_suffix(&wire, "win-max"),
+        row_suffix(&tail),
         ",\"cmdSeq\":\"13\",\"visibility\":null,\
          \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
          \"state\":[]"
@@ -2715,17 +2712,24 @@ fn desire_cmdseq_float_continuation_preserves_original_seq() {
     assert_eq!(row.frame_operation.as_deref(), Some("op-13"));
     assert_eq!(row.command_seq, Some(13), "continuation keeps original seq");
     assert_eq!(row.clear_operation, None, "spent clear never re-actuates");
-    // Wire bytes: the spent clear publishes nothing while the continued
+    assert!(
+        row.floating,
+        "continued float still publishes floating: {row:?}"
+    );
+    assert_eq!(
+        row.float_origin, None,
+        "ordinary float carries no origin: {row:?}"
+    );
+    // Tail bytes: the spent clear publishes nothing while the continued
     // float keeps the original quoted sequence after the frame token.
-    let wire = crate::world_sizing::encode_reply_canonical(&reply);
-    assert!(wire.contains(
-        "\"frame_op\":\"op-13\",\"floating\":true,\"float_origin\":\"\",\
-         \"clear_op\":\"\",\"cmdSeq\":\"13\",\"visibility\":null,\
+    let tail = row_tail_wire(row);
+    assert!(tail.contains(
+        "\"clear_op\":\"\",\"cmdSeq\":\"13\",\"visibility\":null,\
          \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
          \"state\":[]"
     ));
     assert_eq!(
-        row_suffix(&wire, "win-max"),
+        row_suffix(&tail),
         ",\"cmdSeq\":\"13\",\"visibility\":null,\
          \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
          \"state\":[]"
@@ -2750,16 +2754,23 @@ fn desire_cmdseq_float_continuation_preserves_original_seq() {
     let row = desire(&reply, "win-max");
     assert_eq!(row.frame_operation, None);
     assert_eq!(row.command_seq, None, "confirmed desire withdraws sequence");
-    // Wire bytes: both tokens spent means a null correlation suffix.
-    let wire = crate::world_sizing::encode_reply_canonical(&reply);
-    assert!(wire.contains(
-        "\"frame_op\":\"\",\"floating\":true,\"float_origin\":\"\",\
-         \"clear_op\":\"\",\"cmdSeq\":null,\"visibility\":null,\
+    assert!(
+        row.floating,
+        "confirmed float still publishes floating: {row:?}"
+    );
+    assert_eq!(
+        row.float_origin, None,
+        "ordinary float carries no origin: {row:?}"
+    );
+    // Tail bytes: both tokens spent means a null correlation suffix.
+    let tail = row_tail_wire(row);
+    assert!(tail.contains(
+        "\"clear_op\":\"\",\"cmdSeq\":null,\"visibility\":null,\
          \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
          \"state\":[]"
     ));
     assert_eq!(
-        row_suffix(&wire, "win-max"),
+        row_suffix(&tail),
         ",\"cmdSeq\":null,\"visibility\":null,\
          \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
          \"state\":[]"
@@ -2870,15 +2881,15 @@ fn desire_cmdseq_born_clear_is_commandless() {
         .expect("born binds a clear token");
     assert!(op.starts_with("op-born-"), "commandless id, got {op}");
     assert_eq!(row.command_seq, None, "born clear carries no sequence");
-    // Wire bytes: commandless born token rides with a null correlation.
-    let wire = crate::world_sizing::encode_reply_canonical(&reply);
-    assert!(wire.contains(&format!(
+    // Tail bytes: commandless born token rides with a null correlation.
+    let tail = row_tail_wire(row);
+    assert!(tail.contains(&format!(
         "\"clear_op\":\"{op}\",\"cmdSeq\":null,\"visibility\":null,\
          \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
          \"state\":[]"
     )));
     assert_eq!(
-        row_suffix(&wire, "win-born"),
+        row_suffix(&tail),
         ",\"cmdSeq\":null,\"visibility\":null,\
          \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
          \"state\":[]"

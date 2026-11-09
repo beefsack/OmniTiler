@@ -64,11 +64,11 @@
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     FrameSetter, MemberAttempt, NativeCreationAttempt, NativeObservation, NativeOccupancy,
-    ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION_LEGACY, WorkspaceRef, WorldCommand,
-    WorldReport,
+    ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION_V4, WorkspaceRef, WorldCommand,
+    WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -171,9 +171,9 @@ fn report(
     member_attempts: Vec<MemberAttempt>,
     view_attempts: Vec<ViewAttempt>,
     creation_attempts: Vec<NativeCreationAttempt>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -183,9 +183,9 @@ fn report(
         command,
         screens,
         windows: windows.clone(),
-        views: vec![],
         closed: vec![],
         native,
+        held_native: Vec::new(),
         focused_global: windows
             .first()
             .map(|f| f.window.0.clone())
@@ -207,20 +207,24 @@ fn report(
         view_attempts,
         clear_attempts: vec![],
         creation_attempts,
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
+        presentation: tiler_core::world_report::PresentationRowV4::Valid(
+            tiler_core::world_report::PresentationIngressV4::default(),
+        ),
 
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
 fn accepted(
     engine: &mut WorldEngine,
-    report: &WorldReport,
-) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    report: &WorldReportV4,
+) -> tiler_core::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -229,7 +233,7 @@ fn two_screens() -> Vec<ScreenReport> {
     vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
-fn output_view(reply: &tiler_core::world_report::WorldReply, output: &str) -> Option<String> {
+fn output_view(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Option<String> {
     reply
         .outputs
         .iter()
@@ -348,7 +352,7 @@ fn land_members_views_old(
     seq: u64,
     current_a: &str,
     current_b: &str,
-) -> tiler_core::world_report::WorldReply {
+) -> tiler_core::world_report::WorldReplyV4 {
     let settled = accepted(
         engine,
         &report(

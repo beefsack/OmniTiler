@@ -21,10 +21,9 @@
 //! staged reply encodes within budget. Only reports passing every cheap
 //! gate pay for the clone.
 //!
-//! The typed v4 replay cache stays separate from the legacy
-//! `last_report`/`last_reply` cache and legacy request bookkeeping, while
-//! the command high-watermark, state revision, and lifetime/session
-//! machinery stay shared. Pre-ready reports stage intent retention on a
+//! The typed v4 replay cache (`last_report_v4`/`last_reply_v4`) is v4-only
+//! with no legacy twin, while the command high-watermark, state revision,
+//! and lifetime/session machinery stay shared. Pre-ready reports stage intent retention on a
 //! candidate and publish an empty bootstrap reply: no authority, no
 //! revision advance, no command consumption.
 

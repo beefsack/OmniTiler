@@ -11,10 +11,11 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    HoldReason, NativeObservation, NativeOccupancy, ScopeAuthority, ScreenReport, TransferKind,
-    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
+    HoldReason, NativeObservation, NativeOccupancy, PresentationIngressV4, PresentationRowV4,
+    ScopeAuthority, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION_V4, WindowFact,
+    WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -122,7 +123,7 @@ fn anon(fact: WindowFact) -> WindowFact {
 
 /// Authority of one `output/workspace` scope row, if published.
 fn scope_authority(
-    reply: &tiler_core::world_report::WorldReply,
+    reply: &tiler_core::world_report::WorldReplyV4,
     output: &str,
     workspace: &str,
 ) -> Option<ScopeAuthority> {
@@ -147,9 +148,9 @@ fn report(
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
     inventory_complete: bool,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -158,10 +159,12 @@ fn report(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows: windows.clone(),
-        views: vec![],
+        held_windows: Vec::new(),
         closed: vec![],
         native,
+        held_native: Vec::new(),
         focused_global: windows
             .first()
             .map(|f| f.window.0.clone())
@@ -170,8 +173,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
@@ -183,11 +184,12 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
@@ -276,10 +278,10 @@ fn rebind(engine: &mut WorldEngine, adapter: &str, mode: WorkspaceMode, equal_co
 
 fn accepted(
     engine: &mut WorldEngine,
-    report: &WorldReport,
-) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    report: &WorldReportV4,
+) -> tiler_core::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -303,7 +305,10 @@ fn two_native_screens() -> Vec<ScreenReport> {
     vec![screen("out-a", 0)]
 }
 
-fn bound_ids(reply: &tiler_core::world_report::WorldReply, output: &str) -> Vec<(String, String)> {
+fn bound_ids(
+    reply: &tiler_core::world_report::WorldReplyV4,
+    output: &str,
+) -> Vec<(String, String)> {
     reply
         .workspaces
         .iter()
@@ -777,16 +782,16 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
         None,
         true,
     );
-    match engine.handle_report_legacy(&dup) {
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+    match engine.handle_report(&dup) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("within-output duplicate must refuse, got {other:?}"),
     }
     dup.native = vec![
         native_obs("out-a", &[N1], N1),
         native_obs("out-a", &[N2], N2),
     ];
-    match engine.handle_report_legacy(&dup) {
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+    match engine.handle_report(&dup) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("contradictory duplicate rows must refuse, got {other:?}"),
     }
 }

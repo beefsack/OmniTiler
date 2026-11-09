@@ -2,19 +2,22 @@
 //! `clear_op` (`cmdSeq`, `visibility`, `visibility_auth`,
 //! `visibility_hold`, `state`).
 //!
-//! Two hooks: writer parity (both canonical writers spell crafted lanes
-//! byte-identically with exact size accounting) and independent fixture
-//! conformance (actual code encoding of fixture target fields matches the
-//! raw immutable suffix bytes).
+//! Two hooks: v4 writer evidence (the canonical v4 writer spells crafted
+//! lanes with exact size accounting pinned by the independent core byte
+//! count plus a decoder roundtrip) and independent fixture conformance
+//! (actual code encoding of fixture target fields matches the raw
+//! immutable suffix bytes).
 //!
 //! Offline only: no D-Bus, no KWin.
 
 use tiler_core::directional::{OutputId, WindowId};
-use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     HoldReason, ScopeAuthority, StateProperty, StateTarget, VisibilityTarget, WindowDesire,
 };
-use tiler_protocol::world_protocol::encode_reply_legacy;
+use tiler_core::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+use tiler_protocol::world_protocol::{
+    DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, encode_reply_v4,
+};
 
 fn fixture_text(name: &str) -> String {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -24,87 +27,100 @@ fn fixture_text(name: &str) -> String {
 }
 
 #[test]
-fn both_writers_spell_crafted_target_lanes_byte_identically() {
-    // Writer parity hook (not an independent oracle: both sides share the
-    // lane helper): a reply with non-default lanes (visibility object,
-    // held authorities with the longest reason, multi-row state with
-    // quoted correlations, and an escape-heavy lifetime proving the shared
-    // string accounting) spells byte-identically through the transport and
-    // core writers, and the structural estimate covers it.
-    let mut reply = WorldEngine::new("gen-1")
-        .expect("generation")
-        .bootstrap_reply("adapter-1", "req-1");
-    reply.windows.push(tiler_core::world_report::WindowDesire {
-        lifetime: WindowId("win-a".to_owned()),
-        output: OutputId("out".to_owned()),
-        workspace: "ws-a".to_owned(),
-        allocation: None,
-        effective_frame: None,
-        frame_authority: ScopeAuthority::Untouched,
-        membership_authority: ScopeAuthority::Untouched,
-        floating: false,
-        float_origin: None,
-        frame_operation: None,
-        clear_operation: None,
-        command_seq: None,
-        visibility: None,
-        visibility_authority: ScopeAuthority::Untouched,
-        state: Vec::new(),
-    });
-    reply.windows.push(tiler_core::world_report::WindowDesire {
-        lifetime: WindowId("a\"b\\c\x01d".to_owned()),
-        output: OutputId("out".to_owned()),
-        workspace: "ws-a".to_owned(),
-        allocation: None,
-        effective_frame: None,
-        frame_authority: ScopeAuthority::Untouched,
-        membership_authority: ScopeAuthority::Untouched,
-        floating: false,
-        float_origin: None,
-        frame_operation: None,
-        clear_operation: None,
-        command_seq: Some(u64::MAX),
-        visibility: Some(VisibilityTarget {
-            shown: false,
-            revision: u64::MAX,
-            fallback: true,
-        }),
-        visibility_authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
-        state: vec![
-            StateTarget {
-                property: StateProperty::Above,
-                value: true,
-                authority: ScopeAuthority::Controlled,
-                command_seq: None,
-            },
-            StateTarget {
-                property: StateProperty::Fullscreen,
-                value: false,
-                authority: ScopeAuthority::Hold(HoldReason::RefusedTarget),
-                command_seq: Some(1),
-            },
-            StateTarget {
-                property: StateProperty::Maximized,
-                value: true,
-                authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
-                command_seq: Some(u64::MAX),
-            },
-        ],
-    });
-    let wire = encode_reply_legacy(&reply);
+fn v4_writer_spells_crafted_target_lanes_with_exact_bytes() {
+    // Writer hook (only the shared lane helper is common to both sides,
+    // never an independent oracle): a reply with non-default lanes
+    // (visibility object, held authorities with the longest reason,
+    // multi-row state with quoted correlations, and a boundary-length
+    // lifetime proving the shared string accounting) spells through the
+    // genuine v4 writer, with the independent core byte count exact, a
+    // decoder roundtrip to the identical typed reply, and the structural
+    // estimate covering it. The legacy escape-heavy lifetime is not
+    // stageable here: the v4 opaque-id gate (`is_opaque_id`, `[A-Za-z0-9-_.]`
+    // max 128, enforced by the v4 writer) refuses it as `unknown-value`.
+    let mut decoded: DecodedReplyV4 =
+        decode_reply_v4(&fixture_text("reply-observe")).expect("observe decodes");
+    decoded.reply.windows = vec![
+        WindowDesire {
+            lifetime: WindowId("win-a".to_owned()),
+            output: OutputId("out".to_owned()),
+            workspace: "ws-a".to_owned(),
+            allocation: None,
+            effective_frame: None,
+            frame_authority: ScopeAuthority::Untouched,
+            membership_authority: ScopeAuthority::Untouched,
+            floating: false,
+            float_origin: None,
+            frame_operation: None,
+            clear_operation: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: ScopeAuthority::Untouched,
+            state: Vec::new(),
+        },
+        WindowDesire {
+            lifetime: WindowId("a.9_".repeat(32)),
+            output: OutputId("out".to_owned()),
+            workspace: "ws-a".to_owned(),
+            allocation: None,
+            effective_frame: None,
+            frame_authority: ScopeAuthority::Untouched,
+            membership_authority: ScopeAuthority::Untouched,
+            floating: false,
+            float_origin: None,
+            frame_operation: None,
+            clear_operation: None,
+            command_seq: Some(u64::MAX),
+            visibility: Some(VisibilityTarget {
+                shown: false,
+                revision: u64::MAX,
+                fallback: true,
+            }),
+            visibility_authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+            state: vec![
+                StateTarget {
+                    property: StateProperty::Above,
+                    value: true,
+                    authority: ScopeAuthority::Controlled,
+                    command_seq: None,
+                },
+                StateTarget {
+                    property: StateProperty::Fullscreen,
+                    value: false,
+                    authority: ScopeAuthority::Hold(HoldReason::RefusedTarget),
+                    command_seq: Some(1),
+                },
+                StateTarget {
+                    property: StateProperty::Maximized,
+                    value: true,
+                    authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+                    command_seq: Some(u64::MAX),
+                },
+            ],
+        },
+    ];
+    decoded.wire = ReplyWireOptionals {
+        suspended_output_present: decoded.reply.presentation.suspended_output.is_some(),
+    };
+    let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
-        wire,
-        tiler_core::world_report::encode_reply_canonical(&reply),
-        "transport mirrors the core writer over crafted lanes"
+        wire.len(),
+        reply_exact_bytes_v4(&decoded.reply),
+        "core byte count is exact over crafted lanes"
+    );
+    assert_eq!(
+        decode_reply_v4(&wire).expect("reply round-trips"),
+        decoded,
+        "wire round-trips to the identical typed reply and metadata"
     );
     assert!(
-        tiler_core::world_report::reply_estimate(&reply) >= wire.len(),
+        reply_estimate_v4(&decoded.reply) >= wire.len(),
         "structural estimate covers crafted lanes"
     );
     let mut lanes = String::new();
-    tiler_core::world_sizing::encode_window_target_lanes(&mut lanes, &reply.windows[1]);
+    tiler_core::world_sizing::encode_window_target_lanes(&mut lanes, &decoded.reply.windows[1]);
     assert_eq!(
-        tiler_core::world_sizing::window_target_lanes_estimate(&reply.windows[1]),
+        tiler_core::world_sizing::window_target_lanes_estimate(&decoded.reply.windows[1]),
         lanes.len(),
         "lane estimate stays exact on crafted lanes"
     );
@@ -119,8 +135,8 @@ fn both_writers_spell_crafted_target_lanes_byte_identically() {
          \"reason\":\"incomplete-inventory\",\"cmdSeq\":\"18446744073709551615\"}"
     ));
     assert!(
-        wire.contains("\"win\":\"a\\\"b\\\\c\\u0001d\""),
-        "escapes ride the wire"
+        wire.contains(&format!("\"win\":\"{}\"", "a.9_".repeat(32))),
+        "boundary-length lifetime rides the wire byte-exact"
     );
 }
 

@@ -15,7 +15,6 @@ use crate::connection::{HostCapabilities, RawSettingValue};
 use crate::directional::{OutputId, SameAxisMove, WindowId};
 use crate::ids::{CorrelationId, OwnerId};
 use crate::intent_data::{IntentData, decode_intent_data, encode_intent_data};
-use crate::world_directional::tests::{fact, screen};
 use crate::world_engine::{EventIssue, WorldEngine};
 use crate::world_report::{
     BatchSettlement, CommandResult, EffectKind, IntentWrite, NativeObservation, NativeOccupancy,
@@ -23,6 +22,7 @@ use crate::world_report::{
     WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
+use crate::world_v4_support_tests::{fact, screen};
 
 fn engine() -> WorldEngine {
     WorldEngine::new_test_bound_with_initial_settings(

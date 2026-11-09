@@ -1,86 +1,75 @@
-//! Protocol-only optional wire metadata seam (unit1): `decode_request_with_wire_legacy`
+//! Protocol-only optional wire metadata seam: [`decode_request_with_wire`]
 //! records the tolerant spelling of every report-level optional group while
-//! the normalized values stay in [`WorldReport`].
+//! the normalized values stay in [`WorldReportV4`].
 //!
 //! Whole-fixture note: every `test-fixtures/world-wire/v4/messages/*.json`
-//! file below is a v4 envelope (`"v":4` plus `rendererInput` and the v4
-//! presentation shape) that the current v3 gate refuses. They are NEVER
-//! decoded whole here. Only ISOLATED optional fragments (single key values,
-//! single lane rows) are extracted from them and placed in the minimal
-//! current v3 envelope below. Each test names which inputs are fragments.
+//! file below is a genuine v4 envelope (`"v":4` plus `rendererInput` and the
+//! v4 presentation shape) decoded through the genuine v4 ingress. Isolated
+//! optional fragments (single key values, single lane rows) are extracted
+//! from them and placed in the minimal v4 envelope below. Each test names
+//! which inputs are fragments.
+//!
+//! Offline only: no adapters, no live work.
 
 use tiler_core::connection::{
     ApplicationIdentity, HandshakeRequest, HostCapabilities, SettingsRequest,
 };
 use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
+use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
-    ClearAttempt, FrameAttempt, MemberAttempt, NativeCreationAttempt, NativeWorkspaceFact,
-    ViewAttempt, WorkspaceRef, WorldReport, report_digest,
+    AttemptLaneV4, ClearAttempt, FrameAttempt, MemberAttempt, NativeCreationAttempt,
+    NativeWorkspaceFact, ViewAttempt, WorkspaceRef, WorldReportV4,
 };
+use tiler_core::world_report_v4_checks::report_digest_v4 as report_digest;
+use tiler_core::world_sizing_v4::reply_exact_bytes_v4;
 use tiler_protocol::world_protocol::{
-    CursorHitWire, DecodedRequest, GestureIngressWire, ReportWireOptionals, decode_request_legacy,
-    decode_request_with_wire_legacy, encode_reply_legacy,
+    CursorHitWire, DecodedReplyV4, DecodedReportV4, GestureIngressWire, ReplyWireOptionals,
+    ReportWireOptionals, WorldOutcome, decode_reply_v4, decode_request, decode_request_with_wire,
+    encode_reply_v4,
 };
 
-/// Minimal observation-only request envelope (v3): screens plus facts only.
-fn request_json(
-    adapter: &str,
-    generation: &str,
-    obs: &str,
-    req_seq: &str,
-    req: &str,
-    facts: &str,
-) -> String {
-    format!(
-        "{{\"v\":3,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
-         \"obs\":\"{obs}\",\"reqSeq\":\"{req_seq}\",\"req\":\"{req}\",\"cmdSeq\":null,\
-         \"command\":null,\
-         \"screens\":[{{\"out\":\"out\",\"full\":[0,0,800,600],\"work\":[0,0,800,560],\
-          \"complete\":true,\"scale\":1.0,\
-          \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
-         \"windows\":[{facts}],\
-          \"views\":[{{\"out\":\"out\",\"view\":\"\"}}],\"closed\":[],\"native\":[],\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
-          \"actionOutputs\":[\"out\"],\
-          \"focused\":\"\",\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}},\"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[]}}"
-    )
+fn fixture_text(name: &str) -> String {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4/messages")
+        .join(format!("{name}.json"));
+    std::fs::read_to_string(&path).expect("fixture JSON")
 }
 
-fn fact_json(id: &str, x: i32) -> String {
-    format!(
-        "{{\"win\":\"{id}\",\"out\":\"out\",\"rect\":[{x},0,200,200],\
-         \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\
-         \"minimized\":false,\
-         \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}},\
-         \"hostHidden\":false,\"privileged\":false,\"managed\":true,\
-         \"acceptsInput\":true,\"activationInhibited\":false,\
-         \"toolWindow\":false,\"owned\":false,\"transient\":false,\
-         \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\
-         \"owner\":null,\"parent\":null,\"role\":null,\"appId\":null,\
-         \"executable\":null,\"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\
-         \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
-         \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
-         \"suppressionAvailable\":null,\
-         \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
-         \"lastWrite\":null}}"
-    )
+fn fixture_value(name: &str) -> serde_json::Value {
+    serde_json::from_str(&fixture_text(name)).expect("fixture JSON")
+}
+
+/// Minimal observation-only v4 envelope: the immutable
+/// `report-optionals-omitted` fixture (valid screens, windows,
+/// presentation, and the required `rendererInput` lane) rebound to the
+/// connected test engine, with every report-level optional group stripped
+/// to its absent spelling. Tests inject the spellings under test.
+fn base_value() -> serde_json::Value {
+    let mut base = fixture_value("report-optionals-omitted");
+    base["adapter"] = serde_json::json!("adapter-1");
+    base["gen"] = serde_json::json!("gen-1");
+    base["req"] = serde_json::json!("req-1");
+    if let Some(map) = base.as_object_mut() {
+        for key in [
+            "cursorHit",
+            "monotonicMs",
+            "primary",
+            "frameAttempts",
+            "memberAttempts",
+            "viewAttempts",
+            "clearAttempts",
+            "creationAttempts",
+            "gestureIngress",
+        ] {
+            map.remove(key);
+        }
+    }
+    base
 }
 
 fn one_window_request() -> String {
-    request_json(
-        "adapter-1",
-        "gen-1",
-        "1",
-        "1",
-        "req-1",
-        &fact_json("win-a", 0),
-    )
-}
-
-fn base_value() -> serde_json::Value {
-    serde_json::from_str(&one_window_request()).expect("valid envelope")
+    base_value().to_string()
 }
 
 fn connected_engine(generation: &str, caps: HostCapabilities) -> WorldEngine {
@@ -108,28 +97,65 @@ fn connected_engine(generation: &str, caps: HostCapabilities) -> WorldEngine {
     engine
 }
 
-/// Decode through both entry points; the wrapper report must equal the
-/// legacy report byte-for-byte in typed terms.
-fn decode_both(json: &str) -> DecodedRequest {
-    let legacy = decode_request_legacy(json).expect("legacy decodes");
-    let wired = decode_request_with_wire_legacy(json).expect("wired decodes");
+/// Encode one engine-published v4 reply with the canonical reply
+/// writer; the bytes must match the independent core byte count exactly
+/// and round-trip through the reply decoder to the identical typed reply
+/// plus wire metadata.
+fn reply_wire(reply: &tiler_core::world_report::WorldReplyV4) -> String {
+    let decoded = DecodedReplyV4 {
+        reply: reply.clone(),
+        wire: ReplyWireOptionals {
+            suspended_output_present: reply.presentation.suspended_output.is_some(),
+        },
+    };
+    let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
-        legacy, wired.report,
-        "wrapper report matches legacy decoder"
+        wire.len(),
+        reply_exact_bytes_v4(reply),
+        "core byte count is exact over the wire"
     );
+    assert_eq!(
+        decode_reply_v4(&wire).expect("reply round-trips"),
+        decoded,
+        "wire round-trips to the identical typed reply and metadata"
+    );
+    wire
+}
+
+/// Decode through both entry points; the wired report must equal the
+/// plain report byte-for-byte in typed terms.
+fn decode_both(json: &str) -> DecodedReportV4 {
+    let plain = decode_request(json).expect("v4 decodes");
+    let wired = decode_request_with_wire(json).expect("wired decodes");
+    assert_eq!(plain, wired.report, "wrapper report matches plain decoder");
     wired
+}
+
+/// Both entry points must hold the same identifiable attempt row: the
+/// genuine v4 attempt lanes keep unknown fields and identifiable value
+/// failures in the narrow held lane (never a silent drop, never an
+/// envelope refusal) with exact lane/ordinal/identity coverage.
+fn assert_same_hold(json: &str, lane: AttemptLaneV4, identity: &[&str]) {
+    let plain = decode_request(json).expect("held decodes");
+    let wired = decode_request_with_wire(json).expect("held decodes");
+    assert_eq!(plain, wired.report, "both decode APIs hold identically");
+    assert_eq!(plain.held_attempts.len(), 1, "one row held");
+    let held = &plain.held_attempts[0];
+    assert_eq!(held.lane, lane);
+    assert_eq!(held.ordinal, 0);
+    assert_eq!(held.identity, identity);
 }
 
 /// Both entry points must reject with the identical fixed kind/message.
 fn assert_same_rejection(json: &str) -> (&'static str, &'static str) {
-    let legacy = decode_request_legacy(json).expect_err("legacy rejects");
-    let wired = decode_request_with_wire_legacy(json).expect_err("wired rejects");
+    let plain = decode_request(json).expect_err("plain rejects");
+    let wired = decode_request_with_wire(json).expect_err("wired rejects");
     assert_eq!(
-        (legacy.kind, legacy.message),
+        (plain.kind, plain.message),
         (wired.kind, wired.message),
         "both decode APIs reject identically"
     );
-    (legacy.kind, legacy.message)
+    (plain.kind, plain.message)
 }
 
 #[test]
@@ -138,10 +164,7 @@ fn cursor_hit_preserves_all_four_spellings() {
     // fixtures): report-optionals-omitted (key absent),
     // report-optionals-null (`null`), report-optionals-empty (`""`),
     // report-optionals-id (`"win-a"`).
-    let omitted: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-optionals-omitted.json"
-    ))
-    .expect("fixture JSON");
+    let omitted: serde_json::Value = fixture_value("report-optionals-omitted");
     assert!(
         omitted.get("cursorHit").is_none(),
         "omitted fixture carries no cursorHit key"
@@ -183,20 +206,20 @@ fn cursor_hit_preserves_all_four_spellings() {
     // hit spelling varies.
     let mut absent_cursor = base_value();
     absent_cursor["cursor"] = serde_json::json!([100, 200]);
-    let absent_report = decode_request_legacy(&absent_cursor.to_string()).expect("decodes");
-    let null_report = decode_request_legacy(&null_value.to_string()).expect("decodes");
-    let empty_report = decode_request_legacy(&empty_value.to_string()).expect("decodes");
+    let absent_report = decode_request(&absent_cursor.to_string()).expect("decodes");
+    let null_report = decode_request(&null_value.to_string()).expect("decodes");
+    let empty_report = decode_request(&empty_value.to_string()).expect("decodes");
     assert_eq!(absent_report, null_report);
     assert_eq!(absent_report, empty_report);
     assert_eq!(report_digest(&absent_report), report_digest(&null_report));
     assert_eq!(report_digest(&absent_report), report_digest(&empty_report));
-    let absent_wire = decode_request_with_wire_legacy(&absent_cursor.to_string())
+    let absent_wire = decode_request_with_wire(&absent_cursor.to_string())
         .expect("decodes")
         .wire;
-    let null_wire = decode_request_with_wire_legacy(&null_value.to_string())
+    let null_wire = decode_request_with_wire(&null_value.to_string())
         .expect("decodes")
         .wire;
-    let empty_wire = decode_request_with_wire_legacy(&empty_value.to_string())
+    let empty_wire = decode_request_with_wire(&empty_value.to_string())
         .expect("decodes")
         .wire;
     assert_ne!(absent_wire.cursor_hit, null_wire.cursor_hit);
@@ -207,15 +230,9 @@ fn cursor_hit_preserves_all_four_spellings() {
 fn monotonic_clock_absent_zero_and_max() {
     // Fragment sources (isolated `monotonicMs` values only):
     // report-optionals-omitted (`"0"`) and report-optionals-id (u64::MAX).
-    let omitted: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-optionals-omitted.json"
-    ))
-    .expect("fixture JSON");
+    let omitted: serde_json::Value = fixture_value("report-optionals-omitted");
     assert_eq!(omitted["monotonicMs"], serde_json::json!("0"));
-    let id_fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-optionals-id.json"
-    ))
-    .expect("fixture JSON");
+    let id_fixture: serde_json::Value = fixture_value("report-optionals-id");
     assert_eq!(
         id_fixture["monotonicMs"],
         serde_json::json!("18446744073709551615")
@@ -234,8 +251,8 @@ fn monotonic_clock_absent_zero_and_max() {
     // Absent and explicit zero normalize identically (equal typed report
     // and digest) with differing metadata: the canonical parse makes
     // presence plus the u64 sufficient.
-    let absent_report = decode_request_legacy(&one_window_request()).expect("decodes");
-    let zero_report = decode_request_legacy(&zero_value.to_string()).expect("decodes");
+    let absent_report = decode_request(&one_window_request()).expect("decodes");
+    let zero_report = decode_request(&zero_value.to_string()).expect("decodes");
     assert_eq!(absent_report, zero_report);
     assert_eq!(report_digest(&absent_report), report_digest(&zero_report));
 
@@ -259,10 +276,7 @@ fn attempt_lanes_absent_empty_and_nonempty() {
     // nonempty lane fixture each: report-attempt-frame,
     // report-attempt-member-logical, report-attempt-view-native,
     // report-attempt-clear, report-attempt-creation-id.
-    let omitted: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-optionals-omitted.json"
-    ))
-    .expect("fixture JSON");
+    let omitted: serde_json::Value = fixture_value("report-optionals-omitted");
     for lane in [
         "frameAttempts",
         "memberAttempts",
@@ -273,26 +287,11 @@ fn attempt_lanes_absent_empty_and_nonempty() {
         assert_eq!(omitted[lane], serde_json::json!([]), "{lane} empty");
     }
 
-    let frame_fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-frame.json"
-    ))
-    .expect("fixture JSON");
-    let member_fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-member-logical.json"
-    ))
-    .expect("fixture JSON");
-    let view_fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-view-native.json"
-    ))
-    .expect("fixture JSON");
-    let clear_fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-clear.json"
-    ))
-    .expect("fixture JSON");
-    let creation_fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-creation-id.json"
-    ))
-    .expect("fixture JSON");
+    let frame_fixture: serde_json::Value = fixture_value("report-attempt-frame");
+    let member_fixture: serde_json::Value = fixture_value("report-attempt-member-logical");
+    let view_fixture: serde_json::Value = fixture_value("report-attempt-view-native");
+    let clear_fixture: serde_json::Value = fixture_value("report-attempt-clear");
+    let creation_fixture: serde_json::Value = fixture_value("report-attempt-creation-id");
 
     // Absent lanes backfill empty with presence false.
     let decoded = decode_both(&one_window_request());
@@ -326,8 +325,8 @@ fn attempt_lanes_absent_empty_and_nonempty() {
     assert!(decoded.wire.clear_attempts_present);
     assert!(decoded.wire.creation_attempts_present);
     assert!(decoded.report.frames.is_empty());
-    let absent_report = decode_request_legacy(&one_window_request()).expect("decodes");
-    let empty_report = decode_request_legacy(&empty_lanes.to_string()).expect("decodes");
+    let absent_report = decode_request(&one_window_request()).expect("decodes");
+    let empty_report = decode_request(&empty_lanes.to_string()).expect("decodes");
     assert_eq!(absent_report, empty_report);
     assert_eq!(report_digest(&absent_report), report_digest(&empty_report));
 
@@ -384,9 +383,8 @@ fn gesture_ingress_absent_null_and_present() {
     // report-optionals-omitted (`null`) and report-gesture-started (object).
     // report-gesture-started carries neither cursorHit nor monotonicMs, so
     // both ride absent there.
-    let started_text =
-        include_str!("../../../test-fixtures/world-wire/v4/messages/report-gesture-started.json");
-    let started: serde_json::Value = serde_json::from_str(started_text).expect("fixture JSON");
+    let started_text = fixture_text("report-gesture-started");
+    let started: serde_json::Value = serde_json::from_str(&started_text).expect("fixture JSON");
     assert!(started.get("cursorHit").is_none());
     assert!(started.get("monotonicMs").is_none());
 
@@ -401,8 +399,8 @@ fn gesture_ingress_absent_null_and_present() {
     assert!(decoded.report.gesture.is_none());
 
     // Absent and null normalize identically.
-    let absent_report = decode_request_legacy(&one_window_request()).expect("decodes");
-    let null_report = decode_request_legacy(&null_value.to_string()).expect("decodes");
+    let absent_report = decode_request(&one_window_request()).expect("decodes");
+    let null_report = decode_request(&null_value.to_string()).expect("decodes");
     assert_eq!(absent_report, null_report);
     assert_eq!(report_digest(&absent_report), report_digest(&null_report));
 
@@ -603,13 +601,13 @@ fn render_gesture_ingress(gesture: &tiler_core::gesture::GestureIngress) -> Stri
     )
 }
 
-// --- Metadata-plus-report fragment reconstruction ---------------------------
+// --- Metadata-plus-report fragment reconstruction --------------------------
 // Each helper below rebuilds the exact carried `"key":value` fragment from
 // decoded wire metadata plus the normalized typed report (`None` when the
 // key was omitted). Any present-flag regression fails the call-site
 // assertions below.
 
-fn render_cursor_hit(wire: &ReportWireOptionals, report: &WorldReport) -> Option<String> {
+fn render_cursor_hit(wire: &ReportWireOptionals, report: &WorldReportV4) -> Option<String> {
     match wire.cursor_hit {
         CursorHitWire::Absent => None,
         CursorHitWire::Null => Some("null".to_owned()),
@@ -620,7 +618,7 @@ fn render_cursor_hit(wire: &ReportWireOptionals, report: &WorldReport) -> Option
     }
 }
 
-fn render_monotonic_ms(wire: &ReportWireOptionals, report: &WorldReport) -> Option<String> {
+fn render_monotonic_ms(wire: &ReportWireOptionals, report: &WorldReportV4) -> Option<String> {
     wire.monotonic_ms_present
         .then(|| format!("\"{}\"", report.monotonic_ms))
 }
@@ -629,7 +627,7 @@ fn render_lane(present: bool, rows: Vec<String>) -> Option<String> {
     present.then(|| format!("[{}]", rows.join(",")))
 }
 
-fn render_gesture(wire: &ReportWireOptionals, report: &WorldReport) -> Option<String> {
+fn render_gesture(wire: &ReportWireOptionals, report: &WorldReportV4) -> Option<String> {
     match wire.gesture_ingress {
         GestureIngressWire::Absent => None,
         GestureIngressWire::Null => Some("null".to_owned()),
@@ -649,8 +647,7 @@ fn optional_fragments_reconstruct_byte_exact() {
 
     // cursorHit: every spelling rebuilds from decoded metadata plus the
     // normalized report, then matches the immutable fixture pair bytes.
-    let omitted_text =
-        include_str!("../../../test-fixtures/world-wire/v4/messages/report-optionals-omitted.json");
+    let omitted_text = fixture_text("report-optionals-omitted");
     let mut absent_cursor = base_value();
     absent_cursor["cursor"] = serde_json::json!([100, 200]);
     let decoded = decode_both(&absent_cursor.to_string());
@@ -659,8 +656,7 @@ fn optional_fragments_reconstruct_byte_exact() {
         !omitted_text.contains("cursorHit"),
         "omitted fixture carries no cursorHit pair"
     );
-    let null_text =
-        include_str!("../../../test-fixtures/world-wire/v4/messages/report-optionals-null.json");
+    let null_text = fixture_text("report-optionals-null");
     let mut null_cursor = base_value();
     null_cursor["cursor"] = serde_json::json!([100, 200]);
     null_cursor["cursorHit"] = serde_json::Value::Null;
@@ -670,8 +666,7 @@ fn optional_fragments_reconstruct_byte_exact() {
         Some("null".to_owned())
     );
     assert!(null_text.contains("\"cursorHit\":null"));
-    let empty_text =
-        include_str!("../../../test-fixtures/world-wire/v4/messages/report-optionals-empty.json");
+    let empty_text = fixture_text("report-optionals-empty");
     let mut empty_cursor = base_value();
     empty_cursor["cursor"] = serde_json::json!([100, 200]);
     empty_cursor["cursorHit"] = serde_json::Value::String(String::new());
@@ -681,8 +676,7 @@ fn optional_fragments_reconstruct_byte_exact() {
         Some(wire_str(""))
     );
     assert!(empty_text.contains("\"cursorHit\":\"\""));
-    let id_text =
-        include_str!("../../../test-fixtures/world-wire/v4/messages/report-optionals-id.json");
+    let id_text = fixture_text("report-optionals-id");
     let mut id_cursor = base_value();
     id_cursor["cursor"] = serde_json::json!([100, 200]);
     id_cursor["cursorHit"] = serde_json::Value::String("win-a".to_owned());
@@ -770,9 +764,8 @@ fn optional_fragments_reconstruct_byte_exact() {
 
     // Nonempty frame rows: every typed row renders back to its exact
     // fixture bytes.
-    let frame_text =
-        include_str!("../../../test-fixtures/world-wire/v4/messages/report-attempt-frame.json");
-    let frame_fixture: serde_json::Value = serde_json::from_str(frame_text).expect("fixture JSON");
+    let frame_text = fixture_text("report-attempt-frame");
+    let frame_fixture: serde_json::Value = serde_json::from_str(&frame_text).expect("fixture JSON");
     let mut framed = base_value();
     framed["frameAttempts"] = frame_fixture["frameAttempts"].clone();
     let decoded = decode_both(&framed.to_string());
@@ -804,11 +797,9 @@ fn optional_fragments_reconstruct_byte_exact() {
     );
 
     // Nonempty member rows (logical plus null-homing witnesses).
-    let member_text = include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-member-logical.json"
-    );
+    let member_text = fixture_text("report-attempt-member-logical");
     let member_fixture: serde_json::Value =
-        serde_json::from_str(member_text).expect("fixture JSON");
+        serde_json::from_str(&member_text).expect("fixture JSON");
     let mut membered = base_value();
     membered["memberAttempts"] = member_fixture["memberAttempts"].clone();
     let decoded = decode_both(&membered.to_string());
@@ -838,10 +829,8 @@ fn optional_fragments_reconstruct_byte_exact() {
     );
 
     // Nonempty view rows (native proofs).
-    let view_text = include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-view-native.json"
-    );
-    let view_fixture: serde_json::Value = serde_json::from_str(view_text).expect("fixture JSON");
+    let view_text = fixture_text("report-attempt-view-native");
+    let view_fixture: serde_json::Value = serde_json::from_str(&view_text).expect("fixture JSON");
     let mut viewed = base_value();
     viewed["viewAttempts"] = view_fixture["viewAttempts"].clone();
     let decoded = decode_both(&viewed.to_string());
@@ -868,9 +857,8 @@ fn optional_fragments_reconstruct_byte_exact() {
     );
 
     // Nonempty clear rows.
-    let clear_text =
-        include_str!("../../../test-fixtures/world-wire/v4/messages/report-attempt-clear.json");
-    let clear_fixture: serde_json::Value = serde_json::from_str(clear_text).expect("fixture JSON");
+    let clear_text = fixture_text("report-attempt-clear");
+    let clear_fixture: serde_json::Value = serde_json::from_str(&clear_text).expect("fixture JSON");
     let mut cleared = base_value();
     cleared["clearAttempts"] = clear_fixture["clearAttempts"].clone();
     let decoded = decode_both(&cleared.to_string());
@@ -900,11 +888,9 @@ fn optional_fragments_reconstruct_byte_exact() {
     );
 
     // Nonempty creation row with correlated receipt.
-    let creation_text = include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-creation-id.json"
-    );
+    let creation_text = fixture_text("report-attempt-creation-id");
     let creation_fixture: serde_json::Value =
-        serde_json::from_str(creation_text).expect("fixture JSON");
+        serde_json::from_str(&creation_text).expect("fixture JSON");
     let mut created = base_value();
     created["creationAttempts"] = creation_fixture["creationAttempts"].clone();
     let decoded = decode_both(&created.to_string());
@@ -948,9 +934,8 @@ fn optional_fragments_reconstruct_byte_exact() {
     );
     assert!(omitted_text.contains("\"gestureIngress\":null"));
     // Present gesture object renders back to its exact fixture bytes.
-    let started_text =
-        include_str!("../../../test-fixtures/world-wire/v4/messages/report-gesture-started.json");
-    let started: serde_json::Value = serde_json::from_str(started_text).expect("fixture JSON");
+    let started_text = fixture_text("report-gesture-started");
+    let started: serde_json::Value = serde_json::from_str(&started_text).expect("fixture JSON");
     let mut present_value = base_value();
     present_value["gestureIngress"] = started["gestureIngress"].clone();
     let decoded = decode_both(&present_value.to_string());
@@ -980,6 +965,7 @@ fn malformed_optionals_reject_identically_on_both_apis() {
     }
     // A hit without the cursor it was resolved from refuses.
     let mut cursorless = base_value();
+    cursorless["cursor"] = serde_json::Value::Null;
     cursorless["cursorHit"] = serde_json::Value::String("win-a".to_owned());
     let (kind, _) = assert_same_rejection(&cursorless.to_string());
     assert_eq!(kind, "snapshot-invalid");
@@ -996,7 +982,10 @@ fn malformed_optionals_reject_identically_on_both_apis() {
         assert_eq!(kind, "unknown-value");
     }
 
-    // frameAttempts: bad setter, unknown field, and duplicates refuse.
+    // frameAttempts: a bad setter still refuses, while an unknown field
+    // holds the identifiable row on both APIs (the genuine v4 attempt
+    // lanes keep unknown fields narrowly instead of refusing the
+    // envelope).
     let mut bad_setter = base_value();
     bad_setter["frameAttempts"] = serde_json::json!([{
         "win": "win-a", "target": [0, 0, 800, 560], "setter": "clamped",
@@ -1011,27 +1000,60 @@ fn malformed_optionals_reject_identically_on_both_apis() {
         "readback": null, "dpiBefore": null, "dpiAfter": null,
         "attemptMs": "1000", "op": "", "pre": null, "verdict": "clamp",
     }]);
-    let (kind, _) = assert_same_rejection(&unknown_field.to_string());
-    assert_eq!(kind, "unknown-field");
+    let unknown_wire = unknown_field.to_string();
+    assert_same_hold(&unknown_wire, AttemptLaneV4::Frame, &["win-a"]);
+    let held = decode_request(&unknown_wire).expect("held decodes");
+    assert!(held.frames.is_empty(), "unknown field holds the frame row");
+    assert!(
+        decode_request_with_wire(&unknown_wire)
+            .expect("held decodes")
+            .wire
+            .frame_attempts_present,
+        "lane stays present"
+    );
+    assert_eq!(
+        held.held_attempts[0]
+            .fields
+            .last()
+            .map(|(name, _)| name.as_str()),
+        Some("verdict"),
+        "retired key stages last"
+    );
 
-    // memberAttempts: unknown fields refuse.
+    // memberAttempts: unknown fields hold the identifiable row on both
+    // APIs for the same v4 reason.
     let mut bad_member = base_value();
     bad_member["memberAttempts"] = serde_json::json!([{
         "op": "transfer-a", "win": "win-a", "out": "out", "ws": "ws-a",
         "setter": "accepted", "pre": null, "post": null, "attemptMs": "20",
         "nativePost": "native-a",
     }]);
-    let (kind, _) = assert_same_rejection(&bad_member.to_string());
-    assert_eq!(kind, "unknown-field");
+    let member_wire = bad_member.to_string();
+    assert_same_hold(
+        &member_wire,
+        AttemptLaneV4::Member,
+        &["transfer-a", "win-a"],
+    );
+    let held = decode_request(&member_wire).expect("held decodes");
+    assert!(
+        held.member_attempts.is_empty(),
+        "unknown field holds the member row"
+    );
 
-    // viewAttempts: empty typed refs refuse.
+    // viewAttempts: empty typed refs hold the identifiable row on both
+    // APIs for the same v4 reason.
     let mut bad_view = base_value();
     bad_view["viewAttempts"] = serde_json::json!([{
         "op": "op-9", "out": "out", "ws": "ws-1", "setter": "threw",
         "pre": "", "post": "", "base": "", "attemptMs": "1",
     }]);
-    let (kind, _) = assert_same_rejection(&bad_view.to_string());
-    assert_eq!(kind, "malformed");
+    let view_wire = bad_view.to_string();
+    assert_same_hold(&view_wire, AttemptLaneV4::View, &["op-9"]);
+    let held = decode_request(&view_wire).expect("held decodes");
+    assert!(
+        held.view_attempts.is_empty(),
+        "empty refs hold the view row"
+    );
 
     // clearAttempts: duplicates refuse.
     let mut dup_clear = base_value();
@@ -1045,13 +1067,21 @@ fn malformed_optionals_reject_identically_on_both_apis() {
     assert_eq!(kind, "snapshot-invalid");
     assert_eq!(message, "duplicate-clear-attempt");
 
-    // creationAttempts: wrong-typed receipt refuses.
+    // creationAttempts: a wrong-typed receipt holds the identifiable
+    // row on both APIs for the same v4 reason (tolerated, never a
+    // fabricated receipt).
     let mut bad_creation = base_value();
     bad_creation["creationAttempts"] = serde_json::json!([{
         "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
         "before": [], "after": ["ws"], "created": 7, "attemptMs": "5",
     }]);
-    assert_same_rejection(&bad_creation.to_string());
+    let creation_wire = bad_creation.to_string();
+    assert_same_hold(&creation_wire, AttemptLaneV4::Creation, &["op-native-1"]);
+    let held = decode_request(&creation_wire).expect("held decodes");
+    assert!(
+        held.creation_attempts.is_empty(),
+        "wrong-typed receipt holds the creation row"
+    );
 
     // gestureIngress: zero id, missing keys, and unknown tokens refuse.
     let mut gesture_base = base_value();
@@ -1124,7 +1154,7 @@ fn wrapper_preserves_primary_native_and_held_row_semantics() {
         ),
     ] {
         let mut value = base_value();
-        value["native"] = serde_json::json!([{"out": "out", "order": ["d1"], "current": "d1", "occupancy": [{"native": "d1", "count": null}]}]);
+        value["native"] = serde_json::json!([{"out": "out-a", "order": ["d1"], "current": "d1", "occupancy": [{"native": "d1", "count": null}]}]);
         let windows = value["windows"].as_array_mut().expect("windows");
         // Minimal held-free v4-shaped row carrying the spelling under test.
         let mut row: serde_json::Value = serde_json::from_str(
@@ -1151,15 +1181,16 @@ fn wrapper_preserves_primary_native_and_held_row_semantics() {
 
     // Held rows: a retired key holds the identifiable row with raw fields
     // staged in canonical schema order and the retired key last. The
-    // wrapper report (including held staging and order) equals legacy.
+    // wrapper report (including held staging and order) equals the plain
+    // decoder.
     let mut retired_value = base_value();
     retired_value["windows"].as_array_mut().expect("windows")[0]["floating"] =
         serde_json::Value::Bool(false);
-    let legacy = decode_request_legacy(&retired_value.to_string()).expect("held decodes");
-    let wired = decode_request_with_wire_legacy(&retired_value.to_string()).expect("held decodes");
-    assert_eq!(legacy, wired.report);
-    assert!(legacy.windows.is_empty());
-    assert_eq!(legacy.held_windows.len(), 1);
+    let plain = decode_request(&retired_value.to_string()).expect("held decodes");
+    let wired = decode_request_with_wire(&retired_value.to_string()).expect("held decodes");
+    assert_eq!(plain, wired.report);
+    assert!(plain.windows.is_empty());
+    assert_eq!(plain.held_windows.len(), 1);
     let names: Vec<&str> = wired.report.held_windows[0]
         .fields
         .iter()
@@ -1215,42 +1246,42 @@ fn engine_duplicate_and_reused_on_optional_spellings() {
     // and is rejected.
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
 
-    let first_report = decode_request_legacy(&one_window_request()).expect("decodes");
-    let accepted = match engine.handle_report_legacy(&first_report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    let first_report = decode_request(&one_window_request()).expect("decodes");
+    let accepted = match engine.handle_report(&first_report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    let accepted_bytes = encode_reply_legacy(&accepted);
+    let accepted_bytes = reply_wire(&accepted);
 
     // Same reqSeq/req/obs with an equivalent spelling (explicit null hit)
     // decodes to the identical typed report: Duplicate, same bytes.
     let mut null_hit = base_value();
     null_hit["cursorHit"] = serde_json::Value::Null;
     let null_json = null_hit.to_string();
-    let legacy = decode_request_legacy(&null_json).expect("decodes");
-    let wired = decode_request_with_wire_legacy(&null_json).expect("decodes");
-    assert_eq!(legacy, wired.report);
+    let plain = decode_request(&null_json).expect("decodes");
+    let wired = decode_request_with_wire(&null_json).expect("decodes");
+    assert_eq!(plain, wired.report);
     assert_eq!(
-        legacy,
-        decode_request_legacy(&one_window_request()).expect("decodes"),
+        plain,
+        decode_request(&one_window_request()).expect("decodes"),
         "null hit normalizes like absence"
     );
     assert_eq!(
-        report_digest(&legacy),
+        report_digest(&plain),
         report_digest(&first_report),
         "digests match across equivalent spellings"
     );
     assert_ne!(
-        decode_request_with_wire_legacy(&one_window_request())
+        decode_request_with_wire(&one_window_request())
             .expect("decodes")
             .wire,
         wired.wire,
         "metadata still differs"
     );
-    match engine.handle_report_legacy(&legacy) {
-        LegacyWorldOutcome::Duplicate(cached) => {
+    match engine.handle_report(&plain) {
+        WorldOutcome::Duplicate(cached) => {
             assert_eq!(
-                encode_reply_legacy(&cached),
+                reply_wire(&cached),
                 accepted_bytes,
                 "duplicate keeps unchanged bytes"
             );
@@ -1262,13 +1293,13 @@ fn engine_duplicate_and_reused_on_optional_spellings() {
     // different digest: Reused rejection, never execution.
     let mut clocked = base_value();
     clocked["monotonicMs"] = serde_json::Value::String("1200".to_owned());
-    let clocked_report = decode_request_legacy(&clocked.to_string()).expect("decodes");
+    let clocked_report = decode_request(&clocked.to_string()).expect("decodes");
     assert_ne!(
         report_digest(&clocked_report),
-        report_digest(&decode_request_legacy(&one_window_request()).expect("decodes")),
+        report_digest(&decode_request(&one_window_request()).expect("decodes")),
     );
-    match engine.handle_report_legacy(&clocked_report) {
-        LegacyWorldOutcome::Rejected { kind, message } => {
+    match engine.handle_report(&clocked_report) {
+        WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, "request-reused");
             assert_eq!(message, "request sequence reused with different input");
         }

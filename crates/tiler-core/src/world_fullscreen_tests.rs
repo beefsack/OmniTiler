@@ -6,13 +6,13 @@
 
 use crate::connection::HostCapabilities;
 use crate::directional::WindowId;
-use crate::world_directional::tests::{accepted, fact, report_full, screen};
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, CommandResult, FrameSetter, HoldReason, ScopeAuthority,
-    StateAttempt, StateProperty, WorldCommand, WorldReport,
+    StateAttempt, StateProperty, WorldCommand, WorldReportV4,
 };
 use crate::world_state::MAX_RETAINED_STATE_BINDINGS;
+use crate::world_v4_support_tests::{accepted, fact, report_full, screen};
 
 fn fs_caps() -> HostCapabilities {
     HostCapabilities {
@@ -43,7 +43,7 @@ fn unsupported_engine() -> WorldEngine {
         .expect("generation")
 }
 
-fn bootstrap(windows: Vec<crate::world_report::WindowFact>) -> WorldReport {
+fn bootstrap(windows: Vec<crate::world_report::WindowFact>) -> WorldReportV4 {
     report_full(
         1,
         1,
@@ -61,7 +61,7 @@ fn cmd(
     command_seq: u64,
     windows: Vec<crate::world_report::WindowFact>,
     command: WorldCommand,
-) -> WorldReport {
+) -> WorldReportV4 {
     report_full(
         seq,
         seq,
@@ -74,7 +74,7 @@ fn cmd(
     )
 }
 
-fn observe(seq: u64, windows: Vec<crate::world_report::WindowFact>) -> WorldReport {
+fn observe(seq: u64, windows: Vec<crate::world_report::WindowFact>) -> WorldReportV4 {
     report_full(
         seq,
         seq,
@@ -126,7 +126,7 @@ fn binding_value(engine: &WorldEngine, window: &str) -> Option<bool> {
 }
 
 fn target_row(
-    reply: &crate::world_report::WorldReply,
+    reply: &crate::world_report::WorldReplyV4,
     window: &str,
 ) -> Option<(bool, ScopeAuthority, Option<u64>)> {
     reply
@@ -582,8 +582,8 @@ fn minimized_window_refuses_without_mutation() {
     minimized.minimized = Some(true);
     accepted(&mut engine, &bootstrap(vec![minimized.clone()]));
     let rev_before = engine.state_revision;
-    match engine.handle_report_legacy(&cmd(2, 1, vec![minimized], set_fullscreen("win-a", true))) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&cmd(2, 1, vec![minimized], set_fullscreen("win-a", true))) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -673,13 +673,13 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
         );
     }
     let revision = capped.state_revision;
-    match capped.handle_report_legacy(&cmd(
+    match capped.handle_report(&cmd(
         2,
         1,
         vec![fs_fact("win-a", None, false)],
         set_fullscreen("win-a", true),
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1043,14 +1043,15 @@ fn pending_window_transfer_holds_fullscreen_publication() {
     );
     assert_eq!(seq, Some(1));
     // Settle the real flight with the standard raw transfer evidence: the
-    // adapter echoes the destination view and carries the accepted member
-    // attempt for `op-2`. The same unspent target resumes Controlled.
+    // accepted member attempt for `op-2` carries the destination proof
+    // (the legacy views echo has no v4 slot). The same unspent target
+    // resumes Controlled.
     let mut arrived = report_full(
         4,
         4,
         vec![screen("out-a", 0)],
         vec![fs_fact("win-a", None, false)],
-        vec![("out-a", ring[1].as_str())],
+        vec![],
         "win-a",
         None,
         None,

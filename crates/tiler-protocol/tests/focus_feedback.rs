@@ -1,25 +1,27 @@
-//! Required focus-feedback lane (`focusFeedback`).
+//! Required focus-feedback lane (`focusFeedback`) on the genuine v4 wire.
 //!
 //! Raw one-shot native focus evidence rides every staged report (possibly
 //! empty); the core owns every verdict. The nested rows below are extracted
-//! from the immutable v4 fixtures and run through the staged wire path: the
-//! staged envelope decoder preserves them as typed mechanical facts, closed
-//! shape/counter/cap gates refuse with fixed vocabulary, the digest
-//! separates every raw field so changed reuse still fences, and the size
-//! estimate covers the rows exactly. The full v4 envelopes are NOT decoded
-//! here: they stage a newer wire version (and the rendererInput lane).
+//! from the immutable v4 fixtures and run through the genuine v4 ingress:
+//! [`decode_request`](tiler_protocol::world_protocol::decode_request)
+//! preserves them as typed mechanical facts, closed shape/counter/cap gates
+//! refuse with fixed vocabulary, the digest separates every raw field so
+//! changed reuse still fences, and the size estimate covers the rows
+//! exactly. The staged envelope carries the v4 wire version and the required
+//! `rendererInput` lane.
 //!
 //! Offline only: no D-Bus, no KWin.
 
 use tiler_core::connection::{
     ApplicationIdentity, HandshakeRequest, HostCapabilities, SettingsRequest,
 };
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    ArrivalLocation, VisibilityReason, VisibilitySetter, WorkspaceRef, report_digest,
-    report_estimate,
+    ArrivalLocation, VisibilityReason, VisibilitySetter, WorkspaceRef, WorldReportV4,
 };
-use tiler_protocol::world_protocol::decode_request_legacy;
+use tiler_core::world_report_v4_checks::report_digest_v4;
+use tiler_core::world_sizing_v4::report_estimate_v4;
+use tiler_protocol::world_protocol::decode_request;
 
 fn fixture(name: &str) -> serde_json::Value {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -29,37 +31,18 @@ fn fixture(name: &str) -> serde_json::Value {
         .expect("fixture JSON")
 }
 
-/// Otherwise-accepted staged envelope (v3 shape) carrying the focus rows
-/// under test. Raw rows ride verbatim; only this lane varies.
+/// Otherwise-accepted v4 envelope carrying the focus rows under test. The
+/// base is an immutable v4 fixture (valid screens, windows, presentation,
+/// and the required `rendererInput` lane); only the identity stamps are
+/// rebound to the connected test engine and only this lane varies. Raw rows
+/// ride verbatim.
 fn envelope(rows: &serde_json::Value) -> String {
-    format!(
-        "{{\"v\":3,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\
-          \"obs\":\"1\",\"reqSeq\":\"1\",\"req\":\"req-1\",\"cmdSeq\":null,\
-          \"command\":null,\
-          \"screens\":[{{\"out\":\"out\",\"full\":[0,0,800,600],\"work\":[0,0,800,560],\
-          \"complete\":true,\"scale\":1.0,\
-          \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
-          \"windows\":[{{\"win\":\"win-a\",\"out\":\"out\",\"rect\":[0,0,200,200],\
-          \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\
-          \"minimized\":false,\
-          \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}},\
-          \"hostHidden\":false,\"privileged\":false,\"managed\":true,\
-          \"acceptsInput\":true,\"activationInhibited\":false,\
-          \"toolWindow\":false,\"owned\":false,\"transient\":false,\
-          \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\
-          \"owner\":null,\"parent\":null,\"role\":null,\"appId\":null,\
-          \"executable\":null,\"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\
-          \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
-          \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
-          \"suppressionAvailable\":null,\
-          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
-          \"lastWrite\":null}}],\
-          \"views\":[{{\"out\":\"out\",\"view\":\"\"}}],\"closed\":[],\"native\":[],\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
-          \"actionOutputs\":[\"out\"],\
-          \"focused\":\"\",\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}},\
-          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":{rows}}}"
-    )
+    let mut base = fixture("report-focus-feedback-proven");
+    base["adapter"] = serde_json::json!("adapter-1");
+    base["gen"] = serde_json::json!("gen-1");
+    base["req"] = serde_json::json!("req-1");
+    base["focusFeedback"] = rows.clone();
+    base.to_string()
 }
 
 fn nested_rows(name: &str) -> serde_json::Value {
@@ -105,7 +88,7 @@ fn connected_engine(host_owned: bool) -> WorldEngine {
 #[test]
 fn required_lane_refuses_missing_and_null() {
     // The control envelope with a required empty lane decodes.
-    let report = decode_request_legacy(&envelope(&serde_json::json!([]))).expect("empty decodes");
+    let report = decode_request(&envelope(&serde_json::json!([]))).expect("empty decodes");
     assert!(report.focus_feedback.is_empty());
     // Missing refuses as malformed; explicit null is not a backfill.
     let mut value: serde_json::Value =
@@ -114,12 +97,12 @@ fn required_lane_refuses_missing_and_null() {
         .as_object_mut()
         .expect("object")
         .remove("focusFeedback");
-    let error = decode_request_legacy(&value.to_string()).expect_err("missing refuses");
+    let error = decode_request(&value.to_string()).expect_err("missing refuses");
     assert_eq!(error.kind, "malformed");
     let mut value: serde_json::Value =
         serde_json::from_str(&envelope(&serde_json::json!([]))).expect("valid");
     value["focusFeedback"] = serde_json::Value::Null;
-    let error = decode_request_legacy(&value.to_string()).expect_err("null refuses");
+    let error = decode_request(&value.to_string()).expect_err("null refuses");
     assert_eq!(error.kind, "malformed");
 }
 
@@ -128,7 +111,7 @@ fn immutable_focus_rows_decode_to_exact_typed_facts() {
     // Proven output-arm row: every carried field lands typed.
     let rows = nested_rows("report-focus-feedback-proven");
     assert_eq!(rows.as_array().expect("rows").len(), 1);
-    let report = decode_request_legacy(&envelope(&rows)).expect("proven rows ride");
+    let report = decode_request(&envelope(&rows)).expect("proven rows ride");
     assert_eq!(report.focus_feedback.len(), 1);
     let row = &report.focus_feedback[0];
     assert_eq!(row.id, "effect-a");
@@ -164,16 +147,16 @@ fn immutable_focus_rows_decode_to_exact_typed_facts() {
     assert_eq!(bracket.after.lifetime_matched, Some(true));
 
     // Refused and threw rows: at-most-once dispositions with no brackets.
-    let report = decode_request_legacy(&envelope(&nested_rows("report-focus-feedback-refused")))
-        .expect("decodes");
+    let report =
+        decode_request(&envelope(&nested_rows("report-focus-feedback-refused"))).expect("decodes");
     let row = &report.focus_feedback[0];
     assert_eq!(row.target.0, "win-b");
     assert_eq!(row.setter, VisibilitySetter::Refused);
     assert_eq!(row.reason, VisibilityReason::NativeRefused);
     assert!(!row.foreground_proven);
     assert!(row.arrival.is_empty());
-    let report = decode_request_legacy(&envelope(&nested_rows("report-focus-feedback-threw")))
-        .expect("decodes");
+    let report =
+        decode_request(&envelope(&nested_rows("report-focus-feedback-threw"))).expect("decodes");
     let row = &report.focus_feedback[0];
     assert_eq!(row.setter, VisibilitySetter::Threw);
     assert_eq!(row.reason, VisibilityReason::Empty);
@@ -183,7 +166,7 @@ fn immutable_focus_rows_decode_to_exact_typed_facts() {
 
     // Unreadable row: null endpoints, null native home, null frame, null
     // samples stay facts (never verdicts) through the typed shape.
-    let report = decode_request_legacy(&envelope(&nested_rows("report-focus-feedback-unreadable")))
+    let report = decode_request(&envelope(&nested_rows("report-focus-feedback-unreadable")))
         .expect("decodes");
     let row = &report.focus_feedback[0];
     assert_eq!(row.setter, VisibilitySetter::NotCalled);
@@ -209,8 +192,7 @@ fn immutable_focus_rows_decode_to_exact_typed_facts() {
 fn immutable_arrival_rows_decode_as_carried_facts() {
     // Native arm with a namespaced home decodes context-free (the engine
     // host gate below owns the capability check).
-    let report =
-        decode_request_legacy(&envelope(&nested_rows("report-arrival-native"))).expect("decodes");
+    let report = decode_request(&envelope(&nested_rows("report-arrival-native"))).expect("decodes");
     let bracket = &report.focus_feedback[0].arrival[0];
     match &bracket.location {
         ArrivalLocation::Native { home } => match home.as_ref().expect("home") {
@@ -223,8 +205,8 @@ fn immutable_arrival_rows_decode_as_carried_facts() {
         ArrivalLocation::Output { .. } => panic!("native fixture rides the native arm"),
     }
     // Null output home is valid unreadable evidence, never a default.
-    let report = decode_request_legacy(&envelope(&nested_rows("report-arrival-output-null")))
-        .expect("decodes");
+    let report =
+        decode_request(&envelope(&nested_rows("report-arrival-output-null"))).expect("decodes");
     match &report.focus_feedback[0].arrival[0].location {
         ArrivalLocation::Output { out } => assert_eq!(out, &None),
         ArrivalLocation::Native { .. } => panic!("null fixture rides the output arm"),
@@ -238,7 +220,7 @@ fn immutable_arrival_rows_decode_as_carried_facts() {
         ("report-arrival-wrong-watermark", "out-a"),
         ("report-arrival-wrong-retained-home", "out-a"),
     ] {
-        let report = decode_request_legacy(&envelope(&nested_rows(name))).expect("decodes");
+        let report = decode_request(&envelope(&nested_rows(name))).expect("decodes");
         match &report.focus_feedback[0].arrival[0].location {
             ArrivalLocation::Output { out } => {
                 assert_eq!(out.as_ref().map(|id| id.0.as_str()), Some(check), "{name}")
@@ -246,27 +228,26 @@ fn immutable_arrival_rows_decode_as_carried_facts() {
             ArrivalLocation::Native { .. } => panic!("{name} rides the output arm"),
         }
     }
-    let frame = decode_request_legacy(&envelope(&nested_rows("report-arrival-wrong-frame")))
+    let frame = decode_request(&envelope(&nested_rows("report-arrival-wrong-frame")))
         .expect("decodes")
         .focus_feedback[0]
         .arrival[0]
         .frame
         .map(|rect| (rect.x, rect.y, rect.w, rect.h));
     assert_eq!(frame, Some((9, 8, 800, 600)));
-    let after = decode_request_legacy(&envelope(&nested_rows("report-arrival-wrong-lifetime")))
+    let after = decode_request(&envelope(&nested_rows("report-arrival-wrong-lifetime")))
         .expect("decodes")
         .focus_feedback[0]
         .arrival[0]
         .after
         .lifetime_matched;
     assert_eq!(after, Some(false));
-    let after_obs =
-        decode_request_legacy(&envelope(&nested_rows("report-arrival-wrong-watermark")))
-            .expect("decodes")
-            .focus_feedback[0]
-            .arrival[0]
-            .after
-            .obs;
+    let after_obs = decode_request(&envelope(&nested_rows("report-arrival-wrong-watermark")))
+        .expect("decodes")
+        .focus_feedback[0]
+        .arrival[0]
+        .after
+        .obs;
     assert_eq!(after_obs, 2);
 }
 
@@ -285,8 +266,7 @@ fn invalid_arrival_shapes_refuse_context_free() {
         ("invalid-arrival-missing-home", "malformed"),
         ("invalid-arrival-logical-home", "unknown-value"),
     ] {
-        let error =
-            decode_request_legacy(&envelope(&nested_rows(name))).expect_err("{name} refuses");
+        let error = decode_request(&envelope(&nested_rows(name))).expect_err("{name} refuses");
         assert_eq!(error.kind, kind, "{name}");
     }
 }
@@ -297,19 +277,17 @@ fn wrong_host_arms_decode_then_engine_rejects() {
     // host gate rejects per the manifest hostOwned context, without
     // mutating, while the matching host accepts the same rows.
     let output_on_native = nested_rows("invalid-arrival-output-on-native-host");
-    decode_request_legacy(&envelope(&output_on_native)).expect("output arm decodes");
+    decode_request(&envelope(&output_on_native)).expect("output arm decodes");
     let native_on_tiler = nested_rows("invalid-arrival-native-on-tiler-host");
-    decode_request_legacy(&envelope(&native_on_tiler)).expect("native arm decodes");
+    decode_request(&envelope(&native_on_tiler)).expect("native arm decodes");
     for (rows, host_owned) in [
         (output_on_native.clone(), true),
         (native_on_tiler.clone(), false),
     ] {
         let mut engine = connected_engine(host_owned);
         let revision = engine.state_revision();
-        match engine
-            .handle_report_legacy(&decode_request_legacy(&envelope(&rows)).expect("decodes"))
-        {
-            LegacyWorldOutcome::Rejected { kind, message } => {
+        match engine.handle_report(&decode_request(&envelope(&rows)).expect("decodes")) {
+            WorldOutcome::Rejected { kind, message } => {
                 assert_eq!(kind, "snapshot-invalid");
                 assert_eq!(message, "arrival-host-mismatch");
             }
@@ -324,10 +302,8 @@ fn wrong_host_arms_decode_then_engine_rejects() {
     // Cross-acceptance on the matching host: the same rows are facts there.
     for (rows, host_owned) in [(output_on_native, false), (native_on_tiler, true)] {
         let mut engine = connected_engine(host_owned);
-        match engine
-            .handle_report_legacy(&decode_request_legacy(&envelope(&rows)).expect("decodes"))
-        {
-            LegacyWorldOutcome::Accepted(_) => {}
+        match engine.handle_report(&decode_request(&envelope(&rows)).expect("decodes")) {
+            WorldOutcome::Accepted(_) => {}
             other => panic!("expected accepted, got {other:?}"),
         }
     }
@@ -358,7 +334,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     let mut extra = row();
     extra["extra"] = serde_json::json!(1);
     assert_eq!(
-        decode_request_legacy(&envelope(&serde_json::json!([extra])))
+        decode_request(&envelope(&serde_json::json!([extra])))
             .expect_err("unknown key refuses")
             .kind,
         "unknown-field"
@@ -366,7 +342,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     let mut bad_setter = row();
     bad_setter["setter"] = serde_json::json!("retried");
     assert_eq!(
-        decode_request_legacy(&envelope(&serde_json::json!([bad_setter])))
+        decode_request(&envelope(&serde_json::json!([bad_setter])))
             .expect_err("unknown setter refuses")
             .kind,
         "unknown-value"
@@ -374,7 +350,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     let mut bad_reason = row();
     bad_reason["reason"] = serde_json::json!("bogus-reason");
     assert_eq!(
-        decode_request_legacy(&envelope(&serde_json::json!([bad_reason])))
+        decode_request(&envelope(&serde_json::json!([bad_reason])))
             .expect_err("unknown reason refuses")
             .kind,
         "unknown-value"
@@ -382,7 +358,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     let mut bad_kind = row();
     bad_kind["arrival"][0]["kind"] = serde_json::json!("logical");
     assert_eq!(
-        decode_request_legacy(&envelope(&serde_json::json!([bad_kind])))
+        decode_request(&envelope(&serde_json::json!([bad_kind])))
             .expect_err("bad arm refuses")
             .kind,
         "unknown-value"
@@ -403,7 +379,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
         let mut bad = row();
         bad[key] = value;
         let error =
-            decode_request_legacy(&envelope(&serde_json::json!([bad]))).expect_err("stamp refuses");
+            decode_request(&envelope(&serde_json::json!([bad]))).expect_err("stamp refuses");
         assert_eq!(error.kind, kind);
     }
     // Wrong JSON types refuse: foreground endpoints stay nullable window
@@ -431,16 +407,15 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
             "bad-target" => bad["target"] = serde_json::json!("not an id!!"),
             _ => unreachable!(),
         }
-        let error =
-            decode_request_legacy(&envelope(&serde_json::json!([bad]))).expect_err("type refuses");
+        let error = decode_request(&envelope(&serde_json::json!([bad]))).expect_err("type refuses");
         assert_eq!(error.kind, kind, "{mutate}");
     }
     // Dropped required keys refuse.
     for key in ["pre", "arrival", "foregroundProven"] {
         let mut bad = row();
         bad.as_object_mut().expect("object").remove(key);
-        let error = decode_request_legacy(&envelope(&serde_json::json!([bad])))
-            .expect_err("missing refuses");
+        let error =
+            decode_request(&envelope(&serde_json::json!([bad]))).expect_err("missing refuses");
         assert_eq!(error.kind, "malformed", "{key}");
     }
     // Bad nested facts refuse: bracket window ids, decimal watermarks, and
@@ -449,7 +424,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     let mut bad_win = row();
     bad_win["arrival"][0]["win"] = serde_json::json!("not an id!!");
     assert_eq!(
-        decode_request_legacy(&envelope(&serde_json::json!([bad_win])))
+        decode_request(&envelope(&serde_json::json!([bad_win])))
             .expect_err("bad bracket window refuses")
             .kind,
         "unknown-value"
@@ -466,7 +441,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     bad_home_id["arrival"][0]["home"] =
         serde_json::json!({"kind": "native", "out": "not an id!!", "ws": "ws-1"});
     assert_eq!(
-        decode_request_legacy(&envelope(&serde_json::json!([bad_home_id])))
+        decode_request(&envelope(&serde_json::json!([bad_home_id])))
             .expect_err("bad home id refuses")
             .kind,
         "malformed"
@@ -474,7 +449,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     let mut bad_frame = row();
     bad_frame["arrival"][0]["frame"] = serde_json::json!([0, 0, 0, 0]);
     assert_eq!(
-        decode_request_legacy(&envelope(&serde_json::json!([bad_frame])))
+        decode_request(&envelope(&serde_json::json!([bad_frame])))
             .expect_err("degenerate frame refuses")
             .kind,
         "unknown-value"
@@ -485,7 +460,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
 fn wire_level_duplicates_and_trailing_refuse() {
     let rows = nested_rows("report-focus-feedback-proven");
     let wire = envelope(&rows);
-    decode_request_legacy(&wire).expect("valid staged request decodes");
+    decode_request(&wire).expect("valid staged request decodes");
     // Literal duplicate row and bracket keys refuse (a Value build would
     // silently keep the last duplicate, so the witness is literal wire).
     for nested in [
@@ -507,18 +482,18 @@ fn wire_level_duplicates_and_trailing_refuse() {
         ),
     ] {
         assert_ne!(nested, wire);
-        let error = decode_request_legacy(&nested).expect_err("duplicate row key refuses");
+        let error = decode_request(&nested).expect_err("duplicate row key refuses");
         assert_eq!(error.kind, "malformed");
     }
     // Trailing tokens after an otherwise-valid request refuse.
     for trailing in [format!("{wire} {{}}"), format!("{wire}x")] {
-        let error = decode_request_legacy(&trailing).expect_err("trailing refuses");
+        let error = decode_request(&trailing).expect_err("trailing refuses");
         assert_eq!(error.kind, "malformed");
     }
     // Harmless control: a single escaped key spelling still decodes.
     let single = wire.replacen("\"foregroundProven\"", "\"\\u0066oregroundProven\"", 1);
     assert_ne!(single, wire);
-    decode_request_legacy(&single).expect("single escaped key decodes");
+    decode_request(&single).expect("single escaped key decodes");
 }
 
 #[test]
@@ -537,9 +512,9 @@ fn cap_1024_accepts_and_1025_refuses() {
                 .collect(),
         )
     }
-    let report = decode_request_legacy(&envelope(&rows(1024))).expect("cap accepts");
+    let report = decode_request(&envelope(&rows(1024))).expect("cap accepts");
     assert_eq!(report.focus_feedback.len(), 1024);
-    let error = decode_request_legacy(&envelope(&rows(1025))).expect_err("cap refuses");
+    let error = decode_request(&envelope(&rows(1025))).expect_err("cap refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "section-over-cap");
 }
@@ -567,9 +542,9 @@ fn arrival_total_cap_refuses_over_10000() {
             "arrival": brackets, "attemptMs": "9",
         }]))
     }
-    let report = decode_request_legacy(&envelope_with_brackets(10_000)).expect("total accepts");
+    let report = decode_request(&envelope_with_brackets(10_000)).expect("total accepts");
     assert_eq!(report.focus_feedback[0].arrival.len(), 10_000);
-    let error = decode_request_legacy(&envelope_with_brackets(10_001)).expect_err("total refuses");
+    let error = decode_request(&envelope_with_brackets(10_001)).expect_err("total refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "section-over-cap");
     // The total spans rows: two rows of 5000 brackets accept, while
@@ -590,27 +565,26 @@ fn arrival_total_cap_refuses_over_10000() {
             .collect();
         envelope(&serde_json::Value::Array(rows))
     }
-    let split = decode_request_legacy(&envelope_with_split(5_000, 5_000)).expect("split accepts");
+    let split = decode_request(&envelope_with_split(5_000, 5_000)).expect("split accepts");
     assert_eq!(split.focus_feedback.len(), 2);
     assert_eq!(split.focus_feedback[0].arrival.len(), 5_000);
     assert_eq!(split.focus_feedback[1].arrival.len(), 5_000);
-    let error =
-        decode_request_legacy(&envelope_with_split(5_001, 5_000)).expect_err("split refuses");
+    let error = decode_request(&envelope_with_split(5_001, 5_000)).expect_err("split refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "section-over-cap");
 }
 
 #[test]
 fn digest_separates_every_raw_field() {
-    let report = decode_request_legacy(&envelope(&nested_rows("report-focus-feedback-proven")))
-        .expect("decodes");
+    let report =
+        decode_request(&envelope(&nested_rows("report-focus-feedback-proven"))).expect("decodes");
     assert_eq!(report.focus_feedback.len(), 1);
-    let baseline = report_digest(&report);
+    let baseline = report_digest_v4(&report);
     // Identical bytes redeliver the identical digest.
-    assert_eq!(report_digest(&report.clone()), baseline);
+    assert_eq!(report_digest_v4(&report.clone()), baseline);
     // Every raw field, presence bit, arm, and bracket order separates the
     // digest: a changed row never aliases the accepted one.
-    let mut cases: Vec<(&str, tiler_core::world_report::WorldReport)> = Vec::new();
+    let mut cases: Vec<(&str, WorldReportV4)> = Vec::new();
     let mut id = report.clone();
     id.focus_feedback[0].id = "effect-b".to_owned();
     cases.push(("id", id));
@@ -680,8 +654,8 @@ fn digest_separates_every_raw_field() {
     // Bracket order itself separates the digest: two distinct brackets
     // swapped digest differently (compared directly, not to baseline).
     assert_ne!(
-        report_digest(&ordered),
-        report_digest(&swapped),
+        report_digest_v4(&ordered),
+        report_digest_v4(&swapped),
         "arrival order separates"
     );
     cases.push(("arrival-second-bracket", swapped));
@@ -694,13 +668,13 @@ fn digest_separates_every_raw_field() {
     let mut swapped_rows = two_rows.clone();
     swapped_rows.focus_feedback.swap(0, 1);
     assert_ne!(
-        report_digest(&two_rows),
-        report_digest(&swapped_rows),
+        report_digest_v4(&two_rows),
+        report_digest_v4(&swapped_rows),
         "row order separates"
     );
     assert_eq!(cases.len(), 18);
     for (case, mutated) in cases {
-        assert_ne!(report_digest(&mutated), baseline, "{case} separates");
+        assert_ne!(report_digest_v4(&mutated), baseline, "{case} separates");
     }
 }
 
@@ -713,11 +687,11 @@ fn estimate_covers_focus_rows_exactly_at_the_margin() {
         let rows = nested_rows(name);
         let empty = envelope(&serde_json::json!([]));
         let full = envelope(&rows);
-        let empty_report = decode_request_legacy(&empty).expect("empty decodes");
-        let full_report = decode_request_legacy(&full).expect("rows decode");
+        let empty_report = decode_request(&empty).expect("empty decodes");
+        let full_report = decode_request(&full).expect("rows decode");
         assert_eq!(full_report.focus_feedback.len(), 1, "{name}");
-        let empty_estimate = report_estimate(&empty_report);
-        let full_estimate = report_estimate(&full_report);
+        let empty_estimate = report_estimate_v4(&empty_report);
+        let full_estimate = report_estimate_v4(&full_report);
         assert!(
             empty_estimate >= empty.len(),
             "estimate {empty_estimate} bounds empty wire {}",
@@ -753,7 +727,7 @@ fn compact_automatic_ids_decode_and_overlong_spellings_refuse() {
         })
     }
     let target = "w".repeat(128);
-    let compact = decode_request_legacy(&envelope(&serde_json::json!([row(
+    let compact = decode_request(&envelope(&serde_json::json!([row(
         &format!("af-{}", u64::MAX),
         &target
     ),])))
@@ -762,7 +736,7 @@ fn compact_automatic_ids_decode_and_overlong_spellings_refuse() {
     assert_eq!(compact.focus_feedback[0].id, format!("af-{}", u64::MAX));
     assert_eq!(compact.focus_feedback[0].target.0, target);
     assert_eq!(compact.focus_feedback[0].revision, u64::MAX);
-    let hover = decode_request_legacy(&envelope(&serde_json::json!([row(
+    let hover = decode_request(&envelope(&serde_json::json!([row(
         &format!("ffc-{}", u64::MAX),
         &target
     ),])))
@@ -775,7 +749,7 @@ fn compact_automatic_ids_decode_and_overlong_spellings_refuse() {
             old.len()
         );
         assert_eq!(
-            decode_request_legacy(&envelope(&serde_json::json!([row(&old, &target)])))
+            decode_request(&envelope(&serde_json::json!([row(&old, &target)])))
                 .expect_err("overlong identity refuses")
                 .kind,
             "unknown-value",

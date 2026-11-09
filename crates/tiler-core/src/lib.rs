@@ -202,3 +202,5 @@ mod world_sticky_restore_tests;
 mod world_toggle_tests;
 #[cfg(test)]
 mod world_trailing_marker_tests;
+#[cfg(test)]
+mod world_v4_support_tests;

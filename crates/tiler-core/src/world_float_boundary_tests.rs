@@ -8,10 +8,10 @@ use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::workspace_scope::WorkspaceMode;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    ScopeAuthority, ScreenReport, ScreenView, TransferKind, WORLD_CONTRACT_VERSION_LEGACY,
-    WindowFact, WorldCommand, WorldReport,
+    PresentationIngressV4, PresentationRowV4, ScopeAuthority, ScreenReport, TransferKind,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -94,9 +94,16 @@ fn report(
     command: Option<WorldCommand>,
     inventory_complete: bool,
     _default_tiled: bool,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    // v4 carries no view-echo lane; the legacy echoes here were inert
+    // (selection/commands drive homing), so the v4 port passes empty.
+    assert!(
+        views.is_empty(),
+        "v4 has no views lane: {} echo(s) cannot convert",
+        views.len()
+    );
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -105,19 +112,15 @@ fn report(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: views
-            .into_iter()
-            .map(|(output, view)| ScreenView {
-                output: OutputId(output.to_owned()),
-                view: view.to_owned(),
-            })
-            .collect(),
+        held_windows: Vec::new(),
         closed: closed
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
         native: vec![],
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
@@ -125,8 +128,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
@@ -136,17 +137,18 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -199,10 +201,9 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             true,
         ),
     );
-    // Real selection to ws_b before the newcomer arrives: the echoed
-    // views lane is inert native-free, so the old echo-only setup left
-    // win-s homed to the head instead of joining ws_b. Selection drives
-    // homing; the echo below is retained only as inert context.
+    // Real selection to ws_b before the newcomer arrives (the legacy view
+    // echo here was inert native-free context; v4 passes an empty lane).
+    // Selection drives homing.
     accepted(
         &mut engine,
         &report(
@@ -210,7 +211,7 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fact("win-t", "out-a", 100)],
-            vec![("out-a", ws_b.as_str())],
+            vec![],
             vec![],
             Some(11),
             Some(WorldCommand::SelectWorkspace {
@@ -229,7 +230,7 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![s.clone(), fact("win-t", "out-a", 100)],
-            vec![("out-a", ws_b.as_str())],
+            vec![],
             vec![],
             Some(12),
             Some(WorldCommand::SetWorkspaceTiling {
@@ -365,9 +366,8 @@ fn default_seed_changes_only_new_workspaces() {
     // Flip the saved default: existing modes never reseed; only subsequently
     // created workspaces seed from the new default. Fill the live trailing
     // empty so lifecycle mints a fresh trailing seeded from the new default.
-    // The trailing fill rides a real selection: the echoed views lane is
-    // inert native-free, so the old echo-only fill never occupied the
-    // trailing and lifecycle minted nothing.
+    // The trailing fill rides a real selection (the legacy view echo here
+    // was inert native-free context; v4 passes an empty lane).
     let before: Vec<(String, crate::world_report::TilingMode)> = toggled
         .workspaces
         .iter()
@@ -399,7 +399,7 @@ fn default_seed_changes_only_new_workspaces() {
             WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![],
-            vec![("out-a", trailing.as_str())],
+            vec![],
             vec![],
             Some(12),
             Some(WorldCommand::SelectWorkspace {
@@ -417,7 +417,7 @@ fn default_seed_changes_only_new_workspaces() {
             WorkspaceMode::PerOutputLocal,
             two_screens(),
             vec![fill],
-            vec![("out-a", trailing.as_str())],
+            vec![],
             vec![],
             None,
             None,
@@ -544,8 +544,8 @@ fn shared_occupancy_union_keeps_b_only_workspace() {
         .map(|row| row.id.clone())
         .collect();
     assert!(ring.len() >= 2, "ring: {ring:?}");
-    // Occupy the second workspace from out-b only: the newcomer homes
-    // to the echoed view.
+    // Occupy the second workspace from out-b only (v4 passes an empty
+    // views lane; the logical unit is proven by the member facts).
     let b_only = fact("win-b", "out-b", 800);
     let calm = accepted(
         &mut engine,
@@ -554,7 +554,7 @@ fn shared_occupancy_union_keeps_b_only_workspace() {
             WorkspaceMode::Shared,
             two_screens(),
             vec![b_only],
-            vec![("out-b", ring[1].as_str())],
+            vec![],
             vec![],
             None,
             None,

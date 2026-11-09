@@ -1,7 +1,7 @@
 //! Focused internal v4 admission-boundary regressions (unit 6
 //! sub-increment 7e): typed replay bookkeeping, bootstrap, and bounded
 //! candidate adoption through [`WorldEngine::handle_report_v4`], never
-//! through public ingress or the legacy runtime.
+//! through public ingress.
 
 use crate::boundary::CoreCommand;
 use crate::connection::{ApplicationIdentity, HandshakeRequest, HostCapabilities, RawSettingValue};
@@ -11,23 +11,21 @@ use crate::ids::{CorrelationId, OwnerId};
 use crate::intent_data::{IntentData, MAX_INTENT_DATA_BYTES, encode_intent_data};
 use crate::workspace_scope::DisplacedEntry;
 use crate::world_admit_v4::{V4Replay, classify_replay_v4};
-use crate::world_directional::tests::{fact, screen};
 use crate::world_engine::{
     EventIssue, KIND_CORRELATION, KIND_GENERATION, KIND_OBS_STALE, KIND_OWNER, KIND_REPLY_SIZE,
-    KIND_REUSED, KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED, LegacyWorldOutcome,
-    RawRouting, WorldEngine,
+    KIND_REUSED, KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED, RawRouting, WorldEngine,
 };
 use crate::world_report::{
     AttemptLaneV4, AuthorityScope, CommandRejectKind, CommandResult, HeldAttemptRow, HeldWindowRow,
     IntentWrite, PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION_LEGACY,
-    WORLD_CONTRACT_VERSION_V4, WORLD_MAX_REPLY_BYTES, WindowFact, WorldCommand, WorldReport,
-    WorldReportV4, retained_window_fields,
+    RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION_V4, WORLD_MAX_REPLY_BYTES,
+    WindowFact, WorldCommand, WorldReportV4, retained_window_fields,
 };
 use crate::world_report_v4_checks::{graded_effective_v4, report_digest_v4};
 use crate::world_run_v4::V4RunOutcome;
 use crate::world_sizing::max_intent_rollback_bound;
 use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4};
+use crate::world_v4_support_tests::{fact, screen};
 
 fn engine() -> WorldEngine {
     WorldEngine::new_test_bound_with_initial_settings(
@@ -687,7 +685,9 @@ fn late_import_ingests_but_admitted_latch_ignores() {
 fn structural_refusals_leave_original_unchanged() {
     let mut engine = engine();
     let mut versioned = observe(1, facts_pair(), "win-a");
-    versioned.contract_version = WORLD_CONTRACT_VERSION_LEGACY;
+    // Non-v4 wire version on a v4-typed report: the v4 boundary refuses
+    // before any mutation, with a raw non-v4 wire version.
+    versioned.contract_version = 3;
     match admit(&mut engine, &versioned) {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
@@ -826,70 +826,6 @@ fn creation_exhaustion_discards_candidate_atomically() {
     }
     engine.creation_counter = 0;
     accepted_reply(4, admit(&mut engine, &observe(4, single(), "win-a")));
-}
-
-fn legacy_report(seq: u64, windows: Vec<WindowFact>, focused: &str) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
-        adapter_incarnation: "adapter-1".to_owned(),
-        core_generation: "gen-1".to_owned(),
-        observation_seq: seq,
-        request_seq: seq,
-        request_id: format!("req-{seq}"),
-        command_seq: None,
-        command: None,
-        screens: vec![screen("out-a", 0)],
-        windows,
-        views: Vec::new(),
-        closed: Vec::new(),
-        native: Vec::new(),
-        cursor: None,
-        cursor_hit: None,
-        focused_global: focused.to_owned(),
-        action_foreground: None,
-        action_cached: None,
-        action_outputs: Vec::new(),
-        primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
-        inventory_complete: true,
-        gesture_barrier: false,
-        gesture: None,
-        monotonic_ms: 0,
-        frames: Vec::new(),
-        member_attempts: Vec::new(),
-        view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
-        creation_attempts: Vec::new(),
-        state_attempts: Vec::new(),
-        focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-        intent_records: Vec::new(),
-    }
-}
-
-#[test]
-fn typed_v4_cache_stays_separate_from_legacy_cache() {
-    let mut engine = engine();
-    match engine.handle_report_legacy(&legacy_report(1, facts_pair(), "win-a")) {
-        LegacyWorldOutcome::Accepted(_) => {}
-        other => panic!("expected accepted legacy run, got {other:?}"),
-    }
-    // The legacy run populates no typed v4 cache: the v4 boundary treats
-    // its first report as fresh, never a duplicate.
-    assert!(
-        !engine.has_last_v4,
-        "legacy runs never touch typed v4 replay"
-    );
-    assert!(
-        engine.last_reply_v4.is_none(),
-        "legacy runs cache no typed v4 reply"
-    );
-    accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
-    assert!(
-        engine.last_reply.is_some(),
-        "v4 admission never clears the legacy cache"
-    );
 }
 
 #[test]
@@ -1171,9 +1107,11 @@ fn forged_staged_reply_never_adopts() {
 }
 
 #[test]
-fn policy_terminal_reserve_matches_legacy_when_displaced() {
-    // The v4 wrapper shares the input-only live-output core with the legacy
-    // entry, so both agree on every screen lane, including nonzero lanes.
+fn policy_terminal_reserve_v4_counts_displaced_unlive_rings() {
+    // The v4 reserve reads the input-only live-output set: with live
+    // {out-a}, the displaced origin out-gone contributes nothing live
+    // while its unlive mapping ring (one workspace) reserves exactly one
+    // switch event of settle bound.
     let mut engine = engine();
     engine.displaced.insert(
         "out-gone".to_owned(),
@@ -1189,12 +1127,14 @@ fn policy_terminal_reserve_matches_legacy_when_displaced() {
     engine
         .mapping
         .insert("out-gone".to_owned(), vec!["ws-a".to_owned()]);
-    let legacy = legacy_report(1, facts_pair(), "win-a");
     let typed = observe(1, facts_pair(), "win-a");
-    assert_eq!(legacy.screens.len(), typed.screens.len());
-    let legacy_reserve = engine.policy_terminal_reserve(&legacy);
+    assert_eq!(typed.screens.len(), 1);
     let typed_reserve = engine.policy_terminal_reserve_v4(&typed);
-    assert_eq!(typed_reserve, legacy_reserve, "wrapper matches legacy");
+    assert_eq!(
+        typed_reserve,
+        crate::world_sizing::max_switch_settle_reserve(1, 0),
+        "one unlive ring workspace reserves one switch event"
+    );
     assert!(
         typed_reserve > 0,
         "populated displaced/mapping lanes must reserve"
@@ -1374,7 +1314,8 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
     assert_eq!(trials(&engine), 0, "fresh engine runs no trials");
     // Early refusal pays no clone and no trial.
     let mut versioned = observe(1, facts_pair(), "win-a");
-    versioned.contract_version = WORLD_CONTRACT_VERSION_LEGACY;
+    // Non-v4 wire version on a v4-typed report; see structural_refusals.
+    versioned.contract_version = 3;
     match admit(&mut engine, &versioned) {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
@@ -2192,7 +2133,8 @@ fn slice_7_1_invalid_version_and_unbound_owner_refused() {
     let mut engine = engine();
     let revision_before = engine.state_revision;
     let mut version = observe(1, facts_pair(), "win-a");
-    version.contract_version = WORLD_CONTRACT_VERSION_LEGACY;
+    // Non-v4 wire version on a v4-typed report; see structural_refusals.
+    version.contract_version = 3;
     match admit(&mut engine, &version) {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);

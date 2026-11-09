@@ -8,10 +8,10 @@
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, StaySourceFocus, WorldEngine};
+use crate::world_engine::{StaySourceFocus, WorldEngine, WorldOutcome};
 use crate::world_report::{
-    FrameSetter, MemberAttempt, ScreenReport, ScreenView, WORLD_CONTRACT_VERSION_LEGACY,
-    WindowFact, WorkspaceRef, WorldCommand, WorldReport,
+    FrameSetter, MemberAttempt, PresentationIngressV4, PresentationRowV4, ScreenReport,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -91,9 +91,17 @@ fn report(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    // v4 carries no view-echo lane; the select-return echoes here were
+    // inert (commands + member facts carry the proof), so the v4 port
+    // passes an empty lane.
+    assert!(
+        views.is_empty(),
+        "v4 has no views lane: {} echo(s) cannot convert",
+        views.len()
+    );
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -102,19 +110,15 @@ fn report(
         command_seq,
         command,
         screens: vec![screen("out-a", 0), screen("out-b", 800)],
+        held_screens: Vec::new(),
         windows,
-        views: views
-            .into_iter()
-            .map(|(output, view)| ScreenView {
-                output: OutputId(output.to_owned()),
-                view: view.to_owned(),
-            })
-            .collect(),
+        held_windows: Vec::new(),
         closed: closed
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -122,8 +126,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -133,22 +135,23 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
-fn view_of(reply: &crate::world_report::WorldReply, output: &str) -> String {
+fn view_of(reply: &crate::world_report::WorldReplyV4, output: &str) -> String {
     reply
         .outputs
         .iter()
@@ -722,7 +725,7 @@ fn view_switch_return_preserves_remembered_focus() {
         &report(
             4,
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-            vec![("out-a", other.as_str())],
+            vec![],
             vec![],
             "",
             Some(12),
@@ -737,7 +740,7 @@ fn view_switch_return_preserves_remembered_focus() {
         &report(
             5,
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-            vec![("out-a", view_a.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -838,7 +841,7 @@ fn numbered_select_return_emits_remembered_focus() {
         &report(
             4,
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-            vec![("out-a", other.as_str())],
+            vec![],
             vec![],
             "",
             Some(12),
@@ -862,7 +865,7 @@ fn numbered_select_return_emits_remembered_focus() {
         &report(
             5,
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-            vec![("out-a", view_a.as_str())],
+            vec![],
             vec![],
             "",
             Some(13),
@@ -955,7 +958,7 @@ fn numbered_select_empty_and_minimized_targets_stay_quiet() {
         &report(
             4,
             vec![fact("win-a", "out-a", 0), minimized_b],
-            vec![("out-a", other.as_str())],
+            vec![],
             vec![],
             "",
             Some(12),
@@ -1034,7 +1037,7 @@ fn numbered_select_empty_and_minimized_targets_stay_quiet() {
         &report(
             4,
             vec![minimized_a],
-            vec![("out-a", other.as_str())],
+            vec![],
             vec![],
             "",
             Some(12),
@@ -1053,7 +1056,7 @@ fn numbered_select_empty_and_minimized_targets_stay_quiet() {
 }
 
 fn pager_contains_focused(
-    reply: &crate::world_report::WorldReply,
+    reply: &crate::world_report::WorldReplyV4,
     output: &str,
     workspace: &str,
 ) -> bool {
@@ -1070,7 +1073,7 @@ fn pager_contains_focused(
         })
 }
 
-fn pager_contains_focused_any(reply: &crate::world_report::WorldReply, output: &str) -> bool {
+fn pager_contains_focused_any(reply: &crate::world_report::WorldReplyV4, output: &str) -> bool {
     reply
         .presentation
         .pager
@@ -1166,7 +1169,7 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
                 fact("win-b", "out-a", 100),
                 fact("win-c", "out-a", 200),
             ],
-            vec![("out-a", view_b.as_str())],
+            vec![],
             vec![],
             "win-c",
             None,
@@ -1190,7 +1193,7 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
                 fact("win-c", "out-a", 200),
                 fact("win-d", "out-a", 300),
             ],
-            vec![("out-a", view_b.as_str())],
+            vec![],
             vec![],
             "win-d",
             None,
@@ -1213,7 +1216,7 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
                 fact("win-c", "out-a", 200),
                 fact("win-d", "out-a", 300),
             ],
-            vec![("out-a", view_b.as_str())],
+            vec![],
             vec![],
             "win-d",
             Some(12),
@@ -1254,7 +1257,7 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
                 fact("win-c", "out-a", 200),
                 fact("win-d", "out-a", 300),
             ],
-            vec![("out-a", view_a.as_str())],
+            vec![],
             vec![],
             "",
             None,
@@ -1277,7 +1280,7 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
                 fact("win-c", "out-a", 200),
                 fact("win-d", "out-a", 300),
             ],
-            vec![("out-a", view_a.as_str())],
+            vec![],
             vec![],
             "win-b",
             None,
@@ -1298,7 +1301,7 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
                 fact("win-c", "out-a", 200),
                 fact("win-d", "out-a", 300),
             ],
-            vec![("out-a", view_a.as_str())],
+            vec![],
             vec![],
             "ghost",
             None,
@@ -1319,7 +1322,7 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
                 fact("win-c", "out-a", 200),
                 fact("win-d", "out-a", 300),
             ],
-            vec![("out-a", view_a.as_str())],
+            vec![],
             vec![],
             "",
             Some(13),
@@ -1618,7 +1621,7 @@ fn select_hidden_stay_arrival_without_history_focuses_first_leaf() {
     let mut settle = report(
         3,
         vec![fact("win-a", "out-a", 0), arrived_b],
-        vec![("out-a", view_a.as_str())],
+        vec![],
         vec![],
         "win-a",
         None,
@@ -1654,7 +1657,7 @@ fn select_hidden_stay_arrival_without_history_focuses_first_leaf() {
         &report(
             4,
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-            vec![("out-a", view_a.as_str())],
+            vec![],
             vec![],
             "win-a",
             Some(12),
@@ -1745,7 +1748,7 @@ fn select_remembered_fit_excluded_skips_to_eligible_later() {
         &report(
             4,
             vec![fact("win-a", "out-a", 0), excluded_b.clone()],
-            vec![("out-a", other.as_str())],
+            vec![],
             vec![],
             "",
             Some(12),
@@ -1781,7 +1784,7 @@ fn select_remembered_fit_excluded_skips_to_eligible_later() {
         &report(
             5,
             vec![fact("win-a", "out-a", 0), excluded_b],
-            vec![("out-a", view_a.as_str())],
+            vec![],
             vec![],
             "win-a",
             None,
@@ -1868,7 +1871,7 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
     let mut settle = report(
         3,
         vec![fact("win-a", "out-a", 0), arrived_b],
-        vec![("out-a", view_a.as_str())],
+        vec![],
         vec![],
         "win-a",
         None,
@@ -1900,7 +1903,7 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
         &report(
             4,
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-            vec![("out-a", view_a.as_str())],
+            vec![],
             vec![],
             "win-a",
             Some(12),
@@ -1915,15 +1918,7 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
     let mut sticky_b = fact("win-b", "out-a", 100);
     sticky_b.sticky = Some(true);
     let arrived_a = fact("win-a", "out-a", 0);
-    let mut settle = report(
-        5,
-        vec![sticky_b, arrived_a],
-        vec![("out-a", view_a.as_str())],
-        vec![],
-        "",
-        None,
-        None,
-    );
+    let mut settle = report(5, vec![sticky_b, arrived_a], vec![], vec![], "", None, None);
     settle.member_attempts.push(MemberAttempt {
         operation_id: "op-12".to_owned(),
         window: WindowId("win-a".to_owned()),
@@ -1956,7 +1951,7 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
         &report(
             6,
             vec![sticky_select, fact("win-a", "out-a", 0)],
-            vec![("out-a", view_a.as_str())],
+            vec![],
             vec![],
             "",
             Some(13),
@@ -2036,7 +2031,7 @@ fn select_held_scope_stays_quiet_despite_eligible() {
     let mut held = report(
         3,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-        vec![("out-a", other.as_str())],
+        vec![],
         vec![],
         "",
         Some(12),
@@ -2131,15 +2126,7 @@ fn select_without_native_focus_returns_recorded_leaf() {
         }
         accepted(
             &mut engine,
-            &report(
-                seq,
-                windows,
-                vec![("out-a", other.as_str())],
-                vec![],
-                "",
-                None,
-                None,
-            ),
+            &report(seq, windows, vec![], vec![], "", None, None),
         );
     }
     assert_eq!(
@@ -2178,7 +2165,7 @@ fn select_without_native_focus_returns_recorded_leaf() {
                 fact("win-c", "out-a", 200),
                 fact("win-d", "out-a", 300),
             ],
-            vec![("out-a", other.as_str())],
+            vec![],
             vec![],
             "",
             Some(12),
@@ -2203,7 +2190,7 @@ fn select_without_native_focus_returns_recorded_leaf() {
                 fact("win-c", "out-a", 200),
                 fact("win-d", "out-a", 300),
             ],
-            vec![("out-a", view_a.as_str())],
+            vec![],
             vec![],
             "",
             Some(13),

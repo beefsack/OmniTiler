@@ -3,14 +3,14 @@
 use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, WindowId};
 use crate::intent_data::{IntentData, encode_intent_data};
-use crate::world_directional::tests::{accepted, fact, float_fact, report_full, screen};
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, IntentRecord, IntentWrite, ScopeAuthority, StateProperty,
-    WorldCommand, WorldReport,
+    WorldCommand, WorldReportV4,
 };
+use crate::world_v4_support_tests::{accepted, fact, float_fact, report_full, screen};
 
-fn bootstrap(windows: Vec<crate::world_report::WindowFact>) -> WorldReport {
+fn bootstrap(windows: Vec<crate::world_report::WindowFact>) -> WorldReportV4 {
     report_full(
         1,
         1,
@@ -28,7 +28,7 @@ fn cmd(
     command_seq: u64,
     windows: Vec<crate::world_report::WindowFact>,
     command: WorldCommand,
-) -> WorldReport {
+) -> WorldReportV4 {
     report_full(
         seq,
         seq,
@@ -41,7 +41,7 @@ fn cmd(
     )
 }
 
-fn observe(seq: u64, windows: Vec<crate::world_report::WindowFact>) -> WorldReport {
+fn observe(seq: u64, windows: Vec<crate::world_report::WindowFact>) -> WorldReportV4 {
     report_full(
         seq,
         seq,
@@ -80,7 +80,7 @@ fn binding_value(engine: &WorldEngine, window: &str) -> Option<bool> {
 }
 
 fn target_row(
-    reply: &crate::world_report::WorldReply,
+    reply: &crate::world_report::WorldReplyV4,
     window: &str,
 ) -> Option<(bool, ScopeAuthority, Option<u64>)> {
     reply
@@ -1210,7 +1210,7 @@ fn refused_proof(
     target: bool,
     rev: u64,
     pre_post: bool,
-) -> WorldReport {
+) -> WorldReportV4 {
     let mut proof = observe(seq, windows);
     proof.state_attempts = vec![sticky_attempt(
         window,
@@ -1927,8 +1927,8 @@ fn native_rollback_consumed_report_still_emits() {
     );
     proof.command_seq = Some(2);
     proof.command = Some(set_sticky("win-a", false));
-    match engine.handle_report_legacy(&proof) {
-        LegacyWorldOutcome::CommandConsumed(reply) => {
+    match engine.handle_report(&proof) {
+        WorldOutcome::CommandConsumed(reply) => {
             let prior = IntentData::new(Some(true), Some(false));
             assert_eq!(
                 reply.intent_writes,
@@ -2075,7 +2075,8 @@ fn native_off_cross_workspace_refused_rolls_back_home() {
 fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() {
     use crate::world_engine::KIND_REPLY_SIZE;
     use crate::world_report::{WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES};
-    use crate::world_sizing::{max_intent_rollback_bound, reply_upper_bound, report_estimate};
+    use crate::world_sizing::max_intent_rollback_bound;
+    use crate::world_sizing_v4::{reply_upper_bound_v4, report_estimate_v4};
     let mut engine = native_engine();
     accepted(&mut engine, &bootstrap(vec![fact("win-a", "out-a", 0)]));
     let on_reply = accepted(
@@ -2123,7 +2124,7 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
     };
     let bound_of = |windows: &[crate::world_report::WindowFact]| {
         let report = proof_of(windows.to_vec());
-        reply_upper_bound(&report, 0, logical, 1, staged, retained)
+        reply_upper_bound_v4(&report, 0, logical, 1, staged, retained)
     };
     let mut windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
     for i in 0..2200 {
@@ -2138,9 +2139,9 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
         + 2;
     windows[2].title = Some("t".repeat(deficit));
     let report = proof_of(windows);
-    let without = reply_upper_bound(&report, 0, logical, 1, staged, retained);
+    let without = reply_upper_bound_v4(&report, 0, logical, 1, staged, retained);
     assert!(
-        report_estimate(&report) <= WORLD_MAX_REQUEST_BYTES,
+        report_estimate_v4(&report) <= WORLD_MAX_REQUEST_BYTES,
         "request itself fits; only the reply bound trips"
     );
     assert!(without <= WORLD_MAX_REPLY_BYTES, "reserveless bound fits");
@@ -2163,8 +2164,8 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
     let floats = engine.restored_floats.clone();
     let highwater = engine.command_highwater;
     let queued = engine.sticky_rollback_saves.clone();
-    match engine.handle_report_legacy(&report) {
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REPLY_SIZE),
+    match engine.handle_report(&report) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REPLY_SIZE),
         other => panic!("expected reply-oversize, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
@@ -2182,7 +2183,7 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
         rev,
         false,
     );
-    let pre = reply_upper_bound(&retry, 0, logical, 1, staged, retained)
+    let pre = reply_upper_bound_v4(&retry, 0, logical, 1, staged, retained)
         .saturating_add(max_intent_rollback_bound(1));
     assert!(pre <= WORLD_MAX_REPLY_BYTES, "retry fits the reserve");
     let reply = accepted(&mut engine, &retry);
@@ -2196,12 +2197,21 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
     let done = rollback_binding(&engine, "win-a");
     assert_eq!(done.disposition, AttemptOutcome::RefusedProven);
     assert!(done.sticky_meta.as_ref().expect("meta").followup_done);
-    let actual = crate::world_sizing::encode_reply_canonical(&reply).len();
+    let actual = crate::world_sizing_v4::reply_exact_bytes_v4(&reply);
     assert!(actual <= pre, "retry reply {actual} fits pre-bound {pre}");
 }
 
 #[test]
-fn native_rollback_queue_cap_holds_proof_and_replace_still_wins() {
+fn native_rollback_queue_cap_refuses_at_cap_preserving_queue() {
+    // v4 refuses once the pre-existing rollback reserve plus inline/batch
+    // rows exceed MAX_INTENT_WRITES (world-contract.md:115-125, :1182-1199
+    // bounded-error gates; world_admit_v4.rs:419-444 before-mutation
+    // section-over-cap gate; pinned by
+    // rapid_input_batch_rowcap_leaves_batch_unsettled): a full reserve
+    // refuses every report before mutation with
+    // snapshot-invalid/section-over-cap, so neither a hold nor a
+    // same-key replacement succeeds at cap.
+    use crate::world_engine::KIND_SNAPSHOT;
     use crate::world_report::MAX_INTENT_WRITES;
     let mut engine = native_engine();
     accepted(&mut engine, &bootstrap(vec![fact("win-a", "out-a", 0)]));
@@ -2225,16 +2235,30 @@ fn native_rollback_queue_cap_holds_proof_and_replace_still_wins() {
         );
     }
     assert_eq!(engine.sticky_rollback_saves.len(), MAX_INTENT_WRITES);
-    accepted(
-        &mut engine,
-        &refused_proof(
-            3,
-            vec![fact("win-a", "out-a", 0)],
-            "win-a",
-            true,
-            rev,
-            false,
-        ),
+    // A full reserve refuses the commandless proof before mutation; the
+    // queued entries are untouched.
+    let revision = engine.state_revision;
+    let highwater = engine.command_highwater;
+    match engine.handle_report(&refused_proof(
+        3,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        true,
+        rev,
+        false,
+    )) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "section-over-cap");
+        }
+        other => panic!("expected rowcap refusal, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
+    assert_eq!(engine.command_highwater, highwater, "command unconsumed");
+    assert_eq!(
+        engine.sticky_rollback_saves.len(),
+        MAX_INTENT_WRITES,
+        "refusal drops no queued proof"
     );
     assert!(
         !rollback_binding(&engine, "win-a")
@@ -2242,16 +2266,11 @@ fn native_rollback_queue_cap_holds_proof_and_replace_still_wins() {
             .as_ref()
             .expect("meta")
             .followup_done,
-        "full queue never silently drops proof"
+        "refused proof marks nothing done"
     );
-    assert!(
-        !engine
-            .sticky_rollback_saves
-            .contains_key(&WindowId("win-a".to_owned())),
-        "no queue growth past the cap"
-    );
-    // Same-key replacement stays allowed at the cap: refill with a stale
-    // win-a entry plus unrelated filler, then the next proof replaces it.
+    // Same-key replacement at the cap refuses the same way: the stale
+    // win-a entry plus unrelated filler still exceed the rowcap, so the
+    // next proof is refused with the queue intact.
     engine.sticky_rollback_saves.clear();
     engine.sticky_rollback_saves.insert(
         WindowId("win-a".to_owned()),
@@ -2270,29 +2289,31 @@ fn native_rollback_queue_cap_holds_proof_and_replace_still_wins() {
         );
     }
     assert_eq!(engine.sticky_rollback_saves.len(), MAX_INTENT_WRITES);
-    let reply = accepted(
-        &mut engine,
-        &refused_proof(
-            4,
-            vec![fact("win-a", "out-a", 0)],
-            "win-a",
-            true,
-            rev,
-            false,
-        ),
-    );
-    assert!(
-        reply
-            .intent_writes
-            .iter()
-            .any(|write| write.win.0 == "win-a")
-    );
-    assert!(
-        rollback_binding(&engine, "win-a")
-            .sticky_meta
-            .as_ref()
-            .expect("meta")
-            .followup_done
+    let revision = engine.state_revision;
+    match engine.handle_report(&refused_proof(
+        4,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        true,
+        rev,
+        false,
+    )) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "section-over-cap");
+        }
+        other => panic!("expected rowcap refusal, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
+    assert_eq!(
+        engine
+            .sticky_rollback_saves
+            .get(&WindowId("win-a".to_owned())),
+        Some(&IntentWrite {
+            win: WindowId("win-a".to_owned()),
+            data: Some("stale".to_owned()),
+        }),
+        "stale entry survives the refusal"
     );
 }
 
@@ -2858,9 +2879,9 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
     let mut control_obs = refused_obs.clone();
     control_obs.command = None;
     control_obs.command_seq = None;
-    let _ = control.handle_report_legacy(&control_obs);
-    match capped.handle_report_legacy(&refused_obs) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    let _ = control.handle_report(&control_obs);
+    match capped.handle_report(&refused_obs) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(crate::world_report::CommandResult::Rejected {
                 kind: crate::world_report::CommandRejectKind::OperationRefused
@@ -3244,7 +3265,9 @@ fn pending_window_transfer_holds_sticky_publication() {
             3,
             vec![screen("out-a", 0)],
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
-            vec![("out-a", ring[1].as_str())],
+            // The legacy views echo has no v4 slot; the member attempt
+            // carries the destination proof (slice-1 convention).
+            vec![],
             "win-a",
             None,
             None,
@@ -3271,14 +3294,16 @@ fn pending_window_transfer_holds_sticky_publication() {
     );
     assert_eq!(seq, Some(1));
     // Settle the staged flight with the standard raw transfer evidence: the
-    // adapter echoes the destination view and carries the accepted member
-    // attempt for `op-2`. The same unspent target resumes Controlled.
+    // accepted member attempt for `op-2` carries the destination proof
+    // (the legacy views echo has no v4 slot). The same unspent target resumes Controlled.
     let mut arrived = report_full(
         4,
         4,
         vec![screen("out-a", 0)],
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
-        vec![("out-a", ring[1].as_str())],
+        // The legacy views echo has no v4 slot; the member attempt
+        // carries the destination proof (slice-1 convention).
+        vec![],
         "win-a",
         None,
         None,
@@ -3324,7 +3349,9 @@ fn pending_window_transfer_holds_sticky_publication() {
             5,
             vec![screen("out-a", 0)],
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
-            vec![("out-a", ring[1].as_str())],
+            // The legacy views echo has no v4 slot; the member attempt
+            // carries the destination proof (slice-1 convention).
+            vec![],
             "win-b",
             Some(3),
             Some(WorldCommand::Send {
@@ -3351,7 +3378,9 @@ fn pending_window_transfer_holds_sticky_publication() {
         6,
         vec![screen("out-a", 0)],
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
-        vec![("out-a", ring[1].as_str())],
+        // The legacy views echo has no v4 slot; the member attempt
+        // carries the destination proof (slice-1 convention).
+        vec![],
         "win-b",
         None,
         None,

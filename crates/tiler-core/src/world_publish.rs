@@ -14,9 +14,8 @@ use crate::session::{DomainKey, RefusalKind};
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
     CommandResult, FloatOrigin, HoldReason, IntentWrite, OneShotEffect, OutputDesire,
-    ScopeAuthority, ScopeStatus, ScreenView, TilingMode, TransferKind,
-    WORLD_CONTRACT_VERSION_LEGACY, WindowDesire, WorkspaceDesire, WorldCommand, WorldReply,
-    WorldReport, workspace_authority_scope,
+    ScopeAuthority, ScopeStatus, ScreenView, TilingMode, TransferKind, WindowDesire,
+    WorkspaceDesire, WorldCommand, workspace_authority_scope,
 };
 
 /// Shared assembled publication rows: every known logical scope plus
@@ -1533,72 +1532,6 @@ impl WorldEngine {
         PublicationRows { scopes, windows }
     }
 
-    pub(crate) fn publish(
-        &mut self,
-        report: &WorldReport,
-        command_consumed: bool,
-        effects: Vec<OneShotEffect>,
-        command_result: Option<CommandResult>,
-        held_scopes: &BTreeSet<DomainKey>,
-    ) -> WorldReply {
-        let rows =
-            self.assemble_publication_rows(report.presentation.paused, &effects, held_scopes, None);
-        let scopes = rows.scopes;
-        let windows = rows.windows;
-        // Omission of a minimized/absent window inside a controlled scope
-        // means "no managed geometry", never a close or teardown instruction.
-        let workspaces = self.plan_workspaces(&scopes);
-        let outputs = self.plan_outputs(report, held_scopes);
-        // Per-report warp desire (stage 4b, cross-output only): computed
-        // over the final focus effects plus the published window rows, so
-        // explicit, admission, and hover-coupling focus share one rule.
-        let cursor_warp = self.warp_for_publish(&effects, &windows, held_scopes);
-        // Per-report gesture terminal: taken here so the next unrelated
-        // report publishes `None`. Duplicates repeat the cached reply.
-        let gesture_settled = self.gesture_terminal.take();
-        // Per-report operation lifecycle terminals: taken here so the next
-        // unrelated report publishes empty. Duplicates repeat the cached
-        // reply.
-        let operation_settled = std::mem::take(&mut self.operation_settled);
-        // Capability-named note: explicit creation desires only; the reply
-        // carries one stable op per outstanding authorization.
-        let native_creations = self.native_creation_desires();
-        // Real-engine canonical intent saves (at most one): a staged
-        // sticky-command save drains exactly once on its successful fresh
-        // command, else the ordinary ToggleFloat save; the exact-encoding
-        // gate below still commits it atomically with the rest of the reply.
-        let intent_writes =
-            self.drain_intent_saves(report.command.as_ref(), command_consumed, &command_result);
-        // Per-report switch terminals: taken here so the next unrelated
-        // report publishes empty. Duplicates repeat the cached reply.
-        let switch_settled = std::mem::take(&mut self.switch_settled);
-        WorldReply {
-            contract_version: WORLD_CONTRACT_VERSION_LEGACY,
-            adapter_incarnation: report.adapter_incarnation.clone(),
-            core_generation: self.core_generation_str.clone(),
-            request_id: report.request_id.clone(),
-            based_on_observation_seq: report.observation_seq,
-            state_revision: self.state_revision,
-            ready: self.is_ready(),
-            command_consumed,
-            scopes,
-            workspaces,
-            outputs,
-            diagnostics: self.staged.diagnostics.clone(),
-            windows,
-            transfers: self.retained_transfers(),
-            effects,
-            command_result,
-            gesture_settled,
-            operation_settled,
-            native_creations,
-            cursor_warp,
-            presentation: crate::world_presentation::WorldPresentation::default(),
-            intent_writes,
-            switch_settled,
-        }
-    }
-
     /// Retained lifetime rows for a held scope: snapshot windows, exceptions,
     /// and minimized slots homed on `key`, each with narrow holds. Skips
     /// live lifetimes (they carry their own rows) and already-emitted ids,
@@ -1786,18 +1719,6 @@ impl WorldEngine {
             }
         }
         rows
-    }
-
-    /// Desired output views: retained view targets win, else the core
-    /// view (informational, never a focus command). Incomplete screens or
-    /// held scopes on the output hold the row: the adapter must not
-    /// actuate views it cannot verify.
-    pub(crate) fn plan_outputs(
-        &self,
-        report: &WorldReport,
-        held_scopes: &BTreeSet<DomainKey>,
-    ) -> Vec<OutputDesire> {
-        self.plan_outputs_inner(&report.views, None, held_scopes)
     }
 
     /// Output-view core over explicit inputs: `view_echoes` are the

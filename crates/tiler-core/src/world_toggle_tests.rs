@@ -6,10 +6,10 @@
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, ScreenReport, ScreenView, TilingMode,
-    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, PresentationIngressV4, PresentationRowV4, ScreenReport,
+    TilingMode, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -72,14 +72,32 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     }
 }
 
+fn empty_ingress() -> PresentationIngressV4 {
+    PresentationIngressV4 {
+        foreground: String::new(),
+        foreground_minimized: Some(false),
+        foreground_maximized: Some(false),
+        foreground_fullscreen: Some(false),
+        foreground_host_hidden: Some(false),
+        foreground_hidden_workspace: Some(false),
+        foreground_frame: None,
+        chord_held: false,
+        move_window: String::new(),
+        pager_order: Vec::new(),
+        pager_frames: Vec::new(),
+        witness: None,
+        foreground_out: None,
+    }
+}
+
 fn report(
     request_seq: u64,
     windows: Vec<WindowFact>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -88,16 +106,12 @@ fn report(
         command_seq,
         command,
         screens: vec![screen("out-a", 0)],
+        held_screens: Vec::new(),
         windows,
-        views: Vec::<(&str, &str)>::new()
-            .into_iter()
-            .map(|(output, view)| ScreenView {
-                output: OutputId(output.to_owned()),
-                view: view.to_owned(),
-            })
-            .collect(),
+        held_windows: Vec::new(),
         closed: Vec::new(),
         native: vec![],
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
@@ -105,8 +119,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -116,17 +128,19 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
+        presentation: PresentationRowV4::Valid(empty_ingress()),
 
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -249,8 +263,8 @@ fn explicit_set_keeps_genuine_set_semantics() {
 fn toggle_unknown_workspace_refuses_like_set() {
     let (mut engine, _ws) = bootstrap_workspace();
     let windows = vec![fact("win-a", "out-a", 0)];
-    match engine.handle_report_legacy(&report(2, windows, Some(11), Some(toggle("ws-nope")))) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&report(2, windows, Some(11), Some(toggle("ws-nope")))) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::TilingTargetUnknown

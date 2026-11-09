@@ -386,18 +386,14 @@ pub fn half_snap_constraints_ok(half: Rect, hints: crate::size_hints::WindowSize
 pub(crate) mod tests {
     use super::*;
     use crate::directional::{OutputId, WindowId};
-    use crate::geometry::Rect;
     use crate::size_hints::WindowSizeHints;
-    use crate::world_clear_tests::desire;
-    use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
-    use crate::world_report::{
-        CommandResult, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand,
-        WorldReport,
+    use crate::world_engine::WorldEngine;
+    use crate::world_report::{CommandResult, WindowFact, WorldCommand};
+    use crate::world_v4_support_tests::{
+        accepted as accepted_v4, outcome_str, report as report_v4, report_full as report_full_v4,
     };
 
-    pub(crate) fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
-        Rect { x, y, w, h }
-    }
+    use crate::world_v4_support_tests::{fact, float_fact, rect, screen};
 
     fn carrier(window: &str, output: &str, workspace: &str, x: i32, y: i32) -> EngineWindow {
         EngineWindow {
@@ -420,13 +416,6 @@ pub(crate) mod tests {
         EngineWindow {
             floating: true,
             ..carrier(window, output, workspace, x, y)
-        }
-    }
-
-    pub(crate) fn outcome_str(result: &Option<CommandResult>) -> Option<&'static str> {
-        match result {
-            Some(CommandResult::Directional { outcome, .. }) => Some(outcome.as_str()),
-            _ => None,
         }
     }
 
@@ -671,167 +660,10 @@ pub(crate) mod tests {
 
     // --- Engine integration: world-owned directional commands. ---
 
-    pub(crate) fn screen(output: &str, x: i32) -> ScreenReport {
-        ScreenReport {
-            output: OutputId(output.to_owned()),
-            full_rect: Some(rect(x, 0, 800, 600)),
-            work_area: Some(rect(x, 0, 800, 560)),
-            complete: true,
-            scale: 1.0,
-            identity: crate::world_report::OutputIdentity::unknown(),
-        }
-    }
-
-    pub(crate) fn fact(window: &str, output: &str, x: i32) -> WindowFact {
-        WindowFact {
-            window: WindowId(window.to_owned()),
-            output: Some(OutputId(output.to_owned())),
-            rect: Some(rect(x, 0, 40, 90)),
-            fullscreen: Some(false),
-            maximized: Some(false),
-            sticky: Some(false),
-            hints: Some(WindowSizeHints::none()),
-            minimized: Some(false),
-            native_workspace: crate::world_report::NativeWorkspaceFact::Omitted,
-            host_hidden: Some(false),
-            privileged: Some(false),
-            managed: Some(true),
-            accepts_input: Some(true),
-            activation_inhibited: Some(false),
-            tool_window: Some(false),
-            owned: Some(false),
-            transient: Some(false),
-            modal: Some(false),
-            resizable: Some(true),
-            above: Some(false),
-            below: Some(false),
-            owner: None,
-            parent: None,
-            role: None,
-            app_id: None,
-            executable: Some("synthetic.exe".to_owned()),
-            process_id: Some("foreign-pid".to_owned()),
-            class: Some("Synthetic".to_owned()),
-            title: None,
-            window_type: Some(crate::world_report::WindowType::Normal),
-            activation_policy: Some(crate::world_report::ActivationPolicy::Regular),
-            layer: Some(0),
-            fullscreen_owner: None,
-            fullscreen_exitable: None,
-            suppression_available: None,
-            visibility: crate::world_report::VisibilityFact {
-                visible: Some(true),
-                suppression_owned: None,
-            },
-            last_write: None,
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn report_full(
-        request_seq: u64,
-        observation_seq: u64,
-        screens: Vec<ScreenReport>,
-        windows: Vec<WindowFact>,
-        views: Vec<(&str, &str)>,
-        focused: &str,
-        command_seq: Option<u64>,
-        command: Option<WorldCommand>,
-    ) -> WorldReport {
-        WorldReport {
-            contract_version: WORLD_CONTRACT_VERSION_LEGACY,
-            adapter_incarnation: "adapter-1".to_owned(),
-            core_generation: "gen-1".to_owned(),
-            observation_seq,
-            request_seq,
-            request_id: format!("req-{request_seq}"),
-            command_seq,
-            command,
-            screens,
-            windows,
-            views: views
-                .into_iter()
-                .map(|(output, view)| crate::world_report::ScreenView {
-                    output: OutputId(output.to_owned()),
-                    view: view.to_owned(),
-                })
-                .collect(),
-            closed: Vec::new(),
-            // Core regression builders opt into the automatic birth-clear
-            // capability explicitly: production adapters carry their own
-            // value (KDE true, Windows/macOS false) and these tests pin the
-            // enabled lane. Disabled behavior is pinned per-test by
-            // overriding this back to false.
-            native: Vec::new(),
-            cursor: None,
-            cursor_hit: None,
-            focused_global: focused.to_owned(),
-            action_foreground: None,
-            action_cached: None,
-            action_outputs: Vec::new(),
-            inventory_complete: true,
-            gesture_barrier: false,
-            gesture: None,
-            monotonic_ms: 0,
-            frames: Vec::new(),
-            member_attempts: Vec::new(),
-            view_attempts: Vec::new(),
-            clear_attempts: Vec::new(),
-            creation_attempts: Vec::new(),
-            state_attempts: Vec::new(),
-            focus_feedback: Vec::new(),
-            presentation: crate::world_report::PresentationIngress::disabled(),
-            primary_output: None,
-            held_screens: Vec::new(),
-            held_windows: Vec::new(),
-
-            intent_records: Vec::new(),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn report(
-        request_seq: u64,
-        observation_seq: u64,
-        screens: Vec<ScreenReport>,
-        windows: Vec<WindowFact>,
-        command_seq: Option<u64>,
-        command: Option<WorldCommand>,
-    ) -> WorldReport {
-        report_full(
-            request_seq,
-            observation_seq,
-            screens,
-            windows,
-            Vec::new(),
-            "",
-            command_seq,
-            command,
-        )
-    }
-
-    pub(crate) fn accepted(
-        engine: &mut WorldEngine,
-        report: &WorldReport,
-    ) -> crate::world_report::WorldReply {
-        match engine.handle_report_legacy(report) {
-            LegacyWorldOutcome::Accepted(reply) => reply,
-            other => panic!("expected accepted, got {other:?}"),
-        }
-    }
-
-    pub(crate) fn float_fact(window: &str, output: &str, x: i32, y: i32) -> WindowFact {
-        WindowFact {
-            rect: Some(rect(x, y, 200, 200)),
-            transient: Some(true),
-            ..fact(window, output, x)
-        }
-    }
-
     fn bootstrap_pair(engine: &mut WorldEngine) {
-        accepted(
+        accepted_v4(
             engine,
-            &report(
+            &report_v4(
                 1,
                 1,
                 vec![screen("out-a", 0)],
@@ -849,10 +681,10 @@ pub(crate) mod tests {
         engine: &mut WorldEngine,
         seq: u64,
         command: WorldCommand,
-    ) -> crate::world_report::WorldReply {
-        accepted(
+    ) -> crate::world_report::WorldReplyV4 {
+        accepted_v4(
             engine,
-            &report(
+            &report_v4(
                 seq,
                 seq,
                 vec![screen("out-a", 0)],
@@ -960,9 +792,9 @@ pub(crate) mod tests {
     #[test]
     fn automatic_float_and_fullscreen_fences_refuse_without_mutation() {
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-        accepted(
+        accepted_v4(
             &mut engine,
-            &report(
+            &report_v4(
                 1,
                 1,
                 vec![screen("out-a", 0)],
@@ -987,9 +819,9 @@ pub(crate) mod tests {
             ),
         );
         let mut report2 = |seq: u64, command: WorldCommand| {
-            accepted(
+            accepted_v4(
                 &mut engine,
-                &report(
+                &report_v4(
                     seq,
                     seq,
                     vec![screen("out-a", 0)],
@@ -1124,9 +956,9 @@ pub(crate) mod tests {
         // unsolicited sticky frame writes stay prohibited: rows without a
         // `frame_operation` token authorize nothing.
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-        accepted(
+        accepted_v4(
             &mut engine,
-            &report(
+            &report_v4(
                 1,
                 1,
                 vec![screen("out-a", 0)],
@@ -1142,9 +974,9 @@ pub(crate) mod tests {
                 None,
             ),
         );
-        let reply = accepted(
+        let reply = accepted_v4(
             &mut engine,
-            &report(
+            &report_v4(
                 2,
                 2,
                 vec![screen("out-a", 0)],
@@ -1173,14 +1005,17 @@ pub(crate) mod tests {
             other => panic!("directional result, got {other:?}"),
         };
         assert_eq!(half, Some(rect(404, 8, 388, 544)));
-        let row = desire(&reply, "win-sticky");
+        let row = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-sticky")
+            .expect("window keeps a row");
         assert_eq!(row.frame_operation.as_deref(), Some("op-11"));
         assert_eq!(row.effective_frame, half);
-        let wire = crate::world_sizing::encode_reply_canonical(&reply);
-        assert!(
-            wire.contains("\"op\":\"directional\",\"outcome\":\"move-float-applied\""),
-            "sticky half-snap round-trips, got {wire}"
-        );
+        // Legacy pinned the command-result encoding on the canonical wire;
+        // v4 has no full-reply canonical encoder in core (wire encoding
+        // lives in the protocol crate), so the port rests on the typed
+        // outcome/rect/token assertions above.
     }
 
     #[test]
@@ -1189,9 +1024,9 @@ pub(crate) mod tests {
         // directional policy in the displayed (current) view: candidates
         // come from the displayed workspace, never the home one.
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-        let first = accepted(
+        let first = accepted_v4(
             &mut engine,
-            &report(
+            &report_v4(
                 1,
                 1,
                 vec![screen("out-a", 0)],
@@ -1216,10 +1051,13 @@ pub(crate) mod tests {
         ids.sort();
         assert_eq!(ids.len(), 2, "bootstrap seeds head plus trailing");
         let (head, spare) = (ids[0].clone(), ids[1].clone());
-        // Switch the displayed view to the spare workspace.
-        accepted(
+        // Switch the displayed view to the spare workspace. Legacy echoed
+        // the post-switch view (`("out-a", spare)`); v4 has no views lane,
+        // so the port sends an empty lane: the SelectWorkspace command
+        // below carries the target and must drive the switch alone.
+        accepted_v4(
             &mut engine,
-            &report_full(
+            &report_full_v4(
                 2,
                 2,
                 vec![screen("out-a", 0)],
@@ -1231,7 +1069,7 @@ pub(crate) mod tests {
                     },
                     float_fact("win-old", "out-a", 50, 100),
                 ],
-                vec![("out-a", spare.as_str())],
+                Vec::new(),
                 "",
                 Some(11),
                 Some(WorldCommand::SelectWorkspace {
@@ -1243,9 +1081,9 @@ pub(crate) mod tests {
         // A newcomer floats on the displayed spare; the home-workspace
         // float stays behind. Focusing right from the sticky subject must
         // resolve the displayed newcomer, never the home float.
-        let reply = accepted(
+        let reply = accepted_v4(
             &mut engine,
-            &report_full(
+            &report_full_v4(
                 3,
                 3,
                 vec![screen("out-a", 0)],
@@ -1258,7 +1096,10 @@ pub(crate) mod tests {
                     float_fact("win-old", "out-a", 50, 100),
                     float_fact("win-new", "out-a", 300, 100),
                 ],
-                vec![("out-a", spare.as_str())],
+                // Same empty views lane: the switch above must have stuck
+                // through the command alone for the displayed newcomer to
+                // resolve below.
+                Vec::new(),
                 "",
                 Some(12),
                 Some(WorldCommand::FocusDirectional {
@@ -1311,9 +1152,9 @@ pub(crate) mod tests {
         // follow-focus effect on the mover: the adapter verifies the
         // foreground for its snap chain and never actuates twice.
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-        accepted(
+        accepted_v4(
             &mut engine,
-            &report(
+            &report_v4(
                 1,
                 1,
                 vec![screen("out-a", 0), screen("out-b", 800)],
@@ -1322,9 +1163,9 @@ pub(crate) mod tests {
                 None,
             ),
         );
-        let reply = accepted(
+        let reply = accepted_v4(
             &mut engine,
-            &report(
+            &report_v4(
                 2,
                 2,
                 vec![screen("out-a", 0), screen("out-b", 800)],
@@ -1371,9 +1212,9 @@ pub(crate) mod tests {
         // Physical output vs membership home preserved: a sticky on
         // out-a never matches a float homed on out-b.
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-        accepted(
+        accepted_v4(
             &mut engine,
-            &report(
+            &report_v4(
                 1,
                 1,
                 vec![screen("out-a", 0), screen("out-b", 800)],
@@ -1389,9 +1230,9 @@ pub(crate) mod tests {
                 None,
             ),
         );
-        let reply = accepted(
+        let reply = accepted_v4(
             &mut engine,
-            &report(
+            &report_v4(
                 2,
                 2,
                 vec![screen("out-a", 0), screen("out-b", 800)],
@@ -1417,9 +1258,9 @@ pub(crate) mod tests {
         // Unknown windows refuse stale with the preserved cause and no
         // mutation: no continuation on stale lifetime evidence, one shared
         // vocabulary instead of a bare rejection.
-        let reply = accepted(
+        let reply = accepted_v4(
             &mut engine,
-            &report(
+            &report_v4(
                 3,
                 3,
                 vec![screen("out-a", 0), screen("out-b", 800)],

@@ -12,11 +12,11 @@
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::visual::BorderHideReason;
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    ActivationPolicy, PresentationIngress, ScopeAuthority, ScreenReport, VisibilityFact,
-    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WindowType, WorldReply, WorldReport,
+    ActivationPolicy, BorderHideReasonV4, PresentationIngressV4, PresentationRowV4, ScopeAuthority,
+    ScreenReport, VisibilityFact, WORLD_CONTRACT_VERSION_V4, WindowFact, WindowType, WorldReplyV4,
+    WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -83,10 +83,10 @@ fn report(
     request_seq: u64,
     observation_seq: u64,
     windows: Vec<WindowFact>,
-    presentation: PresentationIngress,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+    presentation: PresentationIngressV4,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -95,17 +95,17 @@ fn report(
         command_seq: None,
         command: None,
         screens: vec![screen("out-a", 0)],
+        held_screens: Vec::new(),
         windows,
-        views: vec![],
+        held_windows: Vec::new(),
         closed: vec![],
         native: vec![],
+        held_native: Vec::new(),
         focused_global: String::new(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -117,22 +117,23 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation,
-
+        presentation: PresentationRowV4::Valid(presentation),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
-fn row_of<'a>(reply: &'a WorldReply, window: &str) -> &'a tiler_core::world_report::WindowDesire {
+fn row_of<'a>(reply: &'a WorldReplyV4, window: &str) -> &'a tiler_core::world_report::WindowDesire {
     reply
         .windows
         .iter()
@@ -140,17 +141,19 @@ fn row_of<'a>(reply: &'a WorldReply, window: &str) -> &'a tiler_core::world_repo
         .unwrap_or_else(|| panic!("missing row {window}"))
 }
 
-fn foreground_presentation(window: &str) -> PresentationIngress {
-    PresentationIngress {
+fn foreground_presentation(window: &str) -> PresentationIngressV4 {
+    // v4 ingress carries only the foreground lanes; style sizes live in
+    // composed settings (contract 261-272).
+    PresentationIngressV4 {
         foreground: window.to_owned(),
+        foreground_minimized: Some(false),
+        foreground_maximized: Some(false),
+        foreground_fullscreen: Some(false),
+        foreground_host_hidden: Some(false),
+        foreground_hidden_workspace: Some(false),
         foreground_frame: Some(rect(0, 0, 400, 560)),
-        border_enabled: true,
-        underlay_enabled: false,
-        border_gap_px: 0,
-        border_width_px: 4,
-        underlay_extension_px: 0,
         chord_held: false,
-        ..PresentationIngress::disabled()
+        ..PresentationIngressV4::default()
     }
 }
 
@@ -168,7 +171,7 @@ fn xaml_unknown_executable_tiles_with_hidden_border() {
             1,
             1,
             vec![target.clone(), sibling],
-            PresentationIngress::disabled(),
+            PresentationIngressV4::default(),
         ),
     );
     // Ordinary foreign XAML with unreadable executable keeps tile
@@ -197,9 +200,12 @@ fn xaml_unknown_executable_tiles_with_hidden_border() {
     assert!(!hidden.presentation.border.visible);
     assert_eq!(
         hidden.presentation.border.reason,
-        Some(BorderHideReason::Shell)
+        Some(BorderHideReasonV4::Shell)
     );
-    // A known foreign executable on the same class shows the border.
+    // A known foreign executable on the same class still hides without a
+    // joined witness (R20 anchored border; eligible but unjoined). Visible
+    // rows port via settings+witness in
+    // world_presentation_v4_tests::genuine_descriptor_positive.
     let mut known = healthy("win-xaml-known");
     known.class = Some("Windows.UI.Core.CoreWindow".to_owned());
     known.executable = Some("c:\\synthetic\\example.exe".to_owned());
@@ -210,7 +216,7 @@ fn xaml_unknown_executable_tiles_with_hidden_border() {
             1,
             1,
             vec![known, healthy("win-control")],
-            PresentationIngress::disabled(),
+            PresentationIngressV4::default(),
         ),
     );
     assert!(row_of(&reply, "win-xaml-known").allocation.is_some());
@@ -231,7 +237,7 @@ fn xaml_unknown_executable_tiles_with_hidden_border() {
             foreground_presentation("win-xaml-known"),
         ),
     );
-    assert!(shown.presentation.border.visible);
+    assert!(!shown.presentation.border.visible);
     assert_eq!(shown.presentation.border.reason, None);
     // A known shell host executable keeps the existing hidden border.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
@@ -244,7 +250,7 @@ fn xaml_unknown_executable_tiles_with_hidden_border() {
             1,
             1,
             vec![shell, healthy("win-control")],
-            PresentationIngress::disabled(),
+            PresentationIngressV4::default(),
         ),
     );
     let reply = accepted(
@@ -267,7 +273,7 @@ fn xaml_unknown_executable_tiles_with_hidden_border() {
     assert!(!reply.presentation.border.visible);
     assert_eq!(
         reply.presentation.border.reason,
-        Some(BorderHideReason::Shell)
+        Some(BorderHideReasonV4::Shell)
     );
 }
 
@@ -292,7 +298,7 @@ fn float_origin_survives_unknown_layer_and_irrelevant_transient() {
             1,
             1,
             vec![dialog, modal, healthy("win-control")],
-            PresentationIngress::disabled(),
+            PresentationIngressV4::default(),
         ),
     );
     for win in ["win-dialog", "win-modal"] {
@@ -328,7 +334,7 @@ fn unknown_own_pid_holds_and_dialog_refusal_unchanged() {
             1,
             1,
             vec![unknown_own, dialog, utility, healthy("win-control")],
-            PresentationIngress::disabled(),
+            PresentationIngressV4::default(),
         ),
     );
     // Held/excluded newcomers publish no controlled membership and no

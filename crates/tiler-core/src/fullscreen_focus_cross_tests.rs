@@ -28,9 +28,10 @@ use crate::session::{
 use crate::settings_catalog::{FIELD_INNER_GAP, FIELD_OUTER_GAP};
 use crate::settings_state::EffectiveSetting;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    EffectKind, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
+    EffectKind, PresentationIngressV4, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4,
+    WindowFact, WorldCommand, WorldReportV4,
 };
 use std::collections::BTreeMap;
 
@@ -635,9 +636,9 @@ fn report(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -646,10 +647,12 @@ fn report(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: Vec::new(),
+        held_windows: Vec::new(),
         closed: Vec::new(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -657,8 +660,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -668,17 +669,18 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -691,7 +693,7 @@ fn one_screen() -> Vec<ScreenReport> {
     vec![screen("out-a", 0)]
 }
 
-fn focus_targets(reply: &crate::world_report::WorldReply) -> Vec<WindowId> {
+fn focus_targets(reply: &crate::world_report::WorldReplyV4) -> Vec<WindowId> {
     reply
         .effects
         .iter()
@@ -851,7 +853,7 @@ fn world_fullscreen_single_output_retains_without_effect() {
         ),
     );
     let key = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
-    let outcome = engine.handle_report_legacy(&report(
+    let outcome = engine.handle_report(&report(
         2,
         one_screen(),
         vec![
@@ -866,8 +868,8 @@ fn world_fullscreen_single_output_retains_without_effect() {
         }),
     ));
     let reply = match outcome {
-        LegacyWorldOutcome::Accepted(reply) => reply,
-        LegacyWorldOutcome::Rejected { kind, .. } => {
+        WorldOutcome::Accepted(reply) => reply,
+        WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(
                 kind, "unchanged",
                 "single-output fullscreen refuses as unchanged, not {kind}"
@@ -912,7 +914,7 @@ fn world_fullscreen_vertical_is_noop() {
         ),
     );
     let key = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
-    let outcome = engine.handle_report_legacy(&report(
+    let outcome = engine.handle_report(&report(
         2,
         two_screens(),
         vec![
@@ -928,8 +930,8 @@ fn world_fullscreen_vertical_is_noop() {
         }),
     ));
     let reply = match outcome {
-        LegacyWorldOutcome::Accepted(reply) => reply,
-        LegacyWorldOutcome::Rejected { kind, .. } => {
+        WorldOutcome::Accepted(reply) => reply,
+        WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(
                 kind, "unchanged",
                 "vertical fullscreen refuses as unchanged, not {kind}"

@@ -24,10 +24,10 @@ use crate::directional::{Node, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, RenderTarget, RendererInput, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY,
-    WindowFact, WorldCommand, WorldReport,
+    CommandRejectKind, PresentationIngressV4, PresentationRowV4, RenderTarget, RendererInput,
+    ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -91,6 +91,25 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn empty_ingress() -> PresentationIngressV4 {
+    PresentationIngressV4 {
+        foreground: String::new(),
+        foreground_minimized: Some(false),
+        foreground_maximized: Some(false),
+        foreground_fullscreen: Some(false),
+        foreground_host_hidden: Some(false),
+        foreground_hidden_workspace: Some(false),
+        foreground_frame: None,
+        chord_held: false,
+        move_window: String::new(),
+        pager_order: Vec::new(),
+        pager_frames: Vec::new(),
+        witness: None,
+        foreground_out: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn report(
     generation: &str,
     seq: u64,
@@ -100,9 +119,9 @@ fn report(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: generation.to_owned(),
         observation_seq: seq,
@@ -111,10 +130,12 @@ fn report(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: Vec::new(),
+        held_windows: Vec::new(),
         closed,
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -122,8 +143,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -133,28 +152,25 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
+        presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
 /// Actual latest published presentation revision on the engine.
 fn latest_published(engine: &WorldEngine) -> u64 {
-    engine
-        .last_reply
-        .as_ref()
-        .expect("seed published a reply")
-        .presentation
-        .rev
+    engine.latest_published_presentation_rev_v4
 }
 
 fn screens_pair() -> Vec<ScreenReport> {
@@ -169,7 +185,7 @@ fn facts_pair() -> Vec<WindowFact> {
     ]
 }
 
-/// Seed one engine on `generation` through the accepted legacy path and
+/// Seed one engine on `generation` through the accepted v4 path and
 /// return it with the live logical views plus the two actually published
 /// presentation revisions (`rev_old` from the first reply, `rev_new` from
 /// the second; `rev_old < rev_new`). Both out-a windows home to `view_a`,
@@ -279,7 +295,7 @@ fn domain_members(engine: &WorldEngine, output: &str, workspace: &str) -> BTreeS
 
 /// Pager workspace row for one id on one output, from an accepted reply.
 fn pager_row<'a>(
-    reply: &'a crate::world_report::WorldReply,
+    reply: &'a WorldReplyV4,
     output: &str,
     id: &str,
 ) -> &'a crate::world_presentation::PagerWorkspace {

@@ -3,7 +3,7 @@
 //! [`WorldEngine`] retains the [`crate::engine::Engine`] (D1=A) and owns the
 //! logical workspace model outright: stable core workspace ids, per-screen
 //! rings, views, members, history, lifecycle, and trailing. It accepts one
-//! complete [`WorldReport`] per call — screens (FULL rectangles plus work
+//! complete [`WorldReportV4`](crate::world_report::WorldReportV4) per call — screens (FULL rectangles plus work
 //! areas) and window facts are the only observation prerequisites — assigns
 //! every fact to a logical workspace, projects each logical workspace into
 //! its Engine session through the existing [`Engine::handle`] sweep, holds
@@ -32,12 +32,14 @@
 //!
 //! Budget: the 4 MiB request estimate gates before any convergence; a
 //! conservative reply upper bound gates before any mutation; the staged
-//! reply is then measured with the exact canonical encoding before commit.
-//! Overflow discards the staged candidate and leaves sessions, retained
-//! transfers, ordering, and command consumption exactly as before: only
-//! reports that pass every cheap gate pay for one engine clone, and only
-//! the exact-encoded reply commits. The protocol unit reuses
-//! [`crate::world_report::encode_reply_canonical`] for its own exact check.
+//! reply is then measured with the independent core v4 byte-count twin
+//! [`reply_exact_bytes_v4`](crate::world_sizing_v4::reply_exact_bytes_v4)
+//! before commit. Overflow discards the staged candidate and leaves
+//! sessions, retained transfers, ordering, and command consumption exactly
+//! as before: only reports that pass every cheap gate pay for one engine
+//! clone, and only the byte-counted reply commits. The protocol
+//! `encode_reply_v4` writer tests pin the arithmetic independently
+//! (roundtrips and immutable literal bytes); core builds no second writer.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -53,20 +55,14 @@ use crate::ids::{CorrelationId, GenerationId, OwnerId};
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::workspace_scope::ScopeHistory;
-use crate::world_commands::CommandApplied;
-use crate::world_gesture::{GestureOutcome, RetainedGesture};
+use crate::world_gesture::RetainedGesture;
 use crate::world_report::{
     AuthorityScope, CommandRejectKind, CommandResult, FrameAttempt, HoldReason, ScopeAuthority,
-    ScopeStatus, TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION_LEGACY,
-    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WindowDesire, WorkspaceDesire, WorldCommand,
-    WorldReply, WorldReplyV4, WorldReport, WorldReportV4, encode_reply_canonical,
-    grade_conflicting_windows, grade_invalid_screens, grade_invalid_windows,
-    max_intent_rollback_bound, reply_estimate, reply_upper_bound, report_digest, report_estimate,
-    validate_intent_writes_reason, validate_report_reason,
+    ScopeStatus, TilingMode, TransferKind, TransferTarget, WindowDesire, WorkspaceDesire,
+    WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
 
-pub(crate) const KIND_VERSION: &str = "unsupported-version";
 pub(crate) const KIND_OWNER: &str = "owner-invalid";
 pub(crate) const KIND_CORRELATION: &str = "correlation-invalid";
 pub(crate) const KIND_GENERATION: &str = "generation-mismatch";
@@ -92,7 +88,6 @@ pub(crate) const KIND_MIGRATION: &str = "migration-refused";
 pub(crate) const KIND_OPERATION: &str = "operation-refused";
 pub(crate) const KIND_TILING_TARGET: &str = "tiling-target-unknown";
 
-pub(crate) const MSG_VERSION: &str = "unsupported contract version";
 pub(crate) const MSG_OWNER: &str = "owner is invalid";
 pub(crate) const MSG_CORRELATION: &str = "correlation id is invalid";
 pub(crate) const MSG_GENERATION: &str = "generation does not match the core generation";
@@ -359,30 +354,6 @@ pub(crate) fn emit_resize_refusal(line: String) {
 }
 
 impl WorldEngine {
-    /// Diagnostic-only keyboard-resize refusal line for the generic collapse:
-    /// the verbatim internal `kind`, the same `parse`-or-default wire token
-    /// production maps to, request correlation, observed/retained focus, root
-    /// tree shape, and bounded current geometry with min/max hints. Pure
-    /// formatting; the caller owns the stderr write and the requester
-    /// outcome is untouched. `None` for non-resize commands. `rows` are
-    /// staged domain rows, never the selected resize pair; the subject
-    /// always renders separately with its own geometry and hints. Ids pass
-    /// the opaque gate, tokens the closed gate; no titles or process fields.
-    pub(crate) fn resize_refusal_diagnostic(
-        &self,
-        report: &WorldReport,
-        kind: &str,
-    ) -> Option<String> {
-        self.resize_refusal_line(
-            report.command.as_ref()?,
-            &report.request_id,
-            report.request_seq,
-            report.observation_seq,
-            report.command_seq,
-            kind,
-        )
-    }
-
     /// Diagnostic-only generic refusal line for one rejected v4 batch
     /// command: the executing command sequence, the resolved bookkeeping
     /// identity (op/subject/dir), the verbatim internal `kind`, the same
@@ -799,23 +770,6 @@ pub(crate) struct RetainedNativeCreation {
     pub(crate) ambiguous: bool,
 }
 
-/// Dead legacy bounded outcome of one legacy [`WorldEngine::handle_report_legacy`]
-/// call. Only the doc-hidden legacy implementation and its deferred
-/// regression tests use this; the public outcome is [`WorldOutcome`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LegacyWorldOutcome {
-    Accepted(WorldReply),
-    /// Identical latest duplicate: cached reply, no new revision.
-    Duplicate(WorldReply),
-    /// Fresh report with an already-consumed command: observation
-    /// reconciled, command never re-executed.
-    CommandConsumed(WorldReply),
-    Rejected {
-        kind: &'static str,
-        message: &'static str,
-    },
-}
-
 /// Public bounded outcome of one [`WorldEngine::handle_report`] call: the
 /// genuine v4 result.
 pub type WorldOutcome = V4RunOutcome;
@@ -973,20 +927,6 @@ pub(crate) struct RawRouting<'a> {
 }
 
 impl<'a> RawRouting<'a> {
-    pub(crate) fn from_source(report: &'a WorldReport) -> Self {
-        Self {
-            inventory_complete: report.inventory_complete,
-            cursor: report.cursor,
-            focused_global: report.focused_global.as_str(),
-            action_foreground: report.action_foreground.as_ref(),
-            action_cached: report.action_cached.as_ref(),
-            action_outputs: report.action_outputs.as_slice(),
-            primary_output: report.primary_output.as_ref(),
-            screens: report.screens.as_slice(),
-            held_screens: report.held_screens.as_slice(),
-        }
-    }
-
     pub(crate) fn from_staged(staged: &'a StagedReport) -> Self {
         Self {
             inventory_complete: staged.observation.inventory_complete,
@@ -1157,24 +1097,12 @@ pub struct WorldEngine {
     pub(crate) initial_settings_accepted: bool,
     pub(crate) ready_latched: bool,
     pub(crate) state_revision: u64,
-    has_last: bool,
-    last_request_seq: u64,
-    last_digest: u64,
-    /// Latest accepted typed report, bounded by the input caps in
-    /// [`crate::world_report`]. Duplicate detection compares full typed
-    /// input equality against this value; the digest is only a fast
-    /// pre-check, never the identity (no hash-collision aliasing).
-    pub(crate) last_report: Option<WorldReport>,
-    last_observation_seq: u64,
-    pub(crate) last_reply: Option<WorldReply>,
-    /// Typed v4 replay bookkeeping, separate from the legacy
-    /// `last_report`/`last_reply` cache above: the latest accepted v4
+    /// Typed v4 replay bookkeeping: the latest accepted v4
     /// report, its digest, and the cached v4 reply. The digest is only a
     /// fast pre-check; full typed input equality decides duplicates.
     /// Written only by the internal v4 admission boundary on accepted
     /// candidates; cleared with every fresh engine, cloned with every
-    /// staged candidate, never touched by rejected candidates or the
-    /// legacy path.
+    /// staged candidate, never touched by rejected candidates.
     pub(crate) has_last_v4: bool,
     pub(crate) last_request_seq_v4: u64,
     pub(crate) last_digest_v4: u64,
@@ -1183,7 +1111,7 @@ pub struct WorldEngine {
     pub(crate) last_reply_v4: Option<WorldReplyV4>,
     /// Retained prior-accepted observation/publication facts for shared
     /// lanes: previous raw focus plus the actually published
-    /// controlled-empty workspace set. Written at `finish` from the
+    /// controlled-empty workspace set. Written at `finish_v4` from the
     /// accepted candidate; cleared with every fresh engine, cloned with
     /// every staged candidate, never touched by rejected candidates.
     pub(crate) prior_context: PriorAcceptedContext,
@@ -1391,7 +1319,7 @@ pub struct WorldEngine {
     pub(crate) consumed_gesture_seq: u64,
     /// Precise result of the latest incorporated gesture terminal, staged
     /// for the reply being published ([`WorldEngine::publish`] takes it
-    /// into [`WorldReply::gesture_settled`]). Single slot: each terminal
+    /// into [`WorldReplyV4::gesture_settled`](crate::world_report::WorldReplyV4)). Single slot: each terminal
     /// overwrites; each publish takes. Never drained by the adapter; the
     /// reply carries the per-report result and the next unrelated report
     /// publishes `None`.
@@ -1410,7 +1338,7 @@ pub struct WorldEngine {
     /// forget runs after, never before).
     pub(crate) pending_forget: Vec<(DomainKey, WindowId)>,
     /// Correlated per-command outcome staged by the command path below and
-    /// consumed once by [`WorldEngine::publish`] for the reply being built.
+    /// consumed once by [`crate::world_engine::WorldEngine::publish_v4`] for the reply being built.
     /// `None` for observation-only replies and for operations whose result
     /// the snapshot already carries (move/resize/tiled-admit/focus/send).
     /// Cleared at the start of every staged run so a previous command's
@@ -1624,34 +1552,9 @@ pub struct WorldEngine {
     /// until handshake reset. Fail-closed by construction: a dropped
     /// block would allow a save to erase deferred sticky intent.
     pub(crate) intent_sticky_saturated: bool,
-    /// Retained pager presentation live frames (stage 5): fresh native
-    /// frames per roster lifetime, rebuilt wholesale by every
-    /// [`WorldEngine::retain_pager_presentation`] call from the normalized
-    /// ingress. First in the pager frame fallback after membership.
-    /// Presentation-only; never mapping, membership, or geometry authority.
-    /// Members with no resolved source render no miniature, never a guess.
-    pub(crate) presentation_live: BTreeMap<WindowId, Rect>,
-    /// Retained pager presentation float snapshots (stage 5): saved float
-    /// frames per roster lifetime, second in the pager frame fallback.
-    /// Presentation-only like above.
-    pub(crate) presentation_float: BTreeMap<WindowId, Rect>,
-    /// Retained pager presentation tile/hide-time snapshots (stage 5):
-    /// saved tile slot and hide-time frames per roster lifetime, last in
-    /// the pager frame fallback. Presentation-only like above.
-    pub(crate) presentation_tile: BTreeMap<WindowId, Rect>,
-    /// Retained pager presentation order (stage 5): top-to-bottom native
-    /// stacking over admitted member lifetimes plus first-paint candidates
-    /// (see [`WorldEngine::retain_pager_presentation`]). Sole retained
-    /// stacking authority; per-workspace content lists paint bottom first.
-    pub(crate) presentation_order: Vec<WindowId>,
-    /// Pager presentation focus (stage 5): the adapter-observed focused
-    /// lifetime from the latest accepted report (`None` when none or
-    /// unmanaged). Presentation-only; the content gates it on retained homing.
-    pub(crate) presentation_focused: Option<WindowId>,
     /// Retained v4 pager presentation order: top-to-bottom native stacking
     /// over admitted member lifetimes plus first-paint candidates, from the
-    /// v4 `pagerOrder`/`pagerFrames` rows only. Never shares the v3 order
-    /// maps; the v3 path stays untouched until cutover.
+    /// v4 `pagerOrder`/`pagerFrames` rows only. Never shares any legacy order maps; the legacy path is removed.
     pub(crate) presentation_order_v4: Vec<WindowId>,
     /// Retained v4 pager presentation live frames: last-known fresh frame
     /// per roster lifetime, accumulated by every
@@ -1937,12 +1840,6 @@ impl WorldEngine {
             initial_settings_accepted: false,
             ready_latched: false,
             state_revision: 0,
-            has_last: false,
-            last_request_seq: 0,
-            last_digest: 0,
-            last_report: None,
-            last_observation_seq: 0,
-            last_reply: None,
             has_last_v4: false,
             last_request_seq_v4: 0,
             last_digest_v4: 0,
@@ -2022,11 +1919,6 @@ impl WorldEngine {
             sticky_rollback_saves: BTreeMap::new(),
             intent_sticky_blocks: BTreeSet::new(),
             intent_sticky_saturated: false,
-            presentation_live: BTreeMap::new(),
-            presentation_float: BTreeMap::new(),
-            presentation_tile: BTreeMap::new(),
-            presentation_order: Vec::new(),
-            presentation_focused: None,
             presentation_order_v4: Vec::new(),
             presentation_live_v4: BTreeMap::new(),
             presentation_focused_v4: None,
@@ -2356,44 +2248,6 @@ impl WorldEngine {
         self
     }
 
-    /// Bootstrap reply for discovery: generation/capabilities with
-    /// `ready=false` and no applicable desired state. The adapter sends a
-    /// full report before any ready reply; empty pre-bootstrap state never
-    /// authorizes removal.
-    #[must_use]
-    pub fn bootstrap_reply(&self, adapter_incarnation: &str, request_id: &str) -> WorldReply {
-        WorldReply {
-            contract_version: WORLD_CONTRACT_VERSION_LEGACY,
-            adapter_incarnation: adapter_incarnation.to_owned(),
-            core_generation: self.core_generation_str.clone(),
-            request_id: request_id.to_owned(),
-            based_on_observation_seq: 0,
-            state_revision: self.state_revision,
-            ready: false,
-            command_consumed: false,
-            scopes: Vec::new(),
-            workspaces: Vec::new(),
-            outputs: Vec::new(),
-            diagnostics: Vec::new(),
-            windows: Vec::new(),
-            transfers: Vec::new(),
-            effects: Vec::new(),
-            command_result: None,
-            gesture_settled: None,
-            operation_settled: Vec::new(),
-            native_creations: Vec::new(),
-            cursor_warp: None,
-            // Empty bootstrap mirrors the current revision: no counter
-            // advance, no authority.
-            presentation: crate::world_presentation::WorldPresentation {
-                rev: self.state_revision,
-                ..Default::default()
-            },
-            intent_writes: Vec::new(),
-            switch_settled: Vec::new(),
-        }
-    }
-
     /// Advance the consumed gesture id watermark to at least `id`.
     /// Monotonic: replays can never move it backward.
     pub(crate) fn consume_gesture_id(&mut self, id: u64) {
@@ -2655,335 +2509,6 @@ impl WorldEngine {
         self.history.previous(output)
     }
 
-    /// Dead legacy ingress: accept one complete legacy report and publish
-    /// one globally ordered legacy reply. Only the doc-hidden legacy
-    /// implementation and its deferred regression tests use this; the
-    /// public ingress is [`WorldEngine::handle_report`]. No runtime
-    /// callers go through here.
-    ///
-    /// Transactional: every cheap gate (generation, request estimate,
-    /// version, shape, identity, freshness, observation order, conservative
-    /// reply upper bound, revision exhaustion) runs before any mutation.
-    /// Accepted inputs then run to completion on a staged clone; the exact
-    /// canonical encoding gates the staged reply before it commits. A
-    /// staged overflow leaves sessions, retained transfers, ordering, and
-    /// command consumption exactly as before. Only reports passing every
-    /// cheap gate pay for the clone.
-    #[doc(hidden)]
-    pub fn handle_report_legacy(&mut self, report: &WorldReport) -> LegacyWorldOutcome {
-        // A report can only refer to the lifetime established by handshake.
-        if self.adapter.as_deref() != Some(report.adapter_incarnation.as_str()) {
-            return LegacyWorldOutcome::Rejected {
-                kind: KIND_OWNER,
-                message: MSG_OWNER,
-            };
-        }
-        if report.core_generation != self.core_generation_str {
-            return LegacyWorldOutcome::Rejected {
-                kind: KIND_GENERATION,
-                message: MSG_GENERATION,
-            };
-        }
-        // Core-owned grading: directly constructed identifiable invalid
-        // scale/metadata rows become narrow holds like their
-        // protocol-decoded twins before any estimate, validation, or
-        // mutation. Structural violations still refuse below; the pure
-        // shape gate is unchanged for callers that bypass the engine.
-        // Window grading follows the screen grading: invalid metadata
-        // values hold first, then unavailable-fact contradictions hold
-        // against this connection's capabilities.
-        let graded = grade_invalid_screens(report);
-        let report = graded.as_ref().map_or(report, |owned| owned);
-        let graded_windows = grade_invalid_windows(report);
-        let report = graded_windows.as_ref().map_or(report, |owned| owned);
-        let unavailable = self
-            .capabilities
-            .as_ref()
-            .map(|capabilities| capabilities.unavailable_facts.as_slice())
-            .unwrap_or(&[]);
-        let native_sticky_supported = crate::world_state::state_property_supported(
-            self.capabilities(),
-            crate::world_report::StateProperty::Sticky,
-        );
-        let maximize_supported = crate::world_state::state_property_supported(
-            self.capabilities(),
-            crate::world_report::StateProperty::Maximized,
-        );
-        let graded_conflicting = grade_conflicting_windows(
-            report,
-            unavailable,
-            native_sticky_supported,
-            maximize_supported,
-        );
-        let report = graded_conflicting.as_ref().map_or(report, |owned| owned);
-        if report_estimate(report) > WORLD_MAX_REQUEST_BYTES {
-            return LegacyWorldOutcome::Rejected {
-                kind: KIND_OVERSIZED,
-                message: MSG_OVERSIZED,
-            };
-        }
-        if report.contract_version != WORLD_CONTRACT_VERSION_LEGACY {
-            return LegacyWorldOutcome::Rejected {
-                kind: KIND_VERSION,
-                message: MSG_VERSION,
-            };
-        }
-        if let Some(reason) = validate_report_reason(report) {
-            return LegacyWorldOutcome::Rejected {
-                kind: KIND_SNAPSHOT,
-                // Fixed check vocabulary, never payload bytes.
-                message: reason,
-            };
-        }
-        let native_evidence = !report.native.is_empty()
-            || report
-                .windows
-                .iter()
-                .any(|window| window.native_workspace.as_deref().is_some())
-            || report.member_attempts.iter().any(|attempt| {
-                matches!(
-                    attempt.pre.as_ref(),
-                    Some(crate::world_report::WorkspaceRef::Native { .. })
-                ) || matches!(
-                    attempt.post.as_ref(),
-                    Some(crate::world_report::WorkspaceRef::Native { .. })
-                )
-            })
-            || !report.view_attempts.is_empty()
-            || !report.creation_attempts.is_empty();
-        if native_evidence && !self.host_owned_workspace_domains() {
-            return LegacyWorldOutcome::Rejected {
-                kind: KIND_SNAPSHOT,
-                message: "native-without-capability",
-            };
-        }
-        // Authoritative host-arm gate for readiness brackets: the native
-        // arm rides only on host-owned hosts, the observed-output arm only
-        // elsewhere. Checked before any adoption even when home/out is
-        // null; a null location is valid evidence but never proves
-        // readiness. Context-free structural validation above allows both
-        // shapes.
-        let host_owned = self.host_owned_workspace_domains();
-        let arrival_host_mismatch = report.focus_feedback.iter().any(|row| {
-            row.arrival
-                .iter()
-                .any(|bracket| bracket.location.is_native() != host_owned)
-        });
-        if arrival_host_mismatch {
-            return LegacyWorldOutcome::Rejected {
-                kind: KIND_SNAPSHOT,
-                message: "arrival-host-mismatch",
-            };
-        }
-        let Some(owner) = self.connection_owner.clone() else {
-            return LegacyWorldOutcome::Rejected {
-                kind: KIND_OWNER,
-                message: MSG_OWNER,
-            };
-        };
-        let correlation = match CorrelationId::parse(&report.request_id) {
-            Some(correlation) => correlation,
-            None => {
-                return LegacyWorldOutcome::Rejected {
-                    kind: KIND_CORRELATION,
-                    message: MSG_CORRELATION,
-                };
-            }
-        };
-        let digest = report_digest(report);
-        let (has_last, last_seq, last_digest, last_obs) = (
-            self.has_last,
-            self.last_request_seq,
-            self.last_digest,
-            self.last_observation_seq,
-        );
-        if has_last {
-            if report.request_seq < last_seq {
-                return LegacyWorldOutcome::Rejected {
-                    kind: KIND_SUPERSEDED,
-                    message: MSG_SUPERSEDED,
-                };
-            }
-            if report.request_seq == last_seq {
-                // Fast digest pre-check first; true input equality decides.
-                if digest != last_digest {
-                    return LegacyWorldOutcome::Rejected {
-                        kind: KIND_REUSED,
-                        message: MSG_REUSED,
-                    };
-                }
-                if self.last_report.as_ref().is_some_and(|last| last == report) {
-                    let Some(cached) = self.last_reply.clone() else {
-                        return LegacyWorldOutcome::Rejected {
-                            kind: KIND_SUPERSEDED,
-                            message: MSG_SUPERSEDED,
-                        };
-                    };
-                    return LegacyWorldOutcome::Duplicate(cached);
-                }
-                return LegacyWorldOutcome::Rejected {
-                    kind: KIND_REUSED,
-                    message: MSG_REUSED,
-                };
-            }
-        }
-        if has_last && report.observation_seq < last_obs {
-            return LegacyWorldOutcome::Rejected {
-                kind: KIND_OBS_STALE,
-                message: MSG_OBS_STALE,
-            };
-        }
-        // Conservative pre-mutation reply bound: no observation convergence,
-        // slot cleanup, or command mutation runs when the worst-case reply
-        // cannot fit.
-        let retained_len = self.retained.len() + self.retained_floats.len();
-        let created_len = report.screens.len();
-        let staged_windows = self
-            .staged
-            .facts
-            .len()
-            .saturating_add(self.staged.held_windows.len());
-        if reply_upper_bound(
-            report,
-            retained_len,
-            self.engine.domain_keys().len(),
-            created_len,
-            staged_windows,
-            self.retained_publish_footprint(),
-        )
-        .saturating_add(max_intent_rollback_bound(self.rollback_reserve_count()))
-        .saturating_add(self.switch_settle_reserve())
-        // A select-family command can mint one zero-obligation issuing
-        // terminal while old bindings settle in the same report; reserve
-        // it alongside the retained bindings, never from lane slack.
-        .saturating_add(self.switch_issuing_reserve(report.command.as_ref()))
-        // Commandless policy views can mint at most one zero-obligation
-        // terminal per fresh displaced/returned workspace at publish;
-        // bound the placements knowable before convergence.
-        .saturating_add(self.policy_terminal_reserve(report))
-            > WORLD_MAX_REPLY_BYTES
-        {
-            return LegacyWorldOutcome::Rejected {
-                kind: KIND_REPLY_SIZE,
-                message: MSG_REPLY_SIZE,
-            };
-        }
-        // Counter exhaustion refuses and re-bootstraps under a new
-        // generation; it never wraps in place.
-        if self.state_revision == u64::MAX {
-            return LegacyWorldOutcome::Rejected {
-                kind: KIND_REVISION_EXHAUSTED,
-                message: MSG_REVISION_EXHAUSTED,
-            };
-        }
-        // Fresh reports carrying an already-consumed command sequence
-        // reconcile observation but never re-execute the command.
-        let consumed = match (report.command_seq, report.command.as_ref()) {
-            (Some(seq), Some(_)) => self.command_highwater.is_some_and(|mark| seq <= mark),
-            (Some(_), None) | (None, Some(_)) => {
-                return LegacyWorldOutcome::Rejected {
-                    kind: KIND_SNAPSHOT,
-                    message: "command-pair-invalid",
-                };
-            }
-            (None, None) => false,
-        };
-        let usable_initial_observation = report.inventory_complete
-            && !report.screens.is_empty()
-            && report.screens.iter().all(|screen| {
-                screen.complete
-                    && screen
-                        .full_rect
-                        .is_some_and(|rect| rect.w > 0 && rect.h > 0)
-                    && screen
-                        .work_area
-                        .is_some_and(|rect| rect.w > 0 && rect.h > 0)
-            });
-        if !self.initial_settings_accepted || (!self.ready_latched && !usable_initial_observation) {
-            // Bootstrap still ingests validated intent rows so records
-            // delivered in incomplete pre-ready inventories survive until
-            // the first usable fact. No admission, sweep, or writes here.
-            // Complete/closed cleanup applies immediately too so stale
-            // orphans and conflicts cannot exhaust the joint bound before
-            // ready; retention pre-ready is bounded pending data, never
-            // report or write authority.
-            self.ingest_staged_intent(&Self::capture_observation(report));
-            if report.inventory_complete {
-                let live: BTreeSet<WindowId> = report
-                    .windows
-                    .iter()
-                    .map(|fact| fact.window.clone())
-                    .collect();
-                let held: BTreeSet<WindowId> = report
-                    .held_windows
-                    .iter()
-                    .map(|held| held.window.clone())
-                    .collect();
-                self.pending_intent
-                    .retain(|id, _| live.contains(id) || held.contains(id));
-                self.intent_conflicts
-                    .retain(|id| live.contains(id) || held.contains(id));
-                self.restored_floats
-                    .retain(|id| live.contains(id) || held.contains(id));
-                self.restored_sticky
-                    .retain(|id, _| live.contains(id) || held.contains(id));
-                self.intent_admitted
-                    .retain(|id| live.contains(id) || held.contains(id));
-                self.intent_sticky_blocks
-                    .retain(|id| live.contains(id) || held.contains(id));
-            }
-            return LegacyWorldOutcome::Accepted(self.bootstrap_report_reply(report, &correlation));
-        }
-        // Stage everything past this point on a clone. Exact-encoding
-        // overflow (or any late failure) drops the candidate; `self` is
-        // adopted only after the staged reply encodes within budget.
-        let mut staged = self.clone();
-        if usable_initial_observation {
-            staged.ready_latched = true;
-        }
-        let outcome = staged.run_accepted(report, &owner, &correlation, digest, consumed);
-        match outcome {
-            LegacyWorldOutcome::Accepted(reply) | LegacyWorldOutcome::CommandConsumed(reply) => {
-                // Outbound intent lane gate: every published/cached reply
-                // originates valid. This increment publishes at most one
-                // ToggleFloat save (see `toggle_float_intent_save`); the
-                // gate admits empty and single-save replies alike and must
-                // pass here before the candidate commits or encodes. Fixed
-                // check vocabulary, never payload.
-                if let Some(reason) = validate_intent_writes_reason(&reply.intent_writes) {
-                    return LegacyWorldOutcome::Rejected {
-                        kind: KIND_SNAPSHOT,
-                        message: reason,
-                    };
-                }
-                if reply_estimate(&reply) > WORLD_MAX_REPLY_BYTES
-                    || encode_reply_canonical(&reply).len() > WORLD_MAX_REPLY_BYTES
-                {
-                    return LegacyWorldOutcome::Rejected {
-                        kind: KIND_REPLY_SIZE,
-                        message: MSG_REPLY_SIZE,
-                    };
-                }
-                *self = staged;
-                self.last_reply = Some(reply.clone());
-                if consumed {
-                    LegacyWorldOutcome::CommandConsumed(reply)
-                } else {
-                    LegacyWorldOutcome::Accepted(reply)
-                }
-            }
-            LegacyWorldOutcome::Duplicate(_) => {
-                // Staged runs never duplicate: the latest duplicate returns
-                // above, before staging.
-                LegacyWorldOutcome::Rejected {
-                    kind: KIND_SUPERSEDED,
-                    message: MSG_SUPERSEDED,
-                }
-            }
-            rejected => rejected,
-        }
-    }
-
     /// Accept one complete v4 report and publish one globally ordered v4
     /// reply. This is the sole public report ingress: the caller supplies
     /// the typed v4 report, and the admitted boundary owns admission (bound
@@ -3043,46 +2568,6 @@ impl WorldEngine {
             }
         };
         self.handle_report_v4_batched(report, &EventIssue { owner, correlation }, queued)
-    }
-
-    fn bootstrap_report_reply(
-        &self,
-        report: &WorldReport,
-        correlation: &CorrelationId,
-    ) -> WorldReply {
-        // Bootstrap publishes no intent decisions: the empty `intent_writes`
-        // below trivially satisfies `validate_intent_writes_reason`, so the
-        // staged commit gate above stays the single enforcing boundary.
-        WorldReply {
-            contract_version: WORLD_CONTRACT_VERSION_LEGACY,
-            adapter_incarnation: report.adapter_incarnation.clone(),
-            core_generation: report.core_generation.clone(),
-            request_id: correlation.as_str().to_owned(),
-            based_on_observation_seq: report.observation_seq,
-            state_revision: self.state_revision,
-            ready: false,
-            command_consumed: false,
-            scopes: Vec::new(),
-            workspaces: Vec::new(),
-            outputs: Vec::new(),
-            diagnostics: Vec::new(),
-            windows: Vec::new(),
-            transfers: Vec::new(),
-            effects: Vec::new(),
-            command_result: None,
-            gesture_settled: None,
-            operation_settled: Vec::new(),
-            native_creations: Vec::new(),
-            cursor_warp: None,
-            // Empty bootstrap mirrors the current revision: no counter
-            // advance, no authority.
-            presentation: crate::world_presentation::WorldPresentation {
-                rev: self.state_revision,
-                ..Default::default()
-            },
-            intent_writes: Vec::new(),
-            switch_settled: Vec::new(),
-        }
     }
 
     /// Joint intent ledger occupancy: pending restores plus conflict marks
@@ -3759,470 +3244,6 @@ impl WorldEngine {
         }
     }
 
-    /// Run one accepted report on the staged candidate: converge logical
-    /// rings/views, stage the observation, settle retained state, sweep
-    /// every readable logical workspace, execute at most one command, and
-    /// publish one globally monotonic revision. Called only on the clone;
-    /// the caller adopts the candidate after the exact-encoding gate.
-    fn run_accepted(
-        &mut self,
-        report: &WorldReport,
-        owner: &OwnerId,
-        correlation: &CorrelationId,
-        digest: u64,
-        consumed: bool,
-    ) -> LegacyWorldOutcome {
-        // Freeze implicit send sources from pre-observation retained
-        // homing, before staging can admit newcomers or settle rehoming.
-        // The frozen explicit output is the only source the command below
-        // may use; the home leg must predate stage_facts/settle/reconcile
-        // so first-tick admissions and rehomed movers keep the retired
-        // adapter contract exactly (homed pre-tick output, never post-sweep
-        // membership). Report-only fallback legs need no freeze.
-        // Direction-only migration freezes here too: the old production
-        // route pinned the pre-tick retained view, so view settlement or
-        // bootstrap in this report must never retarget the current intent.
-        // First-tick unbootstrapped migration refuses; same-report created
-        // views never migrate. Retained topology target selection and all
-        // gates stay downstream on staged state.
-        let source_routing = RawRouting::from_source(report);
-        let (frozen_send_source, frozen_migration_source) =
-            self.freeze_command_sources(report.command.as_ref(), &source_routing);
-        // Typed event identity for the command path below: the validated
-        // owner/correlation pair, never a re-parse of the report.
-        let issue = EventIssue {
-            owner: owner.clone(),
-            correlation: correlation.clone(),
-        };
-        // Logical rings/views converge first (bootstrap, hotplug, tiling
-        // seeds) so staging assigns facts against this report's ownership.
-        // Exactly-once initial ingestion: capture, ingest from the
-        // capture, then stage from that same capture, so the classifier
-        // sees pending first-admission wins this same report with no
-        // second ingestion. Later command restages reuse the
-        // classification-only `restage_classification` and never reingest.
-        let observation = Self::capture_observation(report);
-        self.ingest_staged_intent(&observation);
-        self.stage_captured(report, observation);
-        self.converge_logical_pre();
-        // View flights settle with staged native proof before staging:
-        // host-owned confirms and external supersessions move core views,
-        // so homing assigns against adapter truth, never a stale desire.
-        // Native-free flights are kept for their selection binding and
-        // never settle from echoes here.
-        self.settle_views_pre();
-        // Stage the observation: homing plus one domain per known logical
-        // workspace.
-        self.build_staged_domains();
-        // Stage-4a gesture bind (observation half): validate the ingress
-        // and retain the session before settlement and the sweep, so both
-        // converge with the shielded homing. Never commits; the act half
-        // runs after the sweep.
-        self.gesture_bind(&BTreeSet::new());
-        // Remaining flights (window, migration, floats) settle against the
-        // staged homing and echoes. Settlement classifies against the
-        // pre-settlement staged homing (raw observation versus the
-        // authoritative desired projection); a proven migration refusal can
-        // roll back mapping/members/views/session ownership, so restage
-        // afterwards: the sweep and publish below must use post-rollback
-        // domains, never the pre-rollback ones.
-        self.settle_rest(report.command.as_ref(), &issue, consumed);
-        self.build_staged_domains();
-        // State bindings settle against post-rollback staged domains: the
-        // readability join must see the committed homing, and the raw capture
-        // runs before sweep holds. Once per accepted report, including
-        // consumed-command reports (no early return above).
-        self.settle_states();
-        // Ordinary focus feedback settles against the retained latest
-        // batch before the sweep: historical correlation only, never
-        // current-authority or readability gated, so consumed and
-        // observation-only reports settle exactly like command reports.
-        self.settle_focus_feedback();
-        // Selection arrival bindings settle the same way: first exact
-        // opaque-tuple correlation latches raw evidence with no authority
-        // upgrade, so consumed and observation-only reports settle alike.
-        self.settle_selection_feedback();
-        // Selection switch terminals settle next from the latched feedback
-        // plus first-correlated LastWrite evidence, still before the
-        // command-only rollback boundary.
-        self.settle_selection_switch();
-        // Core-owned frame policy: fold mechanical write/readback facts into
-        // retained clamp/transient memory (scoped by exact staged lifetime)
-        // so this same reply publishes suppression.
-        self.settle_frames();
-        // Cursor observations remain report facts; computational policy is
-        // retained from the connection settings envelope.
-        self.prev_cursor = self.last_cursor;
-        self.last_cursor = self.staged.observation.cursor;
-        self.engine.set_fresh_cursor(self.staged.observation.cursor);
-        // Floating workspaces skip convergence entirely: no session is
-        // created or converged there, and no frame writes publish for them.
-        self.floating_scopes = self
-            .staged
-            .domains
-            .iter()
-            .map(|domain| domain.key.clone())
-            .filter(|key| {
-                self.tiling
-                    .get(key)
-                    .is_some_and(|mode| *mode == TilingMode::Floating)
-            })
-            .collect();
-        // Trailing lifecycle and history converge after staging so they see
-        // homed occupancy; core-owned topology retains so the same report's
-        // commands resolve against its own geometry.
-        self.converge_logical_post();
-        self.retain_live_topology();
-        // Retained membership before the sweep, per swept domain: the
-        // admission-focus pass diffs this against converged state to find
-        // genuinely new lifetimes. Only domains with a retained session
-        // count; fresh seeds (bootstrap, restart, disable/enable
-        // re-adoption) never mint admission intents.
-        let mut known_before: BTreeMap<DomainKey, BTreeSet<String>> = BTreeMap::new();
-        for domain in &self.staged.domains {
-            if !domain.readable {
-                continue;
-            }
-            if self.floating_scopes.contains(&domain.key) {
-                continue;
-            }
-            let Some(session) = self.engine.session(&domain.key) else {
-                continue;
-            };
-            let mut known = BTreeSet::new();
-            for link in session.snapshot().windows {
-                if link.output == domain.key.output && link.workspace == domain.key.workspace {
-                    known.insert(link.window.0.clone());
-                }
-            }
-            for observed in session.exception_observed() {
-                if observed.output == domain.key.output
-                    && observed.workspace == domain.key.workspace
-                {
-                    known.insert(observed.window.0.clone());
-                }
-            }
-            for (window, output, workspace) in session.minimized_entries() {
-                if output == domain.key.output && workspace == domain.key.workspace {
-                    known.insert(window.0.clone());
-                }
-            }
-            known_before.insert(domain.key.clone(), known);
-        }
-        // Honest retained tile-slot context for the born predicates: every
-        // tiled link the engine held before this report's sweep, across all
-        // sessions (a slot in an unswept domain still proves the lifetime is
-        // no birth). Computed pre-sweep like `known_before`.
-        let mut slotted_before: BTreeSet<WindowId> = BTreeSet::new();
-        for domain in &self.staged.domains {
-            let Some(session) = self.engine.session(&domain.key) else {
-                continue;
-            };
-            for link in session.snapshot().windows {
-                slotted_before.insert(link.window.clone());
-            }
-        }
-        // Reconcile every readable tiled domain; hold the rest explicitly.
-        // Floating domains skip convergence (untouched, never held).
-        // Hold reasons are per-report staging only: cleared here so a
-        // recovered scope never inherits a previous hold.
-        self.hold_reasons.clear();
-        let mut held_scopes: BTreeSet<DomainKey> = BTreeSet::new();
-        // Host-owned adoption fence: a fact on an authoritative output
-        // whose native evidence is unknown, unmapped, or conflicting keeps
-        // its retained homing but must not bless writes derived from that
-        // retained state. Fence the homed scope with the existing
-        // Unreadable authority (no new lane, no new enum): publish
-        // withholds frame and membership writes there. Unhomed unknowns
-        // (newcomers awaiting evidence) publish no row at all.
-        if self.host_owned_workspace_domains() {
-            let mut fence: Vec<DomainKey> = Vec::new();
-            for (window, fact) in &self.staged.facts {
-                let authoritative = match fact.output.as_ref() {
-                    Some(_) => self.native_authoritative(),
-                    // Unknown output under host-owned domains never proves
-                    // membership: fence the retained homing like any
-                    // unknown receipt.
-                    None => self.host_owned_workspace_domains(),
-                };
-                if !authoritative {
-                    continue;
-                }
-                if self.effective_logical_receipt(fact).is_some() {
-                    continue;
-                }
-                if let Some(key) = self.staged.homing.get(window) {
-                    fence.push(key.clone());
-                }
-            }
-            // Incompatible fresh shared projection: fence every staged
-            // scope (the fallback singletons), not just homed members.
-            if self.native_order_conflict() {
-                for domain in &self.staged.domains {
-                    if !fence.contains(&domain.key) {
-                        fence.push(domain.key.clone());
-                    }
-                }
-            }
-            for key in fence {
-                self.hold_reasons
-                    .insert(key.clone(), HoldReason::Unreadable);
-                held_scopes.insert(key);
-            }
-        }
-        // Narrowly held rows keep their retained homes: hold those scopes
-        // so the sweep never converges live sessions away from under them.
-        // Unhomed held rows (newcomers with no facts) hold nothing: no
-        // authority, no membership.
-        let held_window_scopes: Vec<DomainKey> = self
-            .staged
-            .held_windows
-            .iter()
-            .filter_map(|held| self.core_homing(&held.window))
-            .collect();
-        for key in &held_window_scopes {
-            self.hold_reasons
-                .entry(key.clone())
-                .or_insert(HoldReason::Unreadable);
-            held_scopes.insert(key.clone());
-        }
-        // Snapshot safety-exclusion intent before the sweep retires the
-        // excluded slots (the sweep converges them as closes for slot
-        // removal only, never a native close). Same-lifetime lift below
-        // restores from this ledger through the stage-time fallback.
-        self.capture_excluded_intent();
-        // One-time native sticky dependent followup: exact-tuple Applied
-        // off/clear proof lands the dependent tile/float membership, ON
-        // marks done, and exact-tuple RefusedProven proof rolls back the
-        // exact pre-command runtime plus saved record (one queued write),
-        // now that floating scopes are fresh and held scopes are staged,
-        // before the ordinary sweep converges. Ambiguous proof never
-        // retries.
-        self.run_native_sticky_followups(&issue, &held_scopes);
-        // Clone the staged domains for iteration: sweeps borrow `self`
-        // mutably while reading staged homing.
-        let domains = self.staged.domains.clone();
-        for domain in &domains {
-            if held_window_scopes.contains(&domain.key) {
-                continue;
-            }
-            if !domain.readable {
-                continue;
-            }
-            if self.floating_scopes.contains(&domain.key) {
-                continue;
-            }
-            // Gap preservation: incomplete inventory never infers
-            // minimize/close from absence. Outstanding migration source and
-            // target scopes hold explicitly so the retained sessions (tree,
-            // shares, focus) survive the gap; settlement already holds the
-            // flight narrowly.
-            if !self.staged.observation.inventory_complete
-                && self.retained.iter().any(|r| {
-                    matches!(&r.target.kind, TransferKind::Migration)
-                        && (DomainKey {
-                            output: r.source_output.clone(),
-                            workspace: crate::directional::WorkspaceId(r.source_workspace.clone()),
-                        } == domain.key
-                            || DomainKey {
-                                output: r.target.target_output.clone(),
-                                workspace: crate::directional::WorkspaceId(
-                                    r.target.target_workspace.clone(),
-                                ),
-                            } == domain.key)
-                })
-            {
-                self.hold_reasons.insert(
-                    domain.key.clone(),
-                    crate::world_report::HoldReason::IncompleteInventory,
-                );
-                held_scopes.insert(domain.key.clone());
-                continue;
-            }
-            self.sweep_domain(domain, owner, correlation, &mut held_scopes);
-        }
-        // First-admission latch plus durable explicit-tile commit, before
-        // focus/commands: restored intent must be committed so a
-        // same-report float command can supersede it transactionally.
-        self.settle_intent_admissions();
-        // Changed native focus observation under the same fail-closed
-        // gates as command recording: a changed `focused_global` naming a
-        // live lifetime records the canonical slot through
-        // `record_canonical` (tiled ingestion gates: readable, unheld,
-        // owning-Session validation). Unchanged re-reports carry no new
-        // information and never overwrite an unlanded command choice;
-        // empty focus records nothing. The execution-time slot follows the
-        // same event lifecycle: genuine loss, close, or departure clears
-        // it while per-workspace canonical memory is untouched.
-        {
-            let prev = self.prior_context.prev_focused_global.clone();
-            let current_focused = self.staged.observation.focused_global.clone();
-            if !current_focused.is_empty() && prev != current_focused {
-                let active = WindowId(current_focused.clone());
-                let _ = self.record_canonical(&active, &held_scopes, false);
-                // A genuine new native focus event beats prior core intent:
-                // when the fail-closed record above skipped, the stale slot
-                // must not survive under the new event.
-                if self
-                    .implicit_focus
-                    .as_ref()
-                    .is_none_or(|slot| slot.0 != current_focused)
-                {
-                    self.implicit_focus = None;
-                }
-            } else if current_focused.is_empty() {
-                self.implicit_focus = None;
-            }
-            // Close or departure clears a slot target that left the live
-            // set; unchanged re-reports keep an unlanded command choice.
-            if let Some(slot) = self.implicit_focus.clone()
-                && (self.staged.closes.contains(&slot) || !self.staged.homing.contains_key(&slot))
-            {
-                self.implicit_focus = None;
-            }
-        }
-        // Commandless born maximize-clear minting: first-seen maximized /
-        // fullscreen births bind here (post-sweep, so `known_before` names
-        // the pre-sweep retained lifetimes) and ride this same reply's
-        // `clear_operation` desire. Runs for consumed reports too:
-        // reconciliation never mints commands but born admission is
-        // observation, never a command.
-        {
-            let mut pre_known: BTreeSet<WindowId> = BTreeSet::new();
-            for known in known_before.values() {
-                for id in known {
-                    pre_known.insert(WindowId(id.clone()));
-                }
-            }
-            self.mint_born_clears(report, &pre_known, &slotted_before);
-        }
-        for (key, window) in std::mem::take(&mut self.pending_forget) {
-            self.engine.forget_minimized_slot(&key, &window);
-        }
-        for (key, window) in self.confirmed_minimized_rehomes() {
-            self.engine.forget_minimized_slot(&key, &window);
-        }
-        // Stage-4a gesture ingress before admission focus and commands:
-        // preview and release read the swept observation; a committed
-        // release resweeps and restages exactly like the command path so
-        // admission focus, commands, and publishing below see the
-        // committed ownership. Gesture ingress is observation, never a
-        // command: it runs even on consumed-command reports, and it never
-        // consumes a sequence.
-        self.command_result = None;
-        match self.gesture_act(&issue, &mut held_scopes) {
-            GestureOutcome::Absent | GestureOutcome::Held => {}
-            GestureOutcome::Settled { committed, result } => {
-                if committed {
-                    let was_floating = self.floating_scopes.clone();
-                    self.resweep_retiled(owner, correlation, &mut held_scopes, &was_floating);
-                    self.build_staged_domains();
-                    self.settle_intent_admissions();
-                }
-                self.command_result = result.map(|boxed| *boxed);
-            }
-        }
-        // Fresh-admission focus intent for this report's sweep, if any.
-        // Command execution mints no newcomers, so every publish below
-        // shares it.
-        let mut effects = self.take_admission_focus(&known_before, &held_scopes);
-        // Command path: consumed sequences reconcile only, never re-execute.
-        // A consumed command never re-executes, so its result never
-        // re-emits either; a gesture result is the gesture's own, never
-        // the command's, so consumed replies may still carry it.
-        if consumed {
-            crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-            let result = self.command_result.take();
-            let reply = self.publish(report, true, effects, result, &held_scopes);
-            return self.finish(report, digest, reply);
-        }
-        if let Some(command) = report.command.as_ref() {
-            let command_seq = report.command_seq.expect("validated pair");
-            let was_floating = self.floating_scopes.clone();
-            // Observation-only pre-command image: settlement, sweep,
-            // gesture, admission focus, and intent effects above are
-            // trusted observations. A command refusal restores exactly
-            // this image so no partial command mutation survives, while
-            // pre-command observation effects stay published.
-            let precommand = self.clone();
-            match self.execute_command(
-                &issue,
-                command_seq,
-                command,
-                &held_scopes,
-                frozen_send_source.clone(),
-                frozen_migration_source.clone(),
-            ) {
-                CommandApplied::Effect(effect) => {
-                    self.resweep_retiled(owner, correlation, &mut held_scopes, &was_floating);
-                    let result = self.command_result.take();
-                    // Commands move rings/views; restage so publishing
-                    // assigns facts against the committed ownership.
-                    // Homing stays truthful: echoes still gate views, and
-                    // in-flight members home by raw screen.
-                    self.build_staged_domains();
-                    self.settle_intent_admissions();
-                    self.sync_toggle_float_command(command);
-                    // Admission intent first: an explicit command
-                    // focuses after it, so user intent wins when they
-                    // coincide. A same-target admission duplicate is
-                    // redundant with the explicit winner: drop it so one
-                    // Focus effect names the native target once.
-                    if effect.kind == crate::world_report::EffectKind::Focus {
-                        effects.retain(|existing| {
-                            !(existing.kind == crate::world_report::EffectKind::Focus
-                                && existing.target == effect.target)
-                        });
-                    }
-                    effects.push(effect);
-                    crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                    let reply = self.publish(report, false, effects, result, &held_scopes);
-                    return self.finish(report, digest, reply);
-                }
-                CommandApplied::NoEffect => {
-                    self.resweep_retiled(owner, correlation, &mut held_scopes, &was_floating);
-                    // See above: restage against committed ownership.
-                    self.build_staged_domains();
-                    self.settle_intent_admissions();
-                    self.sync_toggle_float_command(command);
-                    let result = self.command_result.take();
-                    crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                    let reply = self.publish(report, false, effects, result, &held_scopes);
-                    return self.finish(report, digest, reply);
-                }
-                CommandApplied::Rejected { kind, message } => {
-                    // Creation exhaustion is a protocol envelope failure:
-                    // it discards the staged candidate with no adoption,
-                    // exactly like every pre-acceptance gate.
-                    if kind == KIND_CREATION_EXHAUSTED {
-                        return LegacyWorldOutcome::Rejected { kind, message };
-                    }
-                    // Restore the observation-only pre-command image so
-                    // no partial command mutation (e.g. a trailing create
-                    // before a view refusal) survives. Pre-command
-                    // attempts, frames, transfers, and admission effects
-                    // stay; the command sequence still consumes.
-                    *self = precommand;
-                    if let Some(line) = self.resize_refusal_diagnostic(report, kind) {
-                        emit_resize_refusal(line);
-                    }
-                    self.note_command(command_seq);
-                    let typed = CommandRejectKind::parse(kind)
-                        .unwrap_or(CommandRejectKind::OperationRefused);
-                    self.command_result = Some(CommandResult::Rejected { kind: typed });
-                    crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                    let result = self.command_result.take();
-                    let reply = self.publish(report, false, effects, result, &held_scopes);
-                    return self.finish(report, digest, reply);
-                }
-            }
-        }
-        let result = self.command_result.take();
-        crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-        let reply = self.publish(report, false, effects, result, &held_scopes);
-        self.finish(report, digest, reply)
-    }
-
     /// Prune every retained-authority lifetime ledger against the current
     /// staged capture: canonical memory, exclusion/intent ledgers, the
     /// state/focus/selection lane pruners, and lifetime-local composed
@@ -4393,93 +3414,6 @@ impl WorldEngine {
                     || excluded.contains(window)
                     || known.contains(window)
             });
-        }
-    }
-
-    /// Publish one globally monotonic revision and record watermarks on the
-    /// staged candidate. Every accepted report advances the revision, even a
-    /// semantic no-op. The revision cannot wrap: exhaustion is refused
-    /// before staging.
-    fn finish(
-        &mut self,
-        report: &WorldReport,
-        digest: u64,
-        mut reply: WorldReply,
-    ) -> LegacyWorldOutcome {
-        self.prune_lifetime_state();
-        // Retain the last-known focused output before membership converges,
-        // so the latch reflects strictly prior retention: a stealing
-        // newcomer or an empty report never overwrites pre-admission
-        // context. Genuine managed focus only.
-        self.note_focused_output();
-        // Membership owner settles last on the staged candidate so the next
-        // report homes through retained truth (floating release, minimized
-        // and unreadable holds, view-switch stability). Included in the
-        // adopted candidate, never a separate commit.
-        self.reconcile_members();
-        // Drop membership for workspaces lifecycle just removed (empty only,
-        // so this is a backstop, never a live-member delete).
-        let mut ringed: BTreeSet<DomainKey> = BTreeSet::new();
-        for (output, ring) in &self.mapping {
-            for id in ring {
-                ringed.insert(DomainKey {
-                    output: OutputId(output.clone()),
-                    workspace: WorkspaceId(id.clone()),
-                });
-            }
-        }
-        self.members.retain(|_, state| {
-            ringed.contains(&state.home) || self.displaced.contains_key(&state.home.output.0)
-        });
-        // Sessionless floating-route admissions latch here: settle runs
-        // before reconcile creates those members, so no earlier pass can
-        // see them. Health-gated on staged truth, never membership alone.
-        self.latch_floating_admissions();
-        // Uniform presentation retains last (stage 5): pager frames, order,
-        // and focus settle against converged membership, then the reply
-        // carries the computed border/underlay/pager presentation. The
-        // paused (game-lane) report skips projection work inside the compute.
-        self.retain_pager_presentation(report);
-        reply.presentation = self.presentation_for_publish(report);
-        self.state_revision += 1;
-        reply.state_revision = self.state_revision;
-        // Common publication token: every ready publication recomputes the
-        // presentation above, so its issuing label is this reply's own
-        // revision. No new counter, no retention, no comparison.
-        reply.presentation.rev = reply.state_revision;
-        if report.observation_seq > self.last_observation_seq || !self.has_last {
-            self.last_observation_seq = report.observation_seq;
-        }
-        self.has_last = true;
-        self.last_request_seq = report.request_seq;
-        self.last_digest = digest;
-        self.last_report = Some(report.clone());
-        // Retain the prior-accepted context from this accepted candidate:
-        // the staged raw focus plus the just-published common rows. Every
-        // publish path funnels through here, including consumed-command
-        // reports; rejected candidates never reach this boundary.
-        self.prior_context = PriorAcceptedContext::capture(
-            &self.staged.observation.focused_global,
-            &reply.workspaces,
-            &reply.scopes,
-            &reply.windows,
-        );
-        // First accepted complete inventory establishes the startup set
-        // (possibly empty). Later complete reports route newcomers.
-        if report.inventory_complete {
-            self.placement_bootstrapped = true;
-        }
-        // Latest proving echo per output for external-supersession
-        // detection: host-owned domains track the native-derived echo
-        // (never the explicit logical echo). Native-free outputs retain no
-        // last views: their views ride the frozen selection binding.
-        if self.host_owned_workspace_domains() {
-            self.retain_native_last_views();
-        }
-        if reply.command_consumed {
-            LegacyWorldOutcome::CommandConsumed(reply)
-        } else {
-            LegacyWorldOutcome::Accepted(reply)
         }
     }
 }

@@ -1,6 +1,6 @@
 //! Direct staged-v4 publication regressions: genuine parallel `publish_v4`
 //! assembly from staged/retained state. No accepted-run, finish, adoption,
-//! or replay claims: legacy accepted runs below are seeding only (labelled),
+//! or replay claims: genuine v4 admissions below are seeding only (labelled),
 //! and synthetic retained seeds name their own correlation explicitly
 //! (never parsed from operation ids).
 
@@ -10,7 +10,6 @@ use crate::connection::{HostCapabilities, RawSettingValue};
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::gesture::GestureSettled;
-use crate::world_directional::tests::{accepted, fact, report_full, screen};
 use crate::world_engine::{RetainedNativeCreation, RetainedTransfer, WorldEngine};
 use crate::world_publish_v4::PublishEnvelopeV4;
 use crate::world_report::{
@@ -19,6 +18,9 @@ use crate::world_report::{
     RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScreenReport, SwitchEvent,
     SwitchFocus, SwitchOutcome, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION_V4,
     WindowFact, WorldCommand, WorldReportV4,
+};
+use crate::world_v4_support_tests::{
+    accepted as accepted_v4, fact, report_full as report_full_v4, screen,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -159,7 +161,7 @@ fn facts_pair() -> Vec<WindowFact> {
     ]
 }
 
-/// Legacy accepted runs plus a staged v4 report, seeding only: builds live
+/// Genuine v4 admissions plus a staged v4 report, seeding only: builds live
 /// sessions/mapping/views, then replaces staged state with the v4 report.
 /// Never retains pager presentation (the no-side-effect test stages pager
 /// rows that must stay unretained).
@@ -171,9 +173,9 @@ fn seeded(
     focused: &str,
     ingress: PresentationIngressV4,
 ) {
-    accepted(
+    accepted_v4(
         engine,
-        &report_full(
+        &report_full_v4(
             base,
             base,
             screens.clone(),
@@ -184,9 +186,9 @@ fn seeded(
             None,
         ),
     );
-    accepted(
+    accepted_v4(
         engine,
-        &report_full(
+        &report_full_v4(
             base + 1,
             base + 1,
             screens.clone(),
@@ -480,7 +482,10 @@ fn presentation_stamp_and_published_rev() {
         "win-a",
         ingress_v4("win-a"),
     );
-    assert_eq!(engine.latest_published_presentation_rev_v4, 0);
+    // Genuine v4 admissions publish internally: the second seed (seq
+    // base+1) stamps the latest rev, unlike the retired legacy seeding
+    // which never touched the v4 publication state.
+    assert_eq!(engine.latest_published_presentation_rev_v4, 2);
     let before = engine.staged.presentation_v4.clone();
     assert!(matches!(before, Some(PresentationRowV4::Valid(_))));
     let first = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
@@ -511,11 +516,13 @@ fn publish_leaves_pager_retention_untouched() {
         "win-a",
         ingress,
     );
-    // Guard: the staged pager rows would change retention if it ran.
+    // Guard: the staged pager frame would change live retention if it ran:
+    // genuine v4 seed admissions already retain (roster fallback covers
+    // the order), but no admission has seen this staged frame yet.
     assert!(
         !engine
-            .presentation_order_v4
-            .contains(&WindowId("win-b".to_owned()))
+            .presentation_live_v4
+            .contains_key(&WindowId("win-b".to_owned()))
     );
     let order_before = engine.presentation_order_v4.clone();
     let live_before = engine.presentation_live_v4.clone();
@@ -1323,7 +1330,8 @@ fn publish_placeholders_rev_zero_and_latest_stamp() {
         ingress_v4("win-a"),
     );
     assert_eq!(engine.presentation_for_publish_v4().rev, 0);
-    assert_eq!(engine.latest_published_presentation_rev_v4, 0);
+    // Genuine v4 seed admissions stamp the latest rev to base+1 (see above).
+    assert_eq!(engine.latest_published_presentation_rev_v4, 2);
     let _ = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
     assert_eq!(engine.latest_published_presentation_rev_v4, 7);
 }
@@ -1510,13 +1518,14 @@ fn publish_on_clone_leaves_original_rev() {
         "win-a",
         ingress_v4("win-a"),
     );
-    assert_eq!(engine.latest_published_presentation_rev_v4, 0);
+    // Genuine v4 seed admissions stamp the latest rev to base+1 (see above).
+    assert_eq!(engine.latest_published_presentation_rev_v4, 2);
     let mut clone = engine.clone();
     let reply = clone.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
     assert_eq!(reply.state_revision, 7);
     assert_eq!(clone.latest_published_presentation_rev_v4, 7);
     assert_eq!(
-        engine.latest_published_presentation_rev_v4, 0,
+        engine.latest_published_presentation_rev_v4, 2,
         "original rev untouched by clone publish"
     );
 }

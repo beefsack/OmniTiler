@@ -9,7 +9,6 @@ use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::ids::{CorrelationId, OwnerId};
 use crate::intent_data::{IntentData, encode_intent_data};
-use crate::world_directional::tests::{fact, float_fact, screen};
 use crate::world_engine::{EventIssue, WorldEngine};
 use crate::world_report::{
     AttemptOutcome, AuthorityScope, CommandRejectKind, CommandResult, EffectKind, FrameAttempt,
@@ -20,6 +19,7 @@ use crate::world_report::{
     WorldCommand, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
+use crate::world_v4_support_tests::{fact, float_fact, screen};
 
 fn engine() -> WorldEngine {
     WorldEngine::new_test_bound_with_initial_settings(
@@ -303,14 +303,6 @@ fn observation_only_pure_v4_run_publishes_genuine_reply() {
     assert!(
         !engine.prior_context.empty_controlled.is_empty(),
         "accepted controlled-empty workspaces persist for shared lanes"
-    );
-    assert!(
-        engine.last_report.is_none(),
-        "v4 runs never touch legacy replay"
-    );
-    assert!(
-        engine.last_reply.is_none(),
-        "v4 runs never touch legacy replay"
     );
 }
 

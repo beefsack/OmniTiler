@@ -5,11 +5,10 @@
 
 use crate::boundary::CoreCommand;
 use crate::directional::WindowId;
-use crate::geometry::Rect;
 use crate::intent_data::{IntentData, encode_intent_data};
-use crate::world_directional::tests::{accepted, fact, float_fact, report_full, screen};
 use crate::world_engine::WorldEngine;
-use crate::world_report::{IntentRecord, WorldCommand, WorldReport};
+use crate::world_report::{IntentRecord, WorldCommand, WorldReportV4};
+use crate::world_v4_support_tests::{accepted, fact, float_fact, rect, report_full, screen};
 
 fn engine() -> WorldEngine {
     WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
@@ -38,7 +37,7 @@ fn toggle(window: &str) -> WorldCommand {
 }
 
 fn row_for<'a>(
-    reply: &'a crate::world_report::WorldReply,
+    reply: &'a crate::world_report::WorldReplyV4,
     win: &str,
 ) -> Option<&'a crate::world_report::WindowDesire> {
     reply.windows.iter().find(|row| row.lifetime.0 == win)
@@ -84,7 +83,7 @@ fn record(win: &str, data: &str) -> IntentRecord {
     }
 }
 
-fn with_records(mut report: WorldReport, records: Vec<IntentRecord>) -> WorldReport {
+fn with_records(mut report: WorldReportV4, records: Vec<IntentRecord>) -> WorldReportV4 {
     report.intent_records = records;
     report
 }
@@ -114,15 +113,10 @@ fn is_floated(engine: &WorldEngine, win: &str) -> bool {
 fn restart_with_import(
     saved: &IntentData,
     sticky: Option<bool>,
-) -> (WorldEngine, crate::world_report::WorldReply) {
+) -> (WorldEngine, crate::world_report::WorldReplyV4) {
     let mut fresh = engine();
     let mut restart_fact = fact("win-a", "out-a", 0);
-    restart_fact.rect = Some(Rect {
-        x: 100,
-        y: 100,
-        w: 200,
-        h: 200,
-    });
+    restart_fact.rect = Some(rect(100, 100, 200, 200));
     restart_fact.sticky = sticky;
     let reply = accepted(
         &mut fresh,
@@ -213,12 +207,7 @@ fn all_six_sticky_bearing_records_ingest_whole_into_pending() {
 #[test]
 fn sticky_dominates_float_lane_and_commits_exact_prior_without_ops() {
     let mut engine = engine();
-    let native = Rect {
-        x: 100,
-        y: 100,
-        w: 200,
-        h: 200,
-    };
+    let native = rect(100, 100, 200, 200);
     let mut fa = fact("win-a", "out-a", 100);
     fa.rect = Some(native);
     let mut fb = fact("win-b", "out-a", 300);
@@ -374,12 +363,7 @@ fn all_six_sticky_priors_admit_as_semantic_float_with_exact_prior() {
     ];
     for (float, prior) in combos {
         let mut engine = engine();
-        let native = Rect {
-            x: 100,
-            y: 100,
-            w: 200,
-            h: 200,
-        };
+        let native = rect(100, 100, 200, 200);
         let mut f = fact("win-a", "out-a", 100);
         f.rect = Some(native);
         let reply = accepted(
@@ -821,12 +805,7 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
     {
         let mut engine = engine();
         let mut unreadable = fact("win-a", "out-a", 100);
-        unreadable.rect = Some(Rect {
-            x: 100,
-            y: 100,
-            w: 200,
-            h: 200,
-        });
+        unreadable.rect = Some(rect(100, 100, 200, 200));
         unreadable.hints = None;
         let reply = accepted(
             &mut engine,
@@ -1581,7 +1560,7 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
     }
 
     fn sticky_row(
-        reply: &crate::world_report::WorldReply,
+        reply: &crate::world_report::WorldReplyV4,
         window: &str,
     ) -> Option<(bool, ScopeAuthority, Option<u64>)> {
         reply
@@ -1685,12 +1664,7 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
         // restored first, saved intent replays through the record lane.
         let mut fresh = engine();
         let mut restart_fact = fact("win-a", "out-a", 0);
-        restart_fact.rect = Some(Rect {
-            x: 100,
-            y: 100,
-            w: 200,
-            h: 200,
-        });
+        restart_fact.rect = Some(rect(100, 100, 200, 200));
         restart_fact.sticky = Some(false);
         let saved_bytes = encode_intent_data(&saved_data);
         let restart_reply = accepted(
@@ -1748,12 +1722,7 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
         // Adapter performs the authorized write; the correlated evidence
         // settles without a new command or save.
         let mut proof_fact = fact("win-a", "out-a", 0);
-        proof_fact.rect = Some(Rect {
-            x: 100,
-            y: 100,
-            w: 200,
-            h: 200,
-        });
+        proof_fact.rect = Some(rect(100, 100, 200, 200));
         proof_fact.sticky = Some(true);
         let mut proof = report_full(
             2,
@@ -1790,12 +1759,7 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
 
         // A real sticky-off command restores the exact prior mode.
         let mut off_fact = fact("win-a", "out-a", 0);
-        off_fact.rect = Some(Rect {
-            x: 100,
-            y: 100,
-            w: 200,
-            h: 200,
-        });
+        off_fact.rect = Some(rect(100, 100, 200, 200));
         off_fact.sticky = Some(true);
         let off_reply = accepted(
             &mut fresh,
@@ -1839,12 +1803,7 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
         let mut off_proof_fact = fact("win-a", "out-a", 0);
         off_proof_fact.sticky = Some(false);
         if prior {
-            off_proof_fact.rect = Some(Rect {
-                x: 100,
-                y: 100,
-                w: 200,
-                h: 200,
-            });
+            off_proof_fact.rect = Some(rect(100, 100, 200, 200));
         }
         let mut off_proof = report_full(
             4,
@@ -1893,12 +1852,7 @@ fn sticky_restart_refusal_preserves_import_without_retry() {
     // Exact-tuple refusal: the write never landed, so rollback re-asserts
     // the same import instead of erasing sticky provenance.
     let mut refused_fact = fact("win-a", "out-a", 0);
-    refused_fact.rect = Some(Rect {
-        x: 101,
-        y: 100,
-        w: 200,
-        h: 200,
-    });
+    refused_fact.rect = Some(rect(101, 100, 200, 200));
     refused_fact.sticky = Some(false);
     let mut refused = report_full(
         2,
@@ -1958,12 +1912,7 @@ fn sticky_restart_ambiguous_evidence_keeps_import_without_retry() {
     // Accepted setter whose post misses the target: ambiguous evidence
     // spends the binding but never settles and never retries.
     let mut ambiguous_fact = fact("win-a", "out-a", 0);
-    ambiguous_fact.rect = Some(Rect {
-        x: 101,
-        y: 100,
-        w: 200,
-        h: 200,
-    });
+    ambiguous_fact.rect = Some(rect(101, 100, 200, 200));
     ambiguous_fact.sticky = Some(false);
     let mut ambiguous = report_full(
         2,
@@ -2032,12 +1981,7 @@ fn sticky_restart_unknown_holds_then_record_free_recovers() {
     // Record-free known-bool arrival consumes the retained pending into
     // the exact prior and mints the commandless binding.
     let mut known = fact("win-a", "out-a", 0);
-    known.rect = Some(Rect {
-        x: 100,
-        y: 100,
-        w: 200,
-        h: 200,
-    });
+    known.rect = Some(rect(100, 100, 200, 200));
     known.sticky = Some(false);
     let reply = accepted(
         &mut fresh,
@@ -2223,12 +2167,7 @@ fn sticky_restart_import_shapes_share_binding_policy() {
     )
     .expect("generation");
     let mut composed_fact = fact("win-a", "out-a", 0);
-    composed_fact.rect = Some(Rect {
-        x: 100,
-        y: 100,
-        w: 200,
-        h: 200,
-    });
+    composed_fact.rect = Some(rect(100, 100, 200, 200));
     composed_fact.sticky = None;
     composed_fact.suppression_available = Some(true);
     composed_fact.visibility.suppression_owned = Some(false);

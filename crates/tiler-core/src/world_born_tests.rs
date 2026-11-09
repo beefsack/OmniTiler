@@ -6,7 +6,7 @@
 //!
 //! Every test drives the retained born lifecycle through
 //! [`crate::world_engine::WorldEngine`]. Shared report builders live in
-//! [`crate::world_directional::tests`]; facts below mirror captured-shape
+//! [`crate::world_v4_support_tests`]; facts below mirror captured-shape
 //! host data (maximized rows ride `fitExcluded`, fixed rows ride fixed
 //! hints plus `fixedAuto`).
 
@@ -14,12 +14,12 @@ use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_directional::tests::{accepted, fact, float_fact, report, report_full, screen};
-use crate::world_engine::{LegacyWorldOutcome, RetainedFloat, RetainedTransfer, WorldEngine};
+use crate::world_engine::{RetainedFloat, RetainedTransfer, WorldEngine, WorldOutcome};
 use crate::world_report::{
     ClearAttempt, CommandRejectKind, CommandResult, FrameSetter, HoldReason, ScopeAuthority,
-    ScreenReport, TransferKind, TransferTarget, WindowFact, WorldCommand, WorldReport,
+    ScreenReport, TransferKind, TransferTarget, WindowFact, WorldCommand, WorldReportV4,
 };
+use crate::world_v4_support_tests::{accepted, fact, float_fact, report, report_full, screen};
 
 fn clear_attempt(
     operation_id: &str,
@@ -45,7 +45,7 @@ fn report_clears(
     windows: Vec<WindowFact>,
     focused: &str,
     clears: Vec<ClearAttempt>,
-) -> WorldReport {
+) -> WorldReportV4 {
     let mut report = report_full(
         request_seq,
         observation_seq,
@@ -91,7 +91,7 @@ fn fixed_maximized(window: &str, output: &str, x: i32) -> WindowFact {
     }
 }
 
-fn desire_op(reply: &crate::world_report::WorldReply, window: &str) -> Option<String> {
+fn desire_op(reply: &crate::world_report::WorldReplyV4, window: &str) -> Option<String> {
     reply
         .windows
         .iter()
@@ -208,9 +208,11 @@ fn disabled_fullscreen_birth_and_exit_never_bind() {
 #[test]
 fn disabled_deferred_conditions_mint_nothing() {
     // Default-disabled pin: deferred conditions (incomplete-inventory gap,
-    // gesture barrier, game-paused presentation) mint nothing while the
-    // capability is off, and publish no desire either way.
-    for name in ["gap", "gesture", "paused"] {
+    // gesture barrier) mint nothing while the capability is off, and
+    // publish no desire either way. v4 has no paused ingress slot
+    // (world-contract.md:1221 removes `paused`; world_publish_v4.rs passes
+    // born_paused=false), so only the gap/gesture deferred lanes remain.
+    for name in ["gap", "gesture"] {
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let mut deferred = report(
             1,
@@ -223,7 +225,6 @@ fn disabled_deferred_conditions_mint_nothing() {
         match name {
             "gap" => deferred.inventory_complete = false,
             "gesture" => deferred.gesture_barrier = true,
-            "paused" => deferred.presentation.paused = true,
             _ => unreachable!(),
         }
         let reply = accepted(&mut engine, &deferred);
@@ -1459,7 +1460,7 @@ fn cohort_pair() -> Vec<WindowFact> {
     ]
 }
 
-fn cohort_report(request_seq: u64, observation_seq: u64) -> WorldReport {
+fn cohort_report(request_seq: u64, observation_seq: u64) -> WorldReportV4 {
     report(
         request_seq,
         observation_seq,
@@ -1596,14 +1597,19 @@ fn cohort_clear_settles_and_converges_frames() {
 }
 
 #[test]
-fn cohort_clear_held_for_game() {
-    // The focused-fullscreen-game lane vetoes birth-clear authority: no
-    // binding mints and no token rides while paused.
+fn cohort_clear_capability_off_mints_nothing() {
+    // Capability-off pin: a cohort birth mints nothing and publishes no
+    // token while the birth-clear capability is off. v4 has no paused
+    // ingress slot (world-contract.md:1221 removes `paused`;
+    // world_publish_v4.rs passes born_paused=false), so there is no
+    // game-lane born-mint gate to cover.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-    let mut paused = cohort_report(1, 1);
-    paused.presentation.paused = true;
-    let reply = accepted(&mut engine, &paused);
-    assert_eq!(engine.born_retained_len(), 0, "game safety wins");
+    let reply = accepted(&mut engine, &cohort_report(1, 1));
+    assert_eq!(
+        engine.born_retained_len(),
+        0,
+        "capability-off mints nothing"
+    );
     assert_eq!(desire_op(&reply, "win-a"), None);
     assert_eq!(desire_op(&reply, "win-b"), None);
 }
@@ -2140,7 +2146,7 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
         w: 150,
         h: 120,
     };
-    match engine.handle_report_legacy(&report_full(
+    match engine.handle_report(&report_full(
         2,
         2,
         vec![screen("out-a", 0)],
@@ -2153,7 +2159,7 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
             float_rect: Some(target),
         })),
     )) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused

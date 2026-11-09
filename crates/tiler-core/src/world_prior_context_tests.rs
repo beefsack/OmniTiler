@@ -1,6 +1,6 @@
-//! Prior-accepted context regressions (legacy path).
+//! Prior-accepted context regressions (v4 path).
 //!
-//! Genuine legacy accepted-run coverage for the shared prior-observation
+//! Accepted-run coverage for the shared prior-observation
 //! lanes: first-observation focus recording, changed-focus progression,
 //! rejected-candidate preservation, consumed-report handling, bootstrap
 //! exclusion and handshake reset. These run the production
@@ -10,19 +10,18 @@
 use crate::connection::{ApplicationIdentity, HandshakeRequest, HostCapabilities};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::session::DomainKey;
-use crate::world_directional::tests::{accepted, fact, report, report_full, screen};
-use crate::world_engine::{KIND_REUSED, LegacyWorldOutcome, PriorAcceptedContext, WorldEngine};
+use crate::world_engine::{KIND_REUSED, PriorAcceptedContext, WorldEngine, WorldOutcome};
 use crate::world_report::{
-    AuthorityScope, EffectKind, HoldReason, PresentationIngressV4, PresentationRowV4,
-    ScopeAuthority, ScopeStatus, TilingMode, WORLD_CONTRACT_VERSION_V4, WindowDesire,
-    WorkspaceDesire, WorldCommand, WorldReportV4,
+    AuthorityScope, EffectKind, HoldReason, ScopeAuthority, ScopeStatus, TilingMode, WindowDesire,
+    WorkspaceDesire, WorldCommand, WorldReplyV4,
 };
+use crate::world_v4_support_tests::{accepted, fact, report, report_full, screen};
 
 fn engine() -> WorldEngine {
     WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
 }
 
-fn home_key(report: &crate::world_report::WorldReply) -> DomainKey {
+fn home_key(report: &WorldReplyV4) -> DomainKey {
     let row = report
         .workspaces
         .iter()
@@ -111,8 +110,8 @@ fn cleared_cache_preserves_focus_progression() {
     );
     // Test-only eviction of the typed replay cache: the focus lane must
     // keep progressing from retained prior context.
-    engine.last_report = None;
-    engine.last_reply = None;
+    engine.last_report_v4 = None;
+    engine.last_reply_v4 = None;
     let reply = accepted(
         &mut engine,
         &report_full(
@@ -145,8 +144,8 @@ fn bootstrap_only_records_no_canonical_focus() {
         None,
     );
     incomplete.inventory_complete = false;
-    match engine.handle_report_legacy(&incomplete) {
-        LegacyWorldOutcome::Accepted(reply) => assert!(!reply.ready, "bootstrap stays unready"),
+    match engine.handle_report(&incomplete) {
+        WorldOutcome::Accepted(reply) => assert!(!reply.ready, "bootstrap stays unready"),
         other => panic!("expected bootstrap acceptance, got {other:?}"),
     }
     assert_eq!(engine.state_revision, 0);
@@ -186,8 +185,8 @@ fn rejected_report_leaves_canonical_focus_and_revision() {
         None,
         None,
     );
-    match engine.handle_report_legacy(&reused) {
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
+    match engine.handle_report(&reused) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
         other => panic!("expected reused refusal, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision);
@@ -243,53 +242,15 @@ fn report_v4(
     screens: Vec<crate::world_report::ScreenReport>,
     windows: Vec<crate::world_report::WindowFact>,
     focused: &str,
-) -> WorldReportV4 {
-    WorldReportV4 {
-        contract_version: WORLD_CONTRACT_VERSION_V4,
-        adapter_incarnation: "adapter-1".to_owned(),
-        core_generation: "gen-1".to_owned(),
-        observation_seq: seq,
-        request_seq: seq,
-        request_id: format!("req-{seq}"),
-        command_seq: None,
-        command: None,
-        screens,
-        held_screens: Vec::new(),
-        windows,
-        held_windows: Vec::new(),
-        closed: Vec::new(),
-        native: Vec::new(),
-        held_native: Vec::new(),
-        cursor: None,
-        cursor_hit: None,
-        focused_global: focused.to_owned(),
-        action_foreground: None,
-        action_cached: None,
-        action_outputs: Vec::new(),
-        primary_output: None,
-        inventory_complete: true,
-        gesture_barrier: false,
-        gesture: None,
-        monotonic_ms: 0,
-        frames: Vec::new(),
-        member_attempts: Vec::new(),
-        view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
-        creation_attempts: Vec::new(),
-        held_attempts: Vec::new(),
-        state_attempts: Vec::new(),
-        focus_feedback: Vec::new(),
-        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
-        intent_records: Vec::new(),
-        renderer_input: None,
-    }
+) -> crate::world_report::WorldReportV4 {
+    report_full(seq, seq, screens, windows, Vec::new(), focused, None, None)
 }
 
 #[test]
 fn staged_v4_observation_feeds_prior_capture_without_typed_cache() {
     // Staged-only v4 evidence: no accepted run, no scenario claim. The
     // staged observation carries the raw focus for later prior-context
-    // capture, with no `last_report`/`last_reply` seeding involved.
+    // capture, with no `last_report_v4`/`last_reply_v4` seeding involved.
     let mut engine = engine();
     let staged = report_v4(
         1,
@@ -299,8 +260,8 @@ fn staged_v4_observation_feeds_prior_capture_without_typed_cache() {
     );
     engine.stage_facts_v4(&staged);
     assert_eq!(engine.staged.observation.focused_global, "win-a");
-    assert!(engine.last_report.is_none());
-    assert!(engine.last_reply.is_none());
+    assert!(engine.last_report_v4.is_none());
+    assert!(engine.last_reply_v4.is_none());
     let focus = engine.staged.observation.focused_global.clone();
     let context = PriorAcceptedContext::capture(&focus, &[], &[], &[]);
     assert_eq!(context.prev_focused_global, "win-a");
@@ -336,7 +297,7 @@ fn unchanged_raw_focus_preserves_command_selected_slot_without_cache() {
         window: WindowId("win-b".to_owned()),
         direction: "left".to_owned(),
     };
-    let reply = match engine.handle_report_legacy(&report_full(
+    let reply = match engine.handle_report(&report_full(
         2,
         2,
         vec![screen("out-a", 0)],
@@ -346,7 +307,7 @@ fn unchanged_raw_focus_preserves_command_selected_slot_without_cache() {
         Some(1),
         Some(focus_b),
     )) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted command, got {other:?}"),
     };
     assert!(reply.effects.iter().any(|effect| {
@@ -358,8 +319,8 @@ fn unchanged_raw_focus_preserves_command_selected_slot_without_cache() {
     );
     // Test-only eviction of the typed replay cache: unchanged raw A must
     // still preserve the command-selected slot.
-    engine.last_report = None;
-    engine.last_reply = None;
+    engine.last_report_v4 = None;
+    engine.last_reply_v4 = None;
     accepted(
         &mut engine,
         &report_full(
@@ -424,7 +385,7 @@ fn consumed_report_refreshes_prior_focus_and_empty_set() {
         window: WindowId("win-zzz".to_owned()),
         direction: "left".to_owned(),
     };
-    let empty_id = match engine.handle_report_legacy(&report_full(
+    let empty_id = match engine.handle_report(&report_full(
         1,
         1,
         vec![screen("out-a", 0)],
@@ -434,7 +395,7 @@ fn consumed_report_refreshes_prior_focus_and_empty_set() {
         Some(1),
         Some(refused()),
     )) {
-        LegacyWorldOutcome::Accepted(reply) => {
+        WorldOutcome::Accepted(reply) => {
             let row = reply
                 .workspaces
                 .iter()
@@ -464,8 +425,8 @@ fn consumed_report_refreshes_prior_focus_and_empty_set() {
         Some(1),
         Some(refused()),
     );
-    let occupied_id = match engine.handle_report_legacy(&redelivery) {
-        LegacyWorldOutcome::CommandConsumed(reply) => {
+    let occupied_id = match engine.handle_report(&redelivery) {
+        WorldOutcome::CommandConsumed(reply) => {
             let row = reply
                 .workspaces
                 .iter()

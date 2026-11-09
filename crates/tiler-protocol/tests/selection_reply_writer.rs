@@ -1,156 +1,105 @@
-//! Selection reply dual-writer parity over an actual producer reply.
+//! Selection reply v4 writer over an actual producer reply.
 //!
 //! Drives the minimal native-free suppression-capable explicit selection
 //! route through the real engine (boot, send-aside, select), then asserts
-//! the transport writer spells the producer reply byte-identically to the
-//! core canonical writer with exact size accounting, and that the wire
+//! the genuine v4 transport writer spells the producer reply with exact
+//! size accounting (independent core byte count plus a decoder roundtrip
+//! to the identical typed reply and wire metadata), and that the wire
 //! carries the `awaitShown` grant plus the same-revision show/hide pair.
+//!
+//! The staged reports are genuine v4 envelopes: an immutable v4 fixture
+//! (`report-focus-feedback-proven`, two valid windows plus the required
+//! `rendererInput` lane) rebound to the test engine, with only identity,
+//! sequence, command, focus, and settle lanes varied, decoded through the
+//! genuine v4 ingress before reaching the engine.
 //!
 //! Offline only: no D-Bus, no KWin.
 
 use tiler_core::connection::HostCapabilities;
-use tiler_core::directional::{OutputId, WindowId};
-use tiler_core::geometry::Rect;
-use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
+use tiler_core::directional::OutputId;
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     ArrivalBracket, ArrivalLocation, FocusFeedback, LastWrite, LastWritePath, LastWriteProperty,
-    ScopeAuthority, ScreenReport, VisibilityFact, VisibilityReason, VisibilitySample,
-    VisibilitySetter, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport,
+    ScopeAuthority, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    WorldReplyV4, WorldReportV4,
 };
-use tiler_protocol::world_protocol::encode_reply_legacy;
+use tiler_core::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+use tiler_protocol::world_protocol::{
+    DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, decode_request, encode_reply_v4,
+};
 
-fn rect(x: i32) -> Rect {
-    Rect {
-        x,
-        y: 0,
-        w: 40,
-        h: 90,
-    }
+fn fixture_text(name: &str) -> String {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4/messages")
+        .join(format!("{name}.json"));
+    std::fs::read_to_string(&path).expect("fixture bytes")
 }
 
-fn screen() -> ScreenReport {
-    ScreenReport {
-        output: OutputId("out-a".to_owned()),
-        full_rect: Some(Rect {
-            x: 0,
-            y: 0,
-            w: 800,
-            h: 600,
-        }),
-        work_area: Some(Rect {
-            x: 0,
-            y: 0,
-            w: 800,
-            h: 600,
-        }),
-        complete: true,
-        scale: 1.0,
-        identity: tiler_core::world_report::OutputIdentity::unknown(),
-    }
-}
-
-/// Suppression-capable member fact mirroring the core await-route lane:
-/// project suppression supported, native visibility readable, non-minimized,
-/// non-hidden, non-native-owned.
-fn sfact(window: &str, x: i32) -> WindowFact {
-    WindowFact {
-        window: WindowId(window.to_owned()),
-        output: Some(OutputId("out-a".to_owned())),
-        rect: Some(rect(x)),
-        fullscreen: Some(false),
-        maximized: Some(false),
-        sticky: None,
-        hints: Some(WindowSizeHints::none()),
-        minimized: Some(false),
-        native_workspace: tiler_core::world_report::NativeWorkspaceFact::Omitted,
-        host_hidden: Some(false),
-        privileged: Some(false),
-        managed: Some(true),
-        accepts_input: Some(true),
-        activation_inhibited: Some(false),
-        tool_window: Some(false),
-        owned: Some(false),
-        transient: Some(false),
-        modal: Some(false),
-        resizable: Some(true),
-        above: Some(false),
-        below: Some(false),
-        owner: None,
-        parent: None,
-        role: None,
-        app_id: None,
-        executable: Some("synthetic.exe".to_owned()),
-        process_id: Some("foreign-pid".to_owned()),
-        class: Some("Synthetic".to_owned()),
-        title: None,
-        window_type: Some(tiler_core::world_report::WindowType::Normal),
-        activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
-        layer: Some(0),
-        fullscreen_owner: None,
-        fullscreen_exitable: None,
-        suppression_available: Some(true),
-        visibility: VisibilityFact {
-            visible: Some(true),
-            suppression_owned: Some(false),
-        },
-        last_write: None,
-    }
+/// Genuine v4 report: the immutable two-window fixture rebound to the
+/// connected test engine, carrying no command and no settle lanes. Callers
+/// clone and stage sequences, commands, focus, and settle evidence.
+fn base_value() -> serde_json::Value {
+    let mut base: serde_json::Value =
+        serde_json::from_str(&fixture_text("report-focus-feedback-proven")).expect("fixture JSON");
+    base["adapter"] = serde_json::json!("adapter-1");
+    base["gen"] = serde_json::json!("gen-1");
+    base["req"] = serde_json::json!("req-1");
+    base["cmdSeq"] = serde_json::Value::Null;
+    base["command"] = serde_json::Value::Null;
+    base["focusFeedback"] = serde_json::json!([]);
+    base
 }
 
 fn report(
     seq: u64,
     command_seq: Option<u64>,
-    command: Option<WorldCommand>,
+    command: Option<serde_json::Value>,
     focused: &str,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
-        adapter_incarnation: "adapter-1".to_owned(),
-        core_generation: "gen-1".to_owned(),
-        observation_seq: seq,
-        request_seq: seq,
-        request_id: format!("req-{seq}"),
-        command_seq,
-        command,
-        screens: vec![screen()],
-        windows: vec![sfact("w1", 0), sfact("w2", 100)],
-        views: Vec::new(),
-        closed: Vec::new(),
-        native: Vec::new(),
-        cursor: None,
-        cursor_hit: None,
-        focused_global: focused.to_owned(),
-        action_foreground: None,
-        action_cached: None,
-        action_outputs: Vec::new(),
-        primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
-        inventory_complete: true,
-        gesture_barrier: false,
-        gesture: None,
-        monotonic_ms: 0,
-        frames: Vec::new(),
-        member_attempts: Vec::new(),
-        view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
-        creation_attempts: Vec::new(),
-        state_attempts: Vec::new(),
-        focus_feedback: Vec::new(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
-        intent_records: Vec::new(),
+) -> WorldReportV4 {
+    let mut value = base_value();
+    value["req"] = serde_json::json!(format!("req-{seq}"));
+    value["reqSeq"] = serde_json::json!(seq.to_string());
+    value["obs"] = serde_json::json!(seq.to_string());
+    if let Some(cmd_seq) = command_seq {
+        value["cmdSeq"] = serde_json::json!(cmd_seq.to_string());
+    } else {
+        value["cmdSeq"] = serde_json::Value::Null;
+    }
+    value["command"] = command.unwrap_or(serde_json::Value::Null);
+    value["focused"] = serde_json::json!(focused);
+    decode_request(&value.to_string()).expect("fixture envelope decodes")
+}
+
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
     }
 }
 
-fn accepted(
-    engine: &mut WorldEngine,
-    report: &WorldReport,
-) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
-    }
+/// Encode one engine-published v4 reply with the canonical v4 writer; the
+/// bytes must match the independent core byte count exactly and round-trip
+/// through the reply decoder to the identical typed reply plus wire
+/// metadata.
+fn reply_wire(reply: &WorldReplyV4) -> String {
+    let decoded = DecodedReplyV4 {
+        reply: reply.clone(),
+        wire: ReplyWireOptionals {
+            suspended_output_present: reply.presentation.suspended_output.is_some(),
+        },
+    };
+    let wire = encode_reply_v4(&decoded).expect("reply encodes");
+    assert_eq!(
+        wire.len(),
+        reply_exact_bytes_v4(reply),
+        "core byte count is exact over the wire"
+    );
+    assert_eq!(
+        decode_reply_v4(&wire).expect("reply round-trips"),
+        decoded,
+        "wire round-trips to the identical typed reply and metadata"
+    );
+    wire
 }
 
 fn confirmed_write(target: bool, rev: u64, post_obs: u64) -> LastWrite {
@@ -180,32 +129,28 @@ fn settle_report(
     w1_last: LastWrite,
     w2_last: LastWrite,
     feedback: FocusFeedback,
-) -> WorldReport {
-    let mut base = report(seq, None, None, "");
-    base.windows = vec![
-        {
-            let mut fact = sfact("w1", 0);
-            fact.last_write = Some(w1_last);
-            fact
-        },
-        {
-            let mut fact = sfact("w2", 100);
-            fact.last_write = Some(w2_last);
-            fact
-        },
-    ];
-    base.focus_feedback = vec![feedback];
-    base
+) -> WorldReportV4 {
+    let mut decoded = report(seq, None, None, "");
+    for window in &mut decoded.windows {
+        if window.window.0 == "win-a" {
+            window.last_write = Some(w1_last);
+        } else if window.window.0 == "win-b" {
+            window.last_write = Some(w2_last);
+        }
+    }
+    decoded.focus_feedback = vec![feedback];
+    decoded
 }
 
 #[test]
-fn selection_reply_spells_through_both_writers() {
+fn selection_reply_spells_through_v4_writer() {
     let mut engine = WorldEngine::new_test_bound_with_capabilities(
         "gen-1",
         "adapter-1",
         HostCapabilities {
             window_suppression: true,
             maximize: true,
+            native_sticky: true,
             ..Default::default()
         },
     )
@@ -219,21 +164,22 @@ fn selection_reply_spells_through_both_writers() {
         .collect();
     assert!(ring.len() >= 2, "owned plus trailing: {ring:?}");
     let away = ring[1].clone();
-    // Stage w2 on the away workspace without following, so the explicit
-    // selection below actually changes the view and resolves w2. The
+    // Stage win-b on the away workspace without following, so the explicit
+    // selection below actually changes the view and resolves win-b. The
     // transfer requires the mover to be the observed focus.
     let _ = accepted(
         &mut engine,
         &report(
             2,
             Some(2),
-            Some(WorldCommand::Send {
-                window: WindowId("w2".to_owned()),
-                target_output: OutputId("out-a".to_owned()),
-                target_workspace: away.clone(),
-                follow: false,
-            }),
-            "w2",
+            Some(serde_json::json!({
+                "op": "send",
+                "win": "win-b",
+                "out": "out-a",
+                "ws": away,
+                "follow": false,
+            })),
+            "win-b",
         ),
     );
     let reply = accepted(
@@ -241,30 +187,27 @@ fn selection_reply_spells_through_both_writers() {
         &report(
             3,
             Some(3),
-            Some(WorldCommand::SelectWorkspace {
-                output: OutputId("out-a".to_owned()),
-                workspace: away.clone(),
-            }),
+            Some(serde_json::json!({
+                "op": "select-workspace",
+                "out": "out-a",
+                "ws": away,
+            })),
             "",
         ),
     );
     assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
-    assert_eq!(reply.effects[0].target.0, "w2");
+    assert_eq!(reply.effects[0].target.0, "win-b");
     assert!(
         reply.effects[0].await_shown,
         "selection focus awaits arrival"
     );
 
-    // Both writers spell the actual producer reply byte-identically, and
-    // the structural estimate covers it.
-    let wire = encode_reply_legacy(&reply);
-    assert_eq!(
-        wire,
-        tiler_core::world_report::encode_reply_canonical(&reply),
-        "transport mirrors the core writer over a selection reply"
-    );
+    // The v4 writer spells the actual producer reply, with the independent
+    // core byte count exact and a decoder roundtrip to the identical typed
+    // reply, and the structural estimate covers it.
+    let wire = reply_wire(&reply);
     assert!(
-        tiler_core::world_report::reply_estimate(&reply) >= wire.len(),
+        reply_estimate_v4(&reply) >= wire.len(),
         "estimate covers the selection reply"
     );
     assert!(
@@ -276,13 +219,13 @@ fn selection_reply_spells_through_both_writers() {
     let show = reply
         .windows
         .iter()
-        .find(|row| row.lifetime.0 == "w2")
+        .find(|row| row.lifetime.0 == "win-b")
         .and_then(|row| row.visibility)
         .expect("selected home show");
     let hide = reply
         .windows
         .iter()
-        .find(|row| row.lifetime.0 == "w1")
+        .find(|row| row.lifetime.0 == "win-a")
         .and_then(|row| row.visibility)
         .expect("departing home hide");
     assert!(show.shown && !hide.shown);
@@ -300,7 +243,7 @@ fn selection_reply_spells_through_both_writers() {
 }
 
 #[test]
-fn selection_reply_carries_switch_terminal_through_both_writers() {
+fn selection_reply_carries_switch_terminal_through_v4_writer() {
     // Real-producer parity through the actual terminal: the same
     // boot/send-aside/select route, then raw LastWrite plus arrival plus
     // focus feedback settle the parent op on the real engine.
@@ -310,6 +253,7 @@ fn selection_reply_carries_switch_terminal_through_both_writers() {
         HostCapabilities {
             window_suppression: true,
             maximize: true,
+            native_sticky: true,
             ..Default::default()
         },
     )
@@ -328,13 +272,14 @@ fn selection_reply_carries_switch_terminal_through_both_writers() {
         &report(
             2,
             Some(2),
-            Some(WorldCommand::Send {
-                window: WindowId("w2".to_owned()),
-                target_output: OutputId("out-a".to_owned()),
-                target_workspace: away.clone(),
-                follow: false,
-            }),
-            "w2",
+            Some(serde_json::json!({
+                "op": "send",
+                "win": "win-b",
+                "out": "out-a",
+                "ws": away,
+                "follow": false,
+            })),
+            "win-b",
         ),
     );
     let granted = accepted(
@@ -342,10 +287,11 @@ fn selection_reply_carries_switch_terminal_through_both_writers() {
         &report(
             3,
             Some(3),
-            Some(WorldCommand::SelectWorkspace {
-                output: OutputId("out-a".to_owned()),
-                workspace: away.clone(),
-            }),
+            Some(serde_json::json!({
+                "op": "select-workspace",
+                "out": "out-a",
+                "ws": away,
+            })),
             "",
         ),
     );
@@ -355,7 +301,7 @@ fn selection_reply_carries_switch_terminal_through_both_writers() {
     let frame = granted
         .windows
         .iter()
-        .find(|row| row.lifetime.0 == "w2")
+        .find(|row| row.lifetime.0 == "win-b")
         .and_then(|row| row.effective_frame);
     let sample = |obs: u64| VisibilitySample {
         obs,
@@ -407,14 +353,10 @@ fn selection_reply_carries_switch_terminal_through_both_writers() {
     assert!(event.failed.is_empty());
     assert_eq!(event.focus, tiler_core::world_report::SwitchFocus::Proven);
     assert!(!event.fallback);
-    // Both writers spell the terminal reply byte-identically with the
-    // exact canonical event row in frozen key order.
-    let wire = encode_reply_legacy(&settled);
-    assert_eq!(
-        wire,
-        tiler_core::world_report::encode_reply_canonical(&settled),
-        "transport mirrors the core writer over a switch terminal"
-    );
+    // The v4 writer spells the terminal reply with the exact canonical
+    // event row in frozen key order; the independent core byte count is
+    // exact and the wire round-trips to the identical typed reply.
+    let wire = reply_wire(&settled);
     assert!(
         wire.contains(
             "\"switchSettled\":[{\"op\":\"op-3\",\"outcome\":\"complete\",\
@@ -423,18 +365,18 @@ fn selection_reply_carries_switch_terminal_through_both_writers() {
         "exact canonical event row in frozen key order"
     );
     // Marginal switch lane is exact against its wire bytes (the estimate
-    // carries the 19-byte section key while the section writer keeps the
-    // 2 array brackets), and the whole-reply estimate bounds the wire.
+    // carries the 17-byte section framing while the section writer keeps
+    // the 2 array brackets), and the whole-reply estimate bounds the wire.
     let mut section = String::new();
     tiler_core::world_sizing::encode_switch_settled(&mut section, &settled.switch_settled);
     let estimated = tiler_core::world_sizing::switch_settled_estimate(&settled.switch_settled);
     assert_eq!(
         estimated,
         section.len() + 17,
-        "section key accounts the gap"
+        "section framing accounts the gap"
     );
     assert!(
-        tiler_core::world_report::reply_estimate(&settled) >= wire.len(),
+        reply_estimate_v4(&settled) >= wire.len(),
         "estimate covers the terminal reply"
     );
     // The terminal never repeats: the next report publishes empty.

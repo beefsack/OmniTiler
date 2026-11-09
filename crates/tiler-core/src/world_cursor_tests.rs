@@ -10,8 +10,12 @@
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
-use crate::world_report::{WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldCommand, WorldReport};
+use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_report::{
+    PresentationRowV4, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4,
+    WorldReportV4,
+};
+use crate::world_v4_support_tests::empty_ingress;
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -100,7 +104,7 @@ fn report(
     cursor_warp: bool,
     inventory_complete: bool,
     gesture_barrier: bool,
-) -> WorldReport {
+) -> WorldReportV4 {
     command_report(
         request_seq,
         observation_seq,
@@ -131,9 +135,9 @@ fn command_report(
     gesture_barrier: bool,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -143,9 +147,9 @@ fn command_report(
         command,
         screens: vec![screen("out-a", 0), screen("out-b", 800)],
         windows,
-        views: Vec::new(),
         closed: Vec::new(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor,
         cursor_hit: cursor_hit.map(|hit| WindowId(hit.to_owned())),
         focused_global: focused.to_owned(),
@@ -164,17 +168,18 @@ fn command_report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -747,7 +752,7 @@ fn focus_follows_stale_hit_refuses() {
     // A hit naming no reported window (stale or recycled id) refuses the
     // report instead of focusing blindly.
     let mut engine = rig();
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         2,
         2,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
@@ -759,7 +764,7 @@ fn focus_follows_stale_hit_refuses() {
         true,
         false,
     )) {
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("expected rejection, got {other:?}"),
     }
 }
@@ -769,7 +774,7 @@ fn focus_follows_hit_without_cursor_refuses() {
     // A hit without the cursor position it was resolved from refuses:
     // the two always travel together.
     let mut engine = rig();
-    match engine.handle_report_legacy(&report(
+    match engine.handle_report(&report(
         2,
         2,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
@@ -781,7 +786,7 @@ fn focus_follows_hit_without_cursor_refuses() {
         true,
         false,
     )) {
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("expected rejection, got {other:?}"),
     }
 }
@@ -975,10 +980,15 @@ fn focus_follows_yields_to_explicit_command_focus() {
 }
 
 #[test]
-fn warp_follows_last_focus_effect_not_last_cross_output() {
-    // Admission focuses cross-output first, then the explicit command
-    // focuses same-output last: the resulting focus stays on the cursor
-    // output, so no warp rides the earlier cross-output effect.
+fn warp_follows_single_explicit_grant_not_superseded_admission() {
+    // V4 supersession (docs/decisions/commands.md#kde-rapid-input: the adapter
+    // applies only the latest publication, superseded unissued targets drop;
+    // world_run_v4.rs batch-focus resolution: the first explicit batch Focus
+    // supersedes every unissued prior Focus): the newcomer admission Focus for
+    // win-c drops under the explicit batch Focus for win-a, so only the
+    // explicit grant publishes. The surviving focus stays on the cursor
+    // output, so no warp rides the superseded cross-output admission.
+    // Map: world_rapid_input_tests::rapid_input_batch_focus_supersedes_admission_focus.
     let mut engine = cross_rig();
     let reply = accepted(
         &mut engine,
@@ -1004,8 +1014,7 @@ fn warp_follows_last_focus_effect_not_last_cross_output() {
             }),
         ),
     );
-    assert_eq!(reply.effects.len(), 2);
-    assert_eq!(reply.effects[0].target.0, "win-c");
-    assert_eq!(reply.effects[1].target.0, "win-a");
+    assert_eq!(reply.effects.len(), 1, "explicit-only grant: {reply:?}");
+    assert_eq!(reply.effects[0].target.0, "win-a");
     assert_eq!(reply.cursor_warp, None);
 }

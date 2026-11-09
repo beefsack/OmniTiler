@@ -56,7 +56,7 @@ use crate::world_focus::{FocusVerdict, classify_focus_feedback};
 use crate::world_report::{
     EffectKind, FocusFeedback, HeldScreenRow, HoldReason, LastWrite, LastWriteProperty,
     OneShotEffect, ScopeAuthority, ScreenReport, SwitchEvent, SwitchFocus, SwitchOutcome,
-    TransferKind, VisibilityTarget, WindowDesire, WorldCommand, WorldReport,
+    TransferKind, VisibilityTarget, WindowDesire, WorldCommand,
 };
 
 /// Minimal carrier between the real selection command and publish only:
@@ -1261,7 +1261,7 @@ impl WorldEngine {
         // carries its terminal through the common predicate below, command
         // and policy carriers alike (no timer, poll, or artificial future
         // wake; policy issuing terminals size pre-mutation via
-        // `policy_terminal_reserve`). Host-owned focusless never completes
+        // `policy_terminal_reserve_v4`). Host-owned focusless never completes
         // here: its native obligation still reads Pending with no raw yet.
         // No evidence latches here: same-report raw facts would guess a
         // future issuing revision.
@@ -1652,28 +1652,9 @@ impl WorldEngine {
         }
     }
 
-    /// Pre-mutation upper bound on policy issuing terminals for this
-    /// cycle: every fresh displaced/returned workspace passing the focus
-    /// filter mints at most one commandless terminal at publish under its
-    /// own `op-dpv-*` parent, so bound the fresh placements knowable
-    /// before convergence: returned origins' preserved workspaces plus
-    /// removed outputs' ring ids. The focus/view filter and the per-output
-    /// latest-wins carrier only reduce. Zero in shared mode (no
-    /// displacement) and when nothing moved. The v4 report carries the
-    /// same screen lane, so [`Self::policy_terminal_reserve_v4`] shares
-    /// the input-only core below.
-    pub(crate) fn policy_terminal_reserve(&self, report: &WorldReport) -> usize {
-        let live: BTreeSet<&str> = report
-            .screens
-            .iter()
-            .map(|screen| screen.output.0.as_str())
-            .collect();
-        self.policy_terminal_reserve_for_live(&live)
-    }
-
-    /// Pre-mutation upper bound over one v4 report: twin of
-    /// [`Self::policy_terminal_reserve`] over the v4 screen lane. Shares
-    /// the input-only live-output core; no legacy report is built.
+    /// Pre-mutation upper bound over one v4 report over the v4 screen lane.
+    /// Shares the input-only live-output core in
+    /// [`Self::policy_terminal_reserve_for_live`]; no legacy report is built.
     pub(crate) fn policy_terminal_reserve_v4(
         &self,
         report: &crate::world_report::WorldReportV4,

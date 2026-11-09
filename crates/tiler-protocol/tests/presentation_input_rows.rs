@@ -9,8 +9,8 @@
 //! BYTES from the full message (preserving original key order, never
 //! serde-sorted), run exact row decode plus checked canonical encode, and
 //! compare BYTES, not merely `Value` equality. Nothing here claims whole v4
-//! report acceptance: full v4 envelopes still refuse at the unchanged v3
-//! whole-report gate (`unknown-field` on the staged `rendererInput` key
+//! report acceptance: full v4 envelopes are gated by the genuine v4
+//! whole-report codec (removed `views` lane refuses as `unknown-field`
 //! before any version verdict), which is locked below.
 
 use std::collections::BTreeSet;
@@ -23,7 +23,7 @@ use tiler_core::world_report::{
 use tiler_protocol::world_protocol::{
     WORLD_MAX_REQUEST_BYTES, decode_frame_witness_str, decode_pager_frame_v4_str,
     decode_presentation_ingress_v4, decode_presentation_ingress_v4_str, decode_renderer_input_str,
-    decode_request_legacy, decode_request_with_wire_legacy, encode_frame_witness,
+    decode_report_v4, decode_request, decode_request_with_wire, encode_frame_witness,
     encode_pager_frame_v4, encode_presentation_ingress_v4, encode_render_target,
     encode_renderer_input,
 };
@@ -387,21 +387,73 @@ fn v4_renderer_rows_shape_census_and_pairing_exclusion() {
 
 #[test]
 fn v4_whole_report_still_refuses_before_any_version_verdict() {
-    // The staged `rendererInput` key is unknown to the unchanged v3
-    // whole-report gate, which runs before the version check: lock the
-    // actual `unknown-field` refusal, not an `unsupported-version`
-    // assumption. No whole-message conformance is claimed here.
+    // Whole-report structural gates run before any version verdict in the
+    // genuine v4 codec (`decode_report_v4` backs `decode_request` and
+    // `decode_request_with_wire`): malformed bytes, duplicate keys,
+    // trailing tokens, and overbound wire refuse first, and the removed
+    // `views` lane refuses as `unknown-field` even when the version is
+    // also wrong. No whole-message conformance beyond this ordering is
+    // claimed here.
     let root = fixture_root();
     for id in ["report-empty", "report-renderer-workspace"] {
         let text = read_message(&root, &format!("messages/{id}.json"));
-        let error = decode_request_legacy(&text).expect_err("{id} whole report refuses");
+        // The removed `views` lane is unknown to the genuine v4 envelope
+        // gate: lock the actual `unknown-field` refusal, not an
+        // `unsupported-version` assumption.
+        let unknown = text.replacen("\"rendererInput\"", "\"views\":[],\"rendererInput\"", 1);
+        assert_ne!(unknown, text, "{id} stages the unknown field");
+        let error = decode_request(&unknown).expect_err("{id} whole report refuses");
         assert_eq!(
             error.kind, "unknown-field",
             "{id} refuses before version gate"
         );
-        let wired = decode_request_with_wire_legacy(&text).expect_err("{id} wired refuses");
-        assert_eq!(wired.kind, "unknown-field");
+        let wired = decode_request_with_wire(&unknown).expect_err("{id} wired refuses");
+        assert_eq!(wired.kind, "unknown-field", "{id} wired refuses");
+        let report = decode_report_v4(&unknown).expect_err("{id} report refuses");
+        assert_eq!(report.kind, "unknown-field", "{id} report refuses");
+        // Before any version verdict: a wrong version riding with the
+        // unknown field still refuses as `unknown-field`.
+        let wrong_version = unknown.replacen("\"v\":4", "\"v\":3", 1);
+        assert_ne!(wrong_version, unknown, "{id} stages the wrong version");
+        let error =
+            decode_request(&wrong_version).expect_err("{id} refuses before version verdict");
+        assert_eq!(
+            error.kind, "unknown-field",
+            "{id} unknown field wins over version"
+        );
+        let wired = decode_request_with_wire(&wrong_version)
+            .expect_err("{id} wired refuses before version verdict");
+        assert_eq!(wired.kind, "unknown-field", "{id} wired unknown wins");
     }
+    // Wire-level structural gates likewise precede any version verdict:
+    // malformed bytes, duplicate keys, and trailing tokens refuse as
+    // `malformed`; overbound wire refuses as `oversized`.
+    let wire = read_message(&fixture_root(), "messages/report-empty.json");
+    let assert_malformed = |bytes: &str, case: &str| {
+        let error = decode_request(bytes).expect_err(case);
+        assert_eq!(error.kind, "malformed", "{case}");
+        assert_eq!(error.message, "request is malformed", "{case}");
+        let wired = decode_request_with_wire(bytes).expect_err(case);
+        assert_eq!(wired.kind, "malformed", "{case}");
+        assert_eq!(wired.message, "request is malformed", "{case}");
+    };
+    assert_malformed("{invalid", "malformed bytes refuse");
+    let duplicate = wire.replacen(
+        "\"adapter\":\"adapter-a\"",
+        "\"adapter\":\"adapter-a\",\"adapter\":\"adapter-a\"",
+        1,
+    );
+    assert_ne!(duplicate, wire, "stages the duplicate key");
+    assert_malformed(&duplicate, "duplicate root key refuses");
+    assert_malformed(&format!("{wire} {{}}"), "trailing object refuses");
+    assert_malformed(&format!("{wire}x"), "trailing garbage refuses");
+    let big = "x".repeat(WORLD_MAX_REQUEST_BYTES + 1);
+    let error = decode_request(&big).expect_err("overbound refuses");
+    assert_eq!(error.kind, "oversized");
+    let wired = decode_request_with_wire(&big).expect_err("overbound wired refuses");
+    assert_eq!(wired.kind, "oversized");
+    let report = decode_report_v4(&big).expect_err("overbound report refuses");
+    assert_eq!(report.kind, "oversized");
 }
 
 // --- Constructed shape edges --------------------------------------------------
@@ -965,34 +1017,4 @@ fn v4_checked_encoders_reject_invalid_typed_rows() {
     };
     let text = encode_render_target(&group).expect("group encodes");
     assert!(text.contains("\"group\":\"group-a\""));
-}
-
-#[test]
-fn v4_existing_v3_gates_are_unchanged() {
-    // The staged row codecs add no report fields and change no v3 behavior:
-    // a minimal v3 observation-only envelope still decodes on both entry
-    // points with contract version 3.
-    let request = "{\"v\":3,\"adapter\":\"a\",\"gen\":\"gen-1\",\
-         \"obs\":\"1\",\"reqSeq\":\"1\",\"req\":\"req-1\",\"cmdSeq\":null,\
-         \"command\":null,\
-         \"screens\":[{\"out\":\"out\",\"full\":[0,0,800,600],\"work\":[0,0,800,560],\
-          \"complete\":true,\"scale\":1.0,\
-          \"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\
-         \"windows\":[],\
-         \"views\":[{\"out\":\"out\",\"view\":\"\"}],\"closed\":[],\"native\":[],\
-         \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
-         \"actionOutputs\":[\"out\"],\
-         \"focused\":\"\",\"complete\":true,\"gesture\":false,\
-         \"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
-         \"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\
-         \"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\
-         \"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\
-         \"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\
-         \"pagerOrder\":[],\"pagerFrames\":[]},\
-         \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[]}"
-        .to_owned();
-    let report = decode_request_legacy(&request).expect("v3 decodes");
-    assert_eq!(report.contract_version, 3);
-    let wired = decode_request_with_wire_legacy(&request).expect("v3 wired decodes");
-    assert_eq!(wired.report, report);
 }

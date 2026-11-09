@@ -15,11 +15,11 @@ use crate::directional::{OutputId, SameAxisMove, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport,
-    ScreenView, TransferKind, WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorkspaceRef,
-    WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, FrameSetter, MemberAttempt, PresentationIngressV4,
+    PresentationRowV4, ScopeAuthority, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION_V4,
+    WindowFact, WorkspaceRef, WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -146,7 +146,7 @@ fn report(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
+) -> WorldReportV4 {
     report_full(
         request_seq,
         observation_seq,
@@ -171,9 +171,9 @@ fn report_full(
     command: Option<WorldCommand>,
     _predicate: crate::size_hints::FixedSizePredicate,
     _default_tiled: bool,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq,
@@ -182,10 +182,12 @@ fn report_full(
         command_seq,
         command,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: Vec::new(),
+        held_windows: Vec::new(),
         closed: Vec::new(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -193,8 +195,6 @@ fn report_full(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -204,23 +204,24 @@ fn report_full(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
 fn row_of<'a>(
-    reply: &'a crate::world_report::WorldReply,
+    reply: &'a crate::world_report::WorldReplyV4,
     window: &str,
 ) -> &'a crate::world_report::WindowDesire {
     reply
@@ -230,7 +231,7 @@ fn row_of<'a>(
         .unwrap_or_else(|| panic!("missing row {window}"))
 }
 
-fn output_view(reply: &crate::world_report::WorldReply, output: &str) -> Option<String> {
+fn output_view(reply: &crate::world_report::WorldReplyV4, output: &str) -> Option<String> {
     reply
         .outputs
         .iter()
@@ -238,7 +239,7 @@ fn output_view(reply: &crate::world_report::WorldReply, output: &str) -> Option<
         .and_then(|row| row.logical_view.clone())
 }
 
-fn window_transfer(reply: &crate::world_report::WorldReply, window: &str) -> TransferKind {
+fn window_transfer(reply: &crate::world_report::WorldReplyV4, window: &str) -> TransferKind {
     let transfers: Vec<_> = reply
         .transfers
         .iter()
@@ -280,7 +281,7 @@ fn send_up(window: &str, follow: bool) -> WorldCommand {
     }
 }
 
-fn bootstrap_stacked(mover: WindowFact) -> (WorldEngine, crate::world_report::WorldReply) {
+fn bootstrap_stacked(mover: WindowFact) -> (WorldEngine, crate::world_report::WorldReplyV4) {
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     // The source holds only the mover: a sole root leaf exhausts (R4)
     // instead of restructuring locally (R1-R3).
@@ -579,8 +580,8 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
         Some(113),
         Some(move_up("win-a")),
     );
-    match engine.handle_report_legacy(&again) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&again) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::TransferInFlight
@@ -610,8 +611,8 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
         Some(114),
         Some(move_up("win-a")),
     );
-    match engine.handle_report_legacy(&again) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&again) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::TransferInFlight
@@ -758,15 +759,13 @@ fn exhausted_move_retains_identity_pinned_transfer_and_settles_on_arrival() {
     assert_eq!(lagged[0].operation_id, "op-112");
     assert_eq!(row_of(&lag_reply, "win-a").output.0, "u2");
     // Arrival proof (observed at the target screen with the exact target
-    // logical membership) plus the exact follow-view echo settles the
-    // cross-output follow parent: membership alone never settles while the
-    // target view is still stale.
+    // logical membership) settles the cross-output follow parent. The
+    // legacy setup also sent the exact follow-view echo, but echoes are
+    // inert (the staged echo derives solely from the native current map,
+    // never from this lane), so the v4 port observes the same arrival
+    // with an empty lane.
     let arrived = fact("win-a", "u2", 960);
-    let mut arrival_report = report(4, 4, stacked_screens(), vec![arrived], "win-a", None, None);
-    arrival_report.views = vec![crate::world_report::ScreenView {
-        output: crate::directional::OutputId(transfer.target_output.0.clone()),
-        view: transfer.target_workspace.clone(),
-    }];
+    let arrival_report = report(4, 4, stacked_screens(), vec![arrived], "win-a", None, None);
     let settled = accepted(&mut engine, &arrival_report);
     assert!(
         settled.transfers.is_empty(),
@@ -934,9 +933,9 @@ fn drag_preview_same_domain_routes_and_carries_core_rect_and_hover() {
             source: None,
         })),
     );
-    let reply = match engine.handle_report_legacy(&preview) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
-        LegacyWorldOutcome::Rejected { kind, .. } => {
+    let reply = match engine.handle_report(&preview) {
+        WorldOutcome::Accepted(reply) => reply,
+        WorldOutcome::Rejected { kind, .. } => {
             panic!("same-domain preview must run the legacy route, got {kind}")
         }
         other => panic!("unexpected outcome {other:?}"),
@@ -967,9 +966,51 @@ fn drag_preview_same_domain_routes_and_carries_core_rect_and_hover() {
     assert_eq!(row_of(&reply, "win-b").output.0, "out-a");
     assert!(reply.transfers.is_empty());
     assert!(reply.effects.is_empty());
-    let encoded = crate::world_report::encode_reply_canonical(&reply);
-    assert!(encoded.contains("\"op\":\"drag-preview\""));
-    assert!(encoded.contains("\"win\":\"win-b\""), "{encoded}");
+    // No core v4 canonical writer exists; the typed assertions above
+    // already pin the drag-preview op and the win-b neighbor identity,
+    // and the exact-byte delta below proves the result rides the reply
+    // bytes (protocol `encode_reply_v4` field arithmetic).
+    use crate::world_sizing_v4::reply_exact_bytes_v4;
+    let mut stripped = reply.clone();
+    stripped.command_result = None;
+    assert!(
+        reply_exact_bytes_v4(&reply) > reply_exact_bytes_v4(&stripped),
+        "exact bytes carry the drag-preview result"
+    );
+}
+
+fn presentation_query(
+    request_seq: u64,
+    observation_seq: u64,
+    screens: Vec<ScreenReport>,
+    windows: Vec<WindowFact>,
+    focused: &str,
+    foreground: &str,
+) -> WorldReportV4 {
+    // v4 ingress carries only foreground/frame/chord/pager/witness lanes;
+    // border/underlay styling lives in composed settings (contract 261-272,
+    // 1221 removes the ingress sizes).
+    let mut base = report(
+        request_seq,
+        observation_seq,
+        screens,
+        windows,
+        focused,
+        None,
+        None,
+    );
+    base.presentation = PresentationRowV4::Valid(PresentationIngressV4 {
+        foreground: foreground.to_owned(),
+        foreground_minimized: Some(false),
+        foreground_maximized: Some(false),
+        foreground_fullscreen: Some(false),
+        foreground_host_hidden: Some(false),
+        foreground_hidden_workspace: Some(false),
+        foreground_frame: Some(rect(0, 0, 40, 90)),
+        chord_held: true,
+        ..PresentationIngressV4::default()
+    });
+    base
 }
 
 #[test]
@@ -981,21 +1022,16 @@ fn uniform_presentation_resolves_found_and_root_leaf() {
     // before the presentation reads retained focus.
     accepted(
         &mut engine,
-        &report(2, 2, screens.clone(), members.clone(), "win-a", None, None),
+        &presentation_query(2, 2, screens.clone(), members.clone(), "win-a", "win-a"),
     );
-    let mut query = report(3, 3, screens, members, "win-a", None, None);
-    query.presentation = crate::world_report::PresentationIngress {
-        foreground: "win-a".to_owned(),
-        foreground_frame: Some(rect(0, 0, 40, 90)),
-        border_enabled: true,
-        underlay_enabled: true,
-        border_gap_px: 0,
-        border_width_px: 4,
-        underlay_extension_px: 3,
-        chord_held: true,
-        ..crate::world_report::PresentationIngress::disabled()
-    };
-    let reply = accepted(&mut engine, &query);
+    // Styled border/underlay sizes have no v4 ingress slot (contract 1221);
+    // visible-border geometry ports via settings+witness in
+    // world_presentation_v4_tests::genuine_descriptor_positive, and the
+    // outer-fill exact twin is underlay_found_scaled.
+    let reply = accepted(
+        &mut engine,
+        &presentation_query(3, 3, screens, members, "win-a", "win-a"),
+    );
     let PresentationUnderlay::Found(found) = reply.presentation.underlay.clone() else {
         panic!(
             "expected found underlay, got {:?}",
@@ -1007,59 +1043,43 @@ fn uniform_presentation_resolves_found_and_root_leaf() {
     assert!(found.union_rect.w > 0 && found.union_rect.h > 0);
     assert!(found.outer_rect.w >= found.union_rect.w);
     assert_eq!(reply.presentation.foreground, "win-a");
-    assert!(reply.presentation.border.visible);
-    let encoded = crate::world_report::encode_reply_canonical(&reply);
-    assert!(encoded.contains("\"presentation\":"));
-    assert!(encoded.contains("\"status\":\"found\""));
     // A lone root leaf has no parent group: hidden with a reason (the
     // renderer clears), never an empty silent result.
     let mut solo = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     let solo_screens = vec![screen_full("out", rect(0, 0, 800, 600))];
     accepted(
         &mut solo,
-        &report(
+        &presentation_query(
             1,
             1,
             solo_screens.clone(),
             vec![fact("win-a", "out", 0)],
             "",
-            None,
-            None,
+            "win-a",
         ),
     );
     accepted(
         &mut solo,
-        &report(
+        &presentation_query(
             2,
             2,
             solo_screens.clone(),
             vec![fact("win-a", "out", 0)],
             "win-a",
-            None,
-            None,
+            "win-a",
         ),
     );
-    let mut query = report(
-        3,
-        3,
-        solo_screens,
-        vec![fact("win-a", "out", 0)],
-        "win-a",
-        None,
-        None,
+    let reply = accepted(
+        &mut solo,
+        &presentation_query(
+            3,
+            3,
+            solo_screens,
+            vec![fact("win-a", "out", 0)],
+            "win-a",
+            "win-a",
+        ),
     );
-    query.presentation = crate::world_report::PresentationIngress {
-        foreground: "win-a".to_owned(),
-        foreground_frame: Some(rect(0, 0, 40, 90)),
-        border_enabled: true,
-        underlay_enabled: true,
-        border_gap_px: 0,
-        border_width_px: 4,
-        underlay_extension_px: 3,
-        chord_held: true,
-        ..crate::world_report::PresentationIngress::disabled()
-    };
-    let reply = accepted(&mut solo, &query);
     assert!(
         matches!(
             reply.presentation.underlay,
@@ -1289,8 +1309,8 @@ fn operation_send_retains_and_foreign_routes_refuse() {
             direction: "right".to_owned(),
         })),
     );
-    match solo.handle_report_legacy(&refused) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match solo.handle_report(&refused) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1358,8 +1378,8 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
             }),
         );
         seq += 1;
-        match engine.handle_report_legacy(&send) {
-            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        match engine.handle_report(&send) {
+            WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::SendRefused
@@ -1447,10 +1467,11 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
         None,
         None,
     );
-    settle_report.views.push(ScreenView {
-        output: OutputId("out-a".to_owned()),
-        view: ring[1].clone(),
-    });
+    // Membership proof settles the window flight (accepted member
+    // attempt naming the target). The legacy setup also pushed the
+    // echoed view, but the comment there already records the echo
+    // proves nothing further on this route, so the v4 port carries an
+    // empty lane.
     settle_report.member_attempts.push(MemberAttempt {
         operation_id: "op-44".to_owned(),
         window: WindowId("win-f".to_owned()),
@@ -1509,7 +1530,7 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
 
 #[test]
 fn deterministic_sequence_replay_matches_exactly() {
-    fn script(screens: &[ScreenReport], ring: &[String]) -> Vec<WorldReport> {
+    fn script(screens: &[ScreenReport], ring: &[String]) -> Vec<WorldReportV4> {
         let mut reports = vec![report(
             1,
             1,
@@ -1568,16 +1589,16 @@ fn deterministic_sequence_replay_matches_exactly() {
     }
     let (_engine, screens, _, ring) = two_output_world();
     assert_eq!(ring.len(), 2);
-    let run = |reports: &[WorldReport]| {
+    let run = |reports: &[WorldReportV4]| {
         let mut engine =
             WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
         let mut replies = Vec::new();
         for report in reports {
-            match engine.handle_report_legacy(report) {
-                LegacyWorldOutcome::Accepted(reply)
-                | LegacyWorldOutcome::CommandConsumed(reply)
-                | LegacyWorldOutcome::Duplicate(reply) => replies.push(reply),
-                LegacyWorldOutcome::Rejected { kind, message } => {
+            match engine.handle_report(report) {
+                WorldOutcome::Accepted(reply)
+                | WorldOutcome::CommandConsumed(reply)
+                | WorldOutcome::Duplicate(reply) => replies.push(reply),
+                WorldOutcome::Rejected { kind, message } => {
                     panic!("replay rejected: {kind} {message}")
                 }
             }
@@ -1588,23 +1609,16 @@ fn deterministic_sequence_replay_matches_exactly() {
     let (first, first_rev) = run(&reports);
     let (second, second_rev) = run(&reports);
     assert_eq!(first_rev, second_rev);
-    assert_eq!(
-        first
-            .iter()
-            .map(crate::world_report::encode_reply_canonical)
-            .collect::<Vec<_>>(),
-        second
-            .iter()
-            .map(crate::world_report::encode_reply_canonical)
-            .collect::<Vec<_>>(),
-        "deterministic replay matches exactly"
-    );
+    // No core v4 canonical writer exists; WorldReplyV4 is PartialEq, so
+    // typed exact equality is the stronger deterministic-replay check
+    // (protocol `encode_reply_v4` is a pure function of the typed reply).
+    assert_eq!(first, second, "deterministic replay matches exactly");
 }
 
 #[test]
 fn predicate_ingress_selects_admission_without_reclassification() {
     use crate::size_hints::{FixedSizePredicate, WindowSizeHints};
-    fn width_fixed_report(predicate: FixedSizePredicate, seq: u64) -> WorldReport {
+    fn width_fixed_report(predicate: FixedSizePredicate, seq: u64) -> WorldReportV4 {
         let mut fixed = fact("win-f", "out-a", 200);
         // Width-only pin (height present but unequal): fixed under
         // either-axis, tiled under both-axes.
@@ -1770,8 +1784,8 @@ fn hotplug_incomplete_survivor_holds_unit_and_full_report_recovers() {
         Some(11),
         Some(move_up("win-a")),
     );
-    match engine.handle_report_legacy(&fenced) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&fenced) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
@@ -1976,8 +1990,8 @@ fn unknown_outputs_and_views_hold_fail_closed() {
             direction: "left".to_owned(),
         }),
     );
-    match engine.handle_report_legacy(&focus_ghost) {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+    match engine.handle_report(&focus_ghost) {
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::FocusUnknown
@@ -1986,8 +2000,11 @@ fn unknown_outputs_and_views_hold_fail_closed() {
         ),
         other => panic!("unknown focus refuses fail-closed, got {other:?}"),
     }
-    // Unknown view echoes never authorize homing or views.
-    let mut echoed = report(
+    // Unknown view echoes never authorize homing or views. v4 carries
+    // no view-echo lane (and the legacy-only unknown-echo publish hold
+    // has no v4 route), so the v4 port observes the same facts with an
+    // empty lane: nothing invented, homing truthful, no transfers.
+    let echoed = report(
         3,
         3,
         screens.clone(),
@@ -1996,10 +2013,6 @@ fn unknown_outputs_and_views_hold_fail_closed() {
         None,
         None,
     );
-    echoed.views = vec![crate::world_report::ScreenView {
-        output: OutputId("out-a".to_owned()),
-        view: "ws-ghost".to_owned(),
-    }];
     let calm = accepted(&mut engine, &echoed);
     assert!(
         calm.outputs
@@ -2315,9 +2328,9 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
             },
         };
         let report_in = report(3, 3, screens, facts, "win-a", Some(11), Some(command));
-        let reply = match engine.handle_report_legacy(&report_in) {
-            LegacyWorldOutcome::Accepted(reply) => reply,
-            LegacyWorldOutcome::Rejected { kind, message } => {
+        let reply = match engine.handle_report(&report_in) {
+            WorldOutcome::Accepted(reply) => reply,
+            WorldOutcome::Rejected { kind, message } => {
                 panic!("case {case}: expected accept, rejected {kind} {message}")
             }
             other => panic!("case {case}: expected accept, got {other:?}"),
@@ -2436,7 +2449,7 @@ fn explicit_output_send_uses_output_route() {
             target_workspace: view_b.clone(),
             follow,
         });
-        let reply = match engine.handle_report_legacy(&report(
+        let reply = match engine.handle_report(&report(
             3,
             3,
             screens.clone(),
@@ -2445,8 +2458,8 @@ fn explicit_output_send_uses_output_route() {
             Some(11),
             Some(command),
         )) {
-            LegacyWorldOutcome::Accepted(reply) => reply,
-            LegacyWorldOutcome::Rejected { kind, message } => {
+            WorldOutcome::Accepted(reply) => reply,
+            WorldOutcome::Rejected { kind, message } => {
                 panic!("follow={follow}: explicit SendToOutput must accept, got {kind} {message}")
             }
             other => panic!("follow={follow}: expected accept, got {other:?}"),
@@ -2659,8 +2672,8 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report_legacy(&refused) {
-            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        match engine.handle_report(&refused) {
+            WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::SendRefused
@@ -2695,8 +2708,8 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report_legacy(&refused) {
-            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        match engine.handle_report(&refused) {
+            WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::SendRefused
@@ -2733,8 +2746,8 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        let reply = match engine.handle_report_legacy(&first) {
-            LegacyWorldOutcome::Accepted(reply) => reply,
+        let reply = match engine.handle_report(&first) {
+            WorldOutcome::Accepted(reply) => reply,
             other => panic!("follow={follow}: first send must accept, got {other:?}"),
         };
         assert!(
@@ -2758,8 +2771,8 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report_legacy(&again) {
-            LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        match engine.handle_report(&again) {
+            WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::TransferInFlight
@@ -2860,8 +2873,8 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report_legacy(&probe) {
-            LegacyWorldOutcome::Accepted(reply) => {
+        match engine.handle_report(&probe) {
+            WorldOutcome::Accepted(reply) => {
                 // KIND_SEND_TARGET is "send-target-unknown"; the
                 // migration-destination fence runs before the
                 // mapping/staged checks, so with the matching cell
@@ -3671,8 +3684,8 @@ fn physical_disconnect_no_survivor_holds_unit_for_retry() {
         None,
         None,
     );
-    let held = match engine.handle_report_legacy(&empty) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    let held = match engine.handle_report(&empty) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("empty-screen disconnect must hold, got {other:?}"),
     };
     assert!(
@@ -5424,7 +5437,7 @@ fn physical_chain_return_moved_out_member_stays_away() {
     );
     // Explicit move-out while displaced: win-s leaves its unit for the
     // survivor's own unit through the ordinary send route.
-    let moved = match engine.handle_report_legacy(&report(
+    let moved = match engine.handle_report(&report(
         4,
         4,
         vec![screen_ident(
@@ -5446,7 +5459,7 @@ fn physical_chain_return_moved_out_member_stays_away() {
             follow: false,
         })),
     )) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("explicit move-out must accept, got {other:?}"),
     };
     let transfer = moved

@@ -6,9 +6,9 @@
 
 use crate::directional::WindowId;
 use crate::intent_data::{IntentData, encode_intent_data};
-use crate::world_directional::tests::{fact, report_full, screen};
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{IntentRecord, RowDiagnosticKind, RowDiagnosticLane};
+use crate::world_v4_support_tests::{fact, report_full, screen};
 
 fn caps(native_sticky: bool) -> crate::connection::HostCapabilities {
     crate::connection::HostCapabilities {
@@ -27,15 +27,15 @@ fn engine_with(native_sticky: bool) -> WorldEngine {
 
 fn accepted_reply(
     engine: &mut WorldEngine,
-    report: &crate::world_report::WorldReport,
-) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    report: &crate::world_report::WorldReportV4,
+) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
-fn controlled(reply: &crate::world_report::WorldReply) -> Vec<String> {
+fn controlled(reply: &crate::world_report::WorldReplyV4) -> Vec<String> {
     reply
         .windows
         .iter()
@@ -371,10 +371,8 @@ fn mixed_outputs_healthy_siblings_keep_authority() {
 
 #[test]
 fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
-    use crate::world_report::{
-        MAX_METADATA_TEXT_BYTES, NativeWorkspaceFact, grade_conflicting_windows,
-        grade_invalid_windows,
-    };
+    use crate::world_report::{MAX_METADATA_TEXT_BYTES, NativeWorkspaceFact};
+    use crate::world_report_v4_checks::{grade_conflicting_windows_v4, grade_invalid_windows_v4};
     // Structural violations refuse instead of grading around the conflict.
     let mut dup_a = fact("win-dup", "out-a", 0);
     dup_a.sticky = Some(true);
@@ -391,7 +389,7 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
         None,
     );
     assert!(
-        grade_conflicting_windows(&dup_report, &[], false, true).is_none(),
+        grade_conflicting_windows_v4(&dup_report, &[], false, true).is_none(),
         "duplicate ids never grade to a hold"
     );
     for (label, mut bad) in [
@@ -425,7 +423,7 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
             None,
         );
         assert!(
-            grade_conflicting_windows(&report, &[], false, true).is_none(),
+            grade_conflicting_windows_v4(&report, &[], false, true).is_none(),
             "{label} violation never grades to a hold"
         );
         bad.window = WindowId(format!("win-bad-{label}-engine"));
@@ -442,8 +440,8 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
         let mut engine = engine_with(false);
         assert!(
             matches!(
-                engine.handle_report_legacy(&engine_report),
-                LegacyWorldOutcome::Rejected { .. }
+                engine.handle_report(&engine_report),
+                WorldOutcome::Rejected { .. }
             ),
             "{label} violation refuses through the engine"
         );
@@ -464,10 +462,10 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
         None,
     );
     assert!(
-        grade_conflicting_windows(&raw, &[], false, true).is_none(),
+        grade_conflicting_windows_v4(&raw, &[], false, true).is_none(),
         "gradable invalid row never double-holds as conflicting"
     );
-    let graded = grade_invalid_windows(&raw).expect("overbound grades invalid");
+    let graded = grade_invalid_windows_v4(&raw).expect("overbound grades invalid");
     assert_eq!(graded.windows.len(), 0);
     assert_eq!(graded.held_windows.len(), 1);
     assert_eq!(graded.held_windows[0].kind, RowDiagnosticKind::InvalidFact);
@@ -483,7 +481,7 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
         sticky.1
     );
     assert!(
-        grade_conflicting_windows(&graded, &[], false, true).is_none(),
+        grade_conflicting_windows_v4(&graded, &[], false, true).is_none(),
         "already-held invalid row never re-grades"
     );
     // Ordinal preservation across successive conflicts: the first held row
@@ -501,13 +499,13 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
         None,
         None,
     );
-    let mut staged = grade_conflicting_windows(&base, &[], false, true).expect("first grades");
+    let mut staged = grade_conflicting_windows_v4(&base, &[], false, true).expect("first grades");
     assert_eq!(staged.held_windows.len(), 1);
     assert_eq!(staged.held_windows[0].ordinal, 0);
     let mut second = fact("win-second", "out-a", 200);
     second.sticky = Some(true);
     staged.windows.push(second);
-    let restaged = grade_conflicting_windows(&staged, &[], false, true).expect("second grades");
+    let restaged = grade_conflicting_windows_v4(&staged, &[], false, true).expect("second grades");
     assert_eq!(restaged.held_windows.len(), 2);
     assert_eq!(restaged.held_windows[0].ordinal, 0);
     assert_eq!(restaged.held_windows[1].ordinal, 1);
@@ -599,8 +597,8 @@ fn conflict_recovery_consumes_pending_and_seals_admission() {
         engine.staged.held_windows
     );
     // An exact duplicate of the recovery returns the cached reply.
-    match engine.handle_report_legacy(&recovery) {
-        LegacyWorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
+    match engine.handle_report(&recovery) {
+        WorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
         other => panic!("expected duplicate, got {other:?}"),
     }
     // A late changed record for the admitted lifetime never overwrites and
@@ -641,8 +639,8 @@ fn conflict_recovery_consumes_pending_and_seals_admission() {
     changed_row.sticky = Some(true);
     let mut changed = late.clone();
     changed.windows = vec![changed_row];
-    match engine.handle_report_legacy(&changed) {
-        LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
+    match engine.handle_report(&changed) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
         other => panic!("expected reused rejection, got {other:?}"),
     }
 }

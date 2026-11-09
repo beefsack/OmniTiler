@@ -1,4 +1,4 @@
-//! World report shape tests (contract v3): digest stability, validation
+//! World report shape tests (contract v4): digest stability, validation
 //! gates, and typed fixtures through the report constructors.
 //!
 //! Split from [`crate::world_report`]: submodule of the report module with
@@ -8,6 +8,10 @@ use super::*;
 use crate::directional::WorkspaceId;
 use crate::geometry::Rect;
 use crate::ids::NativeWorkspaceId;
+use crate::world_report_v4_checks::{
+    grade_invalid_screens_v4, report_digest_v4, validate_report_v4_reason,
+};
+use crate::world_sizing_v4::report_estimate_v4;
 
 fn logical_ref(output: &str, workspace: &str) -> WorkspaceRef {
     WorkspaceRef::Logical {
@@ -27,9 +31,9 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn test_report() -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+fn test_report() -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: 1,
@@ -87,12 +91,9 @@ fn test_report() -> WorldReport {
             },
             last_write: None,
         }],
-        views: vec![ScreenView {
-            output: OutputId("out".to_owned()),
-            view: String::new(),
-        }],
         closed: Vec::new(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
@@ -113,8 +114,9 @@ fn test_report() -> WorldReport {
         creation_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        held_attempts: Vec::new(),
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
+        renderer_input: None,
         intent_records: Vec::new(),
     }
 }
@@ -122,40 +124,52 @@ fn test_report() -> WorldReport {
 #[test]
 fn digest_covers_every_section() {
     let base = test_report();
-    assert!(validate_report(&base));
-    let digest = report_digest(&base);
+    assert!(validate_report_v4_reason(&base).is_none());
+    let digest = report_digest_v4(&base);
     // Any single-section change alters the digest: duplicates are
     // decided by typed equality, but the digest must never alias two
     // different inputs silently.
     let mut changed = base.clone();
     changed.screens[0].complete = false;
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.screens[0].full_rect = Some(rect(0, 0, 1024, 768));
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.windows[0].rect = Some(rect(1, 0, 40, 90));
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.windows[0].transient = Some(true);
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.windows[0].minimized = Some(true);
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     // The capability-gated native membership moves the digest too.
     let capable = base.clone();
-    let capable_digest = report_digest(&capable);
+    let capable_digest = report_digest_v4(&capable);
     let mut changed = capable;
     changed.windows[0].native_workspace =
         crate::world_report::NativeWorkspaceFact::Value("d1".to_owned());
-    assert!(validate_report(&changed));
-    assert_ne!(report_digest(&changed), capable_digest);
+    assert!(validate_report_v4_reason(&changed).is_none());
+    assert_ne!(report_digest_v4(&changed), capable_digest);
     let mut changed = base.clone();
-    changed.views[0].view = "ws-1".to_owned();
-    assert_ne!(report_digest(&changed), digest);
+    // v4 carries no view-echo lane; the held-native lane is the v4 section
+    // the legacy views arm covered in spirit (row-held evidence).
+    changed.held_native.push(HeldNativeRow {
+        output: OutputId("out".to_owned()),
+        ordinal: 0,
+        fields: Vec::new(),
+        diagnostic: RowDiagnostic {
+            scope: AuthorityScope::Output(OutputId("out".to_owned())),
+            row: RowDiagnosticLane::Native,
+            id: Some("out".to_owned()),
+            kind: RowDiagnosticKind::Unreadable,
+        },
+    });
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.closed.push(WindowId("win-b".to_owned()));
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.native.push(NativeObservation {
         output: OutputId("out".to_owned()),
@@ -166,30 +180,30 @@ fn digest_covers_every_section() {
             count: None,
         }],
     });
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     assert_eq!(
-        report_digest(&base),
+        report_digest_v4(&base),
         digest,
         "connection capabilities are not report facts"
     );
     let mut changed = base.clone();
     changed.inventory_complete = false;
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.focused_global = "win-a".to_owned();
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.action_foreground = Some(crate::directional::OutputId("out".to_owned()));
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.action_cached = Some(crate::directional::OutputId("out".to_owned()));
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.action_outputs = vec![crate::directional::OutputId("out".to_owned())];
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.gesture_barrier = true;
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut progress = base.clone();
     progress.gesture = Some(crate::gesture::GestureIngress {
         id: 3,
@@ -202,26 +216,26 @@ fn digest_covers_every_section() {
         modal_move: true,
         start_frame: rect(0, 0, 40, 90),
     });
-    assert!(validate_report(&progress));
-    let progress_digest = report_digest(&progress);
+    assert!(validate_report_v4_reason(&progress).is_none());
+    let progress_digest = report_digest_v4(&progress);
     // The stable gesture id, live cursor, and START cursor each move the
     // digest: replays with a different id or down point never alias.
     let mut changed = progress.clone();
     changed.gesture.as_mut().expect("gesture rides").id = 4;
-    assert_ne!(report_digest(&changed), progress_digest);
+    assert_ne!(report_digest_v4(&changed), progress_digest);
     let mut changed = progress.clone();
     changed.gesture.as_mut().expect("gesture rides").cursor = Some((6, 5));
-    assert_ne!(report_digest(&changed), progress_digest);
+    assert_ne!(report_digest_v4(&changed), progress_digest);
     let mut changed = progress.clone();
     changed
         .gesture
         .as_mut()
         .expect("gesture rides")
         .start_cursor = Some((1, 3));
-    assert_ne!(report_digest(&changed), progress_digest);
+    assert_ne!(report_digest_v4(&changed), progress_digest);
     let mut changed = base.clone();
     changed.monotonic_ms = 1;
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.member_attempts.push(MemberAttempt {
         operation_id: "op-9".to_owned(),
@@ -233,7 +247,7 @@ fn digest_covers_every_section() {
         post: None,
         attempt_ms: 9,
     });
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     // Native attempt evidence separates the digest like any other proof.
     let mut changed = base.clone();
     changed.member_attempts.push(MemberAttempt {
@@ -246,7 +260,7 @@ fn digest_covers_every_section() {
         post: Some(native_ref("out", "native-2")),
         attempt_ms: 9,
     });
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.view_attempts.push(ViewAttempt {
         operation_id: "op-9".to_owned(),
@@ -258,7 +272,7 @@ fn digest_covers_every_section() {
         baseline: None,
         attempt_ms: 9,
     });
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.view_attempts.push(ViewAttempt {
         operation_id: "op-9".to_owned(),
@@ -270,67 +284,56 @@ fn digest_covers_every_section() {
         baseline: Some(native_ref("out", "native-1")),
         attempt_ms: 9,
     });
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.observation_seq = 2;
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.request_seq = 2;
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
     // The cursor hit rides beside the cursor: a changed hit alone
     // separates the digest.
     let mut changed = base.clone();
     changed.cursor = Some((4, 5));
     changed.cursor_hit = Some(WindowId("win-a".to_owned()));
-    assert_ne!(report_digest(&changed), digest);
+    assert_ne!(report_digest_v4(&changed), digest);
 }
 
 #[test]
 fn validation_gates_shapes() {
     let base = test_report();
-    assert!(validate_report(&base));
+    assert!(validate_report_v4_reason(&base).is_none());
     // Contract version mismatch.
     let mut bad = base.clone();
     bad.contract_version = 1;
-    assert_eq!(validate_report_reason(&bad), Some("version-mismatch"));
+    assert_eq!(validate_report_v4_reason(&bad), Some("version-mismatch"));
     // Unknown screen duplicates.
     let mut bad = base.clone();
     bad.screens.push(bad.screens[0].clone());
-    assert_eq!(validate_report_reason(&bad), Some("duplicate-screen"));
+    assert_eq!(validate_report_v4_reason(&bad), Some("duplicate-screen"));
     // Fact on an unknown screen: no validation refusal. Ingress holds
     // narrowly at the engine (unknown output never guesses a screen:
     // `logical_homing` keeps the retained home, unhomed unknowns stay
     // unhomed), so the report shape itself stays valid.
     let mut bad = base.clone();
     bad.windows[0].output = Some(OutputId("nope".to_owned()));
-    assert_eq!(validate_report_reason(&bad), None);
+    assert_eq!(validate_report_v4_reason(&bad), None);
     // Duplicate window.
     let mut bad = base.clone();
     bad.windows.push(bad.windows[0].clone());
-    assert_eq!(validate_report_reason(&bad), Some("duplicate-window"));
+    assert_eq!(validate_report_v4_reason(&bad), Some("duplicate-window"));
     // Closed overlapping live.
     let mut bad = base.clone();
     bad.closed.push(WindowId("win-a".to_owned()));
-    assert_eq!(validate_report_reason(&bad), Some("closed-overlaps-live"));
+    assert_eq!(
+        validate_report_v4_reason(&bad),
+        Some("closed-overlaps-live")
+    );
     // Duplicate close.
     let mut bad = base.clone();
     bad.closed.push(WindowId("win-b".to_owned()));
     bad.closed.push(WindowId("win-b".to_owned()));
-    assert_eq!(validate_report_reason(&bad), Some("duplicate-closed"));
-    // View on unknown screen.
-    let mut bad = base.clone();
-    bad.views.push(ScreenView {
-        output: OutputId("nope".to_owned()),
-        view: String::new(),
-    });
-    assert_eq!(validate_report_reason(&bad), Some("view-output-unknown"));
-    // Duplicate view.
-    let mut bad = base.clone();
-    bad.views.push(ScreenView {
-        output: OutputId("out".to_owned()),
-        view: String::new(),
-    });
-    assert_eq!(validate_report_reason(&bad), Some("duplicate-view"));
+    assert_eq!(validate_report_v4_reason(&bad), Some("duplicate-closed"));
     // Report shape validation is independent of handshake capabilities.
     let mut bad = base.clone();
     bad.native.push(NativeObservation {
@@ -339,22 +342,25 @@ fn validation_gates_shapes() {
         current_native: None,
         occupancy: Vec::new(),
     });
-    assert!(validate_report(&bad));
+    assert!(validate_report_v4_reason(&bad).is_none());
     // Native member evidence is decoded as a fact; Engine ingress gates it.
     let mut bad = base.clone();
     bad.windows[0].native_workspace =
         crate::world_report::NativeWorkspaceFact::Value("d1".to_owned());
-    assert!(validate_report(&bad));
+    assert!(validate_report_v4_reason(&bad).is_none());
     // Native member evidence must be a valid opaque id.
     let mut bad = base.clone();
     bad.windows[0].native_workspace =
         crate::world_report::NativeWorkspaceFact::Value("not an id".to_owned());
-    assert_eq!(validate_report_reason(&bad), Some("window-native-invalid"));
+    assert_eq!(
+        validate_report_v4_reason(&bad),
+        Some("window-native-invalid")
+    );
     // Native member evidence with the capability validates.
     let mut good = base.clone();
     good.windows[0].native_workspace =
         crate::world_report::NativeWorkspaceFact::Value("d1".to_owned());
-    assert!(validate_report(&good));
+    assert!(validate_report_v4_reason(&good).is_none());
     // Duplicate native ids within one output refuse.
     let mut bad = good.clone();
     bad.native.push(NativeObservation {
@@ -372,7 +378,7 @@ fn validation_gates_shapes() {
             },
         ],
     });
-    assert_eq!(validate_report_reason(&bad), Some("duplicate-native"));
+    assert_eq!(validate_report_v4_reason(&bad), Some("duplicate-native"));
     // Contradictory native rows for the same output refuse.
     let mut bad = good.clone();
     bad.native.push(NativeObservation {
@@ -393,7 +399,7 @@ fn validation_gates_shapes() {
             count: None,
         }],
     });
-    assert_eq!(validate_report_reason(&bad), Some("duplicate-native"));
+    assert_eq!(validate_report_v4_reason(&bad), Some("duplicate-native"));
     // Native on unknown screen refuses.
     let mut bad = good.clone();
     bad.native.push(NativeObservation {
@@ -403,60 +409,72 @@ fn validation_gates_shapes() {
         occupancy: Vec::new(),
     });
     bad.native[0].output = OutputId("nope".to_owned());
-    assert_eq!(validate_report_reason(&bad), Some("native-output-unknown"));
+    assert_eq!(
+        validate_report_v4_reason(&bad),
+        Some("native-output-unknown")
+    );
     // Cursor hit names a reported window and rides with the cursor.
     let mut good = base.clone();
     good.cursor = Some((4, 5));
     good.cursor_hit = Some(WindowId("win-a".to_owned()));
-    assert!(validate_report(&good));
+    assert!(validate_report_v4_reason(&good).is_none());
     // A hit without the cursor it was resolved from refuses.
     let mut bad = base.clone();
     bad.cursor_hit = Some(WindowId("win-a".to_owned()));
     assert_eq!(
-        validate_report_reason(&bad),
+        validate_report_v4_reason(&bad),
         Some("cursor-hit-without-cursor")
     );
     // A hit naming no reported window refuses (stale or foreign id).
     let mut bad = base.clone();
     bad.cursor = Some((4, 5));
     bad.cursor_hit = Some(WindowId("win-ghost".to_owned()));
-    assert_eq!(validate_report_reason(&bad), Some("cursor-hit-unknown"));
+    assert_eq!(validate_report_v4_reason(&bad), Some("cursor-hit-unknown"));
     // Action-context facts carry opaque ids only; liveness filters at use.
     let mut good = base.clone();
     good.action_foreground = Some(OutputId("out".to_owned()));
     good.action_cached = Some(OutputId("out".to_owned()));
-    assert!(validate_report(&good));
+    assert!(validate_report_v4_reason(&good).is_none());
     let mut bad = base.clone();
     bad.action_foreground = Some(OutputId(String::new()));
-    assert_eq!(validate_report_reason(&bad), Some("action-output-invalid"));
+    assert_eq!(
+        validate_report_v4_reason(&bad),
+        Some("action-output-invalid")
+    );
     let mut bad = base.clone();
     bad.action_cached = Some(OutputId(String::new()));
-    assert_eq!(validate_report_reason(&bad), Some("action-output-invalid"));
+    assert_eq!(
+        validate_report_v4_reason(&bad),
+        Some("action-output-invalid")
+    );
     // Registry entries are opaque unique ids in adapter order.
     let mut good = base.clone();
     good.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
-    assert!(validate_report(&good));
+    assert!(validate_report_v4_reason(&good).is_none());
     let mut bad = base.clone();
     bad.action_outputs = vec![OutputId(String::new())];
-    assert_eq!(validate_report_reason(&bad), Some("action-outputs-invalid"));
+    assert_eq!(
+        validate_report_v4_reason(&bad),
+        Some("action-outputs-invalid")
+    );
     let mut bad = base.clone();
     bad.action_outputs = vec![OutputId("out".to_owned()), OutputId("out".to_owned())];
     assert_eq!(
-        validate_report_reason(&bad),
+        validate_report_v4_reason(&bad),
         Some("duplicate-action-output")
     );
     // Bad window rect refuses; hints never fail.
     let mut bad = base.clone();
     bad.windows[0].rect = Some(rect(0, 0, 0, 0));
-    assert_eq!(validate_report_reason(&bad), Some("window-rect-invalid"));
+    assert_eq!(validate_report_v4_reason(&bad), Some("window-rect-invalid"));
     let mut good = base.clone();
     good.windows[0].hints.as_mut().expect("hints").min_w = Some(0);
     good.windows[0].hints.as_mut().expect("hints").max_w = Some(i32::MAX);
-    assert!(validate_report(&good));
+    assert!(validate_report_v4_reason(&good).is_none());
     // Unreadable frames ride None without failing.
     let mut good = base.clone();
     good.windows[0].rect = None;
-    assert!(validate_report(&good));
+    assert!(validate_report_v4_reason(&good).is_none());
     // Gesture ids are nonzero: a zero id can never bind.
     let mut bad = base.clone();
     bad.gesture = Some(crate::gesture::GestureIngress {
@@ -470,7 +488,7 @@ fn validation_gates_shapes() {
         modal_move: true,
         start_frame: rect(0, 0, 40, 90),
     });
-    assert_eq!(validate_report_reason(&bad), Some("gesture-id-invalid"));
+    assert_eq!(validate_report_v4_reason(&bad), Some("gesture-id-invalid"));
     // Out-of-bound START cursors refuse like live cursors.
     let mut bad = base.clone();
     bad.gesture = Some(crate::gesture::GestureIngress {
@@ -484,7 +502,10 @@ fn validation_gates_shapes() {
         modal_move: true,
         start_frame: rect(0, 0, 40, 90),
     });
-    assert_eq!(validate_report_reason(&bad), Some("gesture-cursor-invalid"));
+    assert_eq!(
+        validate_report_v4_reason(&bad),
+        Some("gesture-cursor-invalid")
+    );
     // Member attempt shapes: bad operation, target, and homing ids refuse;
     // unknown pre/post homings ride None; duplicate operation windows
     // refuse.
@@ -499,7 +520,10 @@ fn validation_gates_shapes() {
         post: None,
         attempt_ms: 1,
     });
-    assert_eq!(validate_report_reason(&bad), Some("member-window-invalid"));
+    assert_eq!(
+        validate_report_v4_reason(&bad),
+        Some("member-window-invalid")
+    );
     let mut bad = base.clone();
     bad.member_attempts.push(MemberAttempt {
         operation_id: "op-9".to_owned(),
@@ -514,7 +538,10 @@ fn validation_gates_shapes() {
         post: None,
         attempt_ms: 1,
     });
-    assert_eq!(validate_report_reason(&bad), Some("member-homing-invalid"));
+    assert_eq!(
+        validate_report_v4_reason(&bad),
+        Some("member-homing-invalid")
+    );
     // Native attempt ids are typed report facts; Engine ingress gates them.
     let mut bad = base.clone();
     bad.member_attempts.push(MemberAttempt {
@@ -527,7 +554,7 @@ fn validation_gates_shapes() {
         post: None,
         attempt_ms: 1,
     });
-    assert!(validate_report(&bad));
+    assert!(validate_report_v4_reason(&bad).is_none());
     let mut capable = base.clone();
     capable.member_attempts.push(MemberAttempt {
         operation_id: "op-9".to_owned(),
@@ -540,7 +567,7 @@ fn validation_gates_shapes() {
         attempt_ms: 1,
     });
     assert_eq!(
-        validate_report_reason(&capable),
+        validate_report_v4_reason(&capable),
         Some("member-homing-invalid")
     );
     let mut bad = base.clone();
@@ -556,7 +583,7 @@ fn validation_gates_shapes() {
             attempt_ms: 1,
         });
     }
-    assert_eq!(validate_report_reason(&bad), Some("duplicate-member"));
+    assert_eq!(validate_report_v4_reason(&bad), Some("duplicate-member"));
     // View attempt shapes mirror the member rules over exact-output views.
     let mut bad = base.clone();
     bad.view_attempts.push(ViewAttempt {
@@ -569,7 +596,10 @@ fn validation_gates_shapes() {
         baseline: None,
         attempt_ms: 1,
     });
-    assert_eq!(validate_report_reason(&bad), Some("view-operation-invalid"));
+    assert_eq!(
+        validate_report_v4_reason(&bad),
+        Some("view-operation-invalid")
+    );
     let mut bad = base.clone();
     bad.view_attempts.push(ViewAttempt {
         operation_id: "op-9".to_owned(),
@@ -581,7 +611,7 @@ fn validation_gates_shapes() {
         baseline: None,
         attempt_ms: 1,
     });
-    assert!(validate_report(&bad));
+    assert!(validate_report_v4_reason(&bad).is_none());
     let mut capable = base.clone();
     capable.view_attempts.push(ViewAttempt {
         operation_id: "op-9".to_owned(),
@@ -593,7 +623,7 @@ fn validation_gates_shapes() {
         baseline: Some(logical_ref("out", "ws-0")),
         attempt_ms: 1,
     });
-    assert_eq!(validate_report_reason(&capable), None);
+    assert_eq!(validate_report_v4_reason(&capable), None);
     let mut bad = base.clone();
     for _ in 0..2 {
         bad.view_attempts.push(ViewAttempt {
@@ -607,11 +637,17 @@ fn validation_gates_shapes() {
             attempt_ms: 1,
         });
     }
-    assert_eq!(validate_report_reason(&bad), Some("duplicate-view-attempt"));
+    assert_eq!(
+        validate_report_v4_reason(&bad),
+        Some("duplicate-view-attempt")
+    );
     // Command pair mismatch.
     let mut bad = base.clone();
     bad.command_seq = Some(1);
-    assert_eq!(validate_report_reason(&bad), Some("command-pair-invalid"));
+    assert_eq!(
+        validate_report_v4_reason(&bad),
+        Some("command-pair-invalid")
+    );
     // Over-cap sections.
     let mut bad = base.clone();
     bad.screens.clear();
@@ -624,7 +660,7 @@ fn validation_gates_shapes() {
         identity: crate::world_report::OutputIdentity::unknown(),
     };
     bad.screens.extend((0..100).map(|_| filler.clone()));
-    assert_eq!(validate_report_reason(&bad), Some("section-over-cap"));
+    assert_eq!(validate_report_v4_reason(&bad), Some("section-over-cap"));
 }
 
 #[test]
@@ -785,24 +821,24 @@ fn fullscreen_commands_validate_typed_subjects_and_digest_distinct() {
         window: win.clone(),
         value: true,
     });
-    let set_digest = report_digest(&base);
+    let set_digest = report_digest_v4(&base);
     let mut toggled = base.clone();
     toggled.command = Some(C::ToggleFullscreen {
         window: win.clone(),
     });
-    assert_ne!(report_digest(&toggled), set_digest);
+    assert_ne!(report_digest_v4(&toggled), set_digest);
     let mut unset = base.clone();
     unset.command = Some(C::SetFullscreen {
         window: win.clone(),
         value: false,
     });
-    assert_ne!(report_digest(&unset), set_digest);
+    assert_ne!(report_digest_v4(&unset), set_digest);
     let mut sticky = base.clone();
     sticky.command = Some(C::SetSticky {
         window: win.clone(),
         value: true,
     });
-    assert_ne!(report_digest(&sticky), set_digest);
+    assert_ne!(report_digest_v4(&sticky), set_digest);
 }
 
 #[test]
@@ -824,10 +860,10 @@ fn estimator_stays_total_on_nonfinite_typed_facts_before_validation() {
             kind: RowDiagnosticKind::InvalidFact,
         },
     });
-    let bound = report_estimate(&report);
+    let bound = report_estimate_v4(&report);
     assert!(bound > 0);
     assert_eq!(
-        validate_report_reason(&report),
+        validate_report_v4_reason(&report),
         Some("screen-scale-invalid")
     );
 }
@@ -835,8 +871,8 @@ fn estimator_stays_total_on_nonfinite_typed_facts_before_validation() {
 #[test]
 fn grade_invalid_screens_leaves_valid_reports_untouched() {
     let report = test_report();
-    assert!(validate_report(&report));
-    assert!(grade_invalid_screens(&report).is_none());
+    assert!(validate_report_v4_reason(&report).is_none());
+    assert!(grade_invalid_screens_v4(&report).is_none());
 }
 
 #[test]
@@ -847,10 +883,10 @@ fn grade_invalid_screens_retains_nonfinite_fact_without_null_spelling() {
     let mut report = test_report();
     report.screens[0].scale = f64::NAN;
     assert_eq!(
-        validate_report_reason(&report),
+        validate_report_v4_reason(&report),
         Some("screen-scale-invalid")
     );
-    let graded = grade_invalid_screens(&report).expect("grades to hold");
+    let graded = grade_invalid_screens_v4(&report).expect("grades to hold");
     assert!(graded.screens.is_empty());
     assert_eq!(graded.held_screens.len(), 1);
     let held = &graded.held_screens[0];
@@ -867,7 +903,7 @@ fn grade_invalid_screens_retains_nonfinite_fact_without_null_spelling() {
     assert!(matches!(scale.1, crate::connection::RawSettingValue::Number(v) if v.is_nan()));
     assert!(encode_held_screen_canonical(held).is_err());
     assert!(encode_screen_canonical(&report.screens[0]).is_err());
-    assert!(validate_report(&graded));
+    assert!(validate_report_v4_reason(&graded).is_none());
 }
 
 #[test]
@@ -875,17 +911,17 @@ fn grade_invalid_screens_grades_overbound_identity() {
     let mut report = test_report();
     report.screens[0].identity.serial = Some("s".repeat(257));
     assert_eq!(
-        validate_report_reason(&report),
+        validate_report_v4_reason(&report),
         Some("screen-identity-invalid")
     );
-    let graded = grade_invalid_screens(&report).expect("grades to hold");
+    let graded = grade_invalid_screens_v4(&report).expect("grades to hold");
     assert!(graded.screens.is_empty());
     assert_eq!(graded.held_screens.len(), 1);
     assert_eq!(
         graded.held_screens[0].diagnostic.kind,
         RowDiagnosticKind::InvalidFact
     );
-    assert!(validate_report(&graded));
+    assert!(validate_report_v4_reason(&graded).is_none());
 }
 
 #[test]
@@ -916,7 +952,7 @@ fn grade_invalid_screens_preserves_existing_held_ordinals() {
             kind: RowDiagnosticKind::Unreadable,
         },
     });
-    let graded = grade_invalid_screens(&report).expect("grades to hold");
+    let graded = grade_invalid_screens_v4(&report).expect("grades to hold");
     assert_eq!(graded.screens.len(), 1);
     assert_eq!(graded.screens[0].output.0, "out");
     let ordinals: Vec<usize> = graded
@@ -926,7 +962,7 @@ fn grade_invalid_screens_preserves_existing_held_ordinals() {
         .collect();
     assert_eq!(ordinals, vec![1, 2]);
     assert_eq!(graded.held_screens[1].output.0, "out-bad");
-    assert!(validate_report(&graded));
+    assert!(validate_report_v4_reason(&graded).is_none());
 }
 
 #[test]
@@ -936,8 +972,11 @@ fn grade_invalid_screens_refuses_structural_violations() {
     let mut bad_id = test_report();
     bad_id.screens[0].output = OutputId(String::new());
     bad_id.screens[0].scale = 0.0;
-    assert_eq!(validate_report_reason(&bad_id), Some("screen-id-invalid"));
-    assert!(grade_invalid_screens(&bad_id).is_none());
+    assert_eq!(
+        validate_report_v4_reason(&bad_id),
+        Some("screen-id-invalid")
+    );
+    assert!(grade_invalid_screens_v4(&bad_id).is_none());
 
     let mut duplicate = test_report();
     duplicate.screens.push(ScreenReport {
@@ -949,16 +988,16 @@ fn grade_invalid_screens_refuses_structural_violations() {
         identity: crate::world_report::OutputIdentity::unknown(),
     });
     duplicate.screens[0].scale = 0.0;
-    assert!(grade_invalid_screens(&duplicate).is_none());
+    assert!(grade_invalid_screens_v4(&duplicate).is_none());
 
     let mut bad_rect = test_report();
     bad_rect.screens[0].full_rect = Some(rect(0, 0, -1, 2));
     bad_rect.screens[0].scale = 0.0;
     assert_eq!(
-        validate_report_reason(&bad_rect),
+        validate_report_v4_reason(&bad_rect),
         Some("screen-rect-invalid")
     );
-    assert!(grade_invalid_screens(&bad_rect).is_none());
+    assert!(grade_invalid_screens_v4(&bad_rect).is_none());
 }
 
 #[test]
@@ -1010,12 +1049,12 @@ fn grade_invalid_screens_refuses_structural_violations_hidden_behind_first_scale
         // The validator exits at the first row's scale failure, hiding the
         // later structural violation: this pins the loophole premise.
         assert_eq!(
-            validate_report_reason(&report),
+            validate_report_v4_reason(&report),
             Some("screen-scale-invalid"),
             "{name}: validator exits early"
         );
         assert!(
-            grade_invalid_screens(&report).is_none(),
+            grade_invalid_screens_v4(&report).is_none(),
             "{name}: hidden structural violation must refuse, not grade"
         );
     }
@@ -1057,25 +1096,27 @@ fn screen_section_cap_counts_valid_plus_held_rows() {
         report.screens.push(numbered_screen(n));
     }
     assert_eq!(report.screens.len(), MAX_WORLD_SCREENS);
-    assert!(validate_report(&report));
+    assert!(validate_report_v4_reason(&report).is_none());
     // One held row tips the total over the cap: whole-refusal, no grading.
     report
         .held_screens
         .push(held_row("out-held", MAX_WORLD_SCREENS));
-    assert_eq!(validate_report_reason(&report), Some("section-over-cap"));
-    assert!(grade_invalid_screens(&report).is_none());
+    assert_eq!(validate_report_v4_reason(&report), Some("section-over-cap"));
+    assert!(grade_invalid_screens_v4(&report).is_none());
     // Oversized all-held ingress refuses the same way.
     let mut all_held = test_report();
     all_held.screens.clear();
     all_held.windows.clear();
-    all_held.views.clear();
     for n in 0..MAX_WORLD_SCREENS + 1 {
         all_held
             .held_screens
             .push(held_row(&format!("out-h{n:02}"), n));
     }
-    assert_eq!(validate_report_reason(&all_held), Some("section-over-cap"));
-    assert!(grade_invalid_screens(&all_held).is_none());
+    assert_eq!(
+        validate_report_v4_reason(&all_held),
+        Some("section-over-cap")
+    );
+    assert!(grade_invalid_screens_v4(&all_held).is_none());
 }
 
 #[test]
@@ -1092,7 +1133,7 @@ fn estimator_does_not_collapse_structure_around_nonfinite_held_scalars() {
         ("bad".to_owned(), RawSettingValue::Number(f64::NAN)),
     ]);
     let mut report = test_report();
-    let before = report_estimate(&report);
+    let before = report_estimate_v4(&report);
     report.held_screens.push(HeldScreenRow {
         output: OutputId("out-held".to_owned()),
         ordinal: 1,
@@ -1109,7 +1150,7 @@ fn estimator_does_not_collapse_structure_around_nonfinite_held_scalars() {
         + 1
         + (json_string_len("bad") + 1 + 4);
     let expected_delta = 2 + (json_string_len("extra") + 1 + nested_estimate);
-    assert_eq!(report_estimate(&report) - before, expected_delta);
+    assert_eq!(report_estimate_v4(&report) - before, expected_delta);
 }
 
 #[test]

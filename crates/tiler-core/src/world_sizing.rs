@@ -9,10 +9,7 @@
 use crate::boundary::CoreCommand;
 use crate::directional::Direction;
 use crate::gesture::GestureSettled;
-use crate::world_report::{
-    AuthorityScope, CommandResult, FloatOrigin, HoldReason, TransferKind, WorldCommand, WorldReply,
-    WorldReport,
-};
+use crate::world_report::{AuthorityScope, CommandResult, HoldReason, WorldCommand};
 
 /// JSON string byte length for the canonical codec: two quotes plus the
 /// escaped content. Escaping is derived from the JSON rules (`"` and `\`
@@ -162,15 +159,6 @@ pub(crate) fn focus_feedback_estimate(row: &crate::world_report::FocusFeedback) 
 /// ride this bound in the request estimator so the adapter's compact
 /// canonical encoding always fits.
 pub const MAX_CANONICAL_F64_LEN: usize = 350;
-
-fn row_diagnostic_estimate(diagnostic: &crate::world_report::RowDiagnostic) -> usize {
-    // {"scope":,"row":,"id":,"kind":} = 30 outer punctuation. A missing
-    // id encodes as JSON null (4), never the empty string.
-    30 + authority_scope_len(&diagnostic.scope)
-        + json_string_len(diagnostic.row.as_str())
-        + diagnostic.id.as_deref().map_or(4, json_string_len)
-        + json_string_len(diagnostic.kind.as_str())
-}
 
 pub(crate) fn scope_status_estimate(scope: &crate::world_report::ScopeStatus) -> usize {
     // {"scope":,"auth":,"reason":} = 28 outer punctuation.
@@ -364,33 +352,6 @@ pub const fn usize_len(mut value: usize) -> usize {
     digits
 }
 
-/// Gesture ingress estimate: `,"gesture":null` (12) when absent; the
-/// present object `{"win":S,"kind":S,"phase":S,"id":"N","cursor":[x,y]|null,
-/// "startCursor":[x,y]|null,"esc":B,"modal":B,"start":[x,y,w,h]}` counts its
-/// fixed punctuation plus the window id, kind/phase tokens, decimal id,
-/// cursor digits (`null` counts 4), bools, and the start rect digits.
-#[must_use]
-pub fn gesture_estimate(report: &WorldReport) -> usize {
-    match report.gesture.as_ref() {
-        None => 12,
-        Some(gesture) => {
-            100 + json_string_len(&gesture.window.0)
-                + json_string_len(gesture.kind.as_str())
-                + json_string_len(gesture.phase.as_str())
-                + u64_len(gesture.id)
-                + gesture
-                    .cursor
-                    .map_or(4, |(x, y)| 3 + int_len(x) + int_len(y))
-                + gesture
-                    .start_cursor
-                    .map_or(4, |(x, y)| 3 + int_len(x) + int_len(y))
-                + bool_len(gesture.esc)
-                + bool_len(gesture.modal_move)
-                + rect_len(Some(gesture.start_frame))
-        }
-    }
-}
-
 /// Structural size estimate for the optional gesture-settled section:
 /// `,"gestureSettled":null` (22) when absent; the present object
 /// `{"id":"N","committed":B}` counts its fixed punctuation plus the
@@ -472,7 +433,7 @@ pub const MAX_SWITCH_FAILED_ROW_BYTES: usize = 131;
 /// (bindings are keyed by focus output, so simultaneous completions across
 /// outputs stay covered), each failed list a subset of its frozen switch
 /// members. Zero when no binding is retained. Conservative like every
-/// other [`reply_upper_bound`] term; the exact-encoded staged reply stays
+/// other [`reply_upper_bound_v4`](crate::world_sizing_v4::reply_upper_bound_v4) term; the exact-encoded staged reply stays
 /// the commit backstop.
 #[must_use]
 pub fn max_switch_settle_reserve(event_count: usize, failed_total: usize) -> usize {
@@ -492,159 +453,6 @@ pub fn warp_cursor_estimate(warp: &Option<(i32, i32)>) -> usize {
         None => 18,
         Some((x, y)) => 17 + int_len(*x) + int_len(*y),
     }
-}
-
-/// Structural reply size estimate: every value through its exact width
-/// ([`json_string_len`], [`u64_len`], [`usize_len`], decimal rects,
-/// `true`/`false`/`null` literals) plus per-row JSON object overhead
-/// derived field-by-field from [`encode_reply_canonical`] (key punctuation
-/// counted exactly, never an asserted bare constant). Covers every
-/// section. Conservative: any encoding of this shape fits within this
-/// bound (verified by `estimate_upper_bounds_canonical_encoding`).
-#[must_use]
-pub fn reply_estimate(reply: &WorldReply) -> usize {
-    // Envelope punctuation: {"v":,"adapter":,"gen":,"req":,"obs":"","rev":"",
-    // "ready":,"consumed":,"scopes":[],"workspaces":[],"outputs":[],
-    // "windows":[],"transfers":[],"effects":[]} plus ,"diagnostics":[] last
-    // (after presentation) = 165 plus bools (10). The three
-    // u64 counters encode as decimal strings (two quotes each). The
-    // correlated `command_result` section is counted separately in
-    // [`command_result_estimate`] (`,\"result\":null` = 14 when absent),
-    // the gesture-settled section in [`gesture_settled_estimate`]
-    // (`,\"gestureSettled\":null` = 22 when absent), the operation-settled
-    // section in [`operation_settled_estimate`]
-    // (`,\"operationSettled\":[]` = 21 when empty), the switch-settled
-    // section in [`switch_settled_estimate`]
-    // (`,\"switchSettled\":[]` = 19 when empty), and the warp section
-    // in [`warp_cursor_estimate`] (`,\"warpCursor\":null` = 18 when absent).
-    // The intent save/clear section rides between presentation and
-    // diagnostics ([`intent_writes_estimate`], `,\"intentWrites\":[]` = 18
-    // when empty).
-    let mut bytes = 175
-        + usize_len(reply.contract_version as usize)
-        + json_string_len(&reply.request_id)
-        + json_string_len(&reply.adapter_incarnation)
-        + json_string_len(&reply.core_generation)
-        + u64_len(reply.based_on_observation_seq)
-        + u64_len(reply.state_revision);
-    for scope in &reply.scopes {
-        bytes += scope_status_estimate(scope);
-    }
-    // One comma between adjacent rows of every non-empty array.
-    bytes += reply.scopes.len().saturating_sub(1);
-    for workspace in &reply.workspaces {
-        // {"id":,"out":,"bind":,"scope":,"order":,"mode":,
-        // "exist":,"hold":} = 65 punctuation plus the exist bool.
-        // The optional ,"trailing":true adds 16 only when marked.
-        bytes += 65
-            + json_string_len(&workspace.id)
-            + json_string_len(&workspace.output.0)
-            + json_string_len(workspace.native_binding.as_deref().unwrap_or_default())
-            + authority_scope_len(&workspace.scope)
-            + usize_len(workspace.order)
-            + json_string_len(workspace.tiling_mode.as_str())
-            + bool_len(workspace.existence)
-            + json_string_len(workspace.hold.map_or("", HoldReason::as_str));
-        if workspace.trailing {
-            bytes += 16;
-        }
-    }
-    bytes += reply.workspaces.len().saturating_sub(1);
-    for output in &reply.outputs {
-        // {"out":,"view":,"mode":,"hold":} = 32 punctuation.
-        bytes += 32
-            + json_string_len(&output.output.0)
-            + json_string_len(output.logical_view.as_deref().unwrap_or_default())
-            + json_string_len(output.tiling_mode.as_str())
-            + json_string_len(output.hold.map_or("", HoldReason::as_str));
-    }
-    bytes += reply.outputs.len().saturating_sub(1);
-    for diagnostic in &reply.diagnostics {
-        // Held-row diagnostics ride last beside the presentation they fence.
-        bytes += row_diagnostic_estimate(diagnostic);
-    }
-    bytes += reply.diagnostics.len().saturating_sub(1);
-    for window in &reply.windows {
-        // {"win":,"out":,"ws":,"alloc":,"frame":,"frame_auth":,
-        // "frame_hold":,"member_auth":,"member_hold":,"frame_op":,
-        // "floating":,"float_origin":} = 137 punctuation (109 plus the
-        // new 28: ,"floating": = 12 and ,"float_origin": = 16).
-        // Each rect is [x,y,w,h] (numbers + 5) or null (4). The explicit
-        // float-placement operation id is empty when no target is
-        // outstanding; the float origin token is empty unless capacity.
-        let rect_len = |rect: Option<crate::geometry::Rect>| {
-            rect.map_or(4, |r| {
-                int_len(r.x) + int_len(r.y) + int_len(r.w) + int_len(r.h) + 5
-            })
-        };
-        bytes += 151
-            + json_string_len(&window.lifetime.0)
-            + json_string_len(&window.output.0)
-            + json_string_len(&window.workspace)
-            + rect_len(window.allocation)
-            + rect_len(window.effective_frame)
-            + json_string_len(window.frame_authority.as_str())
-            + json_string_len(
-                window
-                    .frame_authority
-                    .hold_reason()
-                    .map_or("", HoldReason::as_str),
-            )
-            + json_string_len(window.membership_authority.as_str())
-            + json_string_len(
-                window
-                    .membership_authority
-                    .hold_reason()
-                    .map_or("", HoldReason::as_str),
-            )
-            + json_string_len(window.frame_operation.as_deref().unwrap_or_default())
-            + bool_len(window.floating)
-            + json_string_len(window.float_origin.map_or("", FloatOrigin::as_str))
-            + json_string_len(window.clear_operation.as_deref().unwrap_or_default())
-            + window_target_lanes_estimate(window);
-    }
-    bytes += reply.windows.len().saturating_sub(1);
-    for transfer in &reply.transfers {
-        // {"op":,"kind":,"win":,"out":,"ws":,"follow":,"held":} = 53
-        // punctuation plus up to 10 for the two bools.
-        let (kind, window_len) = match &transfer.kind {
-            TransferKind::Window(window) => ("window", json_string_len(&window.0)),
-            TransferKind::View => ("view", 2),
-            TransferKind::Migration => ("migration", 2),
-        };
-        bytes += 63
-            + json_string_len(&transfer.operation_id)
-            + json_string_len(kind)
-            + window_len
-            + json_string_len(&transfer.target_output.0)
-            + json_string_len(&transfer.target_workspace);
-    }
-    bytes += reply.transfers.len().saturating_sub(1);
-    for effect in &reply.effects {
-        // {"id":,"kind":,"target":,"rev":"","cause":,"cmdSeq":null|"N",
-        // "awaitShown":B} = 67 fixed (braces, quoted keys, colons, commas,
-        // quotes around the decimal revision) plus the id/kind/target/cause
-        // widths, the revision digits, the nullable quoted command sequence
-        // (`null` counts 4, otherwise 2 quotes plus digits), and the bool.
-        bytes += 67
-            + json_string_len(&effect.id)
-            + json_string_len(effect.kind.as_str())
-            + json_string_len(&effect.target.0)
-            + u64_len(effect.issued_revision)
-            + json_string_len(effect.cause.as_str())
-            + effect.command_seq.map_or(4, |seq| 2 + u64_len(seq))
-            + bool_len(effect.await_shown);
-    }
-    bytes += reply.effects.len().saturating_sub(1);
-    bytes += command_result_estimate(&reply.command_result);
-    bytes += gesture_settled_estimate(&reply.gesture_settled);
-    bytes += operation_settled_estimate(&reply.operation_settled);
-    bytes += native_creations_estimate(&reply.native_creations);
-    bytes += warp_cursor_estimate(&reply.cursor_warp);
-    bytes += presentation_estimate(&reply.presentation);
-    bytes += intent_writes_estimate(&reply.intent_writes);
-    bytes += switch_settled_estimate(&reply.switch_settled);
-    bytes
 }
 
 /// Maximum escaped canonical JSON width of one staged sticky/float save
@@ -667,35 +475,6 @@ pub const MAX_INTENT_SAVE_DATA_JSON: usize = 48;
 /// one array comma. Exactly 16 + 130 + 48 + 1 = 195. The comma overcounts
 /// the final row by one, conservatively.
 pub const MAX_INTENT_SAVE_ROW_BYTES: usize = 195;
-
-/// Pre-mutation bound for the at-most-one sticky/float save row, gated on
-/// the report's own command: `{"win":,"data":}` is 16 punctuation plus the
-/// subject id plus the save value above (a single row carries no comma).
-/// Reserved for `SetSticky`, `ToggleSticky`, and the sticky-clearing
-/// `ToggleFloat`; zero for every other report. An execution-time
-/// (`Implicit`) save-capable command resolves its subject at execution, so
-/// it reserves the longest opaque id (130 quoted) rather than the empty
-/// placeholder width. Conservative like every
-/// other [`reply_upper_bound`] term; the exact-encoded staged reply stays
-/// the commit backstop.
-#[must_use]
-pub fn max_intent_save_bound(report: &WorldReport) -> usize {
-    let unwrapped = report
-        .command
-        .as_ref()
-        .map(crate::world_report::unwrap_implicit);
-    let is_implicit = matches!(report.command.as_ref(), Some(WorldCommand::Implicit(_)));
-    let window: &str = match unwrapped {
-        Some(WorldCommand::SetSticky { window, .. }) => window.0.as_str(),
-        Some(WorldCommand::ToggleSticky { window }) => window.0.as_str(),
-        Some(WorldCommand::Operation(CoreCommand::ToggleFloat { window, .. })) => window.as_str(),
-        _ => return 0,
-    };
-    if is_implicit {
-        return 16 + 130 + MAX_INTENT_SAVE_DATA_JSON;
-    }
-    16 + json_string_len(window) + MAX_INTENT_SAVE_DATA_JSON
-}
 
 /// Maximum escaped canonical JSON width of one rollback save value: every
 /// `IntentData` shape the proven-refusal rollback can restore (all nine
@@ -722,8 +501,8 @@ pub const MAX_INTENT_ROLLBACK_ROW_BYTES: usize = 196;
 /// `sticky_meta` and `!followup_done`, any disposition, plus already-queued
 /// writes), never the report's own `stateAttempts` length, so record-free
 /// priors and commandless proofs reserve alike. Conservative like every
-/// other [`reply_upper_bound`] term; the exact-encoded staged reply stays
-/// the commit backstop. Kept separate from [`max_intent_save_bound`] (the
+/// other [`reply_upper_bound_v4`](crate::world_sizing_v4::reply_upper_bound_v4) term; the exact-encoded staged reply stays
+/// the commit backstop. Kept separate from [`max_intent_save_bound_v4`](crate::world_sizing_v4::max_intent_save_bound_v4) (the
 /// command's own save row, at most 194 with a max-length id).
 #[must_use]
 pub fn max_intent_rollback_bound(count: usize) -> usize {
@@ -785,102 +564,6 @@ pub fn native_creations_estimate(creations: &[crate::world_report::NativeCreatio
             + json_string_len(&creation.logical_workspace)
             + json_string_len(&creation.target_output.0);
     }
-    bytes
-}
-
-/// Structural reply size estimate for the uniform presentation section,
-/// field-by-field from [`encode_presentation`] below. `,"presentation":`
-/// (16) plus the object: foreground id, required revision label, border
-/// shape, underlay shape, and pager content.
-#[must_use]
-pub fn presentation_estimate(presentation: &crate::world_presentation::WorldPresentation) -> usize {
-    use crate::world_presentation::PresentationUnderlay;
-    // `,"presentation":{"foreground":,"rev":"","border":,"underlay":,
-    // "pager":[]}` = 76 punctuation plus the foreground id plus the
-    // revision digits. The revision rides every publication, quoted
-    // decimal immediately after the foreground (`,"rev":""` = 9 plus
-    // digits); the suspended-output verdict below stays optional.
-    let mut bytes = 76 + json_string_len(&presentation.foreground) + u64_len(presentation.rev);
-    // `,"suspendedOutput":S` = 19 punctuation plus the output id, only when
-    // the verdict is present (omitted otherwise, so default bytes stay exact).
-    if let Some(output) = presentation.suspended_output.as_ref() {
-        bytes += 19 + json_string_len(&output.0);
-    }
-    // Border `{"visible":,"reason":,"inner":,"outer":}` = 40 punctuation
-    // plus the bool, the reason token, and the two rects.
-    bytes += 40
-        + bool_len(presentation.border.visible)
-        + json_string_len(
-            presentation
-                .border
-                .reason
-                .map_or("", crate::visual::BorderHideReason::as_str),
-        )
-        + rect_len(presentation.border.inner)
-        + rect_len(presentation.border.outer);
-    match &presentation.underlay {
-        PresentationUnderlay::Found(found) => {
-            // `{"status":"found","reason":"","baseRev":"","homeOut":"",
-            // "homeWs":"","group":"","leaf":"","win":"","union":[],
-            // "outer":[],"members":[]}` = 129 punctuation plus ids, digits,
-            // rects, and members.
-            bytes += 129
-                + u64_len(found.base_revision)
-                + json_string_len(&found.home.output.0)
-                + json_string_len(&found.home.workspace.0)
-                + json_string_len(&found.group.0)
-                + json_string_len(&found.focused_leaf.0)
-                + json_string_len(&found.focused_window.0)
-                + rect_len(Some(found.union_rect))
-                + rect_len(Some(found.outer_rect));
-            for member in &found.members {
-                // `{"leaf":"","win":"","rect":[]}` = 28 punctuation.
-                bytes += 28
-                    + json_string_len(&member.leaf.0)
-                    + json_string_len(&member.window.0)
-                    + rect_len(Some(member.rect));
-            }
-            bytes += found.members.len().saturating_sub(1);
-        }
-        PresentationUnderlay::Hidden {
-            base_revision,
-            reason,
-        } => {
-            // `{"status":"hidden","reason":"","baseRev":}` = 42 punctuation;
-            // the revision is `null` (4) or `"digits"` (2 + width).
-            bytes += 42
-                + json_string_len(reason.as_str())
-                + base_revision.map_or(4, |rev| 2 + u64_len(rev));
-        }
-    }
-    for screen in &presentation.pager {
-        // `{"out":"","workspaces":[]}` = 26 punctuation plus the output id.
-        bytes += 26 + json_string_len(&screen.output);
-        for workspace in &screen.workspaces {
-            // `{"id":"","ordinal":,"label":"","current":,"occupied":,
-            // "containsFocused":,"windows":[]}` = 88 punctuation plus the
-            // id, ordinal digits, label, and three bools. The optional
-            // ,"trailing":true adds 16 only when marked.
-            bytes += 88
-                + json_string_len(&workspace.id)
-                + usize_len(workspace.ordinal as usize)
-                + json_string_len(&workspace.label)
-                + bool_len(workspace.current)
-                + bool_len(workspace.occupied)
-                + bool_len(workspace.contains_focused);
-            if workspace.trailing {
-                bytes += 16;
-            }
-            for window in &workspace.windows {
-                // `{"win":"","frame":[]}` = 19 punctuation plus the id and
-                // the frame.
-                bytes += 19 + json_string_len(&window.window.0) + rect_len(Some(window.frame));
-            }
-            bytes += workspace.windows.len().saturating_sub(1);
-        }
-        bytes += screen.workspaces.len().saturating_sub(1);
-    }
-    bytes += presentation.pager.len().saturating_sub(1);
     bytes
 }
 
@@ -1112,411 +795,6 @@ fn visibility_sample_estimate(sample: &Option<crate::world_report::VisibilitySam
                 + sample.host_hidden.map_or(4, bool_len)
         }
     }
-}
-
-/// Structural request size estimate over the same accounting: every
-/// carried string through [`json_string_len`], exact numeric widths, and
-/// per-row overhead derived field-by-field from the protocol wire layout
-/// (`v`, `owner`, `adapter`, `gen`, `obs`/`reqSeq`/`cmdSeq` decimal strings,
-/// nullable command, `screens`, `windows`, `views`, `closed`, capability
-/// flags, `native`, `predicate`, `refill`, `anchorFallback`,
-/// `noSpaceResult`, `switchTarget`, `freshPlacement`, nullable `cursor`,
-/// nullable `cursorHit`, nullable action-context outputs, `defaultTiled`/`focused`/`complete`/`gesture`/
-/// `focusFollowsCursor`/`cursorWarp` values, `monotonicMs` decimal string,
-/// `frameAttempts`, `memberAttempts`, `viewAttempts`, `stateAttempts`).
-/// Conservative: any compact encoding of the report fits within this
-/// bound (locked by `request_estimate_bounds_actual_wire_bytes`). The
-/// adapter must emit compact JSON with no whitespace; key order does not
-/// matter because commas and keys count the same in any order.
-#[must_use]
-pub fn report_estimate(report: &WorldReport) -> usize {
-    // Envelope fixed bytes: {"v":2,"owner":,"adapter":,"gen":,"obs":"","reqSeq":"",
-    // "req":,"cmdSeq":,"command":,"screens":[],"windows":[],"views":[],"closed":[],
-    // "hostOwned":,"equalCount":,"birthClear":,"native":[],"predicate":,"refill":,"defaultTiled":,
-    // "complete":,"gesture":} = 219, plus the cursor-first
-    // targeting keys (10 + 16 + 18 + 22 + 13 = 79):
-    // ,"cursor":,"switchTarget":,"freshPlacement":,"focusFollowsCursor":,
-    // "cursorWarp": = 308
-    // plus ,"cursorHit": (13) = 321, plus ,"actionForeground": (20) and
-    // ,"actionCached": (16) = 357, plus ,"actionOutputs":[] (20) = 377,
-    // plus ,"monotonicMs":"" (19) and ,"frameAttempts":[] (19) = 415,
-    // plus ,"memberAttempts":[] (20) and ,"viewAttempts":[] (18) = 453,
-    // plus ,"clearAttempts":[] (18) = 471, plus ,"creationAttempts":[] (22)
-    // = 493, plus ,"gesture":null (12) = 505, plus ,"birthClear": (14) =
-    // 519, plus ,"bornMaximized":S (17
-    // fixed plus the token) = 522, plus the version digits, plus
-    // ,"presentation":{} below, plus ,"primary":null (12) = 534 for the
-    // omitted host designation. Values
-    // counted
-    // separately below; nullable command, cursor, cursor-hit, and
-    // action-context slots count `null` (4), while the action-output
-    // registry counts its brackets plus one comma per entry. The workspace
-    // mode token rides as `"mode":S` (9 fixed plus the token); membership
-    // evidence rides per fact below (absent counts `null`).
-    // The required ,"stateAttempts":[] section adds 20 to the base, and the
-    // required ,"focusFeedback":[] lane adds its exact 19 (comma, quoted
-    // key, colon, and empty brackets).
-    let mut bytes = 471
-        + 36
-        + 20
-        + 19
-        + 17
-        + gesture_estimate(report)
-        + usize_len(report.contract_version as usize)
-        + json_string_len(&report.adapter_incarnation)
-        + json_string_len(&report.core_generation)
-        + json_string_len(&report.request_id)
-        + report
-            .cursor
-            .map_or(4, |(x, y)| 3 + int_len(x) + int_len(y))
-        + report
-            .cursor_hit
-            .as_ref()
-            .map_or(4, |hit| json_string_len(&hit.0))
-        + report
-            .action_foreground
-            .as_ref()
-            .map_or(4, |out| json_string_len(&out.0))
-        + report
-            .action_cached
-            .as_ref()
-            .map_or(4, |out| json_string_len(&out.0))
-        + report
-            .action_outputs
-            .iter()
-            .map(|out| json_string_len(&out.0) + 1)
-            .sum::<usize>()
-        + u64_len(report.request_seq)
-        + u64_len(report.observation_seq)
-        + u64_len(report.monotonic_ms)
-        + report.command_seq.map_or(4, |seq| 2 + u64_len(seq))
-        + report.command.as_ref().map_or(4, command_estimate_owned)
-        + json_string_len(&report.focused_global)
-        + bool_len(report.inventory_complete)
-        + bool_len(report.gesture_barrier)
-        + presentation_ingress_estimate(&report.presentation);
-    for screen in &report.screens {
-        // {"out":S,"full":R|null,"work":R|null,"complete":B,"scale":N,
-        // "identity":{"manufacturer":S|null,"model":S|null,"serial":S|null,
-        // "connector":S|null}} = 106 fixed plus rect digits, bools, the
-        // canonical scale spelling, and identity strings.
-        bytes += 106
-            + rect_len(screen.full_rect)
-            + rect_len(screen.work_area)
-            + bool_len(screen.complete)
-            + MAX_CANONICAL_F64_LEN
-            + json_string_len(&screen.output.0)
-            + screen
-                .identity
-                .manufacturer
-                .as_deref()
-                .map_or(4, json_string_len)
-            + screen.identity.model.as_deref().map_or(4, json_string_len)
-            + screen.identity.serial.as_deref().map_or(4, json_string_len)
-            + screen
-                .identity
-                .connector
-                .as_deref()
-                .map_or(4, json_string_len);
-    }
-    // ,"primary":S|null (12 fixed plus the designation when present).
-    bytes += 12
-        + report
-            .primary_output
-            .as_ref()
-            .map_or(4, |out| json_string_len(&out.0));
-    for held in &report.held_screens {
-        // Held rows ride the wire as ordinary screen objects with their
-        // carried keys: `{` + one `"key":value` per retained field +
-        // commas + `}` (values through [`raw_setting_value_estimate`]).
-        // The diagnostic is core-side only, never on the wire. The
-        // estimator runs before validation, so a non-finite retained
-        // number (which has no canonical spelling) counts the `null`
-        // width per bad scalar as a pure size bound, never as an
-        // encoding, while every carried structure and text byte counts.
-        bytes += 2
-            + held
-                .fields
-                .iter()
-                .map(|(key, value)| json_string_len(key) + 1 + raw_setting_value_estimate(value))
-                .sum::<usize>()
-            + held.fields.len().saturating_sub(1);
-    }
-    for fact in &report.windows {
-        // {"win":S,"out":S|null,"rect":R|null,"fullscreen":B|null,
-        // "maximized":B|null,"sticky":B|null,"minimized":B|null,
-        // "hints":{"minW":N,"minH":N,"maxW":N,"maxH":N}|null,
-        // "nativeWs":S|null,"hostHidden":B|null,"privileged":B|null,
-        // "managed":B|null,"acceptsInput":B|null,
-        // "activationInhibited":B|null,"toolWindow":B|null,"owned":B|null,
-        // "transient":B|null,"modal":B|null,"resizable":B|null,
-        // "above":B|null,"below":B|null,"owner":S|null,"parent":S|null,
-        // "role":S|null,"appId":S|null,"executable":S|null,
-        // "processId":S|null,"class":S|null,"title":S|null,"type":S|null,
-        // "activationPolicy":S|null,"layer":N|null,"fullscreenOwner":S|null,
-        // "fullscreenExitable":B|null,"suppressionAvailable":B|null,
-        // "visibility":{"visible":B|null,"suppressionOwned":B|null},
-        // "lastWrite":{...}|null} = 523 fixed (outer braces, every key
-        // plus colon, hints and visibility braces, and the separating
-        // commas, with no values) plus ids, rect digits, hint bounds,
-        // tokens, counters, and samples (`null` counts 4; absent nullable
-        // scalars count `null`).
-        bytes += 523
-            + json_string_len(&fact.window.0)
-            + fact
-                .output
-                .as_ref()
-                .map_or(4, |out| json_string_len(&out.0))
-            + rect_len(fact.rect)
-            + fact.fullscreen.map_or(4, bool_len)
-            + fact.maximized.map_or(4, bool_len)
-            + fact.sticky.map_or(4, bool_len)
-            + fact.minimized.map_or(4, bool_len)
-            + fact.hints.map_or(4, |hints| {
-                hints.min_w.map_or(4, int_len)
-                    + hints.min_h.map_or(4, int_len)
-                    + hints.max_w.map_or(4, int_len)
-                    + hints.max_h.map_or(4, int_len)
-            })
-            + match &fact.native_workspace {
-                crate::world_report::NativeWorkspaceFact::Omitted => 0,
-                crate::world_report::NativeWorkspaceFact::Null => 4,
-                crate::world_report::NativeWorkspaceFact::Value(id) => json_string_len(id),
-            }
-            + fact.host_hidden.map_or(4, bool_len)
-            + fact.privileged.map_or(4, bool_len)
-            + fact.managed.map_or(4, bool_len)
-            + fact.accepts_input.map_or(4, bool_len)
-            + fact.activation_inhibited.map_or(4, bool_len)
-            + fact.tool_window.map_or(4, bool_len)
-            + fact.owned.map_or(4, bool_len)
-            + fact.transient.map_or(4, bool_len)
-            + fact.modal.map_or(4, bool_len)
-            + fact.resizable.map_or(4, bool_len)
-            + fact.above.map_or(4, bool_len)
-            + fact.below.map_or(4, bool_len)
-            + fact.owner.as_ref().map_or(4, |id| json_string_len(&id.0))
-            + fact.parent.as_ref().map_or(4, |id| json_string_len(&id.0))
-            + fact.role.as_deref().map_or(4, json_string_len)
-            + fact.app_id.as_deref().map_or(4, json_string_len)
-            + fact.executable.as_deref().map_or(4, json_string_len)
-            + fact.process_id.as_deref().map_or(4, json_string_len)
-            + fact.class.as_deref().map_or(4, json_string_len)
-            + fact.title.as_deref().map_or(4, json_string_len)
-            + fact
-                .window_type
-                .map_or(4, |kind| json_string_len(kind.as_str()))
-            + fact
-                .activation_policy
-                .map_or(4, |policy| json_string_len(policy.as_str()))
-            + fact.layer.map_or(4, int_len)
-            + fact
-                .fullscreen_owner
-                .map_or(4, |owner| json_string_len(owner.as_str()))
-            + fact.fullscreen_exitable.map_or(4, bool_len)
-            + fact.suppression_available.map_or(4, bool_len)
-            + 32
-            + fact.visibility.visible.map_or(4, bool_len)
-            + fact.visibility.suppression_owned.map_or(4, bool_len)
-            + last_write_estimate(&fact.last_write);
-    }
-    for held in &report.held_windows {
-        // Held rows ride the wire as ordinary window objects with their
-        // carried keys: `{` + one `"key":value` per retained field +
-        // commas + `}` (values through [`raw_setting_value_estimate`]).
-        // The diagnostic is core-side only, never on the wire. The
-        // estimator runs before validation, so a non-finite retained
-        // number (which has no canonical spelling) counts the `null`
-        // width per bad scalar as a pure size bound, never as an
-        // encoding, while every carried structure and text byte counts.
-        bytes += 2
-            + held
-                .fields
-                .iter()
-                .map(|(key, value)| json_string_len(key) + 1 + raw_setting_value_estimate(value))
-                .sum::<usize>()
-            + held.fields.len().saturating_sub(1);
-    }
-    for view in &report.views {
-        // {"out":S,"view":S} = 17 fixed.
-        bytes += 17 + json_string_len(&view.output.0) + json_string_len(&view.view);
-    }
-    for id in &report.closed {
-        bytes += json_string_len(&id.0) + 1;
-    }
-    for native in &report.native {
-        // {"out":S,"order":[S...],"current":S|null,"occupancy":[{"native":S,
-        // "count":N|null}...]} = 58 fixed plus strings, counts, and commas;
-        // `null` (4) when the current surface is not an ordered desktop and
-        // when an occupant count is unknown.
-        bytes += 58
-            + json_string_len(&native.output.0)
-            + native.current_native.as_deref().map_or(4, json_string_len);
-        for id in &native.native_order {
-            bytes += json_string_len(id) + 1;
-        }
-        for row in &native.occupancy {
-            bytes += 22
-                + json_string_len(&row.native)
-                + row.count.map_or(4, |count| u64_len(u64::from(count)));
-        }
-    }
-    for attempt in &report.frames {
-        // {"win":S,"target":[x,y,w,h],"setter":S,"readback":R|null,
-        // "dpiBefore":N|null,"dpiAfter":N|null,"attemptMs":"u64",
-        // "op":S,"pre":R|null} = 98 fixed (the 85 above plus ,"op": (6)
-        // plus ,"pre": (7)) plus ids, rect digits, setter token, DPI
-        // digits, the stamp, the operation id, and the pre-write rect.
-        // Absent readback/prewrite/DPI count `null` (4); an ordinary
-        // attempt carries an empty operation id.
-        bytes += 98
-            + json_string_len(&attempt.window.0)
-            + int_len(attempt.target.x)
-            + int_len(attempt.target.y)
-            + int_len(attempt.target.w)
-            + int_len(attempt.target.h)
-            + json_string_len(attempt.setter.as_str())
-            + attempt.readback.map_or(4, |rect| {
-                5 + int_len(rect.x) + int_len(rect.y) + int_len(rect.w) + int_len(rect.h)
-            })
-            + attempt.dpi_before.map_or(4, |dpi| u64_len(u64::from(dpi)))
-            + attempt.dpi_after.map_or(4, |dpi| u64_len(u64::from(dpi)))
-            + u64_len(attempt.attempt_ms)
-            + json_string_len(attempt.operation_id.as_deref().unwrap_or_default())
-            + attempt.prewrite.map_or(4, |rect| {
-                5 + int_len(rect.x) + int_len(rect.y) + int_len(rect.w) + int_len(rect.h)
-            });
-    }
-    for attempt in &report.member_attempts {
-        // Empty-string placeholders plus null references establish exact
-        // fixed punctuation; each string placeholder is replaced below.
-        bytes += "{\"op\":\"\",\"win\":\"\",\"out\":\"\",\"ws\":\"\",\"setter\":\"\",\"pre\":null,\"post\":null,\"attemptMs\":\"\"}".len() - 12
-            + json_string_len(&attempt.operation_id)
-            + json_string_len(&attempt.window.0)
-            + json_string_len(&attempt.target_output.0)
-            + json_string_len(&attempt.target_workspace)
-            + json_string_len(attempt.setter.as_str())
-            + workspace_ref_option_len(&attempt.pre)
-            + workspace_ref_option_len(&attempt.post)
-            + u64_len(attempt.attempt_ms);
-    }
-    for attempt in &report.view_attempts {
-        bytes += "{\"op\":\"\",\"out\":\"\",\"ws\":\"\",\"setter\":\"\",\"pre\":null,\"post\":null,\"base\":null,\"attemptMs\":\"\"}".len() - 10
-            + json_string_len(&attempt.operation_id)
-            + json_string_len(&attempt.target_output.0)
-            + json_string_len(&attempt.target_workspace)
-            + json_string_len(attempt.setter.as_str())
-            + workspace_ref_option_len(&attempt.pre)
-            + workspace_ref_option_len(&attempt.post)
-            + workspace_ref_option_len(&attempt.baseline)
-            + u64_len(attempt.attempt_ms);
-    }
-    for attempt in &report.clear_attempts {
-        bytes += 62
-            + json_string_len(&attempt.operation_id)
-            + json_string_len(&attempt.window.0)
-            + json_string_len(attempt.setter.as_str())
-            + 5
-            + 5
-            + u64_len(attempt.attempt_ms);
-    }
-    for attempt in &report.creation_attempts {
-        // {"op":S,"ws":S,"out":S,"setter":S,"before":[S...],
-        // "after":[S...],"created":S|null,"attemptMs":"u64"} = 85 fixed
-        // (the 74 above plus ,"created": (11)) plus ids, setter token,
-        // order lists, the correlated id (`null` counts 4 when the host
-        // cannot prove which desktop its create call produced), and stamp.
-        bytes += 85
-            + json_string_len(&attempt.operation_id)
-            + json_string_len(&attempt.logical_workspace)
-            + json_string_len(&attempt.target_output.0)
-            + json_string_len(attempt.setter.as_str())
-            + attempt.created_native.as_deref().map_or(4, json_string_len)
-            + u64_len(attempt.attempt_ms);
-        for id in &attempt.order_before {
-            bytes += json_string_len(id) + 1;
-        }
-        for id in &attempt.order_after {
-            bytes += json_string_len(id) + 1;
-        }
-    }
-    for attempt in &report.state_attempts {
-        // {"win":S,"property":S,"target":B,"rev":"u64","setter":S,
-        // "pre":B|null,"post":B|null,"attemptMs":"u64"} = 79 fixed (8
-        // quoted keys plus colons, commas, braces, and the two quoted
-        // decimal stamps) plus the window id, property token, target
-        // bool, revision digits, setter token, nullable pre/post proofs
-        // (`null` counts 4 each), and stamp digits.
-        bytes += 79
-            + json_string_len(&attempt.window.0)
-            + json_string_len(attempt.property.as_str())
-            + bool_len(attempt.target)
-            + u64_len(attempt.revision)
-            + json_string_len(attempt.setter.as_str())
-            + attempt.pre.map_or(4, bool_len)
-            + attempt.post.map_or(4, bool_len)
-            + u64_len(attempt.attempt_ms);
-    }
-    // No adapter-projected restoration key is admitted; opaque storage
-    // returns are a separate lane below.
-    // Opaque host storage return rides after the presentation ingress with
-    // exact escaped widths (control/quote/backslash per `json_string_len`).
-    // Correlated focus evidence rides after the native-state lane with the
-    // same exact accounting (one comma per row inside the brackets).
-    for (i, row) in report.focus_feedback.iter().enumerate() {
-        if i > 0 {
-            bytes += 1;
-        }
-        bytes += focus_feedback_estimate(row);
-    }
-    bytes += intent_records_estimate(&report.intent_records);
-    bytes
-}
-
-/// Structural request size estimate for the stage-5 presentation ingress:
-/// `,"presentation":{...}` with the normalized foreground token, fresh
-/// flags, host-scaled style numbers, movement facts, pause flag, pager
-/// order, and per-window pager frame sources. Field-by-field from the
-/// protocol wire layout below.
-#[must_use]
-pub fn presentation_ingress_estimate(ingress: &crate::world_report::PresentationIngress) -> usize {
-    // `,"presentation":{` (18) plus the 17 fixed ingress keys with their
-    // commas and the order bracket (239), the `,"pagerFrames":[` key (16)
-    // and its closing bracket (1): 274 exact, rounded to 276 with the same
-    // one-count conservatism as the order list. Value widths counted below;
-    // frame rows mirror the reply pager-window shape with two extra
-    // nullable rects.
-    let mut bytes = 276
-        + json_string_len(&ingress.foreground)
-        + bool_len(ingress.foreground_minimized)
-        + bool_len(ingress.foreground_maximized)
-        + bool_len(ingress.foreground_fullscreen)
-        + bool_len(ingress.foreground_cloaked)
-        + bool_len(ingress.foreground_hidden_workspace)
-        + bool_len(ingress.foreground_shell)
-        + rect_len(ingress.foreground_frame)
-        + bool_len(ingress.border_enabled)
-        + bool_len(ingress.underlay_enabled)
-        + int_len(ingress.border_gap_px)
-        + int_len(ingress.border_width_px)
-        + int_len(ingress.underlay_extension_px)
-        + bool_len(ingress.chord_held)
-        + json_string_len(&ingress.move_window)
-        + bool_len(ingress.paused);
-    for window in &ingress.pager_order {
-        bytes += json_string_len(&window.0) + 1;
-    }
-    for row in &ingress.pager_frames {
-        // `{"win":,"live":,"float":,"tile":}` = 37 punctuation plus the id
-        // and the three rects (`null` counts 4 each).
-        bytes += 37
-            + json_string_len(&row.window.0)
-            + rect_len(row.live)
-            + rect_len(row.float_frame)
-            + rect_len(row.tile_frame);
-    }
-    bytes += ingress.pager_frames.len().saturating_sub(1);
-    bytes
 }
 
 /// Canonical width of a JSON bool literal.
@@ -2052,7 +1330,7 @@ fn push_raw_setting_value_inner(
 /// Exact encoded width of [`push_raw_setting_value`] without encoding:
 /// `None` when the value has no canonical spelling (a non-finite number
 /// anywhere inside). Pre-validation estimators fall back per value, never
-/// as an encoding (see [`report_estimate`]).
+/// as an encoding (see [`report_estimate_v4`](crate::world_sizing_v4::report_estimate_v4)).
 #[must_use]
 pub fn raw_setting_value_len(value: &crate::connection::RawSettingValue) -> Option<usize> {
     use crate::connection::RawSettingValue;
@@ -2249,269 +1527,6 @@ pub fn encode_screen_canonical(
     Ok(out)
 }
 
-/// Exact canonical reply encoding for the transactional commit gate.
-/// Measures, rather than asserts, the wire size: overflow is decided on
-/// these bytes. Global `u64` counters (`obs`, `rev`, effect `rev`) encode
-/// as bounded decimal strings, never JSON numbers, so JavaScript adapters
-/// never lose precision past 2^53.
-///
-/// Caller precondition (existing unchecked-`String` pattern, shared with the
-/// protocol transport mirror): `validate_intent_writes_reason` on the
-/// reply's `intent_writes` must be `None`. This writer spells whatever rows
-/// it is given and never refuses; the engine publication gate enforces the
-/// precondition before any commit or encode.
-#[must_use]
-pub fn encode_reply_canonical(reply: &WorldReply) -> String {
-    let mut out = String::new();
-    out.push_str("{\"v\":");
-    out.push_str(&reply.contract_version.to_string());
-    out.push_str(",\"adapter\":");
-    push_json_string(&mut out, &reply.adapter_incarnation);
-    out.push_str(",\"gen\":");
-    push_json_string(&mut out, &reply.core_generation);
-    out.push_str(",\"req\":");
-    push_json_string(&mut out, &reply.request_id);
-    out.push_str(",\"obs\":\"");
-    out.push_str(&reply.based_on_observation_seq.to_string());
-    out.push_str("\",\"rev\":\"");
-    out.push_str(&reply.state_revision.to_string());
-    out.push_str("\",\"ready\":");
-    out.push_str(if reply.ready { "true" } else { "false" });
-    out.push_str(",\"consumed\":");
-    out.push_str(if reply.command_consumed {
-        "true"
-    } else {
-        "false"
-    });
-    out.push_str(",\"scopes\":[");
-    for (i, scope) in reply.scopes.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"scope\":");
-        push_authority_scope(&mut out, &scope.scope);
-        out.push_str(",\"auth\":");
-        push_json_string(&mut out, scope.authority.as_str());
-        out.push_str(",\"reason\":");
-        push_json_string(
-            &mut out,
-            scope.authority.hold_reason().map_or("", HoldReason::as_str),
-        );
-        out.push('}');
-    }
-    out.push_str("],\"workspaces\":[");
-    for (i, workspace) in reply.workspaces.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"id\":");
-        push_json_string(&mut out, &workspace.id);
-        out.push_str(",\"out\":");
-        push_json_string(&mut out, &workspace.output.0);
-        out.push_str(",\"bind\":");
-        push_json_string(
-            &mut out,
-            workspace.native_binding.as_deref().unwrap_or_default(),
-        );
-        out.push_str(",\"scope\":");
-        push_authority_scope(&mut out, &workspace.scope);
-        out.push_str(",\"order\":");
-        out.push_str(&workspace.order.to_string());
-        out.push_str(",\"mode\":");
-        push_json_string(&mut out, workspace.tiling_mode.as_str());
-        out.push_str(",\"exist\":");
-        out.push_str(if workspace.existence { "true" } else { "false" });
-        out.push_str(",\"hold\":");
-        push_json_string(&mut out, workspace.hold.map_or("", HoldReason::as_str));
-        if workspace.trailing {
-            out.push_str(",\"trailing\":true");
-        }
-        out.push('}');
-    }
-    out.push_str("],\"outputs\":[");
-    for (i, output) in reply.outputs.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"out\":");
-        push_json_string(&mut out, &output.output.0);
-        out.push_str(",\"view\":");
-        push_json_string(&mut out, output.logical_view.as_deref().unwrap_or_default());
-        out.push_str(",\"mode\":");
-        push_json_string(&mut out, output.tiling_mode.as_str());
-        out.push_str(",\"hold\":");
-        push_json_string(&mut out, output.hold.map_or("", HoldReason::as_str));
-        out.push('}');
-    }
-    out.push_str("],\"windows\":[");
-    for (i, window) in reply.windows.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"win\":");
-        push_json_string(&mut out, &window.lifetime.0);
-        out.push_str(",\"out\":");
-        push_json_string(&mut out, &window.output.0);
-        out.push_str(",\"ws\":");
-        push_json_string(&mut out, &window.workspace);
-        out.push_str(",\"alloc\":");
-        match window.allocation {
-            Some(rect) => {
-                out.push_str(&format!("[{},{},{},{}]", rect.x, rect.y, rect.w, rect.h));
-            }
-            None => out.push_str("null"),
-        }
-        out.push_str(",\"frame\":");
-        match window.effective_frame {
-            Some(rect) => {
-                out.push_str(&format!("[{},{},{},{}]", rect.x, rect.y, rect.w, rect.h));
-            }
-            None => out.push_str("null"),
-        }
-        out.push_str(",\"frame_auth\":");
-        push_json_string(&mut out, window.frame_authority.as_str());
-        out.push_str(",\"frame_hold\":");
-        push_json_string(
-            &mut out,
-            window
-                .frame_authority
-                .hold_reason()
-                .map_or("", HoldReason::as_str),
-        );
-        out.push_str(",\"member_auth\":");
-        push_json_string(&mut out, window.membership_authority.as_str());
-        out.push_str(",\"member_hold\":");
-        push_json_string(
-            &mut out,
-            window
-                .membership_authority
-                .hold_reason()
-                .map_or("", HoldReason::as_str),
-        );
-        out.push_str(",\"frame_op\":");
-        push_json_string(
-            &mut out,
-            window.frame_operation.as_deref().unwrap_or_default(),
-        );
-        out.push_str(",\"floating\":");
-        out.push_str(if window.floating { "true" } else { "false" });
-        out.push_str(",\"float_origin\":");
-        push_json_string(
-            &mut out,
-            window.float_origin.map_or("", FloatOrigin::as_str),
-        );
-        out.push_str(",\"clear_op\":");
-        push_json_string(
-            &mut out,
-            window.clear_operation.as_deref().unwrap_or_default(),
-        );
-        encode_window_target_lanes(&mut out, window);
-        out.push('}');
-    }
-    out.push_str("],\"transfers\":[");
-    for (i, transfer) in reply.transfers.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"op\":");
-        push_json_string(&mut out, &transfer.operation_id);
-        out.push_str(",\"kind\":");
-        push_json_string(
-            &mut out,
-            match &transfer.kind {
-                TransferKind::Window(_) => "window",
-                TransferKind::View => "view",
-                TransferKind::Migration => "migration",
-            },
-        );
-        out.push_str(",\"win\":");
-        match &transfer.kind {
-            TransferKind::Window(window) => push_json_string(&mut out, &window.0),
-            TransferKind::View | TransferKind::Migration => out.push_str("\"\""),
-        }
-        out.push_str(",\"out\":");
-        push_json_string(&mut out, &transfer.target_output.0);
-        out.push_str(",\"ws\":");
-        push_json_string(&mut out, &transfer.target_workspace);
-        out.push_str(",\"follow\":");
-        out.push_str(if transfer.follow { "true" } else { "false" });
-        out.push_str(",\"held\":");
-        out.push_str(if transfer.held { "true" } else { "false" });
-        out.push('}');
-    }
-    out.push_str("],\"effects\":[");
-    for (i, effect) in reply.effects.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"id\":");
-        push_json_string(&mut out, &effect.id);
-        out.push_str(",\"kind\":");
-        push_json_string(&mut out, effect.kind.as_str());
-        out.push_str(",\"target\":");
-        push_json_string(&mut out, &effect.target.0);
-        out.push_str(",\"rev\":\"");
-        out.push_str(&effect.issued_revision.to_string());
-        out.push_str("\",\"cause\":");
-        push_json_string(&mut out, effect.cause.as_str());
-        out.push_str(",\"cmdSeq\":");
-        match effect.command_seq {
-            Some(seq) => {
-                out.push('"');
-                out.push_str(&seq.to_string());
-                out.push('"');
-            }
-            None => out.push_str("null"),
-        }
-        out.push_str(",\"awaitShown\":");
-        out.push_str(if effect.await_shown { "true" } else { "false" });
-        out.push('}');
-    }
-    out.push_str("],\"result\":");
-    encode_command_result(&mut out, &reply.command_result);
-    out.push_str(",\"gestureSettled\":");
-    encode_gesture_settled(&mut out, &reply.gesture_settled);
-    out.push_str(",\"operationSettled\":");
-    encode_operation_settled(&mut out, &reply.operation_settled);
-    out.push_str(",\"nativeCreations\":");
-    encode_native_creations(&mut out, &reply.native_creations);
-    out.push_str(",\"warpCursor\":");
-    match reply.cursor_warp {
-        Some((x, y)) => {
-            out.push_str(&format!("[{x},{y}]"));
-        }
-        None => out.push_str("null"),
-    }
-    out.push_str(",\"presentation\":");
-    encode_presentation(&mut out, &reply.presentation);
-    out.push_str(",\"intentWrites\":[");
-    for (i, write) in reply.intent_writes.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"win\":");
-        push_json_string(&mut out, &write.win.0);
-        out.push_str(",\"data\":");
-        match write.data.as_deref() {
-            Some(data) => push_json_string(&mut out, data),
-            None => out.push_str("null"),
-        }
-        out.push('}');
-    }
-    out.push_str("],\"switchSettled\":");
-    encode_switch_settled(&mut out, &reply.switch_settled);
-    out.push_str(",\"diagnostics\":[");
-    for (i, diagnostic) in reply.diagnostics.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        push_row_diagnostic(&mut out, diagnostic);
-    }
-    out.push(']');
-    out.push('}');
-    out
-}
-
 /// Exact canonical encoding for the switch-settled section, with frozen
 /// key order (mirrored by [`switch_settled_estimate`] and the protocol
 /// codec): `[]` when no switch settled, else one object per settled parent
@@ -2544,8 +1559,8 @@ pub fn encode_switch_settled(out: &mut String, settled: &[crate::world_report::S
 }
 
 /// Exact canonical encoding for one narrow-hold row diagnostic, with
-/// frozen key order (mirrored by [`row_diagnostic_estimate`] and the
-/// protocol codec): `{"scope":..,"row":..,"id":..,"kind":..}` where a
+/// frozen key order (mirroring the v4 inline diagnostic math at
+/// `crate::world_sizing_v4` plus the protocol codec): `{"scope":..,"row":..,"id":..,"kind":..}` where a
 /// missing id encodes as JSON null (rows without identity refuse the
 /// envelope instead of holding, so only lanes with nullable ids emit
 /// here; never the empty string).
@@ -2564,30 +1579,6 @@ pub fn push_row_diagnostic(out: &mut String, diagnostic: &crate::world_report::R
     out.push('}');
 }
 
-/// Exact canonical encoding for the native creation desire section: `[]`
-/// when no creation is authorized, else one object per outstanding
-/// authorization with frozen key order (mirrored by
-/// [`native_creations_estimate`] and the protocol codec).
-pub fn encode_native_creations(
-    out: &mut String,
-    creations: &[crate::world_report::NativeCreationDesire],
-) {
-    out.push('[');
-    for (i, creation) in creations.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"op\":");
-        push_json_string(out, &creation.operation_id);
-        out.push_str(",\"ws\":");
-        push_json_string(out, &creation.logical_workspace);
-        out.push_str(",\"out\":");
-        push_json_string(out, &creation.target_output.0);
-        out.push('}');
-    }
-    out.push(']');
-}
-
 /// Exact canonical encoding for the optional gesture-settled section:
 /// `null` when this report incorporated no terminal, else the stable id
 /// (decimal string) plus the commit flag, with frozen key order (mirrored
@@ -2602,194 +1593,6 @@ pub fn encode_gesture_settled(out: &mut String, settled: &Option<GestureSettled>
     out.push_str("\",\"committed\":");
     out.push_str(if terminal.committed { "true" } else { "false" });
     out.push('}');
-}
-
-/// Exact canonical encoding for the operation-settled section: `[]` when no
-/// retained clear binding or float placement retired on this report, else
-/// one object per retired item with frozen key order (mirrored by
-/// [`operation_settled_estimate`] and the protocol codec). Public so the
-/// protocol transport gate reuses the identical bytes.
-pub fn encode_operation_settled(out: &mut String, settled: &[crate::world_report::OperationEvent]) {
-    out.push('[');
-    for (i, event) in settled.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"op\":");
-        push_json_string(out, &event.operation_id);
-        out.push_str(",\"win\":");
-        push_json_string(out, &event.window.0);
-        out.push_str(",\"outcome\":");
-        push_json_string(out, event.outcome.as_str());
-        out.push_str(",\"cause\":");
-        push_json_string(out, event.cause.as_deref().unwrap_or_default());
-        out.push('}');
-    }
-    out.push(']');
-}
-
-/// Exact canonical encoding for the uniform presentation section: the
-/// tick-time foreground token, the required issuing revision label
-/// (quoted decimal immediately after the foreground), plus the border
-/// shape, the underlay shape, and the pager content, with frozen key
-/// order (mirrored by [`presentation_estimate`] and the protocol codec).
-/// Public so the protocol transport gate reuses the identical bytes.
-pub fn encode_presentation(
-    out: &mut String,
-    presentation: &crate::world_presentation::WorldPresentation,
-) {
-    use crate::world_presentation::PresentationUnderlay;
-    out.push_str("{\"foreground\":");
-    push_json_string(out, &presentation.foreground);
-    out.push_str(",\"rev\":\"");
-    out.push_str(&presentation.rev.to_string());
-    out.push('"');
-    // Neutral focused-fullscreen suspension verdict: omitted entirely when
-    // absent so default publication bytes stay exact.
-    if let Some(output) = presentation.suspended_output.as_ref() {
-        out.push_str(",\"suspendedOutput\":");
-        push_json_string(out, &output.0);
-    }
-    out.push_str(",\"border\":{");
-    out.push_str("\"visible\":");
-    out.push_str(if presentation.border.visible {
-        "true"
-    } else {
-        "false"
-    });
-    out.push_str(",\"reason\":");
-    push_json_string(
-        out,
-        presentation
-            .border
-            .reason
-            .map_or("", crate::visual::BorderHideReason::as_str),
-    );
-    out.push_str(",\"inner\":");
-    match presentation.border.inner {
-        Some(rect) => {
-            out.push_str(&format!("[{},{},{},{}]", rect.x, rect.y, rect.w, rect.h));
-        }
-        None => out.push_str("null"),
-    }
-    out.push_str(",\"outer\":");
-    match presentation.border.outer {
-        Some(rect) => {
-            out.push_str(&format!("[{},{},{},{}]", rect.x, rect.y, rect.w, rect.h));
-        }
-        None => out.push_str("null"),
-    }
-    out.push_str("},\"underlay\":");
-    match &presentation.underlay {
-        PresentationUnderlay::Found(found) => {
-            out.push_str("{\"status\":\"found\",\"reason\":\"\",\"baseRev\":\"");
-            out.push_str(&found.base_revision.to_string());
-            out.push_str("\",\"homeOut\":");
-            push_json_string(out, &found.home.output.0);
-            out.push_str(",\"homeWs\":");
-            push_json_string(out, &found.home.workspace.0);
-            out.push_str(",\"group\":");
-            push_json_string(out, &found.group.0);
-            out.push_str(",\"leaf\":");
-            push_json_string(out, &found.focused_leaf.0);
-            out.push_str(",\"win\":");
-            push_json_string(out, &found.focused_window.0);
-            out.push_str(",\"union\":");
-            out.push_str(&format!(
-                "[{},{},{},{}]",
-                found.union_rect.x, found.union_rect.y, found.union_rect.w, found.union_rect.h
-            ));
-            out.push_str(",\"outer\":");
-            out.push_str(&format!(
-                "[{},{},{},{}]",
-                found.outer_rect.x, found.outer_rect.y, found.outer_rect.w, found.outer_rect.h
-            ));
-            out.push_str(",\"members\":[");
-            for (i, member) in found.members.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str("{\"leaf\":");
-                push_json_string(out, &member.leaf.0);
-                out.push_str(",\"win\":");
-                push_json_string(out, &member.window.0);
-                out.push_str(",\"rect\":");
-                out.push_str(&format!(
-                    "[{},{},{},{}]",
-                    member.rect.x, member.rect.y, member.rect.w, member.rect.h
-                ));
-                out.push('}');
-            }
-            out.push_str("]}");
-        }
-        PresentationUnderlay::Hidden {
-            base_revision,
-            reason,
-        } => {
-            out.push_str("{\"status\":\"hidden\",\"reason\":");
-            push_json_string(out, reason.as_str());
-            out.push_str(",\"baseRev\":");
-            match base_revision {
-                Some(rev) => {
-                    out.push('"');
-                    out.push_str(&rev.to_string());
-                    out.push('"');
-                }
-                None => out.push_str("null"),
-            }
-            out.push('}');
-        }
-    }
-    out.push_str(",\"pager\":[");
-    for (i, screen) in presentation.pager.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"out\":");
-        push_json_string(out, &screen.output);
-        out.push_str(",\"workspaces\":[");
-        for (j, workspace) in screen.workspaces.iter().enumerate() {
-            if j > 0 {
-                out.push(',');
-            }
-            out.push_str("{\"id\":");
-            push_json_string(out, &workspace.id);
-            out.push_str(",\"ordinal\":");
-            out.push_str(&workspace.ordinal.to_string());
-            out.push_str(",\"label\":");
-            push_json_string(out, &workspace.label);
-            out.push_str(",\"current\":");
-            out.push_str(if workspace.current { "true" } else { "false" });
-            out.push_str(",\"occupied\":");
-            out.push_str(if workspace.occupied { "true" } else { "false" });
-            out.push_str(",\"containsFocused\":");
-            out.push_str(if workspace.contains_focused {
-                "true"
-            } else {
-                "false"
-            });
-            if workspace.trailing {
-                out.push_str(",\"trailing\":true");
-            }
-            out.push_str(",\"windows\":[");
-            for (k, window) in workspace.windows.iter().enumerate() {
-                if k > 0 {
-                    out.push(',');
-                }
-                out.push_str("{\"win\":");
-                push_json_string(out, &window.window.0);
-                out.push_str(",\"frame\":");
-                out.push_str(&format!(
-                    "[{},{},{},{}]",
-                    window.frame.x, window.frame.y, window.frame.w, window.frame.h
-                ));
-                out.push('}');
-            }
-            out.push_str("]}");
-        }
-        out.push_str("]}");
-    }
-    out.push_str("]}");
 }
 
 /// Exact canonical encoding for the correlated `command_result` section:
@@ -2967,12 +1770,6 @@ pub fn encode_command_result(out: &mut String, result: &Option<CommandResult>) {
     }
 }
 
-/// Exact canonical reply byte size for the transactional commit gate.
-#[must_use]
-pub fn reply_exact_bytes(reply: &WorldReply) -> usize {
-    encode_reply_canonical(reply).len()
-}
-
 /// Maximum per-offroute-native-state-attempt diagnostic cost: scope (155)
 /// plus lane/kind tokens (30) plus id (130) plus punctuation (30) = 345,
 /// rounded to 512. Independently derived like the held-screen row cost, never
@@ -3051,140 +1848,6 @@ pub const MAX_EFFECT_ROW_BYTES: usize = 294;
 /// the engine; the closed kinds stay encodable without a reserve of their
 /// own.
 pub const MAX_EFFECT_RESERVE_BYTES: usize = MAX_EFFECT_ROW_BYTES * 2 + 1;
-
-/// Conservative pre-mutation reply upper bound for one report: the request
-/// estimate plus worst-case generated state. Any publishable reply for this
-/// input fits within this bound, so exceeding it rejects before any
-/// observation convergence, slot cleanup, or command mutation.
-///
-/// Per-item slack derives from the canonical encoding with maximum-length
-/// (128) identifiers:
-/// - retained transfer row: 63 punctuation + `op-<u64>` (25) + kind (11)
-///   + three max ids (390) = 489, rounded to 512;
-/// - created logical workspace row: 65 punctuation + id (132) + output
-///   (130) + empty binding (2) + scope (130) + order (20) + mode (7) +
-///   hold (23) = 509, rounded to 512;
-/// - retained-missing held scope row: 28 punctuation + `output/workspace`
-///   (259) + authority (12) + reason (23) = 322, rounded to 336;
-/// - coexisting one-shot effects (at most one fresh-admission focus plus
-///   at most one explicit-command focus; same-target dedup keeps one, and
-///   a hover follow never mints beside any focus): [`MAX_EFFECT_RESERVE_BYTES`]
-///   (two [`MAX_EFFECT_ROW_BYTES`] rows plus one comma).
-/// - correlated command result (at most one per command): the drag-preview
-///   / float shapes fit in 2048; a migration member list scales with the
-///   report's live window count (one max-length id + comma per window, 131
-///   each) plus 512 base.
-/// - uniform presentation: the required revision label reserves its
-///   worst case explicitly (9 punctuation plus 20 digits = 29, never
-///   envelope slack); the border shape fits in 256; the underlay
-///   members scale with the report's live window count (one max-length
-///   leaf/window pair plus rect and comma per window, 300 each) plus 1024
-///   base; pager workspaces scale with the logical workspace count (one
-///   max-length id/label plus ordinal/flags per workspace, 320 each, plus
-///   16 outputs of slack) and pager windows scale with the live window
-///   count (one max-length id plus frame and comma per window, 160 each).
-///   The optional explicit trailing marker (`,\"trailing\":true`, 16 bytes)
-///   rides at most one plan row plus one pager row per logical workspace
-///   (32 each).
-/// - gesture-settled terminal (at most one per report): 40 fixed plus a
-///   20-digit id plus a 5-byte bool = 65 worst case, rounded to 96.
-/// - operation-settled events (at most two per window per report: one
-///   clear verdict plus one float verdict): 34 punctuation +
-///   `op-<u64>` (25) + window (130) + outcome (27) + cause (130) = 346,
-///   rounded to 384 each, doubled to 768 per window.
-/// - native creation desires (at most one per logical workspace): 22
-///   punctuation + `op-native-<n>` (25) + logical (130) + output (130) =
-///   307, rounded to 384 each.
-/// - held-row diagnostics (at most one per held screen row): scope (155) plus
-///   lane/kind tokens (30) plus id (130) plus punctuation (30) = 345,
-///   rounded to 512 each.
-/// - offroute native-state attempt diagnostics (at most one per carried
-///   `stateAttempts` row): [`MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES`] each,
-///   independently derived like the held-screen row cost.
-/// - core intent save/clear section (`intentWrites`): the empty 18-byte
-///   section is covered by the 4096 envelope slack below. The at-most-one
-///   sticky/float save row reserves [`max_intent_save_bound`] (16
-///   punctuation plus the command's subject id plus
-///   [`MAX_INTENT_SAVE_DATA_JSON`], at most 194), gated on the report's
-///   own command (`SetSticky`, `ToggleSticky`, or the sticky-clearing
-///   `ToggleFloat`) so non-save reports reserve nothing.
-/// - switch terminals: the empty 19-byte `switchSettled` section fits in the
-///   envelope slack. The caller separately adds [`max_switch_settle_reserve`]
-///   for every retained selection binding and its frozen visibility members,
-///   including simultaneous completions on different outputs, plus
-///   `max_switch_settle_reserve(1, 0)` for the at-most-one zero-obligation
-///   issuing terminal a select-family command can mint while old bindings
-///   settle (see `WorldEngine::switch_issuing_reserve`).
-/// - outbound target lanes (current engine only): each published window
-///   carries at most one composed sticky show plus the command correlation
-///   and at most one native sticky state target plus at most one native
-///   fullscreen state target plus at most one native maximize state target
-///   plus at most one commandless native above state target
-///   (626 worst case with the longest quoted counter, longest revision,
-///   longest authority/hold pair, largest sticky row, largest fullscreen
-///   row, largest maximize row, and largest commandless above row with
-///   `command_seq: None`; see [`MAX_TARGET_LANES_PER_WINDOW`]).
-///   The default suffix costs 94 with a null correlation and 112 with the
-///   longest quoted counter. The count is the union of every
-///   publication source, summed as a conservative upper bound (deduped
-///   lifetimes counted twice still fit): the current carried windows plus
-///   held rows, plus the prior staged windows (held scopes publish retained
-///   lifetimes without a live fact in this report), plus the retained
-///   session/member footprint (tiled links plus exceptions plus minimize
-///   slots across retained domains, which survive a gapped previous report
-///   that left staged small), plus retained mover rows (one per outstanding
-///   window transfer plus every migration member). No per-window headroom
-///   beyond one composed show plus one sticky target plus one fullscreen
-///   target plus one maximize target plus one commandless above target and no
-///   operation-settled headroom reuse.
-/// - envelope slack: 4096 base covers envelope slack and array commas.
-#[must_use]
-pub fn reply_upper_bound(
-    report: &WorldReport,
-    retained_transfers: usize,
-    logical_workspaces: usize,
-    created_workspaces: usize,
-    staged_windows: usize,
-    retained_windows: usize,
-) -> usize {
-    let report_windows: usize = report.windows.len().saturating_add(report.closed.len());
-    let published_windows: usize = report
-        .windows
-        .len()
-        .saturating_add(report.held_windows.len())
-        .saturating_add(staged_windows)
-        .saturating_add(retained_windows);
-    report_estimate(report)
-        .saturating_add(retained_transfers.saturating_mul(512))
-        .saturating_add(created_workspaces.saturating_mul(512))
-        .saturating_add(logical_workspaces.saturating_mul(336))
-        .saturating_add(4096)
-        .saturating_add(MAX_EFFECT_RESERVE_BYTES)
-        .saturating_add(2048)
-        .saturating_add(512)
-        .saturating_add(256)
-        // Required presentation revision label worst case: `,"rev":""`
-        // (9) plus the longest quoted `u64` (20).
-        .saturating_add(29)
-        .saturating_add(report_windows.saturating_mul(300))
-        .saturating_add(1024)
-        .saturating_add(logical_workspaces.saturating_mul(320))
-        .saturating_add(logical_workspaces.saturating_mul(32))
-        .saturating_add(report_windows.saturating_mul(160))
-        .saturating_add(96)
-        .saturating_add(report_windows.saturating_mul(131))
-        .saturating_add(report_windows.saturating_mul(768))
-        .saturating_add(logical_workspaces.saturating_mul(384))
-        .saturating_add(report.held_screens.len().saturating_mul(512))
-        .saturating_add(
-            report
-                .state_attempts
-                .len()
-                .saturating_mul(MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES),
-        )
-        .saturating_add(max_intent_save_bound(report))
-        .saturating_add(published_windows.saturating_mul(MAX_TARGET_LANES_PER_WINDOW))
-}
 
 #[cfg(test)]
 mod typed_scope_sizing_tests {
@@ -4021,18 +2684,23 @@ mod target_lane_sizing_tests {
 mod effect_vocabulary_sizing_tests {
     use super::*;
     use crate::directional::WindowId;
-    use crate::world_directional::tests::{accepted, fact, report_full, screen};
-    use crate::world_engine::LegacyWorldOutcome;
+    use crate::world_engine::WorldOutcome;
     use crate::world_report::{
         EffectCause, EffectKind, OneShotEffect, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
     };
+    use crate::world_sizing_v4::{
+        reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4, report_estimate_v4,
+    };
+    use crate::world_v4_support_tests::{
+        accepted as accepted_v4, fact, report_full as report_full_v4, screen,
+    };
 
-    fn reply_with_effects(effects: Vec<OneShotEffect>) -> crate::world_report::WorldReply {
+    fn reply_with_effects(effects: Vec<OneShotEffect>) -> crate::world_report::WorldReplyV4 {
         let mut engine =
             crate::world_engine::WorldEngine::new_test_bound("gen-1", "adapter-1").expect("engine");
-        let seed = accepted(
+        let seed = accepted_v4(
             &mut engine,
-            &report_full(
+            &report_full_v4(
                 1,
                 1,
                 vec![screen("out-a", 0)],
@@ -4142,148 +2810,79 @@ mod effect_vocabulary_sizing_tests {
             },
         ];
         let reply = reply_with_effects(rows);
-        let wire = encode_reply_canonical(&reply);
+        let wire_len = reply_exact_bytes_v4(&reply);
         let empty = reply_with_effects(Vec::new());
-        let base_wire = encode_reply_canonical(&empty);
+        let base_len = reply_exact_bytes_v4(&empty);
         // Marginal accounting is exact: the estimate delta over the same
-        // reply with empty effects equals the encoded bytes (rows plus
-        // one comma per extra row), for null and quoted-`u64` sequences
-        // and both bools alike. (The full-reply estimate keeps its
+        // reply with empty effects equals the exact bytes (rows plus one
+        // comma per extra row), for null and quoted-`u64` sequences and
+        // both bools alike. (The full-reply estimate keeps its
         // pre-existing conservative slack elsewhere; only the effect lane
-        // is asserted exact here.)
+        // is asserted exact here. The v4 wire key order itself is pinned
+        // by the protocol twin test.)
         let row_bytes: usize = reply
             .effects
             .iter()
             .map(|row| {
                 let one = reply_with_effects(vec![row.clone()]);
-                encode_reply_canonical(&one).len() - base_wire.len()
+                reply_exact_bytes_v4(&one) - base_len
             })
             .sum();
         assert_eq!(
-            wire.len() - base_wire.len(),
+            wire_len - base_len,
             row_bytes + reply.effects.len().saturating_sub(1)
         );
         assert_eq!(
-            reply_estimate(&reply) - reply_estimate(&empty),
-            wire.len() - base_wire.len(),
+            reply_estimate_v4(&reply) - reply_estimate_v4(&empty),
+            wire_len - base_len,
             "effect estimate stays exact over null/quoted sequences and both bools"
         );
         assert!(
-            reply_estimate(&reply) >= wire.len(),
+            reply_estimate_v4(&reply) >= wire_len,
             "estimate covers the reply"
         );
-        // Key order is frozen: id, kind, target, rev, cause, cmdSeq,
-        // awaitShown.
-        assert!(wire.contains(
-            "{\"id\":\"fx-11\",\"kind\":\"focus\",\"target\":\"win-a\",\
-             \"rev\":\"7\",\"cause\":\"explicit-command\",\"cmdSeq\":\"11\",\
-             \"awaitShown\":false}"
-        ));
-        assert!(wire.contains(
-            "{\"id\":\"af-win-b\",\"kind\":\"focus\",\"target\":\"win-b\",\
-             \"rev\":\"18446744073709551615\",\"cause\":\"automatic-admission\",\
-             \"cmdSeq\":null,\"awaitShown\":false}"
-        ));
     }
 
     #[test]
     fn presentation_rev_marginal_is_exact_and_reserved() {
-        // Required revision label: quoted decimal immediately after the
-        // foreground and before the optional suspended output. The
-        // assertions below pin the marginal width only (exactly 9 +
-        // digits at every causal width: 0, 9, 10, u64::MAX); the
+        // Required revision label: quoted decimal riding the presentation.
+        // The assertions below pin the marginal width only (exactly the
+        // digit delta at every causal width: 0, 9, 10, u64::MAX); the
         // surrounding estimates keep their pre-existing conservative
-        // slack. The pre-mutation bound carries the 29-byte worst case
-        // as an explicit term, pinned by an exact headroom equality.
+        // slack. The pre-mutation bound carries the 29-byte worst case as
+        // an explicit term, pinned by an exact headroom equality. The v4
+        // wire key order itself is pinned by the protocol twin test.
         let mut zero = reply_with_effects(Vec::new());
         zero.presentation.foreground = "win-a".to_owned();
         zero.presentation.rev = 0;
-        let zero_wire = encode_reply_canonical(&zero);
-        let mut zero_section = String::new();
-        encode_presentation(&mut zero_section, &zero.presentation);
-        let zero_stripped = zero_section.replacen(",\"rev\":\"0\"", "", 1);
-        assert_ne!(
-            zero_stripped.len(),
-            zero_section.len(),
-            "baseline label strips exactly once"
-        );
+        let zero_exact = reply_exact_bytes_v4(&zero);
         for rev in [0u64, 9, 10, u64::MAX] {
             let mut reply = zero.clone();
             reply.presentation.rev = rev;
-            let mut section = String::new();
-            encode_presentation(&mut section, &reply.presentation);
-            assert!(
-                section.starts_with(&format!("{{\"foreground\":\"win-a\",\"rev\":\"{rev}\"")),
-                "rev rides quoted immediately after the foreground: {section}"
-            );
-            // Absolute accounting against the wire with the label
-            // removed locally in the test: the field costs 9 + digits.
-            let needle = format!(",\"rev\":\"{rev}\"");
-            let stripped = section.replacen(&needle, "", 1);
             assert_eq!(
-                section.len() - stripped.len(),
-                9 + u64_len(rev),
-                "absolute label width is 9 + digits at rev {rev}"
-            );
-            assert_eq!(
-                stripped, zero_stripped,
-                "only the label digits vary at rev {rev}"
-            );
-            let wire = encode_reply_canonical(&reply);
-            assert_eq!(
-                wire.len() - zero_wire.len(),
+                reply_exact_bytes_v4(&reply) - zero_exact,
                 u64_len(rev) - u64_len(0),
                 "marginal presentation width is exact at rev {rev}"
             );
             assert_eq!(
-                presentation_estimate(&reply.presentation)
-                    - presentation_estimate(&zero.presentation),
-                wire.len() - zero_wire.len(),
+                reply_estimate_v4(&reply) - reply_estimate_v4(&zero),
+                reply_exact_bytes_v4(&reply) - zero_exact,
                 "presentation estimate marginal stays exact at rev {rev}"
             );
-            assert_eq!(
-                reply_estimate(&reply) - reply_estimate(&zero),
-                wire.len() - zero_wire.len(),
-                "reply estimate marginal stays exact at rev {rev}"
-            );
             assert!(
-                reply_estimate(&reply) >= wire.len(),
+                reply_estimate_v4(&reply) >= reply_exact_bytes_v4(&reply),
                 "estimate covers the reply at rev {rev}"
             );
         }
-        // Optional suspended output still trails the required label.
-        let mut suspended = zero.clone();
-        suspended.presentation.rev = 7;
-        suspended.presentation.suspended_output =
-            Some(crate::directional::OutputId("out-b".to_owned()));
-        let mut section = String::new();
-        encode_presentation(&mut section, &suspended.presentation);
-        assert!(
-            section.starts_with(
-                "{\"foreground\":\"win-a\",\"rev\":\"7\",\"suspendedOutput\":\"out-b\""
-            ),
-            "suspended output trails the label: {section}"
-        );
-        // Independent labels: the nested witness carries its own rev
-        // while the outer reply carries another (no equality promise).
-        let mut split = zero.clone();
-        split.state_revision = 2;
-        split.presentation.rev = 1;
-        let wire = encode_reply_canonical(&split);
-        assert!(wire.contains("\"rev\":\"2\""), "outer label: {wire}");
-        assert!(
-            wire.contains("\"foreground\":\"win-a\",\"rev\":\"1\""),
-            "nested label stays independent: {wire}"
-        );
         // Pre-mutation bound: for an empty report every report-dependent
         // term is zero, so the headroom over the request estimate must
         // equal the fixed budget plus the explicit 29-byte worst-case
         // label exactly. Dropping the reservation breaks this equality
         // (the 4096 envelope slack alone cannot cover it).
-        let empty = report_full(1, 1, Vec::new(), Vec::new(), Vec::new(), "", None, None);
+        let empty = report_full_v4(1, 1, Vec::new(), Vec::new(), Vec::new(), "", None, None);
         assert_eq!(
-            reply_upper_bound(&empty, 0, 0, 0, 0, 0).saturating_sub(report_estimate(&empty)),
-            4096 + MAX_EFFECT_RESERVE_BYTES + 2048 + 512 + 256 + 29 + 1024 + 96,
+            reply_upper_bound_v4(&empty, 0, 0, 0, 0, 0).saturating_sub(report_estimate_v4(&empty)),
+            4096 + MAX_EFFECT_RESERVE_BYTES + 2048 + 512 + 704 + 29 + 1024 + 96,
             "explicit 29-byte label reserve is load-bearing in the headroom"
         );
     }
@@ -4302,12 +2901,11 @@ mod effect_vocabulary_sizing_tests {
         let hover = widest_hover();
         let one = reply_with_effects(vec![hover.clone()]);
         let empty = reply_with_effects(Vec::new());
-        let hover_len = encode_reply_canonical(&one).len() - encode_reply_canonical(&empty).len();
+        let hover_len = reply_exact_bytes_v4(&one) - reply_exact_bytes_v4(&empty);
         assert_eq!(hover_len, 281, "widest hover row: {hover_len}");
         let explicit = widest_explicit();
         let explicit_one = reply_with_effects(vec![explicit.clone()]);
-        let explicit_len =
-            encode_reply_canonical(&explicit_one).len() - encode_reply_canonical(&empty).len();
+        let explicit_len = reply_exact_bytes_v4(&explicit_one) - reply_exact_bytes_v4(&empty);
         assert_eq!(
             explicit_len, MAX_EFFECT_ROW_BYTES,
             "worst row: {explicit_len}"
@@ -4318,8 +2916,7 @@ mod effect_vocabulary_sizing_tests {
         );
         let admission = widest_admission();
         let admission_one = reply_with_effects(vec![admission.clone()]);
-        let admission_len =
-            encode_reply_canonical(&admission_one).len() - encode_reply_canonical(&empty).len();
+        let admission_len = reply_exact_bytes_v4(&admission_one) - reply_exact_bytes_v4(&empty);
         assert_eq!(admission_len, 279, "widest admission row: {admission_len}");
         let pair = reply_with_effects(vec![admission.clone(), explicit.clone()]);
         assert_ne!(
@@ -4330,7 +2927,7 @@ mod effect_vocabulary_sizing_tests {
             admission.id, explicit.id,
             "coexisting rows carry distinct identities"
         );
-        let pair_len = encode_reply_canonical(&pair).len() - encode_reply_canonical(&empty).len();
+        let pair_len = reply_exact_bytes_v4(&pair) - reply_exact_bytes_v4(&empty);
         assert_eq!(
             pair_len, 574,
             "actual widest coexistence (admission + explicit + comma): {pair_len}"
@@ -4344,17 +2941,20 @@ mod effect_vocabulary_sizing_tests {
     }
 
     #[test]
-    fn admission_and_explicit_coexist_within_the_reserve() {
-        // Actual engine coexistence: a newcomer arrives (automatic
-        // admission on win-b) while an explicit Focus command selects
-        // win-a. Same-target dedup keeps one row; different targets keep
-        // two, and the pre-mutation bound covers both.
+    fn explicit_focus_supersedes_admission_within_the_reserve() {
+        // v4 latest-wins (approved active difference): an explicit Focus
+        // command supersedes every unissued prior Focus, so a newcomer's
+        // automatic admission never co-publishes with the explicit
+        // winner. The pre-mutation bound still covers the coexistence
+        // worst case (the reserve stays conservative), and the token
+        // mapping proves the admission minted before the supersession
+        // dropped it.
         use crate::world_report::WorldCommand;
         let mut engine =
             crate::world_engine::WorldEngine::new_test_bound("gen-1", "adapter-1").expect("engine");
-        accepted(
+        accepted_v4(
             &mut engine,
-            &report_full(
+            &report_full_v4(
                 1,
                 1,
                 vec![screen("out-a", 0)],
@@ -4365,7 +2965,7 @@ mod effect_vocabulary_sizing_tests {
                 None,
             ),
         );
-        let input = report_full(
+        let input = report_full_v4(
             2,
             2,
             vec![screen("out-a", 0)],
@@ -4378,7 +2978,7 @@ mod effect_vocabulary_sizing_tests {
                 direction: "right".to_owned(),
             }),
         );
-        let pre_bound = reply_upper_bound(
+        let pre_bound = reply_upper_bound_v4(
             &input,
             engine.retained.len() + engine.retained_floats.len(),
             engine.engine.domain_keys().len(),
@@ -4387,21 +2987,13 @@ mod effect_vocabulary_sizing_tests {
             engine.retained_publish_footprint(),
         )
         .saturating_add(max_intent_rollback_bound(engine.rollback_reserve_count()));
-        let reply = accepted(&mut engine, &input);
+        let reply = accepted_v4(&mut engine, &input);
         assert_eq!(
             reply.effects.len(),
-            2,
-            "coexisting pair: {:?}",
+            1,
+            "explicit winner supersedes admission: {:?}",
             reply.effects
         );
-        let admission = reply
-            .effects
-            .iter()
-            .find(|effect| effect.cause == EffectCause::AutomaticAdmission)
-            .expect("admission row");
-        assert_eq!(admission.target.0, "win-b");
-        assert_eq!(admission.command_seq, None);
-        assert!(!admission.await_shown);
         let explicit = reply
             .effects
             .iter()
@@ -4409,13 +3001,27 @@ mod effect_vocabulary_sizing_tests {
             .expect("explicit row");
         assert_eq!(explicit.target.0, "win-a");
         assert!(!explicit.await_shown);
-        let actual = encode_reply_canonical(&reply);
         assert!(
-            reply_estimate(&reply) >= actual.len(),
+            reply
+                .effects
+                .iter()
+                .all(|effect| effect.cause != EffectCause::AutomaticAdmission),
+            "admission superseded by the explicit winner: {:?}",
+            reply.effects
+        );
+        assert!(
+            engine
+                .automatic_focus_tokens
+                .contains_key(&WindowId("win-b".to_owned())),
+            "admission minted before the supersession dropped it"
+        );
+        let actual = reply_exact_bytes_v4(&reply);
+        assert!(
+            reply_estimate_v4(&reply) >= actual,
             "estimate covers coexistence"
         );
         assert!(
-            actual.len() <= pre_bound,
+            actual <= pre_bound,
             "coexistence fits the pre-mutation bound"
         );
     }
@@ -4429,9 +3035,9 @@ mod effect_vocabulary_sizing_tests {
         use crate::world_report::WorldCommand;
         let mut engine =
             crate::world_engine::WorldEngine::new_test_bound("gen-1", "adapter-1").expect("engine");
-        accepted(
+        accepted_v4(
             &mut engine,
-            &report_full(
+            &report_full_v4(
                 1,
                 1,
                 vec![screen("out-a", 0)],
@@ -4448,7 +3054,7 @@ mod effect_vocabulary_sizing_tests {
             direction: "right".to_owned(),
         };
         let bound_of = |windows: &[crate::world_report::WindowFact]| {
-            let report = report_full(
+            let report = report_full_v4(
                 2,
                 2,
                 vec![screen("out-a", 0)],
@@ -4458,7 +3064,7 @@ mod effect_vocabulary_sizing_tests {
                 Some(2),
                 Some(focus()),
             );
-            reply_upper_bound(
+            reply_upper_bound_v4(
                 &report,
                 0,
                 logical,
@@ -4481,7 +3087,7 @@ mod effect_vocabulary_sizing_tests {
             .saturating_sub(bound_of(&windows) - MAX_EFFECT_RESERVE_BYTES)
             .saturating_sub(10);
         windows[2].title = Some("t".repeat(shortfall + 2));
-        let report = report_full(
+        let report = report_full_v4(
             2,
             2,
             vec![screen("out-a", 0)],
@@ -4491,7 +3097,7 @@ mod effect_vocabulary_sizing_tests {
             Some(2),
             Some(focus()),
         );
-        let without_reserve = reply_upper_bound(
+        let without_reserve = reply_upper_bound_v4(
             &report,
             0,
             logical,
@@ -4500,7 +3106,7 @@ mod effect_vocabulary_sizing_tests {
             engine.retained_publish_footprint(),
         ) - MAX_EFFECT_RESERVE_BYTES;
         assert!(
-            report_estimate(&report) <= WORLD_MAX_REQUEST_BYTES,
+            report_estimate_v4(&report) <= WORLD_MAX_REQUEST_BYTES,
             "request itself fits; only the reply bound trips"
         );
         assert!(
@@ -4512,8 +3118,8 @@ mod effect_vocabulary_sizing_tests {
             "added reserve is the discriminator"
         );
         let revision = engine.state_revision;
-        match engine.handle_report_legacy(&report) {
-            LegacyWorldOutcome::Rejected { kind, .. } => {
+        match engine.handle_report(&report) {
+            WorldOutcome::Rejected { kind, .. } => {
                 assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
             }
             other => panic!("expected reply-oversize, got {other:?}"),
@@ -4524,7 +3130,7 @@ mod effect_vocabulary_sizing_tests {
             "command unconsumed by the refused report"
         );
         // The same sequence works once the report fits.
-        let retry = report_full(
+        let retry = report_full_v4(
             2,
             2,
             vec![screen("out-a", 0)],
@@ -4534,7 +3140,7 @@ mod effect_vocabulary_sizing_tests {
             Some(2),
             Some(focus()),
         );
-        let reply = accepted(&mut engine, &retry);
+        let reply = accepted_v4(&mut engine, &retry);
         assert!(
             reply
                 .effects

@@ -1,11 +1,9 @@
-//! v4 staging intake regressions: legacy-versus-v4 staged equality over the
-//! shared lanes, plus verbatim retention and lane order for the v4-only
-//! lanes (`held_native`, `held_attempts`, `presentation_v4`,
-//! `renderer_input`).
+//! v4 staging intake regressions: staged equality over the shared lanes,
+//! plus verbatim retention and lane order for the v4-only lanes
+//! (`held_native`, `held_attempts`, `presentation_v4`, `renderer_input`).
 
 use crate::connection::{FactName, HostCapabilities};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
-use crate::world_directional::tests::{accepted, fact, report_full, screen};
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
     AttemptLaneV4, AuthorityScope, FrameSetter, HeldAttemptRow, HeldNativeRow, HeldPresentationRow,
@@ -14,6 +12,9 @@ use crate::world_report::{
     StateProperty, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldReportV4,
 };
 use crate::world_state::state_property_supported;
+use crate::world_v4_support_tests::{
+    accepted as accepted_v4, fact, report_full as report_full_v4, screen,
+};
 
 fn report_v4(
     seq: u64,
@@ -95,23 +96,23 @@ fn held_window(window: &str, output: Option<&str>) -> HeldWindowRow {
 }
 
 #[test]
-fn parity_legacy_v4_shared_fields() {
-    // Seed both engines with the same admitted member so the output-less
-    // held row below resolves through the retained home on both intakes.
-    let mut legacy = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-    let mut v4 = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-    let seed = report_full(
-        1,
-        1,
-        vec![screen("out-a", 0)],
-        vec![fact("win-r", "out-a", 0), fact("win-keep", "out-a", 40)],
-        Vec::new(),
-        "",
-        None,
-        None,
+fn v4_shared_fields_stage() {
+    // Seed via genuine v4 admission so the output-less held row below
+    // resolves through the retained home.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted_v4(
+        &mut engine,
+        &report_full_v4(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-r", "out-a", 0), fact("win-keep", "out-a", 40)],
+            Vec::new(),
+            "",
+            None,
+            None,
+        ),
     );
-    accepted(&mut legacy, &seed);
-    accepted(&mut v4, &seed);
 
     let mut minimized = fact("win-b", "out-a", 40);
     minimized.minimized = Some(true);
@@ -121,24 +122,7 @@ fn parity_legacy_v4_shared_fields() {
     held_scoped.ordinal = 1;
     let held_windows = vec![held_scoped, held_window("win-r", None)];
     let closed = vec![WindowId("win-c".to_owned())];
-    let legacy_report = {
-        let mut report = report_full(
-            2,
-            2,
-            vec![screen("out-a", 0)],
-            windows.clone(),
-            Vec::new(),
-            "",
-            None,
-            None,
-        );
-        report.held_screens = held_screens.clone();
-        report.held_windows = held_windows.clone();
-        report.closed = closed.clone();
-        report.gesture_barrier = true;
-        report
-    };
-    let v4_report = report_v4(
+    let report = report_v4(
         2,
         vec![screen("out-a", 0)],
         windows,
@@ -147,28 +131,30 @@ fn parity_legacy_v4_shared_fields() {
         held_windows,
         true,
     );
-    legacy.stage_facts(&legacy_report);
-    v4.stage_facts_v4(&v4_report);
-
-    assert_eq!(legacy.staged.screens, v4.staged.screens);
-    assert_eq!(legacy.staged.held_screens, v4.staged.held_screens);
-    assert_eq!(legacy.staged.held_windows, v4.staged.held_windows);
-    assert_eq!(legacy.staged.excluded, v4.staged.excluded);
-    assert_eq!(legacy.staged.diagnostics, v4.staged.diagnostics);
-    assert_eq!(legacy.staged.fact_output, v4.staged.fact_output);
-    assert_eq!(legacy.staged.facts, v4.staged.facts);
-    assert_eq!(legacy.staged.derived, v4.staged.derived);
-    assert_eq!(legacy.staged.closes, v4.staged.closes);
-    assert_eq!(legacy.staged.gesture_barrier, v4.staged.gesture_barrier);
-    assert!(legacy.staged.echoes.is_empty());
-    assert!(v4.staged.echoes.is_empty());
+    engine.stage_facts_v4(&report);
+    assert_eq!(engine.staged.screens.len(), 1);
+    assert_eq!(engine.staged.held_screens.len(), 1);
+    assert_eq!(engine.staged.held_windows.len(), 2);
+    assert!(engine.staged.gesture_barrier);
+    assert!(engine.staged.echoes.is_empty());
 
     // Shared content pins: minimized and normal facts stage, the closed id
     // stages, and the output-less row resolves through the retained home.
-    assert!(v4.staged.facts.contains_key(&WindowId("win-a".to_owned())));
-    assert!(v4.staged.facts.contains_key(&WindowId("win-b".to_owned())));
-    assert!(v4.staged.closes.contains(&WindowId("win-c".to_owned())));
-    let resolved = v4
+    assert_eq!(engine.staged.facts.len(), 2);
+    assert!(
+        engine
+            .staged
+            .facts
+            .contains_key(&WindowId("win-a".to_owned()))
+    );
+    assert!(
+        engine
+            .staged
+            .facts
+            .contains_key(&WindowId("win-b".to_owned()))
+    );
+    assert!(engine.staged.closes.contains(&WindowId("win-c".to_owned())));
+    let resolved = engine
         .staged
         .held_windows
         .iter()
@@ -183,39 +169,14 @@ fn parity_legacy_v4_shared_fields() {
         ))
     );
 
-    // The legacy intake leaves every v4-only field at its default.
-    assert!(legacy.staged.held_native.is_empty());
-    assert!(legacy.staged.held_attempts.is_empty());
-    assert!(legacy.staged.presentation_v4.is_none());
-    assert!(legacy.staged.renderer_input.is_none());
-    // The v4 side carries no new-lane rows here but stores its
-    // presentation verbatim.
-    assert!(v4.staged.held_native.is_empty());
-    assert!(v4.staged.held_attempts.is_empty());
-    assert_eq!(
-        v4.staged.presentation_v4,
-        Some(PresentationRowV4::Valid(PresentationIngressV4::default()))
-    );
-    assert!(v4.staged.renderer_input.is_none());
-}
-
-#[test]
-fn legacy_intake_ignores_new_fields() {
-    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-    let report = report_full(
-        1,
-        1,
-        vec![screen("out-a", 0)],
-        vec![fact("win-a", "out-a", 0)],
-        Vec::new(),
-        "",
-        None,
-        None,
-    );
-    engine.stage_facts(&report);
+    // No new-lane rows are carried here but the presentation still stores
+    // its valid ingress verbatim.
     assert!(engine.staged.held_native.is_empty());
     assert!(engine.staged.held_attempts.is_empty());
-    assert!(engine.staged.presentation_v4.is_none());
+    assert_eq!(
+        engine.staged.presentation_v4,
+        Some(PresentationRowV4::Valid(PresentationIngressV4::default()))
+    );
     assert!(engine.staged.renderer_input.is_none());
 }
 
@@ -999,12 +960,12 @@ fn v4_state_offroute_scope_precedence_and_unresolved() {
 
 #[test]
 fn v4_state_offroute_uses_retained_home_when_carried_output_missing() {
-    // Seed a retained home via an accepted legacy run, then stage a v4
+    // Seed a retained home via an accepted v4 run, then stage a v4
     // report with no carried output for the same lifetime.
     let mut engine = engine_with_caps(caps_permissive());
-    accepted(
+    accepted_v4(
         &mut engine,
-        &report_full(
+        &report_full_v4(
             1,
             1,
             vec![screen("out-a", 0)],
@@ -1222,14 +1183,14 @@ fn unbound_grading_withholds_non_null_sticky_and_maximize() {
 
 #[test]
 fn unbound_classification_matches_unsupported_and_rejects_permissive_default() {
-    // Null sticky/maximized facts pass grading under every binding, so the
-    // legacy intake (which never grades) exercises the shared classification
-    // defaults in `stage_window_facts` directly.
+    // Null sticky/maximized facts pass grading under every binding, so
+    // staging them exercises the shared classification defaults in
+    // `stage_window_facts` directly.
     fn classified_hold(engine: &mut WorldEngine) -> bool {
         let mut null_fact = fact("win-a", "out-a", 0);
         null_fact.sticky = None;
         null_fact.maximized = None;
-        let legacy = report_full(
+        let staged_report = report_full_v4(
             1,
             1,
             vec![screen("out-a", 0)],
@@ -1239,7 +1200,7 @@ fn unbound_classification_matches_unsupported_and_rejects_permissive_default() {
             None,
             None,
         );
-        engine.stage_facts(&legacy);
+        engine.stage_facts_v4(&staged_report);
         assert_eq!(engine.staged.facts.len(), 1);
         assert!(engine.staged.held_windows.is_empty());
         assert!(engine.staged.diagnostics.is_empty());

@@ -561,7 +561,7 @@ impl WorldEngine {
                 // (incomplete inventory, incomplete screen, gesture) hold
                 // persistently with identities preserved and no retry. The
                 // screen bar reads the current staged screens (populated
-                // from the current report at stage_captured): an incomplete
+                // from the current report at `stage_captured_v4`): an incomplete
                 // current screen holds even after a complete prior.
                 let current_complete = self
                     .staged

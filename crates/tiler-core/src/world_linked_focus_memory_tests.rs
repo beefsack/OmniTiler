@@ -11,11 +11,12 @@ use crate::seed::EngineWindow;
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
 use crate::world_commands::CommandApplied;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, EffectKind, ScreenReport, WORLD_CONTRACT_VERSION_LEGACY,
-    WindowFact, WorldCommand, WorldReport,
+    CommandRejectKind, CommandResult, EffectKind, PresentationRowV4, ScreenReport,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
+use crate::world_v4_support_tests::empty_ingress;
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -85,9 +86,9 @@ fn report(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: seq,
@@ -97,9 +98,9 @@ fn report(
         command,
         screens,
         windows,
-        views: Vec::new(),
         closed: Vec::new(),
         native: Vec::new(),
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -118,17 +119,18 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -137,14 +139,14 @@ fn two_screens() -> Vec<ScreenReport> {
     vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
-fn test_issue(report: &WorldReport) -> crate::world_engine::EventIssue {
+fn test_issue(report: &WorldReportV4) -> crate::world_engine::EventIssue {
     crate::world_engine::EventIssue {
         owner: crate::ids::OwnerId::parse("adapter-1").expect("owner"),
         correlation: crate::ids::CorrelationId::parse(&report.request_id).expect("correlation"),
     }
 }
 
-fn focus_targets(reply: &crate::world_report::WorldReply) -> Vec<WindowId> {
+fn focus_targets(reply: &WorldReplyV4) -> Vec<WindowId> {
     reply
         .effects
         .iter()
@@ -253,7 +255,7 @@ fn no_focus_report(
     windows: Vec<WindowFact>,
     command_seq: u64,
     direction: &str,
-) -> WorldReport {
+) -> WorldReportV4 {
     let mut out = report(
         seq,
         two_screens(),
@@ -422,7 +424,7 @@ fn view_return_select_records_linked_target_before_native_writes() {
     );
     // Leave early: no further legs. Real duplicate check: replaying the
     // consumed sequence reconciles only, never re-executes.
-    let outcome = engine.handle_report_legacy(&report(
+    let outcome = engine.handle_report(&report(
         5,
         two_screens(),
         windows(),
@@ -434,7 +436,7 @@ fn view_return_select_records_linked_target_before_native_writes() {
         }),
     ));
     assert!(
-        matches!(outcome, LegacyWorldOutcome::CommandConsumed(_)),
+        matches!(outcome, WorldOutcome::CommandConsumed(_)),
         "replayed select stays consumed: {outcome:?}"
     );
     assert_eq!(
@@ -475,7 +477,7 @@ fn view_return_fallback_records_effect_target_not_remembered() {
         None,
         None,
     );
-    engine.stage_facts(&probe);
+    engine.stage_facts_v4(&probe);
     engine.build_staged_domains();
     let held = BTreeSet::new();
     // Leg 1: retain some other view so the return below actually changes
@@ -553,7 +555,7 @@ fn view_return_fallback_records_effect_target_not_remembered() {
 fn rejected_unknown_focus_records_nothing() {
     let (mut engine, key) = bootstrap_two_tiled();
     let before = remembered_window(&engine, &key);
-    let outcome = engine.handle_report_legacy(&report(
+    let outcome = engine.handle_report(&report(
         2,
         two_screens(),
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)],
@@ -565,7 +567,7 @@ fn rejected_unknown_focus_records_nothing() {
         }),
     ));
     match outcome {
-        LegacyWorldOutcome::Accepted(reply) => assert_eq!(
+        WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::FocusUnknown
@@ -750,7 +752,7 @@ fn report_global_unique(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
+) -> WorldReportV4 {
     report(seq, two_screens(), windows, focused, command_seq, command)
 }
 
@@ -1467,7 +1469,7 @@ fn local_move_direct_records_mover_without_sweep() {
         Some(12),
         Some(command.clone()),
     );
-    engine.stage_facts(&probe);
+    engine.stage_facts_v4(&probe);
     engine.build_staged_domains();
     let applied = engine.execute_command(
         &test_issue(&probe),
@@ -1536,7 +1538,7 @@ fn swap_neighbor_move_direct_records_mover_without_sweep() {
         Some(12),
         Some(command.clone()),
     );
-    engine.stage_facts(&probe);
+    engine.stage_facts_v4(&probe);
     engine.build_staged_domains();
     let applied = engine.execute_command(
         &test_issue(&probe),

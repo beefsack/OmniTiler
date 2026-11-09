@@ -9,10 +9,10 @@ use super::world_frames::{
 };
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
-use crate::world_engine::{LegacyWorldOutcome, WorldEngine};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    FrameAttempt, FrameSetter, HoldReason, ScopeAuthority, ScreenReport, ScreenView,
-    WORLD_CONTRACT_VERSION_LEGACY, WindowFact, WorldReport,
+    FrameAttempt, FrameSetter, HoldReason, PresentationIngressV4, PresentationRowV4,
+    ScopeAuthority, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldReportV4,
 };
 
 pub(crate) fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -527,9 +527,9 @@ pub(crate) fn report_with_screens(
     frames: Vec<FrameAttempt>,
     monotonic_ms: u64,
     inventory_complete: bool,
-) -> WorldReport {
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -538,16 +538,15 @@ pub(crate) fn report_with_screens(
         command_seq: None,
         command: None,
         screens,
+        held_screens: Vec::new(),
         windows,
-        views: vec![ScreenView {
-            output: OutputId("out-a".to_owned()),
-            view: String::new(),
-        }],
+        held_windows: Vec::new(),
         closed: closed
             .into_iter()
             .map(|id| WindowId(id.to_owned()))
             .collect(),
         native: vec![],
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
@@ -555,8 +554,6 @@ pub(crate) fn report_with_screens(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: None,
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
@@ -566,11 +563,12 @@ pub(crate) fn report_with_screens(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: crate::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
@@ -582,7 +580,7 @@ fn report(
     frames: Vec<FrameAttempt>,
     monotonic_ms: u64,
     inventory_complete: bool,
-) -> WorldReport {
+) -> WorldReportV4 {
     report_with_screens(
         request_seq,
         vec![screen()],
@@ -596,10 +594,10 @@ fn report(
 
 pub(crate) fn accepted(
     engine: &mut WorldEngine,
-    report: &WorldReport,
-) -> crate::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+    report: &WorldReportV4,
+) -> crate::world_report::WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -629,7 +627,7 @@ fn rebind(engine: &mut WorldEngine, adapter: &str) {
 }
 
 pub(crate) fn frame_row(
-    reply: &crate::world_report::WorldReply,
+    reply: &crate::world_report::WorldReplyV4,
     window: &str,
 ) -> crate::world_report::WindowDesire {
     reply
@@ -846,7 +844,7 @@ fn engine_transient_retry_follows_reported_time() {
         h: desired.h,
     };
     let refused = |ms: u64| attempt("w1", desired, FrameSetter::Refused, Some(observed), ms);
-    let held = |reply: &crate::world_report::WorldReply| {
+    let held = |reply: &crate::world_report::WorldReplyV4| {
         frame_row(reply, "w1").frame_authority == ScopeAuthority::Hold(HoldReason::ConstraintClamp)
     };
     // Failure at ms=1000: inside the 500ms backoff the desire holds.
@@ -1174,7 +1172,7 @@ fn engine_withholds_float_token_while_suppressed() {
 
 #[test]
 fn frame_report_validation_bounds_shape() {
-    use crate::world_report::{validate_report, validate_report_reason};
+    use crate::world_report_v4_checks::validate_report_v4_reason as validate_report_reason;
     let mut base = report(
         1,
         vec![fact("w1", Some(rect(0, 0, 40, 90)))],
@@ -1183,7 +1181,7 @@ fn frame_report_validation_bounds_shape() {
         0,
         true,
     );
-    assert!(validate_report(&base));
+    assert!(validate_report_reason(&base).is_none());
     base.frames.push(attempt(
         "w1",
         rect(0, 0, 800, 560),
@@ -1191,7 +1189,7 @@ fn frame_report_validation_bounds_shape() {
         Some(rect(0, 0, 700, 560)),
         10,
     ));
-    assert!(validate_report(&base));
+    assert!(validate_report_reason(&base).is_none());
     base.frames.push(attempt(
         "w1",
         rect(0, 0, 800, 560),
@@ -3122,7 +3120,7 @@ fn learned_float_excursion_preserves_and_reapplies() {
 
 // --- frame-burst anti-loop bound (two attempts per observed-change burst) ---
 
-fn is_hold(reply: &crate::world_report::WorldReply, window: &str) -> bool {
+fn is_hold(reply: &crate::world_report::WorldReplyV4, window: &str) -> bool {
     frame_row(reply, window).frame_authority == ScopeAuthority::Hold(HoldReason::ConstraintClamp)
 }
 

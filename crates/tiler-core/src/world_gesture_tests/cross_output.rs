@@ -41,7 +41,7 @@ fn mixed_report(
     gesture: Option<GestureIngress>,
     closed: Vec<WindowId>,
     inventory_complete: bool,
-) -> WorldReport {
+) -> WorldReportV4 {
     report_on(
         mixed_screens(),
         request_seq,
@@ -104,7 +104,7 @@ fn seed_mixed(seed_facts: Vec<WindowFact>) -> WorldEngine {
 
 /// Preview rect plus the resolving output name, for cross-output slot
 /// agreement checks.
-fn preview_slot(reply: &crate::world_report::WorldReply) -> (Rect, String) {
+fn preview_slot(reply: &crate::world_report::WorldReplyV4) -> (Rect, String) {
     let Some(CommandResult::DragPreview { rect, domain, .. }) = reply.command_result.clone() else {
         panic!(
             "expected drag-preview result, got {:?}",
@@ -230,8 +230,10 @@ fn cross_slot(
         row_of(&released, mover).allocation,
     );
     // Arrival receipt retires the transfer with the mover geometry
-    // pinned at the slot: settlement plus observed geometry.
-    let target_view = transfer.target_workspace.clone();
+    // pinned at the slot: settlement plus observed geometry. The
+    // legacy setup also sent the target-view echo, but echoes are
+    // inert on native-free engines (and have no v4 slot), so the v4
+    // port observes the same arrival with an empty lane.
     let arrival_facts: Vec<WindowFact> = seed_facts
         .iter()
         .map(|row| {
@@ -242,11 +244,7 @@ fn cross_slot(
             }
         })
         .collect();
-    let mut settle = mixed_report(5, 5, arrival_facts, mover, None, vec![], true);
-    settle.views = vec![crate::world_report::ScreenView {
-        output: OutputId(dest_output.to_owned()),
-        view: target_view,
-    }];
+    let settle = mixed_report(5, 5, arrival_facts, mover, None, vec![], true);
     let settled = accepted(&mut engine, &settle);
     assert!(
         settled
@@ -538,7 +536,7 @@ fn migration_report(
     windows: Vec<WindowFact>,
     focused: &str,
     gesture: Option<GestureIngress>,
-) -> WorldReport {
+) -> WorldReportV4 {
     report_on(
         migration_screens(),
         request_seq,
@@ -694,7 +692,7 @@ fn gapped_report(
     windows: Vec<WindowFact>,
     focused: &str,
     gesture: Option<GestureIngress>,
-) -> WorldReport {
+) -> WorldReportV4 {
     report_on(
         gapped_screens(),
         request_seq,
@@ -914,9 +912,8 @@ fn cross_release_to_empty_destination_keeps_send_admission() {
     assert_eq!(transfer.target_output.0, "out-b");
     assert!(transfer.follow, "empty-destination drop follows");
     assert_eq!(row_of(&released, "win-2").output.0, "out-b");
-    let target_view = transfer.target_workspace.clone();
     let arrived = fact("win-2", "out-b", moved);
-    let mut settle = mixed_report(
+    let settle = mixed_report(
         3,
         3,
         vec![fact("win-1", "out-a", r1), arrived],
@@ -925,10 +922,6 @@ fn cross_release_to_empty_destination_keeps_send_admission() {
         vec![],
         true,
     );
-    settle.views = vec![crate::world_report::ScreenView {
-        output: OutputId("out-b".to_owned()),
-        view: target_view,
-    }];
     let settled = accepted(&mut engine, &settle);
     assert!(
         settled

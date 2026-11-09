@@ -1,11 +1,11 @@
 //! Staged v4 report size estimator: conservative upper bound of the
 //! canonical v4 report wire bytes
 //! (`encode_report_v4` in the protocol crate).
-//! Mirrors [`report_estimate`](crate::world_sizing::report_estimate) over the
-//! v4 envelope (`rendererInput` carried, `views` removed, presentation held
-//! narrowly). The estimator sees only the typed report, never the wire
-//! optionals, so every wire-optional lane counts its present form even when
-//! the wire omits it: an overcount, never an undercount.
+//! Covers the v4 envelope (`rendererInput` carried, `views` removed,
+//! presentation held narrowly) with the shared row estimators. The
+//! estimator sees only the typed report, never the wire optionals, so
+//! every wire-optional lane counts its present form even when the wire
+//! omits it: an overcount, never an undercount.
 
 use crate::world_report::{
     AttemptLaneV4, CommandResult, PresentationIngressV4, PresentationRowV4, RendererInput,
@@ -402,10 +402,9 @@ pub fn report_estimate_v4(report: &WorldReportV4) -> usize {
     bytes
 }
 
-/// Structural reply size estimate over the staged v4 reply: twin of
-/// [`reply_estimate`](crate::world_sizing::reply_estimate) with the v4
+/// Structural reply size estimate over the staged v4 reply with the v4
 /// deltas (transfers carry the quoted `cmdSeq` correlation, presentation
-/// carries the anchored border). Shared lanes reuse the legacy estimators;
+/// carries the anchored border). Shared lanes reuse the shared estimators;
 /// the estimate stays conservative (verified by the protocol twin test).
 #[must_use]
 pub fn reply_estimate_v4(reply: &WorldReplyV4) -> usize {
@@ -532,9 +531,8 @@ pub fn reply_estimate_v4(reply: &WorldReplyV4) -> usize {
     bytes
 }
 
-/// Structural size estimate for the staged v4 reply presentation: twin of
-/// the legacy [`presentation_estimate`](crate::world_sizing::presentation_estimate)
-/// with the anchored border row. Keeps the legacy 76 base (which counts
+/// Structural size estimate for the staged v4 reply presentation with
+/// the anchored border row. Keeps the legacy 76 base (which counts
 /// the border braces separately); the anchored row counts its own braces,
 /// so the estimate rides one byte above exact here, conservatively.
 fn presentation_estimate_v4(presentation: &WorldPresentationV4) -> usize {
@@ -596,8 +594,7 @@ fn presentation_estimate_v4(presentation: &WorldPresentationV4) -> usize {
     bytes
 }
 
-/// Exact canonical v4 reply byte size for the transactional commit gate:
-/// twin of [`reply_exact_bytes`](crate::world_sizing::reply_exact_bytes).
+/// Exact canonical v4 reply byte size for the transactional commit gate.
 /// Pure length arithmetic mirroring
 /// `encode_reply_v4` in the protocol crate
 /// field-by-field; no core encoder twin is built (core cannot depend on
@@ -978,11 +975,9 @@ fn presentation_exact_v4(presentation: &WorldPresentationV4) -> usize {
 }
 
 /// Pre-mutation bound for the at-most-one sticky/float save row over a v4
-/// report: twin of
-/// [`max_intent_save_bound`](crate::world_sizing::max_intent_save_bound)
-/// over the staged report command. Unwraps the execution-time subject and
-/// reserves the longest opaque id for implicit save-capable commands,
-/// never the empty placeholder width.
+/// report over the staged report command. Unwraps the execution-time
+/// subject and reserves the longest opaque id for implicit save-capable
+/// commands, never the empty placeholder width.
 #[must_use]
 pub fn max_intent_save_bound_v4(report: &WorldReportV4) -> usize {
     use crate::world_report::WorldCommand;
@@ -1100,8 +1095,7 @@ pub fn max_intent_save_batch_bound_v4(queued: &[(u64, WorldCommand)]) -> usize {
     bytes.saturating_add(implicit.saturating_mul(crate::world_sizing::MAX_INTENT_SAVE_ROW_BYTES))
 }
 
-/// Conservative pre-mutation v4 reply upper bound for one report: twin of
-/// [`reply_upper_bound`](crate::world_sizing::reply_upper_bound) over the
+/// Conservative pre-mutation v4 reply upper bound for one report over the
 /// staged report estimate. Per-unit reserves match the legacy bound except
 /// where the v4 shapes are larger: retained transfers reserve 544 (the
 /// legacy 512 plus the 32-byte `,"cmdSeq":"<u64::MAX>"` correlation) and

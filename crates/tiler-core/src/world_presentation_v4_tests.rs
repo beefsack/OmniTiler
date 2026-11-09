@@ -6,7 +6,6 @@ use crate::connection::{FactName, HostCapabilities, RawSettingValue};
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::ids::{CorrelationId, OwnerId};
-use crate::world_directional::tests::{accepted, fact, report_full, screen};
 use crate::world_engine::{EventIssue, WorldEngine};
 use crate::world_presentation::{GroupHideReason, PresentationUnderlay};
 use crate::world_report::{
@@ -15,6 +14,7 @@ use crate::world_report::{
     WorldReplyV4, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
+use crate::world_v4_support_tests::{fact, report_full as report_full_v4, screen};
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -155,9 +155,9 @@ fn seeded(
     focused: &str,
     ingress: PresentationIngressV4,
 ) -> String {
-    let first = accepted(
+    let first = accepted_v4(
         engine,
-        &report_full(
+        &report_full_v4(
             base,
             base,
             screens.clone(),
@@ -174,9 +174,9 @@ fn seeded(
         .find(|row| row.output.0 == "out-a")
         .and_then(|row| row.logical_view.clone())
         .expect("view a");
-    accepted(
+    accepted_v4(
         engine,
-        &report_full(
+        &report_full_v4(
             base + 1,
             base + 1,
             screens.clone(),

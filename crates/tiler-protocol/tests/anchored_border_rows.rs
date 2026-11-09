@@ -20,7 +20,7 @@ use tiler_core::world_report::{BorderHideReasonV4, BorderPresentationV4, FrameWi
 use tiler_core::world_sizing::anchored_border_estimate;
 use tiler_protocol::world_protocol::{
     WORLD_MAX_REQUEST_BYTES, decode_border_presentation_v4, decode_border_presentation_v4_str,
-    decode_request_legacy, encode_border_presentation_v4,
+    encode_border_presentation_v4,
 };
 
 fn fixture_root() -> std::path::PathBuf {
@@ -896,44 +896,5 @@ fn v4_border_duplicate_keys_and_size_gate() {
     assert_eq!(
         decode_border_presentation_v4_str(&big).unwrap_err().kind,
         "oversized"
-    );
-}
-
-#[test]
-fn v4_existing_v3_gates_are_unchanged() {
-    // The staged row codec adds no report fields and changes no v3
-    // behavior: a minimal v3 observation-only envelope still decodes on
-    // the whole-report entry point with contract version 3.
-    let request = "{\"v\":3,\"adapter\":\"a\",\"gen\":\"gen-1\",\
-         \"obs\":\"1\",\"reqSeq\":\"1\",\"req\":\"req-1\",\"cmdSeq\":null,\
-         \"command\":null,\
-         \"screens\":[{\"out\":\"out\",\"full\":[0,0,800,600],\"work\":[0,0,800,560],\
-          \"complete\":true,\"scale\":1.0,\
-          \"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\
-         \"windows\":[],\
-         \"views\":[{\"out\":\"out\",\"view\":\"\"}],\"closed\":[],\"native\":[],\
-         \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
-         \"actionOutputs\":[\"out\"],\
-         \"focused\":\"\",\"complete\":true,\"gesture\":false,\
-         \"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
-         \"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\
-         \"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\
-         \"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\
-         \"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\
-         \"pagerOrder\":[],\"pagerFrames\":[]},\
-         \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[]}"
-        .to_owned();
-    let report = decode_request_legacy(&request).expect("v3 decodes");
-    assert_eq!(report.contract_version, 3);
-    // A full immutable v4 report fixture still refuses on the unchanged
-    // whole-report route: the staged `rendererInput` key is unknown before
-    // any version verdict. No whole-reply claim is made here (no reply
-    // decoder exists yet).
-    let root = fixture_root();
-    let text = read_message(&root, "messages/report-renderer-workspace.json");
-    let error = decode_request_legacy(&text).expect_err("v4 report refuses");
-    assert_eq!(
-        error.kind, "unknown-field",
-        "v4 report refuses before version gate"
     );
 }

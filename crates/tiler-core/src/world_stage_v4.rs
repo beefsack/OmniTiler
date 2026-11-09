@@ -1,12 +1,12 @@
 //! Parallel core-internal v4 staging intake (unit 6 sub-increment 3).
 //!
 //! [`WorldEngine::stage_facts_v4`] fills the existing [`StagedReport`] from a
-//! [`WorldReportV4`] without going through the legacy [`WorldReport`]. The
+//! [`WorldReportV4`](crate::world_report::WorldReportV4) without going through any legacy report shape. The
 //! per-window classification loop, held-window scope resolution, and
 //! unsupported state-attempt scope are the shared helpers in
-//! [`crate::world_observe`] and [`crate::world_state`], so the legacy and v4
-//! intakes cannot drift. Nothing calls this from [`WorldEngine::handle_report`];
-//! the runtime stays on version 3.
+//! [`crate::world_observe`] and [`crate::world_state`], so the staging helpers and v4 intake
+//! cannot drift. Nothing calls this from [`WorldEngine::handle_report`];
+//! the runtime is version 4.
 //!
 //! The v4 intake stages screens, held screens, resolved held windows,
 //! windows/closes, the gesture barrier, held native rows, held attempt

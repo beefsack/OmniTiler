@@ -19,10 +19,9 @@
 //! - Bounds mirror the core budget: 4 MiB request AND reply. The service
 //!   enforces byte length before decoding and after encoding; the core
 //!   enforces its structural estimate plus the exact canonical encoding
-//!   before commit. [`encode_reply`] is byte-identical to
-//!   [`tiler_core::world_report::encode_reply_canonical`] over every valid
-//!   reply (ASCII-validated wire alphabet); the codec test locks the
-//!   equality so the two gates cannot differ.
+//!   before commit. [`encode_reply_v4`] is checked independently: core byte count,
+//!   roundtrips, and immutable literal bytes lock the canonical v4 encoding,
+//!   so the core commit gate and this transport gate cannot differ. No second writer.
 //!
 //! Request shape (v4): the sole public ingress is [`decode_request`] /
 //! [`decode_request_with_wire`] through [`decode_report_v4`]; see that
@@ -33,8 +32,7 @@
 //! Attempt lanes carry mechanical write/readback facts only; the core owns
 //! every verdict, and a typed `Rejected` command result is an accepted
 //! observation that settles the command terminally as failed for the
-//! requester. Legacy v3 shapes live only in the doc-hidden `*_legacy`
-//! decoders below, which stay exact for deferred regressions.
+//! requester. No legacy shapes remain: v4 is the sole wire shape.
 //!
 //! Reply keys are exactly the core canonical reply encoding (`v`, `adapter`,
 //! `gen`, `req`, `obs`/`rev` as decimal strings, `ready`, `consumed`,
@@ -94,15 +92,14 @@ use tiler_core::world_report::{
     MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS,
     MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire,
     NativeObservation, NativeWorkspaceFact, OneShotEffect, OperationEvent, OperationOutcome,
-    OutputDesire, OutputIdentity, PresentationIngress, PresentationIngressV4,
-    PresentationPagerFrameV4, PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic,
-    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScopeStatus, ScreenReport, ScreenView,
-    StateProperty, StateTarget, SwitchEvent, SwitchFocus, SwitchOutcome, TilingMode, TransferKind,
-    TransferTargetV4, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    VisibilityTarget, WORLD_CONTRACT_VERSION_LEGACY, WindowDesire, WindowFact, WindowType,
-    WorkspaceDesire, WorkspaceRef, WorldCommand, WorldPresentationV4, WorldReply, WorldReplyV4,
-    WorldReport, WorldReportV4, check_screen_structure, check_window_structure,
-    push_raw_setting_value, validate_report_reason,
+    OutputDesire, OutputIdentity, PresentationIngressV4, PresentationPagerFrameV4,
+    PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind,
+    RowDiagnosticLane, ScopeAuthority, ScopeStatus, ScreenReport, StateProperty, StateTarget,
+    SwitchEvent, SwitchFocus, SwitchOutcome, TilingMode, TransferKind, TransferTargetV4,
+    VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter, VisibilityTarget,
+    WindowDesire, WindowFact, WindowType, WorkspaceDesire, WorkspaceRef, WorldCommand,
+    WorldPresentationV4, WorldReplyV4, WorldReportV4, check_screen_structure,
+    check_window_structure, push_raw_setting_value,
 };
 
 /// World protocol contract version (equals the core world contract version:
@@ -917,330 +914,6 @@ const RETIRED_WINDOW_KEYS: &[&str] = &[
     "cannotControl",
 ];
 
-/// Strict v4 window-row decode: `{win, out, rect, fullscreen, maximized,
-/// sticky, minimized, hints, nativeWs?, hostHidden, privileged, managed,
-/// acceptsInput, activationInhibited, toolWindow, owned, transient, modal,
-/// resizable, above, below, owner, parent, role, appId, executable,
-/// processId, class, title, type, activationPolicy, layer, fullscreenOwner,
-/// fullscreenExitable, suppressionAvailable, visibility, lastWrite}` with
-/// nested `hints`/`visibility`/`lastWrite` objects.
-/// - Unknown top-level keys refuse (`unknown-field`), except the retired
-///   membership keys above which hold the identifiable row.
-/// - A missing or non-opaque `win` refuses the whole report (missing is
-///   `malformed`, a bad id or a duplicate lifetime is `unknown-value`
-///   grammar / `snapshot-invalid` duplicate refusal).
-/// - `out` is required but nullable: `null` is unknown affinity (never a
-///   current-output guess, never structurally invalid); a bad id shape
-///   refuses. Unknown-but-valid outputs stay valid: the core retains the
-///   prior home and holds the scope.
-/// - `rect` failures refuse like the other structural shapes; `hints`
-///   is required but nullable (`null` is unknown, never a default empty
-///   hint set), and a wrong-typed `hints` refuses.
-/// - Overbound metadata text and wrong-typed value fields hold the
-///   identifiable row; unknown enum tokens refuse (`unknown-value`).
-/// - Structural id/duplicate/rect violations refuse before any narrow hold
-///   below (shared policy with the core structural check).
-fn decode_fact(
-    value: &serde_json::Value,
-    ordinal: usize,
-    seen_windows: &mut std::collections::BTreeSet<String>,
-) -> Result<WindowRowOutcome> {
-    const REQUIRED: &[&str] = &[
-        "win",
-        "out",
-        "rect",
-        "fullscreen",
-        "maximized",
-        "sticky",
-        "minimized",
-        "hints",
-        "hostHidden",
-        "privileged",
-        "managed",
-        "acceptsInput",
-        "activationInhibited",
-        "toolWindow",
-        "owned",
-        "transient",
-        "modal",
-        "resizable",
-        "above",
-        "below",
-        "owner",
-        "parent",
-        "role",
-        "appId",
-        "executable",
-        "processId",
-        "class",
-        "title",
-        "type",
-        "activationPolicy",
-        "layer",
-        "fullscreenOwner",
-        "fullscreenExitable",
-        "suppressionAvailable",
-        "visibility",
-        "lastWrite",
-    ];
-    let map = as_object(value)?;
-    check_keys_with_optional(
-        map,
-        REQUIRED,
-        &[
-            "nativeWs",
-            "floating",
-            "fitExcluded",
-            "fixedAuto",
-            "fixedSuppress",
-            "observedWs",
-            "shell",
-            "tool",
-            "ownedDialog",
-            "dialog",
-            "noActivate",
-            "cannotControl",
-        ],
-    )?;
-    let window = match map.get("win") {
-        Some(serde_json::Value::String(text)) if is_opaque_id(text) => WindowId(text.clone()),
-        Some(serde_json::Value::String(_)) => return Err(unknown_value()),
-        _ => return Err(malformed()),
-    };
-    // A null rect is an explicitly unreadable frame: the homed scope
-    // holds instead of authorizing geometry, never a silent absence.
-    let rect = opt_rect_or_null(map, "rect")?;
-    let output = match map.get("out") {
-        None => return Err(malformed()),
-        Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::String(text)) => {
-            if !is_opaque_id(text) {
-                return Err(unknown_value());
-            }
-            Some(OutputId(text.clone()))
-        }
-        Some(_) => return Err(malformed()),
-    };
-    let hints = match map.get("hints") {
-        None => return Err(malformed()),
-        Some(serde_json::Value::Null) => None,
-        Some(value) => Some(decode_hints(value)?),
-    };
-    let native_workspace = match map.get("nativeWs") {
-        None => NativeWorkspaceFact::Omitted,
-        Some(serde_json::Value::Null) => NativeWorkspaceFact::Null,
-        Some(serde_json::Value::String(text)) if text.is_empty() => {
-            NativeWorkspaceFact::Value(String::new())
-        }
-        Some(serde_json::Value::String(text)) => {
-            if !is_opaque_id(text) {
-                return Err(unknown_value());
-            }
-            NativeWorkspaceFact::Value(text.clone())
-        }
-        Some(_) => return Err(malformed()),
-    };
-    // Retired membership verdicts hold the identifiable row (fail closed).
-    let retired = RETIRED_WINDOW_KEYS.iter().any(|key| map.contains_key(*key));
-    // Wrong-typed value fields and overbound metadata hold the
-    // identifiable row instead of refusing it. The strict decoders below
-    // re-check every shape; this pre-scan only decides Valid vs Held so
-    // the structural gate below fires before any hold.
-    let mut held = retired;
-    let mut overbound = false;
-    fn is_wrong_bool(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
-        matches!(map.get(key), Some(v) if !v.is_null() && !v.is_boolean())
-    }
-    for key in [
-        "fullscreen",
-        "maximized",
-        "sticky",
-        "minimized",
-        "hostHidden",
-        "privileged",
-        "managed",
-        "acceptsInput",
-        "activationInhibited",
-        "toolWindow",
-        "owned",
-        "transient",
-        "modal",
-        "resizable",
-        "above",
-        "below",
-        "fullscreenExitable",
-        "suppressionAvailable",
-    ] {
-        if is_wrong_bool(map, key) {
-            held = true;
-        }
-    }
-    for key in [
-        "owner",
-        "parent",
-        "role",
-        "appId",
-        "executable",
-        "processId",
-        "class",
-        "title",
-        "type",
-        "activationPolicy",
-        "fullscreenOwner",
-    ] {
-        match map.get(key) {
-            None | Some(serde_json::Value::Null) => {}
-            Some(serde_json::Value::String(_)) => {}
-            Some(_) => {
-                held = true;
-            }
-        }
-    }
-    if matches!(map.get("layer"), Some(v) if !v.is_null() && !v.is_number()) {
-        held = true;
-    }
-    if matches!(map.get("visibility"), Some(v) if !v.is_object()) {
-        held = true;
-    }
-    if matches!(map.get("lastWrite"), Some(v) if !v.is_null() && !v.is_object()) {
-        held = true;
-    }
-    for key in ["role", "appId", "executable", "class", "title"] {
-        if let Some(serde_json::Value::String(text)) = map.get(key)
-            && text.len() > tiler_core::world_report::MAX_METADATA_TEXT_BYTES
-        {
-            overbound = true;
-            held = true;
-        }
-    }
-    // Bad process grammar holds like overbound text (typed parity): the
-    // strict decoder below would otherwise refuse what the typed grader
-    // holds. Bad owner/parent grammar is never held: it refuses below even
-    // when this row also carries a hold cause.
-    if let Some(serde_json::Value::String(text)) = map.get("processId")
-        && !tiler_core::connection::valid_process_identity_text(text)
-    {
-        held = true;
-    }
-    // Minimal identifiable candidate for the structural gate: win, out,
-    // rect, and the duplicate check. Value shapes decode strictly below.
-    let candidate = WindowFact {
-        window: window.clone(),
-        output: output.clone(),
-        rect,
-        fullscreen: None,
-        maximized: None,
-        sticky: None,
-        minimized: None,
-        hints,
-        native_workspace,
-        host_hidden: None,
-        privileged: None,
-        managed: None,
-        accepts_input: None,
-        activation_inhibited: None,
-        tool_window: None,
-        owned: None,
-        transient: None,
-        modal: None,
-        resizable: None,
-        above: None,
-        below: None,
-        owner: None,
-        parent: None,
-        role: None,
-        app_id: None,
-        executable: None,
-        process_id: None,
-        class: None,
-        title: None,
-        window_type: None,
-        activation_policy: None,
-        layer: None,
-        fullscreen_owner: None,
-        fullscreen_exitable: None,
-        suppression_available: None,
-        visibility: VisibilityFact {
-            visible: None,
-            suppression_owned: None,
-        },
-        last_write: None,
-    };
-    if held || overbound {
-        // Structural id/duplicate/rect violations refuse before any
-        // narrow hold (shared policy with the core structural check).
-        // Bad owner/parent grammar refuses here too: a hold cause
-        // (retired/overbound/wrong-type/bad-process) must not mask it.
-        // Native grammar already refused above; bad process holds.
-        for key in ["owner", "parent"] {
-            if let Some(serde_json::Value::String(text)) = map.get(key)
-                && !is_opaque_id(text)
-            {
-                return Err(unknown_value());
-            }
-        }
-        if let Some(reason) = check_window_structure(&candidate, seen_windows) {
-            return Err(WorldProtocolError {
-                kind: KIND_SNAPSHOT,
-                message: reason,
-            });
-        }
-        return Ok(WindowRowOutcome::Held(held_window_row(
-            &candidate, ordinal, map,
-        )));
-    }
-    let fact = WindowFact {
-        window: candidate.window.clone(),
-        output: candidate.output.clone(),
-        rect: candidate.rect,
-        fullscreen: opt_bool_or_null(map, "fullscreen")?,
-        maximized: opt_bool_or_null(map, "maximized")?,
-        sticky: opt_bool_or_null(map, "sticky")?,
-        minimized: opt_bool_or_null(map, "minimized")?,
-        hints: candidate.hints,
-        native_workspace: candidate.native_workspace.clone(),
-        host_hidden: opt_bool_or_null(map, "hostHidden")?,
-        privileged: opt_bool_or_null(map, "privileged")?,
-        managed: opt_bool_or_null(map, "managed")?,
-        accepts_input: opt_bool_or_null(map, "acceptsInput")?,
-        activation_inhibited: opt_bool_or_null(map, "activationInhibited")?,
-        tool_window: opt_bool_or_null(map, "toolWindow")?,
-        owned: opt_bool_or_null(map, "owned")?,
-        transient: opt_bool_or_null(map, "transient")?,
-        modal: opt_bool_or_null(map, "modal")?,
-        resizable: opt_bool_or_null(map, "resizable")?,
-        above: opt_bool_or_null(map, "above")?,
-        below: opt_bool_or_null(map, "below")?,
-        owner: opt_window_or_null(map, "owner")?,
-        parent: opt_window_or_null(map, "parent")?,
-        role: opt_text_or_null(map, "role")?,
-        app_id: opt_text_or_null(map, "appId")?,
-        executable: opt_text_or_null(map, "executable")?,
-        process_id: opt_process_or_null(map, "processId")?,
-        class: opt_text_or_null(map, "class")?,
-        title: opt_text_or_null(map, "title")?,
-        window_type: opt_token_or_null(map, "type", WindowType::parse)?,
-        activation_policy: opt_token_or_null(map, "activationPolicy", ActivationPolicy::parse)?,
-        layer: opt_layer_or_null(map, "layer")?,
-        fullscreen_owner: opt_token_or_null(map, "fullscreenOwner", FullscreenOwner::parse)?,
-        fullscreen_exitable: opt_bool_or_null(map, "fullscreenExitable")?,
-        suppression_available: opt_bool_or_null(map, "suppressionAvailable")?,
-        visibility: decode_visibility(map.get("visibility").ok_or_else(malformed)?)?,
-        last_write: match map.get("lastWrite") {
-            None => return Err(malformed()),
-            Some(serde_json::Value::Null) => None,
-            Some(value) => Some(decode_last_write(value)?),
-        },
-    };
-    if let Some(reason) = check_window_structure(&fact, seen_windows) {
-        return Err(WorldProtocolError {
-            kind: KIND_SNAPSHOT,
-            message: reason,
-        });
-    }
-    Ok(WindowRowOutcome::Valid(Box::new(fact)))
-}
-
 /// Strict v4 screen-row outcome: either a usable row or an identifiable
 /// row held narrowly with its carried fields retained. Anything
 /// unidentifiable (bad `out`) or structurally wrong (unknown non-retired
@@ -1476,94 +1149,6 @@ fn decode_identity_strict(
         model: text("model")?,
         serial: text("serial")?,
         connector: text("connector")?,
-    })
-}
-
-fn decode_view(value: &serde_json::Value) -> Result<ScreenView> {
-    let map = as_object(value)?;
-    check_keys(map, &["out", "view"])?;
-    // Empty view means unknown (no desire received yet); otherwise an
-    // opaque logical id.
-    let text = req_str(map, "view")?;
-    if !text.is_empty() && !is_opaque_id(text) {
-        return Err(unknown_value());
-    }
-    Ok(ScreenView {
-        output: OutputId(req_id(map, "out")?),
-        view: text.to_owned(),
-    })
-}
-
-fn decode_native(value: &serde_json::Value) -> Result<NativeObservation> {
-    let map = as_object(value)?;
-    check_keys(map, &["out", "order", "current", "occupancy"])?;
-    let order_value = map.get("order").ok_or_else(malformed)?;
-    let order_items = order_value.as_array().ok_or_else(malformed)?;
-    let mut order = Vec::with_capacity(order_items.len());
-    for item in order_items {
-        let id = item.as_str().ok_or_else(malformed)?;
-        if !is_opaque_id(id) {
-            return Err(unknown_value());
-        }
-        order.push(id.to_owned());
-    }
-    // Strict codec: `current` is a string opaque id or `null`. `null`
-    // means the current surface is not an ordered desktop (retains the
-    // logical view while still using the order). Empty strings and missing
-    // keys refuse: no compatibility tolerance is invented.
-    let current_native = match map.get("current") {
-        None => return Err(malformed()),
-        Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::String(text)) => {
-            if !is_opaque_id(text) {
-                return Err(unknown_value());
-            }
-            Some(text.clone())
-        }
-        Some(_) => return Err(unknown_value()),
-    };
-    // v3 required neutral occupancy: `[{native, count:int|null}...]`.
-    // Shape-checked here (opaque id, u32 JSON number or null, no
-    // tolerance); exact coverage of `order` is enforced by core
-    // validation (`native-occupancy-incomplete`, `duplicate-native-occupancy`).
-    let occupancy_value = map.get("occupancy").ok_or_else(malformed)?;
-    let occupancy_items = occupancy_value.as_array().ok_or_else(malformed)?;
-    let mut occupancy = Vec::with_capacity(occupancy_items.len());
-    for item in occupancy_items {
-        let row = as_object(item)?;
-        check_keys(row, &["native", "count"])?;
-        let native_id = match row.get("native") {
-            Some(serde_json::Value::String(text)) => {
-                if !is_opaque_id(text) {
-                    return Err(unknown_value());
-                }
-                text.clone()
-            }
-            _ => return Err(malformed()),
-        };
-        let count = match row.get("count") {
-            None => return Err(malformed()),
-            Some(serde_json::Value::Null) => None,
-            Some(serde_json::Value::Number(number)) => {
-                let count = number.as_u64().ok_or_else(unknown_value)?;
-                let count = u32::try_from(count).map_err(|_| unknown_value())?;
-                if count > tiler_core::world_report::MAX_NATIVE_OCCUPANTS_PER_DESKTOP {
-                    return Err(unknown_value());
-                }
-                Some(count)
-            }
-            Some(_) => return Err(unknown_value()),
-        };
-        occupancy.push(tiler_core::world_report::NativeOccupancy {
-            native: native_id,
-            count,
-        });
-    }
-    Ok(NativeObservation {
-        output: OutputId(req_id(map, "out")?),
-        native_order: order,
-        current_native,
-        occupancy,
     })
 }
 
@@ -1900,49 +1485,6 @@ fn decode_creation_attempt(
     })
 }
 
-fn decode_frame_attempt(
-    value: &serde_json::Value,
-) -> Result<tiler_core::world_report::FrameAttempt> {
-    let map = as_object(value)?;
-    check_keys(
-        map,
-        &[
-            "win",
-            "target",
-            "setter",
-            "readback",
-            "dpiBefore",
-            "dpiAfter",
-            "attemptMs",
-            "op",
-            "pre",
-        ],
-    )?;
-    let target_value = map.get("target").ok_or_else(malformed)?;
-    let operation_id = match map.get("op") {
-        None => return Err(malformed()),
-        Some(serde_json::Value::String(op)) if op.is_empty() => None,
-        Some(serde_json::Value::String(op)) => Some(op.clone()),
-        Some(_) => return Err(unknown_value()),
-    };
-    let prewrite = match map.get("pre") {
-        None => return Err(malformed()),
-        Some(serde_json::Value::Null) => None,
-        Some(value) => Some(req_rect_value(value)?),
-    };
-    Ok(tiler_core::world_report::FrameAttempt {
-        window: WindowId(req_id(map, "win")?),
-        target: req_rect_value(target_value)?,
-        setter: parse_frame_setter(req_str(map, "setter")?)?,
-        readback: opt_rect_or_null(map, "readback")?,
-        dpi_before: opt_u32_or_null(map, "dpiBefore")?,
-        dpi_after: opt_u32_or_null(map, "dpiAfter")?,
-        attempt_ms: req_u64_str(map, "attemptMs")?,
-        operation_id,
-        prewrite,
-    })
-}
-
 fn decode_hover_prior(
     value: &serde_json::Value,
 ) -> Result<Option<tiler_core::session::DragHoverPrior>> {
@@ -2066,115 +1608,17 @@ fn decode_gesture_ingress(
     })
 }
 
-/// Normalized stage-5 presentation ingress: `{"foreground":S,
-/// "minimized":B,"maximized":B,"fullscreen":B,"cloaked":B,
-/// "hiddenWorkspace":B,"shell":B,"frame":[x,y,w,h]|null,
-/// "borderEnabled":B,"underlayEnabled":B,"borderGap":N,"borderWidth":N,
-/// "underlayExtension":N,"chordHeld":B,"moveWindow":S,"paused":B,
-/// "pagerOrder":[S...],"pagerFrames":[{"win":S,"live":[x,y,w,h]|null,
-/// "float":[x,y,w,h]|null,"tile":[x,y,w,h]|null},...]}`. Empty
-/// `foreground`/`moveWindow` mean none; non-empty tokens must be opaque.
-/// The frame is the live foreground frame in adapter units (`null` when
-/// unreadable). Style numbers are host-scaled pixels. The pager order is
-/// the native top-to-bottom stacking snapshot over opaque lifetimes; frame
-/// rows carry the distinct live, float, and tile sources (any slot may be
-/// null; the core resolves live first, then float, then tile).
-fn decode_presentation(value: &serde_json::Value) -> Result<PresentationIngress> {
-    use tiler_core::world_report::{PresentationIngress, PresentationPagerFrame};
-    let map = as_object(value)?;
-    check_keys(
-        map,
-        &[
-            "foreground",
-            "minimized",
-            "maximized",
-            "fullscreen",
-            "cloaked",
-            "hiddenWorkspace",
-            "shell",
-            "frame",
-            "borderEnabled",
-            "underlayEnabled",
-            "borderGap",
-            "borderWidth",
-            "underlayExtension",
-            "chordHeld",
-            "moveWindow",
-            "paused",
-            "pagerOrder",
-            "pagerFrames",
-        ],
-    )?;
-    let foreground = req_str(map, "foreground")?;
-    if !foreground.is_empty() && !is_opaque_id(foreground) {
-        return Err(unknown_value());
-    }
-    let move_window = req_str(map, "moveWindow")?;
-    if !move_window.is_empty() && !is_opaque_id(move_window) {
-        return Err(unknown_value());
-    }
-    let frame = opt_rect_or_null(map, "frame")?;
-    let order_value = map.get("pagerOrder").ok_or_else(malformed)?;
-    let order_items = order_value.as_array().ok_or_else(malformed)?;
-    let mut pager_order = Vec::with_capacity(order_items.len());
-    for item in order_items {
-        let id = item.as_str().ok_or_else(malformed)?;
-        if !is_opaque_id(id) {
-            return Err(unknown_value());
-        }
-        pager_order.push(WindowId(id.to_owned()));
-    }
-    let snapshots_value = map.get("pagerFrames").ok_or_else(malformed)?;
-    let snapshot_items = snapshots_value.as_array().ok_or_else(malformed)?;
-    let mut pager_frames = Vec::with_capacity(snapshot_items.len());
-    for item in snapshot_items {
-        let row = as_object(item)?;
-        check_keys(row, &["win", "live", "float", "tile"])?;
-        let id = req_str(row, "win")?;
-        if !is_opaque_id(id) {
-            return Err(unknown_value());
-        }
-        pager_frames.push(PresentationPagerFrame {
-            window: WindowId(id.to_owned()),
-            live: opt_rect_or_null(row, "live")?,
-            float_frame: opt_rect_or_null(row, "float")?,
-            tile_frame: opt_rect_or_null(row, "tile")?,
-        });
-    }
-    Ok(PresentationIngress {
-        foreground: foreground.to_owned(),
-        foreground_minimized: req_bool(map, "minimized")?,
-        foreground_maximized: req_bool(map, "maximized")?,
-        foreground_fullscreen: req_bool(map, "fullscreen")?,
-        foreground_cloaked: req_bool(map, "cloaked")?,
-        foreground_hidden_workspace: req_bool(map, "hiddenWorkspace")?,
-        foreground_shell: req_bool(map, "shell")?,
-        foreground_frame: frame,
-        border_enabled: req_bool(map, "borderEnabled")?,
-        underlay_enabled: req_bool(map, "underlayEnabled")?,
-        border_gap_px: req_i32(map, "borderGap")?,
-        border_width_px: req_i32(map, "borderWidth")?,
-        underlay_extension_px: req_i32(map, "underlayExtension")?,
-        chord_held: req_bool(map, "chordHeld")?,
-        move_window: move_window.to_owned(),
-        paused: req_bool(map, "paused")?,
-        pager_order,
-        pager_frames,
-    })
-}
-
-/// Staged v4 presentation row codecs (normative target in
+/// V4 presentation row codecs (normative target in
 /// `docs/porting/world-contract.md`): strict
 /// shape-only decode plus checked canonical encode for the standalone
 /// [`PresentationIngressV4`], [`FrameWitness`], [`RendererInput`]/
-/// [`RenderTarget`], and [`PresentationPagerFrameV4`] rows. Staged: the
-/// existing v3 `decode_presentation` above and both whole-report entry points
-/// below are unchanged, and these functions are not called from the old
-/// route. Whole-report pairing (renderer/command, version gate) belongs to a
-/// later unit.
+/// [`RenderTarget`], and [`PresentationPagerFrameV4`] rows used by the whole
+/// v4 ingress. Whole-report pairing (renderer/command, version gate) belongs
+/// to the v4 whole-report codec.
 ///
-/// Wire rules shared with the v3 lane: required means present; unknown keys
-/// refuse as `unknown-field`; unknown enum tokens and bad id grammar refuse
+/// Wire rules for these standalone row codecs: required means present;
+/// unknown keys refuse as `unknown-field` (whole-report identifiable invalid
+/// rows instead hold narrowly); unknown enum tokens and bad id grammar refuse
 /// as `unknown-value`; wrong JSON types refuse as `malformed` (nullable
 /// slots accept `null` only where documented). Duplicate-key rejection
 /// (including escaped duplicates) applies ONLY at the `*_str` entry points,
@@ -3172,7 +2616,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
 }
 
 /// Optional cursor-hit wire spelling (report-level `cursorHit`): the
-/// normalized [`WorldReport::cursor_hit`] value stays in the typed report;
+/// normalized [`WorldReportV4`](tiler_core::world_report::WorldReportV4) `cursor_hit` value stays in the typed report;
 /// this records which tolerant spelling carried it. `Absent` means the key
 /// was omitted, `Null` an explicit `null`, `Empty` an explicit `""`, and
 /// `Id` a validated opaque lifetime. `Absent`/`Null`/`Empty` normalize to
@@ -3197,9 +2641,9 @@ pub enum GestureIngressWire {
 }
 
 /// Report-level optional wire metadata: which tolerant spellings the
-/// request carried. Normalized values stay in [`WorldReport`]; this only
+/// request carried. Normalized values stay in [`WorldReportV4`](tiler_core::world_report::WorldReportV4); this only
 /// records presence/spelling so callers can reconstruct the exact carried
-/// optional groups. Never influences [`WorldReport`] equality, the report
+/// optional groups. Never influences [`WorldReportV4`](tiler_core::world_report::WorldReportV4) equality, the report
 /// digest, or engine input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportWireOptionals {
@@ -3211,403 +2655,6 @@ pub struct ReportWireOptionals {
     pub clear_attempts_present: bool,
     pub creation_attempts_present: bool,
     pub gesture_ingress: GestureIngressWire,
-}
-
-/// Decoded request plus its optional wire metadata.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DecodedRequest {
-    pub report: WorldReport,
-    pub wire: ReportWireOptionals,
-}
-
-/// Dead legacy decode: one JSON legacy world request into the typed legacy
-/// core report plus its optional wire metadata. Only the doc-hidden legacy
-/// implementation and its deferred regression tests use this; the public
-/// ingress is [`decode_request_with_wire`]. Enforces byte length first
-/// (4 MiB), then exact shape/types/vocabularies, then the core
-/// [`validate_report`] gate. Never logs or echoes payload bytes.
-#[doc(hidden)]
-pub fn decode_request_with_wire_legacy(
-    json: &str,
-) -> std::result::Result<DecodedRequest, WorldProtocolError> {
-    if json.len() > WORLD_MAX_REQUEST_BYTES {
-        return Err(WorldProtocolError {
-            kind: KIND_OVERSIZED,
-            message: MSG_OVERSIZED,
-        });
-    }
-    let value: serde_json::Value =
-        crate::connection_protocol::parse_strict_json(json).map_err(|e| {
-            if e.0 == "oversized" {
-                WorldProtocolError {
-                    kind: KIND_OVERSIZED,
-                    message: MSG_OVERSIZED,
-                }
-            } else {
-                malformed()
-            }
-        })?;
-    let map = as_object(&value)?;
-    check_keys_with_optional(
-        map,
-        &[
-            "v",
-            "adapter",
-            "gen",
-            "obs",
-            "reqSeq",
-            "req",
-            "cmdSeq",
-            "command",
-            "screens",
-            "windows",
-            "views",
-            "closed",
-            "native",
-            "focused",
-            "complete",
-            "gesture",
-            "cursor",
-            "actionForeground",
-            "actionCached",
-            "actionOutputs",
-            "presentation",
-            "intentRecords",
-            "stateAttempts",
-            "focusFeedback",
-        ],
-        &[
-            "cursorHit",
-            "monotonicMs",
-            "primary",
-            "frameAttempts",
-            "memberAttempts",
-            "viewAttempts",
-            "clearAttempts",
-            "creationAttempts",
-            "gestureIngress",
-        ],
-    )?;
-    let version = map
-        .get("v")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(malformed)?;
-    if version != u64::from(WORLD_CONTRACT_VERSION_LEGACY) {
-        return Err(WorldProtocolError {
-            kind: KIND_VERSION,
-            message: MSG_VERSION,
-        });
-    }
-    let command_seq = opt_u64_or_null(map, "cmdSeq")?;
-    let command = match map.get("command") {
-        None => return Err(malformed()),
-        Some(serde_json::Value::Null) => None,
-        Some(value) => Some(decode_command(value)?),
-    };
-    if command_seq.is_none() != command.is_none() {
-        return Err(WorldProtocolError {
-            kind: KIND_SNAPSHOT,
-            message: "command-pair-invalid",
-        });
-    }
-    let screens_value = map.get("screens").ok_or_else(malformed)?;
-    let mut screens = Vec::new();
-    let mut held_screens = Vec::new();
-    for (ordinal, item) in screens_value
-        .as_array()
-        .ok_or_else(malformed)?
-        .iter()
-        .enumerate()
-    {
-        match decode_screen(item, ordinal)? {
-            ScreenRowOutcome::Valid(screen) => screens.push(screen),
-            ScreenRowOutcome::Held(held) => held_screens.push(held),
-        }
-    }
-    let windows_value = map.get("windows").ok_or_else(malformed)?;
-    let mut windows = Vec::new();
-    let mut held_windows = Vec::new();
-    let mut seen_windows = std::collections::BTreeSet::new();
-    for (ordinal, item) in windows_value
-        .as_array()
-        .ok_or_else(malformed)?
-        .iter()
-        .enumerate()
-    {
-        match decode_fact(item, ordinal, &mut seen_windows)? {
-            WindowRowOutcome::Valid(fact) => windows.push(*fact),
-            WindowRowOutcome::Held(held) => held_windows.push(held),
-        }
-    }
-    let views_value = map.get("views").ok_or_else(malformed)?;
-    let mut views = Vec::new();
-    for item in views_value.as_array().ok_or_else(malformed)? {
-        views.push(decode_view(item)?);
-    }
-    let closed_value = map.get("closed").ok_or_else(malformed)?;
-    let closed = decode_closed_ids(closed_value)?;
-    let native_value = map.get("native").ok_or_else(malformed)?;
-    let mut native = Vec::new();
-    for item in native_value.as_array().ok_or_else(malformed)? {
-        native.push(decode_native(item)?);
-    }
-    // Tolerant monotonic clock: missing backfills 0 (unreported, never
-    // suppresses the transient lane). A present value must be a canonical
-    // decimal string like every other counter; JSON numbers refuse.
-    let monotonic_ms = match map.get("monotonicMs") {
-        None => 0,
-        Some(serde_json::Value::String(text)) => {
-            parse_u64_decimal(text).ok_or_else(unknown_value)?
-        }
-        Some(_) => return Err(unknown_value()),
-    };
-    // Tolerant frame attempts: missing backfills empty. Present entries
-    // carry the exact mechanical shape; unknown fields/values refuse.
-    let mut frames = Vec::new();
-    if let Some(frames_value) = map.get("frameAttempts") {
-        for item in frames_value.as_array().ok_or_else(malformed)? {
-            frames.push(decode_frame_attempt(item)?);
-        }
-    }
-    // Tolerant membership/view attempts: missing backfills empty.
-    let mut member_attempts = Vec::new();
-    if let Some(value) = map.get("memberAttempts") {
-        for item in value.as_array().ok_or_else(malformed)? {
-            member_attempts.push(decode_member_attempt(item)?);
-        }
-    }
-    let mut view_attempts = Vec::new();
-    if let Some(value) = map.get("viewAttempts") {
-        for item in value.as_array().ok_or_else(malformed)? {
-            view_attempts.push(decode_view_attempt(item)?);
-        }
-    }
-    // Tolerant clear attempts: missing backfills empty.
-    let mut clear_attempts = Vec::new();
-    if let Some(value) = map.get("clearAttempts") {
-        for item in value.as_array().ok_or_else(malformed)? {
-            clear_attempts.push(decode_clear_attempt(item)?);
-        }
-    }
-    // Tolerant creation attempts: missing backfills empty. Present entries
-    // carry the exact mechanical shape; unknown fields/values refuse. The
-    // core gate below refuses them without the host-owned capability.
-    let mut creation_attempts = Vec::new();
-    if let Some(value) = map.get("creationAttempts") {
-        for item in value.as_array().ok_or_else(malformed)? {
-            creation_attempts.push(decode_creation_attempt(item)?);
-        }
-    }
-    // Required native-state attempts: closed mechanical rows, no missing
-    // tolerance (adapters always carry the lane, possibly empty). Unknown
-    // fields/values refuse; per-property duplicates and bad window ids
-    // refuse in the core gate below.
-    let state_attempts_value = map.get("stateAttempts").ok_or_else(malformed)?;
-    let mut state_attempts = Vec::new();
-    for item in state_attempts_value.as_array().ok_or_else(malformed)? {
-        state_attempts.push(decode_state_attempt(item)?);
-    }
-    // Required correlated focus evidence: closed mechanical rows, no
-    // missing tolerance (adapters always carry the lane, possibly empty).
-    // Unknown fields/values refuse in the closed decoders above; lane and
-    // total caps plus the host-arm gate refuse in the core gate below. The
-    // decoder never infers hostOwned from native[] or any other report
-    // fact: both arms decode context-free here.
-    let focus_feedback_value = map.get("focusFeedback").ok_or_else(malformed)?;
-    let mut focus_feedback = Vec::new();
-    for item in focus_feedback_value.as_array().ok_or_else(malformed)? {
-        focus_feedback.push(decode_focus_feedback(item)?);
-    }
-    // Tolerant gesture ingress: missing backfills observation-only (`None`).
-    // A present value carries the exact normalized shape; unknown
-    // fields/values refuse.
-    let gesture = match map.get("gestureIngress") {
-        None => None,
-        Some(serde_json::Value::Null) => None,
-        Some(value) => Some(decode_gesture_ingress(value)?),
-    };
-    // Required opaque host storage return: closed `{"win","data"}` rows.
-    // The `data` string rides verbatim (never decoded here): unsupported
-    // or malformed inner JSON stays an accepted envelope, while a
-    // wrong-typed `data` (object, null) refuses as malformed and an
-    // overbound string or an over-cap section refuses the envelope.
-    let intent_records_value = map.get("intentRecords").ok_or_else(malformed)?;
-    let intent_records_items = intent_records_value.as_array().ok_or_else(malformed)?;
-    if intent_records_items.len() > MAX_INTENT_RECORDS {
-        return Err(WorldProtocolError {
-            kind: KIND_SNAPSHOT,
-            message: "section-over-cap",
-        });
-    }
-    let mut intent_records = Vec::with_capacity(intent_records_items.len());
-    for item in intent_records_items {
-        let row = as_object(item)?;
-        check_keys(row, &["win", "data"])?;
-        let win = WindowId(req_id(row, "win")?);
-        let data = match row.get("data") {
-            Some(serde_json::Value::String(data)) => data.clone(),
-            _ => return Err(malformed()),
-        };
-        if data.len() > tiler_core::intent_data::MAX_INTENT_DATA_BYTES {
-            return Err(WorldProtocolError {
-                kind: KIND_SNAPSHOT,
-                message: "intent-data-invalid",
-            });
-        }
-        intent_records.push(IntentRecord { win, data });
-    }
-    let report = WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION_LEGACY,
-        adapter_incarnation: req_id(map, "adapter")?,
-        core_generation: req_bounded(map, "gen", MAX_GENERATION_LEN, is_generation_text)?,
-        observation_seq: req_u64_str(map, "obs")?,
-        request_seq: req_u64_str(map, "reqSeq")?,
-        request_id: req_bounded(map, "req", MAX_CORRELATION_LEN, is_correlation_text)?,
-        command_seq,
-        command,
-        screens,
-        windows,
-        views,
-        closed,
-        native,
-        cursor: opt_point_or_null(map, "cursor")?,
-        cursor_hit: match map.get("cursorHit") {
-            // Tolerant backfill: adapters predating the hit fact report
-            // nothing, which the core reads as no hover, never as policy.
-            None => None,
-            Some(serde_json::Value::Null) => None,
-            Some(serde_json::Value::String(text)) if text.is_empty() => None,
-            Some(serde_json::Value::String(text)) => {
-                if !is_opaque_id(text) {
-                    return Err(unknown_value());
-                }
-                Some(WindowId(text.clone()))
-            }
-            Some(_) => return Err(unknown_value()),
-        },
-        action_foreground: match map.get("actionForeground") {
-            // Required neutral fact: `null` when the foreground output is
-            // unknown; a carried id must be opaque (empty refuses).
-            Some(serde_json::Value::Null) => None,
-            Some(serde_json::Value::String(text)) => {
-                if !is_opaque_id(text) {
-                    return Err(unknown_value());
-                }
-                Some(OutputId(text.clone()))
-            }
-            _ => return Err(malformed()),
-        },
-        action_cached: match map.get("actionCached") {
-            Some(serde_json::Value::Null) => None,
-            Some(serde_json::Value::String(text)) => {
-                if !is_opaque_id(text) {
-                    return Err(unknown_value());
-                }
-                Some(OutputId(text.clone()))
-            }
-            _ => return Err(malformed()),
-        },
-        action_outputs: match map.get("actionOutputs") {
-            // Required ordered known-output registry (possibly empty):
-            // every entry must be an opaque id; duplicates refuse in the
-            // core gate below.
-            Some(serde_json::Value::Array(items)) => {
-                let mut outputs = Vec::with_capacity(items.len());
-                for item in items {
-                    match item {
-                        serde_json::Value::String(text) => {
-                            if !is_opaque_id(text) {
-                                return Err(unknown_value());
-                            }
-                            outputs.push(OutputId(text.clone()));
-                        }
-                        _ => return Err(malformed()),
-                    }
-                }
-                outputs
-            }
-            _ => return Err(malformed()),
-        },
-        focused_global: {
-            let text = req_str(map, "focused")?;
-            if !text.is_empty() && !is_opaque_id(text) {
-                return Err(unknown_value());
-            }
-            text.to_owned()
-        },
-        inventory_complete: req_bool(map, "complete")?,
-        gesture_barrier: req_bool(map, "gesture")?,
-        gesture,
-        monotonic_ms,
-        frames,
-        member_attempts,
-        view_attempts,
-        clear_attempts,
-        creation_attempts,
-        presentation: decode_presentation(map.get("presentation").ok_or_else(malformed)?)?,
-        intent_records,
-        state_attempts,
-        focus_feedback,
-        primary_output: match map.get("primary") {
-            // Host-designated primary: absent means unknown (no fallback
-            // to any per-screen flag: `primary` is not a screen key and
-            // any screen row carrying it is held). Explicit null refuses;
-            // unknown is absence, never an explicit null.
-            None => None,
-            Some(serde_json::Value::Null) => return Err(malformed()),
-            Some(serde_json::Value::String(text)) => {
-                if !is_opaque_id(text) {
-                    return Err(unknown_value());
-                }
-                Some(OutputId(text.clone()))
-            }
-            Some(_) => return Err(malformed()),
-        },
-        held_screens,
-        held_windows,
-    };
-    if let Some(reason) = validate_report_reason(&report) {
-        return Err(WorldProtocolError {
-            kind: KIND_SNAPSHOT,
-            // Fixed check vocabulary, never payload bytes.
-            message: reason,
-        });
-    }
-    // Hard input caps are enforced by the core [`validate_report`] gate
-    // above (fixed check vocabulary, never payload bytes): every carried
-    // string is already length-gated by its alphabet, and section counts
-    // are core-capped, so the estimator bound holds.
-    let wire = ReportWireOptionals {
-        cursor_hit: match map.get("cursorHit") {
-            None => CursorHitWire::Absent,
-            Some(serde_json::Value::Null) => CursorHitWire::Null,
-            Some(serde_json::Value::String(text)) if text.is_empty() => CursorHitWire::Empty,
-            Some(serde_json::Value::String(_)) => CursorHitWire::Id,
-            Some(_) => return Err(unknown_value()),
-        },
-        monotonic_ms_present: map.contains_key("monotonicMs"),
-        frame_attempts_present: map.contains_key("frameAttempts"),
-        member_attempts_present: map.contains_key("memberAttempts"),
-        view_attempts_present: map.contains_key("viewAttempts"),
-        clear_attempts_present: map.contains_key("clearAttempts"),
-        creation_attempts_present: map.contains_key("creationAttempts"),
-        gesture_ingress: match map.get("gestureIngress") {
-            None => GestureIngressWire::Absent,
-            Some(serde_json::Value::Null) => GestureIngressWire::Null,
-            Some(_) => GestureIngressWire::Present,
-        },
-    };
-    Ok(DecodedRequest { report, wire })
-}
-
-/// Dead legacy decode: one JSON legacy world request into the typed legacy
-/// core report. Only the doc-hidden legacy implementation and its deferred
-/// regression tests use this; the public ingress is [`decode_request`].
-/// Same gated parsing as [`decode_request_with_wire_legacy`]; optional wire
-/// metadata is discarded.
-#[doc(hidden)]
-pub fn decode_request_legacy(json: &str) -> std::result::Result<WorldReport, WorldProtocolError> {
-    decode_request_with_wire_legacy(json).map(|decoded| decoded.report)
 }
 
 /// Decode one JSON world request into the typed core v4 report. This is
@@ -3632,8 +2679,7 @@ pub fn decode_request_with_wire(
 // -- V4 whole-report decoder --
 // Genuine v4 codec for the v4 contract (`rendererInput` carried, `views`
 // refused, identifiable bad rows held narrowly instead of refusing the
-// envelope). The legacy entrypoints above are dead doc-hidden regressions
-// only. Snapshot refusal vocabulary is reused verbatim from the core gate:
+// envelope). Snapshot refusal vocabulary is reused verbatim from the core gate:
 // no new error metadata is minted here.
 
 /// V4 world protocol version: `rendererInput` carried, `views` refused,
@@ -9415,10 +8461,9 @@ fn push_json_string(out: &mut String, value: &str) {
     out.push('"');
 }
 
-/// Protocol-owned exact reply encoding. Byte-identical to
-/// [`tiler_core::world_report::encode_reply_canonical`] over every valid
-/// reply; the codec test locks the equality, so the core commit gate and
-/// this transport gate cannot differ.
+/// Protocol-owned exact reply encoding, checked independently of the core
+/// (core byte count, roundtrips, and immutable literal bytes); the core commit
+/// gate and this transport gate cannot differ.
 fn push_authority_scope(out: &mut String, scope: &AuthorityScope) {
     match scope {
         AuthorityScope::Output(output) => {
@@ -9436,269 +8481,6 @@ fn push_authority_scope(out: &mut String, scope: &AuthorityScope) {
     }
 }
 
-/// Dead legacy transport mirror of the core canonical legacy reply writer:
-/// byte-identical by construction. Only the doc-hidden legacy
-/// implementation and its deferred regression tests use this; the public
-/// reply encode is [`encode_reply`]. Same unchecked-`String` caller
-/// precondition as [`tiler_core::world_sizing::encode_reply_canonical`]:
-/// the reply's `intent_writes` must satisfy
-/// [`tiler_core::world_report::validate_intent_writes_reason`]; the engine
-/// publication gate enforces it before any commit or encode.
-#[doc(hidden)]
-#[must_use]
-pub fn encode_reply_legacy(reply: &WorldReply) -> String {
-    let mut out = String::new();
-    out.push_str("{\"v\":");
-    out.push_str(&reply.contract_version.to_string());
-    out.push_str(",\"adapter\":");
-    push_json_string(&mut out, &reply.adapter_incarnation);
-    out.push_str(",\"gen\":");
-    push_json_string(&mut out, &reply.core_generation);
-    out.push_str(",\"req\":");
-    push_json_string(&mut out, &reply.request_id);
-    out.push_str(",\"obs\":\"");
-    out.push_str(&reply.based_on_observation_seq.to_string());
-    out.push_str("\",\"rev\":\"");
-    out.push_str(&reply.state_revision.to_string());
-    out.push_str("\",\"ready\":");
-    out.push_str(if reply.ready { "true" } else { "false" });
-    out.push_str(",\"consumed\":");
-    out.push_str(if reply.command_consumed {
-        "true"
-    } else {
-        "false"
-    });
-    out.push_str(",\"scopes\":[");
-    for (i, scope) in reply.scopes.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"scope\":");
-        push_authority_scope(&mut out, &scope.scope);
-        out.push_str(",\"auth\":");
-        push_json_string(&mut out, scope.authority.as_str());
-        out.push_str(",\"reason\":");
-        push_json_string(
-            &mut out,
-            scope.authority.hold_reason().map_or("", HoldReason::as_str),
-        );
-        out.push('}');
-    }
-    out.push_str("],\"workspaces\":[");
-    for (i, workspace) in reply.workspaces.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"id\":");
-        push_json_string(&mut out, &workspace.id);
-        out.push_str(",\"out\":");
-        push_json_string(&mut out, &workspace.output.0);
-        out.push_str(",\"bind\":");
-        push_json_string(
-            &mut out,
-            workspace.native_binding.as_deref().unwrap_or_default(),
-        );
-        out.push_str(",\"scope\":");
-        push_authority_scope(&mut out, &workspace.scope);
-        out.push_str(",\"order\":");
-        out.push_str(&workspace.order.to_string());
-        out.push_str(",\"mode\":");
-        push_json_string(&mut out, workspace.tiling_mode.as_str());
-        out.push_str(",\"exist\":");
-        out.push_str(if workspace.existence { "true" } else { "false" });
-        out.push_str(",\"hold\":");
-        push_json_string(&mut out, workspace.hold.map_or("", HoldReason::as_str));
-        if workspace.trailing {
-            out.push_str(",\"trailing\":true");
-        }
-        out.push('}');
-    }
-    out.push_str("],\"outputs\":[");
-    for (i, output) in reply.outputs.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"out\":");
-        push_json_string(&mut out, &output.output.0);
-        out.push_str(",\"view\":");
-        push_json_string(&mut out, output.logical_view.as_deref().unwrap_or_default());
-        out.push_str(",\"mode\":");
-        push_json_string(&mut out, output.tiling_mode.as_str());
-        out.push_str(",\"hold\":");
-        push_json_string(&mut out, output.hold.map_or("", HoldReason::as_str));
-        out.push('}');
-    }
-    out.push_str("],\"windows\":[");
-    for (i, window) in reply.windows.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"win\":");
-        push_json_string(&mut out, &window.lifetime.0);
-        out.push_str(",\"out\":");
-        push_json_string(&mut out, &window.output.0);
-        out.push_str(",\"ws\":");
-        push_json_string(&mut out, &window.workspace);
-        out.push_str(",\"alloc\":");
-        match window.allocation {
-            Some(rect) => {
-                out.push_str(&format!("[{},{},{},{}]", rect.x, rect.y, rect.w, rect.h));
-            }
-            None => out.push_str("null"),
-        }
-        out.push_str(",\"frame\":");
-        match window.effective_frame {
-            Some(rect) => {
-                out.push_str(&format!("[{},{},{},{}]", rect.x, rect.y, rect.w, rect.h));
-            }
-            None => out.push_str("null"),
-        }
-        out.push_str(",\"frame_auth\":");
-        push_json_string(&mut out, window.frame_authority.as_str());
-        out.push_str(",\"frame_hold\":");
-        push_json_string(
-            &mut out,
-            window
-                .frame_authority
-                .hold_reason()
-                .map_or("", HoldReason::as_str),
-        );
-        out.push_str(",\"member_auth\":");
-        push_json_string(&mut out, window.membership_authority.as_str());
-        out.push_str(",\"member_hold\":");
-        push_json_string(
-            &mut out,
-            window
-                .membership_authority
-                .hold_reason()
-                .map_or("", HoldReason::as_str),
-        );
-        out.push_str(",\"frame_op\":");
-        push_json_string(
-            &mut out,
-            window.frame_operation.as_deref().unwrap_or_default(),
-        );
-        out.push_str(",\"floating\":");
-        out.push_str(if window.floating { "true" } else { "false" });
-        out.push_str(",\"float_origin\":");
-        push_json_string(
-            &mut out,
-            window
-                .float_origin
-                .map_or("", tiler_core::world_report::FloatOrigin::as_str),
-        );
-        out.push_str(",\"clear_op\":");
-        push_json_string(
-            &mut out,
-            window.clear_operation.as_deref().unwrap_or_default(),
-        );
-        tiler_core::world_sizing::encode_window_target_lanes(&mut out, window);
-        out.push('}');
-    }
-    out.push_str("],\"transfers\":[");
-    for (i, transfer) in reply.transfers.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"op\":");
-        push_json_string(&mut out, &transfer.operation_id);
-        out.push_str(",\"kind\":");
-        push_json_string(
-            &mut out,
-            match &transfer.kind {
-                TransferKind::Window(_) => "window",
-                TransferKind::View => "view",
-                TransferKind::Migration => "migration",
-            },
-        );
-        out.push_str(",\"win\":");
-        match &transfer.kind {
-            TransferKind::Window(window) => push_json_string(&mut out, &window.0),
-            TransferKind::View | TransferKind::Migration => out.push_str("\"\""),
-        }
-        out.push_str(",\"out\":");
-        push_json_string(&mut out, &transfer.target_output.0);
-        out.push_str(",\"ws\":");
-        push_json_string(&mut out, &transfer.target_workspace);
-        out.push_str(",\"follow\":");
-        out.push_str(if transfer.follow { "true" } else { "false" });
-        out.push_str(",\"held\":");
-        out.push_str(if transfer.held { "true" } else { "false" });
-        out.push('}');
-    }
-    out.push_str("],\"effects\":[");
-    for (i, effect) in reply.effects.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"id\":");
-        push_json_string(&mut out, &effect.id);
-        out.push_str(",\"kind\":");
-        push_json_string(&mut out, effect.kind.as_str());
-        out.push_str(",\"target\":");
-        push_json_string(&mut out, &effect.target.0);
-        out.push_str(",\"rev\":\"");
-        out.push_str(&effect.issued_revision.to_string());
-        out.push_str("\",\"cause\":");
-        push_json_string(&mut out, effect.cause.as_str());
-        out.push_str(",\"cmdSeq\":");
-        match effect.command_seq {
-            Some(seq) => {
-                out.push('"');
-                out.push_str(&seq.to_string());
-                out.push('"');
-            }
-            None => out.push_str("null"),
-        }
-        out.push_str(",\"awaitShown\":");
-        out.push_str(if effect.await_shown { "true" } else { "false" });
-        out.push('}');
-    }
-    out.push_str("],\"result\":");
-    tiler_core::world_sizing::encode_command_result(&mut out, &reply.command_result);
-    out.push_str(",\"gestureSettled\":");
-    tiler_core::world_sizing::encode_gesture_settled(&mut out, &reply.gesture_settled);
-    out.push_str(",\"operationSettled\":");
-    tiler_core::world_sizing::encode_operation_settled(&mut out, &reply.operation_settled);
-    out.push_str(",\"nativeCreations\":");
-    tiler_core::world_sizing::encode_native_creations(&mut out, &reply.native_creations);
-    out.push_str(",\"warpCursor\":");
-    match reply.cursor_warp {
-        Some((x, y)) => {
-            out.push_str(&format!("[{x},{y}]"));
-        }
-        None => out.push_str("null"),
-    }
-    out.push_str(",\"presentation\":");
-    tiler_core::world_sizing::encode_presentation(&mut out, &reply.presentation);
-    out.push_str(",\"intentWrites\":[");
-    for (i, write) in reply.intent_writes.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"win\":");
-        push_json_string(&mut out, &write.win.0);
-        out.push_str(",\"data\":");
-        match write.data.as_deref() {
-            Some(data) => push_json_string(&mut out, data),
-            None => out.push_str("null"),
-        }
-        out.push('}');
-    }
-    out.push_str("],\"switchSettled\":");
-    tiler_core::world_sizing::encode_switch_settled(&mut out, &reply.switch_settled);
-    out.push_str(",\"diagnostics\":[");
-    for (i, diagnostic) in reply.diagnostics.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        tiler_core::world_sizing::push_row_diagnostic(&mut out, diagnostic);
-    }
-    out.push(']');
-    out.push('}');
-    out
-}
-
 /// Checked canonical encode of one decoded v4 reply. This is the sole
 /// public reply encode: the genuine v4 codec ([`encode_reply_v4`]) with
 /// strict v4 shape enforcement. No legacy dual encode.
@@ -9709,9 +8491,7 @@ pub fn encode_reply(decoded: &DecodedReplyV4) -> Result<String> {
 /// Retained engine surface for the service boundary: the planner service
 /// drives [`WorldEngine`] through this module so only `tiler-protocol` sits
 /// between the service and the core.
-pub use tiler_core::world_engine::{
-    LegacyWorldOutcome, WorldEngine, WorldEngineConfig, WorldOutcome,
-};
+pub use tiler_core::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 
 #[cfg(test)]
 mod tests {
@@ -9741,9 +8521,11 @@ mod tests {
     }
 
     #[test]
-    fn switch_settled_both_writers_emit_identical_bytes() {
+    fn switch_settled_v4_writer_emits_exact_bytes() {
         use tiler_core::directional::WindowId;
-        use tiler_core::world_report::{SwitchEvent, SwitchFocus, SwitchOutcome};
+        use tiler_core::world_report::{
+            BorderPresentationV4, SwitchEvent, SwitchFocus, SwitchOutcome,
+        };
         let settled = vec![
             SwitchEvent {
                 operation_id: "op-3".to_owned(),
@@ -9762,8 +8544,8 @@ mod tests {
         ];
         let mut core_section = String::new();
         tiler_core::world_sizing::encode_switch_settled(&mut core_section, &settled);
-        let reply = tiler_core::world_report::WorldReply {
-            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_LEGACY,
+        let reply = tiler_core::world_report::WorldReplyV4 {
+            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: "adapter-1".to_owned(),
             core_generation: "gen-1".to_owned(),
             request_id: "req-1".to_owned(),
@@ -9774,7 +8556,6 @@ mod tests {
             scopes: Vec::new(),
             workspaces: Vec::new(),
             outputs: Vec::new(),
-            diagnostics: Vec::new(),
             windows: Vec::new(),
             transfers: Vec::new(),
             effects: Vec::new(),
@@ -9783,20 +8564,50 @@ mod tests {
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
             cursor_warp: None,
-            presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            presentation: tiler_core::world_report::WorldPresentationV4 {
+                foreground: String::new(),
+                rev: 0,
+                suspended_output: None,
+                border: BorderPresentationV4 {
+                    visible: false,
+                    reason: None,
+                    subject: None,
+                    outsets: None,
+                    width: None,
+                    radius: None,
+                    witness: None,
+                },
+                underlay: tiler_core::world_presentation::PresentationUnderlay::default(),
+                pager: Vec::new(),
+            },
             intent_writes: Vec::new(),
             switch_settled: settled.clone(),
+            diagnostics: Vec::new(),
         };
-        let core_wire = tiler_core::world_report::encode_reply_canonical(&reply);
-        let transport_wire = encode_reply_legacy(&reply);
-        assert_eq!(transport_wire, core_wire, "both writers byte-identical");
+        let decoded = DecodedReplyV4 {
+            reply,
+            wire: ReplyWireOptionals {
+                suspended_output_present: false,
+            },
+        };
+        let wire = encode_reply_v4(&decoded).expect("reply encodes");
+        assert_eq!(
+            wire.len(),
+            tiler_core::world_sizing_v4::reply_exact_bytes_v4(&decoded.reply),
+            "core byte count is exact over the event reply"
+        );
+        assert_eq!(
+            decode_reply_v4(&wire).expect("reply round-trips"),
+            decoded,
+            "wire round-trips to the identical typed reply and metadata"
+        );
         assert!(
-            tiler_core::world_report::reply_estimate(&reply) >= core_wire.len(),
+            tiler_core::world_sizing_v4::reply_estimate_v4(&decoded.reply) >= wire.len(),
             "estimate covers event reply"
         );
-        assert!(core_wire.contains("\"switchSettled\":[{"));
-        assert!(core_wire.contains("\"outcome\":\"complete\""));
-        assert!(core_wire.contains("\"outcome\":\"completed-with-failures\""));
+        assert!(wire.contains("\"switchSettled\":[{"));
+        assert!(wire.contains("\"outcome\":\"complete\""));
+        assert!(wire.contains("\"outcome\":\"completed-with-failures\""));
     }
 
     /// Minimal v4 report envelope carrying one candidate command, mirroring

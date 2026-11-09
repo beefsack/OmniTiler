@@ -1764,9 +1764,9 @@ impl WorldEngine {
 #[cfg(test)]
 mod prior_empty_scope_tests {
     use super::*;
-    use crate::world_directional::tests::{accepted, fact, report, report_full, screen};
-    use crate::world_engine::{KIND_REUSED, LegacyWorldOutcome};
+    use crate::world_engine::{KIND_REUSED, WorldOutcome};
     use crate::world_report::{AuthorityScope, ScopeAuthority, WorldCommand};
+    use crate::world_v4_support_tests::{accepted, fact, report, report_full, screen};
 
     #[test]
     fn output_control_requires_exact_prior_workspace_row_for_empty_proof() {
@@ -1811,8 +1811,8 @@ mod prior_empty_scope_tests {
         // Test-only eviction of the typed replay cache: production keeps
         // full typed equality and the cached reply for duplicate checks.
         // The shared prior-context lane must not depend on those lanes.
-        engine.last_report = None;
-        engine.last_reply = None;
+        engine.last_report_v4 = None;
+        engine.last_reply_v4 = None;
         assert!(engine.prior_empty_controlled(&key));
         assert!(!engine.prior_empty_controlled(&DomainKey {
             output: OutputId("out-a".to_owned()),
@@ -1844,8 +1844,8 @@ mod prior_empty_scope_tests {
             None,
             None,
         );
-        match engine.handle_report_legacy(&reused) {
-            LegacyWorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
+        match engine.handle_report(&reused) {
+            WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
             other => panic!("expected reused refusal, got {other:?}"),
         }
         assert!(engine.prior_empty_controlled(&key));
@@ -1871,8 +1871,8 @@ mod prior_empty_scope_tests {
             Some(1),
             Some(refused_focus),
         );
-        match engine.handle_report_legacy(&first) {
-            LegacyWorldOutcome::Accepted(reply) => match reply.command_result {
+        match engine.handle_report(&first) {
+            WorldOutcome::Accepted(reply) => match reply.command_result {
                 Some(crate::world_report::CommandResult::Rejected { kind, .. }) => {
                     assert_eq!(kind, crate::world_report::CommandRejectKind::FocusUnknown)
                 }
@@ -1893,8 +1893,8 @@ mod prior_empty_scope_tests {
                 direction: "left".to_owned(),
             }),
         );
-        match engine.handle_report_legacy(&redelivery) {
-            LegacyWorldOutcome::CommandConsumed(reply) => {
+        match engine.handle_report(&redelivery) {
+            WorldOutcome::CommandConsumed(reply) => {
                 let known_empty = reply
                     .workspaces
                     .iter()
@@ -1914,11 +1914,13 @@ mod prior_empty_scope_tests {
 mod live_output_order_tests {
     use super::*;
     use crate::connection::RawSettingValue;
-    use crate::world_directional::tests::{report, screen};
     use crate::world_report::{
         AuthorityScope, HeldScreenRow, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
-        report_digest, validate_report_reason,
     };
+    use crate::world_report_v4_checks::{
+        report_digest_v4 as report_digest, validate_report_v4_reason as validate_report_reason,
+    };
+    use crate::world_v4_support_tests::{report, screen};
 
     fn held(output: &str, ordinal: usize) -> HeldScreenRow {
         HeldScreenRow {

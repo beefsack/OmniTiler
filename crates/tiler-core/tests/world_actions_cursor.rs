@@ -12,8 +12,10 @@ use tiler_core::cursor_targeting::{FreshPlacement, SwitchTarget};
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{LegacyWorldOutcome, WorldEngine};
-use tiler_core::world_report::{WorldCommand, WorldReport};
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_report::{
+    PresentationIngressV4, PresentationRowV4, WorldCommand, WorldReplyV4, WorldReportV4,
+};
 
 fn rect(v: &[i64]) -> Rect {
     Rect {
@@ -226,9 +228,9 @@ fn report(
     cursor: Option<(i32, i32)>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> WorldReport {
-    WorldReport {
-        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_LEGACY,
+) -> WorldReportV4 {
+    WorldReportV4 {
+        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
         observation_seq: request_seq,
@@ -237,10 +239,12 @@ fn report(
         command_seq,
         command,
         screens: vec![screen("out-a", 0), screen("out-b", 800)],
+        held_screens: Vec::new(),
         windows,
-        views: vec![],
+        held_windows: Vec::new(),
         closed: vec![],
         native: vec![],
+        held_native: Vec::new(),
         cursor,
         cursor_hit: None,
         focused_global: focused.to_owned(),
@@ -248,8 +252,6 @@ fn report(
         action_cached: None,
         action_outputs: Vec::new(),
         primary_output: Some(OutputId("out-a".to_owned())),
-        held_screens: Vec::new(),
-        held_windows: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -259,20 +261,18 @@ fn report(
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         focus_feedback: Vec::new(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
-
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
-fn accepted(
-    engine: &mut WorldEngine,
-    report: &WorldReport,
-) -> tiler_core::world_report::WorldReply {
-    match engine.handle_report_legacy(report) {
-        LegacyWorldOutcome::Accepted(reply) => reply,
+fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
+    match engine.handle_report(report) {
+        WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -376,7 +376,7 @@ fn reboot(engine: &mut WorldEngine, case: &Case, adapter: &str) {
     );
 }
 
-fn homed(reply: &tiler_core::world_report::WorldReply, window: &str) -> (String, String) {
+fn homed(reply: &tiler_core::world_report::WorldReplyV4, window: &str) -> (String, String) {
     let row = reply
         .windows
         .iter()
@@ -385,7 +385,7 @@ fn homed(reply: &tiler_core::world_report::WorldReply, window: &str) -> (String,
     (row.output.0.clone(), row.workspace.clone())
 }
 
-fn allocation(reply: &tiler_core::world_report::WorldReply, window: &str) -> Rect {
+fn allocation(reply: &tiler_core::world_report::WorldReplyV4, window: &str) -> Rect {
     reply
         .windows
         .iter()
@@ -395,7 +395,7 @@ fn allocation(reply: &tiler_core::world_report::WorldReply, window: &str) -> Rec
         .expect("tiled allocation")
 }
 
-fn view_of(reply: &tiler_core::world_report::WorldReply, output: &str) -> Option<String> {
+fn view_of(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Option<String> {
     reply
         .outputs
         .iter()
