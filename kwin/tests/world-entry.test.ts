@@ -4077,7 +4077,15 @@ describe("world entry trace probe", () => {
         h.runTimers();
         const req = requestOf(h);
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1"));
-        assert.ok(!h.logs.some((l) => l.includes("omnitiler:world:trace")), "steady state emits no probe lines");
+        // New-window probe silence only: the pre-existing win-probe
+        // events stay silent while the intentional ev=cmd/marker/no-subject
+        // command diagnostics for the explicit press still emit.
+        const probeLines = h.logs.filter((l) =>
+            l.includes("omnitiler:world:trace") &&
+            /(?:^| )ev=(added|debounce-start|debounce-fire|send|reply|write|observed)(?: |$)/.test(l));
+        assert.equal(probeLines.length, 0, `steady state emits no new-window probe lines: ${probeLines.join("\n")}`);
+        assert.ok(h.logs.some((l) => l.includes("omnitiler:world:trace ev=cmd") && l.includes("op=select-relative")), "explicit press leaves its command diagnostic");
+        assert.ok(h.logs.some((l) => l.includes("omnitiler:world:trace ev=marker-unassigned") || l.includes("omnitiler:world:trace ev=no-subject")), "windowless select leaves its unassigned/no-subject diagnostic");
         assert.ok(h.logs.some((l) => l.includes("omnitiler:world:dispatch")), "production dispatch logging is intact");
         assert.equal(h.world.geometryWrites.length, 0);
         h.handle?.stop();

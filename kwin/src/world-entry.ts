@@ -53,6 +53,24 @@ interface WorldTraceProbe {
     noteDebounceFire(): void;
     noteSend(sourceToken: string, observation: WorldObservation | null): void;
     noteReply(sourceToken: string): void;
+    // Bounded float/state-target diagnostics (trace builds only): submit
+    // records the press/submitted basis per command; the apply pair
+    // isolates this flight's per-window core intent, observation facts and
+    // newly recorded frame/state attempts so a rapid-toggle run can locate
+    // the first per-window divergence instead of aggregate geometry counts.
+    // All value formatting/validation lives in the gated implementation;
+    // call sites pass raw values only.
+    noteTraceCommand(info: {
+        op: unknown; clientCmd: unknown; press: unknown; submitted: unknown; focusPress: unknown; rect: unknown;
+    }): void;
+    noteTraceSent(sourceToken: string, clientCmds: ReadonlyArray<string>): void;
+    noteTraceApplyBegin(flight: CaptureFlight): void;
+    noteTraceApplied(
+        flight: CaptureFlight,
+        parsed: WorldReply,
+        fresh: WorldObservation,
+        takePairs: ReadonlyArray<{ clientCmd: string; result: WorldReplyResult | null }>,
+    ): void;
     setGeometryFor(
         fresh: WorldObservation,
         base: {
@@ -514,6 +532,388 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             traceSentBySrc.set(src, wins);
         };
+        // Bounded command-subject basis (clientCmd -> press/submitted),
+        // filled at submit and consumed at apply. Caps keep rapid spam
+        // bounded; eviction drops the oldest unapplied press first.
+        const traceCmdSubjects = new Map<string, { op: string; press: string; submitted: string }>();
+        // Capture-source batch membership (source -> clientCmds), filled at
+        // send and consumed at apply. Bounded like the existing sent map.
+        const traceFlightCmds = new Map<string, string[]>();
+        // Single global snapshot of the last-diffed attempt rows. Rows
+        // carry their own win attribution plus in-row provenance (state
+        // rows: the authorizing rev; frame rows: op + attemptMs); the
+        // emission label only names the delivery boundary that first
+        // observed them - applySrc for rows proven synchronous to one
+        // flight's apply, flushSrc for rows first observed at a send-time
+        // flush or an apply-begin catch-up. One snapshot (never per-source
+        // bases) so every distinct row emits exactly once and is never
+        // relabeled under a stale source.
+        let traceAttemptSnap: string[] = [];
+        // Trace value validators mirror the production wire contract
+        // (isOpaqueId length and charset for identifiers), never a
+        // narrower guess, so dotted, underscored and long source/window
+        // ids survive intact instead of collapsing to "-".
+        const traceDiagId = (value: unknown): string => (
+            isOpaqueId(value) ? value as string : "-"
+        );
+        const traceDiagRect = (value: unknown): string => {
+            if (Array.isArray(value) && value.length === 4 &&
+                (value as ReadonlyArray<unknown>).every((n) => typeof n === "number" && Number.isInteger(n))) {
+                return (value as ReadonlyArray<number>).join(",");
+            }
+            return "-";
+        };
+        const traceDiagBool = (value: unknown): string => (
+            value === true ? "1" : value === false ? "0" : "-"
+        );
+        // Closed command/result vocabulary for trace display (open wire
+        // strings are never printed raw): unknown or overlong values
+        // collapse to "-".
+        const traceDiagOp = (value: unknown): string => (
+            typeof value === "string" && value.length > 0 && value.length <= 32 &&
+            /^[a-z-]+$/.test(value) ? value : "-"
+        );
+        // Closed scope-authority vocabulary (world-contract "controlled" /
+        // "untouched" / "hold"); hold reasons ride traceDiagHold.
+        const traceDiagAuth = (value: unknown): string => (
+            value === "controlled" || value === "untouched" || value === "hold" ? value : "-"
+        );
+        // Hold reasons are either none ("", shown as "-") or closed
+        // lowercase-hyphen tokens; anything else is not printed.
+        const traceDiagHold = (value: unknown): string => (
+            value === "" ? "-" : traceDiagOp(value)
+        );
+        // Closed native-state property vocabulary (world-contract
+        // StateAttempt): never print an unrecognized property.
+        const traceDiagProperty = (value: unknown): string => (
+            value === "fullscreen" || value === "maximized" ||
+            value === "sticky" || value === "above" ? value : "-"
+        );
+        // Canonical broker clock stamps only; foreign or malformed stamps
+        // would pass one row off as another, so they collapse to "-".
+        const traceDiagAttemptMs = (value: unknown): string => (
+            typeof value === "string" && isCanonicalU64(value) ? value : "-"
+        );
+        // Live window DPI around the write; unreadable rides "-".
+        const traceDiagDpi = (value: unknown): string => (
+            typeof value === "number" && Number.isInteger(value) ? String(value) : "-"
+        );
+        // Serialize the currently retained frame/state attempt rows.
+        // Trace-only and bounded by the existing latest-wins caps.
+        const traceDiagCurrentRows = (): string[] => {
+            const rows: string[] = [];
+            try {
+                for (const row of state.framesForReport()) {
+                    rows.push(JSON.stringify(row));
+                }
+            } catch (error) {
+                void error;
+            }
+            try {
+                for (const row of state.statesForReport()) {
+                    rows.push(JSON.stringify(row));
+                }
+            } catch (error) {
+                void error;
+            }
+            return rows;
+        };
+        // Emit rows that are new since the last snapshot, then advance the
+        // snapshot to the current rows. The label names the delivery
+        // boundary that first observed them (applySrc for rows proven
+        // synchronous to one flight's apply, flushSrc for a send-time
+        // flush or an apply-begin catch-up) - never an inferred flight of
+        // origin. Every distinct row emits exactly once; beyond-cap rows
+        // stay swallowed for their epoch (bounded trace volume).
+        const traceDiagEmitNewAttempts = (label: string): void => {
+            const current = traceDiagCurrentRows();
+            const base = new Set(traceAttemptSnap);
+            traceAttemptSnap = current;
+            let emitted = 0;
+            for (const serialized of current) {
+                if (emitted >= 32) {
+                    break;
+                }
+                if (base.has(serialized)) {
+                    continue;
+                }
+                let parsedRow: Record<string, unknown> | null = null;
+                try {
+                    parsedRow = JSON.parse(serialized) as Record<string, unknown>;
+                } catch (error) {
+                    void error;
+                    continue;
+                }
+                if (parsedRow === null || typeof parsedRow["win"] !== "string") {
+                    continue;
+                }
+                emitted += 1;
+                traceDiagEmitAttempt(label, parsedRow);
+            }
+        };
+        // Emit one attempt row. Caller bounds volume and attribution; the
+        // label carries the delivery boundary (applySrc/flushSrc).
+        const traceDiagEmitAttempt = (label: string, parsedRow: Record<string, unknown>): void => {
+            if (typeof parsedRow["target"] === "boolean" || typeof parsedRow["property"] === "string") {
+                log(`omnitiler:world:trace ev=state-attempt ${label} win=${traceDiagId(parsedRow["win"])} ` +
+                    `property=${traceDiagProperty(parsedRow["property"])} target=${traceDiagBool(parsedRow["target"])} ` +
+                    `rev=${traceDiagId(parsedRow["rev"])} setter=${traceDiagId(parsedRow["setter"])} ` +
+                    `pre=${traceDiagBool(parsedRow["pre"])} post=${traceDiagBool(parsedRow["post"])} ` +
+                    `attemptMs=${traceDiagAttemptMs(parsedRow["attemptMs"])}`);
+            } else {
+                log(`omnitiler:world:trace ev=frame-attempt ${label} win=${traceDiagId(parsedRow["win"])} ` +
+                    `target=${traceDiagRect(parsedRow["target"])} setter=${traceDiagId(parsedRow["setter"])} ` +
+                    `readback=${traceDiagRect(parsedRow["readback"])} pre=${traceDiagRect(parsedRow["pre"])} ` +
+                    `op=${traceDiagId(parsedRow["op"])} attemptMs=${traceDiagAttemptMs(parsedRow["attemptMs"])} ` +
+                    `dpi=${traceDiagDpi(parsedRow["dpiBefore"])}/${traceDiagDpi(parsedRow["dpiAfter"])}`);
+            }
+        };
+        const traceDiagEmitApplied = (
+            flight: CaptureFlight,
+            parsed: WorldReply,
+            fresh: WorldObservation,
+            takePairs: ReadonlyArray<{ clientCmd: string; result: WorldReplyResult | null }>,
+        ): void => {
+            const src = traceDiagId(flight.source);
+            const cmds = traceFlightCmds.get(flight.source) ??
+                (flight.clientCmd !== null ? [flight.clientCmd] : []);
+            // Exact per-command take association by clientCmd (the take
+            // lane collects one result per clientCmd identity). Implicit
+            // subjects resolve ONLY through their own pair's result -
+            // never by same-op order across commands.
+            const takeByCmd = new Map<string, WorldReplyResult | null>();
+            for (const pair of takePairs) {
+                takeByCmd.set(pair.clientCmd, pair.result);
+            }
+            const subjects: Array<{ op: string; clientCmd: string; win: string; basis: string }> = [];
+            const unassigned: Array<{ op: string; clientCmd: string; result: WorldReplyResult | null }> = [];
+            const pressCandidates: Array<{ op: string; clientCmd: string; win: string }> = [];
+            for (const cmd of cmds.slice(0, 16)) {
+                const sub = traceCmdSubjects.get(cmd);
+                if (sub === undefined) {
+                    continue;
+                }
+                const result = takeByCmd.get(cmd) ?? null;
+                const takeWin = result !== null && typeof result === "object" &&
+                    typeof (result as unknown as Record<string, unknown>)["win"] === "string" ?
+                    (result as unknown as Record<string, unknown>)["win"] as string : null;
+                // Exact take-resolved acting subject wins over every basis:
+                // a changed core focus can move the win away from the press
+                // id, so the press id never masquerades as resolved.
+                if (takeWin !== null) {
+                    const op = sub.op !== "unknown" ? sub.op :
+                        traceDiagOp((result as unknown as Record<string, unknown>)["op"]);
+                    subjects.push({ op, clientCmd: cmd, win: takeWin, basis: "take" });
+                    if (subjects.length >= 8) {
+                        break;
+                    }
+                    continue;
+                }
+                // Explicitly submitted subject (keepSubject/Inner bypasses the
+                // marker conversion, so press and submitted stay the id).
+                // One resolved row per command, even for a repeated win.
+                if (sub.submitted !== "" && sub.submitted !== "-" && sub.submitted !== "currentFocus") {
+                    subjects.push({ op: sub.op, clientCmd: cmd, win: sub.submitted, basis: "submitted" });
+                    if (subjects.length >= 8) {
+                        break;
+                    }
+                    continue;
+                }
+                // Unresolved marker: no exact take win names the acting
+                // window. Keep the marker evidence plus the press-window
+                // plan/fact pair on an explicitly press-basis row - never a
+                // guessed take/submitted resolution.
+                unassigned.push({ op: sub.op, clientCmd: cmd, result });
+                if (unassigned.length >= 8) {
+                    break;
+                }
+                if (sub.press !== "" && sub.press !== "-" && sub.press !== "currentFocus" &&
+                    !subjects.some((s) => s.win === sub.press) &&
+                    !pressCandidates.some((s) => s.win === sub.press)) {
+                    pressCandidates.push({ op: sub.op, clientCmd: cmd, win: sub.press });
+                }
+            }
+            for (const press of pressCandidates) {
+                if (subjects.length >= 8) {
+                    break;
+                }
+                subjects.push({ ...press, basis: "press" });
+            }
+            let focusApply = "-";
+            try {
+                focusApply = traceDiagId(activeWindowId());
+            } catch (error) {
+                void error;
+            }
+            // Unresolved markers are logged as evidence, never guessed:
+            // the take rendering shows the exact same-clientCmd result
+            // (pending, or the op/rect/noSpace/kind/outcome/cause the lane
+            // actually held, including rejections).
+            for (const marker of unassigned) {
+                const res = marker.result;
+                let takeEvidence = "-";
+                if (res !== null && typeof res === "object") {
+                    const rec = res as unknown as Record<string, unknown>;
+                    takeEvidence = traceDiagOp(rec["op"]);
+                    if (typeof rec["rect"] !== "undefined") {
+                        takeEvidence = `${takeEvidence}@${traceDiagRect(rec["rect"])}`;
+                    }
+                    if (typeof rec["noSpace"] === "boolean") {
+                        takeEvidence = `${takeEvidence}@noSpace=${rec["noSpace"] ? "1" : "0"}`;
+                    }
+                    if (typeof rec["kind"] === "string") {
+                        takeEvidence = `${takeEvidence}@${traceDiagOp(rec["kind"])}`;
+                    }
+                    if (typeof rec["outcome"] === "string") {
+                        takeEvidence = `${takeEvidence}@${traceDiagOp(rec["outcome"])}`;
+                    }
+                    if (typeof rec["cause"] === "string") {
+                        takeEvidence = `${takeEvidence}@${traceDiagOp(rec["cause"])}`;
+                    }
+                } else {
+                    takeEvidence = "pending";
+                }
+                const evidence = res !== null && typeof res === "object" ?
+                    traceDiagOp((res as unknown as Record<string, unknown>)["op"]) : "pending";
+                log(`omnitiler:world:trace ev=marker-unassigned src=${src} op=${marker.op} ` +
+                    `clientCmd=${traceDiagId(marker.clientCmd)} result=${evidence} take=${takeEvidence} t=${Date.now()}`);
+            }
+            if (subjects.length === 0) {
+                const named = cmds.slice(0, 16).map((c) => traceDiagId(c)).join("|");
+                log(`omnitiler:world:trace ev=no-subject src=${src} cmds=${named === "" ? "-" : named} t=${Date.now()}`);
+                return;
+            }
+            const subjectWins = new Set(subjects.map((s) => s.win));
+            // Affected windows come from the accepted plan rows outside
+            // the command subjects (e.g. a converging sibling records no
+            // attempt when already at its plan, but its plan/live pair
+            // still locates the stuck subject by contrast).
+            const affected: Array<{ op: string; clientCmd: string; win: string; basis: string }> = [];
+            for (const candidate of parsed.windows) {
+                if (subjectWins.has(candidate.win) || affected.some((s) => s.win === candidate.win)) {
+                    continue;
+                }
+                if (subjects.length + affected.length >= 8) {
+                    break;
+                }
+                affected.push({ op: "-", clientCmd: "-", win: candidate.win, basis: "affected" });
+            }
+            for (const subject of [...subjects, ...affected]) {
+                let row: (typeof parsed.windows)[number] | null = null;
+                for (const candidate of parsed.windows) {
+                    if (candidate.win === subject.win) {
+                        row = candidate;
+                        break;
+                    }
+                }
+                const cmdSeq = row !== null && typeof row.cmdSeq === "string" &&
+                    /^[0-9]+$/.test(row.cmdSeq) ? row.cmdSeq : "-";
+                let state = "-";
+                if (row !== null && row.state.length > 0) {
+                    const parts: string[] = [];
+                    for (const target of row.state.slice(0, 4)) {
+                        const auth = typeof target.auth === "string" && /^[a-z-]+$/.test(target.auth) ?
+                            target.auth : "?";
+                        const seq = typeof target.cmdSeq === "string" && /^[0-9]+$/.test(target.cmdSeq) ?
+                            target.cmdSeq : "-";
+                        const property = traceDiagProperty(target.property);
+                        parts.push(`${property}=${target.value ? "1" : "0"}/${auth}/${seq}`);
+                    }
+                    state = parts.join("|");
+                }
+                let transfers = "-";
+                {
+                    const parts: string[] = [];
+                    for (const transfer of parsed.transfers) {
+                        if (transfer.win !== subject.win) {
+                            continue;
+                        }
+                        const seq = typeof transfer.cmdSeq === "string" && /^[0-9]+$/.test(transfer.cmdSeq) ?
+                            transfer.cmdSeq : "-";
+                        parts.push(`${traceDiagOp(transfer.op)}:${seq}:${transfer.held ? "1" : "0"}`);
+                        if (parts.length >= 4) {
+                            break;
+                        }
+                    }
+                    if (parts.length > 0) {
+                        transfers = parts.join("|");
+                    }
+                }
+                // Exact same-clientCmd take rendering: only this command's
+                // own take result rides its line, op sanitized for display.
+                // rect and noSpace ride independently (a toggle-float
+                // refusal carries rect null plus noSpace true); rejected
+                // kind and directional outcome/cause ride sanitized when
+                // present.
+                let take = "-";
+                {
+                    const res = takeByCmd.get(subject.clientCmd) ?? null;
+                    if (res !== null && typeof res === "object") {
+                        const rec = res as unknown as Record<string, unknown>;
+                        take = traceDiagOp(rec["op"]);
+                        if (typeof rec["rect"] !== "undefined") {
+                            take = `${take}@${traceDiagRect(rec["rect"])}`;
+                        }
+                        if (typeof rec["noSpace"] === "boolean") {
+                            take = `${take}@noSpace=${rec["noSpace"] ? "1" : "0"}`;
+                        }
+                        if (typeof rec["kind"] === "string") {
+                            take = `${take}@${traceDiagOp(rec["kind"])}`;
+                        }
+                        if (typeof rec["outcome"] === "string") {
+                            take = `${take}@${traceDiagOp(rec["outcome"])}`;
+                        }
+                        if (typeof rec["cause"] === "string") {
+                            take = `${take}@${traceDiagOp(rec["cause"])}`;
+                        }
+                    }
+                }
+                let obs = "obs=-/-/-/- frame=- focused=-";
+                for (const domain of fresh.domains) {
+                    for (const entry of domain.windows) {
+                        if (entry.win !== subject.win) {
+                            continue;
+                        }
+                        const rect = entry.rect;
+                        const frame = Number.isInteger(rect.x) && Number.isInteger(rect.y) &&
+                            Number.isInteger(rect.w) && Number.isInteger(rect.h) ?
+                            `${rect.x},${rect.y},${rect.w},${rect.h}` : "-";
+                        obs = `obs=${traceDiagBool(entry.floating)}/${traceDiagBool(entry.maximized)}/` +
+                            `${traceDiagBool(entry.fullscreen)}/${traceDiagBool(entry.sticky)} ` +
+                            `frame=${frame} focused=${domain.focused === subject.win ? "1" : "0"}`;
+                        break;
+                    }
+                }
+                let fact = "fact=- max=- fs=- desks=- above=- below=-";
+                for (const wf of fresh.windowFacts) {
+                    if (wf.win !== subject.win) {
+                        continue;
+                    }
+                    const g = wf.frameGeometry;
+                    const frame = Number.isInteger(g.x) && Number.isInteger(g.y) &&
+                        Number.isInteger(g.width) && Number.isInteger(g.height) ?
+                        `${g.x},${g.y},${g.width},${g.height}` : "-";
+                    const desks = `${wf.onAllDesktops ? "1" : "0"}/${wf.desktops.length}`;
+                    fact = `fact=${frame} max=${Number.isInteger(wf.maximizeMode) ? String(wf.maximizeMode) : "-"} ` +
+                        `fs=${traceDiagBool(wf.fullScreen)} desks=${desks} ` +
+                        `above=${traceDiagBool(wf.above)} below=${traceDiagBool(wf.below)}`;
+                    break;
+                }
+                const core = row === null ? "core=-/-/- frameOp=- clearOp=- cmdSeq=- frameAuth=- frameHold=- memberAuth=- memberHold=-" :
+                    `core=${traceDiagBool(row.floating)}/${traceDiagRect(row.frame)}/${traceDiagRect(row.alloc)} ` +
+                    `frameOp=${row.frame_op !== "" ? "1" : "0"} clearOp=${row.clear_op !== "" ? "1" : "0"} ` +
+                    `cmdSeq=${cmdSeq} frameAuth=${traceDiagAuth(row.frame_auth)} ` +
+                    `frameHold=${traceDiagHold(row.frame_hold)} memberAuth=${traceDiagAuth(row.member_auth)} ` +
+                    `memberHold=${traceDiagHold(row.member_hold)}`;
+                log(`omnitiler:world:trace ev=subject src=${src} clientCmd=${traceDiagId(subject.clientCmd)} basis=${subject.basis} ` +
+                    `op=${subject.op} win=${traceDiagId(subject.win)} focusApply=${focusApply} ${core} state=${state} ` +
+                    `transfers=${transfers} take=${take} ${obs} ${fact} t=${Date.now()}`);
+            }
+            // Emit rows first observed during this flight's own apply, which
+            // the apply-begin catch-up above proves synchronous: only this
+            // flight's setters ran since the snapshot advanced.
+            traceDiagEmitNewAttempts(`applySrc=${src}`);
+        };
         worldTraceProbes.set(state, {
             noteAdded: (added) => {
                 try {
@@ -585,6 +985,84 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                 } catch (error) {
                     void error;
+                }
+            },
+            noteTraceCommand: (info) => {
+                try {
+                    const op = typeof info.op === "string" && info.op.length > 0 &&
+                        info.op.length <= 32 && /^[a-z-]+$/.test(info.op) ? info.op : "unknown";
+                    const clientCmd = typeof info.clientCmd === "string" && info.clientCmd.length > 0 &&
+                        info.clientCmd.length <= 32 && /^[0-9]+$/.test(info.clientCmd) ? info.clientCmd : "-";
+                    const press = traceDiagId(info.press);
+                    const submitted = traceDiagId(info.submitted);
+                    if (clientCmd !== "-") {
+                        traceCmdSubjects.delete(clientCmd);
+                        while (traceCmdSubjects.size >= 64) {
+                            const oldest = traceCmdSubjects.keys().next();
+                            if (oldest.done) {
+                                break;
+                            }
+                            traceCmdSubjects.delete(oldest.value as string);
+                        }
+                        traceCmdSubjects.set(clientCmd, { op, press, submitted });
+                    }
+                    log(`omnitiler:world:trace ev=cmd op=${op} clientCmd=${clientCmd} press=${press} win=${submitted} focusPress=${traceDiagId(info.focusPress)} rect=${traceDiagRect(info.rect)} t=${Date.now()}`);
+                } catch (error) {
+                    void error;
+                }
+            },
+            noteTraceSent: (sourceToken, clientCmds) => {
+                try {
+                    // Flush attempts the previous flights' post-apply
+                    // executor work recorded after their applied
+                    // diagnostics (persist-before-write setters run on a
+                    // later store ack). Rows carry their own win
+                    // attribution plus in-row provenance; the flushSrc
+                    // label names this send as the delivery boundary,
+                    // never an inferred flight of origin. The snapshot
+                    // advances so later diffs never re-emit them.
+                    traceDiagEmitNewAttempts(`flushSrc=${traceDiagId(sourceToken)}`);
+                    traceFlightCmds.delete(sourceToken);
+                    while (traceFlightCmds.size >= 16) {
+                        const oldest = traceFlightCmds.keys().next();
+                        if (oldest.done) {
+                            break;
+                        }
+                        traceFlightCmds.delete(oldest.value as string);
+                    }
+                    traceFlightCmds.set(sourceToken, [...clientCmds].slice(0, 16));
+                } catch (error) {
+                    void error;
+                }
+            },
+            noteTraceApplyBegin: (flight) => {
+                try {
+                    // Catch up rows that landed after the last flush (late
+                    // persist acks during take round-trips run between the
+                    // send and the apply): they are delivered here, labeled
+                    // by this boundary, so the post-apply diff below only
+                    // ever sees rows this flight's own setters recorded
+                    // synchronously.
+                    traceDiagEmitNewAttempts(`flushSrc=${traceDiagId(flight.source)}`);
+                } catch (error) {
+                    void error;
+                }
+            },
+            noteTraceApplied: (flight, parsed, fresh, takePairs) => {
+                try {
+                    traceDiagEmitApplied(flight, parsed, fresh, takePairs);
+                } catch (error) {
+                    void error;
+                } finally {
+                    try {
+                        // Attempt rows are already isolated per delivery
+                        // boundary by the single snapshot (begin catch-up
+                        // plus this apply's diff), so only the per-flight
+                        // command batch needs cleanup here.
+                        traceFlightCmds.delete(flight.source);
+                    } catch (error) {
+                        void error;
+                    }
                 }
             },
             setGeometryFor: (fresh, base, sourceToken) => {
@@ -702,6 +1180,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     tracePending.length = 0;
                     traceSentBySrc.clear();
+                    traceCmdSubjects.clear();
+                    traceFlightCmds.clear();
+                    traceAttemptSnap = [];
                 } catch (error) {
                     void error;
                 }
@@ -1571,6 +2052,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return false;
         }
         pendingQueue.push({ command, keepSubject, clientCmd, payload, gen, filed: false, filing: false });
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            const innerRec = command as unknown as Record<string, unknown>;
+            const innerWin = innerRec["win"];
+            const innerSubject = commandWindowTarget(command) ?? (typeof innerWin === "object" && innerWin !== null &&
+                (innerWin as Record<string, unknown>)["currentFocus"] === true ? "currentFocus" : "-");
+            worldTraceProbes.get(state)?.noteTraceCommand({
+                op: (command as { op?: unknown }).op,
+                clientCmd,
+                press: innerSubject,
+                submitted: innerSubject,
+                focusPress: activeWindowId(),
+                rect: (command as { rect?: unknown }).rect,
+            });
+        }
         log(`omnitiler:world:command op=${token((command as { op?: unknown }).op)} label=${token(label)} nwinv=${state.currentInvalid}`);
         scheduleDispatch();
         return true;
@@ -1654,6 +2149,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return false;
         }
         pendingQueue.push({ command: converted, keepSubject, clientCmd, payload, gen, filed: false, filing: false });
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            const convertedRec = converted as unknown as Record<string, unknown>;
+            const convertedWin = convertedRec["win"];
+            const submitted = typeof convertedWin === "object" && convertedWin !== null &&
+                (convertedWin as Record<string, unknown>)["currentFocus"] === true ? "currentFocus" :
+                commandWindowTarget(converted) ?? "-";
+            worldTraceProbes.get(state)?.noteTraceCommand({
+                op: (converted as { op?: unknown }).op,
+                clientCmd,
+                press: originalTarget ?? (typeof convertedWin === "object" && convertedWin !== null &&
+                    (convertedWin as Record<string, unknown>)["currentFocus"] === true ? "currentFocus" : "-"),
+                submitted,
+                focusPress: activeWindowId(),
+                rect: (converted as { rect?: unknown }).rect,
+            });
+        }
         log(`omnitiler:world:command op=${token((command as { op?: unknown }).op)} label=${token(label)} nwinv=${state.currentInvalid} depth=${pendingQueue.length}`);
         // Park-first FIFO: the pump files the earliest unfiled entry only
         // when no filing is outstanding, so a newer press never submits
@@ -4109,6 +4620,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         parsed: WorldReply,
         flight: CaptureFlight,
         takeResults: Array<WorldReplyResult | null>,
+        takePairs: Array<{ clientCmd: string; result: WorldReplyResult | null }>,
     ): void => {
                     // Close/attempt ACK is independent of native apply: ack
                     // the closes that rode the accepted dispatch BEFORE the
@@ -4604,6 +5116,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     const setGeometryBase = typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1"
                         ? (worldTraceProbes.get(state)?.setGeometryFor(fresh, applyHostBase, token(flight.source)) ?? applyHostBase.setGeometry)
                         : applyHostBase.setGeometry;
+                    if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                        worldTraceProbes.get(state)?.noteTraceApplyBegin(flight);
+                    }
                     const applied = applyWorldReply({
                         state,
                         observation: fresh,
@@ -4666,6 +5181,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // Retired automatic float stacking (option A removed):
                     // no local keepAbove classification writes.
                     log(`omnitiler:world:applied rev=${token(parsed.rev)} geom=${applied.geometryWrites} member=${applied.membershipWrites} views=${applied.viewWrites} mk=${applied.creations} rm=${applied.removals} fx=${applied.effects} held=${applied.held}`);
+                    if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                        worldTraceProbes.get(state)?.noteTraceApplied(flight, parsed, fresh, takePairs);
+                    }
                     // B9 single-observation boundary: the first accepted
                     // full-state report after the issued clear decides the
                     // deferred unfloat exactly once (complete or narrow
@@ -4871,6 +5389,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return false;
         }
         flightBatches.set(source, [...clientCmds]);
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            worldTraceProbes.get(state)?.noteTraceSent(source, clientCmds);
+        }
         // Stamp the exact raw terminal identity this capture carries (if
         // any): the later accept binds its GestureSettled to this flight
         // identity before any ack may fire. The native window freezes here
@@ -5311,9 +5832,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     takeResultsForUndecided((pairs) => {
                         const flightCmds = flightBatches.get(flight.source) ?? (flight.clientCmd !== null ? [flight.clientCmd] : []);
                         const flightSet = new Set(flightCmds);
-                        const takeResults = pairs
-                            .filter((pair) => flightSet.has(pair.clientCmd))
-                            .map((pair) => pair.result);
+                        const flightPairs = pairs.filter((pair) => flightSet.has(pair.clientCmd));
+                        const takeResults = flightPairs.map((pair) => pair.result);
                         flightBatches.delete(flight.source);
                         if (parsed.gen !== state.boundGen) {
                             // The take outlived its generation (a delayed
@@ -5329,7 +5849,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             wakeFollowup();
                             return;
                         }
-                        postAcceptCapture(parsed, flight, takeResults);
+                        postAcceptCapture(parsed, flight, takeResults, flightPairs);
                     });
                 },
             );
