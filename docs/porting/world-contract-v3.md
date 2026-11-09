@@ -814,8 +814,8 @@ the adapter never selects a replacement source refill by ordinal.
 ## Conformance fixtures
 
 - [World-wire fixtures](../../test-fixtures/world-wire/):
-  [`world_wire_fixtures.rs`](../../crates/omnitiler/examples/world_wire_fixtures.rs#L1-L21)
-  regenerates broker replies and byte-gates request fixtures; KWin consumes
+  the `world_wire_fixtures` generator (removed unrun during v4 migration; the
+  recorded bytes are retained) regenerated broker replies; KWin consumes
   the corpus in [`world-bytes.test.ts`](../../kwin/tests/world-bytes.test.ts#L1-L8),
   [`world-wire.test.ts`](../../kwin/tests/world-wire.test.ts#L1-L8), and
   [`world-command-result.test.ts`](../../kwin/tests/world-command-result.test.ts#L1-L20).
