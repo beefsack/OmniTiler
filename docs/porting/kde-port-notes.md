@@ -72,7 +72,7 @@ Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
   `stage5_fixture_route_matches_recorded_projections` and
   `stage5_fixture_route_same_source_serial_b`. Both are explicitly ignored in the
   phase-1 core gate, not passing v4 proof; preserve `test-fixtures/stage5` until
-  that migration. The legacy `world_wire_fixtures` generator remains unrun.
+  that migration. The legacy `world_wire_fixtures` generator was removed unrun.
 
 ## Recommended topology
 
@@ -124,7 +124,8 @@ Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
   recover silent errors/restarts without native events or idle captures. Owner
   auth, generation/producer/nonce fences and bounded dead-waiter cleanup apply.
   See [B1 evidence](../changes/kde-world-v2-port.md#b1-external-command-wake-delivery-offline-complete).
-- Actual v2 reply fixtures now come from the Rust `world_wire_fixtures` example;
+- Actual v2 reply fixtures came from the Rust `world_wire_fixtures` example
+  (since removed; the recorded bytes remain);
   retired `logical` workspace fields refuse. The entry-only TS engine harness
   does not prove broker authentication/replay; Rust flow/private-bus tests do.
 - Logical targets resolve only through accepted output-specific native bindings.
@@ -198,8 +199,7 @@ JS adapter (`kwin/src/`):
   `workspace_scope.rs`, `window_policy.rs`, `output_selection.rs`, `admission.rs`.
   `tray-publisher.ts` keeps native placement/anchoring/styling and
   click-to-command; pager content comes from core.
-- `provenance-entry.ts`, `native-id.ts`,
-  `native-alias.ts`: keep only native identity/binding/recovery claims;
+- `native-id.ts`, `native-alias.ts`: keep only native identity/binding/recovery claims;
   logical homing moves to core receipts.
 
 Native effect (`kwin/native-effect/`, `activewindowborder.*`,
