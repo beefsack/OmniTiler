@@ -646,3 +646,167 @@
   unscoped non-trace bundle is rebuilt and final production status is DOWN.
   This closes the bounded prior-tile native restart/off observation, not the
   broader state-target slice, protocol/storage proof or physical-input checks.
+
+## 2026-11-09 physical state-target triage
+
+- ST **FAIL; macOS start gate open**. User-run physical keys in an unscoped
+  development session: maximize did nothing, including after Authentic Apply;
+  independent float on/off reported PASS; sticky failed from tile and float,
+  with sibling expansion but no cross-workspace visibility or apparent release.
+  A later prior-float journey also reported rejected unfloat after failed sticky.
+  Remaining user-run ST steps (reported as steps 4-6) were NOT RUN; no additional
+  sub-leg outcomes are inferred from that numbering. No new native journey or
+  code correction is evidence from this investigation.
+- Source baseline `420a84f6`; documentation parent `874bd25b` changes the RC
+  ordering only: RC gates the macOS reconnect/rehome slice and 0.1, not port
+  start. ST still gates start. Existing injected fixture passes above are
+  bounded native observations, not acceptance of these physical journeys.
+- Evidence: unchanged, externally preserved copies; original/copy SHA-256
+  equality was supplied with the logs. Investigation independently read and
+  hashed the copies. Basenames below are sufficient to identify them without
+  retaining local paths. Combined streams are interleaved, not a global clock.
+
+| Log | Lines | SHA-256 | Bounded evidence |
+| --- | ---: | --- | --- |
+| `omnitiler-dev.puCu01.log` (M1) | 813 | `1e9a141341cd033862a043efa6a57dd23610d36b2ce31f7d21bcf8eb8e83d620` | 11 maximize shortcut-label commands plus one fullscreen (:497); 50 stale state drops: 34 maximized, 12 fullscreen, 4 above |
+| `omnitiler-dev.HOFkEy.log` (S1) | 272 | `64c7de42cfb5428371d7b3ad9693d156dec523a702f4221c68e70bd74329f771` | Sticky commands :115,238; 22 stale drops, 11 above/sticky pairs |
+| `omnitiler-dev.0uUT7s.log` (M2) | 210 | `d120ab44895303988aa81897e29666c2a365186b0cf05d8355073124762495ba` | User reports two failed Meta+M and two failed Meta+F11; commands :41,82,109,136; 12 stale drops total (first per chord :59,86,113,140; observe drops :64,91,118,145,161,179,192,206) |
+| `omnitiler-dev.dVXwsP.log` (S2) | 116 | `2b4a0f9f179a03c8b3b9366964c894eb615973649ab62354d1e611e90497f451` | Prior-float sticky failure/rejected unfloat reported; two captured sticky commands :57,90; 10 stale drops, paired above/sticky at :62-63,69-70,95-96,101-102,112-113; no captured toggle-float or refusal |
+
+### First evidenced failure: native preimage seed, not key delivery
+
+- **Proven service-side condition:** all four logs :6 report
+  `op=preimage-read correlation=preimage-seed-1 outcome=degraded stored=0 returned=0 reason=namespace-mismatch`.
+  `native_preimage_store.rs:386-401` in `crates/omnitiler/src` rejects a stored
+  bus-ID or KWin-owner mismatch before interpreting any old records; the service
+  returns that degraded-empty outcome (`planner_service.rs:1127-1142`). This
+  proves an incompatible stored namespace, not which identity changed or why.
+  No old UUID is restoration authority in the new namespace.
+- **Source-proven disabling mechanism:** this is not the usable empty seed
+  obtained when no file exists (`native_preimage_store.rs:263-282`). The client
+  accepts only `outcome=ok` as usable (`kwin/src/world-native-preimage.ts:523-570`);
+  every degraded seed clears retained rows and sets `seedUsable=false`
+  (:438-442). A lost callback instead times out degraded (:467-475). Availability
+  requires a usable, exact-generation seed (:840-845). Recovery consequently
+  blocks the lane (`world-native-recovery.ts:228-249,718-734`). The production
+  authorization callback rejects recovery-blocked/unavailable lanes
+  (`world-entry.ts:2044-2055`), producing the executor's pre-arm `stale` drop
+  (`world-native-state.ts:983-999`). These checks are shared by maximize,
+  fullscreen, sticky and above, independent of physical versus injected input.
+- **Evidence limit:** the KWin seed settlement and exact first false authorization
+  clause were not captured. Degraded callback receipt versus timeout remains
+  unproved; other simultaneous settings/gesture/lifetime failures are not
+  excluded. The observed service verdict plus deterministic unavailable-seed
+  path is the leading common cause, not proof that every `stale` line names
+  namespace mismatch. `stale` also covers later fences (:702-720,854-859).
+- All four captures have no `native-state-pending`/`native-state-refused` or
+  Planner `preimage-write` traffic. Repeated drops before `applied`, including
+  commandless observations, strongly locate rejection before arm/flush, not in
+  KWin's all-desktop setter or correlated native completion. `world:applied`
+  has no native-state counter (`world-entry.ts:4607-4668`); it is not state-write
+  or settlement evidence. Readable target publication and geometry work can
+  continue while the native lane is disabled.
+- The disablement cannot repair its own stale namespace: same-generation seed
+  reads do not retry (`world-native-preimage.ts:451-454`), arm requires usable
+  seed (:863-866), and flush refuses unusable seed (:1046-1051). A later start
+  reading the same incompatible file degrades again. Do not delete storage or
+  bypass persist-before-write as a diagnostic workaround. Selection of a safe
+  namespace-boundary correction is separate work, preserving stale-UUID fences.
+- **Maximize/fullscreen:** M1 :157-167,184-194 and M2 :41-65,82-146 establish
+  callback-label command -> queue/dispatch -> native `stale` drop. Thus missing
+  registration, wrong action mapping or foreign holder is not the explanation
+  for these delivered presses. Settings can display valid bindings and Authentic
+  Apply cannot cure a disabled native preimage lane. No at-press holder capture
+  exists to classify any additional silent press. The runner holder preflight
+  (`scripts/kde-scenarios.mjs:2095-2137`) covers selection digits only, not the
+  state chords; its success is not a state-shortcut ownership proof.
+
+### Sticky release and reported rejected unfloat
+
+- **Acquisition:** S1 :115-129 and S2 :57-71 show sticky commands, stored opaque
+  intent, sibling geometry work and repeated above/sticky `stale` drops. Core
+  sticky-on changes semantic float membership/provenance before native proof
+  (`crates/tiler-core/src/world_sticky.rs:493-576,1007-1065`). This explains
+  removal from the tree and sibling expansion without native all-desktop
+  visibility; unchanged subject position is not evidence that no command ran.
+- **Release mechanism, source-proven:** with readable native facts, retained
+  sticky provenance makes `sticky_current` true even if native sticky is still
+  false (:74-98). Off may replace the unattempted on-binding with a fresh
+  `Sticky=false` binding and saved prior mode (:310-343,579-668); it does not
+  queue behind the old binding. Dependent runtime release/retile waits for a
+  spent, Applied clear and current non-sticky fact (:1454-1490,1546-1600).
+  Silent pre-arm drops create no attempt or spent marker
+  (`kwin/src/world-native-state.ts:680-684,990-999`). A blocked clear can
+  therefore leave semantic sticky-float retained, not an in-flight native call.
+- **Ranked release explanation:** (1) off was issued but also dropped at the
+  unavailable-seed gate, so required clear proof never arrived; (2) an independent
+  core/readability/scope refusal prevented off, leaving the earlier target.
+  S1 :238-265 and S2 :90-114 prove the second sticky command and continued
+  Controlled state publication, but summaries omit values, command correlation
+  and command results. They cannot distinguish these alternatives. Neither
+  native setter refusal nor a new core correlation defect is established.
+- **Rejected unfloat remains reported FAIL, cause unresolved:** S2 has no
+  `toggle-float`, `shortcut-failed`, `command-refused`, `command-busy`,
+  `native-fenced` or `float-refused-*` line. This does not disprove the user's
+  rejection. Entry-side float refusal can occur before a command is queued
+  (`kwin/src/world-native.ts:383-459`); a delivered float command on a sticky
+  subject routes a native clear and similarly waits for proof
+  (`world_sticky.rs:671-706,1569-1577`). The capture cannot place that press,
+  distinguish entry refusal from core refusal, or prove an actual native call
+  pending. Rank retained, unattempted clear as the common downstream hypothesis;
+  leave capture-boundary/key-route and independent refusal alternatives open.
+
+### Discriminating capture and proposed correction units
+
+- The existing logs explain the common native-lane failure without trace, but
+  not the exact seed settlement or rejected-unfloat boundary. For a user-run
+  diagnostic capture, retain the pre-start user-journal cursor, then run
+  `just dev trace` from the repository root. Record the printed verified KWin
+  PID and combined/Planner log locations. After stopping with Ctrl-C, also save
+  `journalctl --user --after-cursor "$CURSOR" _PID="$KWIN_PID" -o cat --no-pager`.
+  Strip the displayed `-- cursor: ` prefix when assigning `CURSOR`; obtain it
+  before startup with `journalctl --user --show-cursor -n 0 --no-pager`.
+  This is a proposed user procedure, not an executed journey or storage reset.
+  Follow the [live guide](../live-kwin-testing.md), use an appended test workspace
+  and ordinary disposable windows, and retain readiness before pressing keys.
+- Startup must show `world:ready`, `world:discovered` and matched
+  dispatch/applied, plus `world:settings status=accepted` and
+  `world:preimage-seed outcome=...`. Expected on the failing path: degraded
+  namespace-mismatch (or degraded timeout), no usable recovery seed and repeated
+  native-state stale drops. If seed is `ok`, retain any
+  `native-recovery-seed outcome=ready pending=N` and recovery completion; inspect
+  the other authorization predicates rather than assuming the same cause.
+  Missing evaluated readiness is a stop, not a reason to restart around it.
+- Use separate known-baseline subjects for these bounded sequences; physically
+  release every chord and wait for its result before the next. Do not turn a
+  failed diagnostic into acceptance or repeatedly press to force convergence.
+
+| Diagnostic sequence | Required log/visible evidence after each press |
+| --- | --- |
+| Ordinary tile: Meta+M; Meta+M; Meta+F11; Meta+F11 | Respectively `world:command op=toggle-maximize` twice, then `op=toggle-fullscreen` twice; each queue/dispatch and state pending/refused/dropped. On a working path native maximize on/off, then fullscreen on/off; on the current failing path expect stale drops and unchanged native state. This is not the composed maximize-under-fullscreen acceptance sequence. |
+| Ordinary tile: Meta+Shift+G; Meta+Shift+G | Two `op=toggle-sticky` command/dispatch pairs. Record all-desktop/above native facts and sibling frame after each; expected working roundtrip returns tiled. Persistent stale pairs with no setter evidence support blocked acquire/clear. |
+| Ordinary tile: Meta+G; Meta+Shift+G; Meta+Shift+G; Meta+G | First `op=toggle-float label=float` must establish ordinary float; two sticky commands should return to prior float; final `toggle-float` should tile. At final rejection retain the exact UI message/time, callback/refusal lines, and whether a float command/dispatch exists. No float dispatch plus `shortcut-failed`/`float-refused-*` locates entry refusal; a dispatched float with terminal failure locates core refusal; a dispatched clear with stale drops supports blocked completion. Complete silence needs at-press holder/capture-boundary evidence. |
+
+- `just dev` follows KWin after bring-up but tails Planner from its first line
+  (`just/linux.just:1472-1474`); missing startup KWin lines cannot prove settings
+  or recovery never ran. User reports no trace argument on supplied runs; a few
+  `world:trace` timing lines in M2 do not provide the missing state payloads.
+  Current trace enables KWin probes (`world-entry.ts:480-487`), but Planner
+  CaptureWorld still emits summaries only (`planner_service.rs:498-502`,
+  `world_service.rs:622-700`). Despite the broader description in the dev recipe,
+  do not promise that trace will reveal target values/cmdSeq/attempts/results.
+  If the cursor-bounded rerun cannot distinguish release alternatives, add
+  bounded native-state gate/target and terminal-result diagnostics in a separate
+  correction unit; no bus monitor is part of this procedure.
+- Proposed P1 units: (1) reproduce mismatched-preimage seed through the real
+  service/client/recovery/executor boundary, then correct namespace-boundary
+  admission without adopting stale records or weakening durable-write gates;
+  (2) reproduce sticky-on with no native attempt, sticky-off and Meta+G from
+  both prior modes, distinguish unattempted binding from native pending work
+  and verify release/refusal evidence; (3) repeat physical ST and remaining
+  storage/recovery/menu legs after corrections. Namespace treatment beyond the
+  existing contract needs an explicit decision before implementation.
+- Verification of this record: source/log review, independent copy hashes,
+  local link checks and `git diff --check`. No test suite or native command ran;
+  previous offline/fixture passes are not refreshed. The state-target note stays
+  active; no settled state/wire/history/restart contract is reopened.
