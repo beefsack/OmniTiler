@@ -127,7 +127,12 @@
   [reconnect record](v4-phase2-kde-physical-reconnect.md):95-213 documents physical
   identity return, minimized-rehome invalidation, overlapping chains and no
   admission focus for rehomed members. [Native triage, 2026-11-09](v4-phase2-kde-physical-reconnect.md#2026-11-09-native-reconnect-triage):
-  RC partial, leg 2 failed; summary logs do not prove the causal divergence.
+   RC partial, leg 2 failed; summary logs do not prove the live causal divergence.
+   The [exact offline leg](v4-phase2-kde-physical-reconnect.md#2026-11-10-offline-leg-2-discriminator)
+    reproduced F's non-return after a settled T3 send and now passes with the
+    existing separate-layout/current-content rule: F/T2 return, T3 stays, native
+    membership converges. Bounded diagnostics and updated traced re-run steps
+    are available. Native RC and the user's merge-policy question remain open.
 - **E5 - bounded state restart**:
   [state record](v4-phase2-kde-state-targets.md):609-648 reports injected prior-tile
   sticky restart/off PASS with native joins/focus and both readiness gates.

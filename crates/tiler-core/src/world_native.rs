@@ -241,6 +241,14 @@ impl WorldEngine {
             for output in &live {
                 self.reorder_ring_to_native(output);
             }
+            // Physical-return binding carry before adoption: a renamed
+            // live handle carrying a displaced origin's physical identity
+            // reclaims that origin's native bindings for its owned units,
+            // so the adoption below reuses the reclaimed logicals instead
+            // of minting fresh ids. Only reclaimed owned units, only
+            // staged-ordered valid natives; collision/held conservative
+            // (never steals a live binding, never double-binds).
+            self.carry_return_bindings();
             for output in &live {
                 self.adopt_native_output(output);
             }
@@ -276,6 +284,87 @@ impl WorldEngine {
                 .collect();
             for output in &live {
                 self.ensure_native_creations(output);
+            }
+        }
+    }
+
+    /// Physical-return native binding carry (host-owned, separate-view
+    /// only): for each displaced origin whose disconnect-time panel
+    /// identity matches exactly one live handle, copy that origin's
+    /// `(origin, native) -> owned logical` bindings onto the live handle
+    /// so adoption reuses the reclaimed logicals. Mirrors the return
+    /// matching in [`WorldEngine::converge_logical_pre`] (same unique
+    /// physical match, same ambiguous-hold); runs before adoption mints
+    /// fresh ids. Conservative: only owned units, only natives in the
+    /// live handle's staged order, never steals an existing live binding
+    /// and never binds a logical that already has one there.
+    fn carry_return_bindings(&mut self) {
+        let live_panels: Vec<(String, crate::world_report::OutputIdentity)> = self
+            .staged
+            .screens
+            .iter()
+            .map(|screen| (screen.output.0.clone(), screen.identity.clone()))
+            .collect();
+        let live_refs: Vec<(&str, &crate::world_report::OutputIdentity)> = live_panels
+            .iter()
+            .map(|(handle, identity)| (handle.as_str(), identity))
+            .collect();
+        let origins: Vec<String> = self.displaced.keys().cloned().collect();
+        let matched = self.matched_physical_returns(&live_refs, &origins);
+        let live_set: BTreeSet<String> = self
+            .staged
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.clone())
+            .collect();
+        for (origin, live_handle) in matched {
+            let Some(entry) = self.displaced.get(&origin) else {
+                continue;
+            };
+            let owned = entry.owned.clone();
+            let order: BTreeSet<String> = self
+                .staged
+                .observation
+                .native
+                .iter()
+                .find(|row| row.output.0 == live_handle)
+                .map(|row| row.native_order.iter().cloned().collect())
+                .unwrap_or_default();
+            if order.is_empty() {
+                if !live_set.contains(&origin) {
+                    self.native_map
+                        .retain(|(out, _), logical| out != &origin || !owned.contains(logical));
+                }
+                continue;
+            }
+            let out = OutputId(live_handle.clone());
+            for id in &owned {
+                if self.native_binding_for(&live_handle, id).is_some() {
+                    continue;
+                }
+                let natives: Vec<String> = self
+                    .native_map
+                    .iter()
+                    .filter(|((out, _), logical)| out == &origin && *logical == id)
+                    .map(|((_, native), _)| native.clone())
+                    .collect();
+                for native in natives {
+                    if !order.contains(&native) {
+                        continue;
+                    }
+                    if self.native_logical(&out, &native).is_some() {
+                        continue;
+                    }
+                    self.native_map
+                        .insert((live_handle.clone(), native), id.clone());
+                }
+            }
+            // Dead-origin cleanup (verified dead): pending policy SOURCE
+            // lookups home live post-return; non-policy flights may still
+            // reference the dead handle but never read these rows.
+            if !live_set.contains(&origin) {
+                self.native_map
+                    .retain(|(out, _), logical| out != &origin || !owned.contains(logical));
             }
         }
     }

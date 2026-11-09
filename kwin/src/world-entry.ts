@@ -598,6 +598,269 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         const traceDiagDpi = (value: unknown): string => (
             typeof value === "number" && Number.isInteger(value) ? String(value) : "-"
         );
+        // Observe-flight receipt/plan/transfer evidence: sent snapshot at
+        // every capture send, fresh readbacks plus reply plan at every
+        // accepted apply, sharing only the source token (rev rides apply
+        // rows). snap=sent vs snap=fresh vs snap=reply are never merged.
+        // Caps ride inline as omit counts. Never logged: titles, app ids,
+        // roles, physical metadata, rects. Transfer rows have no
+        // source/target arms on the wire (only target out/ws plus
+        // cmdSeq): the absence is explicit, never invented.
+        const OBSERVE_MAX_SCREENS = 8;
+        const OBSERVE_MAX_NATIVE_OUTS = 8;
+        const OBSERVE_MAX_ORDER = 8;
+        const OBSERVE_MAX_WINS = 16;
+        const OBSERVE_MAX_PLAN = 8;
+        const OBSERVE_MAX_BINDS = 8;
+        const OBSERVE_MAX_XFERS = 8;
+        const OBSERVE_MAX_MEMBERS = 8;
+        // Closed transfer-kind vocabulary (world-contract window/view/
+        // migration); anything else collapses to "-".
+        const traceDiagXferKind = (value: unknown): string => (
+            value === "window" || value === "view" || value === "migration" ? value : "-"
+        );
+        // Closed native-setter vocabulary (world-contract FrameSetter);
+        // anything else collapses to "-".
+        const traceDiagSetter = (value: unknown): string => (
+            value === "accepted" || value === "refused" || value === "threw" ? value : "-"
+        );
+        // Closed membership-ref namespace (world-contract WorldMemberRef
+        // kind); the out/ws arms ride traceDiagId.
+        const traceDiagMemberRef = (value: unknown): string => {
+            if (typeof value !== "object" || value === null) {
+                return "-";
+            }
+            const rec = value as Record<string, unknown>;
+            const kind = rec["kind"] === "logical" || rec["kind"] === "native" ?
+                (rec["kind"] as string) : "-";
+            if (kind === "-") {
+                return "-";
+            }
+            return `${kind}/${traceDiagId(rec["out"])}/${traceDiagId(rec["ws"])}`;
+        };
+        // Canonical broker/reply clock stamps only (rev, nativeInvalid,
+        // local watermark, attemptMs share the u64 shape).
+        const traceDiagStamp = (value: unknown): string => (
+            typeof value === "string" && isCanonicalU64(value) ? value : "-"
+        );
+        // Join sanitized ids with an explicit omission count. Empty reads
+        // "-" (never mistaken for one empty id); omission rides `+omit=N`
+        // only when nonzero.
+        const traceDiagJoinIds = (ids: string[], cap: number): { text: string; omitted: number } => {
+            const shown = ids.slice(0, cap);
+            const omitted = ids.length - shown.length;
+            return { text: shown.length > 0 ? shown.join("|") : "-", omitted };
+        };
+        // Per-window observed homing: logical out/ws plus the native arm.
+        // Single-homed names the sanitized native id; all-desktops reads
+        // `all` (never unknown); other multi-homed rides `multi:N`;
+        // zero/unknown reads `unknown`.
+        const traceDiagObservedWins = (observation: WorldObservation): Array<{ win: string; out: string; ws: string; native: string }> => {
+            const rows: Array<{ win: string; out: string; ws: string; native: string }> = [];
+            try {
+                const desktopsByWin = new Map<string, number>();
+                const allByWin = new Set<string>();
+                for (const fact of observation.windowFacts) {
+                    if (typeof fact.win === "string") {
+                        const known = desktopsByWin.get(fact.win) ?? 0;
+                        const count = Array.isArray(fact.desktops) ? fact.desktops.length : 0;
+                        if (count > known) {
+                            desktopsByWin.set(fact.win, count);
+                        }
+                        if (fact.onAllDesktops === true) {
+                            allByWin.add(fact.win);
+                        }
+                    }
+                }
+                const push = (win: string, out: string, ws: string, nativeWs: string | null): void => {
+                    let native = "unknown";
+                    if (allByWin.has(win)) {
+                        native = "all";
+                    } else if (typeof nativeWs === "string" && nativeWs !== "") {
+                        native = traceDiagId(nativeWs);
+                    } else {
+                        const count = desktopsByWin.get(win) ?? 0;
+                        if (count > 1) {
+                            native = `multi:${count}`;
+                        }
+                    }
+                    rows.push({ win: traceDiagId(win), out: traceDiagId(out), ws: traceDiagId(ws), native });
+                };
+                for (const domain of observation.domains) {
+                    for (const entry of domain.windows) {
+                        push(entry.win, entry.out, entry.ws, entry.nativeWs);
+                    }
+                }
+                for (const entry of observation.minimized) {
+                    push(entry.win, entry.out, entry.ws, entry.nativeWs);
+                }
+            } catch (error) {
+                void error;
+            }
+            return rows;
+        };
+        // SENT snapshot receipt, emitted at the send boundary only.
+        const traceDiagEmitSent = (observation: WorldObservation, sourceToken: string): void => {
+            let watermark = "-";
+            try {
+                const live = state.inFlight;
+                // Sources mint `src-...` (already token-safe), and noteSend
+                // receives the tokenized form, so a direct compare binds
+                // the live watermark without the later-declared helper.
+                if (live !== null && live.source === sourceToken) {
+                    watermark = traceDiagStamp(live.watermark);
+                }
+            } catch (error) {
+                void error;
+            }
+            let cmds = 0;
+            try {
+                cmds = traceFlightCmds.get(sourceToken)?.length ?? 0;
+            } catch (error) {
+                void error;
+            }
+            const screens = traceDiagJoinIds(
+                observation.screens.map((s) => traceDiagId(s.out)), OBSERVE_MAX_SCREENS,
+            );
+            const nativeOuts = observation.native.slice(0, OBSERVE_MAX_NATIVE_OUTS);
+            const nativeOmit = observation.native.length - nativeOuts.length;
+            const nativeParts: string[] = [];
+            for (const entry of nativeOuts) {
+                const order = traceDiagJoinIds(
+                    entry.order.map((id) => traceDiagId(id)), OBSERVE_MAX_ORDER,
+                );
+                nativeParts.push(`${traceDiagId(entry.out)}:cur=${traceDiagId(entry.current)}` +
+                    `/n=${entry.order.length}:order=${order.text}${order.omitted > 0 ? `+omit=${order.omitted}` : ""}`);
+            }
+            const wins = traceDiagObservedWins(observation);
+            const shownWins = wins.slice(0, OBSERVE_MAX_WINS);
+            log(`omnitiler:world:trace ev=observe-sent snap=sent src=${traceDiagId(sourceToken)} ` +
+                `nwinv=${watermark} cmds=${cmds} focus=${traceDiagId(observation.focusedGlobal)} ` +
+                `screens=${observation.screens.length}:${screens.text}${screens.omitted > 0 ? `+omit=${screens.omitted}` : ""} ` +
+                `native=${observation.native.length}:${nativeParts.join("|") === "" ? "-" : nativeParts.join("|")}` +
+                `${nativeOmit > 0 ? `+omitOuts=${nativeOmit}` : ""} ` +
+                `wins=${shownWins.length}/${wins.length}${wins.length > shownWins.length ? `+omit=${wins.length - shownWins.length}` : ""} t=${Date.now()}`);
+            for (const row of shownWins) {
+                log(`omnitiler:world:trace ev=observe-sent-win snap=sent src=${traceDiagId(sourceToken)} ` +
+                    `win=${row.win} out=${row.out} ws=${row.ws} native=${row.native} t=${Date.now()}`);
+            }
+        };
+        // One membership-attempt row; snap names the evidence boundary.
+        const traceDiagEmitMember = (
+            snap: string, sourceToken: string, rev: string, attempt: {
+                op: unknown; win: unknown; out: unknown; ws: unknown;
+                setter: unknown; pre: unknown; post: unknown; attemptMs: unknown;
+            },
+        ): void => {
+            log(`omnitiler:world:trace ev=member-attempt snap=${snap} src=${traceDiagId(sourceToken)} rev=${traceDiagStamp(rev)} ` +
+                `op=${traceDiagId(attempt.op)} win=${traceDiagId(attempt.win)} ` +
+                `out=${traceDiagId(attempt.out)} ws=${traceDiagId(attempt.ws)} ` +
+                `setter=${traceDiagSetter(attempt.setter)} pre=${traceDiagMemberRef(attempt.pre)} ` +
+                `post=${traceDiagMemberRef(attempt.post)} attemptMs=${traceDiagStamp(attempt.attemptMs)} t=${Date.now()}`);
+        };
+        // Fresh receipt plus reply evidence for one accepted apply. Runs
+        // for commandless flights too, before the subject early-return.
+        const traceDiagEmitObserveApplied = (
+            flight: CaptureFlight, parsed: WorldReply, fresh: WorldObservation,
+        ): void => {
+            const src = traceDiagId(flight.source);
+            const rev = traceDiagStamp(parsed.rev);
+            const watermark = traceDiagStamp(flight.watermark);
+            const replyInvalid = traceDiagStamp(parsed.nativeInvalid);
+            let focusPost = "-";
+            try {
+                focusPost = traceDiagId(activeWindowId());
+            } catch (error) {
+                void error;
+            }
+            const wins = traceDiagObservedWins(fresh);
+            const shownWins = wins.slice(0, OBSERVE_MAX_WINS);
+            log(`omnitiler:world:trace ev=observe-applied snap=fresh src=${src} rev=${rev} ` +
+                `nwinv=${watermark} nativeInvalid=${replyInvalid} ` +
+                `focusFresh=${traceDiagId(fresh.focusedGlobal)} focusPost=${focusPost} ` +
+                `wins=${shownWins.length}/${wins.length}${wins.length > shownWins.length ? `+omit=${wins.length - shownWins.length}` : ""} ` +
+                `replyPlans=${parsed.windows.length} replyBinds=${parsed.workspaces.length} replyXfers=${parsed.transfers.length} t=${Date.now()}`);
+            for (const row of shownWins) {
+                log(`omnitiler:world:trace ev=observe-fresh-win snap=fresh src=${src} rev=${rev} ` +
+                    `win=${row.win} out=${row.out} ws=${row.ws} native=${row.native} t=${Date.now()}`);
+            }
+            const plans = parsed.windows.slice(0, OBSERVE_MAX_PLAN);
+            for (const row of plans) {
+                log(`omnitiler:world:trace ev=observe-plan snap=reply src=${src} rev=${rev} ` +
+                    `win=${traceDiagId(row.win)} out=${traceDiagId(row.out)} ws=${traceDiagId(row.ws)} ` +
+                    `member=${traceDiagAuth(row.member_auth)}/${traceDiagHold(row.member_hold)} ` +
+                    `frame=${traceDiagAuth(row.frame_auth)}/${traceDiagHold(row.frame_hold)} t=${Date.now()}`);
+            }
+            if (parsed.windows.length > plans.length) {
+                log(`omnitiler:world:trace ev=observe-plan snap=reply src=${src} rev=${rev} ` +
+                    `omit=${parsed.windows.length - plans.length} t=${Date.now()}`);
+            }
+            const shownPlanKeys = new Set<string>();
+            for (const row of parsed.windows.slice(0, OBSERVE_MAX_PLAN)) {
+                shownPlanKeys.add(`${row.out}\u0000${row.ws}`);
+            }
+            for (const transfer of parsed.transfers.slice(0, OBSERVE_MAX_XFERS)) {
+                shownPlanKeys.add(`${transfer.out}\u0000${transfer.ws}`);
+            }
+            const relevantBinds: typeof parsed.workspaces = [];
+            const otherBinds: typeof parsed.workspaces = [];
+            for (const row of parsed.workspaces) {
+                if (shownPlanKeys.has(`${row.out}\u0000${row.id}`)) {
+                    relevantBinds.push(row);
+                } else {
+                    otherBinds.push(row);
+                }
+            }
+            const binds = [...relevantBinds, ...otherBinds].slice(0, OBSERVE_MAX_BINDS);
+            for (const row of binds) {
+                const bind = typeof row.bind === "string" && row.bind !== "" ? traceDiagId(row.bind) : "-";
+                log(`omnitiler:world:trace ev=observe-bind snap=reply src=${src} rev=${rev} ` +
+                    `ws=${traceDiagId(row.id)} out=${traceDiagId(row.out)} bind=${bind} t=${Date.now()}`);
+            }
+            if (parsed.workspaces.length > binds.length) {
+                log(`omnitiler:world:trace ev=observe-bind snap=reply src=${src} rev=${rev} ` +
+                    `omit=${parsed.workspaces.length - binds.length} t=${Date.now()}`);
+            }
+            const xfers = parsed.transfers.slice(0, OBSERVE_MAX_XFERS);
+            for (const transfer of xfers) {
+                const cmdSeq = typeof transfer.cmdSeq === "string" && /^[0-9]+$/.test(transfer.cmdSeq) ?
+                    transfer.cmdSeq : "-";
+                const win = transfer.win !== "" ? traceDiagId(transfer.win) : "-";
+                log(`omnitiler:world:trace ev=observe-transfer snap=reply src=${src} rev=${rev} ` +
+                    `op=${traceDiagId(transfer.op)} kind=${traceDiagXferKind(transfer.kind)} win=${win} ` +
+                    `out=${traceDiagId(transfer.out)} ws=${traceDiagId(transfer.ws)} ` +
+                    `held=${transfer.held ? "1" : "0"} follow=${transfer.follow ? "1" : "0"} ` +
+                    `cmdSeq=${cmdSeq} t=${Date.now()}`);
+            }
+            if (parsed.transfers.length > xfers.length) {
+                log(`omnitiler:world:trace ev=observe-transfer snap=reply src=${src} rev=${rev} ` +
+                    `omit=${parsed.transfers.length - xfers.length} t=${Date.now()}`);
+            }
+            // Delivered (SENT correlation) plus retained-at-apply rows; the
+            // retained set may include unconsumed older rows.
+            const sentMembers = flight.delivered.members.slice(0, OBSERVE_MAX_MEMBERS);
+            for (const attempt of sentMembers) {
+                traceDiagEmitMember("sent", flight.source, parsed.rev, attempt);
+            }
+            if (flight.delivered.members.length > sentMembers.length) {
+                log(`omnitiler:world:trace ev=member-attempt snap=sent src=${src} rev=${rev} ` +
+                    `omit=${flight.delivered.members.length - sentMembers.length} t=${Date.now()}`);
+            }
+            let retained: ReturnType<typeof state.memberAttemptsForReport> = [];
+            try {
+                retained = state.memberAttemptsForReport();
+            } catch (error) {
+                void error;
+            }
+            const shownRetained = retained.slice(0, OBSERVE_MAX_MEMBERS);
+            for (const attempt of shownRetained) {
+                traceDiagEmitMember("apply-retained", flight.source, parsed.rev, attempt);
+            }
+            if (retained.length > shownRetained.length) {
+                log(`omnitiler:world:trace ev=member-attempt snap=apply-retained src=${src} rev=${rev} ` +
+                    `omit=${retained.length - shownRetained.length} t=${Date.now()}`);
+            }
+        };
         // Serialize the currently retained frame/state attempt rows.
         // Trace-only and bounded by the existing latest-wins caps.
         const traceDiagCurrentRows = (): string[] => {
@@ -674,6 +937,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             fresh: WorldObservation,
             takePairs: ReadonlyArray<{ clientCmd: string; result: WorldReplyResult | null }>,
         ): void => {
+            // Receipt/plan/transfer evidence for every accepted apply,
+            // including commandless flights (the subject path below exits
+            // ev=no-subject for those).
+            traceDiagEmitObserveApplied(flight, parsed, fresh);
             const src = traceDiagId(flight.source);
             const cmds = traceFlightCmds.get(flight.source) ??
                 (flight.clientCmd !== null ? [flight.clientCmd] : []);
@@ -964,8 +1231,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         }
                         wins = tracePending.filter((id) => inReport.has(id));
                         traceRememberSent(sourceToken, [...wins]);
+                        // SENT-snapshot receipt (never fresh readbacks).
+                        traceDiagEmitSent(observation, sourceToken);
                     } else {
                         wins = [...(traceSentBySrc.get(sourceToken) ?? [])];
+                        log(`omnitiler:world:trace ev=observe-retry src=${traceDiagId(sourceToken)} t=${Date.now()}`);
                     }
                     for (const win of wins) {
                         log(`omnitiler:world:trace win=${win} ev=send t=${Date.now()} src=${sourceToken}`);

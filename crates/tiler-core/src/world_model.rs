@@ -416,6 +416,45 @@ impl WorldEngine {
         }
     }
 
+    /// Shared physical-return matcher: for each displaced origin, match
+    /// its disconnect-time panel identity against the live handles (same
+    /// unique physical match plus the same ambiguous-hold when one live
+    /// panel is claimed twice). Used by the logical return scan and the
+    /// native binding carry so the two never diverge.
+    pub(crate) fn matched_physical_returns(
+        &self,
+        live_refs: &[(&str, &crate::world_report::OutputIdentity)],
+        origins: &[String],
+    ) -> Vec<(String, String)> {
+        let mut matched: Vec<(String, String)> = Vec::new();
+        for origin in origins {
+            let Some(entry) = self.displaced.get(origin) else {
+                continue;
+            };
+            let siblings: Vec<&crate::world_report::OutputIdentity> = origins
+                .iter()
+                .filter(|other| *other != origin)
+                .filter_map(|other| self.displaced.get(other))
+                .map(|sibling| &sibling.origin_identity)
+                .collect();
+            if let Some(handle) =
+                crate::workspace_scope::match_physical_return(entry, live_refs, &siblings)
+            {
+                matched.push((origin.clone(), handle));
+            }
+        }
+        // One live panel claimed twice is ambiguous: hold every such
+        // claim rather than merging two physical identities.
+        {
+            let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+            for (_, handle) in &matched {
+                *counts.entry(handle.clone()).or_default() += 1;
+            }
+            matched.retain(|(_, handle)| counts.get(handle) == Some(&1));
+        }
+        matched
+    }
+
     /// Pre-sweep logical convergence: bootstrap, hotplug
     /// displacement/return, tiling seeds, and view sanity. Runs after
     /// [`WorldEngine::stage_facts`] (echoes inform homing) and before
@@ -604,32 +643,16 @@ impl WorldEngine {
                 .map(|(handle, identity)| (handle.as_str(), identity))
                 .collect();
             let origins: Vec<String> = self.displaced.keys().cloned().collect();
-            let mut matched: Vec<(String, String)> = Vec::new();
-            for origin in &origins {
-                let Some(entry) = self.displaced.get(origin) else {
-                    continue;
-                };
-                let siblings: Vec<&crate::world_report::OutputIdentity> = origins
-                    .iter()
-                    .filter(|other| *other != origin)
-                    .filter_map(|other| self.displaced.get(other))
-                    .map(|sibling| &sibling.origin_identity)
-                    .collect();
-                if let Some(handle) =
-                    crate::workspace_scope::match_physical_return(entry, &live_refs, &siblings)
-                {
-                    matched.push((origin.clone(), handle));
-                }
-            }
-            // One live panel claimed twice is ambiguous: hold every such
-            // claim rather than merging two physical identities.
-            {
-                let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-                for (_, handle) in &matched {
-                    *counts.entry(handle.clone()).or_default() += 1;
-                }
-                matched.retain(|(_, handle)| counts.get(handle) == Some(&1));
-            }
+            let matched = self.matched_physical_returns(&live_refs, &origins);
+            // Pre-rekey member homes: the scan below must read where
+            // members lived before this report's return rekeys them onto
+            // the live handle, otherwise every home already names the
+            // origin and no return flight ever mints.
+            let pre_homes: BTreeMap<WindowId, DomainKey> = self
+                .members
+                .iter()
+                .map(|(window, state)| (window.clone(), state.home.clone()))
+                .collect();
             for (origin, live_handle) in matched {
                 let Some(entry) = self.displaced.remove(&origin) else {
                     continue;
@@ -670,22 +693,40 @@ impl WorldEngine {
                 for id in &owned {
                     fresh_views.push((origin_id.clone(), id.clone()));
                 }
-                // Members still homed away from the origin ride one policy
-                // transfer each back home. Staged admitted facts only:
-                // own-process and safety exclusions never ride.
+                // Members homed away from the origin (pre-rekey view) ride
+                // one policy transfer each back home. Staged admitted
+                // facts only: own-process and safety exclusions never
+                // ride. Never replace an outstanding non-policy Window or
+                // Migration flight: the command path owns it.
                 for (window, fact) in &self.staged.facts.clone() {
                     if self.derived_for(window).sticky {
                         continue;
                     }
                     let moved_id = owned.iter().find(|id| {
-                        self.retained_homing(window).is_some_and(|key| {
+                        pre_homes.get(window).is_some_and(|key| {
                             key.output.0 == entry.dest && key.workspace.0 == **id
                         })
                     });
-                    let (Some(moved_id), Some(source)) = (moved_id, self.retained_homing(window))
+                    let (Some(moved_id), Some(source)) = (moved_id, pre_homes.get(window).cloned())
                     else {
                         continue;
                     };
+                    let occupied = self.retained.iter().any(|retained| {
+                        if retained.policy {
+                            false
+                        } else {
+                            match &retained.target.kind {
+                                TransferKind::Window(w) => w == window,
+                                TransferKind::Migration => {
+                                    retained.members.iter().any(|member| member == window)
+                                }
+                                TransferKind::View => false,
+                            }
+                        }
+                    });
+                    if occupied {
+                        continue;
+                    }
                     let target = DomainKey {
                         output: origin_id.clone(),
                         workspace: WorkspaceId(moved_id.clone()),
@@ -777,18 +818,23 @@ impl WorldEngine {
                     continue;
                 };
                 let fresh = prev.as_deref() != Some(dest.as_str());
-                // Stray scan before the rekey below: members homed to the
-                // displaced units but observed away from the destination
-                // ride one policy transfer each. Members observed at the
-                // destination carry without actuation; sticky facts never
+                // Stray scan before the rekey below: every member homed to
+                // the displaced units rides one policy transfer each onto
+                // the separate displaced layout (new native backing via
+                // the existing creation mechanism below, never a hidden
+                // divergent home). Members already observed on the
+                // destination screen ride too: the stale topology receipt
+                // (old native now bound to a survivor unit) must not
+                // collapse them onto the survivor's own unit, and the
+                // SOURCE-narrowed settlement below holds the flight until
+                // native backing plus arrival prove it. Sticky facts never
                 // ride. Must run before `rekey_members`, which moves every
                 // member home onto the destination and would make the
                 // origin-homing check below vacuous.
                 let mut stray_members: Vec<(WindowId, DomainKey, DomainKey)> = Vec::new();
                 if fresh {
-                    let dest_id = OutputId(dest.clone());
                     // Staged admitted facts only (see above).
-                    for (window, fact) in &self.staged.facts.clone() {
+                    for window in self.staged.facts.clone().keys() {
                         if self.derived_for(window).sticky {
                             continue;
                         }
@@ -812,14 +858,27 @@ impl WorldEngine {
                         // origin's units, so `take_admission_focus` spends
                         // it without emitting even when the survivor homing
                         // lands on a previously empty controlled unit.
-                        // Recorded before the dest-observed check so members
-                        // already carried on the destination count too.
                         self.displaced_rehomed.insert(window.clone());
-                        if fact.output.as_ref() == Some(&dest_id) {
+                        // Never replace an outstanding non-policy Window or
+                        // Migration flight: the command path owns it.
+                        let occupied = self.retained.iter().any(|retained| {
+                            if retained.policy {
+                                false
+                            } else {
+                                match &retained.target.kind {
+                                    TransferKind::Window(w) => w == window,
+                                    TransferKind::Migration => {
+                                        retained.members.iter().any(|member| member == window)
+                                    }
+                                    TransferKind::View => false,
+                                }
+                            }
+                        });
+                        if occupied {
                             continue;
                         }
                         let target = DomainKey {
-                            output: dest_id.clone(),
+                            output: OutputId(dest.clone()),
                             workspace: WorkspaceId(moved_id.clone()),
                         };
                         if source == target {

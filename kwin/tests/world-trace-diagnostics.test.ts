@@ -65,17 +65,20 @@ interface Harness {
     handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
     runTimers: (maxDelay?: number) => void;
     setActive: (id: string | null) => void;
+    // Trace-test-only native event trigger (fires a workspace signal with
+    // no payload, producing a commandless OBSERVE capture on the debounce).
+    fire: (name: string) => void;
     lastCall: (method: string) => { method: string; payload: string; callback: (reply: unknown) => void; answered: boolean };
 }
 
-function makeHarness(): Harness {
+function makeHarness(extraDesktops: readonly string[] = []): Harness {
     const wins = [
         makeWin(WIN_A, { x: TILE_A[0], y: TILE_A[1], width: TILE_A[2], height: TILE_A[3] }),
         makeWin(WIN_B, { x: TILE_B[0], y: TILE_B[1], width: TILE_B[2], height: TILE_B[3] }),
     ];
     const world = {
         screens: [{ name: OUT, geometry: { x: 0, y: 0, width: 1920, height: 1080 } }],
-        desktops: [{ id: WS }],
+        desktops: [{ id: WS }, ...extraDesktops.map((id) => ({ id }))],
         wins,
         activeScreen: { name: OUT },
         activeWindow: wins[0] as FakeWin | null,
@@ -162,6 +165,13 @@ function makeHarness(): Harness {
         wins, activeId: WIN_A, calls, timers, logs, handle, runTimers,
         setActive: (id: string | null) => {
             world.activeWindow = id === null ? null : (world.wins.find((w) => w.internalId === id) ?? null);
+        },
+        fire: (name: string) => {
+            const sig = signals[name];
+            assert.ok(sig !== undefined, `known signal ${name}`);
+            for (const handler of [...sig.handlers]) {
+                (handler as (...a: Array<unknown>) => void)();
+            }
         },
         lastCall: (method: string) => {
             const f = [...calls].reverse().find((c) => c.method === method);
@@ -903,6 +913,300 @@ describe("world trace subject-basis display caps", () => {
         }
         const batchUn = traceLines(h, "marker-unassigned").filter((l) => l.includes(`src=${batchSrc}`));
         assert.equal(batchUn.length, 0, `resolved commands never spill to marker-unassigned: ${batchUn.join("\n")}`);
+        h.handle.stop();
+    });
+});
+
+describe("world trace observe-flight reconnect diagnostics", () => {
+    const observeLines = (h: Harness): string[] =>
+        h.logs.filter((l) => l.includes("omnitiler:world:trace") &&
+            /ev=(observe-sent|observe-sent-win|observe-retry|observe-applied|observe-fresh-win|observe-plan|observe-bind|observe-transfer|member-attempt)/.test(l));
+    const srcOf = (line: string): string => {
+        const m = line.match(/ src=([a-z0-9-]+)/);
+        assert.ok(m !== null, `observe line carries a source: ${line}`);
+        return (m as RegExpMatchArray)[1] as string;
+    };
+
+    it("commandless OBSERVE flights emit shared-source sent-vs-fresh receipt, plan, bind and transfer evidence", () => {
+        const h = makeHarness();
+        discover(h);
+        // A native screensChanged with no command queued produces a second
+        // commandless OBSERVE capture; the discover auto flight (rev 0) is
+        // already settled and must never be re-answered.
+        h.fire("screensChanged");
+        h.runTimers();
+        const descs = h.calls.filter((c) => c.method === "DescribeWorld");
+        assert.equal(descs.length, 2, "one native event sends exactly one observe flight");
+        const req = JSON.parse(descs[descs.length - 1]!.payload) as Record<string, unknown>;
+        const src = req["source"] as string;
+        const nwinv = req["nativeInvalid"] as string;
+        assert.ok(typeof src === "string" && src.length > 0, "auto capture has a source");
+        // Native membership changes between the send boundary and the
+        // accepted apply: WIN_A flips to all-desktops after its SENT
+        // snapshot was taken, so sent rows must show the old homing while
+        // fresh rows show the new one. No signal fires (direct mutation),
+        // so the capture watermark still binds the reply.
+        h.wins[0]!.onAllDesktops = true;
+        // Held transfer: no actuation, but the desired target still rides
+        // the row as held=1 so a native pullback (no transfer) and a held
+        // core transfer stay distinguishable.
+        answerDescribe(h, req, "1", {
+            windows: [
+                winRow(WIN_A, { floating: false, frame_auth: "untouched", frame_hold: "", frame: [...TILE_A], alloc: [...TILE_A] }),
+                winRow(WIN_B, { floating: false, frame_auth: "untouched", frame_hold: "", frame: [...TILE_B], alloc: [...TILE_B] }),
+            ],
+            workspaces: [
+                { id: WS, out: OUT, bind: WS, scope: { kind: "workspace", out: OUT, ws: WS }, order: 0, mode: "tiled", exist: true, hold: "" },
+            ],
+            transfers: [
+                { op: "op-held-1", kind: "window", win: WIN_A, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null },
+            ],
+        });
+        h.runTimers();
+        ackWriteIfPending(h);
+        h.runTimers();
+        // Scope to the second flight: the settled discover auto flight
+        // (rev 0) keeps its own rows under its own source.
+        const lines = observeLines(h).filter((l) => l.includes(`src=${src}`));
+        assert.ok(lines.length > 0, "observe flight leaves observe diagnostics");
+        // Every observe row shares the capture source; SENT rows carry no
+        // rev (nothing accepted yet) while apply-side rows carry rev=1.
+        const srcs = new Set(lines.map(srcOf));
+        assert.deepEqual([...srcs], [src], `every observe row shares the capture source: ${lines.join("\n")}`);
+        const sent = lines.filter((l) => l.includes("ev=observe-sent "));
+        assert.equal(sent.length, 1, `one sent receipt per capture: ${sent.join("\n")}`);
+        assert.ok(sent[0]!.includes("snap=sent"), `sent receipt is labelled sent: ${sent[0]}`);
+        assert.ok(sent[0]!.includes(`nwinv=${nwinv}`), `sent receipt carries the capture watermark: ${sent[0]}`);
+        assert.ok(sent[0]!.includes("cmds=0"), `commandless flight shows zero commands: ${sent[0]}`);
+        assert.ok(!sent[0]!.includes("rev="), `sent receipt carries no rev (nothing accepted): ${sent[0]}`);
+        assert.ok(sent[0]!.includes("wins=2/2"), `sent receipt names the exact live set: ${sent[0]}`);
+        assert.ok(sent[0]!.includes("focus=win-a"), `sent receipt carries the sent focus: ${sent[0]}`);
+        assert.ok(sent[0]!.includes("native=1:out:cur=ws1/n=1:order=ws1"),
+            `sent receipt bounds native order/current: ${sent[0]}`);
+        const sentWins = lines.filter((l) => l.includes("ev=observe-sent-win"));
+        assert.equal(sentWins.length, 2, `one sent row per live window: ${sentWins.join("\n")}`);
+        assert.ok(sentWins.every((l) => l.includes("snap=sent") && !l.includes("rev=")),
+            `sent rows never borrow the later rev: ${sentWins.join("\n")}`);
+        assert.ok(sentWins.some((l) => l.includes(`win=${WIN_A}`) && l.includes(`out=${OUT}`) && l.includes(`ws=${WS}`) &&
+            l.includes("native=ws1")),
+            `sent row carries the pre-change homing: ${sentWins.join("\n")}`);
+        const applied = lines.filter((l) => l.includes("ev=observe-applied"));
+        assert.equal(applied.length, 1, `one apply receipt per accept: ${applied.join("\n")}`);
+        assert.ok(applied[0]!.includes("snap=fresh") && applied[0]!.includes("rev=1"),
+            `apply receipt is labelled fresh with the reply rev: ${applied[0]}`);
+        assert.ok(applied[0]!.includes(`nwinv=${nwinv}`), `apply receipt repeats the capture watermark: ${applied[0]}`);
+        assert.ok(applied[0]!.includes("focusFresh=win-a") && applied[0]!.includes("focusPost=win-a"),
+            `apply receipt carries fresh and post-apply focus distinctly: ${applied[0]}`);
+        assert.ok(applied[0]!.includes("replyPlans=2") && applied[0]!.includes("replyBinds=1") && applied[0]!.includes("replyXfers=1"),
+            `apply receipt counts the reply evidence: ${applied[0]}`);
+        const fresh = lines.filter((l) => l.includes("ev=observe-fresh-win"));
+        assert.ok(fresh.some((l) => l.includes(`win=${WIN_A}`) && l.includes("snap=fresh") && l.includes("rev=1") &&
+            l.includes("native=all")),
+            `fresh row shows the post-change all-desktops homing, never merged with sent: ${fresh.join("\n")}`);
+        assert.ok(!fresh.some((l) => l.includes(`win=${WIN_A}`) && l.includes("native=ws1")),
+            `fresh rows never repeat the stale sent homing: ${fresh.join("\n")}`);
+        const plans = lines.filter((l) => l.includes("ev=observe-plan") && !l.includes("omit="));
+        assert.ok(plans.every((l) => l.includes("snap=reply")),
+            `plan rows are desired-reply evidence, not fresh observations: ${plans.join("\n")}`);
+        assert.ok(plans.some((l) => l.includes(`win=${WIN_A}`) && l.includes(`out=${OUT}`) && l.includes(`ws=${WS}`) &&
+            l.includes("member=untouched/-") && l.includes("frame=untouched/-")),
+            `plan row carries the reply target plus authority: ${plans.join("\n")}`);
+        const binds = lines.filter((l) => l.includes("ev=observe-bind") && !l.includes("omit="));
+        assert.ok(binds.every((l) => l.includes("snap=reply")),
+            `bind rows are desired-reply evidence: ${binds.join("\n")}`);
+        assert.ok(binds.some((l) => l.includes(`ws=${WS}`) && l.includes(`out=${OUT}`) && l.includes(`bind=${WS}`)),
+            `bind row carries the native binding: ${binds.join("\n")}`);
+        const xfers = lines.filter((l) => l.includes("ev=observe-transfer") && !l.includes("omit="));
+        assert.equal(xfers.length, 1, `one transfer row: ${xfers.join("\n")}`);
+        assert.ok(xfers[0]!.includes("snap=reply") && xfers[0]!.includes("op=op-held-1") && xfers[0]!.includes("kind=window") &&
+            xfers[0]!.includes(`win=${WIN_A}`) && xfers[0]!.includes("held=1") && xfers[0]!.includes("rev=1"),
+            `held transfer names target and held disposition: ${xfers[0]}`);
+        // False absence: the settled auto flight carried zero transfers,
+        // so its header counts zero with no transfer rows at all.
+        const autoSrc = (JSON.parse(descs[0]!.payload) as Record<string, unknown>)["source"] as string;
+        const autoApplied = h.logs.filter((l) => l.includes("ev=observe-applied") && l.includes(`src=${autoSrc}`));
+        assert.equal(autoApplied.length, 1, `auto flight leaves one apply receipt: ${autoApplied.join("\n")}`);
+        assert.ok(autoApplied[0]!.includes("replyXfers=0"),
+            `zero transfers ride the header count: ${autoApplied[0]}`);
+        assert.ok(!h.logs.some((l) => l.includes("ev=observe-transfer") && l.includes(`src=${autoSrc}`)),
+            "zero transfers leave no transfer rows");
+        // The existing command-subject path still exits honestly: no
+        // subjects exist on a commandless flight.
+        assert.ok(h.logs.some((l) => l.includes("omnitiler:world:trace ev=no-subject") && l.includes(`src=${src}`)),
+            "commandless flight keeps its no-subject exit");
+        h.handle.stop();
+    });
+
+    it("observe evidence stays sanitized, bounded and metadata-free", () => {
+        const h = makeHarness();
+        discover(h);
+        const LONG = `win.dotted_under-${"x".repeat(83)}`;
+        assert.equal(LONG.length, 100, "long id is ~100 chars");
+        h.wins[0]!.internalId = LONG;
+        h.setActive(LONG);
+        // Second commandless flight (see previous test): the discover auto
+        // flight is already settled.
+        h.fire("screensChanged");
+        h.runTimers();
+        const descs = h.calls.filter((c) => c.method === "DescribeWorld");
+        assert.equal(descs.length, 2, "one native event sends exactly one observe flight");
+        const req = JSON.parse(descs[descs.length - 1]!.payload) as Record<string, unknown>;
+        const src = req["source"] as string;
+        // Ten plan/transfer rows against caps of eight: the ninth and tenth
+        // must ride explicit omit counts, never silent absence or a longer
+        // row. Wire transfer ids stay opaque-safe (no invented fields:
+        // WorldReplyTransfer has no source/target arms).
+        const windows: Record<string, unknown>[] = [winRow(LONG), winRow(WIN_B)];
+        const transfers: Record<string, unknown>[] = [];
+        for (let i = 3; i <= 10; i += 1) {
+            windows.push(winRow(`win-${i}`));
+            transfers.push({ op: `op-${i}`, kind: "window", win: `win-${i}`, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null });
+        }
+        transfers.push(
+            { op: "op-1", kind: "window", win: LONG, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null },
+            { op: "op-2", kind: "window", win: WIN_B, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null },
+        );
+        const workspaces: Record<string, unknown>[] = [
+            { id: WS, out: OUT, bind: WS, scope: { kind: "workspace", out: OUT, ws: WS }, order: 0, mode: "tiled", exist: true, hold: "" },
+        ];
+        for (let i = 2; i <= 10; i += 1) {
+            workspaces.push({ id: `ws-${i}`, out: OUT, bind: "", scope: { kind: "workspace", out: OUT, ws: `ws-${i}` }, order: i, mode: "tiled", exist: false, hold: "" });
+        }
+        answerDescribe(h, req, "1", { windows, workspaces, transfers });
+        h.runTimers();
+        ackWriteIfPending(h);
+        h.runTimers();
+        const lines = observeLines(h).filter((l) => l.includes(`src=${src}`));
+        const plans = lines.filter((l) => l.includes("ev=observe-plan") && !l.includes("omit="));
+        assert.equal(plans.length, 8, `plan rows cap at eight: ${plans.join("\n")}`);
+        assert.ok(plans.every((l) => l.includes("snap=reply")),
+            `plan rows are desired-reply evidence: ${plans.join("\n")}`);
+        const planOmit = lines.filter((l) => l.includes("ev=observe-plan") && l.includes("omit="));
+        assert.equal(planOmit.length, 1, `one plan omit line: ${planOmit.join("\n")}`);
+        assert.ok(planOmit[0]!.includes("omit=2"), `plan omit counts the two dropped rows: ${planOmit[0]}`);
+        const xfers = lines.filter((l) => l.includes("ev=observe-transfer") && !l.includes("omit="));
+        assert.equal(xfers.length, 8, `transfer rows cap at eight: ${xfers.join("\n")}`);
+        assert.ok(xfers.every((l) => l.includes("snap=reply")),
+            `transfer rows are desired-reply evidence: ${xfers.join("\n")}`);
+        const xferOmit = lines.filter((l) => l.includes("ev=observe-transfer") && l.includes("omit="));
+        assert.equal(xferOmit.length, 1, `one transfer omit line: ${xferOmit.join("\n")}`);
+        assert.ok(xferOmit[0]!.includes("omit=2"), `transfer omit counts the two dropped rows: ${xferOmit[0]}`);
+        const bindOmit = lines.filter((l) => l.includes("ev=observe-bind") && l.includes("omit="));
+        assert.equal(bindOmit.length, 1, `one bind omit line: ${bindOmit.join("\n")}`);
+        assert.ok(bindOmit[0]!.includes("omit=2"), `bind omit counts the two dropped rows: ${bindOmit[0]}`);
+        // Identity readability: the full dotted/underscored/long id rides
+        // every observe row intact, never collapsed to "-".
+        assert.ok(lines.some((l) => l.includes("ev=observe-sent-win") && l.includes(`win=${LONG}`)),
+            `sent row keeps the full long id: ${lines.join("\n")}`);
+        assert.ok(lines.some((l) => l.includes("ev=observe-plan") && l.includes(`win=${LONG}`)),
+            `plan row keeps the full long id: ${lines.join("\n")}`);
+        assert.ok(!lines.some((l) => l.includes(`win=${LONG}`) && l.includes("win=-")),
+            "long id is never collapsed");
+        // Metadata-free: no titles, app names, process ids, roles, geometry
+        // dumps or physical output metadata on any observe row.
+        const FORBIDDEN = ["manufacturer", "appId", "processId", "transientFor", "resourceClass",
+            "clientGeometry", "frameGeometry", "windowType", "title=", "role=", "serialNumber"];
+        for (const line of lines) {
+            for (const token of FORBIDDEN) {
+                assert.ok(!line.includes(token), `observe row leaks ${token}: ${line}`);
+            }
+        }
+        h.handle.stop();
+    });
+
+    it("relevant binding beyond the cap is prioritized over irrelevant rows", () => {
+        const h = makeHarness();
+        discover(h);
+        h.fire("screensChanged");
+        h.runTimers();
+        const descs = h.calls.filter((c) => c.method === "DescribeWorld");
+        assert.equal(descs.length, 2, "one native event sends exactly one observe flight");
+        const req = JSON.parse(descs[descs.length - 1]!.payload) as Record<string, unknown>;
+        const src = req["source"] as string;
+        // Nine irrelevant bindings precede the relevant one: a naive first-8
+        // slice would omit the only binding referenced by the shown plan and
+        // transfer rows. Prioritization must surface it within the cap.
+        const workspaces: Record<string, unknown>[] = [];
+        for (let i = 1; i <= 9; i += 1) {
+            workspaces.push({ id: `ws-x${i}`, out: OUT, bind: "", scope: { kind: "workspace", out: OUT, ws: `ws-x${i}` }, order: i, mode: "tiled", exist: false, hold: "" });
+        }
+        workspaces.push({ id: WS, out: OUT, bind: WS, scope: { kind: "workspace", out: OUT, ws: WS }, order: 9, mode: "tiled", exist: true, hold: "" });
+        answerDescribe(h, req, "1", {
+            windows: [
+                winRow(WIN_A, { floating: false, frame_auth: "untouched", frame_hold: "", frame: [...TILE_A], alloc: [...TILE_A] }),
+                winRow(WIN_B, { floating: false, frame_auth: "untouched", frame_hold: "", frame: [...TILE_B], alloc: [...TILE_B] }),
+            ],
+            workspaces,
+            transfers: [
+                { op: "op-rel", kind: "window", win: WIN_A, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null },
+            ],
+        });
+        h.runTimers();
+        ackWriteIfPending(h);
+        h.runTimers();
+        const lines = observeLines(h).filter((l) => l.includes(`src=${src}`));
+        const binds = lines.filter((l) => l.includes("ev=observe-bind") && !l.includes("omit="));
+        assert.equal(binds.length, 8, `binding rows stay capped at eight: ${binds.join("\n")}`);
+        assert.ok(binds.some((l) => l.includes(`ws=${WS}`) && l.includes(`out=${OUT}`) && l.includes(`bind=${WS}`)),
+            `relevant trailing binding renders exactly: ${binds.join("\n")}`);
+        const bindOmit = lines.filter((l) => l.includes("ev=observe-bind") && l.includes("omit="));
+        assert.equal(bindOmit.length, 1, `one bind omit line: ${bindOmit.join("\n")}`);
+        assert.ok(bindOmit[0]!.includes("omit=2"), `bind omit preserves the actual dropped count: ${bindOmit[0]}`);
+        h.handle.stop();
+    });
+
+    it("accepted window transfer records pre/post membership-attempt evidence", () => {
+        // Two-desktop single-output world: the transfer moves WIN_A across
+        // native desktops without an output send, so setMembership actuates
+        // on the fake native and records pre/post setter evidence.
+        const WS2 = "ws2";
+        const h = makeHarness([WS2]);
+        discover(h);
+        // Second commandless flight carries the transfer reply; the
+        // discover auto flight is already settled.
+        h.fire("screensChanged");
+        h.runTimers();
+        const descs = h.calls.filter((c) => c.method === "DescribeWorld");
+        assert.equal(descs.length, 2, "one native event sends exactly one observe flight");
+        const req = JSON.parse(descs[descs.length - 1]!.payload) as Record<string, unknown>;
+        const src = req["source"] as string;
+        h.lastCall("DescribeWorld").callback(
+            acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                windows: [
+                    winRow(WIN_A, { out: OUT, ws: WS2, floating: false, frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame: [...TILE_A], alloc: [...TILE_A] }),
+                    winRow(WIN_B, { floating: false, frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "", frame: [...TILE_B], alloc: [...TILE_B] }),
+                ],
+                workspaces: [
+                    { id: WS, out: OUT, bind: WS, scope: { kind: "workspace", out: OUT, ws: WS }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: WS2, out: OUT, bind: WS2, scope: { kind: "workspace", out: OUT, ws: WS2 }, order: 1, mode: "tiled", exist: true, hold: "" },
+                ],
+                transfers: [
+                    { op: "op-move-1", kind: "window", win: WIN_A, out: OUT, ws: WS2, follow: false, held: false, cmdSeq: null },
+                ],
+            }),
+        );
+        h.runTimers();
+        ackWriteIfPending(h);
+        h.runTimers();
+        // Native proof the transfer actuated before asserting evidence.
+        assert.deepEqual(
+            h.wins[0]!.desktops.map((d) => d.id),
+            [WS2],
+            "transfer moved the live native homing",
+        );
+        const lines = observeLines(h).filter((l) =>
+            /ev=(observe-transfer|member-attempt)/.test(l) && l.includes(`src=${src}`));
+        const xfer = lines.filter((l) => l.includes("ev=observe-transfer"));
+        assert.ok(xfer.some((l) => l.includes("op=op-move-1") && l.includes(`win=${WIN_A}`) &&
+            l.includes(`out=${OUT}`) && l.includes(`ws=${WS2}`) && l.includes("held=0") && l.includes("rev=1")),
+            `transfer row names the desired target as live: ${xfer.join("\n")}`);
+        const members = lines.filter((l) => l.includes("ev=member-attempt") && l.includes(`win=${WIN_A}`));
+        assert.ok(members.length >= 1, `transfer leaves membership-attempt evidence: ${members.join("\n")}`);
+        assert.ok(members.some((l) => l.includes("setter=accepted") &&
+            l.includes(`pre=native/${OUT}/${WS}`) && l.includes(`post=native/${OUT}/${WS2}`)),
+            `attempt carries exact pre/post setter evidence: ${members.join("\n")}`);
+        assert.ok(members.every((l) => (l.includes("snap=sent") || l.includes("snap=apply-retained")) && l.includes("src=")),
+            `attempt rows always scope source under a snap label: ${members.join("\n")}`);
         h.handle.stop();
     });
 });

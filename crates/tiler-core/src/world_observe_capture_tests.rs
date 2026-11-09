@@ -13,8 +13,8 @@ use crate::intent_data::{IntentData, encode_intent_data};
 use crate::seed::EngineWindow;
 use crate::session::DomainKey;
 use crate::world_engine::{
-    ExcludedIntent, RetainedBornClear, RetainedTransfer, StagedDomain, StagedObservation,
-    WorldEngine,
+    EventIssue, ExcludedIntent, RetainedBornClear, RetainedTransfer, StagedDomain,
+    StagedObservation, WorldEngine,
 };
 use crate::world_focus::{FocusVerdict, RetainedFocusGrant};
 use crate::world_gesture::GestureOutcome;
@@ -24,11 +24,12 @@ use crate::world_report::{
     CommandResult, EffectCause, FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow,
     HeldNativeRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, IntentWrite, LastWrite,
     LastWritePath, LastWriteProperty, MemberAttempt, NativeCreationAttempt, NativeObservation,
-    NativeOccupancy, OneShotEffect, PresentationIngressV4, PresentationRowV4, RenderTarget,
-    RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
-    ScreenReport, StateAttempt, StateProperty, SwitchOutcome, TransferKind, TransferTarget,
-    ViewAttempt, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    WORLD_CONTRACT_VERSION_V4, WindowDesire, WindowFact, WorkspaceRef, WorldReportV4,
+    NativeOccupancy, NativeWorkspaceFact, OneShotEffect, OutputIdentity, PresentationIngressV4,
+    PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind,
+    RowDiagnosticLane, ScopeAuthority, ScreenReport, StateAttempt, StateProperty, SwitchOutcome,
+    TransferKind, TransferTarget, ViewAttempt, VisibilityFact, VisibilityReason, VisibilitySample,
+    VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowDesire, WindowFact, WorkspaceRef,
+    WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_selection::{
     FrozenArrivalMember, RetainedSelection, SelectionScope, SelectionTarget, SwitchMember,
@@ -10608,5 +10609,1569 @@ fn staged_native_last_views_follow_only_staged_echo() {
         engine.last_views.get(&OutputId("out-a".to_owned())),
         Some(&"ws-9".to_owned()),
         "staged n1 echo supersedes staged n0 echo"
+    );
+}
+
+// Host-owned physical-reconnect regression rig (full pipeline): two
+// outputs with readable panel identities plus native lanes, driven
+// through `handle_report` on a host-owned engine. Baselines adopt the
+// staged native order into logical rings; facts carry known native
+// values so every receipt resolves through the engine's own bindings.
+// Helpers reuse `report_v4_simple`/`fact` plus field overrides only;
+// no independent model.
+fn host_panel(tag: &str) -> OutputIdentity {
+    OutputIdentity {
+        manufacturer: Some("SynthMfg".to_owned()),
+        model: Some(format!("SynthModel-{tag}")),
+        serial: Some(format!("serial-{tag}")),
+        connector: None,
+    }
+}
+
+fn host_screen(output: &str, x: i32, tag: &str) -> ScreenReport {
+    ScreenReport {
+        output: OutputId(output.to_owned()),
+        full_rect: Some(rect(x, 0, 800, 600)),
+        work_area: Some(rect(x, 0, 800, 560)),
+        complete: true,
+        scale: 1.0,
+        identity: host_panel(tag),
+    }
+}
+
+fn host_native(output: &str, order: &[&str], current: &str) -> NativeObservation {
+    NativeObservation {
+        output: OutputId(output.to_owned()),
+        native_order: order.iter().map(|id| (*id).to_owned()).collect(),
+        current_native: Some(current.to_owned()),
+        occupancy: order
+            .iter()
+            .map(|id| NativeOccupancy {
+                native: (*id).to_owned(),
+                count: None,
+            })
+            .collect(),
+    }
+}
+
+fn host_fact(window: &str, output: &str, x: i32, native: &str) -> WindowFact {
+    let mut row = fact(window, output, x);
+    row.native_workspace = NativeWorkspaceFact::Value(native.to_owned());
+    row
+}
+
+fn host_unknown_fact(window: &str, output: &str, x: i32) -> WindowFact {
+    let mut row = fact(window, output, x);
+    row.native_workspace = NativeWorkspaceFact::Omitted;
+    row
+}
+
+fn host_accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
+    match engine.handle_report(report) {
+        crate::world_run_v4::V4RunOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    }
+}
+
+fn host_report(
+    seq: u64,
+    screens: Vec<ScreenReport>,
+    native: Vec<NativeObservation>,
+    windows: Vec<WindowFact>,
+    focused: &str,
+    command: Option<(u64, WorldCommand)>,
+) -> WorldReportV4 {
+    let mut out = report_v4_simple(seq, screens, Vec::new(), windows, Vec::new(), Vec::new());
+    out.native = native;
+    out.focused_global = focused.to_owned();
+    if let Some((command_seq, cmd)) = command {
+        out.command_seq = Some(command_seq);
+        out.command = Some(cmd);
+    }
+    out
+}
+
+struct HostRig {
+    a1: String,
+    a2: String,
+    b1: String,
+    b2: String,
+}
+
+fn host_home(engine: &WorldEngine, window: &str) -> DomainKey {
+    engine
+        .members
+        .get(&WindowId(window.to_owned()))
+        .unwrap_or_else(|| panic!("{window} admitted"))
+        .home
+        .clone()
+}
+
+fn host_hp_for(reply: &WorldReplyV4, window: &str) -> Vec<String> {
+    reply
+        .transfers
+        .iter()
+        .filter(|t| {
+            t.operation_id.starts_with("op-hp-")
+                && matches!(&t.kind, TransferKind::Window(w) if w.0 == window)
+        })
+        .map(|t| t.operation_id.clone())
+        .collect()
+}
+
+fn host_disconnect_rig() -> (WorldEngine, HostRig) {
+    let mut engine = engine_settle_host();
+    assert!(engine.host_owned_workspace_domains(), "rig is host-owned");
+    let reply = host_accepted(
+        &mut engine,
+        &host_report(
+            1,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-b", 800, "b")],
+            vec![
+                host_native("out-a", &["na1", "na2"], "na1"),
+                host_native("out-b", &["nb1", "nb2"], "nb1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-b", 800, "nb1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    // Rings adopt the staged native order; views follow staged currents.
+    let ring =
+        |engine: &WorldEngine, out: &str| engine.mapping.get(out).cloned().unwrap_or_default();
+    let a = ring(&engine, "out-a");
+    let b = ring(&engine, "out-b");
+    assert_eq!(a.len(), 2, "survivor adopts two natives: {a:?}");
+    assert_eq!(b.len(), 2, "removed adopts two natives: {b:?}");
+    for (out, native, want) in [
+        ("out-a", "na1", &a[0]),
+        ("out-a", "na2", &a[1]),
+        ("out-b", "nb1", &b[0]),
+        ("out-b", "nb2", &b[1]),
+    ] {
+        assert_eq!(
+            engine.native_map.get(&(out.to_owned(), native.to_owned())),
+            Some(want),
+            "binding ({out},{native})"
+        );
+    }
+    assert_eq!(
+        host_home(&engine, "win-a"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(a[0].clone()),
+        },
+        "win-a receipt home"
+    );
+    assert_eq!(
+        host_home(&engine, "win-b"),
+        DomainKey {
+            output: OutputId("out-b".to_owned()),
+            workspace: WorkspaceId(b[0].clone()),
+        },
+        "win-b receipt home"
+    );
+    assert!(
+        reply.transfers.is_empty(),
+        "baseline actuates nothing: {:?}",
+        reply.transfers
+    );
+    assert!(
+        reply.native_creations.is_empty(),
+        "baseline backs everything: {:?}",
+        reply.native_creations
+    );
+    (
+        engine,
+        HostRig {
+            a1: a[0].clone(),
+            a2: a[1].clone(),
+            b1: b[0].clone(),
+            b2: b[1].clone(),
+        },
+    )
+}
+
+#[test]
+fn host_return_keeps_outstanding_send_without_pullback() {
+    let (mut engine, rig) = host_disconnect_rig();
+    // The output disappears with a stale topology receipt: win-b still
+    // names its vanished native, so the displacement policy holds
+    // pending.
+    let gone = host_accepted(
+        &mut engine,
+        &host_report(
+            2,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "nb1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.contains_key("out-b"),
+        "removed origin displaced"
+    );
+    let hp0 = host_hp_for(&gone, "win-b");
+    assert_eq!(
+        hp0.len(),
+        1,
+        "displacement policy pending: {:?}",
+        gone.transfers
+    );
+    assert!(
+        gone.effects.is_empty(),
+        "disappearance mints no focus: {:?}",
+        gone.effects
+    );
+    // Truthful external evidence: the compositor kept win-b on a
+    // survivor native, so the pending policy drops and the home adopts.
+    let moved = host_accepted(
+        &mut engine,
+        &host_report(
+            3,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "na2"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        !engine
+            .retained_transfers()
+            .iter()
+            .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b") }),
+        "policy superseded before the send: {:?}",
+        engine.retained_transfers()
+    );
+    assert!(
+        moved.effects.iter().all(|e| e.target.0 != "win-a"),
+        "supersession steals no focus from the stable member: {:?}",
+        moved.effects
+    );
+    // Explicit same-output send of win-b onto the displaced unit hosted
+    // by the survivor. The mover is the observed focus.
+    let sent = host_accepted(
+        &mut engine,
+        &host_report(
+            4,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "na2"),
+            ],
+            "win-b",
+            Some((
+                11,
+                WorldCommand::Send {
+                    window: WindowId("win-b".to_owned()),
+                    target_output: OutputId("out-a".to_owned()),
+                    target_workspace: rig.b1.clone(),
+                    follow: false,
+                },
+            )),
+        ),
+    );
+    assert!(
+        sent.transfers.iter().any(|t| t.operation_id == "op-11"),
+        "explicit send executes: {:?}",
+        sent.transfers
+    );
+    assert_eq!(
+        host_home(&engine, "win-b").workspace.0,
+        rig.b1,
+        "send commits the member home"
+    );
+    // The panel returns under a renamed handle while the send is still
+    // outstanding (no arrival evidence is ever supplied). The departed
+    // member stays where sent: no return pullback replaces the
+    // command-owned flight.
+    let back = host_accepted(
+        &mut engine,
+        &host_report(
+            5,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-c", 800, "b")],
+            vec![
+                host_native("out-a", &["na1", "na2"], "na1"),
+                host_native("out-c", &["nb1", "nb2"], "nb1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "na2"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-b"),
+        "same panel under a new handle reclaims: {:?}",
+        engine.displaced
+    );
+    assert!(
+        host_hp_for(&back, "win-b").is_empty(),
+        "no return pullback for the departed member: {:?}",
+        back.transfers
+    );
+    assert!(
+        back.transfers.iter().any(|t| t.operation_id == "op-11"),
+        "explicit departure association survives the return: {:?}",
+        back.transfers
+    );
+    assert_eq!(
+        host_home(&engine, "win-b").workspace.0,
+        rig.b1,
+        "departed member keeps its unit"
+    );
+    assert!(
+        engine.native_map.keys().all(|(out, _)| out != "out-b"),
+        "no stale origin bindings pin the dead handle: {:?}",
+        engine.native_map
+    );
+    assert!(
+        back.effects.iter().all(|e| e.target.0 != "win-b"),
+        "return mints no focus for the departed member: {:?}",
+        back.effects
+    );
+    // Quiescent follow-up: still no pullback, still no leak.
+    let quiet = host_accepted(
+        &mut engine,
+        &host_report(
+            6,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-c", 800, "b")],
+            vec![
+                host_native("out-a", &["na1", "na2"], "na1"),
+                host_native("out-c", &["nb1", "nb2"], "nb1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "na2"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        host_hp_for(&quiet, "win-b").is_empty()
+            && !engine
+                .retained_transfers()
+                .iter()
+                .any(|t| t.operation_id.starts_with("op-hp-")),
+        "quiescence leaks no return flight: {:?} {:?}",
+        quiet.transfers,
+        engine.retained_transfers()
+    );
+    assert!(
+        engine
+            .retained_transfers()
+            .iter()
+            .any(|t| t.operation_id == "op-11"),
+        "genuinely outstanding send stays retained"
+    );
+}
+
+#[test]
+fn host_newcomer_admits_survivor_unit_and_pending_policy_still_returns() {
+    let (mut engine, rig) = host_disconnect_rig();
+    // Disconnect with a stale topology receipt: win-b still names its
+    // vanished native, so the displacement policy holds pending.
+    let gone = host_accepted(
+        &mut engine,
+        &host_report(
+            2,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "nb1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.contains_key("out-b"),
+        "removed origin displaced"
+    );
+    let hp1 = host_hp_for(&gone, "win-b");
+    assert_eq!(
+        hp1.len(),
+        1,
+        "displacement mints one pull-aside flight: {:?}",
+        gone.transfers
+    );
+    // A newcomer during the absence admits the survivor's own unit: it
+    // is not displaced, and the pending policy is untouched.
+    let arrival = host_accepted(
+        &mut engine,
+        &host_report(
+            3,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-n", "out-a", 400, "na2"),
+                host_fact("win-b", "out-a", 100, "nb1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert_eq!(
+        host_home(&engine, "win-n"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(rig.a2.clone()),
+        },
+        "newcomer admits the survivor unit"
+    );
+    assert!(
+        host_hp_for(&arrival, "win-n").is_empty()
+            && !engine
+                .retained_transfers()
+                .iter()
+                .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-n") }),
+        "newcomer rides no hotplug flight: {:?}",
+        arrival.transfers
+    );
+    assert!(
+        arrival
+            .effects
+            .iter()
+            .all(|e| e.target.0 != "win-a" && e.target.0 != "win-b"),
+        "newcomer birth steals no focus from members: {:?}",
+        arrival.effects
+    );
+    assert!(
+        !engine
+            .automatic_focus_tokens
+            .contains_key(&WindowId("win-a".to_owned()))
+            && !engine
+                .automatic_focus_tokens
+                .contains_key(&WindowId("win-b".to_owned())),
+        "newcomer birth takes no focus token for pre-existing members: {:?}",
+        engine.automatic_focus_tokens
+    );
+    assert!(
+        engine
+            .retained_transfers()
+            .iter()
+            .any(|t| t.operation_id == hp1[0]),
+        "displacement policy still pending across the newcomer report"
+    );
+    // The panel returns under a renamed handle while the displacement
+    // policy is still pending and members are unrestored. The return
+    // must replace the pending policy with a pull-back flight (never
+    // skip it, never keep both).
+    let back = host_accepted(
+        &mut engine,
+        &host_report(
+            4,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-c", 800, "b")],
+            vec![
+                host_native("out-a", &["na1", "na2"], "na1"),
+                host_native("out-c", &["nb1", "nb2"], "nb1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-n", "out-a", 400, "na2"),
+                host_fact("win-b", "out-a", 100, "nb1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-b"),
+        "same panel under a new handle reclaims: {:?}",
+        engine.displaced
+    );
+    let hp2 = host_hp_for(&back, "win-b");
+    assert_eq!(
+        hp2.len(),
+        1,
+        "return replaces the pending policy with one pull-back: {:?}",
+        back.transfers
+    );
+    assert_ne!(
+        hp2[0], hp1[0],
+        "return mints a fresh pull-back, never republishes the pending policy"
+    );
+    assert!(
+        !engine
+            .retained_transfers()
+            .iter()
+            .any(|t| t.operation_id == hp1[0]),
+        "superseded displacement policy retires"
+    );
+    assert_eq!(
+        engine
+            .native_map
+            .get(&("out-c".to_owned(), "nb1".to_owned())),
+        Some(&rig.b1),
+        "carried binding reclaims the owned unit"
+    );
+    assert_eq!(
+        engine
+            .native_map
+            .get(&("out-c".to_owned(), "nb2".to_owned())),
+        Some(&rig.b2),
+        "carried binding reclaims the sibling unit"
+    );
+    assert!(
+        engine.native_map.keys().all(|(out, _)| out != "out-b"),
+        "no stale origin bindings pin the dead handle: {:?}",
+        engine.native_map
+    );
+    assert_eq!(
+        host_home(&engine, "win-n"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(rig.a2.clone()),
+        },
+        "newcomer excluded from the return"
+    );
+    assert!(
+        host_hp_for(&back, "win-n").is_empty(),
+        "return mints no flight for the newcomer: {:?}",
+        back.transfers
+    );
+    assert!(
+        back.effects.is_empty(),
+        "return mints no admission focus: {:?}",
+        back.effects
+    );
+    // The adapter actuates the pull-back: arrival settles the return
+    // flight and the world drains with separate homes preserved.
+    let settled = host_accepted(
+        &mut engine,
+        &host_report(
+            5,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-c", 800, "b")],
+            vec![
+                host_native("out-a", &["na1", "na2"], "na1"),
+                host_native("out-c", &["nb1", "nb2"], "nb1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-n", "out-a", 400, "na2"),
+                host_fact("win-b", "out-c", 800, "nb1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        host_hp_for(&settled, "win-b").is_empty()
+            && !engine
+                .retained_transfers()
+                .iter()
+                .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b") }),
+        "arrival settles the return flight: {:?} {:?}",
+        settled.transfers,
+        engine.retained_transfers()
+    );
+    assert_eq!(
+        host_home(&engine, "win-b"),
+        DomainKey {
+            output: OutputId("out-c".to_owned()),
+            workspace: WorkspaceId(rig.b1.clone()),
+        },
+        "returned member home"
+    );
+    assert_eq!(
+        host_home(&engine, "win-n"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(rig.a2.clone()),
+        },
+        "survivor home preserved"
+    );
+    assert!(
+        settled.native_creations.is_empty()
+            && engine.retained_creations.iter().all(|c| !c.ambiguous),
+        "no leaked native creations: {:?} {:?}",
+        settled.native_creations,
+        engine.retained_creations
+    );
+}
+
+#[test]
+fn host_external_native_move_supersedes_pending_policy() {
+    let (mut engine, rig) = host_disconnect_rig();
+    let gone = host_accepted(
+        &mut engine,
+        &host_report(
+            2,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "nb1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert_eq!(
+        host_hp_for(&gone, "win-b").len(),
+        1,
+        "displacement policy pending: {:?}",
+        gone.transfers
+    );
+    // Genuine external move while the policy is pending: the adapter
+    // reports win-b on a different known survivor native. Truth wins
+    // immediately: the policy drops and the receipt adopts.
+    let moved = host_accepted(
+        &mut engine,
+        &host_report(
+            3,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "na2"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        host_hp_for(&moved, "win-b").is_empty()
+            && !engine
+                .retained_transfers()
+                .iter()
+                .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b") }),
+        "different known native supersedes the pending policy: {:?} {:?}",
+        moved.transfers,
+        engine.retained_transfers()
+    );
+    assert_eq!(
+        host_home(&engine, "win-b"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(rig.a2.clone()),
+        },
+        "external receipt adopts"
+    );
+    // The panel returns; the departed member is not on a returning
+    // unit, so no pull-back may mint.
+    let back = host_accepted(
+        &mut engine,
+        &host_report(
+            4,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-c", 800, "b")],
+            vec![
+                host_native("out-a", &["na1", "na2"], "na1"),
+                host_native("out-c", &["nb1", "nb2"], "nb1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "na2"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-b"),
+        "panel reclaims: {:?}",
+        engine.displaced
+    );
+    assert!(
+        host_hp_for(&back, "win-b").is_empty()
+            && !engine
+                .retained_transfers()
+                .iter()
+                .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b") }),
+        "no return pullback off the returning unit: {:?} {:?}",
+        back.transfers,
+        engine.retained_transfers()
+    );
+    assert_eq!(
+        host_home(&engine, "win-b"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(rig.a2.clone()),
+        },
+        "external home survives the return"
+    );
+    assert!(
+        back.effects.is_empty(),
+        "return mints no admission focus: {:?}",
+        back.effects
+    );
+}
+
+#[test]
+fn host_backed_unit_move_back_truth_wins_then_returns() {
+    let (mut engine, rig) = host_disconnect_rig();
+    let gone = host_accepted(
+        &mut engine,
+        &host_report(
+            2,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_unknown_fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+        ),
+    );
+    // Unknown native evidence holds the displacement policy too (not
+    // just an explicit stale native).
+    assert_eq!(
+        host_hp_for(&gone, "win-b").len(),
+        1,
+        "unknown evidence holds policy pending: {:?}",
+        gone.transfers
+    );
+    // An inventory gap also holds: partial observations never prove.
+    let mut gapped = host_report(
+        3,
+        vec![host_screen("out-a", 0, "a")],
+        vec![host_native("out-a", &["na1", "na2"], "na1")],
+        vec![
+            host_fact("win-a", "out-a", 0, "na1"),
+            host_unknown_fact("win-b", "out-a", 100),
+        ],
+        "",
+        None,
+    );
+    gapped.inventory_complete = false;
+    let held_gap = host_accepted(&mut engine, &gapped);
+    assert_eq!(
+        host_hp_for(&held_gap, "win-b"),
+        host_hp_for(&gone, "win-b"),
+        "inventory gap republishes the pending policy without re-minting: {:?} {:?}",
+        held_gap.transfers,
+        engine.retained_transfers()
+    );
+    // Back the displaced unit before any external move: the adapter
+    // fulfills the outstanding creation desire while the member still
+    // needs it. Desires mint at displacement and stay retained; read
+    // them there. Only the occupied unit wants backing; trailing
+    // spares need none. Fulfilling after the member leaves would let
+    // the ordinary prune drop the emptied desire, so the order here
+    // is load-bearing.
+    let new_natives = ["na3", "na4"];
+    let desires: Vec<(String, String, String, Vec<String>)> = gone
+        .native_creations
+        .iter()
+        .enumerate()
+        .map(|(index, d)| {
+            (
+                d.operation_id.clone(),
+                d.logical_workspace.clone(),
+                new_natives[index].to_owned(),
+                vec!["na1".to_owned(), "na2".to_owned()],
+            )
+        })
+        .collect();
+    assert!(
+        !desires.is_empty(),
+        "displaced units want backing: {:?}",
+        gone.native_creations
+    );
+    let mut backing = host_report(
+        4,
+        vec![host_screen("out-a", 0, "a")],
+        vec![host_native("out-a", &["na1", "na2", "na3", "na4"], "na1")],
+        vec![
+            host_fact("win-a", "out-a", 0, "na1"),
+            host_unknown_fact("win-b", "out-a", 100),
+        ],
+        "",
+        None,
+    );
+    backing.creation_attempts = desires
+        .iter()
+        .map(|(op, logical, created, before)| NativeCreationAttempt {
+            operation_id: op.clone(),
+            logical_workspace: logical.clone(),
+            target_output: OutputId("out-a".to_owned()),
+            setter: FrameSetter::Accepted,
+            order_before: before.clone(),
+            order_after: vec![
+                "na1".to_owned(),
+                "na2".to_owned(),
+                "na3".to_owned(),
+                "na4".to_owned(),
+            ],
+            created_native: Some(created.clone()),
+            attempt_ms: 15,
+        })
+        .collect();
+    let backed = host_accepted(&mut engine, &backing);
+    for (_, logical, created, _) in &desires {
+        assert_eq!(
+            engine
+                .native_map
+                .get(&("out-a".to_owned(), created.clone())),
+            Some(logical),
+            "distinct backing binds {logical} to {created}: {:?}",
+            engine.native_map
+        );
+    }
+    assert!(
+        backed.native_creations.is_empty()
+            && engine.retained_creations.iter().all(|c| !c.ambiguous),
+        "backing settles creation desires: {:?} {:?}",
+        backed.native_creations,
+        engine.retained_creations
+    );
+    // External move onto the survivor's other unit supersedes policy.
+    host_accepted(
+        &mut engine,
+        &host_report(
+            5,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2", "na3", "na4"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "na2"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        !engine
+            .retained_transfers()
+            .iter()
+            .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b") }),
+        "policy superseded: {:?}",
+        engine.retained_transfers()
+    );
+    // External move back onto the originally displaced (now distinctly
+    // backed) unit: truth wins again, home adopts, no flight mints.
+    let home_again = host_accepted(
+        &mut engine,
+        &host_report(
+            6,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2", "na3", "na4"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "na3"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert_eq!(
+        host_home(&engine, "win-b"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(rig.b1.clone()),
+        },
+        "move back onto backed unit adopts"
+    );
+    assert!(
+        home_again
+            .transfers
+            .iter()
+            .all(|t| { !matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b") }),
+        "truthful receipt mints no flight: {:?}",
+        home_again.transfers
+    );
+    // Return now pulls back: the member is home on the returning unit.
+    let back = host_accepted(
+        &mut engine,
+        &host_report(
+            7,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-c", 800, "b")],
+            vec![
+                host_native("out-a", &["na1", "na2", "na3", "na4"], "na1"),
+                host_native("out-c", &["nb1", "nb2"], "nb1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "na3"),
+            ],
+            "",
+            None,
+        ),
+    );
+    let hp = host_hp_for(&back, "win-b");
+    assert_eq!(
+        hp.len(),
+        1,
+        "member home on the returning unit rides home: {:?}",
+        back.transfers
+    );
+    assert_eq!(
+        back.transfers
+            .iter()
+            .find(|t| t.operation_id == hp[0])
+            .map(|t| (t.target_output.0.clone(), t.target_workspace.clone())),
+        Some(("out-c".to_owned(), rig.b1.clone())),
+        "pull-back targets the reclaimed unit"
+    );
+    // Arrival drains everything with separate homes preserved.
+    let settled = host_accepted(
+        &mut engine,
+        &host_report(
+            8,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-c", 800, "b")],
+            vec![
+                host_native("out-a", &["na1", "na2", "na3", "na4"], "na1"),
+                host_native("out-c", &["nb1", "nb2"], "nb1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-c", 800, "nb1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        !engine
+            .retained_transfers()
+            .iter()
+            .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b") })
+            && !engine
+                .retained_transfers()
+                .iter()
+                .any(|t| t.operation_id.starts_with("op-hp-")),
+        "arrival drains return flights: {:?}",
+        engine.retained_transfers()
+    );
+    assert_eq!(
+        host_home(&engine, "win-b"),
+        DomainKey {
+            output: OutputId("out-c".to_owned()),
+            workspace: WorkspaceId(rig.b1.clone()),
+        },
+        "returned member home"
+    );
+    assert_eq!(
+        host_home(&engine, "win-a"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(rig.a1.clone()),
+        },
+        "survivor home preserved"
+    );
+    assert!(
+        settled.effects.is_empty(),
+        "no admission focus across the journey: {:?}",
+        settled.effects
+    );
+    assert!(
+        engine.native_map.keys().all(|(out, _)| out != "out-b"),
+        "no stale origin bindings: {:?}",
+        engine.native_map
+    );
+}
+
+#[test]
+fn native_value_without_capability_rejects_pipeline_unchanged() {
+    // Native-free engines carry no native vocabulary: a report naming
+    // a native workspace value refuses at the boundary, so later
+    // settlement never observes it. This pins the native-free contract
+    // while host-owned tests above supply the same values lawfully.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    assert!(
+        !engine.host_owned_workspace_domains(),
+        "control engine is native-free"
+    );
+    let mut valued = fact("win-a", "out-a", 0);
+    valued.native_workspace = NativeWorkspaceFact::Value("na1".to_owned());
+    let report = report_v4_simple(
+        1,
+        vec![screen("out-a", 0)],
+        Vec::new(),
+        vec![valued],
+        Vec::new(),
+        Vec::new(),
+    );
+    match engine.handle_report(&report) {
+        crate::world_run_v4::V4RunOutcome::Rejected { message, .. } => assert_eq!(
+            message, "native-without-capability",
+            "native value refuses without the capability"
+        ),
+        other => panic!("expected rejection, got {other:?}"),
+    }
+}
+
+#[test]
+fn settle_policy_hold_ignores_value_without_capability() {
+    // Capability-off settlement holds a hotplug policy flight even when
+    // the staged fact names a native value: without host-owned
+    // evidence no value ever proves external input. Seeded ledgers
+    // drive the real sweep; the pipeline above can never stage this
+    // combination (it rejects at the boundary).
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    assert!(
+        !engine.host_owned_workspace_domains(),
+        "control engine is native-free"
+    );
+    let window = WindowId("win-b".to_owned());
+    let mut valued = fact("win-b", "out-c", 800);
+    valued.native_workspace = NativeWorkspaceFact::Value("nx9".to_owned());
+    engine.staged.facts.insert(window.clone(), valued);
+    engine.staged.homing.insert(
+        window.clone(),
+        DomainKey {
+            output: OutputId("out-c".to_owned()),
+            workspace: WorkspaceId("ws-9".to_owned()),
+        },
+    );
+    engine.retained.push(RetainedTransfer {
+        target: TransferTarget {
+            operation_id: "op-hp-1-0".to_owned(),
+            kind: TransferKind::Window(window.clone()),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: "ws-3".to_owned(),
+            follow: false,
+            held: false,
+        },
+        policy: true,
+        command_seq: None,
+        source_output: OutputId("out-b".to_owned()),
+        source_workspace: "ws-3".to_owned(),
+        members: Vec::new(),
+        migration_refill: None,
+        migration_initial_empty: false,
+        migration_source_index: None,
+        migration_source_view: None,
+        migration_target_view: None,
+        migration_terminal: None,
+        migration_selection_rev: None,
+        pending_member: None,
+        pending_members: BTreeMap::new(),
+        pending_view: None,
+    });
+    let issue = EventIssue {
+        owner: OwnerId::parse("adapter-1").expect("owner"),
+        correlation: CorrelationId::parse("req-9").expect("correlation"),
+    };
+    engine.settle_rest(None, &issue, false);
+    assert!(
+        engine
+            .retained_transfers()
+            .iter()
+            .any(|t| t.operation_id == "op-hp-1-0"),
+        "capability-off policy holds on value evidence: {:?}",
+        engine.retained_transfers()
+    );
+}
+
+#[test]
+fn host_predisconnect_send_survives_displacement_without_replacement() {
+    let (mut engine, rig) = host_disconnect_rig();
+    // Two explicit same-output sends filed before the disconnect: win-b
+    // rides b1 -> b2 on the doomed output, win-a rides a1 -> a2 on the
+    // survivor. Neither has arrival evidence, so both stay outstanding.
+    let sent_b = host_accepted(
+        &mut engine,
+        &host_report(
+            2,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-b", 800, "b")],
+            vec![
+                host_native("out-a", &["na1", "na2"], "na1"),
+                host_native("out-b", &["nb1", "nb2"], "nb1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-b", 800, "nb1"),
+            ],
+            "win-b",
+            Some((
+                11,
+                WorldCommand::Send {
+                    window: WindowId("win-b".to_owned()),
+                    target_output: OutputId("out-b".to_owned()),
+                    target_workspace: rig.b2.clone(),
+                    follow: false,
+                },
+            )),
+        ),
+    );
+    assert!(
+        sent_b.transfers.iter().any(|t| t.operation_id == "op-11"),
+        "doomed-output send executes: {:?}",
+        sent_b.transfers
+    );
+    let sent_a = host_accepted(
+        &mut engine,
+        &host_report(
+            3,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-b", 800, "b")],
+            vec![
+                host_native("out-a", &["na1", "na2"], "na1"),
+                host_native("out-b", &["nb1", "nb2"], "nb1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-b", 800, "nb1"),
+            ],
+            "win-a",
+            Some((
+                12,
+                WorldCommand::Send {
+                    window: WindowId("win-a".to_owned()),
+                    target_output: OutputId("out-a".to_owned()),
+                    target_workspace: rig.a2.clone(),
+                    follow: false,
+                },
+            )),
+        ),
+    );
+    assert!(
+        sent_a.transfers.iter().any(|t| t.operation_id == "op-12"),
+        "survivor send executes: {:?}",
+        sent_a.transfers
+    );
+    // The output disappears with stale topology receipts. The
+    // displacement scan must replace neither command flight with a
+    // policy pull-aside: win-b is a stray candidate but occupied by
+    // its non-policy send, win-a is untouched on the survivor.
+    let gone = host_accepted(
+        &mut engine,
+        &host_report(
+            4,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "nb1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        engine.displaced.contains_key("out-b"),
+        "removed origin displaced"
+    );
+    assert!(
+        host_hp_for(&gone, "win-b").is_empty() && host_hp_for(&gone, "win-a").is_empty(),
+        "displacement mints no policy over either command flight: {:?}",
+        gone.transfers
+    );
+    assert!(
+        !engine
+            .retained_transfers()
+            .iter()
+            .any(|t| t.operation_id.starts_with("op-hp-")),
+        "no policy flight minted at all: {:?}",
+        engine.retained_transfers()
+    );
+    // The survivor send stays outstanding on its live target. The
+    // doomed-output send reconciles through the rehome (its member is
+    // already on the target workspace b2, now hosted by the survivor),
+    // so it settles without any policy replacement.
+    assert!(
+        engine
+            .retained_transfers()
+            .iter()
+            .any(|t| t.operation_id == "op-12"),
+        "survivor send survives the displacement: {:?}",
+        engine.retained_transfers()
+    );
+    assert_eq!(
+        host_home(&engine, "win-a"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(rig.a2.clone()),
+        },
+        "survivor send home holds"
+    );
+    assert_eq!(
+        host_home(&engine, "win-b"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(rig.b2.clone()),
+        },
+        "displaced member rekeys with its unit, never pulled aside"
+    );
+    assert!(
+        gone.effects.is_empty(),
+        "displacement mints no focus over the command flights: {:?}",
+        gone.effects
+    );
+}
+
+#[test]
+fn host_known_value_gap_holds_policy_until_complete() {
+    let (mut engine, rig) = host_disconnect_rig();
+    let gone = host_accepted(
+        &mut engine,
+        &host_report(
+            2,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "nb1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    let hp0 = host_hp_for(&gone, "win-b");
+    assert_eq!(
+        hp0.len(),
+        1,
+        "displacement policy pending: {:?}",
+        gone.transfers
+    );
+    let home0 = host_home(&engine, "win-b");
+    // A known-different native value during an inventory gap still
+    // holds: partial observations never prove external input.
+    let mut gapped = host_report(
+        3,
+        vec![host_screen("out-a", 0, "a")],
+        vec![host_native("out-a", &["na1", "na2"], "na1")],
+        vec![
+            host_fact("win-a", "out-a", 0, "na1"),
+            host_fact("win-b", "out-a", 100, "na2"),
+        ],
+        "",
+        None,
+    );
+    gapped.inventory_complete = false;
+    let held = host_accepted(&mut engine, &gapped);
+    assert_eq!(
+        host_hp_for(&held, "win-b"),
+        hp0,
+        "gap republishes the pending policy without re-minting: {:?} {:?}",
+        held.transfers,
+        engine.retained_transfers()
+    );
+    assert_eq!(
+        host_home(&engine, "win-b"),
+        home0,
+        "gap holds homing on partial evidence"
+    );
+    // The same value on complete evidence is truth: the policy drops
+    // and the receipt adopts.
+    let moved = host_accepted(
+        &mut engine,
+        &host_report(
+            4,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["na1", "na2"], "na1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "na1"),
+                host_fact("win-b", "out-a", 100, "na2"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        host_hp_for(&moved, "win-b").is_empty()
+            && !engine
+                .retained_transfers()
+                .iter()
+                .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b") }),
+        "complete known-different value supersedes the policy: {:?} {:?}",
+        moved.transfers,
+        engine.retained_transfers()
+    );
+    assert_eq!(
+        host_home(&engine, "win-b"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(rig.a2.clone()),
+        },
+        "truthful receipt adopts on complete evidence"
+    );
+}
+
+#[test]
+fn host_shared_native_pending_return_before_settle() {
+    let mut engine = engine_settle_host();
+    let base = host_accepted(
+        &mut engine,
+        &host_report(
+            1,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-b", 800, "b")],
+            vec![
+                host_native("out-a", &["ws1", "ws2"], "ws1"),
+                host_native("out-b", &["ws1", "ws2"], "ws1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "ws1"),
+                host_fact("win-b", "out-b", 800, "ws1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(base.transfers.is_empty(), "baseline actuates nothing");
+    let b_ring = engine.mapping.get("out-b").cloned().unwrap_or_default();
+    assert_eq!(b_ring.len(), 2, "removed adopts two natives");
+    let gone = host_accepted(
+        &mut engine,
+        &host_report(
+            2,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["ws1", "ws2"], "ws1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "ws1"),
+                host_fact("win-b", "out-a", 100, "ws1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(engine.displaced.contains_key("out-b"), "removed displaced");
+    assert_eq!(
+        host_hp_for(&gone, "win-b").len(),
+        1,
+        "displacement pending: {:?}",
+        gone.transfers
+    );
+    let back = host_accepted(
+        &mut engine,
+        &host_report(
+            3,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-c", 800, "b")],
+            vec![
+                host_native("out-a", &["ws1", "ws2"], "ws1"),
+                host_native("out-c", &["ws1", "ws2"], "ws1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "ws1"),
+                host_fact("win-b", "out-a", 100, "ws1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        !engine.displaced.contains_key("out-b"),
+        "panel reclaims: {:?}",
+        engine.displaced
+    );
+    assert_eq!(
+        host_hp_for(&back, "win-b").len(),
+        1,
+        "shared return keeps pull-back: {:?} {:?}",
+        back.transfers,
+        engine.retained_transfers()
+    );
+    assert_eq!(
+        host_home(&engine, "win-b"),
+        DomainKey {
+            output: OutputId("out-c".to_owned()),
+            workspace: WorkspaceId(b_ring[0].clone()),
+        },
+        "returned member home"
+    );
+    let settled = host_accepted(
+        &mut engine,
+        &host_report(
+            4,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-c", 800, "b")],
+            vec![
+                host_native("out-a", &["ws1", "ws2"], "ws1"),
+                host_native("out-c", &["ws1", "ws2"], "ws1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "ws1"),
+                host_fact("win-b", "out-c", 800, "ws1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        host_hp_for(&settled, "win-b").is_empty()
+            && !engine
+                .retained_transfers()
+                .iter()
+                .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b") }),
+        "arrival settles the return: {:?} {:?}",
+        settled.transfers,
+        engine.retained_transfers()
+    );
+}
+
+#[test]
+fn host_shared_native_pending_return_genuine_supersedes() {
+    let mut engine = engine_settle_host();
+    let base = host_accepted(
+        &mut engine,
+        &host_report(
+            1,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-b", 800, "b")],
+            vec![
+                host_native("out-a", &["ws1", "ws2"], "ws1"),
+                host_native("out-b", &["ws1", "ws2"], "ws1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "ws1"),
+                host_fact("win-b", "out-b", 800, "ws1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(base.transfers.is_empty(), "baseline actuates nothing");
+    let a_ring = engine.mapping.get("out-a").cloned().unwrap_or_default();
+    let gone = host_accepted(
+        &mut engine,
+        &host_report(
+            2,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["ws1", "ws2"], "ws1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "ws1"),
+                host_fact("win-b", "out-a", 100, "ws1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert_eq!(
+        host_hp_for(&gone, "win-b").len(),
+        1,
+        "displacement pending: {:?}",
+        gone.transfers
+    );
+    let back = host_accepted(
+        &mut engine,
+        &host_report(
+            3,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-c", 800, "b")],
+            vec![
+                host_native("out-a", &["ws1", "ws2"], "ws1"),
+                host_native("out-c", &["ws1", "ws2"], "ws1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "ws1"),
+                host_fact("win-b", "out-a", 100, "ws2"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        host_hp_for(&back, "win-b").is_empty()
+            && !engine
+                .retained_transfers()
+                .iter()
+                .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b") }),
+        "different known native supersedes: {:?} {:?}",
+        back.transfers,
+        engine.retained_transfers()
+    );
+    assert_eq!(
+        host_home(&engine, "win-b"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(a_ring[1].clone()),
+        },
+        "external receipt adopts"
+    );
+}
+
+#[test]
+fn host_shared_native_pending_return_backed_source_genuine_supersedes() {
+    let mut engine = engine_settle_host();
+    let base = host_accepted(
+        &mut engine,
+        &host_report(
+            1,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-b", 800, "b")],
+            vec![
+                host_native("out-a", &["ws1", "ws2"], "ws1"),
+                host_native("out-b", &["ws1", "ws2"], "ws1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "ws1"),
+                host_fact("win-b", "out-b", 800, "ws1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(base.transfers.is_empty(), "baseline actuates nothing");
+    let a_ring = engine.mapping.get("out-a").cloned().unwrap_or_default();
+    let gone = host_accepted(
+        &mut engine,
+        &host_report(
+            2,
+            vec![host_screen("out-a", 0, "a")],
+            vec![host_native("out-a", &["ws1", "ws2"], "ws1")],
+            vec![
+                host_fact("win-a", "out-a", 0, "ws1"),
+                host_fact("win-b", "out-a", 100, "ws1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert_eq!(
+        host_hp_for(&gone, "win-b").len(),
+        1,
+        "displacement pending: {:?}",
+        gone.transfers
+    );
+    let b1 = engine
+        .mapping
+        .get("out-a")
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|id| *id != a_ring[0] && *id != a_ring[1])
+        .expect("hosted unit");
+    engine
+        .native_map
+        .insert(("out-a".to_owned(), "n3".to_owned()), b1.clone());
+    let back = host_accepted(
+        &mut engine,
+        &host_report(
+            3,
+            vec![host_screen("out-a", 0, "a"), host_screen("out-c", 800, "b")],
+            vec![
+                host_native("out-a", &["ws1", "ws2", "n3"], "ws1"),
+                host_native("out-c", &["ws1", "ws2"], "ws1"),
+            ],
+            vec![
+                host_fact("win-a", "out-a", 0, "ws1"),
+                host_fact("win-b", "out-a", 100, "ws1"),
+            ],
+            "",
+            None,
+        ),
+    );
+    assert!(
+        host_hp_for(&back, "win-b").is_empty()
+            && !engine
+                .retained_transfers()
+                .iter()
+                .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b") }),
+        "backed source stays authoritative: {:?} {:?}",
+        back.transfers,
+        engine.retained_transfers()
+    );
+    assert_eq!(
+        host_home(&engine, "win-b"),
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(a_ring[0].clone()),
+        },
+        "genuine receipt adopts over backed source"
     );
 }

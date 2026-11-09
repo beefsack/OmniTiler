@@ -1,7 +1,8 @@
 # v4 phase-2 KDE physical reconnect/rehome
 
-- Status: offline implementation verified; native RC partial, leg 2 failed,
-  2026-11-09. Keep active; the MAC gate remains open.
+- Status: native RC partial, leg 2 failed, 2026-11-09; the exact offline leg is
+  corrected and passing. Keep active pending the traced physical re-run.
+  RC gates the macOS reconnect/rehome slice and 0.1, not the macOS start.
 - Goal: supply truthful physical output facts and prove disconnect, reconnect
   and rehome offline without regressing the prior dogfoodable slices.
 - Native evidence is bounded below; offline evidence cannot establish physical
@@ -337,3 +338,205 @@ devenv shell -- env OMNITILER_SCOPE_CLASS= npm --prefix kwin run build
   native-rehome/occupied-unit combination. This regression is proposed, not run.
 - Verification of this record: source/evidence review, local link/anchor checks
   and `git diff --check`; no new native or offline execution evidence.
+
+## 2026-11-10 offline leg-2 discriminator
+
+- Goal: locate the first producer/core divergence without selecting the pending
+  same-numbered merge policy. No physical reconnect, display change or native
+  acceptance is established by this investigation.
+- `kwin/tests/world-producer-disconnect.test.ts` now carries the exact four-member
+  setup: T1 A/ws1 focused; T2 B/ws1; F/T3 B/ws2. It removes B, selects A/ws2
+  through `select-numbered`, focuses T3 through `windowActivated`, sends T3 to
+  ws1 with follow, then supplies quiescent native membership before returning
+  B's physical identity under a renamed handle. Selection and send each have
+  their own ready take, native current readback and plan/native equality proof.
+- Before correction: the new test reaches `F returns to B` and fails
+  (`out-left`, expected `out-right2`). Prior assertions prove T3's native ws1
+  membership and settled logical workspace persist on A across return; all
+  four plan rows match the modeled natives. T2's final return assertion is
+  after the first failure and is not execution evidence. The two older journeys
+   passed before correction but encoded the same emptied-unit defect; their
+   corrected oracles now require separate hosted units and current-content return.
+- First offline causal divergence: at removal, native receipts resolve T2 to
+  A's occupied ws1 unit and F/T3 to A's ws2 unit
+  (`crates/tiler-core/src/world_observe.rs:1006-1013`). Membership reconciliation
+  stores that new home (`world_members.rs:177-190`), superseding the displaced
+  logical id retained during `world_model.rs:846-857`. Physical return reclaims
+  B's owned unit IDs, but member eligibility requires a retained home on exactly
+  those IDs (`world_model.rs:633-703`, especially `:680-687`). F no longer
+  qualifies; B's unit returns empty. This establishes the offline mechanism,
+  not the cause of the physical browser outcome from summary logs alone.
+- T3 pullback is not reproduced. The harness return deliberately moves no
+  native windows; it does not model KWin placement restoration. The original
+  L2 send/apply evidence remains exactly as bounded above: no proof of native
+  settlement or physical matching, and no basis to assign unplug/replug to
+  specific revisions. A settled offline send excludes a core pullback only
+  for this supplied input sequence, not for every possible live ordering.
+
+### Existing-rule correction and open merge question
+
+- [R-OUT-06a](../spec/reference-outcomes/multi-output.md#r-out-06a-occupied-same-index-evacuation-explicit-member-move-return)
+  records all four Tier 1 sources at the existing pins. COSMIC directly models
+  equal per-output indices and preserves separate workspace objects. i3/sway
+  names and Hyprland numbered IDs are global; their distinct-identity analogy
+  also moves whole objects, not equal-index member merges. Sway/Hyprland/COSMIC
+  return current objects; i3 has no automatic return affinity in this default
+  leg. None supplies evidence for a per-member merge-and-later-unmerge rule.
+- The correction implements the existing generic separate-layout and
+  then-current-content rules. It does not record a user decision on the open
+  same-numbered merge question or add a merge exception. The reference row
+  stays TBD for that question, with the Tier 1 evidence attached.
+- Displacement now retains the existing membership-only policy transfer even
+  when KWin has already moved the window's output onto the survivor. Existing
+  native-creation and binding machinery supplies a distinct backing; no new
+  membership ledger, wire field or receipt precedence is introduced.
+- Policy settlement distinguishes unchanged source-native topology evidence
+  from a genuine different native receipt using the transfer's existing source
+  binding. The former holds until arrival; the latter supersedes the policy
+  immediately. Unknown/incomplete evidence holds; native-free behavior remains
+  unchanged. Settled members again follow ordinary native truth, including
+  movement back onto a formerly used desktop.
+- Return snapshots homes before rekeying, so then-current members remain
+  eligible for the return transfer. Physical-identity-matched native bindings
+  carry before adoption on a renamed handle, avoiding unrelated fresh logicals;
+  dead-origin binding rows are removed. Both topology scans leave outstanding
+  command-owned window/migration transfers alone. Rehomed members remain exempt
+  from automatic-admission focus.
+- Eleven core controls cover pending sends before disconnect and at return,
+  newcomers, pending-policy replacement, genuine external moves before backing,
+  backed-unit movement, unknown/inventory-gap evidence and capability-off input.
+  Independent review accepted the production change and five existing chain
+  regressions; its send-before-disconnect and known-value-gap coverage gaps
+  were subsequently closed. Native KWin placement restoration remains unmodeled.
+- A further shared-native ordering control reproduced a return-before-backing
+  gap: the unbacked hosted source had no native binding, so settlement dropped
+  its return transfer and adopted the survivor's unit. The corrected check uses
+  the carried target binding as stale-source evidence only while the source has
+  no binding. A backed source stays authoritative. Three controls prove stale
+  shared-native return/arrival, genuine different-native supersession, and a
+  backed source with a genuine move to the original native. Follow-up independent
+  review accepted this repair; no new state or wire semantics were needed.
+
+### Bounded reconnect diagnostics
+
+- Ordinary trace previously emitted `no-subject` for commandless observations;
+  it was not a full report/reply dump. The trace-only probe now emits on existing
+  capture sends and accepted applies, without extra captures/timers/writes:
+
+  | Event | Evidence boundary |
+  | --- | --- |
+  | `observe-sent`, `observe-sent-win` | Exact sent source/watermark, output IDs, native current/order, focus and per-window output/logical/native membership |
+  | `observe-applied`, `observe-fresh-win` | Fresh pre-apply membership and focus, separately labeled post-apply focus, reply revision and lane totals |
+  | `observe-plan`, `observe-bind`, `observe-transfer` | Reply desire, not observed settlement; logical home, native binding, authority and transfer target/held/op/cmdSeq |
+  | `member-attempt` | Exact delivered attempts versus separately labeled retained-at-apply attempts; pre/post typed membership, setter, operation and original timestamp |
+
+- Caps: 8 outputs/native orders/bindings/plans/transfers/attempts, 16 observed
+  window carriers; every new truncated lane reports omission counts. Bindings
+  referenced by shown plans/transfers are prioritized before spare rows, so
+  appended test workspaces are not hidden behind the first eight native rows.
+  Nonzero omissions mean absence is not proof. All-desktop, multi-desktop and
+  unknown native membership remain distinct. IDs are sanitized; titles, app
+  names and physical metadata are not logged. Normal builds eliminate this
+  probe. Transfer wire rows expose the target, not a separate source; internal
+  displaced owned/hosting sets and physical-identity matching remain unlogged.
+- Independent source review accepted the offline causal chain and the new
+  trace boundary separation. Existing subject-line transfer-op sanitization and
+  older subject/frame-state-attempt caps have unrelated diagnostic limitations;
+  this investigation uses the new explicit `observe-transfer` and
+  `member-attempt` lanes with totals/omissions, not those older summaries.
+
+### Traced user re-run (not executed)
+
+1. Follow [the live guide](../live-kwin-testing.md), fixture scope, lifecycle and
+   evaluated readiness. Start from `just dev-status` reporting DOWN; retain a
+   pre-start journal cursor and fresh evidence directory outside the checkout.
+   Start the [fixture server and `run` helper](../../crates/tiler-live-fixture/README.md#smoke-two-terminals-from-the-repo-root-after-an-env-restart).
+   Use two appended native desktop positions p/q beyond the existing roster,
+   with independent per-output current views. p/q replace ws1/ws2 in this leg;
+   do not commandeer the user's existing numbered workspaces.
+2. In the capture terminal (inside the configured development environment):
+
+   ```sh
+   CAPTURE_DIR="$(mktemp -d)"
+   CURSOR="$(journalctl --user -n 1 -o json --no-pager | jq -er '.__CURSOR')"
+   just dev-status
+   ```
+
+   In another terminal, start and retain the combined trace:
+
+   ```sh
+   just dev-kde trace --scope-class OmniTilerTestWindow 2>&1 | tee "$CAPTURE_DIR/reconnect-trace.log"
+   ```
+
+   Export/paste the same capture directory in that terminal first. Use the
+   controller receipt's verified KWin owner PID to retain the unfiltered stream
+   in the capture terminal:
+
+   ```sh
+   RECEIPT="$(cat "$XDG_RUNTIME_DIR/omnitiler-dev/controller-receipt-path")"
+   KWIN_PID="$(jq -er '.pid' "$RECEIPT")"
+   journalctl --user --no-pager -f --after-cursor="$CURSOR" _PID="$KWIN_PID" -o short-monotonic | tee "$CAPTURE_DIR/kwin-journal.log"
+   ```
+
+   Require fresh ready/discovered and a matched accepted dispatch/applied pair;
+   stop if inert. Keep the separate unfiltered scripting-error check. No raw bus
+   monitor is needed.
+3. Spawn four ordinary resizable fixtures and retain exact caller/PID/native
+   joins. Stage T1 on A/p focused, T2 on B/p, F/T3 on B/q with B/q current.
+   F is a fixture, not a browser-specific claim. Record native windows' outputs,
+   desktops, currents and focus plus a `run` get response before proceeding.
+
+   ```sh
+   run '{"v":1,"request_id":"rc-spawn","op":"spawn","windows":[{"id":"T1"},{"id":"T2"},{"id":"F"},{"id":"T3"}]}'
+   run '{"v":1,"request_id":"rc-before","op":"get","ids":["T1","T2","F","T3"]}'
+   ```
+
+4. User physically unplugs B. Record the action time and wait for a quiet
+   accepted observation. Retain sent/fresh/reply window rows, binding and lane
+   totals, currents and actual focus. Expect separate hosted logical units and
+   newly created backing where the survivor's p/q are already bound; prove
+   their membership settles without admission focus before continuing. Select
+   A/q, then explicitly activate T3 on its observed hosted backing (it need not
+   still be native q); do not replace the selection with a different index.
+   Send T3 to A/p with follow. Record each action time; prove T3 native membership=p in a
+   **later** sent observation, with the corresponding plan on A/p and no
+   outstanding T3 transfer. A setter count or ready take alone is insufficient.
+   If that proof is missing, stop and retain the unsettled-send evidence rather
+   than claiming an explicit-move return failure.
+5. User physically reconnects B, without moving/focusing a window meanwhile.
+   Retain every source from the first topology change through quiescence. If
+   sent/fresh T3 already names B before a core transfer, that is native output
+   restoration evidence. If a reply first authorizes T3 to B, retain its exact
+   transfer/op/target/attempt chain. This split does not independently prove
+   physical-identity matching or the compositor's internal restoration reason.
+   Repeat `run get` with a fresh request ID for all four fixtures. Record F/T2
+   return and T3 exclusion separately; do not promote partial results to RC PASS.
+6. Close only the four owned fixtures and shut down the fixture server. Stop
+   the scoped controller with Ctrl-C and perform its verified teardown; retain
+   both complete logs. Undo only recorded owned staging changes. A real-browser
+   reproduction, if still necessary, is a separate user-owned leg rather than
+   silent scope broadening.
+
+### Current offline verification
+
+- `npm --prefix kwin run typecheck`: exit 0.
+- Red: `npm --prefix kwin test` before correction had **1223 passed, 1 failed**,
+  exit 1, with the sole failure `F returns to B`. Green: **1224 passed, 0 failed,
+  0 skipped/todo**. The exact select-2/focus-T3/send-1 action sequence is retained;
+  F/T2 return and T3 stays, with native-plan equality and no retained return or
+  creation operation at quiescence. The opt-in producer harness models the
+  pinned void `createDesktop(position, name)` plus `desktopsChanged` so distinct
+  backing can really settle; the default harness remains unchanged.
+- Focused trace diagnostics: **16/16**; existing world-entry **93/93** and
+  trace/build gating **6/6**. Independent review verified normal-bundle probe
+  elimination and no added native effect, capture or timer; the final additive
+  binding-cap control also passes in the full run above.
+- Scoped Rust: **3191 passed, 0 failed/ignored**, with the unsafe-posture check
+  excluded: core **2562**, protocol **288**, omnitiler **341**. Hermetic runner:
+  **130/130**. No live checks or immutable fixture changes. These offline
+  results do not establish native RC acceptance or the physical T3 pullback cause.
+- Final Rust format, scoped locked build and all-target clippy gates exit 0;
+  adapter typecheck, full adapter suite, normal-bundle probe elimination and
+  `git diff --check` pass. Rust tests use
+  `cargo test -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`;
+  runner coverage uses `node --test scripts/kde-scenarios.test.mjs`, not live execution.

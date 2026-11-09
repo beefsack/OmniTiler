@@ -15,6 +15,8 @@
 //! ingress is retired; internal [`AttemptOutcome`] latch vocabulary
 //! (migration terminal) is retained.
 
+use std::collections::BTreeSet;
+
 use crate::directional::{OutputId, WindowId};
 use crate::session::DomainKey;
 use crate::world_engine::{RetainedFloat, RetainedTransfer, WorldEngine};
@@ -889,9 +891,63 @@ impl WorldEngine {
                             // screen vanished under the member (no newer
                             // user input), so the intent holds instead of
                             // dropping, and the outstanding flight keeps the
-                            // member homed until arrival proves it.
+                            // member homed until arrival proves it. SOURCE
+                            // provenance narrows the hold: a fact still on
+                            // a retained source native (or with unknown
+                            // native) is stale topology evidence and holds;
+                            // a fact on a different genuine native is newer
+                            // external input and supersedes the flight
+                            // (drop, so reconcile adopts the receipt through
+                            // the existing path; no new ledger).
                             if retained.policy {
-                                keep.push(retained);
+                                // Capability-gated SOURCE narrowing: without
+                                // host-owned evidence no Value ever proves
+                                // external input, so the policy holds.
+                                if !self.host_owned_workspace_domains() {
+                                    keep.push(retained);
+                                } else {
+                                    let source_natives: BTreeSet<String> = self
+                                        .native_map
+                                        .iter()
+                                        .filter(|((out, _), logical)| {
+                                            out == &retained.source_output.0
+                                                && *logical == &retained.source_workspace
+                                        })
+                                        .map(|((_, native), _)| native.clone())
+                                        .collect();
+                                    let stale = match self
+                                        .staged
+                                        .facts
+                                        .get(window)
+                                        .and_then(|fact| fact.native_workspace.as_deref())
+                                    {
+                                        Some(native) => {
+                                            if !source_natives.is_empty() {
+                                                source_natives.contains(native)
+                                            } else {
+                                                // Unbacked hosted unit (return source has
+                                                // no lane yet): use the target binding
+                                                // for the same logical as the stale
+                                                // proxy. A backed source stays
+                                                // authoritative so a genuine move
+                                                // still supersedes.
+                                                self.native_map
+                                                    .iter()
+                                                    .filter(|((out, _), logical)| {
+                                                        out == &retained.target.target_output.0
+                                                            && *logical
+                                                                == &retained.source_workspace
+                                                    })
+                                                    .map(|((_, native_id), _)| native_id.clone())
+                                                    .any(|id| id == native)
+                                            }
+                                        }
+                                        None => true,
+                                    };
+                                    if stale {
+                                        keep.push(retained);
+                                    }
+                                }
                             } else if key.output == target_key.output
                                 || key.output == source_key.output
                             {

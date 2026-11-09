@@ -30,7 +30,6 @@ import {
     frameOf,
     lastDescribeReply,
     makeHarness,
-    replyFrames,
     takeReadys,
     winById,
     type Harness,
@@ -47,6 +46,10 @@ async function makeTwoOutputHarness(focusId: string): Promise<Harness> {
         desktops: ["ws1", "ws2"],
         currents: { "out-left": "ws1", "out-right": "ws2" },
         homes: { "win-a": "out-left", "win-b": "out-left", "win-c": "out-right", "win-d": "out-right" },
+        // Displacement mints separate logical units through the real
+        // native-creation mechanism; the faithful opt-in lets the
+        // adapter create the backing so quiescence converges.
+        withNativeCreation: true,
     });
     // Right members home to the right current before discovery, mirroring
     // the workspace-selection journeys' pre-discovery re-home.
@@ -97,16 +100,40 @@ describe("world genuine-producer output disconnect and return journeys", () => {
             // Published roster exact: the live roster, no more and no fewer.
             const ids = windowRows(reply).map((w) => w["win"] as string).sort();
             assert.deepEqual(ids, ["win-a", "win-b", "win-c", "win-d"], "published window set exact");
-            // Every row re-homes to the survivor's same-native unit: a/b
-            // stay on ws-1, the displaced c/d join the empty ws-2.
+            // Every row re-homes to the survivor, but the displaced members
+            // never merge onto a survivor-owned unit: a/b stay on ws-1
+            // while c/d ride a separate core-minted unit (ws-4) through
+            // the real native-creation mechanism, so the return leg can
+            // tell their home apart from the survivor's own.
             for (const win of ["win-a", "win-b"]) {
                 assert.equal(rowByWin(reply, win)["out"], "out-left", `${win} re-homes to the survivor`);
                 assert.equal(rowByWin(reply, win)["ws"], "ws-1", `${win} keeps its workspace`);
             }
             for (const win of ["win-c", "win-d"]) {
                 assert.equal(rowByWin(reply, win)["out"], "out-left", `${win} re-homes to the survivor`);
-                assert.equal(rowByWin(reply, win)["ws"], "ws-2", `${win} joins the survivor's same-native unit`);
+                assert.equal(rowByWin(reply, win)["ws"], "ws-4", `${win} rides the separate displaced unit, never the survivor's own`);
             }
+            // Separate backing, not a hidden divergent home: displacement
+            // creates exactly one native desktop (ws-3) backing c/d while
+            // a/b stay on the survivor's ws1, and the core binds the
+            // displaced unit to exactly that created native.
+            assert.deepEqual(
+                (h.workspace["desktops"] as Array<{ id: string }>).map((d) => d.id),
+                ["ws1", "ws2", "ws-3"],
+                "displacement creates exactly one native desktop",
+            );
+            for (const win of ["win-c", "win-d"]) {
+                assert.deepEqual(
+                    winById(h, win).desktops.map((d) => d.id),
+                    ["ws-3"],
+                    `native membership of ${win} rides the created desktop`,
+                );
+            }
+            const displacedUnit = (reply["workspaces"] as Array<Record<string, unknown>>).find(
+                (u) => u["out"] === "out-left" && u["id"] === "ws-4",
+            );
+            assert.ok(displacedUnit !== undefined, "displaced unit publishes on the survivor");
+            assert.equal(displacedUnit["bind"], "ws-3", "displaced unit binds the created native");
             // Native output reassignment is KWin-complete before the core
             // reply lands: every live window names the survivor.
             assert.deepEqual(
@@ -120,10 +147,15 @@ describe("world genuine-producer output disconnect and return journeys", () => {
             assert.deepEqual(frameOf(winById(h, "win-b")), beforeB, "survivor win-b keeps its exact frame");
             // Presentation set exact: the pager carries the full roster.
             assert.deepEqual(pagerWins(reply), ["win-a", "win-b", "win-c", "win-d"], "pager carries the full roster");
-            // Commandless displacement: no queue filing, no take, null result.
+            // Commandless displacement: creations ride the apply lane, never
+            // the command lane: no queue filing, no take, null result.
             assert.equal(h.calls.filter((call) => call.method === "QueueWorldCommand").length, 0, "displacement files no command");
             assert.equal(takeReadys(h).length, 0, "displacement settles no takes");
             assert.equal(reply["result"], null, "actuator lane carries a null result");
+            // Settled quiescence leaks nothing: no in-flight transfer and no
+            // outstanding creation desire ride the publication.
+            assert.deepEqual(reply["transfers"] ?? [], [], "displacement leaves no in-flight transfer");
+            assert.deepEqual(reply["nativeCreations"] ?? [], [], "displacement leaves no outstanding creation");
             // Rehomed members are not fresh admissions: no automatic-admission
             // focus effect, and native focus stays untouched.
             // Scan every capture the disconnect produced: the effect would
@@ -137,7 +169,9 @@ describe("world genuine-producer output disconnect and return journeys", () => {
             assert.deepEqual(disconnectEffects, [], "displacement mints no focus effect");
             assert.equal(h.focused.length, focusedBefore, "displacement activates no native window");
             assert.equal(h.activeRef?.internalId, "win-c", "native focus stays on the focused rehomed window");
-            // No native writes: the adapter moves nothing itself.
+            // No output or view writes: the displaced membership lands
+            // through direct bound desktop writes, never a cross-output
+            // move or a view switch.
             assert.deepEqual(h.viewWrites, [], "displacement writes no native view");
             assert.deepEqual(h.outputWrites, [], "displacement drives no output move");
             assert.deepEqual(h.echoWrites, [], "displacement re-homes no echo desktop");
@@ -151,7 +185,7 @@ describe("world genuine-producer output disconnect and return journeys", () => {
         }
     });
 
-    it("returns the removed output under a renamed handle and reclaims only its then-current empty units", async () => {
+    it("returns the removed output under a renamed handle and reclaims its then-current units", async () => {
         const h = await makeTwoOutputHarness("win-c");
         try {
             await discover(h);
@@ -160,17 +194,23 @@ describe("world genuine-producer output disconnect and return journeys", () => {
             h.runTimers();
             await h.settle();
             const removedReply = lastDescribeReply(h);
-            const removedFrames = replyFrames(removedReply);
+            const callsBefore = h.calls.length;
+            const focusedBefore = h.focused.length;
             h.returnOutput({ name: "out-right2", geometry: { x: 1000, y: 50, width: 900, height: 700 }, manufacturer: "Acme", model: "Panel-R", serialNumber: "SN-RIGHT-1" });
             h.runTimers();
             await h.settle();
             const reply = lastDescribeReply(h);
             assert.equal(reply["outcome"] ?? "accepted", "accepted", "return capture accepted");
-            // Roster exact, and nobody pulls back: every row stays on the
-            // survivor with its post-removal workspace and frame.
+            // Roster exact, with then-current contents: a/b never left and
+            // stay on the survivor, while the displaced c/d ride their own
+            // unit home to the returned output (the same logical unit as
+            // after removal, now hosted on out-right2). Frames re-tile
+            // across the output move, so the oracle below (exact native
+            // frame match against the plan) replaces any frame-identity
+            // assertion against the post-removal capture.
             const ids = windowRows(reply).map((w) => w["win"] as string).sort();
             assert.deepEqual(ids, ["win-a", "win-b", "win-c", "win-d"], "published window set exact");
-            for (const win of ["win-a", "win-b", "win-c", "win-d"]) {
+            for (const win of ["win-a", "win-b"]) {
                 assert.equal(rowByWin(reply, win)["out"], "out-left", `${win} stays on the survivor`);
                 assert.equal(
                     rowByWin(reply, win)["ws"],
@@ -178,28 +218,36 @@ describe("world genuine-producer output disconnect and return journeys", () => {
                     `${win} keeps its post-removal workspace`,
                 );
             }
-            assert.deepEqual(replyFrames(reply), removedFrames, "return keeps every post-removal frame");
-            for (const win of ["win-a", "win-b", "win-c", "win-d"]) {
-                assert.deepEqual(
-                    frameOf(winById(h, win)),
-                    removedFrames.get(win),
-                    `native frame of ${win} matches its post-removal frame`,
+            for (const win of ["win-c", "win-d"]) {
+                assert.equal(rowByWin(reply, win)["out"], "out-right2", `${win} rides home to the returned output`);
+                assert.equal(
+                    rowByWin(reply, win)["ws"],
+                    rowByWin(removedReply, win)["ws"],
+                    `${win} keeps its displaced unit across the return`,
                 );
             }
             assert.deepEqual(
                 h.wins.map((w) => w.output.name).sort(),
-                ["out-left", "out-left", "out-left", "out-left"],
-                "no native moves back to the returned output",
+                ["out-left", "out-left", "out-right2", "out-right2"],
+                "displaced natives move back to the returned output",
             );
             appliedMatchesReply(h, reply);
-            // The reclaimed trio rides empty on the returned output: ws-3,
-            // ws-4 and ws-5 appear exactly once across outputs, all unbound.
+            // The displaced unit reclaims bound, not empty: c/d's
+            // then-current unit publishes on the returned output bound to a
+            // live native, and that native is exactly the adapter-written
+            // membership (direct bound write, never an echo re-home).
             const units = reply["workspaces"] as Array<Record<string, unknown>>;
-            for (const trio of ["ws-3", "ws-4", "ws-5"]) {
-                const rows = units.filter((u) => u["id"] === trio);
-                assert.equal(rows.length, 1, `${trio} appears exactly once across outputs`);
-                assert.equal(rows[0]?.["out"], "out-right2", `${trio} reclaims onto the returned output`);
-                assert.equal(rows[0]?.["bind"], "", `${trio} reclaims unbound`);
+            for (const win of ["win-c", "win-d"]) {
+                const home = rowByWin(reply, win)["ws"] as string;
+                const rows = units.filter((u) => u["id"] === home && u["out"] === "out-right2");
+                assert.equal(rows.length, 1, `${win}'s unit publishes exactly once on the returned output`);
+                const bind = rows[0]?.["bind"] as string;
+                assert.ok(bind !== "", `${win}'s unit reclaims bound`);
+                assert.deepEqual(
+                    winById(h, win).desktops.map((d) => d.id),
+                    [bind],
+                    `native membership of ${win} matches its reclaimed bind`,
+                );
             }
             // Left view unchanged: the survivor still shows ws-1.
             const outputs = reply["outputs"] as Array<Record<string, unknown>>;
@@ -211,15 +259,173 @@ describe("world genuine-producer output disconnect and return journeys", () => {
             assert.equal(h.calls.filter((call) => call.method === "QueueWorldCommand").length, 0, "return files no command");
             assert.equal(takeReadys(h).length, 0, "return settles no takes");
             assert.equal(reply["result"], null, "actuator lane carries a null result");
-            // No native writes: the adapter moves nothing itself.
+            // The adapter drives exactly the home move and nothing else:
+            // one cross-output send per displaced window, no echo re-home,
+            // no view switch. Settled quiescence leaks nothing.
             assert.deepEqual(h.viewWrites, [], "return writes no native view");
-            assert.deepEqual(h.outputWrites, [], "return drives no output move");
+            assert.deepEqual(h.outputWrites, ["win-c->out-right2", "win-d->out-right2"], "return drives exactly the home move");
             assert.deepEqual(h.echoWrites, [], "return re-homes no echo desktop");
+            assert.deepEqual(reply["transfers"] ?? [], [], "return leaves no in-flight transfer");
+            assert.deepEqual(reply["nativeCreations"] ?? [], [], "return leaves no outstanding creation");
+            // Reclaimed members are not fresh admissions: no focus effect
+            // rides the return captures, and no native activates.
+            const returnEffects: unknown[] = [];
+            for (const [at, raw] of h.replies) {
+                if (at >= callsBefore && (h.calls[at] as { method: string }).method === "DescribeWorld") {
+                    returnEffects.push(...(((JSON.parse(raw) as Record<string, unknown>)["effects"] as unknown[] | undefined) ?? []));
+                }
+            }
+            assert.deepEqual(returnEffects, [], "return mints no focus effect");
+            assert.equal(h.focused.length, focusedBefore, "return activates no native window");
             // Sensitivity control: a stale pulled-back output must fail
             // loudly, proving the no-pullback assertions are not vacuous.
             const tampered = JSON.parse(JSON.stringify(reply)) as Record<string, unknown>;
             (windowRows(tampered).find((w) => w["win"] === "win-a") as Record<string, unknown>)["out"] = "out-right2";
             assert.throws(() => appliedMatchesReply(h, tampered), /native output of/, "stale output fails the oracle");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("reconnects the leg-2 survivor-focus journey with a settled explicit send (P1 reproduction)", async () => {
+        // Exact 2026-11-09 leg-2 topology, no merge decision taken: A holds
+        // T1 on ws1 with focus; B holds T2 on ws1 and F/T3 on ws2. Removal
+        // re-homes every B window onto separate hosted units on A; T3 is
+        // then sent to ws1 with settled membership before B returns under
+        // a renamed handle carrying the same physical identity. Expected
+        // return: F rides home to B, T2 rides home to B, T3 stays where
+        // sent. Before correction F lost its return-eligible home through
+        // the survivor's same-native receipt. T3 staying put distinguishes
+        // the offline core path from live native
+        // restoration (H3, unmodelled: returnOutput moves nothing back).
+        const h = await makeHarness("win-a", ["win-a", "win-b", "win-c", "win-d"], {
+            outputs: OUTPUTS,
+            desktops: ["ws1", "ws2"],
+            currents: { "out-left": "ws1", "out-right": "ws2" },
+            homes: { "win-a": "out-left", "win-b": "out-right", "win-c": "out-right", "win-d": "out-right" },
+            // Displacement mints separate logical units through the real
+            // native-creation mechanism; the faithful opt-in lets the
+            // adapter create the backing so quiescence converges.
+            withNativeCreation: true,
+        });
+        try {
+            winById(h, "win-b").desktops = [deskById(h, "ws1")];
+            winById(h, "win-c").desktops = [deskById(h, "ws2")];
+            winById(h, "win-d").desktops = [deskById(h, "ws2")];
+            await discover(h);
+            await h.settle();
+            // Setup proof through live natives: T1 A/ws1, T2 B/ws1, F/T3
+            // B/ws2, with the plan matching every native.
+            assert.equal(winById(h, "win-a").output.name, "out-left", "T1 starts on A");
+            assert.deepEqual(winById(h, "win-a").desktops.map((d) => d.id), ["ws1"], "T1 starts on ws1");
+            assert.equal(winById(h, "win-b").output.name, "out-right", "T2 starts on B");
+            assert.deepEqual(winById(h, "win-b").desktops.map((d) => d.id), ["ws1"], "T2 starts on ws1");
+            for (const win of ["win-c", "win-d"]) {
+                assert.equal(winById(h, win).output.name, "out-right", `${win} starts on B`);
+                assert.deepEqual(winById(h, win).desktops.map((d) => d.id), ["ws2"], `${win} starts on ws2`);
+            }
+            appliedMatchesReply(h, lastDescribeReply(h));
+            // Survivor-focus removal: T1 keeps native focus, no admission
+            // focus effect for the rehomed members.
+            const focusedBefore = h.focused.length;
+            const callsBefore = h.calls.length;
+            h.removeOutput("out-right");
+            h.runTimers();
+            await h.settle();
+            const removedReply = lastDescribeReply(h);
+            assert.equal(removedReply["outcome"] ?? "accepted", "accepted", "disconnect capture accepted");
+            assert.deepEqual(
+                windowRows(removedReply).map((w) => w["win"] as string).sort(),
+                ["win-a", "win-b", "win-c", "win-d"],
+                "published window set exact after removal",
+            );
+            assert.deepEqual(
+                h.wins.map((w) => w.output.name).sort(),
+                ["out-left", "out-left", "out-left", "out-left"],
+                "all natives name the survivor output",
+            );
+            appliedMatchesReply(h, removedReply);
+            const disconnectEffects: unknown[] = [];
+            for (const [at, raw] of h.replies) {
+                if (at >= callsBefore && (h.calls[at] as { method: string }).method === "DescribeWorld") {
+                    disconnectEffects.push(...(((JSON.parse(raw) as Record<string, unknown>)["effects"] as unknown[] | undefined) ?? []));
+                }
+            }
+            assert.deepEqual(disconnectEffects, [], "displacement mints no focus effect");
+            assert.equal(h.focused.length, focusedBefore, "displacement activates no native window");
+            assert.equal(h.activeRef?.internalId, "win-a", "native focus stays on the survivor T1");
+            assert.notEqual(rowByWin(removedReply, "win-b")["ws"], rowByWin(removedReply, "win-a")["ws"], "T2 keeps a separate displaced unit on the occupied native index");
+            assert.equal(rowByWin(removedReply, "win-c")["ws"], rowByWin(removedReply, "win-d")["ws"], "F/T3 keep their shared displaced unit");
+            assert.notDeepEqual(winById(h, "win-c").desktops.map((d) => d.id), ["ws2"], "F/T3 receive distinct native backing before selection");
+            // L2 select: A ws2 through the production numbered route.
+            h.activeScreen = { name: "out-left" };
+            h.handle.requestWorkspaceSelect(2);
+            // The drain dispatch gates on the async Queue filing ack, which
+            // quiescent settle() never waits for: flush() bounds that wait,
+            // then settle() quiesces the follow-up round-trips.
+            await h.flush();
+            h.runTimers();
+            await h.settle();
+            assert.equal(h.commandPayloads("select-numbered").length, 1, "selection files exactly once");
+            const currentFor = h.workspace["currentDesktopForScreen"] as (screen: { name: string }) => { id: string };
+            assert.equal(currentFor({ name: "out-left" }).id, "ws2", "native current reads back ws2");
+            const selectTakes = takeReadys(h);
+            assert.equal(selectTakes.length, 1, "selection settles its own take");
+            assert.equal(selectTakes[0]?.["globalCmd"], "1", "selection take rides sequence 1");
+            appliedMatchesReply(h, lastDescribeReply(h));
+            // L2 focus: the user selects T3. Native activation through the
+            // supported workspace signal, read back below.
+            h.activeRef = winById(h, "win-d");
+            h.fire("windowActivated");
+            h.runTimers();
+            await h.settle();
+            assert.equal(h.activeRef?.internalId, "win-d", "T3 holds native focus before the send");
+            // L2 send: T3 to ws1 with follow, then prove the native
+            // membership settled before the return.
+            h.handle.requestWorkspaceMove(1, true);
+            await h.flush();
+            h.runTimers();
+            await h.settle();
+            assert.equal(h.commandPayloads("send-numbered").length, 1, "send files exactly once");
+            const sendTakes = takeReadys(h);
+            assert.equal(sendTakes.length, 2, "send settles its own take after the selection take");
+            assert.equal(sendTakes[1]?.["globalCmd"], "2", "send take rides sequence 2");
+            assert.equal(sendTakes[1]?.["result"], null, "send take resolves null");
+            assert.equal(currentFor({ name: "out-left" }).id, "ws1", "follow carries the native current to ws1");
+            const sentReply = lastDescribeReply(h);
+            assert.deepEqual(winById(h, "win-d").desktops.map((d) => d.id), ["ws1"], "T3 native membership settles on ws1");
+            appliedMatchesReply(h, sentReply);
+            const sentWs = rowByWin(sentReply, "win-d")["ws"] as string;
+            assert.equal(rowByWin(sentReply, "win-a")["ws"], sentWs, "T3 settles onto T1's workspace");
+            // Same-identity return under a renamed handle.
+            h.returnOutput({ name: "out-right2", geometry: { x: 1000, y: 50, width: 900, height: 700 }, manufacturer: "Acme", model: "Panel-R", serialNumber: "SN-RIGHT-1" });
+            h.runTimers();
+            await h.settle();
+            const reply = lastDescribeReply(h);
+            assert.equal(reply["outcome"] ?? "accepted", "accepted", "return capture accepted");
+            assert.deepEqual(
+                windowRows(reply).map((w) => w["win"] as string).sort(),
+                ["win-a", "win-b", "win-c", "win-d"],
+                "published window set exact after return",
+            );
+            assert.ok((reply["outputs"] as Array<Record<string, unknown>>).some((o) => o["out"] === "out-right2"), "returned output publishes a row");
+            // T3 is not pulled back: it stays where explicitly sent.
+            assert.equal(rowByWin(reply, "win-d")["out"], "out-left", "sent T3 stays on the survivor");
+            assert.equal(rowByWin(reply, "win-d")["ws"], sentWs, "sent T3 keeps its settled workspace");
+            // The plan matches every live native at quiescence, so the
+            // failure below is homing, not an unapplied native write.
+            appliedMatchesReply(h, reply);
+            // F rides home to B. Fails before the H1 correction: F rehomed
+            // onto the survivor's own unit, so reclaiming B's emptied unit
+            // cannot return it.
+            assert.equal(rowByWin(reply, "win-c")["out"], "out-right2", "F returns to B");
+            // T2 rides home to B (same H1 mechanism on the occupied unit).
+            assert.equal(rowByWin(reply, "win-b")["out"], "out-right2", "T2 returns to B");
+            // Settled quiescence leaks nothing: the select/send takes
+            // resolved on the command lane, and no policy flight or
+            // creation desire rides the return publication.
+            assert.deepEqual(reply["transfers"] ?? [], [], "settled return leaves no in-flight transfer");
+            assert.deepEqual(reply["nativeCreations"] ?? [], [], "settled return leaves no outstanding creation");
         } finally {
             await h.stop();
         }

@@ -279,7 +279,7 @@ export function truthfulClientFor(f: { x: number; y: number; width: number; heig
     return { x, y, width: w, height: h };
 }
 
-export async function makeHarness(focusId: string, ids: string[], opts?: { withEffectFacts?: boolean; withNativePreimage?: boolean; withIntentStore?: boolean; desktops?: string[]; fractionalScale?: number; outputs?: FakeOutputSpec[]; homes?: Record<string, string>; currents?: Record<string, string> }): Promise<Harness> {
+export async function makeHarness(focusId: string, ids: string[], opts?: { withEffectFacts?: boolean; withNativePreimage?: boolean; withIntentStore?: boolean; withNativeCreation?: boolean; desktops?: string[]; fractionalScale?: number; outputs?: FakeOutputSpec[]; homes?: Record<string, string>; currents?: Record<string, string> }): Promise<Harness> {
     // Multi-desktop selection support (tier 2A): the default stays exactly
     // one native desktop (`ws1`, the pre-existing shape); passing
     // `desktops` seeds that many natives in order, all but the first empty.
@@ -770,7 +770,28 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
                 }
             }
         },
-        createDesktop: (): void => undefined,
+        // Opt-in production-faithful native creation (`withNativeCreation`):
+        // the default stays a no-op so producers that never exercise
+        // displacement behave identically to before. When armed, the
+        // pinned void shape applies: a numeric zero-based position in
+        // [0, count] plus the logical token as the name, synchronously
+        // appending one native desktop and firing `desktopsChanged`
+        // synchronously (real KWin signals fire inside the call; the
+        // apply loop spends the stable op before calling for exactly
+        // this reason). Same-turn before/after enumeration proves the
+        // created id causally.
+        createDesktop: (position: unknown, name: unknown): void => {
+            if (opts?.withNativeCreation !== true) {
+                return;
+            }
+            assert.equal(typeof position, "number", "creation carries a numeric position");
+            assert.equal(typeof name, "string", "creation carries a logical token name");
+            const id = `ws-${liveDesktops.length + 1}`;
+            const desk: FakeDesktop = { id, name: name as string };
+            const at = Math.max(0, Math.min(position as number, liveDesktops.length));
+            liveDesktops.splice(at, 0, desk);
+            harness.fire("desktopsChanged");
+        },
         removeDesktop: (): void => undefined,
     };
     for (const win of wins) {

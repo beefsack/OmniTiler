@@ -429,6 +429,74 @@ offline); workspace send still refuses cross-output (`S(S-ours-out)` pinned base
 - Variant hook: provisional/TBD (host-topology hook, to discuss;
   distinct from R-WS-12 whole-workspace reassignment).
 
+### R-OUT-06a: occupied same-index evacuation, explicit member move, return
+
+- Given: occupied L/R; L index 1 has T1, R index 1 has T2 and R index 2
+  has F/T3. L focused. In per-output-index profiles the two index-1 units
+  are distinct objects. For global-namespace profiles use distinct global
+  workspace identities instead: this is an analogous evacuation leg, not
+  evidence of a same-index collision. Ordinary non-sticky windows, no rules.
+- When: disconnect R; select the evacuated F/T3 unit; explicitly move T3
+  into L's T1 unit; prove membership, then reconnect R.
+- Observe: separate layout versus member merge; return of then-current
+  contents versus a saved member snapshot; explicit-move exclusion.
+- Evidence: source-only at the pins below, not native execution. Exact focus,
+  client-visible settlement and pixel layout remain TBD.
+- Then COSMIC: shipped `OutputBound` has distinct per-output workspace sets;
+  removal appends each retained workspace object to the survivor rather than
+  merging equal indices. Reconnect reclaims objects through `prefers_output`;
+  their then-current contents return, so T3 moved into L's object does not
+  ride R's object back. `cosmic-comp` @
+  `3d55cba06c9cf6f27609cdefb520f7857dba20af`:
+  `cosmic-comp-config/src/workspace.rs:28-44`,
+  `src/shell/mod.rs:867-935,937-1029,3164-3200,3300-3440`,
+  `src/shell/workspace.rs:589-645`; `S(S-cos-outremove)`.
+- Then Hyprland/Dwindle: numbered workspace IDs are globally unique, not
+  independent per-output index-1 objects. Analogous distinct-ID leg moves whole
+  workspaces to the backup and returns them by recorded monitor address, with
+  remembered active workspace restored. Explicit T3 membership move removes
+  it from the returned object; no saved member-list pullback. `Hyprland` @
+  `19fb395d45314960e6f79f17994a84094f1cd4f6`:
+  `src/state/workspace/State.cpp:44-59,95-110`,
+  `src/state/workspace/LifecyclePolicy.cpp:39-120`,
+  `src/state/workspace/PlacementController.cpp:259-329`,
+  `src/config/shared/actions/ConfigActions.cpp:380-436`; `S(S-hyp-monlife)`.
+- Then bspwm: TBD (this member-move discriminator not investigated).
+- Then i3: identical workspace names resolve globally, not per output
+  (`1:foo` and `1:bar` are different names, not independent local `1`s).
+  Analogous distinct-name leg detaches/attaches whole workspace objects to the
+  first remaining output, without merging their trees. Reconnect initializes
+  a workspace through assignment/first-free policy, not automatic return
+  affinity; evacuated objects remain on L with their then-current contents.
+  Explicit T3 move changes its object membership; no saved member-list pullback.
+  `i3` @ `903bcd518df32b0e055b17f5da3f988a0187fd3d`:
+  `src/workspace.c:30-44,131-165`, `src/randr.c:456-525,860-888`,
+  `src/con.c:1415-1464,1569-1580`; `S(S-i3-ws)`.
+- Then xmonad/Tall+Navigation2D: TBD (this discriminator not investigated).
+- Then sway: names/numbered lookup are global, not independent local `1`s.
+  Analogous distinct-identity leg evacuates whole occupied workspace objects;
+  priority affinity returns those objects with their then-current members.
+  T3 moved into L's object is no longer in R's returned object, so no pullback.
+  `sway` @ `1652c54b73f67df17b7b4ab0b0f7048204aa8104`:
+  `sway/tree/workspace.c:493-535,808-822`,
+  `sway/tree/output.c:31-57,205-257`, `sway/commands/move.c:198-242`;
+  `S(S-sway-evac)`.
+- Then qtile/Columns: TBD (this discriminator not investigated).
+- Then awesome/tile: TBD (this discriminator not investigated).
+- Then niri: TBD (this discriminator not investigated).
+- Then PaperWM: TBD (host-owned evacuation/member-move leg untraced).
+- Then karousel/Lazy: fixture-inapplicable (single-screen profile).
+- Then paneru: TBD (native display/Space leg untraced).
+- Then Ours KDE: exact producer sequence reproduces F staying on L after a
+  settled T3 send; T3 stays on L offline. Receipt homing loses the displaced
+  unit association before return eligibility is tested. Separate-versus-merged
+  absence policy remains TBD; no merge exception selected. Physical T3 pullback
+  cause remains unproved; [investigation](../../changes/v4-phase2-kde-physical-reconnect.md#2026-11-10-offline-leg-2-discriminator).
+- Then Ours Windows: TBD (this discriminator not executed).
+- Variant hook: separate displaced layouts versus same-native member merge;
+  unresolved, not a setting or a product selection. COSMIC supplies the direct
+  per-output-index comparison; the other Tier 1 legs are analogies only.
+
 ## Selected addition (USER 2026-10-07; delivery status per profile)
 
 [Item 5](../../decisions/layout-and-admission.md#directional-moveoutput-transfer-and-selection) selects R-OUT-04's
