@@ -8,9 +8,10 @@
   neither replaces them nor reopens approved behavior.
 - **Not started; start gate pending.** Under the [migration decision](../decisions/contract.md#contract-authority-and-v4-migration),
   KDE phase 2 must be complete offline, including remaining v3 removal (done),
-  and user-run KDE state-target and reconnect checks must pass (pending in the
+  and the user-run KDE state-target check must pass (pending in the
   [single acceptance checklist](kde-v4-acceptance-checklist.md#additional-kde-acceptance-and-diagnostic-legs),
-  ST/RC, marked MAC gate). Other KDE acceptance remains separate, not implicitly
+  ST, marked MAC gate). The KDE reconnect (RC) leg-2 fix and merge decision
+  must land before this port reaches its reconnect/rehome slice and before 0.1. Other KDE acceptance remains separate, not implicitly
   cleared by opening this port.
 - Complete the [pre-port backlog items](../backlog.md#open-work): review the
   tentative [fullscreen-games](../decisions/macos.md#fullscreen-games),
