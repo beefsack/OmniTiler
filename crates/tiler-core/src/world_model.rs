@@ -425,6 +425,10 @@ impl WorldEngine {
     /// whole-workspace migration.
     pub(crate) fn converge_logical_pre(&mut self) {
         use crate::workspace_scope::{DisplacedEntry, OutputFacts, SurvivorInfo, WorkspaceMode};
+        // Fresh-displacement rehoming below is per-report evidence: clear
+        // the discriminator so an earlier disconnect never suppresses a
+        // later report's genuinely new lifetimes.
+        self.displaced_rehomed.clear();
         let shared = self.workspace_mode_setting() == WorkspaceMode::Shared;
         let inventory_complete = self.staged.observation.inventory_complete;
         let staged_focused = self.staged.observation.focused_global.clone();
@@ -803,6 +807,14 @@ impl WorldEngine {
                         let (Some(moved_id), Some(source)) = (moved_id, home_of(window)) else {
                             continue;
                         };
+                        // Disconnect rehoming, never a fresh admission: this
+                        // lifetime's recorded home sat on the removed
+                        // origin's units, so `take_admission_focus` spends
+                        // it without emitting even when the survivor homing
+                        // lands on a previously empty controlled unit.
+                        // Recorded before the dest-observed check so members
+                        // already carried on the destination count too.
+                        self.displaced_rehomed.insert(window.clone());
                         if fact.output.as_ref() == Some(&dest_id) {
                             continue;
                         }
@@ -1240,6 +1252,15 @@ impl WorldEngine {
             for window in &domain.windows {
                 let id = window.window.0.as_str();
                 if before.contains(id) || transferred.contains(id) {
+                    continue;
+                }
+                // Disconnect rehoming is never a fresh admission: members
+                // carried off a removed output by this report's
+                // displacement spend here without emitting, so a survivor
+                // landing on a previously empty controlled unit never
+                // replays as a newcomer on a later report either.
+                if self.displaced_rehomed.contains(&window.window) {
+                    self.admission_focus_spent.insert(window.window.0.clone());
                     continue;
                 }
                 if window.sticky && known_anywhere.contains(id) {

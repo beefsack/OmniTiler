@@ -210,11 +210,11 @@
 
 ### KDE common-model output disconnection
 <a id="kde-aligned-output-disconnection"></a>
-- Decision: On disconnect, preserve displaced layout in separate workspace(s), never merge it into the remaining layout. If the disconnected monitor's active window survives, show its relocated workspace retaining focus; a surviving-monitor active window preserves its view and focus. Commandless policy views bind as focusless selections under their existing `op-dpv-*` parent, with no invented `cmdSeq` or focus effect, and retire through the common completion; native focus stays untouched.
+- Decision: On disconnect, preserve displaced layout in separate workspace(s), never merge it into the remaining layout. If the disconnected monitor's active window survives, show its relocated workspace retaining focus; a surviving-monitor active window preserves its view and focus. Commandless policy views bind as focusless selections under their existing `op-dpv-*` parent, with no invented `cmdSeq` or focus effect, and retire through the common completion; native focus stays untouched. Windows rehomed off the disconnected output are never fresh admissions: no automatic-admission focus effect fires and native focus stays untouched, including when they join an existing non-fresh survivor unit (no `op-dpv-*` view is minted there).
 - Why: not recorded.
 - Assumes / revisit if: Focus continuity deliberately keeps the window in use visible; selection among multiple survivors follows the reconnect rule.
 - Status: active, 2026-10-18.
-- Evidence: [physical reconnect/rehome](../changes/v4-phase2-kde-physical-reconnect.md); earlier [workspace record](../changes/kde-aligned-output-workspaces.md).
+- Evidence: [physical reconnect/rehome](../changes/v4-phase2-kde-physical-reconnect.md#disconnect-rehomed-members-are-not-admissions); earlier [workspace record](../changes/kde-aligned-output-workspaces.md); `world_model.rs` `take_admission_focus`, regression `disconnect_rehomed_members_mint_no_admission_focus`.
 
 ### KDE common-model output reconnection
 <a id="kde-aligned-output-reconnection"></a>

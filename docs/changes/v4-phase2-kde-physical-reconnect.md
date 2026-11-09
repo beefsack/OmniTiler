@@ -182,6 +182,35 @@ devenv shell -- env OMNITILER_SCOPE_CLASS= npm --prefix kwin run build
 - Whole-workspace migration while displaced is not exercised here. Its D9
   association-removal path remains unverified; no migration behavior changed.
 
+## Disconnect rehomed members are not admissions
+
+- User decision 2026-11-09: windows rehomed off a disconnected output are not
+  fresh admissions. No automatic-admission focus effect fires and native focus
+  stays untouched, consistent with the commandless disconnect rule. When the
+  members join an existing non-fresh unit on the survivor no `op-dpv-*` view is
+  minted, accepted as correct.
+- Cause (core): native receipts home the rehomed members onto the survivor's
+  same-native unit, a domain with no retained session that the prior report
+  published as an empty controlled unit; `take_admission_focus` (per-domain diff
+  plus `prior_empty_controlled`) read the last member as a newcomer and minted
+  one automatic-admission effect. Not an adapter defect.
+- Fix: per-report `displaced_rehomed` set (cleared in `converge_logical_pre`,
+  populated for non-sticky members whose recorded home sat on the removed
+  origin's units in a fresh displacement) that `take_admission_focus` spends
+  without emitting. Homing, views, mapping, transfers and publication are
+  unchanged. Regressions: `disconnect_rehomed_members_mint_no_admission_focus`
+  (fails without the fix) and the genuine-newcomer control in
+  `world_selection_await_tests.rs`, plus the producer disconnect journey.
+- Reference WMs (source-only, pins in the reference-outcomes row): i3 re-attaches
+  the disappearing output's workspaces and re-focuses the previously focused
+  container; sway evacuates workspaces with no focus change. Neither treats
+  moved windows as new.
+- Known limit: the spend is consumed only when the survivor domain is iterated
+  in the same report; a held, floating or incomplete-inventory survivor scope in
+  the disconnect report was reasoned (not reproduced) to leave a later first
+  appearance able to mint. A probe with an incomplete disconnect inventory
+  stayed quiet, so no extra handling was added.
+
 ## Native-only remainder
 
 - Reuse fixture attribution, readiness, evidence and restoration from

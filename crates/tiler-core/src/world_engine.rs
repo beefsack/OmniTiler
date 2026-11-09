@@ -1324,6 +1324,15 @@ pub struct WorldEngine {
     /// Planner-owned hotplug displacement: removed screens mapped to their
     /// preserved logical workspace units plus the hosting survivor.
     pub(crate) displaced: BTreeMap<String, crate::workspace_scope::DisplacedEntry>,
+    /// Members rehomed off a removed output by this report's displacement:
+    /// every staged lifetime whose recorded home (before `rekey_members`)
+    /// sat on the removed origin's units. Cleared at the start of every
+    /// accepted run and populated only when a fresh displacement is
+    /// processed, so the discriminator never spans reports. Read by
+    /// [`WorldEngine::take_admission_focus`] to withhold fresh-admission
+    /// focus from rehomed members without touching homing, views, or
+    /// publication. Never a row, slot, or wire value.
+    pub(crate) displaced_rehomed: BTreeSet<WindowId>,
     /// Last observed screen facts by stable output key (FULL rectangle,
     /// work area, plus active-screen primary). Updated for every live
     /// screen on every accepted report; removed screens keep their
@@ -1971,6 +1980,7 @@ impl WorldEngine {
             views: BTreeMap::new(),
             history: ScopeHistory::new(),
             displaced: BTreeMap::new(),
+            displaced_rehomed: BTreeSet::new(),
             output_facts: BTreeMap::new(),
             live_topology: BTreeMap::new(),
             tiling: BTreeMap::new(),

@@ -12645,3 +12645,209 @@ fn d23_minimized_same_turn_rehome_forgets_slot() {
         "same-turn minimize+rehome leaves no source slot"
     );
 }
+
+#[test]
+fn disconnect_rehomed_members_mint_no_admission_focus() {
+    // Disconnect regression: windows rehomed off a removed output are not
+    // fresh admissions. When the rehomed members land on a survivor unit
+    // that was an empty controlled unit, the disconnect capture must mint
+    // no automatic-admission focus effect, while homing and publication
+    // still move the members onto the survivor unit.
+    use crate::world_report::{NativeObservation, NativeOccupancy, NativeWorkspaceFact};
+    fn hfact(window: &str, output: &str, native: &str, x: i32) -> WindowFact {
+        let mut fact = sfact(window, output, x);
+        fact.sticky = Some(false);
+        fact.native_workspace = NativeWorkspaceFact::Value(native.to_owned());
+        fact
+    }
+    fn native(output: &str, order: &[&str], current: &str) -> NativeObservation {
+        NativeObservation {
+            output: OutputId(output.to_owned()),
+            native_order: order.iter().map(|id| (*id).to_owned()).collect(),
+            current_native: Some(current.to_owned()),
+            occupancy: order
+                .iter()
+                .map(|id| NativeOccupancy {
+                    native: (*id).to_owned(),
+                    count: None,
+                })
+                .collect(),
+        }
+    }
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let both = || vec![screen("out-left", 0), screen("out-right", 800)];
+    // Baseline: two outputs, each with two native desktops; win-a/win-b on
+    // the left current desktop, win-c/win-d on the right current desktop.
+    let mut boot = report_multi(
+        1,
+        vec![
+            hfact("win-a", "out-left", "l0", 0),
+            hfact("win-b", "out-left", "l0", 100),
+            hfact("win-c", "out-right", "r1", 800),
+            hfact("win-d", "out-right", "r1", 900),
+        ],
+        vec![],
+        None,
+        None,
+        vec![],
+        "win-c",
+        both(),
+    );
+    boot.native = vec![
+        native("out-left", &["l0", "l1"], "l0"),
+        native("out-right", &["r0", "r1"], "r1"),
+    ];
+    let first = accepted(&mut engine, &boot);
+    assert!(first.effects.is_empty(), "baseline stays quiet: {first:?}");
+    let empty_unit = first
+        .workspaces
+        .iter()
+        .find(|row| row.output.0 == "out-left" && row.native_binding.as_deref() == Some("l1"))
+        .expect("l1-backed survivor unit")
+        .id
+        .clone();
+    assert!(
+        engine.prior_context.empty_controlled.contains(&DomainKey {
+            output: OutputId("out-left".to_owned()),
+            workspace: WorkspaceId(empty_unit.clone()),
+        }),
+        "survivor unit publishes empty controlled"
+    );
+    // Disconnect: out-right disappears; every live window names the
+    // survivor with the rehomed members receipted to the empty unit.
+    let mut disc = report_multi(
+        2,
+        vec![
+            hfact("win-a", "out-left", "l0", 0),
+            hfact("win-b", "out-left", "l0", 100),
+            hfact("win-c", "out-left", "l1", 200),
+            hfact("win-d", "out-left", "l1", 300),
+        ],
+        vec![],
+        None,
+        None,
+        vec![],
+        "win-c",
+        vec![screen("out-left", 0)],
+    );
+    disc.native = vec![native("out-left", &["l0", "l1"], "l0")];
+    let reply = accepted(&mut engine, &disc);
+    assert!(
+        reply.effects.is_empty(),
+        "displacement mints no focus effect: {:?}",
+        reply.effects
+    );
+    assert!(
+        engine.displaced.contains_key("out-right"),
+        "removed output displaces"
+    );
+    for win in ["win-a", "win-b"] {
+        let row = row(&reply, win);
+        assert_eq!(row.output.0, "out-left", "{win} stays on the survivor");
+    }
+    for win in ["win-c", "win-d"] {
+        let found = row(&reply, win);
+        assert_eq!(found.output.0, "out-left", "{win} re-homes to the survivor");
+        assert_eq!(
+            found.workspace, empty_unit,
+            "{win} joins the survivor empty unit"
+        );
+    }
+}
+
+#[test]
+fn disconnect_control_genuine_newcomer_still_mints_admission_focus() {
+    // Control for the disconnect regression above: a genuinely new window
+    // admitted onto the survivor after the disconnect keeps its
+    // automatic-admission focus effect.
+    use crate::world_report::{
+        EffectCause, NativeObservation, NativeOccupancy, NativeWorkspaceFact,
+    };
+    fn hfact(window: &str, output: &str, native: &str, x: i32) -> WindowFact {
+        let mut fact = sfact(window, output, x);
+        fact.sticky = Some(false);
+        fact.native_workspace = NativeWorkspaceFact::Value(native.to_owned());
+        fact
+    }
+    fn native(output: &str, order: &[&str], current: &str) -> NativeObservation {
+        NativeObservation {
+            output: OutputId(output.to_owned()),
+            native_order: order.iter().map(|id| (*id).to_owned()).collect(),
+            current_native: Some(current.to_owned()),
+            occupancy: order
+                .iter()
+                .map(|id| NativeOccupancy {
+                    native: (*id).to_owned(),
+                    count: None,
+                })
+                .collect(),
+        }
+    }
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let both = || vec![screen("out-left", 0), screen("out-right", 800)];
+    let mut boot = report_multi(
+        1,
+        vec![
+            hfact("win-a", "out-left", "l0", 0),
+            hfact("win-b", "out-left", "l0", 100),
+            hfact("win-c", "out-right", "r1", 800),
+            hfact("win-d", "out-right", "r1", 900),
+        ],
+        vec![],
+        None,
+        None,
+        vec![],
+        "win-c",
+        both(),
+    );
+    boot.native = vec![
+        native("out-left", &["l0", "l1"], "l0"),
+        native("out-right", &["r0", "r1"], "r1"),
+    ];
+    let _ = accepted(&mut engine, &boot);
+    let mut disc = report_multi(
+        2,
+        vec![
+            hfact("win-a", "out-left", "l0", 0),
+            hfact("win-b", "out-left", "l0", 100),
+            hfact("win-c", "out-left", "l1", 200),
+            hfact("win-d", "out-left", "l1", 300),
+        ],
+        vec![],
+        None,
+        None,
+        vec![],
+        "win-c",
+        vec![screen("out-left", 0)],
+    );
+    disc.native = vec![native("out-left", &["l0", "l1"], "l0")];
+    let _ = accepted(&mut engine, &disc);
+    // A genuinely new lifetime arrives on the survivor current unit.
+    let mut admit = report_multi(
+        3,
+        vec![
+            hfact("win-a", "out-left", "l0", 0),
+            hfact("win-b", "out-left", "l0", 100),
+            hfact("win-c", "out-left", "l1", 200),
+            hfact("win-d", "out-left", "l1", 300),
+            hfact("win-e", "out-left", "l0", 400),
+        ],
+        vec![],
+        None,
+        None,
+        vec![],
+        "win-e",
+        vec![screen("out-left", 0)],
+    );
+    admit.native = vec![native("out-left", &["l0", "l1"], "l0")];
+    let reply = accepted(&mut engine, &admit);
+    assert_eq!(
+        reply.effects.len(),
+        1,
+        "genuine newcomer mints once: {reply:?}"
+    );
+    assert_eq!(reply.effects[0].target.0, "win-e");
+    assert_eq!(reply.effects[0].cause, EffectCause::AutomaticAdmission);
+    let found = row(&reply, "win-e");
+    assert_eq!(found.output.0, "out-left");
+}
