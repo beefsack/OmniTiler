@@ -1,6 +1,6 @@
 # KDE physical and user-run checklist
 
-- Scope: one KDE Plasma session, physical keys and pointer, preferably normal resizable [live fixture windows](../../crates/tiler-live-fixture/README.md). Read the [live KWin guide](../live-kwin-testing.md) first. No new implementation or policy is selected here.
+- Historical bounded run sheet: current KDE scope, gates and v4 evidence are consolidated in the [KDE v4 acceptance checklist](kde-v4-acceptance-checklist.md). Recipes below remain references only where consistent with the current [live KWin guide](../live-kwin-testing.md); no historical constraint overrides that guide or waives the consolidated acceptance legs.
 - Status: UNRUN. Earlier callback/offline checks and user physical evidence through 2026-10-28 are partial evidence, not passes for this sheet. In particular, renewed toggle diagnostics after `4e504586` remain pending.
 - Gate: the [KDE v2 port](../backlog.md#open-work), [native acceptance remainder](kde-live-acceptance.md#remaining-coverage-and-next-step), and the triage queues cited per row. A result closes only the named sub-leg, not the entire backlog item or Stage 8 ownership audit.
 - Budget: about 50-60 minutes for setup/restoration, T1, S1-S8 and N1-N2. With two outputs, substitute D1-D3 for optional single-output permutations; allow about 10 minutes. D4 and O1-O5 are optional extensions, not extra mandatory steps.

@@ -1,11 +1,11 @@
 # Observability
 
 ### Cross-component diagnostics
-- Decision: implementation and review include evidence needed to diagnose behavior/failure across every component. Project processes and Rust-path IPC emit bounded structured correlated lifecycle/terminal logs for requests, significant decisions, failures, recovery and outcomes to existing visible KWin console/stdout/stderr/journal; future troubleshooting checks these first. Carry trace/correlation IDs across components/services; distinguish dispatch, acceptance, completion and uncertainty. Normal operation has bounded summaries; opt-in trace supplies high-volume detail without frame/poll noise. Logging failures never block or change behavior.
+- Decision: implementation and review include evidence needed to diagnose behavior/failure across every component. Project processes and Rust-path IPC emit bounded structured correlated lifecycle/terminal logs for requests, significant decisions, failures, recovery and outcomes to existing visible KWin console/stdout/stderr/journal; future troubleshooting checks these first. Carry trace/correlation IDs across components/services; distinguish dispatch, acceptance, completion and uncertainty. Normal operation has bounded summaries; opt-in trace supplies high-volume detail without frame/poll noise. User 2026-11-09: KDE K24 retains quiet-versus-actionable diagnostics, accepted through a v4 normal/trace comparison with named correlated outcomes; retire the old log-string oracle, not the requirement. Logging failures never block or change behavior.
 - Why: not recorded.
 - Assumes / revisit if: no unbounded pointer-step logging. Redact captions, application content, secrets, full paths, raw environment, native window handles/IDs and raw native D-Bus payloads.
-- Status: active, 2026-10-14
-- Evidence: [Observability](../principles.md#observability), [route diagnostic schema](../changes/core-interface-review.md).
+- Status: active, 2026-11-09
+- Evidence: [Observability](../principles.md#observability), [route diagnostic schema](../changes/core-interface-review.md), [approved KDE acceptance](../changes/kde-v4-acceptance-checklist.md#approved-acceptance-decisions).
 
 ### Normal-level window identity (R15)
 - Decision: normal-level logs may carry application identity (executable basename, window class, bundle id) and process IDs so a window can be identified at baseline without title/content. Titles, content, full paths and native window handles/IDs stay redacted. "Native identifiers" means those handles/IDs, not app identity or process IDs.

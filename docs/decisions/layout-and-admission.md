@@ -1,11 +1,11 @@
 # Layout and admission
 
 ### Placement and minimums
-- Decision: Default split is long-edge (tall target vertical, wide horizontal), including sends. Minimum hints affect target rectangle/allocation, not alternative-axis/target search. Writable admitted windows use proportional tile origin with each extent at least declared minimum; compare/read back/refuse against effective target, flag overconstrained leaves without skipping. Oversized last resort may overlap/overflow; no fallback, global optimizer or alternative-axis search. Startup preserves clean/tolerance-valid recursive cuts, otherwise deterministic sequential long-edge seed, no center inference.
+- Decision: Default split is long-edge (tall target vertical, wide horizontal), including sends. Minimum hints affect target rectangle/allocation, not alternative-axis/target search. V4 honors feasible minima; infeasible minima retain proportional allocation under core clamp settlement, not adapter-raised extents. No global optimizer or alternative-axis search. User 2026-11-09: KDE M18 uses the v4 proportional-allocation/clamp core-settlement oracle instead of B6 raised-minimum writes and adapter reassertions; all native minimum/origin/convergence journeys remain and M18 stays must-pass. Startup preserves clean/tolerance-valid recursive cuts, otherwise deterministic sequential long-edge seed, no center inference.
 - Why: not recorded.
 - Assumes / revisit if: clean prior 2x2/nested identities retained; no guaranteed balanced 2x2; deliberate deviation from references that ignore minima.
-- Status: active, 2026-10-08
-- Evidence: [Windows placement](../changes/archive/windows-placement-correctness.md), [KDE minimum placement](../changes/archive/kde-minimum-origin-placement.md).
+- Status: active, 2026-11-09
+- Evidence: [Windows placement](../changes/archive/windows-placement-correctness.md), [historical KDE B6](../changes/archive/kde-minimum-origin-placement.md), [core settlement](engine.md#core-derived-native-settlement), [approved KDE acceptance](../changes/kde-v4-acceptance-checklist.md#approved-acceptance-decisions).
 
 ### Windows declared minimum hints
 - Decision: Query fresh application-declared minimum track sizes and provide visible-frame physical-pixel hints to shared minimum-aware projection. Do not learn limits; generic learned limits remain parked. On query timeout, reuse each live window's last-good declared hint without a time bound; replace only on successful query, including success with no usable hint, and drop on close or identity change. Failed, unperformed, and budget-skipped queries remain unknown without erasing last-good state.

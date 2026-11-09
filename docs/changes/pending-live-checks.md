@@ -1,6 +1,6 @@
 # Backlog detail moved 2026-11-01
 
-Full detail moved from the pending live-check section of `docs/backlog.md`.
+Historical detail moved from `docs/backlog.md`; current KDE run instructions and v4 coverage are consolidated in the [KDE v4 acceptance checklist](kde-v4-acceptance-checklist.md). Windows and reference-WM scope below is unchanged; historical KDE results are not new v4 passes.
 
 #### Original backlog lines 2183-2203
 
@@ -797,3 +797,22 @@ Full detail moved from the pending live-check section of `docs/backlog.md`.
   [host builder](archive/host-matched-native-development-builds.md)
 
 Active pending work: [backlog](../backlog.md#pending-live-checks).
+
+## Current v4 acceptance supersession
+
+The dated inventory above is historical: 57 = 43 M / 12 K / 2 W. The current
+[KDE v4 checklist](kde-v4-acceptance-checklist.md) applies these approved changes:
+
+- User 2026-11-09, A4/M18: retain all native minimum/origin/convergence journeys
+  and must-pass classification; use proportional-allocation/clamp core settlement
+  instead of B6 raised-minimum writes and adapter reassertions.
+- User 2026-11-09, A1/K35: retire standalone Custom Tile component check; product
+  tiling/drag/native safety remains under 25/36/47.
+- User 2026-11-09, A2/K24: retain quiet-versus-actionable diagnostics via v4
+  normal/trace comparison with named correlated outcomes; retire old log strings.
+- User 2026-11-09, A3/K38: retain committed resize/8px-gap/no-extra-reconcile
+  physical proof; use v4 command/reply/native convergence as oracle.
+
+Current inventory: 56 = 43 M / 11 K / 2 W; KDE has 53 active checks (43 M / 10 K)
+plus retired K35, with Windows 3-4 and COSMIC reference confirmation 5 separate.
+No new native pass is established by these acceptance-oracle approvals.
