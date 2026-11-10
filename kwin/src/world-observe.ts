@@ -189,10 +189,10 @@ export interface ObservedNativeFact {
     order: string[];
     current: string;
     // Exact per-desktop native occupancy: one row per ordered desktop id,
-    // counting every raw enumerated window (including unmanaged, deleted,
-    // minimized, non-normal, and scope-foreign windows; never derived from
-    // managed WindowFacts). Sticky windows (onAllDesktops true) count toward
-    // every ordered desktop. Explicit null counts ride when membership is
+    // counting every raw enumerated non-sticky window (including unmanaged,
+    // deleted, minimized, non-normal, and scope-foreign windows; never
+    // derived from managed WindowFacts). Sticky windows (onAllDesktops true)
+    // occupy no desktop. Explicit null counts ride when membership is
     // unreadable, never zero.
     occupancy: Array<{ native: string; count: number | null }>;
 }
@@ -1465,11 +1465,11 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         : [];
     // Native occupancy (v4 wire `native[].occupancy`): a dedicated pass over
     // the raw capped window list, BEFORE any managed/unmanaged filtering, so
-    // counts cover every enumerated native window (including unmanaged,
-    // deleted, minimized, non-normal, and scope-foreign windows). Sticky
-    // windows (onAllDesktops true, whose desktop list is empty on KWin) count
-    // toward every ordered desktop; other windows count toward each listed
-    // member desktop that is in the ordered set. Any unreadable membership
+    // counts cover every enumerated native non-sticky window (including
+    // unmanaged, deleted, minimized, non-normal, and scope-foreign
+    // windows). Sticky windows (onAllDesktops true, whose desktop list is
+    // empty on KWin) occupy no desktop; other windows count toward each
+    // listed member desktop that is in the ordered set. Any unreadable membership
     // (non-object item, non-list or truncated desktops, present-but-
     // non-boolean onAllDesktops, non-opaque or duplicate member id) marks the
     // whole occupancy unknown: every ordered id then rides count null, never
@@ -1517,11 +1517,11 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 occupancyUnknown = true;
                 break;
             }
-            if (sticky) {
-                for (const id of nativeOrderFull) {
-                    occupancyCounts.set(id, (occupancyCounts.get(id) ?? 0) + 1);
-                }
-            } else {
+            // On-all-desktops windows (panels, docks, user sticky) never
+            // occupy any desktop: deleting a globally-empty desktop moves
+            // none. Other windows count toward each listed member desktop
+            // that is in the ordered set.
+            if (!sticky) {
                 for (const id of ids) {
                     if (nativeOrderSet.has(id)) {
                         occupancyCounts.set(id, (occupancyCounts.get(id) ?? 0) + 1);

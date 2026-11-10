@@ -1,7 +1,7 @@
 // Native occupancy v4: `native[].occupancy` counts every raw enumerated
-// window per ordered desktop (unmanaged, deleted, minimized, non-normal,
-// multi-desktop, and sticky windows all count; sticky counts toward every
-// ordered desktop). Unreadable membership yields explicit null counts, never
+// non-sticky window per ordered desktop (unmanaged, deleted, minimized,
+// non-normal, and multi-desktop windows all count; sticky windows occupy no
+// desktop). Unreadable membership yields explicit null counts, never
 // zero. The production v4 encoder carries the exact `occupancy` wire shape;
 // v2 and v3 replies refuse.
 
@@ -138,7 +138,7 @@ describe("world v4 contract", () => {
 });
 
 describe("native occupancy observation", () => {
-    it("counts every raw window including unmanaged, deleted, minimized, non-normal, multi-desktop, and sticky", () => {
+    it("counts every raw non-sticky window including unmanaged, deleted, minimized, non-normal, and multi-desktop", () => {
         const obs = observe([
             { id: "w1", desktops: [{ id: "ws-1" }] },
             { id: "w2", desktops: [{ id: "ws-2" }] },
@@ -154,8 +154,8 @@ describe("native occupancy observation", () => {
         assert.deepEqual(obs.closed, ["w9-gone"]);
         assert.equal(obs.complete, true);
         assert.deepEqual(occupancyOf(obs), [
-            { native: "ws-1", count: 7 },
-            { native: "ws-2", count: 5 },
+            { native: "ws-1", count: 5 },
+            { native: "ws-2", count: 3 },
         ]);
     });
 
@@ -228,8 +228,8 @@ describe("native occupancy encoding", () => {
         };
         assert.equal(body.native.length, 1);
         assert.deepEqual(body.native[0]?.occupancy, [
-            { native: "ws-1", count: 2 },
-            { native: "ws-2", count: 1 },
+            { native: "ws-1", count: 1 },
+            { native: "ws-2", count: 0 },
         ]);
     });
 });

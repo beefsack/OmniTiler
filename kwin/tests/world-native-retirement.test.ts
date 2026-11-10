@@ -409,6 +409,58 @@ describe("world native retirement", () => {
         }
     });
 
+    it("managed sticky keeps its retained home while the empty middle still retires", { timeout: 240000 }, async () => {
+        const bridge = WorldBridge.start();
+        const broker = createMiniBroker();
+        try {
+            const w = makeWorld();
+            const tiled: Win = {
+                internalId: "win-s",
+                desktops: [{ id: "d2", name: "d2" }],
+                output: { name: "out-1" },
+                onAllDesktops: false,
+                managed: true,
+                deleted: false,
+                minimized: false,
+                hidden: false,
+                normalWindow: true,
+                dialog: false,
+                fullScreen: false,
+                maximizeMode: 0,
+                transient: false,
+                transientFor: null,
+                modal: false,
+                wantsInput: true,
+                minSize: null,
+                maxSize: null,
+                frameGeometry: { x: 100, y: 100, width: 400, height: 300 },
+            };
+            w.wins.push(tiled);
+            const gen = await connectBridge(bridge, broker);
+            await roundtrip(bridge, broker, w, "src-1", gen);
+            // User pins the managed window to all desktops through KWin
+            // (no core command): empty membership with the sticky flag.
+            tiled.onAllDesktops = true;
+            tiled.desktops = [];
+            const second = await roundtrip(bridge, broker, w, "src-2", gen);
+            const rows = workspacesOf(second.bound);
+            const byBind = new Map(rows.map((r) => [r.bind, r]));
+            assert.equal(byBind.get("d2")?.exist, true, `sticky retained home never retires: ${second.bound.slice(0, 500)}`);
+            assert.equal(byBind.get("d3")?.exist, false, `empty middle still retires: ${second.bound.slice(0, 500)}`);
+            // Mechanical apply with the real production host: the sticky
+            // window proves no occupancy anywhere, so the empty middle is
+            // removed while the sticky-homed desktop is kept.
+            const live = makeWorld();
+            live.wins.push(tiled);
+            const host = createWorldApplyHost(live.surface, (v, p) => Reflect.get(v, p));
+            const result = applyWith(second.obs, second.bound, { removed: live.removed, nativeHost: host });
+            assert.equal(result.removals, 1, `exactly one removal, got ${JSON.stringify(live.removed)}`);
+            assert.deepEqual(live.removed, ["d3"]);
+        } finally {
+            await bridge.close();
+        }
+    });
+
     it("fresh occupant, visibility, pin, floor, and incomplete vetoes hold removal", { timeout: 240000 }, async () => {
         const bridge = WorldBridge.start();
         const broker = createMiniBroker();
@@ -501,7 +553,7 @@ describe("world native retirement", () => {
         }
     });
 
-    it("production host fresh sticky, malformed, visibility and floor reads veto captured desires", { timeout: 240000 }, async () => {
+    it("production host fresh malformed, visibility and floor reads veto captured desires", { timeout: 240000 }, async () => {
         const bridge = WorldBridge.start();
         const broker = createMiniBroker();
         try {
@@ -510,7 +562,6 @@ describe("world native retirement", () => {
             await roundtrip(bridge, broker, captured, "src-1", gen);
             const second = await roundtrip(bridge, broker, captured, "src-2", gen);
             for (const windows of [
-                [{ onAllDesktops: true, desktops: [{ id: "d1" }] }],
                 [{ onAllDesktops: false, desktops: [] }],
                 [{ onAllDesktops: false, desktops: [null] }],
                 [{ onAllDesktops: false, desktops: [{ id: "" }] }],
@@ -563,8 +614,7 @@ describe("world native retirement", () => {
 
 describe("production retirement fresh evidence", () => {
     for (const [label, window] of [
-        ["sticky flag", { onAllDesktops: true, desktops: [{ id: "d1" }] }],
-        ["empty-list sticky", { onAllDesktops: false, desktops: [] }],
+        ["empty-list non-sticky", { onAllDesktops: false, desktops: [] }],
         ["malformed member", { onAllDesktops: false, desktops: [null] }],
         ["unreadable sticky", { onAllDesktops: null, desktops: [{ id: "d1" }] }],
     ] as const) {
@@ -572,6 +622,15 @@ describe("production retirement fresh evidence", () => {
             const host = createWorldApplyHost({ windowList: () => [window] }, (v, p) => Reflect.get(v, p));
             const count = host.desktopOccupants("d2");
             assert.ok(!count.readable || count.total > 0, "never prove empty");
+        });
+    }
+    for (const [label, window] of [
+        ["sticky flag", { onAllDesktops: true, desktops: [{ id: "d1" }] }],
+        ["empty-list sticky", { onAllDesktops: true, desktops: [] }],
+    ] as const) {
+        it(`${label} proves empty`, () => {
+            const host = createWorldApplyHost({ windowList: () => [window] }, (v, p) => Reflect.get(v, p));
+            assert.deepEqual(host.desktopOccupants("d2"), { total: 0, readable: true });
         });
     }
     it("one readable current cannot hide another unreadable output", () => {

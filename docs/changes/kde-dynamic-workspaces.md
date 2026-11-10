@@ -120,6 +120,13 @@ these recommendations changes the current contract.
 - Checklist rows 15 and 52 remain open; supporting observations do not close
   physical delivery or inverse fill/retire oscillation acceptance.
 
+### Sticky occupancy boundary (2026-11-10)
+
+- Both KDE native-occupancy counters exclude on-all-desktops windows, including panels, docks and user sticky windows: deleting an otherwise eligible desktop moves none. Ordinary managed/unmanaged occupants and non-sticky subset memberships still count; unreadable membership remains fail-closed.
+- Core sticky-home retention is unchanged. A managed window made sticky keeps its retained logical home and protects that desktop; excluding native occupancy is not authority to discard its home.
+- Targeted red/green regressions cover both counters and the real capture/core/apply boundary, including retained managed sticky homes. The initial full adapter run passed 1239/1241: one lifecycle assertion depended on sticky panels preserving native stones, and the mutable byte captures still counted sticky occupants. Reconciled lifecycle assertions distinguish two actual creation receipts from a superseded, deleted intermediate, preserve quiescence/zero-member-write proofs, and protect the stone using a genuine non-sticky subset occupant. Genuine recorder refresh changes only native occupancy in the three mutable KDE byte reports; frozen fixtures are unchanged.
+- Final adapter suite passes 1241/1241 with no skips; both TypeScript configurations, Rust formatting and whitespace checks pass. No Rust or runner source changed. Independent review accepts the counter exclusion, retained-home boundary, strengthened lifecycle assertions and occupancy-only mutable fixture refresh. Native acceptance and checklist rows 15/52 remain open.
+
 ## Implementation checkpoint (2026-11-10, incomplete)
 
 - Portable lifecycle now uses a single-spare invariant instead of an independent minimum-two floor, immediately desires backing for trailing spares, and prunes ordinary empty/unshown rows into native-only retirement records. KWin applies the existing fresh occupant/visibility/minimum vetoes and bootstraps its native floor to two. No new wire fields or format were needed.

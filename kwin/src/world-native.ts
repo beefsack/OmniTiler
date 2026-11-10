@@ -845,9 +845,12 @@ export function createWorldApplyHost(
                     if (typeof item !== "object" || item === null) {
                         return { total: 0, readable: false };
                     }
+                    // On-all-desktops windows (panels, docks, user sticky) never
+                    // occupy any desktop: deleting a globally-empty desktop
+                    // moves none. Every other shape still counts, so ordinary
+                    // and subset memberships keep their veto.
                     const sticky = readProp(item as object, "onAllDesktops");
                     if (sticky === true) {
-                        total += 1;
                         continue;
                     }
                     const members = decodeList(readProp(item as object, "desktops"), MAX_NATIVE_WINDOW_DESKTOPS);
