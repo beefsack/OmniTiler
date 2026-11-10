@@ -2,9 +2,10 @@
 
 ## Status, goal and scope
 
-- Active design for approval, 2026-11-10. Product decisions below are approved;
-  numbered proposals P1-P6 are not yet approved. Implementation and native
-  acceptance are pending. This note changes no contract or implementation.
+- Active design for approval, 2026-11-10. Product decisions, including Q1/Q2
+  below, are approved. Remaining implementation choices in P1-P6 are proposed,
+  not approved. Implementation and native acceptance are pending. This note
+  changes no contract or implementation.
 - Goal: consistently reflow and refocus after positive close of the focused
   window on KDE, macOS and Windows, without inventing observed foreground or
   fighting newer input. Follows consistency principle 1 and
@@ -26,8 +27,8 @@
    surviving float, sticky or fullscreen eligibility.
 2. If native close fallback already chose core's winner, do nothing. If it chose
    a different survivor, make one bounded correction, never retry. Newer
-   observable user focus/input, commands, view changes, unknown foreground and
-   failed safety checks supersede the attempt.
+   observable user focus/input under Q1's report-order attribution, commands,
+   view changes, unknown foreground and failed safety checks supersede the attempt.
 3. The close-focus request is retained state, not a one-shot effect. Publish its
    target, request id and distinct positive-close cause in every publication
    until satisfied, superseded, ineligible or refused. Satisfaction means
@@ -48,6 +49,29 @@
    exception to macOS explicit-command-only native focus, retaining native
    lifetime, visibility, session and readback fences. Observed focus stays
    truthful. Adapters may refuse; later observation teaches core the outcome.
+7. **Q1 decided: same-report attribution.** Attribute focus observed in the same
+   ingress report as the qualifying positive close to native close fallback.
+   Target equality satisfies without activation; a different eligible same-domain
+   survivor permits one bounded correction. In a later report, any observed-focus
+   change relative to the close report supersedes the request, except target
+   equality satisfies it. Commands/view changes still supersede. Accepted cost:
+   a user click between close and its first report may be overridden once.
+   A->B->A flips entirely between captures remain invisible, as today. No causal
+   input guard or new input interception is part of this design.
+8. **Q2 decided: coordinated pre-release v4 amendment in place**, no version bump
+   and no dual-shape fallback. Update all matching components and fixtures.
+
+- This delivers existing core policy, not a new adapter-owned or host-owned
+  selection policy: [engine lifecycle](../decisions/engine.md#cosmic-v1-lifecycle-semantics)
+  (`engine.md:117`) selects source-domain tiled MRU on focused removal and clears
+  focus when none remains;
+  [ordinary float close](../decisions/window-state.md#transient-dialogs-and-float-visibility)
+  (`window-state.md:80`) refocuses MRU without changing tiles;
+  [workspace lifecycle](../decisions/workspaces.md#workspace-lifecycle-focus-and-history)
+  (`workspaces.md:68`) retains shown empty workspaces unfocused. Core-policy
+  ownership in approvals 1/3 restates this baseline. A different host fallback
+  during positive close is close-caused, not unrelated "host-caused focus loss";
+  the bounded correction does not conflict with that decision's no-repair rule.
 
 - Preserve positive close evidence as the sole trigger: incomplete inventory,
   bare absence and off-current/unreadable Space omission never qualify. Preserve
@@ -81,8 +105,9 @@
   observed; it does not distinguish known no-client focus from unreadable or
   foreign foreground. The observation watermark advances for all invalidation,
   not specifically user input (`world_report.rs:1309-1348`). Neither a cursor
-  position nor a larger observation number proves user intent. This is a
-  contract evidence gap, not permission to guess; see P3 and question Q1.
+  position nor a larger observation number proves user intent. Q1 deliberately
+  chooses report-order attribution instead of requiring causal input evidence.
+  Known-no-client versus unknown still needs the minimal distinction in P3.
 - Prior source investigation: KWin 6.8.1 at
   `1b798c05c19b1124edb1e16623191fcd2c128fd0` invokes `activateNextWindow` before
   `windowRemoved` (`src/workspace.cpp:979-1009`, `src/activation.cpp:433-485`).
@@ -104,9 +129,10 @@
   A close cohort removes all positively closed members before choosing the one
   survivor; it never produces one request per removed window or output.
 - Proposed retained fields: opaque `id`, `target` lifetime, source `DomainKey`,
-  immutable `issued_revision`, source closed lifetime(s), issuing observation
-  watermark, command high-water and shown-view/input safety basis. The last
-  fields are cancellation evidence, not authority to mutate native state.
+  immutable `issued_revision`, source closed lifetime(s), close-report observation
+  watermark and observed-foreground baseline, command high-water and shown-view
+  basis. The baseline is the close report's truthful focus, not the logical
+  winner; no input counter or causal guard is retained.
 - Proposed id: `close-focus-<issued_revision>`, opaque to consumers; mint once at
   the accepted publication revision, unique within the bound adapter/core
   generation. No command sequence is fabricated and no extra counter is needed.
@@ -149,41 +175,60 @@
   focus or clear-focus call. Native desktop/app foreground can remain; do not
   falsify observations or claim control over the host's own fallback.
 
-### P3. Raw safety evidence and request lifecycle
+### P3. Decided report-order attribution; proposed minimal foreground bit
 
-- Proposed evidence extension, requiring approval and producer feasibility
-  proof: distinguish report foreground as `bound`, `no-client` or `unknown`,
-  consistently with existing `focused`; add a close-bound raw input/focus guard.
-  Illustrative report keys are `foregroundState` and nullable `closeFocusGuard`
-  with source closed lifetime, close observation stamp and
-  `interveningInput:none/present/unknown`. `none` must mean a genuinely covered
-  native interval since the close boundary, not absence of an event in an
-  incomplete capture. A native focus event with unknown cause is not user proof.
-  Exact acquisition and wire fields remain open under Q1; these are proposals,
-  not claims that existing adapters can produce them.
-- A known no-client state tied to the qualifying close may originate the
-  request; unreadable/unknown foreground cannot. The close action itself is
-  not newer input. Native close fallback to a different eligible survivor may
-  be corrected only with a covered no-newer-user-action interval. Its observed
-  identity alone is neither a veto nor permission. Adapters also recheck this
-  guard immediately before dispatch, including while a reply is in flight.
-- Proposed lifecycle (all transitions atomic with accepted core state):
+- Source-read findings: none of the current focus strings preserves the needed
+  empty-known versus empty-unknown distinction. Existing native reads can supply
+  it with cause preservation; it is not already an ingress field:
+
+  | Adapter | Current producer and native evidence | Minimal implementation needed (proposed) |
+  | --- | --- | --- |
+  | KDE | `kwin/src/world-observe.ts:326-333,837-866` collapses literal null activeWindow, getter failure/undefined, invalid id and scope-foreign focus to `activeId=""`; `:1796` publishes that string, and `kwin/src/world-report.ts:2889` encodes it. Inventory completeness does not prove this separate read succeeded | Preserve the outcome of the existing activeWindow read: literal null can prove no-client; throw/undefined, unbound desktop/native object or scope-foreign focus stays unknown. No additional native read or input hook |
+  | Windows | `crates/tiler-windows/src/tiling_sys/world_capture.rs:1686-1690` joins caller-read foreground HWND to observed lifetimes, otherwise emits empty. Zero and nonzero unmatched HWNDs therefore collapse. Existing native guard at `world_native.rs:2417-2438` distinguishes zero (`None`), failed identity (`Unknown`) and exact native identity (`Known`) | Preserve zero versus nonzero/unbound from the existing foreground read; keep nonzero foreign/desktop/unbound or failed identity unknown, never infer none from no managed match. Reuse existing identity reads. This is capture/port work, not a claim of an existing Windows v4 producer |
+  | macOS | `crates/tiler-macos/src/native_tile_backend.rs:1289-1329` reads app-local focus and production selected-oracle evidence, then `.ok()` discards failure causes. `ffi.rs:5944-5955` already reads focused/main AX statuses; `:5991-5996` returns an error for no selected window. `runtime_native.rs:412-438` collapses failed agreement/current-domain checks to no retained focus; `world_runtime.rs:796-800` emits empty | Preserve the already-read AX statuses: only genuine NoValue on both focused and main legs, with coherent frontmost/process evidence, can prove windowless; unsupported, unreadable, stale, foreign or missing membership stays unknown. Main-window fallback is not no-client. Extend existing frontmost revalidation (`ffi.rs:6013-6027`) to the windowless branch before publishing it; no extra AX query or diagnostic system-wide route |
+
+- Proposed smallest wire addition: required report boolean `foregroundKnown`,
+  used with the existing `focused` string. `true` plus nonempty means proven bound
+  foreground; `true` plus empty means positively known no-client; `false` requires
+  empty and means unknown/unreadable/unbound/foreign. Reject inconsistent pairs.
+  Do not add an origin enum, native identity payload, input history or close guard.
+  No-client must come from the fresh native read, not retained focus absence.
+  Exact new field and producer changes remain proposed, not native acceptance.
+- **Decided Q1 algorithm:** freeze the winner and retain the close report's
+  observed-foreground baseline. In each accepted later ingress report, check
+  target equality first (satisfied), then unknown foreground (retire), then a
+  change from that baseline (superseded). Otherwise keep the same request.
+  Baseline equality is not an assertion that no user action occurred; it is the
+  user-approved attribution rule. A known no-client baseline can originate a
+  request. A foreign/unknown or ineligible fallback cannot authorize correction.
+- Latest-only native apply stays intact: core processes ingress reports even if
+  their publications are skipped, so it can retire on a later observed change
+  before the adapter ever applies the request. The adapter applies only the
+  latest publication, never intervening publications, and spends each id once.
+  A successful adapter attempt becomes target equality in a later report and
+  is recognized as satisfaction, not misclassified as user supersession. A
+  failed/unproven attempt with unchanged baseline stays inert, without retry,
+  until superseded or satisfied; a conclusive refusal may retire the request
+  under the existing terminal rule but never renews the spent id.
+- Proposed lifecycle bookkeeping (attribution and latest-only rules above are
+  decided; transitions remain atomic with accepted core state):
 
   | Event | Result |
   | --- | --- |
   | Qualifying focused positive close, shown readable source, safe survivor | Freeze target; mint once unless observed foreground already equals target |
   | Observed focus equals target, including native fallback without a tiler call | Satisfied; retire; no native activation |
-  | Unrelated observation or skipped native publication, guard still valid | Re-emit identical request id/revision/target in latest snapshot |
-  | New admitted/consumed command, including a semantic refusal; newer user input/focus; view/output change | Supersede and retire; explicit input wins |
-  | Unknown/foreign foreground or unproved guard; hidden/minimized target, held scope, lost lifetime/home, game/fullscreen veto | Ineligible/superseded; retire; no later restoration retry |
+  | Later report has unchanged known foreground; native publication skipped | Re-emit identical request id/revision/target in latest snapshot |
+  | Later report changes observed focus from close-report baseline, not to target; new admitted/consumed command, including a semantic refusal; view/output change | Supersede and retire |
+  | Unknown/foreign foreground; hidden/minimized target, held scope, lost lifetime/home, game/fullscreen veto | Ineligible/superseded; retire; no later restoration retry |
   | Correlated refusal or safety no-call in later observation | Retire, never remint for the same close |
   | Attempt remains unproven or feedback is temporarily missing | Retain identical request; spent adapter never calls again; late satisfaction/refusal can retire it |
   | Target positively closes | Retire old request; a genuinely new qualifying focused close may originate a new request, never a precomputed chain |
 
-- Proposed: unrelated geometry/observation revisions do not renew activation.
-  Re-emission alone never marks a request attempted in core. A different host
-  fallback must not silently supersede it as though user-selected; conversely
-  no generic observation-sequence heuristic may override a real user choice.
+- Unrelated geometry/observation revisions do not renew activation. Re-emission
+  alone never marks a request attempted in core. The same-report fallback is
+  not supersession. A later sampled focus change is attributed to user intent
+  even if the host caused it; A->B->A between captures is invisible. A click in
+  the close-to-report gap may be corrected once, the explicitly accepted cost.
 - No timer, deadline retry, successor substitution or repair after retirement.
   A request awaiting feedback is bounded to one global row, not a retry queue.
 
@@ -215,15 +260,14 @@
   reuse derives refusal from raw facts and safety no-call reasons. Mere
   disagreement after accepted dispatch is not proved refusal; retain as
   unproven without retry. Late evidence for a retired id grants no new work.
-- Proposed rollout: amend the still-pre-release v4 contract in place, coordinated
-  with all codecs/producers/consumers and fixtures, rather than call this v5.
+- Decided Q2 rollout: amend the still-pre-release v4 contract in place, coordinated
+  with all codecs/producers/consumers and fixtures; no version bump.
   This is a strict breaking shape change, not backward-compatible optional data:
   `check_keys_with_optional` rejects unknown keys. Old readers cannot consume new
-  replies. Require one matching build/fixture set, no dual-shape fallback and no
-  live acceptance until matching components pass conformance. If independently
-  deployed v4 compatibility is required, use an explicit version bump instead;
-  approval is Q2. Existing migration policy permits temporarily broken ports,
-  not silently running mismatched versions.
+   replies. Require one matching build/fixture set, no dual-shape fallback and no
+   live acceptance until matching components pass conformance. Existing migration
+   policy permits temporarily broken ports, not silently running mismatched
+   versions.
 - Implementation must update required-key checks, cross-field validation,
   digests/cache equality, exact and upper-bound sizing, empty/bootstrap replies,
   bounded raw evidence and negative fixtures. Bound the outbound lane to zero or
@@ -234,14 +278,19 @@
 
 - Proposed common sequence: validate bound latest reply, resolve current target
   lifetime/home and shown native workspace/Space, apply permitted nonactivating
-  survivor geometry, then re-read foreground/input/session/visibility and all
+  survivor geometry, then re-read foreground/session/visibility and all
   existing automatic-focus safety fences. No dependency on other one-shot
   effects or cross-output visibility barriers is created.
 - Already target: no setter; report truthful observation/equality evidence.
-  Otherwise, if id is unspent and the close guard still permits it, mark spent
-  before one bounded native attempt. Safety refusal/no-call also spends the id.
+  Otherwise, if id is unspent and existing native safety/freshness permits it,
+  mark spent before one bounded native attempt. Safety refusal/no-call also spends the id.
   Report raw feedback through the next normal capture; losing feedback does
   not permit another call. Superseded ids cannot execute from an older outbox.
+- Proposed: reject stale/superseded publication envelopes before selecting an
+  attempt; delivery churn alone does not spend an unchanged re-emitted request.
+  Once selected for native application, a safety no-call spends it. Existing
+  native invalidation and foreground rechecks still veto stale writes; they do
+  not introduce causal input evidence or require applying skipped publications.
 - Proposed bounded accounting: one current close-request record plus a monotonic
   retired/spent issuing-revision fence within the bound connection context;
   reject older publications and ids. Retiring/null publication cannot make an
@@ -250,9 +299,10 @@
   unbounded spent-id set. Proof of this compaction is a required burst/reconnect
   test, not an existing implementation claim.
 - KDE: do not suppress or reconfigure KWin's earlier fallback. After core
-  roundtrip, re-read `activeWindow`; same winner means zero assignments, covered
-  different-survivor fallback permits one assignment. A later activation must
-  not start a tug-of-war. Keep output/current-desktop and activity/visibility,
+  roundtrip, re-read `activeWindow`; same winner means zero assignments, the
+  latest valid request permits one assignment under existing safety fences.
+  Attribution to same-report fallback versus later change stays in core. A later
+  activation must not start a tug-of-war. Keep output/current-desktop and activity/visibility,
   transient/grab, fullscreen/game and lifetime checks. The activeWindow setter
   can raise or switch desktop, so verify the target is already on the shown
   source domain; never use that setter to realize an unshown target.
@@ -270,9 +320,10 @@
 
 ### P6. Bounded implementation order
 
-1. Resolve Q1/Q2; approve raw evidence and wire/fixture contract first. Demonstrate
-   real producer acquisition or explicit unknown/refusal for each platform; no
-   new interception mechanism is implicitly selected by this design.
+1. Apply decided Q1/Q2; approve remaining wire/bookkeeping proposals first.
+   Implement the minimal known-foreground bit by preserving existing read
+   outcomes on each platform; verify genuine windowless versus unknown cases.
+   No new input interception or causal-input protocol is part of the work.
 2. Core retained request, pre-convergence selection and focusless close reflow,
    with focused core/codec tests and strict sizing/replay coverage.
 3. Coordinated KDE/macOS/Windows consumer and producer support with genuine
@@ -291,8 +342,9 @@
 | Required sequence | Required assertion / evidence |
 | --- | --- |
 | `H[A,B,C]`, focus A,C,B, positively close B | Freeze C before observed fallback changes history; survivor order preserved, proportional reflow, latest request C; genuine producer plus core regression |
-| Host already C; reset and host instead A | First case zero native focus calls; second exactly one correction when safely attributed; no repeated call after mismatch |
-| User selects A after close, including before first reply and during apply | User wins, no stale activation; independently ordered native input/focus evidence, not cursor/obs-number inference |
+| Host already C; reset and close-report focus instead A | First case zero native focus calls; second exactly one correction under same-report attribution; no repeated call after mismatch |
+| Close-report baseline A; compare later report focus D versus target C in separate runs; repeat while first publication is skipped | D supersedes before native apply; C satisfies first. Core sees ingress reports even when adapters skip publications; later equality cannot resurrect a retired request |
+| User clicks A between close and close report; repeat A->D->A entirely between captures | Accepted cost: first may be overridden once; second is invisible. No causal input guard/hook; native freshness still vetoes stale apply |
 | Burst of observations skips issuing publication; then command burst | Same id survives unrelated skipped revisions; command supersedes it; at-most-once across cached replies, outbox duplicates and transport reconnect |
 | Focused ordinary float closes over A/C tiles | Tiled MRU selected, tile frames unchanged; no float/sticky/fullscreen candidate expansion |
 | Survivors hidden/minimized or scope held; restore later | No activation/unhide/unminimize or retry; independently readable survivor geometry may reflow, held scope stays fenced |
@@ -302,6 +354,7 @@
 | R-CLOSE-03 sole close, single and L/R multi-output legs | Shown empty workspace and focused-output intent retained, no member request, no other-domain focus and no native clear call; truthful host foreground retained |
 | Refused setter, safety no-call, accepted/unproven and lost feedback | Correct terminal/retained accounting, at-most-once, no replay or remint; late target observation satisfies without setter proof requirement |
 | Generation/adapter replacement, reused native id, late feedback | Old request/context cannot actuate or settle a fresh lifetime |
+| Native null/windowless versus read failure, unsupported AX, foreign/unbound native window and main-window fallback | Minimal foreground bit is truthful for each producer; unknown never originates focus; no diagnostic system-wide AX route or inferred none from omission |
 | macOS `scoped_close_reflow` four cases and old core hold regression | Replace old hold expectation with survivor frames plus distinct pending focus; preserve held-Space safety and truthful observed focus; rerun all four, not only previously failing cases |
 
 ## Decision and contract amendments at implementation completion
@@ -320,31 +373,39 @@
 - Keep this note active through design approval and implementation; archive only
   after accepted implementation evidence and durable decision amendments.
 
-## Approval questions and risks
+## Decided questions, remaining proposals and risks
 
-- **Q1: raw foreground/input attribution (P3).** Existing `focused:""` and generic
-  `obs` cannot satisfy both correct-the-host and preserve-newer-user-focus rules.
-  Recommended: approve explicit known-no-client/unknown distinction plus causal
-  close-bound guard facts; unknown guard refuses rather than guessing. First
-  prove native acquisition on each adapter, then finalize exact field shape.
-  Alternative: treat any different/empty foreground as supersession using current
-  data. That is simpler but abandons approved correction/focusless-close cases
-  and requires a new product decision. No such relaxation is adopted here.
-- **Q2: version boundary (P4).** Recommended: coordinated breaking amendment to
-  pre-release v4, following current migration policy. Alternative: explicit next
-  contract version if old-v4 interoperability/deployment requires discrimination.
-  Neither old-reader tolerance nor a compatibility adapter is proposed.
-- All P1-P6 details require design approval; Q1/Q2 are the material unresolved
-  choices. Native feasibility of causal guard evidence is unproved. If it needs
-  new hooks/interception or cannot be proven on a platform, return the evidence
-  and choices before expanding scope; do not silently disable consistency.
-- Risks: a host fallback can precede lifecycle delivery (especially KWin), user
-  focus can race the roundtrip, and host setters can raise/switch unexpectedly.
-  Conservative fences may suppress valid corrections. Lost feedback can leave
-  one inert pending row; it must never become a retry. Native restart/lifetime
-  reuse can defeat incorrect spent accounting. Roundtrip latency/visible double
-  focus remains unmeasured and belongs to later live/user acceptance.
-- Design verification: `git diff --check` passed; changed relative links and
-  heading targets were checked. Independent records review found no actionable
-  findings. No implementation, test execution or live acceptance is claimed;
-  Q1/Q2 and all P1-P6 proposals remain open for approval.
+- **Q1 decided, User 2026-11-10:** same-report native-fallback attribution and
+  later-report focus-change supersession, with target equality satisfying first.
+  Close-to-report click override and invisible between-capture flips are accepted.
+  Core ingress attribution preserves latest-only adapter application. No causal
+  guard, input history or new interception is required.
+- **Q2 decided, User 2026-11-10:** coordinated in-place pre-release v4 amendment,
+  no version bump or dual-shape fallback. Old strict readers are not compatible.
+- Remaining proposed choices requiring design approval, recommendation: accept
+  these bounded implementation choices together, without reopening Q1/Q2:
+  - P1: one global retained request, revision-derived id, baseline/command/view
+    bookkeeping and connection-scoped lifetime/reset rules.
+  - P2: exact pre-convergence freeze point, existing removal fallback reuse,
+    focusless survivor projection and logical-memory/native-observation split.
+  - P3: one required `foregroundKnown` bit and the per-adapter read-outcome
+    preservation above; no new cause/input data. Alternative: a three-value
+    foreground enum; the bit plus existing `focused` already encodes the same
+    three states with less redundant wire data.
+  - P4: nullable `closeFocus` shape and typed cause, existing exact-tuple feedback
+    reuse/latching and sizing/validation changes, under the decided v4 rollout.
+  - P5: existing native paths including typed macOS observation dispatch, bounded
+    once-per-id current-record/revision-fence accounting and no-call semantics.
+  - P6: contract/fixture agreement, coordinated implementation, offline review,
+    then native and physical acceptance order.
+- Risks: deliberately coarse report-order attribution can override a gap click
+  once or cancel on a later host focus change. Unknown/windowless read handling
+  must stay conservative, especially macOS unsupported versus NoValue and main
+  fallback. Existing native freshness cannot expose flips entirely between
+  captures. Lost feedback can leave one inert pending row; it must never become
+  a retry. Lifetime reuse/spent-fence compaction and roundtrip latency/visible
+  double focus remain implementation and later native acceptance obligations.
+- Evidence: foreground findings are source-read only, not native execution.
+  `git diff --check` passed; changed links/anchors and exact source ranges were
+  checked. Independent records review found no remaining actionable findings.
+  No implementation, test execution or live acceptance is claimed.
