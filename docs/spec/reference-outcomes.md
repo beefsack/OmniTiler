@@ -1432,7 +1432,9 @@ Legend:
   @3d55cba06c9cf6f27609cdefb520f7857dba20af for compositor paths,
   @3d55cba0 for config
   (shipped hover retains focus; enabled variant focuses after the delay)
-- `S-cos-cursor` cosmic-comp:src/shell/seats.rs:310-332
+- `S-cos-cursor` cosmic-comp:src/shell/seats.rs:279-283
+  (`focused_or_active_output` falls back to the cursor output when no
+  window has keyboard focus) and :310-332
   (`active_output` is the cursor output, `focused_output` the keyboard-focus
   output; the two may differ) + src/input/mod.rs:365-376 (relative motion
   resolves the containing output) and :450-457 (containing-output motion
@@ -1881,6 +1883,8 @@ Legend:
 - `S-sway-close` sway:sway/input/seat.c:234-325 (destroyed-node focus falls
   to the focus-inactive view of the parent, else workspace/last workspace)
   and :219-232 + :1378-1393 (focus-inactive is MRU order) and
+  :1159-1164 (`seat_set_workspace_focus` derives the newly focused output
+  from the focused workspace's output) and
   sway/tree/view.c:991-1006 (unmap detaches, reaps empty parent, rearranges)
   @1652c54b73f67df17b7b4ab0b0f7048204aa8104
 - `S-sway-reload` sway:sway/commands.c:118-129 (`reload` + `exit`, no
@@ -2431,8 +2435,8 @@ Legend:
 - `S-bsp-admit` bspwm:src/rule.c:256-293 and src/tree.c:787-795
   @e11eff4cb3333216ad03c815609a4ed79e08929c
   (fullscreen state/fixed-size floating admission; maximum flags not admission state)
-- `S-bsp-close` bspwm:src/tree.c:1337-1405 (`unlink_node` sibling promotion) and :1407-1421 (`close_node` delete/kill) and :1441-1474 (`remove_node` + focus guess) and :538-578 (`focus_node` history fallback) and :645-663 (shows the resolved desktop, sets its focus and records history) and src/history.c:171-180 (`history_last_node` MRU) @e11eff4cb3333216ad03c815609a4ed79e08929c
-  (close removal + MRU refocus, no spatial rule)
+- `S-bsp-close` bspwm:src/tree.c:1337-1405 (`unlink_node` sibling promotion) and :1407-1421 (`close_node` delete/kill) and :1441-1474 (`remove_node` + focus guess) and :538-578 (`focus_node` history fallback) and :645-663 (shows the resolved desktop, sets its focus and records history) and src/window.c:925-941 (`set_input_focus` clears on NULL/non-client, `clear_input_focus` drops X input to pointer-root) and src/history.c:171-180 (`history_last_node` MRU) @e11eff4cb3333216ad03c815609a4ed79e08929c
+  (close removal + MRU refocus, no spatial rule; empty-desk NULL guess clears to root)
 - `S-bsp-wsretain` bspwm:src/messages.c:793-803 (desktop removal only via
   explicit `desktop -r`, refused on the sole desktop) and
   src/desktop.c:336 (`remove_desktop`)
@@ -2687,10 +2691,16 @@ Legend:
 - `S-hyp-close`
   Hyprland:src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:268-310
   (live-tree removal: sibling promotion + recalc; last-node erase) +
+  src/layout/LayoutManager.cpp:149-150 (`getNextCandidate` delegates to
+  the same space) + src/layout/space/Space.cpp:192-193 (space delegates
+  to its own algorithm, so cross-output windows are never candidates) +
   src/desktop/view/window/Window.cpp:1668-1713 (unmap removes group
   membership and layout target, then refocuses only if the closed window
   was focused: grouped next else `focus_on_close` cursor/next/MRU branch;
   no candidate on an emptied workspace runs the pointer refocus) +
+  src/managers/input/InputManager.cpp:283 (refocus queries the monitor at
+  the cursor position) and :1840-1843 (`refocus` reruns pointer focus at
+  the current cursor) +
   src/desktop/view/window/Window.cpp:485-527 (empty-close runs only for
   special workspaces via `misc:close_special_on_empty`; no ordinary
   empty-destroy path) +
@@ -2917,7 +2927,9 @@ Legend:
 - `S-i3-close` i3:src/tree.c:263-311 (close detaches with percent fix; focus
   next only if the closed con was focused) and src/con.c:1651-1685
   (`con_next_focused`: non-head keeps head, head takes next sibling else
-  parent; floating maps to its wrapper)
+  parent; floating maps to its wrapper) and src/con.c:292-296
+  (`con_activate` is `con_focus` + `con_raise` with no `workspace_show` /
+  output switch; the switch lives in `con_activate_unblock`, unused here)
   @903bcd518df32b0e055b17f5da3f988a0187fd3d
 - `S-i3-wsretain` i3:src/workspace.c:530-533 (old workspace closes only
   when empty and invisible; shown workspaces are retained)
@@ -6450,7 +6462,7 @@ minimum-size stays a supplemental file (not nested in resize).
 | Maximise / fullscreen | [maximize-fullscreen.md](reference-outcomes/maximize-fullscreen.md) | R-MAX-01..12 (12) | R-MAX-10/11 fullscreen-toggle discriminators added 2026-10-28 (source-only Tier 1 legs, Ours OPEN pending user decision); R-MAX-12 focused-fullscreen action outcomes TBD |
 | Groups / stacks | [groups-stacks.md](reference-outcomes/groups-stacks.md) | R-GRP-01..03 (3) | none (R-GRP-02..03 landed with scrolling backfill) |
 | Floating | [floating.md](reference-outcomes/floating.md) | R-FLT-01..14 (14) | none (R-FLT-12..14 landed with scrolling backfill) |
-| Close / reflow | [close.md](reference-outcomes/close.md) | R-CLOSE-01..05 (5) | none (R-CLOSE-03..05 landed with scrolling backfill) |
+| Close / reflow | [close.md](reference-outcomes/close.md) | R-CLOSE-01..05 (5) | none (R-CLOSE-03..05 landed with scrolling backfill). R-CLOSE-03 carries an additive multi-output sole-close leg reusing the same scenario ID; scenario count unchanged (5) |
 | Multi-output | [multi-output.md](reference-outcomes/multi-output.md) | R-OUT-01..11 (11) | R-OUT-07 added 2026-10-07; R-OUT-11 selected 2026-11-01: cross from fullscreen/maximized origins to adjacent outputs, eligible overlay destinations preserve state; native journey and unsupported references remain TBD; KDE item 5 R-OUT-01/04/07 delivered offline; Windows wiring pending |
 | Mouse | [mouse.md](reference-outcomes/mouse.md) | R-DRAG-01..08 + R-MOU-01..03 (11) | none (R-MOU-01..03 landed with scrolling backfill) |
 | Special windows | [special-windows.md](reference-outcomes/special-windows.md) | R-SPC-01..13 (13) | R-SPC-04/06..13 KDE and Windows implemented offline under selected D1-D8/G-05; Windows prerequisite a41fcb5 plus runtime delivery 2026-10-11. R-SPC-11/12 lifecycle/enable and R-SPC-13 fixed-origin maximized restart discriminate readings; Windows hydrated-override overlay route is approved shared policy User 2026-10-17, option A (not implemented). Native and unsupported reference outcomes TBD |

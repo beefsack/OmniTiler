@@ -178,6 +178,64 @@ is the observation-driven proposal, never the native verb.
   boundary; native focus journey TBD. `S(S-ours-close)`; queued.
 - Then Ours Windows: same Engine collapse and desired focus none via
   the shared Engine; native journey TBD. `S(S-ours-close)`; queued.
+- Given (multi-output leg, reuses R-CLOSE-03, no new scenario): two
+  outputs L/R; `L:WS1=H[A*]` shown, `R:WS2=H[B,C]` shown with C the
+  remembered/MRU window on R; cursor on L with no cursor motion; A is
+  an ordinary responsive client; no session lock, exclusive-keyboard
+  layer surface, popup grab, or fullscreen/global obstruction; shipped
+  focus-follows-mouse defaults apply (COSMIC off, Hyprland
+  `follow_mouse=1` with `focus_on_close=next`, bspwm off, i3 on,
+  sway yes).
+- When (multi-output leg): close A with the profile's verb from the inventory above.
+- Observe (multi-output leg): WS1 retained as shown empty vs
+  same-output switch; focus none/on-workspace vs a window on R
+  (MRU pick would be C); focused output stays L vs changes to R.
+- Then (multi-output leg) COSMIC: WS1 retained as shown empty
+  (active empties kept); focus none (per-output workspace stack
+  empty, no mapped target); keyboard-focus output is None so
+  `focused_or_active_output` falls back to cursor output L.
+  `S(S-cos-rem)` + `S(S-cos-send)` + `S(S-cos-focusfix)` +
+  `S(S-cos-cursor)` + `S(S-cos-hoverfocus)`.
+- Then (multi-output leg) Hyprland: WS1 retained as shown empty (no
+  ordinary empty-destroy path); candidate search is same-space only
+  (`CLayoutManager` delegates to `CSpace`, so B/C on R are never
+  candidates under `next` or `mru`); `cursor` hit-tests at the L
+  cursor position; empty-workspace `refocus()` re-queries the
+  monitor at the cursor, which is L; focus none, monitor stays L.
+  `S(S-hyp-close)` + `S(S-hyp-follow)`.
+- Then (multi-output leg) bspwm: desktop retained as shown empty
+  (explicit-only removal); sole removal clears the desktop focus
+  and `remove_node` on the focused monitor's desk runs
+  `focus_node` with a NULL guess on the empty root, clearing X
+  input to pointer-root; monitor stays L, no jump to R.
+  `S(S-bsp-close)` + `S(S-bsp-wsretain)` + `S(S-bsp-ptrfocus)`.
+- Then (multi-output leg) i3: WS1 retained (visible-empty kept);
+  `con_next_focused` returns the parent workspace for the sole
+  child and `con_activate` focuses the WS1 node with no
+  `workspace_show`/output switch; focus is on the L workspace, not
+  B or C. `S(S-i3-close)` + `S(S-i3-wsretain)` + `S(S-i3-ffm)`.
+- Then (multi-output leg) sway: WS1 retained (output-active spared);
+  the destroy handler climbs to the visible parent workspace on L
+  and seats focus there; the R windows are never consulted. Focus
+  is on the L workspace, output stays L. `S(S-sway-close)` +
+  `S(S-sway-wsretain)` + `S(S-sway-ffm)`.
+- Then (multi-output leg) xmonad/Tall+Navigation2D: TBD (multi-output
+  sole-close focus/output unestablished at pin).
+- Then (multi-output leg) qtile/Columns: TBD (multi-output sole-close
+  focus/output unestablished at pin).
+- Then (multi-output leg) awesome/tile: TBD (multi-output sole-close
+  focus/output unestablished at pin).
+- Then (multi-output leg) niri: TBD (multi-output sole-close
+  focus/output unestablished at pin).
+- Then (multi-output leg) PaperWM: TBD (multi-output sole-close
+  focus/output unestablished at pin).
+- Then (multi-output leg) karousel/Lazy: TBD (multi-output sole-close
+  focus/output unestablished at pin).
+- Then (multi-output leg) paneru: TBD (multi-output sole-close
+  focus/output unestablished at pin; host remainder as in the
+  single-output leg).
+- Then (multi-output leg) Ours KDE: TBD (no selection).
+- Then (multi-output leg) Ours Windows: TBD (no selection).
 - Variant hook: provisional/TBD (sole-close retention hook, to discuss).
 
 ### R-CLOSE-04: close a focused ordinary float over tiles

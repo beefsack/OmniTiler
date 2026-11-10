@@ -1192,7 +1192,19 @@ matrix total is now 99 rows (96 + 3 new; backfill reuses IDs).
 Ours-vs-consensus position (no behavior selected): three new strong
 predicates stand with Ours unresolved, never differing. R-CLOSE-03
 retained-7/8 (C/B/I/X/S/Q/A across all four families): the shown
-workspace survives closing its sole window. R-CLOSE-04 untouched-6/8
+workspace survives closing its sole window. The single-output
+predicate above (focus none / empty-workspace focus) is distinct from
+the additive multi-output leg in R-CLOSE-03 (same scenario ID, no
+count change): with `L:WS1=H[A*]` shown, `R:WS2=H[B,C]` shown
+(remembered C), and the cursor on L, Tier 1 keeps WS1 shown empty
+with focus none (COSMIC, Hyprland) or on the L workspace node
+(i3, sway), and the current output/monitor stays L (COSMIC's
+keyboard-focused output becomes None; its cursor output remains L);
+the R windows are never consulted, so the MRU pick C is context
+only (bspwm, non-Tier-1 extra context, likewise retains the shown
+desktop with X input cleared to pointer-root and no jump to R).
+Remaining non-Tier-1 and Ours multi-output legs stay TBD with no
+selection. R-CLOSE-04 untouched-6/8
 plus focus-B-6/8 (C/B/I/S/Q/A across all four families): floats close
 outside the tiling with MRU refocus. R-CLOSE-05
 full-leg-5/8 (H/B/I/Q/A across three families): a closed fullscreen
