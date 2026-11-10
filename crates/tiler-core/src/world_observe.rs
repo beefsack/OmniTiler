@@ -85,6 +85,16 @@ impl WorldEngine {
             .any(|held| held.window == *window)
     }
 
+    /// Whether one window stages hidden this report: raw minimized or
+    /// host-hidden known-true. Per-window staged truth only, never a
+    /// report-wide inventory verdict; unknown (`None`) is not hidden.
+    pub(crate) fn staged_hidden(&self, window: &WindowId) -> bool {
+        self.staged
+            .facts
+            .get(window)
+            .is_some_and(|fact| fact.minimized == Some(true) || fact.host_hidden == Some(true))
+    }
+
     /// Whether one window is safety/own-process excluded this report.
     /// Excluded windows hold no membership, slot, or control, complete
     /// and incomplete alike.

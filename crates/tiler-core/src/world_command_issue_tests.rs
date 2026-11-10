@@ -1505,3 +1505,233 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
         reply.effects
     );
 }
+
+#[test]
+fn hidden_focus_target_refuses_complete_and_incomplete() {
+    // Staged minimized/host-hidden focus targets refuse with the
+    // existing focus vocabulary even though retained membership still
+    // authorizes them; the visible control effects, proving no blanket
+    // focus ban. Raw hidden flags are set on the source v4 reports
+    // BEFORE intake, and the contra probe carries no hidden state, so
+    // only staged inputs can explain the outcomes. Both inventory legs
+    // stage the same hidden truth: the guard reads per-window staged
+    // facts, never a report-wide inventory verdict. Minimized
+    // restoration rides its own lane; nothing here restores.
+    for (hidden_kind, inventory_complete) in [
+        ("minimized", true),
+        ("minimized", false),
+        ("host-hidden", true),
+        ("host-hidden", false),
+    ] {
+        let mut engine = new_engine();
+        let mut bootstrap = report_v4_simple(1, vec![screen("out-a", 0)]);
+        bootstrap.windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)];
+        bootstrap.focused_global = "win-a".to_owned();
+        accepted_v4(&mut engine, &bootstrap);
+        let mut hidden_report = report_v4_simple(2, vec![screen("out-a", 0)]);
+        let mut hidden_win = fact("win-b", "out-a", 200);
+        if hidden_kind == "minimized" {
+            hidden_win.minimized = Some(true);
+        } else {
+            hidden_win.host_hidden = Some(true);
+        }
+        hidden_report.windows = vec![fact("win-a", "out-a", 0), hidden_win];
+        hidden_report.focused_global = "win-a".to_owned();
+        hidden_report.inventory_complete = inventory_complete;
+        stage_v4(&mut engine, &hidden_report);
+        seed_ring_views(&mut engine);
+        // Real command-planning joins over the staged facts
+        // (classification only, from staged state with no report
+        // input), mirroring accepted-run assembly: hidden rows land in
+        // the minimized lane, never the carrier index.
+        engine.build_staged_domains();
+        assert!(
+            engine.staged_hidden(&WindowId("win-b".to_owned())),
+            "{hidden_kind} target stages hidden (complete={inventory_complete})",
+        );
+        assert!(
+            !engine.staged_hidden(&WindowId("win-a".to_owned())),
+            "visible control stages shown (complete={inventory_complete})",
+        );
+        let mut owned: Vec<EngineWindow> = Vec::new();
+        for domain in &engine.staged.domains {
+            owned.extend(domain.windows.iter().cloned());
+        }
+        let by_id: BTreeMap<&WindowId, &EngineWindow> =
+            owned.iter().map(|row| (&row.window, row)).collect();
+        // Load-bearing shape: the hidden target leaves the staged
+        // carrier index while retained membership still authorizes it,
+        // so only the staged-hidden guard can explain the refusal.
+        assert!(
+            !by_id.contains_key(&WindowId("win-b".to_owned())),
+            "{hidden_kind} target leaves the carrier index (complete={inventory_complete})",
+        );
+        assert!(
+            engine.engine.domain_keys().iter().any(|key| {
+                engine.engine.session(key).is_some_and(|session| {
+                    session
+                        .snapshot()
+                        .windows
+                        .iter()
+                        .any(|link| link.window == WindowId("win-b".to_owned()))
+                        || session.is_exception(&WindowId("win-b".to_owned()))
+                })
+            }),
+            "{hidden_kind} target keeps retained membership (complete={inventory_complete})",
+        );
+        let probe = contra_v4(90);
+        match engine.execute_command(
+            &test_issue(&probe),
+            12,
+            &focus_command("win-b"),
+            &BTreeSet::new(),
+            None,
+            None,
+        ) {
+            CommandApplied::Rejected { kind, .. } => assert_eq!(kind, KIND_FOCUS),
+            CommandApplied::NoEffect => {
+                panic!("{hidden_kind} focus must refuse (complete={inventory_complete})")
+            }
+            CommandApplied::Effect(_) => {
+                panic!("{hidden_kind} focus must never effect (complete={inventory_complete})")
+            }
+        }
+        // Visible control: no blanket focus ban while hidden is staged.
+        match engine.execute_command(
+            &test_issue(&probe),
+            13,
+            &focus_command("win-a"),
+            &BTreeSet::new(),
+            None,
+            None,
+        ) {
+            CommandApplied::Effect(effect) => {
+                assert_eq!(effect.target, WindowId("win-a".to_owned()));
+                assert_eq!(effect.command_seq, Some(13));
+            }
+            CommandApplied::Rejected { kind, message } => panic!(
+                "visible focus must effect with {hidden_kind} staged, refused {kind} {message}"
+            ),
+            CommandApplied::NoEffect => panic!(
+                "visible focus must effect with {hidden_kind} staged (complete={inventory_complete})"
+            ),
+        }
+        // Observations preserved: the hidden row stays staged verbatim
+        // with no controlled geometry and no hidden focus recorded.
+        let staged = engine
+            .staged
+            .facts
+            .get(&WindowId("win-b".to_owned()))
+            .expect("hidden observation retained");
+        if hidden_kind == "minimized" {
+            assert_eq!(staged.minimized, Some(true));
+        } else {
+            assert_eq!(staged.host_hidden, Some(true));
+        }
+        assert!(
+            engine.implicit_focus != Some(WindowId("win-b".to_owned())),
+            "refused hidden focus records nothing",
+        );
+    }
+}
+
+#[test]
+fn hidden_directional_source_refuses_stale_complete_and_incomplete() {
+    // A staged minimized/host-hidden directional-focus source refuses
+    // with the existing stale vocabulary, like an unknown window (no
+    // new kind, no wire change). Same four legs as the direct guard:
+    // minimized/host-hidden across complete/incomplete inventory, with
+    // a visible-source control proving the guard never misfires.
+    for (hidden_kind, inventory_complete) in [
+        ("minimized", true),
+        ("minimized", false),
+        ("host-hidden", true),
+        ("host-hidden", false),
+    ] {
+        let mut engine = new_engine();
+        let mut bootstrap = report_v4_simple(1, vec![screen("out-a", 0)]);
+        bootstrap.windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)];
+        bootstrap.focused_global = "win-a".to_owned();
+        accepted_v4(&mut engine, &bootstrap);
+        let mut hidden_report = report_v4_simple(2, vec![screen("out-a", 0)]);
+        let mut hidden_win = fact("win-b", "out-a", 200);
+        if hidden_kind == "minimized" {
+            hidden_win.minimized = Some(true);
+        } else {
+            hidden_win.host_hidden = Some(true);
+        }
+        hidden_report.windows = vec![fact("win-a", "out-a", 0), hidden_win];
+        hidden_report.focused_global = "win-a".to_owned();
+        hidden_report.inventory_complete = inventory_complete;
+        stage_v4(&mut engine, &hidden_report);
+        seed_ring_views(&mut engine);
+        engine.build_staged_domains();
+        let probe = contra_v4(90);
+        match engine.execute_command(
+            &test_issue(&probe),
+            12,
+            &WorldCommand::FocusDirectional {
+                window: WindowId("win-b".to_owned()),
+                direction: "left".to_owned(),
+            },
+            &BTreeSet::new(),
+            None,
+            None,
+        ) {
+            CommandApplied::NoEffect => {}
+            CommandApplied::Rejected { kind, message } => panic!(
+                "{hidden_kind} directional source must stale-no-effect, refused {kind} {message}"
+            ),
+            CommandApplied::Effect(_) => panic!(
+                "{hidden_kind} directional source must never effect (complete={inventory_complete})"
+            ),
+        }
+        match &engine.command_result {
+            Some(crate::world_report::CommandResult::Directional {
+                outcome,
+                target,
+                cause,
+                ..
+            }) => {
+                assert_eq!(
+                    *outcome,
+                    crate::world_directional::DirectionalOutcome::FocusFloatRefusedStale,
+                    "{hidden_kind} stale outcome (complete={inventory_complete})",
+                );
+                assert_eq!(*target, Some(WindowId("win-b".to_owned())));
+                assert_eq!(cause.as_deref(), Some("unknown-window"));
+            }
+            other => panic!(
+                "{hidden_kind} directional source must keep the stale vocabulary, got {other:?}"
+            ),
+        }
+        // Visible-source control: the guard never misfires on a shown
+        // subject, so its result never takes the hidden stale path.
+        let applied = engine.execute_command(
+            &test_issue(&probe),
+            13,
+            &WorldCommand::FocusDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "left".to_owned(),
+            },
+            &BTreeSet::new(),
+            None,
+            None,
+        );
+        let stale_hidden_path = matches!(applied, CommandApplied::NoEffect)
+            && matches!(
+                &engine.command_result,
+                Some(crate::world_report::CommandResult::Directional {
+                    outcome,
+                    cause,
+                    ..
+                }) if *outcome
+                    == crate::world_directional::DirectionalOutcome::FocusFloatRefusedStale
+                    && cause.as_deref() == Some("unknown-window")
+            );
+        assert!(
+            !stale_hidden_path,
+            "visible directional source must not take the hidden stale path ({hidden_kind}, complete={inventory_complete})",
+        );
+    }
+}

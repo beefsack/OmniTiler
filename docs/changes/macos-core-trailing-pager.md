@@ -151,15 +151,28 @@ mise exec -- cargo test --locked -p tiler-macos --lib world_builder::tests::firs
 | 1 | Complete inventory: `1001_7` and `1002_8` live on `space-11`, focus `1001_7`. | Establish both live lifetimes. |
 | 2 | Same report first marks `1001_7` minimized and frameless, reports `1002_8` focused, makes `space-12` unreadable (`inventory_complete: false`), and commands `Focus(1001_7, left)`. | Reject `focus-unknown` without convergence, or accept with no hidden-target focus effect, geometry or controlled authority. |
 
-- Actual: step 2 accepts and mints `EffectKind::Focus` on `1001_7`; the complete
+- Historical reproduction: step 2 accepts and mints `EffectKind::Focus` on `1001_7`; the complete
   contrast passes. `world_commands.rs:70-103` checks retained session membership
   but not the staged minimized/held facts before minting the effect. The adapter
   supplies the correct minimized, frameless, native-home and incomplete facts.
-- Proposed core correction, not implemented: reject a staged minimized target
-  before the retained-membership fallback can authorize direct focus; review
-  staged-home/readability/held-scope eligibility consistently with other commands.
-  Keep minimized restoration separate from this hidden-target focus path and
-  cover complete/incomplete transition contrasts in core regressions.
+- Resolved in the v4 implementation (2026-11-10): direct `Focus` rejects an
+  explicitly staged minimized/host-hidden target with existing `focus-unknown`
+  before retained membership can authorize it. Directional focus refuses the
+  hidden source with its existing stale-source result. The guard is per-window,
+  not a whole-inventory focus ban. Observations and non-authoritative held layout
+  remain; minimized restoration is unchanged. No wire or contract change.
+- Verification: the genuine macOS producer regression above passes both complete
+  and incomplete contrasts with explicit native raw facts and macOS capabilities.
+  Focused core regressions pass for minimized/host-hidden across both inventory
+  states, including visible controls. Independent source review accepts the
+  bounded guard; directional-source coverage pins existing refusal semantics
+  rather than distinguishing the redundant guard from the carrier-index miss.
+  Core/protocol build and all behavioral test targets pass; the workspace unsafe
+  allowlist test fails on three unchanged fixture attributes. Core strict
+  all-target clippy passes; protocol strict clippy fails on two unchanged
+  single-element loops. Baseline attribution is source comparison, not a separate
+  baseline execution. This resolves the focus defect, not full gate closure,
+  pager native acceptance or the broader macOS v4 port.
 
 ### Current verification
 

@@ -486,6 +486,19 @@ impl WorldEngine {
                 by_id,
             );
         }
+        // Hidden subjects never navigate: a staged minimized/host-hidden
+        // source refuses with the existing stale vocabulary, like an
+        // unknown window (no new kind, no wire change).
+        if self.staged_hidden(window) {
+            self.command_result = Some(CommandResult::Directional {
+                outcome: DirectionalOutcome::FocusFloatRefusedStale,
+                target: Some(window.clone()),
+                rect: None,
+                cause: Some("unknown-window".to_owned()),
+            });
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
+        }
         let Some(source_row) = by_id.get(window) else {
             self.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::FocusFloatRefusedStale,

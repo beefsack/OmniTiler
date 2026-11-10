@@ -123,6 +123,18 @@ impl WorldEngine {
                         message: MSG_DIRECTION,
                     };
                 }
+                // Hidden targets never take focus: a staged
+                // minimized/host-hidden target refuses with the existing
+                // focus vocabulary before the retained-membership
+                // fallback below can authorize it. Per-window staged
+                // truth only, never a report-wide inventory verdict;
+                // minimized restoration rides its own lane.
+                if self.staged_hidden(window) {
+                    return CommandApplied::Rejected {
+                        kind: KIND_FOCUS,
+                        message: MSG_FOCUS,
+                    };
+                }
                 let known = by_id.contains_key(window)
                     || self.engine.domain_keys().iter().any(|key| {
                         self.engine.session(key).is_some_and(|session| {
